@@ -1,0 +1,195 @@
+{
+  "_comment": "Curated, NON-personal demo library for the marketing screenshots. The ONLY hand-edited source. Run `bun run screenshots` (or `cargo test --features e2e build_showcase_fixture -- --ignored`) to regenerate showcase-fixture.bin from this. Block ids map the Claude Design handoff's abstract glyph codes to real Fender model ids verified present in src/models/blockArt.ts. Preset `slot` = device user slot (= list index + 1). `activeSlot` is the hero preset shown on the Level tab.",
+  "firmware": "1.8.45",
+  "activeSlot": 146,
+  "presets": [
+    {
+      "slot": 3,
+      "name": "Clean DI",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_DynaComp",
+          "ACD_DeluxeReverb65NoFx",
+          "ACD_CabSimTMS",
+          "ACD_TMSpring65"
+        ]
+      },
+      "scenes": ["Clean", "Bright"]
+    },
+    {
+      "slot": 7,
+      "name": "Studio Clean",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_DynaComp",
+          "ACD_TwinReverb65NoFx",
+          "ACD_CabSimTMS",
+          "ACD_TMSmallHall"
+        ]
+      },
+      "scenes": ["Clean", "Sparkle"]
+    },
+    {
+      "slot": 8,
+      "name": "Plexi Crunch",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_MarshallPlexi",
+          "ACD_CabSimTMS",
+          "ACD_TMSpring65"
+        ]
+      },
+      "scenes": ["Rhythm", "Crunch", "Lead"]
+    },
+    {
+      "slot": 12,
+      "name": "Tweed Warm",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_TweedDeluxe",
+          "ACD_CabSimTMS",
+          "ACD_TMSpring65"
+        ]
+      }
+    },
+    {
+      "slot": 18,
+      "name": "AC Top Boost",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": ["ACD_ChromeGate", "ACD_AC30Brilliant", "ACD_CabSimTMS"]
+      },
+      "scenes": ["Chime", "Cut"]
+    },
+    {
+      "slot": 24,
+      "name": "Brit Combo 65",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_DeluxeReverb65NoFx",
+          "ACD_CabSimTMS",
+          "ACD_TMSmallHall"
+        ]
+      },
+      "scenes": ["Clean", "Edge", "Drive"]
+    },
+    {
+      "slot": 31,
+      "name": "Octave Fuzz",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_BigFuzz",
+          "ACD_MarshallPlexi",
+          "ACD_CabSimTMS"
+        ]
+      },
+      "scenes": ["Fuzz", "Octave"]
+    },
+    {
+      "slot": 45,
+      "name": "Worship Swell",
+      "template": "gtrParallel1",
+      "groups": {
+        "G1": ["ACD_ChromeGate"],
+        "G2": ["ACD_AC30Brilliant", "ACD_CabSimTMS"],
+        "G3": ["ACD_MarshallPlexi", "ACD_CabSimTMS"],
+        "G4": ["ACD_TMSmallHall"]
+      },
+      "scenes": ["Pad", "Swell", "Lead"]
+    },
+    {
+      "slot": 58,
+      "name": "Stadium Lead",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_KlonCentaur",
+          "ACD_JCM800TMS",
+          "ACD_CabSimTMS",
+          "ACD_TMSmallHall"
+        ]
+      },
+      "scenes": ["Clean", "Rhythm", "Crunch", "Lead", "Solo"]
+    },
+    {
+      "slot": 146,
+      "name": "Verse — Split",
+      "template": "gtrParallel2",
+      "groups": {
+        "G1": ["ACD_Boost"],
+        "G2": ["ACD_TweedDeluxe"],
+        "G3": ["ACD_PrincetonReverb65NoFx"],
+        "G4": ["ACD_SpaceEcho"],
+        "G5": ["ACD_TMSmallHall"],
+        "G6": ["ACD_EcFilter"],
+        "G7": ["ACD_TMSmallHall"]
+      },
+      "scenes": ["Verse", "Chorus", "Solo", "Ambient"]
+    },
+    {
+      "slot": 147,
+      "name": "Chorus Lead",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_DeluxeReverb65NoFx",
+          "ACD_CabSimTMS",
+          "ACD_ChorusCE2",
+          "ACD_TMSmallHall"
+        ]
+      },
+      "scenes": ["Rhythm", "Lead"]
+    },
+    {
+      "slot": 152,
+      "name": "Ambient Wash",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": [
+          "ACD_ChromeGate",
+          "ACD_TwinReverb65NoFx",
+          "ACD_CabSimTMS",
+          "ACD_SpaceEcho",
+          "ACD_CloudReverb"
+        ]
+      },
+      "scenes": ["Air", "Deep"]
+    },
+    {
+      "slot": 168,
+      "name": "Direct Acoustic",
+      "template": "gtrSeries",
+      "groups": { "G1": ["ACD_Acoustasonic", "ACD_TMSmallHall"] }
+    }
+  ],
+  "songs": [
+    { "name": "Open / Intro", "presets": [3, 152] },
+    { "name": "Higher Ground", "presets": [8, 58] },
+    { "name": "Still Water", "presets": [45, 152] },
+    { "name": "Run It Back", "presets": [8, 24, 58, 147] },
+    { "name": "Marigold", "presets": [7, 18] },
+    { "name": "Closer", "presets": [3, 45] },
+    { "name": "Encore — Split", "presets": [146, 58] },
+    { "name": "Cornerstone", "presets": [168] },
+    { "name": "Lights Down", "presets": [58, 147] },
+    { "name": "Northbound", "presets": [24] }
+  ],
+  "setlists": [
+    "Roundhouse · Fri",
+    "Acoustic Sessions",
+    "Festival · Main",
+    "Rehearsal"
+  ]
+}

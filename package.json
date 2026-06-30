@@ -1,0 +1,67 @@
+{
+  "name": "tmp-companion",
+  "version": "0.0.0-development",
+  "private": true,
+  "type": "module",
+  "description": "USB controller for the Fender Tone Master Pro: loudness leveling, block copy, and song/setlist editing",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "bash scripts/e2e.sh",
+    "lint": "eslint src/ e2e/ --max-warnings 0",
+    "lint:fix": "eslint src/ e2e/ --fix --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "screenshots": "cargo test --manifest-path src-tauri/Cargo.toml --features e2e --lib build_showcase_fixture -- --ignored && playwright test -c e2e/showcase/playwright.showcase.config.ts",
+    "format": "prettier --write 'src/**/*.{ts,tsx}' 'e2e/**/*.ts' '*.config.{js,ts}' .prettierrc index.html",
+    "format:check": "prettier --check 'src/**/*.{ts,tsx}' 'e2e/**/*.ts' '*.config.{js,ts}' .prettierrc index.html",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "{src,e2e}/**/*.{ts,tsx}": [
+      "prettier --write",
+      "eslint --max-warnings 0"
+    ],
+    "*.{js,json,md,css,html}": "prettier --write"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-log": "^2.8.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.1.0",
+    "@commitlint/config-conventional": "^21.1.0",
+    "@playwright/test": "^1.61.0",
+    "@tauri-apps/cli": "^2.11.2",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.13.0",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "^9",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
+    "jsdom": "^29.1.1",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.8.3",
+    "semantic-release": "^24.2.9",
+    "@semantic-release/exec": "^7.1.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8",
+    "vite": "^8.0.15",
+    "vitest": "^4.1.7"
+  }
+}

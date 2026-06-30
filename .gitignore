@@ -1,0 +1,23 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# frontend-rewrite scratch (read-only references, not shipped)
+.design-ref/
+
+# Playwright e2e output (transient)
+test-results/
+playwright-report/
+
+# design-sync (claude.ai/design) — local tooling, not shipped
+.ds-sync/
+ds-bundle/
+.design-sync/
+dts-gen/
+
+# Claude local state (skills symlink, scheduled-task locks, etc.)
+.claude/
+
+# CLAUDE.md — internal RE/working notes, kept local (not part of the public repo)
+/CLAUDE.md

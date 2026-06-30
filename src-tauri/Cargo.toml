@@ -1,0 +1,57 @@
+[package]
+name = "tmp-companion"
+version = "0.0.0-development"
+description = "USB controller for the Fender Tone Master Pro: loudness leveling, block copy, and song/setlist editing"
+authors = ["Pedro CAVADAS"]
+edition = "2021"
+# probe/gen_samples are dev-only helper bins; `tauri dev` runs a bare `cargo run`
+# which is otherwise ambiguous with multiple binaries.
+default-run = "tmp-companion"
+
+[lib]
+name = "tmp_companion_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Closed-loop progress + cross-thread command/response to the HID runloop thread.
+crossbeam-channel = "0.5"
+# Re-amp playback + capture of the processed return. cpal IS native CoreAudio
+# (AUHAL) on macOS — same backend the emulator uses.
+cpal = "0.15"
+# Pure-Rust EBU R128 / ITU-R BS.1770 loudness measurement (no C dependency).
+ebur128 = "0.1"
+# WAV decode for sound samples + capture dumps.
+hound = "3"
+# Logging: tauri-plugin-log writes frontend (console/error) + backend `log::*`
+# records to the OS log dir + stdout. `log` provides the macros + LevelFilter.
+tauri-plugin-log = "2"
+log = "0.4"
+# Device-backup fast DB read (`probe --device-backup`): the unit streams a
+# GNU-tar + LZ4-frame archive of /data (built by `tm-stomp-server`'s libarchive).
+# Both pure-Rust, no C dependency. SQLite itself is read via the system `sqlite3`.
+lz4_flex = "0.11"
+tar = "0.4"
+
+# macOS-only: IOKit HID (exclusive device seize) is
+# reached by hand-declared `#[link(name = "IOKit", kind = "framework")]` externs
+# in hid.rs — no Rust crate exposes kIOHIDOptionsTypeSeizeDevice. core-foundation
+# gives us the CFType/CFRunLoop wrappers; libc the raw fd/timing primitives.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+libc = "0.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# Offline UI e2e seam: compiles the device-transport factory (`session::e2e_transport`)
+# and the `e2e_server` bin so a Playwright run drives the real backend against an
+# in-memory `SimDevice` instead of USB. Production never enables it (real `Hid` only).
+# `tauri/test` gives the windowless MockRuntime the server invokes commands through.
+e2e = ["tauri/test"]

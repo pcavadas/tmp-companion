@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TMP Companion — Every preset, the same loudness.</title>
+    <meta
+      name="description"
+      content="Auto-level your Fender Tone Master Pro presets to a consistent loudness over USB — no guitar required. Free, open-source, macOS."
+    />
+
+    <link rel="icon" href="assets/app-icon.png" />
+    <meta
+      property="og:title"
+      content="TMP Companion — Every preset, the same loudness."
+    />
+    <meta
+      property="og:description"
+      content="Auto-level your Fender Tone Master Pro presets to a consistent loudness over USB — no guitar required."
+    />
+    <meta property="og:image" content="assets/app-icon.png" />
+    <meta property="og:type" content="website" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;0,500;1,400&display=swap"
+      rel="stylesheet"
+    />
+
+    <style>
+      :root {
+        --ink: #0f1115;
+        --ink-2: #33373f;
+        --muted: #6b7280;
+        --faint: #9aa0a9;
+        --accent: #d97757;
+        --accent-hover: #cf6a48;
+        --accent-deep: #a7461f;
+        --bg-grey: #f6f7f9;
+        --bg-ivory: #faf8f4;
+        --hairline: rgba(15, 17, 21, 0.09);
+        --hairline-soft: rgba(15, 17, 21, 0.07);
+        --card-border: rgba(15, 17, 21, 0.1);
+        --serif: "Source Serif 4", Georgia, serif;
+        --sans: "Inter", system-ui, sans-serif;
+        --mono: "JetBrains Mono", ui-monospace, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #fff;
+        color: var(--ink-2);
+        font-family: var(--sans);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .wrap {
+        max-width: 1012px;
+        margin: 0 auto;
+      }
+
+      a {
+        color: inherit;
+      }
+      .link {
+        text-decoration: none;
+        transition: color 0.15s ease;
+      }
+      .link:hover {
+        color: var(--accent);
+      }
+
+      a:focus-visible,
+      .btn:focus-visible {
+        outline: 2px solid var(--accent-deep);
+        outline-offset: 3px;
+        border-radius: 4px;
+      }
+
+      /* ---- buttons ---- */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-family: var(--sans);
+        font-weight: 500;
+        font-size: 14px;
+        line-height: 1;
+        text-decoration: none;
+        border-radius: 8px;
+        padding: 10px 16px;
+        cursor: pointer;
+        transition:
+          background 0.15s ease,
+          border-color 0.15s ease,
+          color 0.15s ease;
+        white-space: nowrap;
+      }
+      .btn svg {
+        width: 15px;
+        height: 15px;
+        display: block;
+      }
+      .btn.sm {
+        font-size: 13px;
+        padding: 7px 12px;
+      }
+      .btn.sm svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .btn.primary {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+      }
+      .btn.primary:hover {
+        background: var(--accent-hover);
+      }
+
+      .btn.ghost {
+        background: transparent;
+        color: var(--ink-2);
+        border: 0.5px solid rgba(15, 17, 21, 0.18);
+      }
+      .btn.ghost:hover {
+        color: var(--accent-deep);
+        border-color: rgba(167, 70, 31, 0.4);
+      }
+
+      /* ---- micro-labels ---- */
+      .kicker {
+        display: block;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--accent-deep);
+      }
+
+      /* ---- header ---- */
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        background: rgba(255, 255, 255, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 0.5px solid var(--hairline);
+      }
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 13px 40px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .brand img {
+        display: block;
+      }
+      .wordmark {
+        font-weight: 600;
+        font-size: 15px;
+        color: var(--ink);
+      }
+      .wordmark span {
+        font-weight: 400;
+        color: var(--muted);
+      }
+      nav.nav {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+      }
+      .nav-link {
+        font-weight: 500;
+        font-size: 13px;
+        color: var(--ink-2);
+      }
+
+      /* ---- hero ---- */
+      .hero {
+        background: linear-gradient(180deg, #ffffff, var(--bg-ivory));
+      }
+      .hero-inner {
+        max-width: 840px;
+        margin: 0 auto;
+        padding: 76px 40px 84px;
+        text-align: center;
+      }
+      .hero .kicker {
+        margin-bottom: 20px;
+      }
+      .hero h1 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: clamp(40px, 5vw, 60px);
+        line-height: 1.04;
+        letter-spacing: -0.015em;
+        color: var(--ink);
+        margin: 0 0 22px;
+      }
+      .hero p {
+        font-size: 18px;
+        line-height: 1.55;
+        color: var(--ink-2);
+        margin: 0 auto 28px;
+        max-width: 30em;
+        text-wrap: pretty;
+      }
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: center;
+        margin-bottom: 14px;
+      }
+      .spec {
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: var(--faint);
+      }
+
+      /* ---- feature sections ---- */
+      .feature {
+        border-top: 0.5px solid var(--hairline-soft);
+      }
+      .feature.white {
+        background: #fff;
+      }
+      .feature.grey {
+        background: var(--bg-grey);
+      }
+      .feature-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 40px;
+        padding: 72px 40px;
+      }
+      .feature.reverse .feature-row {
+        flex-direction: row-reverse;
+      }
+
+      .shot-col {
+        flex: 1 1 472px;
+        min-width: 0;
+        display: flex;
+      }
+      .feature.reverse .shot-col {
+        justify-content: flex-end;
+      }
+      /* The PNG is a self-contained macOS window — traffic lights, title bar, rounded corners,
+     and a soft drop shadow on a transparent margin — so the frame is a transparent
+     passthrough (no card border/shadow/background) and the window floats on the section. */
+      .shot {
+        position: relative;
+        width: 100%;
+        max-width: 472px;
+      }
+      /* img removed (404 fallback): give the collapsed box a size. Ratio ≈ the framed PNG
+     (content + title bar + margin); keep roughly in sync with frameWindow in showcase.spec.ts. */
+      .shot:has(.placeholder:only-child) {
+        aspect-ratio: 472 / 384;
+      }
+      .shot img {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .shot .placeholder {
+        display: none;
+      } /* the loaded <img> covers it */
+      .shot .placeholder:only-child {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--mono);
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+
+      .text-col {
+        flex: 1 1 300px;
+        min-width: 280px;
+      }
+      .text-col .kicker {
+        margin-bottom: 14px;
+      }
+      .text-col h2 {
+        font-family: var(--serif);
+        font-weight: 500;
+        font-size: clamp(26px, 3vw, 34px);
+        line-height: 1.1;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+        margin: 0 0 16px;
+      }
+      .text-col p {
+        font-size: 16px;
+        line-height: 1.6;
+        color: var(--ink-2);
+        margin: 0;
+        max-width: 34em;
+        text-wrap: pretty;
+      }
+
+      /* ---- footer ---- */
+      footer {
+        background: #fff;
+        border-top: 0.5px solid var(--hairline);
+      }
+      .footer-inner {
+        max-width: 1012px;
+        margin: 0 auto;
+        padding: 48px 40px 30px;
+      }
+      .footer-top {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 48px 64px;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+      .footer-brand {
+        flex: 1 1 300px;
+        min-width: 260px;
+        max-width: 380px;
+      }
+      .footer-brand .brand {
+        margin-bottom: 14px;
+      }
+      .footer-brand .wordmark {
+        font-size: 14px;
+      }
+      .footer-tagline {
+        font-family: var(--serif);
+        font-size: 17px;
+        line-height: 1.4;
+        color: var(--ink);
+        margin: 0 0 16px;
+        max-width: 18em;
+      }
+      .footer-meta {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+        color: var(--faint);
+      }
+
+      .footer-cols {
+        display: flex;
+        gap: 64px;
+        flex-wrap: wrap;
+      }
+      .footer-col-head {
+        font-family: var(--mono);
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--faint);
+        margin-bottom: 14px;
+      }
+      .footer-col-links {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .footer-col-links a {
+        font-size: 13.5px;
+        color: var(--ink-2);
+      }
+
+      .footer-bottom {
+        margin-top: 40px;
+        padding-top: 22px;
+        border-top: 0.5px solid var(--hairline);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px 24px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .legal {
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: var(--faint);
+        max-width: 66ch;
+      }
+      .copyright {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        color: var(--faint);
+        white-space: nowrap;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        * {
+          transition: none !important;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .header-row {
+          padding: 12px 20px;
+          gap: 12px;
+        }
+        .hero-inner {
+          padding: 56px 20px 60px;
+        }
+        .feature-row {
+          padding: 52px 20px;
+          gap: 28px;
+        }
+        .footer-inner {
+          padding: 40px 20px 26px;
+        }
+        /* Declutter the sticky header on phones — GitHub stays reachable in the hero + footer. */
+        nav.nav .nav-link,
+        nav.nav .btn.ghost {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="header-row">
+        <div class="brand">
+          <img src="assets/app-icon.png" alt="" width="28" height="28" />
+          <span class="wordmark">TMP <span>Companion</span></span>
+        </div>
+        <nav class="nav">
+          <a class="link nav-link" href="#level">Features</a>
+          <a
+            class="btn ghost sm link"
+            href="https://github.com/pcavadas/tmp-companion"
+            >View on GitHub</a
+          >
+          <a
+            class="btn primary sm"
+            href="https://github.com/pcavadas/tmp-companion/releases"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 3v12" />
+              <path d="m7 11 5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+            Download
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-inner">
+          <span class="kicker">TMP Companion</span>
+          <h1>Every preset, the same loudness.</h1>
+          <p>
+            Auto-level your Fender Tone Master Pro presets to a consistent
+            loudness over USB — no guitar required.
+          </p>
+          <div class="cta-row">
+            <a
+              class="btn primary"
+              href="https://github.com/pcavadas/tmp-companion/releases"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 3v12" />
+                <path d="m7 11 5 5 5-5" />
+                <path d="M5 21h14" />
+              </svg>
+              Download for macOS (.dmg)
+            </a>
+            <a
+              class="btn ghost"
+              href="https://github.com/pcavadas/tmp-companion"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
+                <path d="M12 16V3" />
+                <path d="m8 7 4-4 4 4" />
+              </svg>
+              View on GitHub
+            </a>
+          </div>
+          <div class="spec">Free · Open-source · Apple Silicon · macOS 12+</div>
+        </div>
+      </section>
+
+      <section id="level" class="feature white">
+        <div class="feature-row wrap">
+          <div class="shot-col">
+            <div class="shot">
+              <span class="placeholder">Level</span>
+              <img
+                src="assets/level.png"
+                alt="The Level tab measuring and setting preset loudness"
+                loading="lazy"
+                onerror="this.remove()"
+              />
+            </div>
+          </div>
+          <div class="text-col">
+            <span class="kicker">Level</span>
+            <h2>Set every preset to the same loudness.</h2>
+            <p>
+              Measure each preset's real, integrated loudness over USB and set
+              its exact level — per preset, per scene, per footswitch. Pick a
+              target and the run trims each one to match, so nothing leaps or
+              drops when you switch live.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="copy" class="feature grey reverse">
+        <div class="feature-row wrap">
+          <div class="shot-col">
+            <div class="shot">
+              <span class="placeholder">Copy</span>
+              <img
+                src="assets/copy.png"
+                alt="The Copy tab editing signal-chain blocks across presets"
+                loading="lazy"
+                onerror="this.remove()"
+              />
+            </div>
+          </div>
+          <div class="text-col">
+            <span class="kicker">Copy</span>
+            <h2>Move blocks between presets.</h2>
+            <p>
+              Copy, replace, insert, or remove signal-chain blocks across
+              presets — pick what to copy from, choose where it lands, and
+              review before it's applied. Nothing changes on the unit until you
+              save.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="songs" class="feature white">
+        <div class="feature-row wrap">
+          <div class="shot-col">
+            <div class="shot">
+              <span class="placeholder">Songs</span>
+              <img
+                src="assets/songs.png"
+                alt="The Songs tab organizing songs and setlists"
+                loading="lazy"
+                onerror="this.remove()"
+              />
+            </div>
+          </div>
+          <div class="text-col">
+            <span class="kicker">Songs</span>
+            <h2>Build songs and setlists.</h2>
+            <p>
+              Keep your songs and setlists in playing order, each linked to the
+              presets it needs — so you can see at a glance which sounds every
+              song in the set calls for.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="catalog" class="feature grey reverse">
+        <div class="feature-row wrap">
+          <div class="shot-col">
+            <div class="shot">
+              <span class="placeholder">Catalog</span>
+              <img
+                src="assets/catalog.png"
+                alt="The Catalog tab browsing every amp, cab, mic, and effect"
+                loading="lazy"
+                onerror="this.remove()"
+              />
+            </div>
+          </div>
+          <div class="text-col">
+            <span class="kicker">Catalog</span>
+            <h2>The full model catalog.</h2>
+            <p>
+              Every amp, cab, mic, and stompbox on the unit, by its real name —
+              300+ models across Combo Amps, Amp Heads, Half Stacks, Bass Amps,
+              Cabinets, and Effects. See each block's CPU cost and mono / stereo
+              routing, so you can budget your signal path before it touches the
+              hardware.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-inner">
+        <div class="footer-top">
+          <div class="footer-brand">
+            <div class="brand">
+              <img src="assets/app-icon.png" alt="" width="26" height="26" />
+              <span class="wordmark">TMP Companion</span>
+            </div>
+            <p class="footer-tagline">Every preset, the same loudness.</p>
+            <div class="footer-meta">Free · Open-source · macOS 12+</div>
+          </div>
+          <div class="footer-cols">
+            <div>
+              <div class="footer-col-head">Project</div>
+              <div class="footer-col-links">
+                <a class="link" href="https://github.com/pcavadas/tmp-companion"
+                  >Repository</a
+                >
+                <a
+                  class="link"
+                  href="https://github.com/pcavadas/tmp-companion/releases"
+                  >Releases</a
+                >
+                <a
+                  class="link"
+                  href="https://github.com/pcavadas/tmp-companion/issues"
+                  >Issues</a
+                >
+              </div>
+            </div>
+            <div>
+              <div class="footer-col-head">Download</div>
+              <div class="footer-col-links">
+                <a
+                  class="link"
+                  href="https://github.com/pcavadas/tmp-companion/releases"
+                  >macOS (.dmg)</a
+                >
+                <a
+                  class="link"
+                  href="https://github.com/pcavadas/tmp-companion/blob/main/LICENSE"
+                  >MIT License</a
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <div class="legal">
+            Not affiliated with or endorsed by Fender Musical Instruments
+            Corporation. Tone Master Pro is a trademark of FMIC.
+          </div>
+          <div class="copyright">MIT · © 2026</div>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>

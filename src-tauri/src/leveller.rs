@@ -1,0 +1,2847 @@
+//! Preset leveling — derived from the live de-risk against real hardware.
+//!
+//! Findings that shape this (all confirmed on-device):
+//!   1. The re-amp USB-Out tap reflects `presetLevel`, but ONLY the value that
+//!      was set BEFORE re-amp engaged — re-amp latches preset state at engage.
+//!   2. Re-amp engages reliably only ONCE per connection (fresh connect →
+//!      single toggle). Repeated toggling within a session is unreliable.
+//!   3. `set_preset_level` is IGNORED when it immediately follows `load_preset`
+//!      in the SAME connection — the load's own level-apply overrides our set.
+//!      A no-load `set_preset_level` (on the already-current preset) sticks.
+//!      → load the preset in its own connection, then measure/set on FRESH
+//!      connections. The device keeps the loaded preset "current" across USB
+//!      reconnects, so the no-load set targets the right preset.
+//!   4. `presetLevel` is a LINEAR amplitude control:
+//!      `captured_LUFS = 20·log10(presetLevel) + C`,
+//!      where `C` folds the preset's inherent processed loudness + stimulus
+//!      level + the fixed re-amp tap gain. Verified to ~0.2 LU across 0.1–0.9.
+//!
+//! So leveling is one-shot/open-loop: measure once at a reference level, solve
+//! for `C`, compute the exact `presetLevel` that hits the target, set it, save.
+
+use std::time::Duration;
+
+use serde::Serialize;
+
+use crate::audio;
+use crate::lufs;
+use crate::session::Session;
+
+pub(crate) const SETTLE_AFTER_LOAD_MS: u64 = 1200;
+// Settle after a reload when the next step is a PURE WRITE (no verify capture): the
+// preset only needs to be loaded enough to accept + persist a param, not for the DSP
+// audio to settle. Conservative pending an on-HW read-back floor (write → confirm the
+// value stuck); it can drop toward ~400 ms once measured. Full SETTLE_AFTER_LOAD_MS is
+// still used when a verify capture follows the reload.
+const SETTLE_BEFORE_WRITE_MS: u64 = 600;
+pub(crate) const SETTLE_AFTER_SET_MS: u64 = 300;
+const SETTLE_AFTER_REAMP_MS: u64 = 500;
+/// Inter-session HID gap: let the IOKit seize release before the next open. The
+/// HW-proven safe open-after-close gap within the lockout window (`lib.rs`'s scene
+/// prepass→one-shot handoff reuses it). `pub(crate)` so that single shared value /
+/// rationale isn't duplicated as a magic number elsewhere.
+pub(crate) const RECONNECT_GAP_MS: u64 = 400;
+const CAPTURE_TAIL_MS: u64 = 800;
+// Scene mode (`SetNodeSceneEdit`) MUST be enabled AND confirmed before the value
+// write, or the write hits the BASE/global value and leaks across scenes
+// (HW). It is a fire-and-forget setter (no ack), so give it a generous
+// settle to land before `change_parameter` — a 300 ms window intermittently raced
+// under HID congestion, leaking the last scene's level into the un-scene-moded base.
+const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 600;
+const RATE: u32 = 48_000;
+const LEVEL_MIN: f32 = 0.0;
+const LEVEL_MAX: f32 = 1.0;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LevelResult {
+    pub slot: u32,
+    pub ref_level: f32,
+    /// Captured integrated LUFS measured at `ref_level`.
+    pub measured_lufs: f64,
+    /// Solved constant `C` in `LUFS = 20·log10(level) + C` (= max reachable LUFS).
+    pub constant_c: f64,
+    /// presetLevel computed to hit the target (clamped 0..1).
+    pub final_level: f32,
+    pub target_lufs: f64,
+    /// Predicted captured LUFS at `final_level` (== target unless clamped).
+    pub predicted_lufs: f64,
+    /// True if the target needed level outside [0,1] (unreachable — clamped).
+    pub clamped: bool,
+    /// Whether `final_level` was persisted to the preset (SaveCurrentPreset).
+    pub saved: bool,
+    /// Independent re-measure at `final_level` on a fresh capture (None if skipped).
+    pub verify_lufs: Option<f64>,
+    /// Number of capture iterations the solve used (1 = one-shot presetLevel
+    /// path; 2..=N for the closed-loop block-knob path).
+    pub iterations: u32,
+    /// Short-term-max − integrated of the measure capture (LU), gain-invariant.
+    /// Large (≳6 LU) = a dynamic preset whose gated-integrated reading understates
+    /// its peaks vs a compressed one — the UI flags it "verify by ear". `None`
+    /// when the measuring path has no full-capture meter (live windows).
+    pub dynamic_spread_lu: Option<f64>,
+    /// When clamped for a SPECIFIC reason (currently "no authority" — the amp's
+    /// `outputLevel` doesn't reach the USB 1/2 capture), the UI shows this verbatim
+    /// instead of a generic "clamped". `None` for the preset-level path / plain clamp.
+    pub clamp_reason: Option<String>,
+    /// Best-effort rebalance "verify by ear" flag (lane-mute bleed may have skewed the
+    /// equal-solo balance). Distinct from `dynamic_spread_lu`; the UI ORs both.
+    pub verify_by_ear: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct LevelOptions {
+    /// Persist `final_level` to the preset after computing it.
+    pub save: bool,
+    /// Re-measure at `final_level` on a fresh capture to confirm the result.
+    pub verify: bool,
+    /// Reference level to measure at (the model is solved from this point).
+    pub ref_level: f32,
+}
+
+impl Default for LevelOptions {
+    fn default() -> Self {
+        LevelOptions {
+            save: false,
+            verify: false,
+            ref_level: 0.5,
+        }
+    }
+}
+
+/// Fresh-connect, set `level` (NO load — the current preset is already the one
+/// we want), engage re-amp once, capture, and return the loudest channel's
+/// loudness. The one-shot `presetLevel` case of `measure_knob_at`.
+fn measure_at_level(stimulus: &[f32], level: f32) -> Result<lufs::Loudness, String> {
+    measure_knob_at(stimulus, &LevelKnob::PresetLevel, level)
+}
+
+/// Sentinel error returned when a cooperative cancel flag is observed at a leveling
+/// checkpoint. Compared by `restore_after_unsaved_error` (a cancel must restore the
+/// stored preset even on the `save=true` path) and treated as a skip by the frontend.
+pub const CANCELLED: &str = "cancelled";
+
+/// Reload the stored preset to discard temporary level edits made while
+/// measuring. `save=false` is a preview/read-only contract for callers: the TMP
+/// edit buffer may be mutated during capture, but it must not remain dirty.
+fn restore_saved_preset(slot: u32) -> Result<(), String> {
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let mut s = Session::connect()?;
+    s.load_preset(slot)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    log::info!("restored stored preset slot={slot} after unsaved measurement");
+    Ok(())
+}
+
+/// If an unsaved operation fails after touching a level control, try to discard
+/// the temporary edit before returning the original error.
+fn restore_after_unsaved_error<T>(
+    slot: u32,
+    save: bool,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    let err = match result {
+        Ok(value) => return Ok(value),
+        Err(err) => err,
+    };
+    // Restore the stored preset to discard a dirty edit buffer when nothing was
+    // persisted: an unsaved op (save=false), OR a cancel — even with save=true a cancel
+    // bails before `apply_level`, leaving `presetLevel` at the measurement reference
+    // (`measure_knob_at` sets it and never restores). A non-cancel save error keeps the
+    // prior pass-through behavior (no reload).
+    if save && err != CANCELLED {
+        return Err(err);
+    }
+    match restore_saved_preset(slot) {
+        Ok(()) => Err(err),
+        Err(restore_err) => Err(format!(
+            "{err}; also failed to restore stored preset: {restore_err}"
+        )),
+    }
+}
+
+/// What one reference capture yields: the loudness reading, the solved model
+/// constant, and the capture's dynamics spread (see `LevelResult::dynamic_spread_lu`).
+#[derive(Debug, Clone, Copy)]
+pub struct MeasuredC {
+    /// Captured integrated LUFS at the reference level.
+    pub measured_lufs: f64,
+    /// Solved `C` in `LUFS = 20·log10(level) + C` (= max reachable LUFS).
+    pub c: f64,
+    /// Short-term-max − integrated of the same capture (LU).
+    pub dynamic_spread_lu: f64,
+}
+
+/// Conn 1+2 seam: load `slot` (own connection, since set-after-load is overridden
+/// in-connection), then measure its captured loudness at `ref_level` on a fresh
+/// connection, and solve `C` in `LUFS = 20·log10(level) + C`. `C` is the preset's
+/// max reachable captured loudness.
+pub fn measure_c(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<MeasuredC, String> {
+    let ref_level = ref_level.clamp(0.05, 1.0);
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    // No load → the set inside measure_at_level sticks on the now-current preset.
+    let loudness = measure_at_level(stimulus, ref_level)?;
+    let c = loudness.integrated_lufs - 20.0 * (ref_level as f64).log10();
+    Ok(MeasuredC {
+        measured_lufs: loudness.integrated_lufs,
+        c,
+        dynamic_spread_lu: loudness.spread_lu(),
+    })
+}
+
+/// MEASURE seam returning the FULL multi-channel capture: load `slot`, re-amp
+/// `stimulus` at `ref_level`, return every captured channel. Validated own-conn
+/// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
+/// and the per-channel N1 diagnostic (`probe --channels`) share this.
+pub fn capture_full(
+    slot: u32,
+    stimulus: &[f32],
+    ref_level: f32,
+) -> Result<audio::Capture, String> {
+    let ref_level = ref_level.clamp(0.05, 1.0);
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let mut s = Session::connect()?;
+    set_knob(&mut s, &LevelKnob::PresetLevel, ref_level)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    let _ = s.set_reamp_mode(true)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+    let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
+    let _ = s.set_reamp_mode(false);
+    cap
+}
+
+/// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the
+/// `stimulus` at `ref_level`, and return the loudest captured channel's raw samples +
+/// rate (for FFT / band analysis). Mirrors the validated `measure_c` + `measure_knob_at`
+/// sequence (own-connection load → fresh-connect set → engage re-amp once → capture).
+pub fn capture_samples(
+    slot: u32,
+    stimulus: &[f32],
+    ref_level: f32,
+) -> Result<(Vec<f32>, u32), String> {
+    let cap = capture_full(slot, stimulus, ref_level)?;
+    let (ch, _) = cap.loudest_channel();
+    Ok((cap.channel(ch), cap.sample_rate))
+}
+
+/// MEASURE seam for scene leveling: load `slot`, then for each scene in
+/// `0..scene_count` activate it (`loadScene`) and capture its ceiling loudness at
+/// `presetLevel = 1.0`. Returns per-scene loudness (LUFS) — feed to
+/// `scenes::normalize_scene_targets` for the per-scene gain offsets. The scene is
+/// activated in the load connection (alongside `load_preset`); whether the active
+/// scene survives the reconnect to the capture connection is the one HW detail to
+/// confirm (if not, move the `load_scene` into the capture connection).
+pub fn capture_scene_ceilings(
+    slot: u32,
+    scene_count: u32,
+    stimulus: &[f32],
+) -> Result<Vec<f64>, String> {
+    let mut cs = Vec::with_capacity(scene_count as usize);
+    // Scenes are 0-based `scenes[]` indices on the wire (base is the constant slot 8)
+    // — HW-proven by the `--loadscene 1` → scenes[1] activegraph diff. Slot 0 IS
+    // addressable because `proto::load_scene` now emits the field explicitly even
+    // for 0 (the device ignores an empty LoadScene{} — HW-found).
+    for scene in 0..scene_count {
+        {
+            let mut s = Session::connect()?;
+            s.load_preset(slot)?;
+            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+            s.load_scene(scene)?;
+            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        }
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        let mut s = Session::connect()?;
+        set_knob(&mut s, &LevelKnob::PresetLevel, 1.0)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        cs.push(engage_measure_disengage(&mut s, stimulus)?.integrated_lufs);
+    }
+    Ok(cs)
+}
+
+/// The common leveling target for a set of preset ceilings `cs`: the
+/// loudest level *every* preset can still reach, with `headroom_lu` of margin —
+/// `min(C) − headroom`. `None` if `cs` is empty. Leveling all presets to this target
+/// means no loudness jump when switching presets/instruments on stage.
+pub fn common_target(cs: &[f64], headroom_lu: f64) -> Option<f64> {
+    // Ignore non-finite ceilings (a failed/silent capture yields NaN); an all-NaN
+    // slice returns None so the caller errors out rather than solving against NaN and
+    // writing a garbage presetLevel.
+    cs.iter()
+        .copied()
+        .filter(|c| c.is_finite())
+        .reduce(f64::min)
+        .map(|min_c| min_c - headroom_lu)
+}
+
+/// Solve the `presetLevel` that hits `target_lufs` given `C`. Returns
+/// `(final_level clamped 0..1, clamped, predicted_lufs)`.
+pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
+    let ideal = 10f64.powf((target_lufs - c) / 20.0);
+    let clamped = ideal > LEVEL_MAX as f64 || ideal < LEVEL_MIN as f64;
+    let final_level = (ideal as f32).clamp(LEVEL_MIN, LEVEL_MAX);
+    let predicted = 20.0 * (final_level.max(1e-6) as f64).log10() + c;
+    (final_level, clamped, predicted)
+}
+
+/// Conn 3 seam: set `knob`=`final_level` on a fresh connection, optionally verify
+/// (fresh re-amp capture) and save. With `save=false`, reloads the stored preset
+/// after verification so the TMP edit buffer does not remain dirty. Returns
+/// `(saved, verify_lufs)`.
+///
+/// `reload_preset` controls whether the preset is re-loaded first: the
+/// single-preset and block paths leave it `false` (the preset is still current
+/// from the prior load — exactly the validated 3-connection sequence); the setlist
+/// path sets it `true` because measuring other presets has since changed which
+/// preset is current.
+pub fn apply_level(
+    slot: u32,
+    stimulus: &[f32],
+    knob: &LevelKnob,
+    final_level: f32,
+    opts: LevelOptions,
+    reload_preset: bool,
+) -> Result<(bool, Option<f64>), String> {
+    apply_levels(slot, stimulus, &[(knob, final_level)], opts, reload_preset)
+}
+
+/// Multi-knob Conn-3 seam: set every `(knob, value)` in `targets` (all belonging to
+/// the same scene) on a fresh connection — the joint-k apply for a parallel-merged
+/// scene's lane amps — optionally verify (one fresh re-amp capture, latching the
+/// whole set) and save. `apply_level` is the one-element case. See `apply_level`'s
+/// notes on `reload_preset`.
+pub fn apply_levels(
+    slot: u32,
+    stimulus: &[f32],
+    targets: &[(&LevelKnob, f32)],
+    opts: LevelOptions,
+    reload_preset: bool,
+) -> Result<(bool, Option<f64>), String> {
+    if reload_preset {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        // A verify capture needs the DSP audio fully settled; a pure write does not.
+        let settle = if opts.verify {
+            SETTLE_AFTER_LOAD_MS
+        } else {
+            SETTLE_BEFORE_WRITE_MS
+        };
+        std::thread::sleep(Duration::from_millis(settle));
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+
+    let mut verify_lufs = None;
+    let mut s = Session::connect()?;
+    set_knobs(&mut s, targets)?; // set before any re-amp engage (latched)
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+
+    if opts.verify {
+        verify_lufs = engage_measure_disengage(&mut s, stimulus)
+            .ok()
+            .map(|l| l.integrated_lufs);
+        // Re-assert every level after the re-amp toggle, before saving.
+        let _ = set_knobs(&mut s, targets);
+        std::thread::sleep(Duration::from_millis(150));
+    }
+
+    if opts.save {
+        s.save_current_preset(slot)?;
+    } else {
+        drop(s);
+        restore_saved_preset(slot)?;
+    }
+    Ok((opts.save, verify_lufs))
+}
+
+/// Level one preset to `target_lufs`. Self-contained: opens its own fresh
+/// connections (load → measure → set), so the caller must NOT hold a competing
+/// device seize while this runs. Composes the `measure_c` → `solve_level` →
+/// `apply_level` seams.
+pub fn level_preset(
+    slot: u32,
+    stimulus: &[f32],
+    target_lufs: f64,
+    opts: LevelOptions,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<LevelResult, String> {
+    // Pre-measure cancel: nothing has touched the device yet, so return WITHOUT the
+    // restore wrapper (no needless reload).
+    if cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    let result = (|| {
+        let ref_level = opts.ref_level.clamp(0.05, 1.0);
+        let m = measure_c(slot, stimulus, ref_level)?;
+        // Post-measure cancel: `measure_c` left `presetLevel` at `ref_level`; bail before
+        // the apply+save. The restore wrapper reloads the stored preset (see CANCELLED).
+        if cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
+        // The preset is still current from measure_c's load → no reload needed.
+        let (saved, verify_lufs) = apply_level(
+            slot,
+            stimulus,
+            &LevelKnob::PresetLevel,
+            final_level,
+            opts,
+            false,
+        )?;
+
+        Ok(LevelResult {
+            slot,
+            ref_level,
+            measured_lufs: m.measured_lufs,
+            constant_c: m.c,
+            final_level,
+            target_lufs,
+            predicted_lufs: predicted,
+            clamped,
+            saved,
+            verify_lufs,
+            iterations: 1,
+            dynamic_spread_lu: Some(m.dynamic_spread_lu),
+            clamp_reason: None,
+            verify_by_ear: false,
+        })
+    })();
+    restore_after_unsaved_error(slot, opts.save, result)
+}
+
+/// One entry in a setlist leveling pass: the preset slot + its already-loaded
+/// instrument stimulus.
+pub struct SetlistEntry<'a> {
+    pub slot: u32,
+    pub stimulus: &'a [f32],
+    /// Fletcher–Munson playback compensation (LU) added to this entry's target
+    /// (see `profiles::playback_offset_lu`). 0 = level at the common target as-is.
+    pub offset_lu: f64,
+}
+
+/// The result of leveling a whole setlist to one common target.
+#[derive(Debug, Clone, Serialize)]
+pub struct SetlistResult {
+    /// The common target chosen = min(C across entries) − `headroom_lu`.
+    pub target_lufs: f64,
+    pub results: Vec<LevelResult>,
+}
+
+/// Level a whole setlist so every (preset, instrument) pair lands at one common
+/// loudness — the goal being no on-stage jump when switching presets/guitars.
+///
+/// Two passes (each entry's stimulus is its instrument's): pass 1 measures `C`
+/// for every entry; the common target `T = min(C − offset) − headroom_lu` is the
+/// loudest level every preset can still reach AT ITS OWN effective target
+/// `T + offset_lu` (the per-instrument Fletcher–Munson compensation —
+/// presetLevel only attenuates, so an effective target above any preset's `C`
+/// would clamp → a residual jump, surfaced per row). Pass 2 applies each entry's
+/// effective target (reloading the preset, since measuring others moved the
+/// "current" preset). Verify is forced off for speed across many presets.
+pub fn level_setlist(
+    entries: &[SetlistEntry<'_>],
+    headroom_lu: f64,
+    ref_level: f32,
+    save: bool,
+) -> Result<SetlistResult, String> {
+    if entries.is_empty() {
+        return Err("no presets to level".to_string());
+    }
+    let ref_level = ref_level.clamp(0.05, 1.0);
+
+    // Pass 1 — measure C for every entry (C is intrinsic, independent of target).
+    let mut measured: Vec<MeasuredC> = Vec::with_capacity(entries.len());
+    for e in entries {
+        measured.push(measure_c(e.slot, e.stimulus, ref_level)?);
+    }
+
+    // Common target: just below the quietest-capable preset's ceiling, in
+    // OFFSET-ADJUSTED space (an entry leveled `offset_lu` hotter eats into its
+    // own ceiling by exactly that much, so its constraint is `C − offset`).
+    let cs: Vec<f64> = measured
+        .iter()
+        .zip(entries)
+        .map(|(m, e)| m.c - e.offset_lu)
+        .collect();
+    let target_lufs = common_target(&cs, headroom_lu).ok_or("no presets to level")?;
+
+    // Pass 2 — apply each entry's effective target (reload: measuring moved current).
+    let opts = LevelOptions {
+        save,
+        verify: false,
+        ref_level,
+    };
+    let mut results = Vec::with_capacity(entries.len());
+    for (e, m) in entries.iter().zip(measured.iter()) {
+        let entry_target = target_lufs + e.offset_lu;
+        let (final_level, clamped, predicted) = solve_level(m.c, entry_target);
+        let (saved, verify_lufs) = apply_level(
+            e.slot,
+            e.stimulus,
+            &LevelKnob::PresetLevel,
+            final_level,
+            opts,
+            true,
+        )?;
+        results.push(LevelResult {
+            slot: e.slot,
+            ref_level,
+            measured_lufs: m.measured_lufs,
+            constant_c: m.c,
+            final_level,
+            target_lufs: entry_target,
+            predicted_lufs: predicted,
+            clamped,
+            saved,
+            verify_lufs,
+            iterations: 1,
+            dynamic_spread_lu: Some(m.dynamic_spread_lu),
+            clamp_reason: None,
+            verify_by_ear: false,
+        });
+    }
+
+    Ok(SetlistResult {
+        target_lufs,
+        results,
+    })
+}
+
+// ─── Closed-loop block-control leveling ──────────────────────────────────────
+
+/// Which control to drive when leveling. `PresetLevel` is the validated one-shot
+/// master path; `Block` drives a chosen block parameter via `ChangeParameter`
+/// (e.g. an amp's `outputLevel`) and is solved with a closed loop because an
+/// arbitrary level knob's response isn't guaranteed linear-in-dB.
+#[derive(Debug, Clone)]
+pub enum LevelKnob {
+    PresetLevel,
+    Block {
+        group_id: String,
+        node_id: String,
+        parameter_id: String,
+        /// When `Some(scene_slot)` (0-based `scenes[]` wire index), each connection
+        /// loads that scene and enables per-block Scene Edit before driving the knob,
+        /// so the write lands on the SCENE overlay (per-scene leveling). `None` =
+        /// level the base/preset value (a normal block knob; base needs no recall —
+        /// the preset load activates it).
+        scene_slot: Option<u32>,
+    },
+}
+
+impl LevelKnob {
+    pub fn label(&self) -> String {
+        match self {
+            LevelKnob::PresetLevel => "presetLevel".to_string(),
+            LevelKnob::Block {
+                group_id,
+                node_id,
+                parameter_id,
+                scene_slot,
+            } => match scene_slot {
+                Some(s) => format!("{group_id}/{node_id}/{parameter_id}@scene{s}"),
+                None => format!("{group_id}/{node_id}/{parameter_id}"),
+            },
+        }
+    }
+}
+
+/// Closed-loop convergence tolerance and iteration cap. Each iteration is one
+/// fresh connection (re-amp engages once per connection), so the cap bounds the
+/// device round-trips; ≈0.3 LU is well within audible-match for leveling.
+const KNOB_TOL_LU: f64 = 0.3;
+const KNOB_MAX_ITERS: u32 = 6;
+const LIVE_SETTLE_MS: u64 = 350;
+const LIVE_MAX_ITERS: u32 = 5;
+
+/// Live-controller flavors. Only `LiveHybrid` ships (the batched runner's
+/// controller — the benchmark winner); the others remain as
+/// `next_live_coord` branches exercised by the unit tests, documenting WHY
+/// hybrid won (secant is noise-fragile, fixed-gain proportional stalls on
+/// compressed responses, Fractal-style full meter-match jumps overshoot —
+/// Fractal itself ships no auto-leveler, just a ~300 ms VU meter the player
+/// matches manually, FM9 manual p.62). `BatchedLive` labels the shipped
+/// whole-preset runner in benchmark rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SceneLevelStrategy {
+    LiveSecant,
+    LiveProportional,
+    LiveHybrid,
+    FractalStyle,
+    /// One preset load + one stream pair per preset; one re-amp engage per
+    /// scene; trust-region slope jumps (`level_scenes_live_batched`).
+    BatchedLive,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SceneLevelBenchmarkRow {
+    pub preset_slot: u32,
+    pub ui_label: String,
+    pub scene_slot: u32,
+    pub scene_name: String,
+    pub strategy: SceneLevelStrategy,
+    pub elapsed_ms: u128,
+    pub capture_windows: u32,
+    pub parameter_writes: u32,
+    pub final_lufs: Option<f64>,
+    pub error_lu: Option<f64>,
+    pub final_output_level: Option<f32>,
+    pub clamped: bool,
+    pub saved: bool,
+    pub failure: Option<String>,
+}
+
+/// Set the chosen knob to `value` on an open session (before re-amp engage).
+fn set_knob(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<(), String> {
+    match knob {
+        LevelKnob::PresetLevel => {
+            s.set_preset_level(value)?;
+            Ok(())
+        }
+        LevelKnob::Block {
+            group_id,
+            node_id,
+            parameter_id,
+            scene_slot,
+        } => {
+            if let Some(scene) = scene_slot {
+                // Per-scene leveling: activate the scene, then enable scene mode on this
+                // block so its params become scene-specific. Scene mode MUST be enabled
+                // AND CONFIRMED before the value write — otherwise the write hits the
+                // BASE/global value and leaks across scenes (HW). It's
+                // re-asserted on EVERY connection (scene + scene-edit don't survive the
+                // leveller's reconnects), and given a generous settle (a 300 ms window
+                // intermittently raced under HID congestion, leaking the last scene's
+                // level into the un-scene-moded base — fixed by a 2nd convergence pass).
+                s.load_scene(*scene)?;
+                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+                s.set_node_scene_edit(group_id, node_id, true)?;
+                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
+            }
+            s.change_parameter(group_id, node_id, parameter_id, value)
+        }
+    }
+}
+
+/// Write ONLY the knob value (no scene re-activation) — the live loop's
+/// mid-stream adjustment. The scene + per-block Scene Edit were already
+/// activated by the initial `set_knob` on the same connection; re-loading the
+/// scene while re-amp is engaged and audio is streaming is slow and risks
+/// disturbing the engaged state.
+fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<(), String> {
+    match knob {
+        LevelKnob::PresetLevel => {
+            s.set_preset_level(value)?;
+            Ok(())
+        }
+        LevelKnob::Block {
+            group_id,
+            node_id,
+            parameter_id,
+            ..
+        } => s.change_parameter(group_id, node_id, parameter_id, value),
+    }
+}
+
+/// Write a SET of block knobs that all belong to the SAME scene, doing the scene
+/// recall + per-block Scene Edit ONCE up front (NOT per knob — calling `set_knob`
+/// per knob re-`load_scene`s between writes, which reverts the prior knob's unsaved
+/// value). Ordering mirrors `set_knob` but batched, so the scene-edit-before-write
+/// rule holds for every block at once: load scene → enable Scene Edit on every
+/// per-scene block → ONE settle → write every value. Base/`PresetLevel` knobs
+/// (no `scene_slot`) write directly. The settle-race that leaks to the base scene
+/// (see `SETTLE_AFTER_SCENE_EDIT_MS`) is paid once, covering all knobs.
+fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), String> {
+    let scene = targets.iter().find_map(|(k, _)| match k {
+        LevelKnob::Block {
+            scene_slot: Some(slot),
+            ..
+        } => Some(*slot),
+        _ => None,
+    });
+    if let Some(scene) = scene {
+        s.load_scene(scene)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        for (k, _) in targets {
+            if let LevelKnob::Block {
+                group_id,
+                node_id,
+                scene_slot: Some(_),
+                ..
+            } = k
+            {
+                s.set_node_scene_edit(group_id, node_id, true)?;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
+    }
+    for (k, v) in targets {
+        set_knob_value_only(s, k, *v)?;
+    }
+    Ok(())
+}
+
+/// Fresh-connect, load `scene_slot`, engage re-amp, capture — measure the scene's
+/// loudness AS-IS without writing ANY parameter (no `set_knob`, no Scene Edit). Lets
+/// the one-shot runner decide whether a scene already sits at target before touching
+/// it. The preset must already be current (loaded in a prior connection).
+/// The integrated LUFS of a re-amp capture's loudest channel, erroring on silence.
+/// The shared tail of every isolated measurement (load/engage/capture/disengage
+/// differ per caller; this `capture → loudest channel → measure → finite-check` is
+/// identical). `pub(crate)` so the `lib.rs` probe measure paths share it too.
+pub(crate) fn loudest_lufs(cap: Result<audio::Capture, String>) -> Result<f64, String> {
+    loudest_loudness(cap).map(|l| l.integrated_lufs)
+}
+
+/// Like [`loudest_lufs`] but keeps the full meter reading (integrated + short-term
+/// max), for paths that report the capture's dynamics spread alongside the level.
+fn loudest_loudness(cap: Result<audio::Capture, String>) -> Result<lufs::Loudness, String> {
+    let cap = cap?;
+    let (ch, _) = cap.loudest_channel();
+    let m = lufs::measure_mono(&cap.channel(ch), cap.sample_rate)?;
+    m.integrated_lufs
+        .is_finite()
+        .then_some(m)
+        .ok_or_else(|| "no signal captured".to_string())
+}
+
+/// Engage re-amp on `s` (latching the already-set knob/scene), settle, capture the
+/// FULL stimulus + decay tail, measure the loudest channel's integrated LUFS, then
+/// disengage. The shared tail of every isolated leveling measurement (the
+/// connect/load/set prefix differs per caller).
+///
+/// This deliberately uses the FULL capture, not the adaptive `audio::reamp_measure`.
+/// The offline harness proved that trimming the window — early-exit, dropping the
+/// 0.8 s tail, OR skipping a pre-roll — shifts the measured loudness up to ~0.4 LU on
+/// time-effect/reverb presets (quiet delay buildup + decay tail that production
+/// integrates). Adopting the adaptive capture is a measurement RE-BASELINE; until
+/// that's signed off, leveling keeps the validated full-capture metric. The adaptive
+/// path is HW-A/B-able via `probe --measure-adaptive`.
+pub(crate) fn engage_measure_disengage(
+    s: &mut Session,
+    stimulus: &[f32],
+) -> Result<lufs::Loudness, String> {
+    let _ = s.set_reamp_mode(true)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+    let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
+    let _ = s.set_reamp_mode(false);
+    loudest_loudness(cap)
+}
+
+fn measure_scene_asis(scene_slot: u32, stimulus: &[f32]) -> Result<lufs::Loudness, String> {
+    let mut s = Session::connect()?;
+    s.load_scene(scene_slot)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    engage_measure_disengage(&mut s, stimulus)
+}
+
+/// Fresh-connect, set `knob`=`value` (before engage), engage re-amp once,
+/// measure the loudest channel on the full capture. Restores re-amp OFF.
+fn measure_knob_at(
+    stimulus: &[f32],
+    knob: &LevelKnob,
+    value: f32,
+) -> Result<lufs::Loudness, String> {
+    let mut s = Session::connect()?;
+    set_knob(&mut s, knob, value)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    engage_measure_disengage(&mut s, stimulus)
+}
+
+// ───────────────────────── Footswitch (engaged-state) leveling ─────────────────────────
+//
+// Levels a footswitch's engaged state by solving the switch-ON value (`valueA`) of a
+// `param` function on that switch. The leveler creates/edits ONLY a parameter-change
+// assignment for the user's chosen block+param — it does NOT touch on/off. Measurement
+// sweeps the chosen param (via `changeParameter`) in the preset's natural state and finds
+// the value that hits target; when the footswitch is later engaged, that param jumps to the
+// solved `valueA`. The param is user-chosen (any continuous `[0,1]` control), so this is a
+// generic param-space secant (not the amplitude one-shot) with an honest clamp — a param on
+// a bypassed/inert block measures as no-authority and clamps.
+
+/// One footswitch-leveling outcome (mirrors the `LevelResult` subset the UI shows).
+#[derive(Debug, Clone, Serialize)]
+pub struct FootswitchLevelResult {
+    pub switch: u32,
+    /// Engaged loudness at the low reference seed (context).
+    pub measured_lufs: f64,
+    /// Solved switch-ON value written as the `param` function's `valueA`.
+    pub final_value: f32,
+    pub target_lufs: f64,
+    /// Achieved engaged loudness at `final_value`.
+    pub predicted_lufs: f64,
+    pub clamped: bool,
+    pub clamp_reason: Option<String>,
+    pub saved: bool,
+    pub verify_lufs: Option<f64>,
+    pub iterations: u32,
+    pub dynamic_spread_lu: Option<f64>,
+    /// `"baked"` (value written straight onto the block) or `"assigned"` (param-change
+    /// footswitch function written) — which simplification the leveler chose.
+    pub method: String,
+}
+
+/// How to write the leveling `param` function — resolved by the caller (edit an existing
+/// matching function, or add at the next free index), preserving its display fields.
+#[derive(Debug, Clone)]
+pub struct FootswitchWriteSpec {
+    pub function_index: u32,
+    pub color_a: u32,
+    pub color_b: u32,
+    pub custom_label: String,
+    pub link_group: u32,
+    pub is_active: bool,
+}
+
+/// How `level_footswitch` persists the solved value.
+#[derive(Debug, Clone)]
+pub enum FsWrite {
+    /// Write a `param`-change footswitch function (`valueA`=solved, `valueB`=`value_b`).
+    Assign {
+        value_b: f32,
+        spec: FootswitchWriteSpec,
+    },
+    /// Bake the solved value straight onto the block (`change_parameter`), and clear a
+    /// now-redundant `param` function at `clear_stale` so the bake is the single source.
+    Bake { clear_stale: Option<u32> },
+}
+
+/// Pure secant step in PARAMETER space: two `(value, loudness)` points → the next value
+/// that should hit `target`. `None` when the local slope is ~flat (the param doesn't move
+/// loudness). UNCLAMPED — caller clamps to the param's `[0,1]` range.
+fn fs_secant_next(p0: (f64, f64), p1: (f64, f64), target: f64) -> Option<f64> {
+    let slope = (p1.1 - p0.1) / (p1.0 - p0.0);
+    if !slope.is_finite() || slope.abs() < 1e-3 {
+        return None;
+    }
+    Some(p1.0 + (target - p1.1) / slope)
+}
+
+/// True if `ftsw[switch][index]` is a `param` function targeting `param` — the post-write
+/// read-back confirmation (the schema has no dedicated `…Changed` echo).
+fn param_fn_present(ftsw: &serde_json::Value, switch: u32, index: u32, param: &str) -> bool {
+    ftsw.as_array()
+        .and_then(|a| a.get(switch as usize))
+        .and_then(|s| s.as_array())
+        .and_then(|fns| fns.get(index as usize))
+        .map(|f| {
+            f.get("func").and_then(|v| v.as_str()) == Some("param")
+                && f.get("parameterId").and_then(|v| v.as_str()) == Some(param)
+        })
+        .unwrap_or(false)
+}
+
+/// Level a footswitch's engaged state by solving a parameter-change assignment.
+/// `lev` = the `(group, node, param)` solved; `value_b` = the switch-OFF value written. On
+/// `save`, writes the `param` function (gated on the field-54 echo / read-back, never on
+/// `presetError`) and persists; otherwise reverts the working copy. The measurement param
+/// sweep is NEVER saved — the write path reloads the preset first.
+#[allow(clippy::too_many_arguments)]
+pub fn level_footswitch(
+    slot: u32,
+    switch: u32,
+    lev: (&str, &str, &str),
+    engaged_bypass: &[(String, String, bool)],
+    write: &FsWrite,
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    verify: bool,
+) -> Result<FootswitchLevelResult, String> {
+    // Load the preset in its own connection (re-amp latch workaround), then measure on
+    // fresh connections (the preset stays current across reconnects).
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+
+    // Replicate the footswitch's engaged state (force each on-off block's bypass) before the
+    // param sweep — empty for a block that's ON in base (today's base-state measurement). The
+    // forced bypass lives only on these throwaway measurement connections; the write reloads.
+    let measure_at = |v: f32| -> Result<lufs::Loudness, String> {
+        let mut s = Session::connect()?;
+        for (g, n, byp) in engaged_bypass {
+            s.change_parameter_bool(g, n, "bypass", *byp)?;
+        }
+        s.change_parameter(lev.0, lev.1, lev.2, v)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        engage_measure_disengage(&mut s, stimulus)
+    };
+
+    // Seed two real points and run a bounded generic secant.
+    let (v_lo, v_hi) = (0.25f32, 0.75f32);
+    let l_lo = measure_at(v_lo)?;
+    let l_hi = measure_at(v_hi)?;
+    let mut iterations = 2u32;
+    let err = |l: f64| (l - target_lufs).abs();
+    let (mut best_v, mut best_lufs, mut best_spread) =
+        if err(l_lo.integrated_lufs) <= err(l_hi.integrated_lufs) {
+            (v_lo, l_lo.integrated_lufs, l_lo.spread_lu())
+        } else {
+            (v_hi, l_hi.integrated_lufs, l_hi.spread_lu())
+        };
+    let mut clamp_reason: Option<String> = None;
+    if (l_hi.integrated_lufs - l_lo.integrated_lufs).abs() < KNOB_TOL_LU {
+        clamp_reason = Some("parameter has little effect on loudness".into());
+    } else if err(best_lufs) > KNOB_TOL_LU {
+        let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
+        let mut p1 = (v_hi as f64, l_hi.integrated_lufs);
+        for _ in 0..MEASURE_CORRECT_MAX {
+            let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
+                clamp_reason
+                    .get_or_insert_with(|| "parameter has little effect on loudness".into());
+                break;
+            };
+            if !(-1e-9..=1.0 + 1e-9).contains(&raw) {
+                clamp_reason.get_or_insert_with(|| "target outside parameter range".into());
+            }
+            let v2 = raw.clamp(0.0, 1.0) as f32;
+            let l2 = measure_at(v2)?;
+            iterations += 1;
+            if err(l2.integrated_lufs) < err(best_lufs) {
+                best_v = v2;
+                best_lufs = l2.integrated_lufs;
+                best_spread = l2.spread_lu();
+            }
+            if err(l2.integrated_lufs) <= KNOB_TOL_LU {
+                break;
+            }
+            p0 = p1;
+            p1 = (v2 as f64, l2.integrated_lufs);
+        }
+    }
+    let clamped = err(best_lufs) > KNOB_TOL_LU;
+    if !clamped {
+        clamp_reason = None; // converged — drop any transient out-of-range hint
+    } else if clamp_reason.is_none() {
+        clamp_reason = Some("could not reach target".into());
+    }
+
+    // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
+    // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
+    let reamp_off = || {
+        let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+    };
+
+    // ── Write (save only): reload to DISCARD the measurement pollution (incl. the forced
+    //    bypass), then write per the mode and persist ──
+    let mut saved = false;
+    let mut verify_lufs = None;
+    if save {
+        reamp_off();
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        // Establish a LIVE CONTROLLER (begin_live_edit warmup) → load (discards the
+        // measurement pollution) → then KEEP THE SESSION LIVE with a heartbeat burst right up
+        // to any chunked `ftsw` edit. Chunked edits are silently DROPPED (empty reply) if the
+        // session has lapsed — and a PASSIVE SLEEP lets it lapse. HW-proven
+        // (`probe --repro-chunked`): passive sleep before the set → dropped; heartbeat-pumped →
+        // lands, even across prior re-amp captures.
+        let mut s = Session::connect()?;
+        s.begin_live_edit()?;
+        s.load_preset(slot)?;
+        let name = s.active_preset_name().unwrap_or_default();
+        if !name.is_empty() && !s.await_active_preset(&name, 20) {
+            return Err("after reload, active preset changed — aborting before write".into());
+        }
+        for _ in 0..8 {
+            let _ = s.heartbeat();
+            let _ = s.pump_collect(150);
+        }
+        match write {
+            FsWrite::Assign { value_b, spec } => {
+                let json = serde_json::json!({
+                    "func": "param", "groupId": lev.0, "nodeId": lev.1, "parameterId": lev.2,
+                    "valueA": best_v, "valueB": value_b, "valueType": 2,
+                    "colorA": spec.color_a, "colorB": spec.color_b,
+                    "customLabel": spec.custom_label, "switchType": 0,
+                    "isActive": spec.is_active, "linkGroup": spec.link_group
+                })
+                .to_string();
+                // Confirm the set landed: the device ECHOES field 54 on success (checked first,
+                // before the read-back clears the buffer); the working-copy read-back corroborates
+                // (it can lag a heartbeat under post-measurement congestion). The first edit after
+                // a fresh load can be silently dropped, so retry the whole set+confirm once.
+                let mut confirmed = false;
+                let mut last_seen = Vec::new();
+                for _ in 0..2 {
+                    s.set_footswitch_assignment(switch, spec.function_index, &json, false, None)?;
+                    if s.saw_preset_error() {
+                        return Err("device rejected the footswitch assignment (presetError) — not saved".into());
+                    }
+                    last_seen = s.seen_preset_fields();
+                    if last_seen.contains(&54) {
+                        confirmed = true;
+                        break;
+                    }
+                    for _ in 0..3 {
+                        if s.live_ftsw().is_some_and(|f| {
+                            param_fn_present(&f, switch, spec.function_index, lev.2)
+                        }) {
+                            confirmed = true;
+                            break;
+                        }
+                        let _ = s.heartbeat();
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    if confirmed {
+                        break;
+                    }
+                }
+                if !confirmed {
+                    return Err(format!(
+                        "footswitch assignment not confirmed (no field-54 echo / read-back, \
+                         retried; device replied with PresetMessage fields {last_seen:?}) — not saved"
+                    ));
+                }
+            }
+            FsWrite::Bake { clear_stale } => {
+                // Clear a now-redundant param fn FIRST (a chunked `ftsw` edit — done while the
+                // session is freshest), confirming it's gone (else its valueA would override the
+                // baked value when engaged). Then bake the value onto the block. Abort before
+                // save if the clear can't be confirmed (nothing is persisted on the reload).
+                if let Some(idx) = clear_stale {
+                    s.clear_footswitch_assignment(switch, *idx)?;
+                    if s.saw_preset_error() {
+                        return Err("device rejected the footswitch clear (presetError) — not saved".into());
+                    }
+                    let mut cleared = false;
+                    for _ in 0..4 {
+                        if s.live_ftsw().is_some_and(|f| {
+                            crate::footswitch::existing_param_fn_index(&f, switch, lev.1, lev.2)
+                                .is_none()
+                        }) {
+                            cleared = true;
+                            break;
+                        }
+                        let _ = s.heartbeat();
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    if !cleared {
+                        return Err("redundant footswitch param fn not confirmed cleared — not saved".into());
+                    }
+                }
+                s.change_parameter(lev.0, lev.1, lev.2, best_v)?;
+            }
+        }
+        s.save_current_preset(slot)?;
+        saved = true;
+        drop(s);
+        if verify {
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            verify_lufs = measure_at(best_v).ok().map(|l| l.integrated_lufs);
+            let mut s = Session::connect()?; // discard the verify pollution
+            let _ = s.load_preset(slot);
+        }
+    } else {
+        let mut s = Session::connect()?; // dry: discard the measurement pollution
+        let _ = s.load_preset(slot);
+    }
+    reamp_off(); // final guarantee (verify re-amps; never leave the unit input-muted)
+
+    Ok(FootswitchLevelResult {
+        switch,
+        measured_lufs: l_lo.integrated_lufs,
+        final_value: best_v,
+        target_lufs,
+        predicted_lufs: best_lufs,
+        clamped,
+        clamp_reason,
+        saved,
+        verify_lufs,
+        iterations,
+        dynamic_spread_lu: Some(best_spread),
+        method: match write {
+            FsWrite::Bake { .. } => "baked".into(),
+            FsWrite::Assign { .. } => "assigned".into(),
+        },
+    })
+}
+
+/// Pure secant step for the closed loop: given two measured points
+/// `(xa, ya)`/`(xb, yb)` of knob-value → captured LUFS and a `target`, return the
+/// next knob value that should hit it (UNCLAMPED — caller clamps to bounds).
+/// `None` if the local response is flat (slope ≈ 0 → the knob doesn't move
+/// loudness here, so the caller should stop).
+fn secant_next(xa: f32, ya: f64, xb: f32, yb: f64, target: f64) -> Option<f32> {
+    let dx = (xb - xa) as f64;
+    if dx.abs() < 1e-9 {
+        return None;
+    }
+    let slope = (yb - ya) / dx; // LUFS per knob unit
+    if !slope.is_finite() || slope.abs() < 1e-4 {
+        return None;
+    }
+    let next = xb as f64 + (target - yb) / slope;
+    if next.is_finite() {
+        Some(next as f32)
+    } else {
+        None
+    }
+}
+
+fn knob_search_space(lo: f32, hi: f32) -> (bool, f32, f32) {
+    let log_space = lo >= 0.0 && hi <= 1.0 + 1e-6;
+    let eps = 1e-3f32;
+    let to_c = |x: f32| {
+        if log_space {
+            20.0 * x.max(eps).log10()
+        } else {
+            x
+        }
+    };
+    let c_lo = to_c(if log_space { lo.max(eps) } else { lo });
+    let c_hi = to_c(hi);
+    (log_space, c_lo, c_hi)
+}
+
+fn knob_to_coord(value: f32, log_space: bool) -> f32 {
+    if log_space {
+        20.0 * value.max(1e-3).log10()
+    } else {
+        value
+    }
+}
+
+fn coord_to_knob(coord: f32, log_space: bool, lo: f32, hi: f32) -> f32 {
+    if log_space {
+        10f32.powf(coord / 20.0).clamp(lo, hi)
+    } else {
+        coord.clamp(lo, hi)
+    }
+}
+
+fn live_window_lufs(live: &audio::LiveReamp, window_ms: u64) -> Result<f64, String> {
+    let cap = live.recent_capture(window_ms)?;
+    let (ch, _) = cap.loudest_channel();
+    let lufs = lufs::measure_mono(&cap.channel(ch), cap.sample_rate)?.integrated_lufs;
+    if lufs.is_finite() {
+        Ok(lufs)
+    } else {
+        Err("no finite live LUFS measurement".to_string())
+    }
+}
+
+/// Pure live-controller step: from the current point `(coord, measured)` (c-space
+/// knob coordinate → measured LUFS), the PREVIOUS distinct point (`None` on the
+/// first step), and the target, return the next c-space coordinate, clamped to
+/// `[c_lo, c_hi]`. Pure so each strategy is unit-testable against a fake
+/// loudness source (see `tests::simulate_live`).
+///
+/// - `LiveHybrid`: one-shot predicted jump first (slope ≈ 1 dB per dB of knob in
+///   c-space — the validated amplitude model), then secant trims from the two
+///   real measured points.
+/// - `LiveSecant`: conservative half-error probe first so the secant gets a real
+///   local slope estimate, then pure secant.
+/// - `LiveProportional`: bounded-gain (0.75) nudges toward the target.
+/// - `FractalStyle`: full meter-match jump every step — paired with the SHORT
+///   capture window in `live_window_ms()` (Fractal's fast-meter posture).
+fn next_live_coord(
+    strategy: SceneLevelStrategy,
+    iter: u32,
+    current: (f32, f64),
+    prev: Option<(f32, f64)>,
+    target: f64,
+    (c_lo, c_hi): (f32, f32),
+) -> f32 {
+    let (coord, measured) = current;
+    let err = (target - measured) as f32;
+    let full = coord + err;
+    let stepped = match strategy {
+        SceneLevelStrategy::LiveHybrid | SceneLevelStrategy::LiveSecant => match prev {
+            Some((pa, py)) if iter > 0 => {
+                secant_next(pa, py, coord, measured, target).unwrap_or(full)
+            }
+            _ if strategy == SceneLevelStrategy::LiveSecant => coord + 0.5 * err,
+            _ => full,
+        },
+        SceneLevelStrategy::LiveProportional => coord + 0.75 * err,
+        _ => full, // FractalStyle (and the defensive default): meter-match jump
+    };
+    stepped.clamp(c_lo, c_hi)
+}
+
+/// Per-scene capture window for the BATCHED live runner. Shorter than
+/// `LIVE_WINDOW_MS`: the batched run amortizes session + engage ceremony, so
+/// the window is the dominant per-trim cost; 2 s of the looped stimulus is the
+/// speed/accuracy compromise (final accuracy still gated at `KNOB_TOL_LU`).
+const BATCH_WINDOW_MS: u64 = 2000;
+const BATCH_MAX_TRIMS: u32 = 4;
+/// Trust region for the slope-jump controller (max dB the knob moves per trim):
+/// full computed jumps overshot steep nonlinear knobs by ~6 LU on HW.
+const BATCH_TRUST_DB: f32 = 6.0;
+
+/// Per-scene outcome of [`level_scenes_live_batched`].
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchedSceneOutcome {
+    pub scene_slot: u32,
+    pub final_lufs: Option<f64>,
+    pub final_level: Option<f32>,
+    pub clamped: bool,
+    pub windows: u32,
+    pub writes: u32,
+    pub elapsed_ms: u128,
+    pub failure: Option<String>,
+    /// Dynamics spread of the scene's measure capture (LU); `None` where the
+    /// measuring path has no full-capture meter (the live-window runner) or the
+    /// scene failed. See `LevelResult::dynamic_spread_lu`.
+    pub dynamic_spread_lu: Option<f64>,
+    /// Set with `clamped` when the scene clamped for a SPECIFIC reason the UI should
+    /// show verbatim — currently "no authority": a big `outputLevel` change moved the
+    /// USB 1/2 capture by ~nothing, so the amp is off-branch / off-USB (or hard-limited).
+    /// `None` for an ordinary headroom clamp.
+    pub clamp_reason: Option<String>,
+    /// Best-effort "verify by ear" flag from the rebalance flow: the lane-mute floor was
+    /// close enough to a solo lane that bleed may have skewed the equal-solo balance (the
+    /// overall target is still hit). `false` outside rebalance.
+    pub verify_by_ear: bool,
+}
+
+/// One amp knob to drive within a scene: the control, its bounds, and its current
+/// value in THAT scene (from the pre-pass doc, so the first jump starts from truth).
+#[derive(Debug, Clone)]
+pub struct KnobTarget {
+    pub knob: LevelKnob,
+    pub lo: f32,
+    pub hi: f32,
+    pub current: f32,
+}
+
+/// A pre-resolved per-scene leveling job. A scene carries a **set** of amp knobs:
+/// one for a series chain (the last active amp) and the split-output single-lane
+/// case, but TWO+ for a parallel-merged scene where each lane has its own amp — those
+/// are driven together by one factor `k` (joint-k), since scaling every amp in a sum
+/// by the same `k` shifts the captured loudness by exactly `20·log10(k)` regardless of
+/// inter-lane correlation. The probe-only bench runner (`level_scenes_live_batched`)
+/// requires `knobs.len() == 1` (via `solo()`) and errors otherwise.
+#[derive(Debug, Clone)]
+pub struct SceneJob {
+    pub scene_slot: u32,
+    pub knobs: Vec<KnobTarget>,
+    /// When `Some`, this scene can't be safely leveled (mic/split/no-active-amp/etc.);
+    /// the runner reports it as a skipped (failed) outcome and moves on, never aborting
+    /// the whole run. `knobs` is empty in that case.
+    pub skip: Option<String>,
+    /// True only for a parallel scene whose lanes RE-MERGE (≥2 knobs feeding one summed
+    /// output) — the rebalance flow may adjust the lanes' mix. False for series, single
+    /// amp, and split-OUTPUT scenes (separate physical outs have no shared mix).
+    pub rebalanceable: bool,
+}
+
+impl SceneJob {
+    /// The single knob for the single-knob paths; errors if this is a multi-knob
+    /// (parallel) job or a skip job, which those probe-only runners can't solve.
+    fn solo(&self) -> Result<&KnobTarget, String> {
+        if let Some(reason) = &self.skip {
+            return Err(reason.clone());
+        }
+        match self.knobs.as_slice() {
+            [one] => Ok(one),
+            n => Err(format!(
+                "this leveling path supports a single amp knob per scene, got {} \
+                 (a parallel-merged scene needs the joint-k runner)",
+                n.len()
+            )),
+        }
+    }
+}
+
+/// BATCHED live scene leveling — the fast path. The preset loads ONCE and the
+/// stimulus/capture streams run ONCE for the whole preset; each scene then gets
+/// a lean engage connection: `set_knob` (scene recall + Scene Edit + start
+/// value) → engage re-amp → measure on the shared stream → trust-region slope
+/// jumps via live `changeParameter` (audible mid-engage, HW-proven) → re-amp
+/// OFF → drop. One ENGAGE PER SCENE is mandatory: re-amp latches the ACTIVE
+/// SCENE at engage — `loadScene` mid-engage is inaudible (HW: all 9
+/// scenes of an 8-scene preset measured the identical audio on one engage).
+///
+/// `jobs` come from the caller's un-engaged pre-pass (live doc per scene →
+/// knob + bounds + that scene's current value). `save` persists once at the
+/// end; otherwise the stored preset is reloaded.
+pub fn level_scenes_live_batched(
+    slot: u32,
+    jobs: &[SceneJob],
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Vec<BatchedSceneOutcome>, String> {
+    let result = (|| {
+        // Load in its own connection (set-after-load override + engage latch).
+        {
+            let mut s = Session::connect()?;
+            s.load_preset(slot)?;
+            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+        }
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+
+        // ONE pair of CoreAudio streams for the whole preset (between engages
+        // they just carry silence). Rebuilding streams per scene both wasted
+        // ~0.5 s/scene and churned coreaudiod.
+        let live = audio::LiveReamp::start(stimulus, RATE)?;
+
+        let mut outcomes = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            if cancelled() {
+                return Err(CANCELLED.to_string());
+            }
+            on_scene(job.scene_slot, None);
+            let t0 = std::time::Instant::now();
+            let mut windows = 0u32;
+            let mut writes = 0u32;
+
+            let scene_result = (|windows: &mut u32,
+                                 writes: &mut u32|
+             -> Result<(f64, f32, bool), String> {
+                // This closed-loop runner is single-knob only (probe benchmark path);
+                // a parallel-merged scene must use the joint-k `level_scenes_oneshot`.
+                let kt = job.solo()?;
+                // Fresh engage connection per scene: scene recall + Scene Edit
+                // + start value ride `set_knob` BEFORE the engage (latch rule).
+                let mut s = Session::connect()?;
+                set_knob(&mut s, &kt.knob, kt.current.clamp(kt.lo, kt.hi))?;
+                *writes += 1;
+                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+                let _ = s.set_reamp_mode(true)?;
+                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+
+                let (log_space, c_lo, c_hi) = knob_search_space(kt.lo, kt.hi);
+                let mut coord =
+                    knob_to_coord(kt.current.clamp(kt.lo, kt.hi), log_space).clamp(c_lo, c_hi);
+                std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                let mut measured = live_window_lufs(&live, BATCH_WINDOW_MS)?;
+                *windows += 1;
+                let mut best = (coord, measured);
+                let mut prev: Option<(f32, f64)> = None;
+
+                for iter in 0..BATCH_MAX_TRIMS {
+                    if cancelled() {
+                        return Err(CANCELLED.to_string());
+                    }
+                    if (best.1 - target_lufs).abs() <= KNOB_TOL_LU {
+                        break;
+                    }
+                    let raw_next = next_live_coord(
+                        SceneLevelStrategy::LiveHybrid,
+                        iter,
+                        (coord, measured),
+                        prev,
+                        target_lufs,
+                        (c_lo, c_hi),
+                    );
+                    // Trust region: bound each move (full computed jumps
+                    // overshot steep knobs by ~6 LU on HW).
+                    let next = (coord + (raw_next - coord).clamp(-BATCH_TRUST_DB, BATCH_TRUST_DB))
+                        .clamp(c_lo, c_hi);
+                    if (next - coord).abs() < 1e-3 {
+                        break;
+                    }
+                    let next_value = coord_to_knob(next, log_space, kt.lo, kt.hi);
+                    set_knob_value_only(&mut s, &kt.knob, next_value)?;
+                    *writes += 1;
+                    std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    let lufs = live_window_lufs(&live, BATCH_WINDOW_MS)?;
+                    *windows += 1;
+                    if (lufs - target_lufs).abs() < (best.1 - target_lufs).abs() {
+                        best = (next, lufs);
+                    }
+                    prev = Some((coord, measured));
+                    coord = next;
+                    measured = lufs;
+                }
+
+                // Land on the best point if the loop ended elsewhere.
+                let best_value = coord_to_knob(best.0, log_space, kt.lo, kt.hi);
+                if (best.0 - coord).abs() > 1e-4 {
+                    set_knob_value_only(&mut s, &kt.knob, best_value)?;
+                    *writes += 1;
+                    std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    best.1 = live_window_lufs(&live, BATCH_WINDOW_MS)?;
+                    *windows += 1;
+                }
+                let _ = s.set_reamp_mode(false);
+                Ok((
+                    best.1,
+                    best_value,
+                    (best.1 - target_lufs).abs() > KNOB_TOL_LU,
+                ))
+            })(&mut windows, &mut writes);
+
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            let outcome = match scene_result {
+                Ok((lufs, level, clamped)) => BatchedSceneOutcome {
+                    scene_slot: job.scene_slot,
+                    final_lufs: Some(lufs),
+                    final_level: Some(level),
+                    clamped,
+                    windows,
+                    writes,
+                    elapsed_ms: t0.elapsed().as_millis(),
+                    failure: None,
+                    dynamic_spread_lu: None, // live windows carry no full-capture meter
+                    clamp_reason: None,
+                    verify_by_ear: false,
+                },
+                Err(e) if e == CANCELLED => return Err(e),
+                Err(e) => BatchedSceneOutcome {
+                    scene_slot: job.scene_slot,
+                    final_lufs: None,
+                    final_level: None,
+                    clamped: false,
+                    windows,
+                    writes,
+                    elapsed_ms: t0.elapsed().as_millis(),
+                    failure: Some(e),
+                    dynamic_spread_lu: None,
+                    clamp_reason: None,
+                    verify_by_ear: false,
+                },
+            };
+            on_scene(job.scene_slot, Some(&outcome));
+            outcomes.push(outcome);
+        }
+
+        drop(live);
+        if save {
+            let mut s = Session::connect()?;
+            s.save_current_preset(slot)?;
+        } else {
+            restore_saved_preset(slot)?;
+        }
+        Ok(outcomes)
+    })();
+    // Guaranteed fresh OFF — interrupted live streams can strand re-amp even if
+    // the in-session OFF was sent.
+    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    restore_after_unsaved_error(slot, save, result)
+}
+
+/// ONE-SHOT open-loop per-scene leveling — the validated replacement for
+/// [`level_scenes_live_batched`] (HW). The active amp's `outputLevel` is
+/// LINEAR in dB (`captured_LUFS = 20·log10(outputLevel) + C`, ~25 LU authority), so —
+/// exactly like `presetLevel` — there is no need for a closed loop: measure ONCE at a
+/// reference level via an ISOLATED fresh re-amp capture, solve `C`, set the exact
+/// level. The BatchedLive runner's shared continuous stream MIS-MEASURED scenes
+/// (returning impossible loudness, e.g. -6.96 LUFS on a knob whose true range is
+/// -40..-14), which made the trust-region loop clamp on garbage; the isolated
+/// measurement (`measure_knob_at`) reads correctly. Same signature + outcome shape as
+/// `level_scenes_live_batched` so the command path is a drop-in swap. Per-scene
+/// isolation rides `set_knob`'s Scene Edit; `presetLevel` (the Base) must be leveled
+/// FIRST (it is a global multiplier over every scene). `save` persists each scene
+/// (via `apply_level`) as it lands; a per-scene failure becomes a failed outcome,
+/// never aborting the run.
+pub fn level_scenes_oneshot(
+    slot: u32,
+    jobs: &[SceneJob],
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Vec<BatchedSceneOutcome>, String> {
+    // Load the preset once (own connection) so the first scene's measure operates on
+    // the current preset; each `apply_level(reload=true)` re-establishes it thereafter.
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+
+    let mut outcomes = Vec::with_capacity(jobs.len());
+    // Every writing scene verifies + self-corrects (see `jointk_one_scene`): a downstream
+    // compressor undershoots the open-loop solve per scene, so the canary-only model isn't
+    // enough. Cost is one verify capture per off-target scene (none when already at target).
+    for job in jobs {
+        if cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        on_scene(job.scene_slot, None);
+        let t0 = std::time::Instant::now();
+
+        // A skip job (unclassifiable scene: mic/split lane/no active amp/…) is reported
+        // as a failed outcome and the run continues — never aborts the whole pass.
+        if let Some(reason) = &job.skip {
+            let outcome =
+                failed_scene_outcome(job.scene_slot, reason.clone(), t0.elapsed().as_millis());
+            on_scene(job.scene_slot, Some(&outcome));
+            outcomes.push(outcome);
+            continue;
+        }
+
+        // Verify EVERY scene that writes — `jointk_one_scene` uses the verify capture to
+        // run its bounded secant correction, so a preset with a downstream compressor
+        // converges per scene (not just the first). On a linear chain the first verify is
+        // within tol and no correction runs, so the cost is one verify capture per off-target scene.
+        let result = jointk_one_scene(slot, job, stimulus, target_lufs, save, true);
+
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        let outcome = match result {
+            Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
+            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
+        };
+        on_scene(job.scene_slot, Some(&outcome));
+        outcomes.push(outcome);
+    }
+    // Guaranteed fresh re-amp OFF (each `measure_knob_at`/`apply_level` already
+    // disengages, but an interrupted capture can strand it).
+    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    Ok(outcomes)
+}
+
+/// Result of the joint-k solve for a scene's amp-knob set.
+struct JointK {
+    /// Per-knob final levels (aligned with the input `knobs`), each `current_i · k_eff`.
+    levels: Vec<f32>,
+    /// The target needed more boost than the hottest amp's headroom allowed.
+    clamped: bool,
+    /// Predicted captured loudness at the applied levels (= target unless clamped).
+    achieved: f64,
+    /// The applied scale factor (< the ideal `k` when clamped).
+    k_eff: f64,
+}
+
+/// Solve joint-k for a scene's amp-knob set, given the as-is `measured` loudness at the
+/// knobs' current values. Scaling every amp's `outputLevel` by one `k` shifts the
+/// summed output by exactly `20·log10(k)` (correlation-invariant), so:
+///   `k = 10^((target − measured)/20)`, clamped to keep the hottest amp ≤ `LEVEL_MAX`
+///   (`k_eff = min(k, LEVEL_MAX / max_i current_i)` — ratio-preserving), then
+///   `level_i = current_i · k_eff`.
+/// Requires amplitude (0..1) knobs — a dB-unit knob can't be scaled multiplicatively
+/// (`−12 dB · 1.5` is nonsense) and errors. The per-knob `current` is floored at 1e-3
+/// so an author-muted lane (current 0) doesn't divide-by-zero (it stays muted: `0·k`).
+fn solve_joint_k_at(
+    knobs: &[KnobTarget],
+    target_lufs: f64,
+    measured: f64,
+) -> Result<JointK, String> {
+    if knobs.is_empty() {
+        return Err("joint-k: no amp knobs in scene".to_string());
+    }
+    for kt in knobs {
+        if kt.lo < -1e-6 || kt.hi > 1.0 + 1e-6 {
+            return Err(format!(
+                "joint-k requires amplitude (0..1) knobs; got bounds [{}, {}] for {}",
+                kt.lo,
+                kt.hi,
+                kt.knob.label()
+            ));
+        }
+    }
+    let max_cur = knobs
+        .iter()
+        .map(|kt| kt.current.clamp(1e-3, 1.0) as f64)
+        .fold(0.0_f64, f64::max);
+    let k = 10f64.powf((target_lufs - measured) / 20.0);
+    let k_cap = (LEVEL_MAX as f64) / max_cur;
+    let k_eff = k.min(k_cap).max(0.0);
+    let clamped = k_eff < k - 1e-9;
+    let levels = knobs
+        .iter()
+        .map(|kt| (kt.current as f64 * k_eff).clamp(LEVEL_MIN as f64, LEVEL_MAX as f64) as f32)
+        .collect();
+    let achieved = measured + 20.0 * k_eff.max(1e-9).log10();
+    Ok(JointK {
+        levels,
+        clamped,
+        achieved,
+        k_eff,
+    })
+}
+
+/// One scene's solve outcome.
+struct SceneSolve {
+    /// Achieved (verified, or predicted when unverified) loudness.
+    lufs: f64,
+    /// Final per-knob levels, aligned with the job's knobs.
+    levels: Vec<f32>,
+    /// Target unreachable — ran out of headroom, OR a specific `clamp_reason` applies.
+    clamped: bool,
+    /// Dynamics spread (LU) of the as-is measure capture.
+    spread: f64,
+    /// Device writes this scene took (0 = already at target, nothing written).
+    writes: u32,
+    /// Set with `clamped` for the "no authority" case (off-branch / off-USB amp).
+    clamp_reason: Option<String>,
+    /// Rebalance "verify by ear" flag; `false` for the plain joint-k path.
+    verify_by_ear: bool,
+}
+
+/// Max secant CORRECTIONS after the first apply, shared by every re-amp-measured solve
+/// (scene `outputLevel` AND footswitch `param` valueA). Each correction is a fresh-connect
+/// re-amp capture (~10 s), so this is kept small — 2–3 slope-corrected steps converge any
+/// chain with slope ≥ ~0.15 (below that it's the no-authority case), and a large cap would
+/// re-inflate per-scene cost toward the legacy 80–93 s regime. (NOT `KNOB_MAX_ITERS`, which
+/// counts 2 seed measurements in its budget.)
+const MEASURE_CORRECT_MAX: u32 = 3;
+/// An `outputLevel` change of at least this many dB that moves the captured loudness by
+/// less than `KNOB_TOL_LU` means the amp has no authority over the USB 1/2 capture
+/// (off-branch / off-USB output, or hard-limited downstream).
+const NO_AUTHORITY_MIN_DB: f64 = 6.0;
+/// Rebalance: if a solo lane is within this many dB of the both-muted floor, the muted
+/// lane's bleed corrupts the equal-solo balance → flag the scene "verify by ear".
+const REBALANCE_BLEED_MARGIN_DB: f64 = 28.0;
+/// Sentinel loudness for a both-lanes-muted capture that reads as digital silence — the
+/// IDEAL mute (no bleed). `loudest_loudness` errors on silence; this stands in so the
+/// solo-above-floor margin is huge (→ no verify-by-ear flag) instead of failing the scene.
+const MUTE_FLOOR_SILENT_LUFS: f64 = -120.0;
+
+/// Per-scene joint-k: measure the scene AS-IS once, solve one factor `k`, apply it to every
+/// lane amp (preserving their mix), VERIFY, then `correct_iter` (bounded secant) to converge
+/// through a downstream compressor. The open-loop `20·log10(k)` model is exact for pure gain
+/// (±0.07 LU) but UNDERSHOOTS through a compressor/limiter (preset 027's UA1176 → −22.93 vs
+/// −22). On a linear chain the first verify is within tol and no correction runs. Shared by
+/// `level_scenes_oneshot` and the rebalance flow's non-mergeable scenes. `verify=false` skips
+/// both verify and correction.
+fn jointk_one_scene(
+    slot: u32,
+    job: &SceneJob,
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    verify: bool,
+) -> Result<SceneSolve, String> {
+    let loudness = measure_scene_asis(job.scene_slot, stimulus)?;
+    let (measured, spread) = (loudness.integrated_lufs, loudness.spread_lu());
+    let JointK {
+        levels,
+        clamped,
+        achieved,
+        k_eff,
+    } = solve_joint_k_at(&job.knobs, target_lufs, measured)?;
+    // Already at target (uniform relative move within ~1.2% of the knob) and not clamped
+    // → leave every knob untouched (a clamp must still be REPORTED even if nothing moves).
+    if !clamped && ((k_eff - 1.0).abs() as f32) < 0.012 {
+        let currents = job.knobs.iter().map(|kt| kt.current).collect();
+        return Ok(SceneSolve {
+            lufs: measured,
+            levels: currents,
+            clamped: false,
+            spread,
+            writes: 0,
+            clamp_reason: None,
+            verify_by_ear: false,
+        });
+    }
+    let opts = LevelOptions {
+        save,
+        verify,
+        ..Default::default()
+    };
+    let base: Vec<f32> = job.knobs.iter().map(|kt| kt.current).collect();
+    let knob_refs: Vec<&LevelKnob> = job.knobs.iter().map(|kt| &kt.knob).collect();
+    let v0 = {
+        let targets: Vec<(&LevelKnob, f32)> = knob_refs
+            .iter()
+            .copied()
+            .zip(&levels)
+            .map(|(k, &v)| (k, v))
+            .collect();
+        apply_levels(slot, stimulus, &targets, opts, true)?.1
+    };
+    let (best_lufs, best_levels, clamp_reason, writes) = match v0 {
+        Some(v0) if verify => {
+            let c = correct_iter(
+                slot,
+                stimulus,
+                &knob_refs,
+                &base,
+                levels,
+                measured,
+                v0,
+                target_lufs,
+                save,
+            )?;
+            (c.lufs, c.levels, c.clamp_reason, 1 + c.writes)
+        }
+        _ => (v0.unwrap_or(achieved), levels, None, 1),
+    };
+    // Report clamped if a specific reason fired, the open-loop solve clamped, or the verified
+    // best still can't reach target (knob out of headroom / chain limits below target).
+    let clamped =
+        clamped || clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
+    Ok(SceneSolve {
+        lufs: best_lufs,
+        levels: best_levels,
+        clamped,
+        spread,
+        writes,
+        clamp_reason,
+        verify_by_ear: false,
+    })
+}
+
+/// Result of the bounded correction loop.
+struct Correction {
+    lufs: f64,
+    levels: Vec<f32>,
+    /// `Some` for the no-authority case (the amp doesn't reach the USB 1/2 capture).
+    clamp_reason: Option<String>,
+    /// Device writes the correction itself performed (iterations + any land-on re-apply).
+    writes: u32,
+}
+
+/// Bounded secant correction after a first verified apply (shared by joint-k + rebalance).
+/// The open-loop `20·log10(k)` solve undershoots through a downstream compressor; this
+/// iterates a trust-region-clamped (±`BATCH_TRUST_DB`) secant from the real points until
+/// within `KNOB_TOL_LU`, capped at `MEASURE_CORRECT_MAX`, and ALWAYS lands the device on the
+/// best point seen — re-applying it if the last write wasn't the best. (Critical: `apply_levels`
+/// SAVES whatever it last wrote, so a worse final step would otherwise persist while a better
+/// number is reported.) When a large applied gain produced ~no response, it reports
+/// NO-AUTHORITY (off-branch / off-USB) and restores `base` rather than leaving the amp slammed.
+/// `levels0`/`v0` = the levels the caller already applied (the device holds them) and their
+/// verified loudness; `measured0` = loudness at `base`.
+#[allow(clippy::too_many_arguments)]
+fn correct_iter(
+    slot: u32,
+    stimulus: &[f32],
+    knobs: &[&LevelKnob],
+    base: &[f32],
+    levels0: Vec<f32>,
+    measured0: f64,
+    v0: f64,
+    target: f64,
+    save: bool,
+) -> Result<Correction, String> {
+    let max_base = base
+        .iter()
+        .map(|&x| x.clamp(1e-3, 1.0) as f64)
+        .fold(0.0_f64, f64::max);
+    let k_cap = (LEVEL_MAX as f64) / max_base;
+    let levels_for = |applied_db: f64| -> Vec<f32> {
+        let k = 10f64.powf(applied_db / 20.0).clamp(1e-3, k_cap);
+        base.iter()
+            .map(|&b| (b as f64 * k).clamp(LEVEL_MIN as f64, LEVEL_MAX as f64) as f32)
+            .collect()
+    };
+    let apply = |levels: &[f32], verify: bool| -> Result<Option<f64>, String> {
+        let opts = LevelOptions {
+            save,
+            verify,
+            ..Default::default()
+        };
+        let targets: Vec<(&LevelKnob, f32)> = knobs
+            .iter()
+            .copied()
+            .zip(levels)
+            .map(|(k, &v)| (k, v))
+            .collect();
+        Ok(apply_levels(slot, stimulus, &targets, opts, true)?.1)
+    };
+
+    let k0 = levels0[0] as f64 / (base[0].max(1e-3)) as f64; // shared factor (uniform across lanes)
+    let applied_db0 = 20.0 * k0.max(1e-9).log10();
+    let mut writes = 0u32; // the device currently holds levels0 (applied by the caller)
+
+    // No-authority: a big applied gain barely moved the capture → the amp isn't on the USB
+    // 1/2 path. Restore `base` (don't leave it slammed) and report the distinct reason.
+    if no_authority(applied_db0, v0 - measured0) {
+        let reason = no_authority_reason(applied_db0 < 0.0);
+        apply(base, false)?;
+        writes += 1;
+        return Ok(Correction {
+            lufs: measured0,
+            levels: base.to_vec(),
+            clamp_reason: Some(reason),
+            writes,
+        });
+    }
+
+    // Already at target, or no applied gain to read a slope from → keep levels0.
+    if applied_db0.abs() <= 1e-3 || (v0 - target).abs() <= KNOB_TOL_LU {
+        return Ok(Correction {
+            lufs: v0,
+            levels: levels0,
+            clamp_reason: None,
+            writes,
+        });
+    }
+
+    // Bounded secant. Seed points: base@measured0 and levels0@v0 (device at levels0).
+    let mut prev = (0.0_f64, measured0); // (applied_db, lufs)
+    let mut last = (applied_db0, v0);
+    let mut best = (levels0.clone(), v0); // best MEASURED point
+    let mut device = levels0; // what the device currently holds
+    for _ in 0..MEASURE_CORRECT_MAX {
+        if (last.1 - target).abs() <= KNOB_TOL_LU {
+            break;
+        }
+        // Trust-region-clamped secant step (None ⇒ slope too flat / non-finite → stop).
+        let Some(next_db) = secant_next_db(prev, last, target) else {
+            break;
+        };
+        let next_levels = levels_for(next_db);
+        if next_levels
+            .iter()
+            .zip(&device)
+            .all(|(a, b)| (a - b).abs() <= 1e-3)
+        {
+            break; // pinned — stepping changes nothing
+        }
+        let vn = apply(&next_levels, true)?;
+        writes += 1;
+        device = next_levels.clone();
+        let Some(vn) = vn else { break }; // capture failed — land on best below
+        if (vn - target).abs() < (best.1 - target).abs() {
+            best = (next_levels, vn);
+        }
+        prev = last;
+        last = (next_db, vn);
+    }
+
+    // Land on best: persist the best point if the device isn't already there (the
+    // apply_levels-saves-the-last-write fix). No verify needed — best.1 is known.
+    if device
+        .iter()
+        .zip(&best.0)
+        .any(|(a, b)| (a - b).abs() > 1e-3)
+    {
+        apply(&best.0, false)?;
+        writes += 1;
+    }
+    Ok(Correction {
+        lufs: best.1,
+        levels: best.0,
+        clamp_reason: None,
+        writes,
+    })
+}
+
+/// Hedged message for a no-authority scene. A DOWNWARD move that gets no response is
+/// near-conclusive off-branch (attenuating below any limiter still passes ~1:1); an UPWARD
+/// one is ambiguous (a hard limiter saturates identically to an absent path).
+fn no_authority_reason(downward: bool) -> String {
+    let cause = if downward {
+        "it is routed to a different output"
+    } else {
+        "it is likely routed to a different output (or hard-limited downstream)"
+    };
+    format!(
+        "changing this amp's outputLevel did not move the USB 1/2 capture — {cause}; \
+         route it to USB 1/2 or level it manually"
+    )
+}
+
+/// Pure: trust-region-clamped secant step toward `target` from two real points
+/// `prev`/`last` = `(applied_db, lufs)`. Returns the next `applied_db`, clamped to
+/// `last.applied_db ± BATCH_TRUST_DB` so a noisy near-zero slope can't explode the jump.
+/// `None` when the local slope is non-finite or ≤ 0.05 (no usable response → stop).
+fn secant_next_db(prev: (f64, f64), last: (f64, f64), target: f64) -> Option<f64> {
+    let slope = (last.1 - prev.1) / (last.0 - prev.0);
+    if !slope.is_finite() || slope <= 0.05 {
+        return None;
+    }
+    let raw = last.0 + (target - last.1) / slope;
+    Some(raw.clamp(
+        last.0 - BATCH_TRUST_DB as f64,
+        last.0 + BATCH_TRUST_DB as f64,
+    ))
+}
+
+/// Pure: a no-authority verdict — a large applied gain (`|applied_db| ≥ NO_AUTHORITY_MIN_DB`)
+/// produced almost no loudness `response` (`< KNOB_TOL_LU`), so the knob doesn't reach the
+/// captured output. A small applied gain is inconclusive (a headroom clamp), so it's `false`.
+fn no_authority(applied_db: f64, response: f64) -> bool {
+    applied_db.abs() >= NO_AUTHORITY_MIN_DB && response.abs() < KNOB_TOL_LU
+}
+
+/// Fresh-connect, set a SET of knobs (before engage), engage re-amp once, measure the
+/// loudest channel on the full capture — the multi-knob `measure_knob_at` used by the
+/// rebalance flow to read one lane SOLO (the other muted) and the balanced combination.
+fn measure_knobs_at(
+    stimulus: &[f32],
+    targets: &[(&LevelKnob, f32)],
+) -> Result<lufs::Loudness, String> {
+    let mut s = Session::connect()?;
+    set_knobs(&mut s, targets)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    engage_measure_disengage(&mut s, stimulus)
+}
+
+/// Measure the both-lanes-muted FLOOR. `outputLevel`=0 is often DEEP silence — the ideal
+/// mute — which `loudest_loudness` reports as "no signal captured"; treat that as a sentinel
+/// deep floor (`MUTE_FLOOR_SILENT_LUFS`), the BEST case (no bleed), rather than failing.
+/// Other capture errors still propagate.
+fn measure_mute_floor(stimulus: &[f32], a: &LevelKnob, b: &LevelKnob) -> Result<f64, String> {
+    match measure_knobs_at(stimulus, &[(a, 0.0), (b, 0.0)]) {
+        Ok(l) => Ok(l.integrated_lufs),
+        Err(e) if e.contains("no signal captured") => Ok(MUTE_FLOOR_SILENT_LUFS),
+        Err(e) => Err(e),
+    }
+}
+
+/// READ-ONLY mute-isolation diagnostic for `probe --mute-floor` (rebalance validation).
+/// For a 2-amp scene, measures the combined output, the both-lanes-muted FLOOR
+/// (`outputLevel`=0 on both), and each lane SOLO (other muted), and reports the
+/// solo-above-floor margins. A small margin means `outputLevel`=0 isn't deep silence — the
+/// muted lane bleeds into the solo, so the equal-solo rebalance balance is only approximate
+/// (the combined joint-k still hits the overall target). NO SAVE (each measure reloads).
+pub fn mute_floor_report(
+    slot: u32,
+    a: &LevelKnob,
+    cur_a: f32,
+    b: &LevelKnob,
+    cur_b: f32,
+    stimulus: &[f32],
+) -> Result<String, String> {
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+    let combined = measure_knobs_at(stimulus, &[(a, cur_a), (b, cur_b)])?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let floor_lufs = measure_mute_floor(stimulus, a, b)?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)])?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let b_solo = measure_knobs_at(stimulus, &[(a, 0.0), (b, cur_b)])?;
+    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+
+    let silent = floor_lufs <= MUTE_FLOOR_SILENT_LUFS + 1e-6;
+    let margin_a = a_solo.integrated_lufs - floor_lufs;
+    let margin_b = b_solo.integrated_lufs - floor_lufs;
+    let min_margin = margin_a.min(margin_b);
+    let flag = !silent && min_margin < REBALANCE_BLEED_MARGIN_DB;
+    let floor_disp = if silent {
+        "silent (no signal — ideal mute)".to_string()
+    } else {
+        format!("{floor_lufs:.2} LUFS")
+    };
+    Ok(format!(
+        "mute-floor (list index {slot})\n\
+         combined (both at current): {:.2} LUFS\n\
+         both muted (outputLevel=0):  {floor_disp}  ← floor\n\
+         lane A solo: {:.2} LUFS\n\
+         lane B solo: {:.2} LUFS\n\
+         {}verify_by_ear = {flag}\n",
+        combined.integrated_lufs,
+        a_solo.integrated_lufs,
+        b_solo.integrated_lufs,
+        if silent {
+            "floor is digital silence → no lane bleed → ".to_string()
+        } else {
+            format!(
+                "min solo-above-floor margin {min_margin:.1} dB {} threshold {REBALANCE_BLEED_MARGIN_DB:.0} dB → ",
+                if flag { "<" } else { ">=" }
+            )
+        },
+    ))
+}
+
+/// Balanced per-lane levels for EQUAL solo loudness given each lane's solo ceiling `C`
+/// (its captured loudness at level 1.0): the quieter-ceiling lane is pinned at 1.0 and
+/// the louder lane is attenuated to match, so both stay ≤ 1.0. The absolute level is then
+/// set by the joint-k pass over the combined capture, so the choice of equal point
+/// (= the quieter ceiling) is just the max-headroom anchor. Pure → unit-testable.
+fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
+    let equal_point = c_a.min(c_b);
+    let la = 10f64.powf((equal_point - c_a) / 20.0).clamp(0.0, 1.0) as f32;
+    let lb = 10f64.powf((equal_point - c_b) / 20.0).clamp(0.0, 1.0) as f32;
+    (la, lb)
+}
+
+/// OPT-IN rebalance leveling (only on a path MERGE, never on separate outputs).
+/// For each `rebalanceable` scene (≥2 lane amps that re-merge), it first equalizes the
+/// two lanes' SOLO loudness (mute one, measure the other — 2 isolated captures), then
+/// joint-ks the balanced pair to the target (1 combined measure + apply). Non-rebalanceable
+/// scenes (series / single / split-output) fall through to the plain joint-k (`jointk_one_scene`).
+/// Same signature + outcome shape as `level_scenes_oneshot`, so the command path swaps in.
+///
+/// NOTE (HW-UNVALIDATED): muting a lane via `outputLevel`=0 assumes 0 is true silence and
+/// that the write lands on the per-scene overlay (not the base). Validate `probe --rebalance`
+/// before trusting the equal-solo balance; the final combined joint-k still hits the target
+/// either way. Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
+pub fn level_scenes_rebalance(
+    slot: u32,
+    jobs: &[SceneJob],
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Vec<BatchedSceneOutcome>, String> {
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+    let mut outcomes = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        if cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        on_scene(job.scene_slot, None);
+        let t0 = std::time::Instant::now();
+
+        if let Some(reason) = &job.skip {
+            let outcome =
+                failed_scene_outcome(job.scene_slot, reason.clone(), t0.elapsed().as_millis());
+            on_scene(job.scene_slot, Some(&outcome));
+            outcomes.push(outcome);
+            continue;
+        }
+
+        // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
+        let result = if !job.rebalanceable || job.knobs.len() < 2 {
+            jointk_one_scene(slot, job, stimulus, target_lufs, save, true)
+        } else {
+            // Rebalanceable: 2-lane equalize → joint-k. (Only the first two knobs are the
+            // rebalance pair; the classifier never produces >2 for a single split.)
+            rebalance_one_scene(slot, job, stimulus, target_lufs, save, true)
+        };
+        let outcome = match result {
+            Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
+            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
+        };
+        on_scene(job.scene_slot, Some(&outcome));
+        outcomes.push(outcome);
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    }
+    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    restore_after_unsaved_error(slot, save, Ok(outcomes))
+}
+
+/// The rebalance flow for ONE mergeable scene: equalize the two lanes' solo loudness, then
+/// joint-k the balanced pair to target. Returns a [`SceneSolve`] like `jointk_one_scene`,
+/// plus a `verify_by_ear` flag when the lane-mute floor is too shallow to trust the balance.
+fn rebalance_one_scene(
+    slot: u32,
+    job: &SceneJob,
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    verify: bool,
+) -> Result<SceneSolve, String> {
+    let a = &job.knobs[0];
+    let b = &job.knobs[1];
+    let cur_a = a.current.clamp(1e-3, 1.0);
+    let cur_b = b.current.clamp(1e-3, 1.0);
+
+    // 1+2. Each lane SOLO (the other muted to 0) at its current level → solo ceiling C.
+    let la_solo = measure_knobs_at(stimulus, &[(&a.knob, cur_a), (&b.knob, 0.0)])?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let lb_solo = measure_knobs_at(stimulus, &[(&a.knob, 0.0), (&b.knob, cur_b)])?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let c_a = la_solo.integrated_lufs - 20.0 * (cur_a as f64).log10();
+    let c_b = lb_solo.integrated_lufs - 20.0 * (cur_b as f64).log10();
+
+    // 2b. Mute FLOOR: BOTH lanes at 0. `outputLevel`=0 may floor near ~−40 dB (not −∞), so a
+    // "solo" carries the muted lane's bleed when the lanes sit within ~`REBALANCE_BLEED_MARGIN_DB`.
+    // If so, the equal-solo balance is only approximate (the combined joint-k still hits the
+    // overall target) → flag the scene "verify by ear". One extra capture; rebalance is opt-in.
+    // A SILENT floor (deep mute) is the best case → huge margin → no flag.
+    let floor_lufs = measure_mute_floor(stimulus, &a.knob, &b.knob)?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let min_solo = la_solo.integrated_lufs.min(lb_solo.integrated_lufs);
+    let verify_by_ear = (min_solo - floor_lufs) < REBALANCE_BLEED_MARGIN_DB;
+
+    // 3. Balanced levels for equal solo loudness.
+    let (la_bal, lb_bal) = balanced_solo_levels(c_a, c_b);
+
+    // 4. Measure the COMBINED output at the balanced levels (correlation-real sum).
+    let combined = measure_knobs_at(stimulus, &[(&a.knob, la_bal), (&b.knob, lb_bal)])?;
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let spread = combined.spread_lu();
+
+    // 5. Joint-k the balanced pair to target (scale both by one k from the combined point).
+    let balanced_knobs = vec![
+        KnobTarget {
+            knob: a.knob.clone(),
+            lo: a.lo,
+            hi: a.hi,
+            current: la_bal,
+        },
+        KnobTarget {
+            knob: b.knob.clone(),
+            lo: b.lo,
+            hi: b.hi,
+            current: lb_bal,
+        },
+    ];
+    let JointK {
+        levels,
+        clamped,
+        achieved,
+        ..
+    } = solve_joint_k_at(&balanced_knobs, target_lufs, combined.integrated_lufs)?;
+
+    // 6. Apply the final balanced+scaled levels (reload discards the temporary mutes), then the
+    // bounded secant correction — the balanced pair feeds the same downstream chain (e.g. a
+    // post-merge compressor), so the open-loop solve undershoots there exactly like joint-k.
+    let opts = LevelOptions {
+        save,
+        verify,
+        ..Default::default()
+    };
+    let knob_refs = [&a.knob, &b.knob];
+    let base = [la_bal, lb_bal];
+    let v0 = {
+        let targets: Vec<(&LevelKnob, f32)> = knob_refs
+            .iter()
+            .copied()
+            .zip(&levels)
+            .map(|(k, &v)| (k, v))
+            .collect();
+        apply_levels(slot, stimulus, &targets, opts, true)?.1
+    };
+    let (best_lufs, best_levels, clamp_reason, corr_writes) = match v0 {
+        Some(v0) if verify => {
+            let c = correct_iter(
+                slot,
+                stimulus,
+                &knob_refs,
+                &base,
+                levels,
+                combined.integrated_lufs,
+                v0,
+                target_lufs,
+                save,
+            )?;
+            (c.lufs, c.levels, c.clamp_reason, c.writes)
+        }
+        _ => (v0.unwrap_or(achieved), levels, None, 0),
+    };
+    let clamped =
+        clamped || clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
+    Ok(SceneSolve {
+        lufs: best_lufs,
+        levels: best_levels,
+        clamped,
+        spread,
+        writes: 1 + corr_writes,
+        clamp_reason,
+        verify_by_ear,
+    })
+}
+
+/// Build a successful per-scene outcome from a [`SceneSolve`] (joint-k / rebalance share this).
+fn solved_scene_outcome(scene_slot: u32, s: SceneSolve, elapsed_ms: u128) -> BatchedSceneOutcome {
+    BatchedSceneOutcome {
+        scene_slot,
+        final_lufs: Some(s.lufs),
+        // The loudest lane amp's solved value (representative for the single-knob case; the
+        // meaningful number for a multi-knob scene is `final_lufs`). All lanes share `k_eff`.
+        final_level: s
+            .levels
+            .iter()
+            .copied()
+            .fold(None, |m, v| Some(m.map_or(v, |mx: f32| mx.max(v)))),
+        clamped: s.clamped,
+        windows: 1,
+        writes: s.writes,
+        elapsed_ms,
+        failure: None,
+        dynamic_spread_lu: Some(s.spread),
+        clamp_reason: s.clamp_reason,
+        verify_by_ear: s.verify_by_ear,
+    }
+}
+
+/// Build a failed/skipped per-scene outcome.
+fn failed_scene_outcome(scene_slot: u32, failure: String, elapsed_ms: u128) -> BatchedSceneOutcome {
+    BatchedSceneOutcome {
+        scene_slot,
+        final_lufs: None,
+        final_level: None,
+        clamped: false,
+        windows: 0,
+        writes: 0,
+        elapsed_ms,
+        failure: Some(failure),
+        dynamic_spread_lu: None,
+        clamp_reason: None,
+        verify_by_ear: false,
+    }
+}
+
+/// Level `slot` to `target_lufs` by driving `knob` in a closed loop within
+/// `[lo, hi]`. Loads the preset once (own connection), seeds two measurements,
+/// then secant-iterates (each a fresh re-amp capture) until within `KNOB_TOL_LU`
+/// or `KNOB_MAX_ITERS`. Self-contained: opens its own connections, so the caller
+/// must NOT hold a device seize. `clamped` = the target needed a knob value
+/// outside `[lo, hi]` (unreachable). Optionally verifies and saves.
+#[allow(clippy::too_many_arguments)]
+pub fn level_preset_block(
+    slot: u32,
+    stimulus: &[f32],
+    knob: &LevelKnob,
+    lo: f32,
+    hi: f32,
+    target_lufs: f64,
+    opts: LevelOptions,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<LevelResult, String> {
+    // Pre-measure cancel: no device touch yet → return without the restore wrapper.
+    if cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    let result = (|| {
+        if hi <= lo {
+            return Err(format!("invalid knob bounds [{lo}, {hi}]"));
+        }
+        // Load the preset in its own connection (the set-after-load-in-same-conn
+        // override applies to any setter, so isolate the load).
+        {
+            let mut s = Session::connect()?;
+            s.load_preset(slot)?;
+            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+        }
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+
+        // Search in a coordinate where the knob is ~linear in LUFS so the secant
+        // converges in 1–2 steps. Amplitude knobs (range within [0,1]) are linear in
+        // dB-of-knob (`20·log10(x)` — the de-risk's proven `presetLevel`/`outputLevel`
+        // model); dB-unit knobs (e.g. an IR `outputlevel`) are already ~linear, so
+        // search them in raw units.
+        let log_space = lo >= 0.0 && hi <= 1.0 + 1e-6;
+        let eps = 1e-3f32;
+        let to_c = |x: f32| {
+            if log_space {
+                20.0 * x.max(eps).log10()
+            } else {
+                x
+            }
+        };
+        let from_c = |c: f32| {
+            if log_space {
+                10f32.powf(c / 20.0).clamp(lo, hi)
+            } else {
+                c.clamp(lo, hi)
+            }
+        };
+        let c_lo = to_c(if log_space { lo.max(eps) } else { lo });
+        let c_hi = to_c(hi);
+        let cspan = c_hi - c_lo;
+
+        // Seed two points inside the range (avoid the extremes), in c-space.
+        let mut ca = c_lo + 0.4 * cspan;
+        let mut cb = c_lo + 0.75 * cspan;
+        if cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        let first = measure_knob_at(stimulus, knob, from_c(ca))?;
+        // The spread is gain-invariant, so the first capture characterizes the preset.
+        let dynamic_spread_lu = first.spread_lu();
+        let mut ya = first.integrated_lufs;
+        if cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        let mut yb = measure_knob_at(stimulus, knob, from_c(cb))?.integrated_lufs;
+        let mut iterations = 2u32;
+
+        // Track the best (closest-to-target) measured point as the result.
+        let mut best = if (ya - target_lufs).abs() <= (yb - target_lufs).abs() {
+            (ca, ya)
+        } else {
+            (cb, yb)
+        };
+
+        while iterations < KNOB_MAX_ITERS && (best.1 - target_lufs).abs() > KNOB_TOL_LU {
+            let Some(raw_next) = secant_next(ca, ya, cb, yb, target_lufs) else {
+                break; // flat response — knob can't move loudness here
+            };
+            let cnext = raw_next.clamp(c_lo, c_hi);
+            // If the secant keeps pinning us to the same bound, we've converged to
+            // the reachable extreme — stop.
+            if (cnext - cb).abs() < 1e-4 {
+                break;
+            }
+            if cancelled() {
+                return Err(CANCELLED.to_string());
+            }
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            let ynext = measure_knob_at(stimulus, knob, from_c(cnext))?.integrated_lufs;
+            iterations += 1;
+            if (ynext - target_lufs).abs() < (best.1 - target_lufs).abs() {
+                best = (cnext, ynext);
+            }
+            (ca, ya, cb, yb) = (cb, yb, cnext, ynext);
+        }
+
+        let (final_level, measured_at_final) = (from_c(best.0), best.1);
+        // "Clamped" = target not achieved within tolerance — the knob couldn't reach
+        // it, whether because it hit a bound or its response went flat (e.g. a
+        // normalvolume whose channel can't go quiet enough). This is the
+        // user-meaningful "target unreachable with this knob" signal.
+        let clamped = (measured_at_final - target_lufs).abs() > KNOB_TOL_LU;
+
+        // Apply the solved value + optional verify/save. The preset is still current
+        // from the initial load, so no reload — the same Conn-3 seam the one-shot path
+        // uses, just with a block knob.
+        if cancelled() {
+            return Err(CANCELLED.to_string());
+        }
+        let (saved, verify_lufs) = apply_level(slot, stimulus, knob, final_level, opts, false)?;
+
+        Ok(LevelResult {
+            slot,
+            ref_level: final_level, // for a block knob, "ref" carries the solved value
+            measured_lufs: measured_at_final,
+            constant_c: f64::NAN, // no single-constant model for an arbitrary knob
+            final_level,
+            target_lufs,
+            predicted_lufs: measured_at_final,
+            clamped,
+            saved,
+            verify_lufs,
+            iterations,
+            dynamic_spread_lu: Some(dynamic_spread_lu),
+            clamp_reason: None,
+            verify_by_ear: false,
+        })
+    })();
+    restore_after_unsaved_error(slot, opts.save, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A cancel flag already set at entry must bail at the PRE-MEASURE checkpoint —
+    // before any `Session::connect`/device touch — so this runs with no hardware and
+    // returns the CANCELLED sentinel. Guards both the master-level and block-knob paths.
+    #[test]
+    fn cancel_before_measure_short_circuits_without_device() {
+        let stim = [0.0f32; 16];
+        let opts = LevelOptions::default();
+        assert_eq!(
+            level_preset(0, &stim, -30.0, opts, || true).unwrap_err(),
+            CANCELLED
+        );
+        let knob = LevelKnob::PresetLevel;
+        assert_eq!(
+            level_preset_block(0, &stim, &knob, 0.05, 1.0, -30.0, opts, || true).unwrap_err(),
+            CANCELLED
+        );
+    }
+
+    // Footswitch generic param-space secant: hits a linear response, gives up on a flat one.
+    #[test]
+    fn fs_secant_converges_and_detects_flat() {
+        // loudness(v) = 10·v − 30 → target −23 ⇒ v = 0.7.
+        let f = |v: f64| 10.0 * v - 30.0;
+        let next = fs_secant_next((0.25, f(0.25)), (0.75, f(0.75)), -23.0).unwrap();
+        assert!((next - 0.70).abs() < 1e-9, "got {next}");
+        // Flat response → None (no authority).
+        assert!(fs_secant_next((0.25, -9.0), (0.75, -9.0), -23.0).is_none());
+    }
+
+    #[test]
+    fn param_fn_present_matches_switch_index_and_param() {
+        let ftsw = serde_json::json!([
+            [],
+            [{ "func": "on-off" }, { "func": "param", "parameterId": "gain" }],
+        ]);
+        assert!(param_fn_present(&ftsw, 1, 1, "gain"));
+        assert!(!param_fn_present(&ftsw, 1, 1, "level")); // wrong param
+        assert!(!param_fn_present(&ftsw, 1, 0, "gain")); // index 0 is on-off
+        assert!(!param_fn_present(&ftsw, 0, 0, "gain")); // empty switch
+    }
+
+    /// Solve for `C` from a real on-device data point: -26.70 LUFS at ref 0.5.
+    /// C is the captured loudness at level=1.0 (20·log10(1)=0), i.e. this
+    /// preset's MAX achievable captured loudness ≈ -20.68 LUFS.
+    fn c_from_real_data() -> f64 {
+        let (measured, ref_level) = (-26.70f64, 0.5f64);
+        measured - 20.0 * ref_level.log10()
+    }
+
+    #[test]
+    fn reachable_target_hits_exactly() {
+        let c = c_from_real_data();
+        assert!((c - (-20.68)).abs() < 0.1, "C={c}");
+        // -30 is quieter than C → reachable. The model at the computed level
+        // returns the target exactly; the level lands near the on-device point
+        // (0.3225 measured -30.51, so -30 needs slightly more: ~0.342).
+        let target = -30.0f64;
+        let level = (10f64.powf((target - c) / 20.0)).clamp(0.0, 1.0);
+        assert!((level - 0.342).abs() < 0.005, "level={level}");
+        let back = 20.0 * level.log10() + c;
+        assert!((back - target).abs() < 1e-6, "got {back}");
+    }
+
+    #[test]
+    fn target_louder_than_max_clamps() {
+        let c = c_from_real_data(); // ≈ -20.68 = max achievable
+        let target = -16.0f64; // louder than the preset can reach
+        let ideal = 10f64.powf((target - c) / 20.0);
+        assert!(ideal > 1.0, "ideal={ideal}");
+        assert_eq!((ideal as f32).clamp(0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn solve_level_reachable_and_clamped() {
+        let c = c_from_real_data();
+        // Reachable target → exact, not clamped.
+        let (lvl, clamped, predicted) = super::solve_level(c, -30.0);
+        assert!(!clamped);
+        assert!((lvl - 0.342).abs() < 0.005, "lvl={lvl}");
+        assert!((predicted - (-30.0)).abs() < 1e-4, "predicted={predicted}");
+        // Target louder than C → clamps at 1.0 and predicts C (the ceiling).
+        let (lvl2, clamped2, predicted2) = super::solve_level(c, -16.0);
+        assert!(clamped2);
+        assert_eq!(lvl2, 1.0);
+        assert!((predicted2 - c).abs() < 1e-9, "predicted2={predicted2}");
+    }
+
+    // ── joint-k (parallel-merged) solve ──────────────────────────────────────
+    fn amp_knob(current: f32) -> super::KnobTarget {
+        super::KnobTarget {
+            knob: super::LevelKnob::Block {
+                group_id: "G1".into(),
+                node_id: "ACD_X".into(),
+                parameter_id: "outputLevel".into(),
+                scene_slot: Some(0),
+            },
+            lo: 0.0,
+            hi: 1.0,
+            current,
+        }
+    }
+
+    // Single amp: joint-k degenerates to the validated one-amp solve.
+    #[test]
+    fn joint_k_single_amp_hits_target() {
+        let j = super::solve_joint_k_at(&[amp_knob(0.5)], -30.0, -26.0).unwrap();
+        assert!(!j.clamped);
+        assert!(
+            (j.achieved - (-30.0)).abs() < 1e-6,
+            "achieved={}",
+            j.achieved
+        );
+        assert!(
+            (j.levels[0] - 0.3155).abs() < 0.002,
+            "level={}",
+            j.levels[0]
+        );
+    }
+
+    // Two equal lanes summing to `measured`: each scaled by the same k → target hit,
+    // balance (equal) preserved.
+    #[test]
+    fn joint_k_two_equal_amps_scale_together() {
+        let j = super::solve_joint_k_at(&[amp_knob(0.5), amp_knob(0.5)], -26.0, -20.0).unwrap();
+        assert!(!j.clamped);
+        assert!(
+            (j.achieved - (-26.0)).abs() < 1e-6,
+            "achieved={}",
+            j.achieved
+        );
+        assert_eq!(j.levels.len(), 2);
+        assert!(
+            (j.levels[0] - j.levels[1]).abs() < 1e-6,
+            "balance preserved"
+        );
+        assert!(
+            (j.levels[0] - 0.2505).abs() < 0.002,
+            "level={}",
+            j.levels[0]
+        );
+    }
+
+    // Unequal lanes, boost beyond the hottest amp's headroom → ratio-preserving clamp:
+    // hottest hits 1.0, the other scales by the SAME k_eff (mix intact), `clamped` set,
+    // `achieved` reports the shortfall (NOT the target).
+    #[test]
+    fn joint_k_unequal_clamp_preserves_ratio() {
+        let j = super::solve_joint_k_at(&[amp_knob(0.9), amp_knob(0.3)], -18.0, -30.0).unwrap();
+        assert!(j.clamped);
+        assert!(
+            (j.levels[0] - 1.0).abs() < 1e-4,
+            "hottest pinned at 1.0: {}",
+            j.levels[0]
+        );
+        let ratio = j.levels[0] / j.levels[1];
+        assert!(
+            (ratio - 3.0).abs() < 1e-3,
+            "0.9:0.3 ratio preserved, got {ratio}"
+        );
+        assert!(
+            j.achieved < -28.0,
+            "achieved reports the shortfall: {}",
+            j.achieved
+        );
+        assert!(j.achieved > -30.0);
+    }
+
+    // At target already → k_eff ≈ 1, not clamped (the caller then skips the write).
+    #[test]
+    fn joint_k_at_target_is_unity_unclamped() {
+        let j = super::solve_joint_k_at(&[amp_knob(0.5), amp_knob(0.2)], -30.0, -30.0).unwrap();
+        assert!(!j.clamped);
+        assert!((j.k_eff - 1.0).abs() < 1e-6, "k_eff={}", j.k_eff);
+    }
+
+    // A dB-unit knob can't be scaled multiplicatively → error, never a garbage write.
+    #[test]
+    fn joint_k_rejects_db_knob() {
+        let mut kt = amp_knob(0.5);
+        kt.lo = -18.0;
+        kt.hi = 6.0;
+        assert!(super::solve_joint_k_at(&[kt], -30.0, -26.0).is_err());
+    }
+
+    // Rebalance: equal-ceiling lanes both sit at 1.0; a louder lane is attenuated to match
+    // the quieter (which pins at 1.0), and both stay ≤ 1.0 — equal SOLO loudness.
+    #[test]
+    fn balanced_solo_levels_equalizes_lanes() {
+        let (la, lb) = super::balanced_solo_levels(-20.0, -20.0);
+        assert!(
+            (la - 1.0).abs() < 1e-6 && (lb - 1.0).abs() < 1e-6,
+            "equal → both 1.0"
+        );
+
+        // A louder (C=-15) than B (C=-21): B pins at 1.0, A attenuates to 10^(-6/20)≈0.501.
+        let (la, lb) = super::balanced_solo_levels(-15.0, -21.0);
+        assert!((lb - 1.0).abs() < 1e-6, "quieter lane B at 1.0, got {lb}");
+        assert!(
+            (la - 0.501).abs() < 0.005,
+            "louder lane A attenuated, got {la}"
+        );
+        // Equal solo loudness check: 20·log10(la)+C_a ≈ 20·log10(lb)+C_b.
+        let solo_a = 20.0 * (la as f64).log10() + (-15.0);
+        let solo_b = 20.0 * (lb as f64).log10() + (-21.0);
+        assert!(
+            (solo_a - solo_b).abs() < 0.05,
+            "solo loudness equal: {solo_a} vs {solo_b}"
+        );
+    }
+
+    // AC1 — the common target is min(C) − headroom (the loudest level every
+    // preset can still reach), and empty input yields None.
+    #[test]
+    fn common_target_is_min_c_minus_headroom() {
+        let cs = [-22.0, -25.5, -19.0]; // quietest ceiling is -25.5
+        let t = super::common_target(&cs, 2.0).unwrap();
+        assert!((t - (-27.5)).abs() < 1e-9, "t={t}");
+        // A target equal to min(C) (headroom 0) is reachable by the quietest; a
+        // louder target would clamp that preset (solve_level flags it).
+        assert!(super::common_target(&[], 2.0).is_none());
+    }
+
+    #[test]
+    fn secant_next_solves_linear_response() {
+        // A perfectly linear knob: lufs = 10*x - 25. Target -20 ⇒ x = 0.5.
+        let f = |x: f32| 10.0 * x as f64 - 25.0;
+        let x = super::secant_next(0.2, f(0.2), 0.8, f(0.8), -20.0).unwrap();
+        assert!((x - 0.5).abs() < 1e-4, "x={x}");
+    }
+
+    #[test]
+    fn secant_next_none_on_flat_response() {
+        // A knob that doesn't move loudness → no solution.
+        assert!(super::secant_next(0.2, -20.0, 0.8, -20.0, -18.0).is_none());
+    }
+
+    // Item 3 — no-authority verdict: a LARGE applied gain that barely moves loudness means
+    // the amp is off-branch; a small gain is inconclusive (headroom clamp), and a real
+    // response means the amp has authority.
+    #[test]
+    fn no_authority_flags_dead_knob_only() {
+        assert!(
+            super::no_authority(12.0, 0.10),
+            "big boost, no response → off-branch"
+        );
+        assert!(
+            super::no_authority(-9.0, -0.05),
+            "big cut, no response → off-branch"
+        );
+        assert!(
+            !super::no_authority(12.0, 6.0),
+            "big gain, real response → has authority"
+        );
+        assert!(
+            !super::no_authority(2.0, 0.05),
+            "small gain → inconclusive (headroom clamp)"
+        );
+        assert!(
+            !super::no_authority(0.0, 0.0),
+            "no gain applied → not no-authority"
+        );
+    }
+
+    // Item 1 — the secant step is trust-region-clamped: a shallow (but > 0.05) slope with a
+    // big residual must NOT explode the Newton jump; it caps at ±BATCH_TRUST_DB.
+    #[test]
+    fn secant_next_db_trust_region_caps_jump() {
+        let prev = (0.0, -30.0);
+        let last = (1.0, -29.7); // slope 0.3 over 1 dB; raw jump ≈ +32 dB
+        let next = super::secant_next_db(prev, last, -20.0).unwrap();
+        assert!(
+            (next - (last.0 + super::BATCH_TRUST_DB as f64)).abs() < 1e-9,
+            "step clamped to +{} dB, got {next}",
+            super::BATCH_TRUST_DB
+        );
+    }
+
+    #[test]
+    fn secant_next_db_none_on_flat_slope() {
+        // slope ≈ 0.0017 ≤ 0.05 → no usable response (→ the loop stops / no-authority path).
+        assert!(super::secant_next_db((0.0, -30.0), (6.0, -29.99), -20.0).is_none());
+    }
+
+    // Item 1 — the bounded secant converges on a SATURATING (compressor-like) response where
+    // the open-loop slope-1 first apply overshoots and one step would still miss, within
+    // MEASURE_CORRECT_MAX steps, honoring the trust region. Mirrors `correct_iter`'s loop.
+    #[test]
+    fn correct_iter_secant_converges_on_compressor() {
+        let l0 = -30.0_f64;
+        let (g, tau) = (15.0_f64, 8.0_f64); // saturating: dB-out/dB-in slope < 1, decreasing
+        let model = |db: f64| l0 + g * (1.0 - (-db / tau).exp());
+        let target = -22.0_f64;
+
+        // Seed exactly as correct_iter: base@0 and the open-loop first apply at db0=target-l0
+        // (assumes slope 1 → overshoots through the compressor).
+        let db0 = target - l0;
+        let mut prev = (0.0_f64, model(0.0));
+        let mut last = (db0, model(db0));
+        let mut best = last;
+        let mut steps = 0u32;
+        let mut max_step = 0.0_f64;
+        while steps < super::MEASURE_CORRECT_MAX && (last.1 - target).abs() > super::KNOB_TOL_LU {
+            let Some(next_db) = super::secant_next_db(prev, last, target) else {
+                break;
+            };
+            max_step = max_step.max((next_db - last.0).abs());
+            let vn = model(next_db);
+            steps += 1;
+            if (vn - target).abs() < (best.1 - target).abs() {
+                best = (next_db, vn);
+            }
+            prev = last;
+            last = (next_db, vn);
+        }
+        assert!(
+            (best.1 - target).abs() <= super::KNOB_TOL_LU,
+            "converged to {} (target {target})",
+            best.1
+        );
+        assert!(steps <= super::MEASURE_CORRECT_MAX, "steps={steps}");
+        assert!(
+            max_step <= super::BATCH_TRUST_DB as f64 + 1e-9,
+            "trust region honored, max step {max_step} dB"
+        );
+    }
+
+    // Drive the secant loop against a synthetic dB-of-amplitude knob, searching
+    // in log-of-knob coordinate (c = 20·log10(x)) exactly as `level_preset_block`
+    // does. In that space the knob is linear, so it converges in one secant step.
+    #[test]
+    fn secant_loop_converges_on_log_knob() {
+        // captured_LUFS = 20*log10(x) + C, x in (0,1], C = -10 (amp outputLevel).
+        let model = |x: f32| 20.0 * (x.max(1e-4) as f64).log10() - 10.0;
+        let target = -24.0f64;
+        let (lo, hi) = (0.0f32, 1.0f32);
+        let eps = 1e-3f32;
+        let to_c = |x: f32| 20.0 * x.max(eps).log10();
+        let from_c = |c: f32| 10f32.powf(c / 20.0).clamp(lo, hi);
+        let (c_lo, c_hi) = (to_c(lo.max(eps)), to_c(hi));
+        let span = c_hi - c_lo;
+        let (mut ca, mut cb) = (c_lo + 0.4 * span, c_lo + 0.75 * span);
+        let (mut ya, mut yb) = (model(from_c(ca)), model(from_c(cb)));
+        let mut best = if (ya - target).abs() <= (yb - target).abs() {
+            (ca, ya)
+        } else {
+            (cb, yb)
+        };
+        let mut iters = 2;
+        while iters < super::KNOB_MAX_ITERS && (best.1 - target).abs() > super::KNOB_TOL_LU {
+            let Some(nc) = super::secant_next(ca, ya, cb, yb, target) else {
+                break;
+            };
+            let nc = nc.clamp(c_lo, c_hi);
+            if (nc - cb).abs() < 1e-4 {
+                break;
+            }
+            let ny = model(from_c(nc));
+            iters += 1;
+            if (ny - target).abs() < (best.1 - target).abs() {
+                best = (nc, ny);
+            }
+            (ca, ya, cb, yb) = (cb, yb, nc, ny);
+        }
+        assert!(
+            (best.1 - target).abs() <= super::KNOB_TOL_LU,
+            "converged to lufs {} for target {target}",
+            best.1
+        );
+        let final_x = from_c(best.0);
+        assert!((final_x - 0.1995).abs() < 0.02, "final knob {final_x}"); // 10^((-24+10)/20)
+        assert!(
+            iters <= 3,
+            "should converge fast in log space, iters={iters}"
+        );
+    }
+
+    /// The setlist common target is min(C) − headroom; presets whose C equals the
+    /// floor land below the target (reachable), so none clamp.
+    #[test]
+    fn setlist_common_target_is_below_min_c() {
+        // Three presets with different ceilings.
+        let cs = [-20.68f64, -24.0, -22.5];
+        let headroom = 1.0;
+        let min_c = cs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let target = min_c - headroom;
+        assert!((target - (-25.0)).abs() < 1e-9, "target={target}");
+        // Every preset can reach the common target (level ≤ 1.0, not clamped).
+        for &c in &cs {
+            let (lvl, clamped, _) = super::solve_level(c, target);
+            assert!(!clamped, "C={c} unexpectedly clamped at target {target}");
+            assert!(lvl <= 1.0 && lvl > 0.0, "lvl={lvl}");
+        }
+    }
+
+    // ---- live-controller (next_live_coord) against a fake loudness source ----
+
+    use super::{next_live_coord, SceneLevelStrategy, KNOB_TOL_LU, LIVE_MAX_ITERS};
+
+    /// Drive `next_live_coord` against a fake device response `respond(coord) →
+    /// LUFS` exactly the way `level_preset_block_live` does (same best-tracking,
+    /// same stop conditions). Returns (measurement steps after the seed, best
+    /// LUFS, best coord).
+    fn simulate_live(
+        strategy: SceneLevelStrategy,
+        respond: impl Fn(f32) -> f64,
+        start_coord: f32,
+        target: f64,
+        c_lo: f32,
+        c_hi: f32,
+    ) -> (u32, f64, f32) {
+        let mut coord = start_coord.clamp(c_lo, c_hi);
+        let mut measured = respond(coord);
+        let mut best = (coord, measured);
+        let mut prev: Option<(f32, f64)> = None;
+        let mut steps = 0u32;
+        for iter in 0..LIVE_MAX_ITERS {
+            if (best.1 - target).abs() <= KNOB_TOL_LU {
+                break;
+            }
+            let next = next_live_coord(
+                strategy,
+                iter,
+                (coord, measured),
+                prev,
+                target,
+                (c_lo, c_hi),
+            );
+            if (next - coord).abs() < 1e-3 {
+                break;
+            }
+            let y = respond(next);
+            steps += 1;
+            if (y - target).abs() < (best.1 - target).abs() {
+                best = (next, y);
+            }
+            prev = Some((coord, measured));
+            coord = next;
+            measured = y;
+        }
+        (steps, best.1, best.0)
+    }
+
+    /// Ideal amplitude knob (the validated `20·log10` model): LUFS = coord + C.
+    /// Hybrid's one-shot jump and FractalStyle's meter-match both land in ONE step.
+    #[test]
+    fn live_hybrid_and_fractal_converge_in_one_step_on_unit_gain() {
+        let plant = |c: f32| c as f64 - 26.0; // C = -26 at coord 0
+        for strategy in [
+            SceneLevelStrategy::LiveHybrid,
+            SceneLevelStrategy::FractalStyle,
+        ] {
+            let (steps, lufs, _) = simulate_live(strategy, plant, -6.0, -28.0, -60.0, 0.0);
+            assert_eq!(steps, 1, "{strategy:?}");
+            assert!(
+                (lufs - (-28.0)).abs() <= KNOB_TOL_LU,
+                "{strategy:?} lufs={lufs}"
+            );
+        }
+    }
+
+    /// Compressive response (0.5 LU per dB of knob — e.g. leveling through a
+    /// limiter-ish chain): the secant-based strategies recover the real slope and
+    /// converge; pure proportional's bounded gain (0.75·err on a 0.5 slope ⇒
+    /// residual ×0.625/step) cannot reach the ±0.3 LU gate within the cap.
+    #[test]
+    fn live_secant_strategies_beat_proportional_on_compressive_response() {
+        let plant = |c: f32| 0.5 * c as f64 - 26.0;
+        for strategy in [
+            SceneLevelStrategy::LiveHybrid,
+            SceneLevelStrategy::LiveSecant,
+        ] {
+            let (steps, lufs, _) = simulate_live(strategy, plant, 0.0, -22.0, -60.0, 30.0);
+            assert!(steps <= 3, "{strategy:?} steps={steps}");
+            assert!(
+                (lufs - (-22.0)).abs() <= KNOB_TOL_LU,
+                "{strategy:?} lufs={lufs}"
+            );
+        }
+        let (_, lufs_prop, _) = simulate_live(
+            SceneLevelStrategy::LiveProportional,
+            plant,
+            0.0,
+            -22.0,
+            -60.0,
+            30.0,
+        );
+        assert!(
+            (lufs_prop - (-22.0)).abs() > KNOB_TOL_LU,
+            "proportional unexpectedly converged: {lufs_prop}"
+        );
+    }
+
+    /// LiveSecant's first move is the conservative half-error probe (NOT the full
+    /// jump) — the seed point that distinguishes it from LiveHybrid.
+    #[test]
+    fn live_secant_first_step_is_half_gain_probe() {
+        let next = next_live_coord(
+            SceneLevelStrategy::LiveSecant,
+            0,
+            (-10.0, -28.0),
+            None,
+            -22.0,
+            (-60.0, 0.0),
+        );
+        assert!((next - (-7.0)).abs() < 1e-4, "next={next}"); // -10 + 0.5·6
+        let hybrid = next_live_coord(
+            SceneLevelStrategy::LiveHybrid,
+            0,
+            (-10.0, -28.0),
+            None,
+            -22.0,
+            (-60.0, 0.0),
+        );
+        assert!((hybrid - (-4.0)).abs() < 1e-4, "hybrid={hybrid}"); // full jump
+    }
+
+    /// Unreachable target: every strategy pins at the top bound and stops (the
+    /// equal-coord break), leaving the best point at the ceiling — the `clamped`
+    /// signal upstream.
+    #[test]
+    fn live_strategies_clamp_at_unreachable_ceiling() {
+        let plant = |c: f32| c as f64 - 26.0; // ceiling at coord 0 → -26 LUFS max
+        for strategy in [
+            SceneLevelStrategy::LiveHybrid,
+            SceneLevelStrategy::LiveSecant,
+            SceneLevelStrategy::LiveProportional,
+            SceneLevelStrategy::FractalStyle,
+        ] {
+            let (steps, lufs, coord) = simulate_live(strategy, plant, -6.0, -20.0, -60.0, 0.0);
+            assert!(steps <= LIVE_MAX_ITERS, "{strategy:?}");
+            assert!((coord - 0.0).abs() < 1e-3, "{strategy:?} coord={coord}");
+            assert!((lufs - (-26.0)).abs() < 1e-6, "{strategy:?} lufs={lufs}");
+        }
+    }
+}

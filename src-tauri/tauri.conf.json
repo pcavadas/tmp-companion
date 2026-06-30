@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TMP Companion",
+  "version": "0.0.0-development",
+  "identifier": "dev.tmpcompanion.app",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build",
+    "devUrl": "http://localhost:1421",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "TMP Companion",
+        "width": 900,
+        "height": 680,
+        "minWidth": 640,
+        "minHeight": 480,
+        "resizable": true,
+        "maximizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "Music",
+    "shortDescription": "USB controller for the Tone Master Pro: leveling, block copy, song/setlist editing.",
+    "longDescription": "Desktop companion for the Fender Tone Master Pro: search and inventory your preset library, bulk-edit parameters/blocks/IRs/footswitches, manage songs and setlists, and auto-level loudness to a LUFS target over USB. Full-preset edits round-trip through the offline .preset codec; live edits and leveling drive the device directly in re-amp mode.",
+    "copyright": "Copyright (c) 2026 Pedro Cavadas",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["resources/samples/*.wav"],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist",
+      "entitlements": "entitlements.plist"
+    }
+  }
+}

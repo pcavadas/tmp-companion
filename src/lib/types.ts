@@ -1,0 +1,805 @@
+// TMP Companion — shared TypeScript type surface.
+//
+// A byte-accurate mirror of the Rust serde types the Tauri backend returns and
+// the enum-tagged payloads it accepts. Field names are snake_case because that
+// is exactly how serde serializes them (the Rust structs use no `rename_all`).
+//
+// Mirrors the serde types the Rust backend returns/accepts.
+//
+// WIRE-CASING RULE (load-bearing): top-level invoke arg KEYS are camelCase
+// (Tauri auto-converts to the Rust snake_case param); field keys NESTED inside a
+// JSON payload object (job/op/spec/recipe/filter/edit/store) stay snake_case and
+// are passed through to serde unchanged. The interfaces below model the *wire*
+// payloads, so their fields are snake_case to match serde.
+
+// ─── Connection + app ─────────────────────────────────────────────────────────
+
+/** App identity (mirrors lib::AppInfo). Name is "TMP Companion". */
+export interface AppInfo {
+  name: string;
+  version: string;
+}
+
+/** One device "My Presets" row (mirrors lib::PresetEntry). `slot` is the
+ * 0-based list index shown in the UI. */
+export interface PresetEntry {
+  slot: number;
+  name: string;
+}
+
+/** One block-acting function on a footswitch (`footswitch::FootswitchFn`). */
+export interface FootswitchFn {
+  func: "on-off" | "param";
+  group_id: string;
+  node_id: string;
+  fender_id: string;
+  parameter_id: string | null;
+  value_a: number | null;
+  value_b: number | null;
+}
+
+/** A continuous block parameter the leveler can target (`footswitch::LevelParamCandidate`). */
+export interface LevelParamCandidate {
+  group_id: string;
+  node_id: string;
+  fender_id: string;
+  parameter_id: string;
+  current: number;
+}
+
+/** A block-acting footswitch (on/off + parameter change) with its leveling-candidate
+ * params (`footswitch::FootswitchInfo`). `switch` is the `ftsw` array index. */
+export interface FootswitchInfo {
+  switch: number;
+  label: string;
+  link_group: number | null;
+  functions: FootswitchFn[];
+  level_params: LevelParamCandidate[];
+}
+
+export interface PresetScenes {
+  scenes: string[];
+  fs: (number | null)[];
+  /** Block-acting footswitches (empty when the preset has none). */
+  footswitches: FootswitchInfo[];
+}
+
+// ─── Loudness leveling ──────────────────────────────────────────────────────
+
+/** A level-job sent to `level_preset` inside `{ job: ... }`. Keys are snake_case
+ * (mirrors lib::LevelJob, a serde Deserialize struct). All three `block_*`
+ * coords set ⇒ closed-loop leveling on that block knob. */
+export interface LevelJob {
+  slot: number;
+  target_lufs: number;
+  /** Opt-in persist (SaveCurrentPreset). No window.confirm guard. */
+  save: boolean;
+  /** Pickup topology id → its bundled stimulus WAV. */
+  topology_id: string | null;
+  /** Tier-2 measured dry-instrument loudness (K-weighted LUFS). */
+  calibration_lufs: number | null;
+  /** Explicit stimulus override (wins over topology_id). */
+  stimulus_path?: string | null;
+  /** Block-knob leveling coordinates (from `list_level_blocks`). */
+  block_group_id: string | null;
+  block_node_id: string | null;
+  block_parameter_id: string | null;
+  /** Current value, picks closed-loop search bounds. */
+  block_value: number | null;
+}
+
+/** One entry in a setlist common-target job (mirrors lib::SetlistJobEntry).
+ * Keys snake_case (nested inside `{ entries: [...] }`). */
+export interface SetlistJobEntry {
+  slot: number;
+  topology_id: string | null;
+  calibration_lufs: number | null;
+}
+
+/** Result of leveling one preset (mirrors leveller::LevelResult). */
+export interface LevelResult {
+  slot: number;
+  ref_level: number;
+  measured_lufs: number;
+  constant_c: number;
+  final_level: number;
+  target_lufs: number;
+  predicted_lufs: number;
+  clamped: boolean;
+  saved: boolean;
+  /** Independent re-measure at final_level (null if verify skipped). */
+  verify_lufs: number | null;
+  /** Capture iterations used (1 = one-shot presetLevel; 2..N = closed-loop block). */
+  iterations: number;
+  /** Short-term-max − integrated of the measure capture (LU). Large (≳6 LU) = a
+   * dynamic preset whose gated reading understates its peaks — verify by ear.
+   * Null when the measuring path has no full-capture meter. */
+  dynamic_spread_lu: number | null;
+  /** Set with `clamped` for the "no authority" case — the amp's outputLevel doesn't
+   * reach the USB 1/2 capture (off-branch / off-USB). Shown verbatim instead of a
+   * generic clamp. Null for the preset-level path / an ordinary headroom clamp. */
+  clamp_reason: string | null;
+  /** Rebalance "verify by ear": the lane-mute floor was too shallow to trust the
+   * equal-solo balance (the overall target still landed). ORed with the spread flag. */
+  verify_by_ear: boolean;
+}
+
+/** Result of leveling one block-acting footswitch's engaged state
+ * (mirrors `leveller::FootswitchLevelResult`, snake_case). */
+export interface FootswitchLevelResult {
+  switch: number;
+  /** Engaged loudness at the low reference seed. */
+  measured_lufs: number;
+  /** Solved switch-ON value written as the `param` function's `valueA`. */
+  final_value: number;
+  target_lufs: number;
+  /** Achieved engaged loudness at `final_value`. */
+  predicted_lufs: number;
+  clamped: boolean;
+  clamp_reason: string | null;
+  saved: boolean;
+  verify_lufs: number | null;
+  iterations: number;
+  dynamic_spread_lu: number | null;
+  /** `"baked"` (value written onto the block) or `"assigned"` (param-change function written). */
+  method: string;
+}
+
+/** Result of leveling a whole setlist to one common target
+ * (mirrors leveller::SetlistResult). */
+export interface SetlistResult {
+  target_lufs: number;
+  results: LevelResult[];
+}
+
+/** A level-type block control discoverable from a preset
+ * (mirrors session::LevelBlock). */
+export interface LevelBlock {
+  group_id: string;
+  node_id: string;
+  model_id: string;
+  parameter_id: string;
+  value: number;
+}
+
+// ─── Instrument profiles + persisted store (Settings window) ──────────────────
+
+/** A user-defined instrument profile (mirrors profiles::Profile). */
+export interface Profile {
+  id: string;
+  name: string;
+  topology_id: string;
+  /** K-weighted loudness (LUFS) of the dry instrument; null until calibrated. */
+  calibration_lufs: number | null;
+}
+
+/** A named loudness target the user can apply per preset (mirrors profiles::Target). */
+export interface Target {
+  name: string;
+  lufs: number;
+}
+
+/** The playback loudness leveling compensates for (mirrors profiles::PlaybackLevel).
+ * Equal-LUFS is equal-loudness at one SPL only; below stage volume bass presets
+ * get a hotter target (Fletcher–Munson compensation). */
+export type PlaybackLevel = "quiet" | "rehearsal" | "stage";
+
+/** The persisted profile/target store (mirrors profiles::Store). */
+export interface Store {
+  profiles: Profile[];
+  /** slot → profile id (sparse — only slots with an assigned profile appear). */
+  profile_by_slot: Partial<Record<number, string>>;
+  /** User-editable named loudness targets (the live levels). */
+  targets: Target[];
+  /** Playback loudness the leveling targets are compensated for. */
+  playback_level: PlaybackLevel;
+}
+
+/** A shipped pickup topology (mirrors lib::TopologyInfo). */
+export interface TopologyInfo {
+  id: string;
+  label: string;
+  instrument: string;
+}
+
+/** A bundled stimulus WAV (mirrors lib::SampleInfo). */
+export interface SampleInfo {
+  name: string;
+  path: string;
+}
+
+// ─── Library ───────────────────────────────────────────────────────────────
+
+/** Per-preset facets (mirrors search::Facets). */
+export interface Facets {
+  name: string;
+  template: string;
+  preset_level: number | null;
+  blocks: string[];
+  amps: string[];
+  cabs: string[];
+  irs: string[];
+  sics: string[];
+}
+
+/** One ingested .preset file + its device reconciliation
+ * (mirrors library::LibraryRecord). `decoded_json` is omitted on the wire;
+ * `list_index` is null when unmatched/ambiguous (not writable);
+ * `preset_id` is null when the preset has no stable identity (untaggable). */
+export interface LibraryRecord {
+  file_path: string;
+  display_name: string;
+  preset_id: string | null;
+  facets: Facets;
+  list_index: number | null;
+  list_enum: number;
+}
+
+/** Folder↔device reconciliation summary (mirrors library::ReconcileReport). */
+export interface ReconcileReport {
+  matched: number;
+  unmatched_files: string[];
+  unmatched_slots: string[];
+  ambiguous: string[];
+}
+
+/** Filter args for `library_filter`, sent inside `{ filter: ... }`. All
+ * optional, snake_case (mirrors lib::FilterArgs). */
+export interface FilterArgs {
+  name_substr?: string;
+  amp?: string;
+  block?: string;
+  ir?: string;
+  sic?: string;
+  level_lt?: number;
+  level_gt?: number;
+}
+
+// ─── Bulk run engine ──────────────────────────────────────────────────────────
+
+/** One changed field in a diff (mirrors backup::FieldChange). */
+export interface FieldChange {
+  pointer: string;
+  before: unknown;
+  after: unknown;
+}
+
+export type ChangeStatus = "changed" | "unchanged" | "skipped" | "error";
+
+/** Dry-run preview of one preset (mirrors bulkrun::DryRunEntry). */
+export interface DryRunEntry {
+  list_index: number;
+  display_name: string;
+  status: ChangeStatus;
+  changes: FieldChange[];
+  error: string | null;
+}
+
+/** Apply result for one preset (mirrors bulkrun::RunEntry). */
+export interface RunEntry {
+  list_index: number;
+  display_name: string;
+  changed: boolean;
+  verified: boolean;
+  error: string | null;
+  snapshot_path: string | null;
+}
+
+/** Before/after report of a bulk run (mirrors bulkrun::RunReport). */
+export interface RunReport {
+  entries: RunEntry[];
+}
+
+/** Result of `bulk_apply` (mirrors lib::BulkApplyResult). */
+export interface BulkApplyResult {
+  run_id: string;
+  report: RunReport;
+}
+
+/** Revert result for one preset (mirrors bulkrun::RevertEntry). */
+export interface RevertEntry {
+  list_index: number;
+  restored: boolean;
+  error: string | null;
+}
+
+/** Set/offset/scale mode for a parameter edit. serde(tag="mode",
+ * content="value", rename_all="lowercase") — mirrors bulk_cmd::ParamModeSpec. */
+export type ParamModeSpec =
+  | { mode: "set"; value: number }
+  | { mode: "offset"; value: number }
+  | { mode: "scale"; value: number };
+
+/** The enum-tagged bulk operation spec sent to bulk_dry_run / bulk_apply inside
+ * `{ op: ... }`. serde tag = "type", PascalCase variant names (NO rename_all).
+ * The lone LIVE op is ParamEdit (changeParameter); every other variant is an
+ * OFFLINE re-import. Mirrors bulk_cmd::OpSpec. */
+export type OpSpec =
+  | {
+      type: "ParamEdit";
+      model: string;
+      param: string;
+      mode: ParamModeSpec;
+      min: number;
+      max: number;
+    } // edit a parameter
+  | { type: "BulkBypass"; ids: string[]; bypass: boolean } // bypass/enable blocks
+  | { type: "RelinkIr"; from: string; to: string } // relink an IR
+  | { type: "SetSic"; sicid: string; only_files?: string[] } // set the SIC
+  | { type: "SetBpm"; bpm: number } // set the BPM
+  | { type: "SetOnLoadMidi"; msgs: unknown[]; cap: number } // set on-load MIDI
+  | { type: "ApplyBlock"; template: BlockTemplate } // apply a block template
+  | { type: "FootswitchLayout"; ftsw: unknown; exp?: unknown }; // footswitch layout
+
+// ─── Rename + variants ────────────────────────────────────────────────────────
+
+/** Rename spec sent inside `{ spec: ... }` (mirrors lib::RenameSpecArg).
+ * serde tag="type", PascalCase. */
+export type RenameSpecArg =
+  | { type: "FindReplace"; from: string; to: string }
+  | { type: "Template"; pattern: string }
+  | { type: "Number"; width: number; start: number };
+
+/** One rename apply result (mirrors lib::RenameApplyRow). */
+export interface RenameApplyRow {
+  list_index: number;
+  new_name: string;
+  applied: boolean;
+  error: string | null;
+}
+
+/** One variant-recipe edit (mirrors lib::VariantEditArg). serde tag="type". */
+export type VariantEditArg =
+  | { type: "SetParam"; model: string; param: string; value: number }
+  | { type: "ReplaceBlock"; from: string; to: string }
+  | { type: "SetBpm"; bpm: number };
+
+/** A variant recipe sent inside `{ recipe: ... }` (mirrors lib::RecipeArg).
+ * Keys snake_case. */
+export interface RecipeArg {
+  name_suffix: string;
+  edits: VariantEditArg[];
+}
+
+// ─── Block templates ──────────────────────────────────────────────────────────
+
+/** A saved block template (mirrors blocklib::BlockTemplate). */
+export interface BlockTemplate {
+  name: string;
+  model: string;
+  params: Record<string, unknown>;
+}
+
+// ─── Spectral analysis + audition ─────────────────────────────────────────────
+
+/** Per-band energies + tonal flags for one preset (mirrors lib::SpectrumResult). */
+export interface SpectrumResult {
+  bands: number[];
+  flags: string[];
+}
+
+/** EQ-match result: source vs reference spectra + match deltas
+ * (mirrors lib::EqMatchResult). */
+export interface EqMatchResult {
+  source_bands: number[];
+  reference_bands: number[];
+  distance: number;
+  deltas: number[];
+  matched_bands: number[];
+}
+
+/** A candidate ranked by spectral distance to a target (mirrors spectrum::SicRank). */
+export interface SicRank {
+  sicid: string;
+  distance: number;
+}
+
+// ─── Loudness audit + migration ───────────────────────────────────────────────
+
+/** One loudness-audit finding (mirrors lint::Finding). */
+export interface Finding {
+  list_index: number;
+  rule: string;
+  message: string;
+}
+
+/** One preset affected by a firmware migration (mirrors lib::MigrationRow). */
+export interface MigrationRow {
+  list_index: number | null;
+  name: string;
+  affected_blocks: string[];
+}
+
+/** Classified catalog diff (mirrors migration::ClassifiedDiff). */
+export interface ClassifiedDiff {
+  renamed: [string, string][];
+  removed_only: string[];
+  added_only: string[];
+}
+
+/** One planned block swap (mirrors migration::Replacement). */
+export interface Replacement {
+  list_index: number;
+  from: string;
+  to: string;
+}
+
+/** Migration plan (mirrors lib::MigrationPlan). */
+export interface MigrationPlan {
+  classified: ClassifiedDiff;
+  plan: Replacement[];
+}
+
+/** One preset's migration-apply outcome (mirrors lib::MigrationApplyRow). */
+export interface MigrationApplyRow {
+  list_index: number;
+  swaps: number;
+  applied: boolean;
+  error: string | null;
+}
+
+// ─── Songs ────────────────────────────────────────────────────────────────────
+
+/**
+ * A song as read live from the device (Songs overview, read-only).
+ * `presets` is a per-song list of {slot, scene} references; when the live read
+ * does not populate per-song preset rows it is left undefined.
+ */
+export interface SongRecord {
+  slot: number;
+  name: string;
+  notes: string;
+  bpm: number;
+  bpm_active?: boolean;
+  presets?: { slot: number; scene: number }[];
+}
+
+/** A setlist as read live from the device (mirrors session::SetlistRecord). The
+ * device model is name-only; per-setlist song membership is a separate read
+ * (`list_setlist_songs` → ordered global song slots). */
+export interface SetlistRecord {
+  slot: number;
+  name: string;
+}
+
+/** Result of a batched song transaction (create_song_full / update_song_full):
+ * the fresh authoritative song list, the fresh membership of the requested
+ * setlist (create with add-to-setlist only), and the best-effort BPM warning
+ * (BPM is the unit's active-song tap tempo and can fail to settle — the song
+ * itself is kept). */
+export interface SongSaveOutcome {
+  songs: SongRecord[];
+  members: number[] | null;
+  bpm_warning: string | null;
+}
+
+// ─── LevelView — active preset signal graph (read_active_preset) ───────────────
+
+/** One node in the active preset's signal chain (mirrors session::GraphNode). */
+export interface GraphNode {
+  group_id: string;
+  node_id: string;
+  model: string;
+  bypassed: boolean;
+  /** CabSim block only: its primary cabinet id (`cabsimid`, e.g. `Mar1960aV30Alt`)
+   *  — the strip names the cab from this and expands a dual-cab into two parallel
+   *  tiles. Omitted (undefined) for non-cab nodes. */
+  cab_sim_id?: string;
+  /** The second cabinet id of a dual cab (`cab2simid`), when `cab_sim2_enabled`. */
+  cab_sim_id2?: string;
+  /** Whether this CabSim runs two cabinets in parallel (`cabsim2enabled`). */
+  cab_sim2_enabled?: boolean;
+}
+
+/** One ordered stage of the chain (mirrors session::Stage). A `series` run of
+ * blocks, or a `split` with two parallel lanes (each a series run) joined by a
+ * mix. The chain is an ordered `Stage[]`, so any number of sequential splits with
+ * series segments before/between/after is representable. */
+export type Stage =
+  | { kind: "series"; blocks: GraphNode[] }
+  | { kind: "split"; a: GraphNode[]; b: GraphNode[] };
+
+export interface InputLane {
+  type: "guitar" | "mic";
+  blocks: GraphNode[];
+}
+
+export interface OutputLane {
+  type: "out1" | "out2";
+  blocks: GraphNode[];
+}
+
+export interface InputPair {
+  a: InputLane;
+  b: InputLane;
+}
+
+export interface OutputPair {
+  a: OutputLane;
+  b: OutputLane;
+}
+
+export interface IndependentLane {
+  input: "guitar" | "mic";
+  output: "out1" | "out2";
+  blocks: GraphNode[];
+}
+
+/** The active (currently-loaded) preset's signal graph as read live from the
+ * device (mirrors session::ActiveGraph). Header fields are null until the live
+ * read populates them; `split_mix` is an opaque JSON payload. `stages` is the
+ * back-compat ordered view, while optional input/output/lanes fields let the
+ * strip render dual-input, split-output, and fully independent templates. */
+export interface ActiveGraph {
+  name: string | null;
+  slot: number | null;
+  template: string | null;
+  split_mix: unknown;
+  nodes: GraphNode[];
+  input_type?: "guitar" | "mic" | null;
+  output_type?: "out" | null;
+  inputs?: InputPair | null;
+  outputs?: OutputPair | null;
+  lanes?: IndependentLane[] | null;
+  stages: Stage[];
+}
+
+/** Combined connect result: firmware + active graph in one handshake (mirrors
+ * lib.rs ConnectResult). The graph is null when no preset is loaded or the
+ * handshake's field-3 stream was truncated before a complete audioGraph. */
+export interface ConnectResult {
+  firmware: string | null;
+  graph: ActiveGraph | null;
+}
+
+// Scene rows + the live scene come exclusively from the unit via the monitor events
+// below. The wire is 0-based with base = BASE_SCENE_SLOT.
+
+// ─── Live-sync monitor events (backend EMITS, frontend LISTENS) ────────────────
+// The persistent device monitor (src-tauri/src/monitor.rs) holds the device with a
+// dense ~250 ms heartbeat so the unit PUSHES its state changes (footswitch taps,
+// scene recalls, preset changes done ON THE HARDWARE) unsolicited; the backend
+// mirrors them as these Tauri events. App-initiated commands (loadScene/loadPreset)
+// route through the device-op gate, which pauses the monitor for the command's
+// duration; the resulting device state then comes back through the SAME event
+// stream (app-initiated and device-pushed share one stream). Payload keys are
+// camelCase (the backend serializes with `rename_all = "camelCase"`).
+
+/** `tmp://live-preset` — the active preset's identity, coalesced from PresetLoaded(11)
+ * + CurrentPresetInfoChanged(22). `listIndex` is the 0-based My-Presets list index
+ * (`PresetLoaded.presetSlot − 1`), or null when the active preset isn't a My-Presets
+ * slot (factory / song context) or before the first PresetLoaded push. */
+export interface LivePresetEvent {
+  listIndex: number | null;
+  name: string;
+  isDirty: boolean;
+  isFavorite: boolean;
+}
+
+/** The device's base scene slot on the wire: `loadScene`/`SceneLoaded`/`lastLoadedScene`
+ * address FS scenes as 0-based `scenes[]` indices (0..=7) and the base scene as the
+ * CONSTANT 8 — even for a preset with zero FS scenes (HW-proven; NOT scene count + 1). */
+export const BASE_SCENE_SLOT = 8;
+
+/** `tmp://live-scene` — the unit's current scene. Emitted by BOTH the SceneLoaded(102)
+ * echo (fast path — its embedded name is authoritative) and the field-3
+ * `lastLoadedScene` (authoritative index, same document as the scene rows); last-writer
+ * wins. `key` is `"base"` for the base scene (the wire's constant base slot), else the
+ * numeric 0-based FS scene index into `scenes[]`. `name` null if absent/truncated. */
+export interface LiveSceneEvent {
+  key: "base" | number;
+  name: string | null;
+}
+
+/** One row of `tmp://scene-list`. Row index = the 0-based wire sceneSlot. `fs` is the
+ * real assigned footswitch (1-based, from the preset's live `ftsw`); null when the
+ * scene has no active switch (the UI renders an em-dash). */
+export interface SceneListRow {
+  name: string;
+  fs: number | null;
+}
+
+/** `tmp://scene-list` — the ACTIVE preset's live scene rows. Canonical source: the
+ * field-3 preset JSON (`scenes[].sceneName` slot-ordered + `ftsw`, one document),
+ * which arrives on every device change AND in the connect handshake;
+ * sceneListResponse(125) is only a preset-switch top-up. Also returned by the
+ * `requestSceneList` command (a manual top-up). */
+export interface SceneListEvent {
+  scenes: SceneListRow[];
+}
+
+/** `tmp://signal-chain` — the active preset's signal graph from currentPresetDataChanged(3).
+ * Same shape as `read_active_preset` (`ActiveGraph`), so the existing chain renderer
+ * works unchanged whether the graph arrives via the command or the live push. */
+export type SignalChainEvent = ActiveGraph;
+
+/** `tmp://sync` — a device-push / (re)connect is in flight; the UI shows the neutral
+ * catching-up state until the first real state lands. */
+export interface SyncEvent {
+  syncing: boolean;
+}
+
+/** `tmp://leveling-lufs` — advisory live measured loudness (mirrors `lib::LiveLufsEvent`)
+ * streamed while a leveling capture runs. Reference-level loudness as the meter converges,
+ * NOT the final preset level; the run result row is the authoritative value. */
+export interface LiveLufsEvent {
+  lufs: number;
+}
+
+// ─── Device-backup fast library read (the Presets-tab two-phase load) ──────────
+
+/** One scene of a backup-read preset (mirrors `lib::SceneInfo`): name + 1-based
+ * footswitch tag (`null` when the scene has no footswitch). Same shape as the live
+ * `SceneListRow`, so backup-loaded and live scenes render identically. */
+export interface SceneInfo {
+  name: string;
+  fs: number | null;
+}
+
+/** An amp `outputLevel` leveling candidate (`lib::LevelBlockArg`, camelCase wire
+ * form) — the knob per-scene leveling drives. Extracted from the backup at startup
+ * so the run never needs a live block-discovery round-trip. */
+export interface AmpCandidate {
+  groupId: string;
+  nodeId: string;
+  parameterId: string;
+  value: number;
+}
+
+/** One preset from the backup DB (`lib::BackupPresetRow`). `scene_count` is `-1`
+ * when `presetJson` could not be parsed (rare — the DB doc is full plaintext). */
+export interface BackupPresetRow {
+  slot: number;
+  name: string;
+  scene_count: number;
+  scenes: SceneInfo[];
+  amp_candidates: AmpCandidate[];
+  /** Every block in the preset's audioGraph (`lib::BackupBlock`). Drives the
+   * per-preset CPU total + "blocks present in the selection" lists. */
+  blocks: BackupBlock[];
+  /** The preset's routed signal graph (`session::extract_active_graph` over the
+   * backup's full presetJson) — the SAME shape as the active read, so any preset's
+   * lanes/topology can render off the one backup. Empty (`stages: []`, `nodes: []`)
+   * when the row's presetJson couldn't be parsed. Drives the Copy feature. */
+  graph: ActiveGraph;
+  /** Block-acting footswitches (on/off + parameter change) with leveling-candidate
+   * params, from the same presetJson — drives the footswitch picker + preset-list
+   * tags for the whole library with no extra device read. Empty otherwise. */
+  footswitches: FootswitchInfo[];
+}
+
+/** One block in a backup preset's audioGraph roster (`lib::BackupBlock`). */
+export interface BackupBlock {
+  group_id: string;
+  node_id: string;
+  /** Exact (possibly suffixed, e.g. `ACD_HiwattDR103CanModCabIR`) model id. */
+  fender_id: string;
+}
+
+/** One saved block ("block preset") from the device store (`lib::SavedBlock`).
+ * Identity + cab config only — the saved `dspUnitParameters` live on the device and
+ * are applied live by `index` via `ReplaceNodeWithBlock`. */
+export interface SavedBlock {
+  fender_id: string;
+  /** Position in this model's saved list = the `ReplaceNodeWithBlock` index. */
+  index: number;
+  name: string;
+  favorite: boolean;
+  dual_cabs_enabled: boolean;
+  cab1_id: string;
+  cab2_id: string;
+}
+
+/** One user impulse-response slot on the device (`lib::UserIr`). */
+export interface UserIr {
+  name: string;
+  exists: boolean;
+}
+
+/** One preset's outcome from a live bulk-replace run (`lib::BulkReplaceItem`). */
+export interface BulkReplaceItem {
+  slot: number;
+  name: string;
+  outcome: "updated" | "skipped" | "error";
+  detail: string;
+}
+
+// ─── Copy blocks between presets (`copy_apply`) ───────────────────────────────
+// The save path of the Copy feature: per target preset, an ordered list of structural
+// ops applied LIVE on a held session (`session::{replace_node, insert_node,
+// remove_node}`), saved only when every op confirmed. Tagged enums match the Rust
+// serde (`#[serde(tag = "kind", rename_all = "snake_case")]`); the nested object keys
+// are camelCase because they cross `invoke` (Tauri → snake_case) like every arg key.
+
+/** The copied-in block for a Replace / Insert op (`lib::CopyRepl`). The frontend only
+ * ever sends `model` — the origin palette is built from the reference preset's node
+ * FenderIds, so a stock-model id is the faithful copy. (The backend also accepts `ir`
+ * / `saved`, used by no current caller.) */
+export interface CopyRepl {
+  kind: "model";
+  fenderId: string;
+}
+
+/** One structural op applied to a target preset (`lib::CopyOp`). `nodeId` / `group`
+ * address the existing block. An insert anchors BEFORE a FenderId (`beforeFenderId`,
+ * field-34 insertNode — field-2 is the block to insert AHEAD of); `beforeFenderId` null
+ * appends at the group end. */
+export type CopyOp =
+  | { kind: "replace"; group: string; nodeId: string; repl: CopyRepl }
+  | {
+      kind: "insert";
+      group: string;
+      beforeFenderId?: string | null;
+      repl: CopyRepl;
+    }
+  | { kind: "remove"; group: string; nodeId: string };
+
+/** One target preset's staged edits for `copy_apply` (`lib::CopyJob`). `listIndex` is
+ * the 0-based My-Presets index; `ops` is the ordered op list from `diffToOps`. */
+export interface CopyJob {
+  listIndex: number;
+  name: string;
+  ops: CopyOp[];
+}
+
+/** One preset's outcome from a `copy_apply` run (`lib::CopyApplyItem`). Like
+ * `BulkReplaceItem` plus the post-save signal graph, so the Copy view can patch its
+ * cached library in place (no re-scan) after a write — `graph` is omitted when the
+ * preset wasn't saved or its graph couldn't be read back. */
+export interface CopyApplyItem {
+  slot: number;
+  name: string;
+  outcome: "updated" | "skipped" | "error";
+  detail: string;
+  graph?: ActiveGraph;
+}
+
+/** One song→preset binding from the backup `SongPresets` table (`lib::SongPresetBinding`).
+ * `song_slot` = device song slot (1-based positional, aligns with the live song list's
+ * `slot`); `preset_slot` = bound preset's device slot (`UserPresets.slot`, = list index
+ * + 1). Read-only: which songs use a preset is set ON THE UNIT (Pro Control). */
+export interface SongPresetBinding {
+  song_slot: number;
+  preset_slot: number;
+}
+
+/** One setlist→song membership row (`lib::BackupSetlistSong`); `position` is the song's
+ * 1-based order within the setlist. */
+export interface BackupSetlistSong {
+  setlist_slot: number;
+  song_slot: number;
+  position: number;
+}
+
+/** Result of `read_library_via_backup` (`lib::BackupReadResult`) — the whole user
+ * library (every preset + its scenes) decoded from one ~22 s device backup.
+ * NOTE: wire is snake_case — `BackupReadResult` has NO `rename_all = "camelCase"`. */
+export interface BackupReadResult {
+  members: [string, number][];
+  db_bytes: number;
+  total_rows: number;
+  scene_mode: string;
+  presets: BackupPresetRow[];
+  /** Song→preset bindings; empty when the DB lacks `Songs`/`SongPresets`. */
+  song_presets: SongPresetBinding[];
+  /** Full `Songs` table (reuses the live read type); empty when the DB lacks it. */
+  songs: SongRecord[];
+  /** Full `Setlists` table (reuses the live read type); empty when the DB lacks it. */
+  setlists: SetlistRecord[];
+  /** `SetlistSongs` membership; empty when the DB lacks it. */
+  setlist_songs: BackupSetlistSong[];
+}
+
+/** `tmp://backup-progress` (`session::BackupProgress`) — drives the Presets-tab scan
+ * strip. `phase` is `"building"` (device assembling the archive, before chunks) or
+ * `"streaming"` (chunks arriving — `percent` is exact). */
+export interface BackupProgress {
+  phase: "building" | "streaming";
+  received: number;
+  total: number;
+  bytes: number;
+  total_bytes: number;
+  percent: number;
+  build_size: number;
+  build_ticks: number;
+}

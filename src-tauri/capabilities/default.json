@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for the TMP Companion window.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "log:default"
+  ]
+}

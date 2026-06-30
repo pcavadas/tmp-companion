@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-14 # the Rust crate is macOS-only (IOKit/CoreAudio)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install frontend dependencies
+        run: bun install
+
+      - name: Build frontend (also produces dist/ for tauri-build)
+        run: bun run build
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Frontend tests
+        run: bun run test
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  commitlint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: wagoid/commitlint-github-action@v6
