@@ -1,0 +1,3 @@
+# Every change requires review from the repo owner.
+# Auto-requests @pcavadas on all PRs; enforced by the "protect main" ruleset.
+* @pcavadas
