@@ -27,7 +27,9 @@ export interface PlaceBlocksProps {
   edit: EditMap;
   open: { slot: number; uid: string } | null;
   changedCount: number;
-  overSlots: number[];
+  /** Slots whose staged edit violates a firmware cap (CPU or a block-count rule) —
+   *  they block the save until fixed. */
+  blockedSlots: number[];
   saveBlocked: boolean;
   hint: string | null;
   backedUp: boolean;
@@ -52,7 +54,7 @@ export function PlaceBlocks({
   edit,
   open,
   changedCount,
-  overSlots,
+  blockedSlots,
   saveBlocked,
   hint,
   backedUp,
@@ -75,9 +77,9 @@ export function PlaceBlocks({
   const refGraph = useMemo(() => editGraphFromActive(from.graph), [from.graph]);
   const origin = useMemo(() => originBlocks(from.graph), [from.graph]);
 
-  const overSet = new Set(overSlots);
-  const showOver = onlyOver && overSlots.length > 0;
-  const visible = showOver ? targets.filter((s) => overSet.has(s)) : targets;
+  const blockedSet = new Set(blockedSlots);
+  const showOver = onlyOver && blockedSlots.length > 0;
+  const visible = showOver ? targets.filter((s) => blockedSet.has(s)) : targets;
 
   const saveDisabled = saveBlocked || !backedUp;
 
@@ -160,10 +162,10 @@ export function PlaceBlocks({
           }}
         >
           {showOver
-            ? `${String(visible.length)} over budget`
+            ? `${String(visible.length)} can't save`
             : `Editing ${String(targets.length)} preset${targets.length === 1 ? "" : "s"} — each keeps its own path`}
         </span>
-        {overSlots.length > 0 && (
+        {blockedSlots.length > 0 && (
           <span
             role="button"
             onClick={() => {
@@ -185,7 +187,7 @@ export function PlaceBlocks({
             }}
           >
             <Icon name="warn-tri" size={12} stroke={t.sevWarn} />
-            {String(overSlots.length)} over budget ·{" "}
+            {`${String(blockedSlots.length)} can't save`} ·{" "}
             {showOver ? "Show all" : "Show only these"}
           </span>
         )}
