@@ -1,17 +1,15 @@
 // Smoke + behavior tests for the design foundation (theme/ + ui/).
 //
-// Covers the light-only token set, the icon catalogs (Icon + the shared BlockArt
-// illustration engine), and the design-system primitives used by the app
-// (Select / Tag / Panel).
+// Covers the light-only token set and the icon catalogs (Icon + the shared
+// BlockArt illustration engine).
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { light, microLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
-import { Select, Tag, Panel } from "../ui/primitives";
 import type { ReactNode } from "react";
 
 function under(node: ReactNode) {
@@ -81,28 +79,5 @@ describe("icons — fuller catalogs", () => {
       <BlockArt icon="combo" tone="tweed" size={58} label={false} />,
     );
     expect(container.querySelector("svg")).not.toBeNull();
-  });
-});
-
-describe("primitives — mount + interaction", () => {
-  it("Select renders its control + options", () => {
-    under(<Select options={["A", "B"]} value="A" />);
-    expect(screen.getByRole("combobox")).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "B" })).toBeInTheDocument();
-  });
-
-  it("Tag renders its label", () => {
-    under(<Tag tone="warn">over</Tag>);
-    expect(screen.getByText("over")).toBeInTheDocument();
-  });
-
-  it("Panel renders title + body", () => {
-    under(
-      <Panel title="META">
-        <span>panel-body</span>
-      </Panel>,
-    );
-    expect(screen.getByText("META")).toBeInTheDocument();
-    expect(screen.getByText("panel-body")).toBeInTheDocument();
   });
 });

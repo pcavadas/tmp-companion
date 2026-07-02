@@ -210,31 +210,6 @@ export interface SampleInfo {
 
 // ─── Library ───────────────────────────────────────────────────────────────
 
-/** Per-preset facets (mirrors search::Facets). */
-export interface Facets {
-  name: string;
-  template: string;
-  preset_level: number | null;
-  blocks: string[];
-  amps: string[];
-  cabs: string[];
-  irs: string[];
-  sics: string[];
-}
-
-/** One ingested .preset file + its device reconciliation
- * (mirrors library::LibraryRecord). `decoded_json` is omitted on the wire;
- * `list_index` is null when unmatched/ambiguous (not writable);
- * `preset_id` is null when the preset has no stable identity (untaggable). */
-export interface LibraryRecord {
-  file_path: string;
-  display_name: string;
-  preset_id: string | null;
-  facets: Facets;
-  list_index: number | null;
-  list_enum: number;
-}
-
 /** Folder↔device reconciliation summary (mirrors library::ReconcileReport). */
 export interface ReconcileReport {
   matched: number;
@@ -257,45 +232,6 @@ export interface FilterArgs {
 
 // ─── Bulk run engine ──────────────────────────────────────────────────────────
 
-/** One changed field in a diff (mirrors backup::FieldChange). */
-export interface FieldChange {
-  pointer: string;
-  before: unknown;
-  after: unknown;
-}
-
-export type ChangeStatus = "changed" | "unchanged" | "skipped" | "error";
-
-/** Dry-run preview of one preset (mirrors bulkrun::DryRunEntry). */
-export interface DryRunEntry {
-  list_index: number;
-  display_name: string;
-  status: ChangeStatus;
-  changes: FieldChange[];
-  error: string | null;
-}
-
-/** Apply result for one preset (mirrors bulkrun::RunEntry). */
-export interface RunEntry {
-  list_index: number;
-  display_name: string;
-  changed: boolean;
-  verified: boolean;
-  error: string | null;
-  snapshot_path: string | null;
-}
-
-/** Before/after report of a bulk run (mirrors bulkrun::RunReport). */
-export interface RunReport {
-  entries: RunEntry[];
-}
-
-/** Result of `bulk_apply` (mirrors lib::BulkApplyResult). */
-export interface BulkApplyResult {
-  run_id: string;
-  report: RunReport;
-}
-
 /** Revert result for one preset (mirrors bulkrun::RevertEntry). */
 export interface RevertEntry {
   list_index: number;
@@ -303,62 +239,12 @@ export interface RevertEntry {
   error: string | null;
 }
 
-/** Set/offset/scale mode for a parameter edit. serde(tag="mode",
- * content="value", rename_all="lowercase") — mirrors bulk_cmd::ParamModeSpec. */
-export type ParamModeSpec =
-  | { mode: "set"; value: number }
-  | { mode: "offset"; value: number }
-  | { mode: "scale"; value: number };
-
-/** The enum-tagged bulk operation spec sent to bulk_dry_run / bulk_apply inside
- * `{ op: ... }`. serde tag = "type", PascalCase variant names (NO rename_all).
- * The lone LIVE op is ParamEdit (changeParameter); every other variant is an
- * OFFLINE re-import. Mirrors bulk_cmd::OpSpec. */
-export type OpSpec =
-  | {
-      type: "ParamEdit";
-      model: string;
-      param: string;
-      mode: ParamModeSpec;
-      min: number;
-      max: number;
-    } // edit a parameter
-  | { type: "BulkBypass"; ids: string[]; bypass: boolean } // bypass/enable blocks
-  | { type: "RelinkIr"; from: string; to: string } // relink an IR
-  | { type: "SetSic"; sicid: string; only_files?: string[] } // set the SIC
-  | { type: "SetBpm"; bpm: number } // set the BPM
-  | { type: "SetOnLoadMidi"; msgs: unknown[]; cap: number } // set on-load MIDI
-  | { type: "ApplyBlock"; template: BlockTemplate } // apply a block template
-  | { type: "FootswitchLayout"; ftsw: unknown; exp?: unknown }; // footswitch layout
-
-// ─── Rename + variants ────────────────────────────────────────────────────────
-
-/** Rename spec sent inside `{ spec: ... }` (mirrors lib::RenameSpecArg).
- * serde tag="type", PascalCase. */
-export type RenameSpecArg =
-  | { type: "FindReplace"; from: string; to: string }
-  | { type: "Template"; pattern: string }
-  | { type: "Number"; width: number; start: number };
-
 /** One rename apply result (mirrors lib::RenameApplyRow). */
 export interface RenameApplyRow {
   list_index: number;
   new_name: string;
   applied: boolean;
   error: string | null;
-}
-
-/** One variant-recipe edit (mirrors lib::VariantEditArg). serde tag="type". */
-export type VariantEditArg =
-  | { type: "SetParam"; model: string; param: string; value: number }
-  | { type: "ReplaceBlock"; from: string; to: string }
-  | { type: "SetBpm"; bpm: number };
-
-/** A variant recipe sent inside `{ recipe: ... }` (mirrors lib::RecipeArg).
- * Keys snake_case. */
-export interface RecipeArg {
-  name_suffix: string;
-  edits: VariantEditArg[];
 }
 
 // ─── Block templates ──────────────────────────────────────────────────────────
@@ -408,26 +294,6 @@ export interface MigrationRow {
   list_index: number | null;
   name: string;
   affected_blocks: string[];
-}
-
-/** Classified catalog diff (mirrors migration::ClassifiedDiff). */
-export interface ClassifiedDiff {
-  renamed: [string, string][];
-  removed_only: string[];
-  added_only: string[];
-}
-
-/** One planned block swap (mirrors migration::Replacement). */
-export interface Replacement {
-  list_index: number;
-  from: string;
-  to: string;
-}
-
-/** Migration plan (mirrors lib::MigrationPlan). */
-export interface MigrationPlan {
-  classified: ClassifiedDiff;
-  plan: Replacement[];
 }
 
 /** One preset's migration-apply outcome (mirrors lib::MigrationApplyRow). */

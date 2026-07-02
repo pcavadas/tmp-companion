@@ -8,7 +8,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Dialog, DialogBody, DialogFooter } from "./Dialog";
 import { Icon, type IconName } from "./Icon";
 import { useTheme, useStyles } from "../theme/ThemeContext";
-import { microLabel, plainInput } from "../theme/tokens";
+import { plainInput } from "../theme/tokens";
 
 // ===========================================================================
 // Button — primary (ink fill / bg text), inverse alias, ghost (bordered), warn.
@@ -91,77 +91,6 @@ export function Button({
 // ===========================================================================
 // Slider — labeled range + mono numeric readout (Level rail target/headroom).
 // ===========================================================================
-
-export interface SliderProps {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  onChange: (v: number) => void;
-  /** Format the mono readout (e.g. (v) => v.toFixed(1)). Defaults to String. */
-  format?: (v: number) => string;
-}
-
-export function Slider({
-  label,
-  value,
-  min,
-  max,
-  step = 0.1,
-  onChange,
-  format,
-}: SliderProps) {
-  const { t } = useTheme();
-  const readout = (format ?? String)(value);
-  const pct = ((value - min) / (max - min)) * 100;
-  return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-          marginBottom: 6,
-        }}
-      >
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsMicro,
-            color: t.mutedInk,
-            letterSpacing: t.lsLabel,
-            textTransform: "uppercase",
-          }}
-        >
-          {label}
-        </span>
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsData,
-            color: t.ink,
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {readout}
-        </span>
-      </div>
-      <input
-        className="ds-slider-input"
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => {
-          onChange(parseFloat(e.target.value));
-        }}
-        style={{ width: "100%", "--fill": `${String(pct)}%` } as CSSProperties}
-      />
-    </div>
-  );
-}
 
 // ===========================================================================
 // Modal — destructive-confirm shell: warn kicker + serif headline + mono code
@@ -528,103 +457,6 @@ export function SearchInput({
           <Icon name="x" size={13} stroke={t.faint} />
         </span>
       )}
-    </div>
-  );
-}
-
-// ---- Select ----------------------------------------------------------------
-export interface SelectProps {
-  options: string[];
-  value?: string;
-  onChange?: (v: string) => void;
-  style?: CSSProperties;
-}
-
-export function Select({ options, value, onChange, style }: SelectProps) {
-  const { t } = useTheme();
-  return (
-    <div style={{ position: "relative", ...style }}>
-      <select
-        value={value}
-        onChange={(e) => onChange?.(e.target.value)}
-        style={{
-          width: "100%",
-          appearance: "none",
-          WebkitAppearance: "none",
-          padding: "7px 28px 7px 10px",
-          background: t.bg,
-          color: t.ink,
-          border: `0.5px solid ${t.hairline}`,
-          borderRadius: t.rMd,
-          fontFamily: t.sans,
-          fontSize: t.fsUi,
-          cursor: "pointer",
-          outline: "none",
-        }}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-      <span
-        style={{
-          position: "absolute",
-          right: 9,
-          top: "50%",
-          transform: "translateY(-50%)",
-          pointerEvents: "none",
-          color: t.mutedInk,
-          display: "inline-flex",
-        }}
-      >
-        <Icon name="arrow-down" size={12} stroke="currentColor" />
-      </span>
-    </div>
-  );
-}
-
-// ---- Tag -------------------------------------------------------------------
-export interface TagProps {
-  children: ReactNode;
-  tone?: "muted" | "accent" | "warn";
-}
-
-export function Tag({ children, tone = "muted" }: TagProps) {
-  const { t } = useTheme();
-  const color =
-    tone === "accent" ? t.accent : tone === "warn" ? t.warn : t.mutedInk;
-  return (
-    <span style={{ ...microLabel(t), letterSpacing: t.lsTag, color }}>
-      {children}
-    </span>
-  );
-}
-
-// ---- Panel -----------------------------------------------------------------
-export interface PanelProps {
-  title?: ReactNode;
-  children: ReactNode;
-  padded?: boolean;
-  style?: CSSProperties;
-}
-
-export function Panel({ title, children, padded = true, style }: PanelProps) {
-  const { t } = useTheme();
-  return (
-    <div
-      style={{
-        border: `0.5px solid ${t.hairline}`,
-        borderRadius: t.rMd,
-        overflow: "hidden",
-        ...style,
-      }}
-    >
-      {title && (
-        <div style={{ ...microLabel(t), padding: "10px 12px 0" }}>{title}</div>
-      )}
-      <div style={{ padding: padded ? 12 : 0 }}>{children}</div>
     </div>
   );
 }
