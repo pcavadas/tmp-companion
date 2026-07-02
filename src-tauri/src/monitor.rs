@@ -561,6 +561,9 @@ fn monitor_loop(
             );
         }));
         if outcome.is_err() {
+            // A panic between emit_sync(true) and emit_sync(false) would strand the UI
+            // in the syncing state; clear it on recovery (idempotent when already false).
+            emit_sync(&app, false);
             log::error!("monitor: loop iteration panicked — recovered; monitor stays alive");
             graph_retries = 0;
             sleep(RECONNECT_BACKOFF_MS);
