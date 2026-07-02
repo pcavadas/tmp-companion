@@ -207,15 +207,14 @@ fn apply_one(
 
     // 3) AC2 — snapshot the pre-edit state BEFORE writing, so a write failure (or a
     // later preset's failure) still leaves this one revertible.
-    let snap = PresetSnapshot {
-        list_enum: t.list_enum,
-        slot: t.list_index,
-        display_name: t.display_name.clone(),
-        captured_at: now_stamp(),
-        source: t.source.clone(),
-        preset_json: t.before_json.clone(),
-    };
-    match backup::save_snapshot_to_dir(backup_dir, &snap) {
+    match save_pre_write_snapshot(
+        backup_dir,
+        t.list_enum,
+        t.list_index,
+        &t.display_name,
+        &t.source,
+        &t.before_json,
+    ) {
         Ok(p) => e.snapshot_path = Some(p),
         Err(err) => {
             e.error = Some(format!("snapshot: {err}"));
@@ -291,13 +290,35 @@ pub fn revert(report: &RunReport, io: &mut dyn PresetIo) -> Vec<RevertEntry> {
 /// Zero-padded epoch-millis stamp for the snapshot filename. Opaque/non-load-bearing
 /// (the snapshot contract only uses it for ordering/naming), and zero-padding keeps
 /// the lexical sort in `backup::list_snapshots_in_dir` chronological.
-fn now_stamp() -> String {
+pub(crate) fn now_stamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!("{ms:020}")
+}
+
+/// Build + persist a preset's pre-edit snapshot (AC2) — the ONE source of the snapshot
+/// shape, shared by [`apply_one`] and migration's direct-write path so the format can't
+/// drift out of what `backup::list_snapshots_in_dir` expects. `Err` ⇒ DO NOT WRITE.
+pub(crate) fn save_pre_write_snapshot(
+    dir: &Path,
+    list_enum: u32,
+    slot: u32,
+    display_name: &str,
+    source: &str,
+    preset_json: &str,
+) -> Result<PathBuf, String> {
+    let snap = PresetSnapshot {
+        list_enum,
+        slot,
+        display_name: display_name.to_string(),
+        captured_at: now_stamp(),
+        source: source.to_string(),
+        preset_json: preset_json.to_string(),
+    };
+    backup::save_snapshot_to_dir(dir, &snap)
 }
 
 #[cfg(test)]

@@ -1535,11 +1535,11 @@ pub fn probe_insert_map(
     s.send_and_collect(&proto::connection_request(), 80)?;
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
-    let attached = s.await_active_preset(&name, 8);
-    let loaded = s.loaded_slot();
-    if loaded != Some(list_index) && !(loaded.is_none() && attached) {
+    let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
+    if !s.active_matches(list_index, Some(&name)) {
         return Err(format!(
-            "could not confirm slot {device_slot} loaded (loaded={loaded:?}, active={:?})",
+            "could not confirm slot {device_slot} loaded (loaded={:?}, active={:?})",
+            s.loaded_slot(),
             s.active_preset_name()
         ));
     }
@@ -1619,19 +1619,17 @@ fn held_insert_one(
     s.send_and_collect(&proto::connection_request(), 80)?;
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
-    let attached = s.await_active_preset(name, 8);
-    // SAFETY — confirm the held session re-attached to the TARGET preset (prefer the
-    // PresetLoaded slot echo; fall back to the active name) before editing/saving.
-    let loaded = s.loaded_slot();
-    let slot_ok = loaded == Some(list_index);
-    let name_ok = loaded.is_none() && !name.is_empty() && attached;
-    if !slot_ok && !name_ok {
+    let _ = s.await_active_preset(name, 8); // pump for the fresh currentPresetInfoChanged
+    // SAFETY — confirm the held session re-attached to the TARGET preset (active_matches
+    // prefers the PresetLoaded slot echo, falling back to the active name) before editing.
+    if !s.active_matches(list_index, Some(name)) {
         return Ok(BulkReplaceItem {
             slot: list_index,
             name: name.to_string(),
             outcome: "error".to_string(),
             detail: format!(
-                "could not confirm target preset loaded (slot {loaded:?} ≠ {list_index}, active {:?} ≠ {name:?}) — not edited",
+                "could not confirm target preset loaded (slot {:?} ≠ {list_index}, active {:?} ≠ {name:?}) — not edited",
+                s.loaded_slot(),
                 s.active_preset_name()
             ),
         });
@@ -2623,18 +2621,14 @@ fn replace_one_live(
     // `PresetLoaded` slot echo (identity); fall back to the active-preset NAME. If
     // NEITHER confirms (empty/duplicate name + no slot echo), SKIP — editing+saving an
     // unverified preset would corrupt this slot.
-    let loaded = s.loaded_slot();
-    let slot_ok = loaded == Some(list_index);
-    let name_ok = loaded.is_none()
-        && !name.is_empty()
-        && s.active_preset_name().as_deref() == Some(name.as_str());
-    if !slot_ok && !name_ok {
+    if !s.active_matches(list_index, Some(&name)) {
         return Ok(BulkReplaceItem {
             slot: list_index,
             name: name.clone(),
             outcome: "error".to_string(),
             detail: format!(
-                "could not confirm target preset (slot {loaded:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
+                "could not confirm target preset (slot {:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
+                s.loaded_slot(),
                 s.active_preset_name()
             ),
         });
@@ -2715,23 +2709,20 @@ fn held_replace_one(
     s.send_and_collect(&proto::connection_request(), 80)?;
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
-    let attached = s.await_active_preset(&name, 8);
+    let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
     // SAFETY 1 — confirm the held session re-attached to the TARGET preset before
     // editing+saving (a load that didn't take leaves a DIFFERENT preset active, and
-    // saving it corrupts this slot — HW). Prefer the `PresetLoaded` echo's
-    // SLOT (identity, immune to duplicate display names); fall back to the active-preset
-    // NAME only when no slot echo arrived. If NEITHER confirms (empty/duplicate name +
-    // no slot echo), SKIP — never edit an unverified preset.
-    let loaded = s.loaded_slot();
-    let slot_ok = loaded == Some(list_index);
-    let name_ok = loaded.is_none() && !name.is_empty() && attached;
-    if !slot_ok && !name_ok {
+    // saving it corrupts this slot — HW). active_matches prefers the `PresetLoaded` slot
+    // echo (identity, immune to duplicate display names), falling back to the active
+    // preset NAME only when no slot echo arrived; if NEITHER confirms, SKIP.
+    if !s.active_matches(list_index, Some(&name)) {
         return Ok(BulkReplaceItem {
             slot: list_index,
             name: name.clone(),
             outcome: "error".to_string(),
             detail: format!(
-                "could not confirm target preset loaded on held session (slot {loaded:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
+                "could not confirm target preset loaded on held session (slot {:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
+                s.loaded_slot(),
                 s.active_preset_name()
             ),
         });
@@ -2889,19 +2880,18 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     s.send_and_collect(&proto::connection_request(), 80)?;
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
-    let attached = s.await_active_preset(&name, 8);
+    let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
     // SAFETY — confirm the held session re-attached to the TARGET preset before
-    // editing/saving (prefer the PresetLoaded slot echo; fall back to the active name).
-    let loaded = s.loaded_slot();
-    let slot_ok = loaded == Some(list_index);
-    let name_ok = loaded.is_none() && !name.is_empty() && attached;
-    if !slot_ok && !name_ok {
+    // editing/saving (active_matches prefers the PresetLoaded slot echo, falling back to
+    // the active name only when no slot echo arrived).
+    if !s.active_matches(list_index, Some(&name)) {
         return Ok(CopyApplyItem {
             slot: list_index,
             name: name.clone(),
             outcome: "error".to_string(),
             detail: format!(
-                "could not confirm target preset loaded on held session (slot {loaded:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
+                "could not confirm target preset loaded on held session (slot {:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
+                s.loaded_slot(),
                 s.active_preset_name()
             ),
             graph: None,
@@ -5041,7 +5031,22 @@ pub(crate) fn replace_inplace_core(
     // 3) Land it on the original slot. The session layer translates these 0-based
     // list indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
     Session::connect()?.load_preset(scratch_slot)?; // scratch becomes current (persists across reconnect)
-    Session::connect()?.save_current_preset(orig_list_index)?; // overwrite the original slot in place
+    // Fresh connection re-attaches to the now-current preset; CONFIRM it is the scratch
+    // copy BEFORE saving it over the (real, irreplaceable) original slot. A dropped load
+    // would leave a DIFFERENT preset current, and saving that over orig_list_index is
+    // silent data loss — so the guard lives in the SAME connection as the mutation. On
+    // failure ABORT before the save (and before the clear), leaving the scratch import on
+    // the device for manual recovery.
+    let mut save_conn = Session::connect()?;
+    save_conn
+        .confirm_active(scratch_slot, Some(&scratch_name))
+        .map_err(|e| {
+            format!(
+                "{e}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
+                 the original slot {orig_list_index} was NOT modified."
+            )
+        })?;
+    save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
     guarded_clear(scratch_slot, &scratch_name)?; // remove the scratch copy (guarded)
 
     // 4) Re-read and confirm slot / Song-link survival. Settle first: clear/save are
@@ -7496,10 +7501,20 @@ async fn rename_save_preset(
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         let mut s = Session::connect()?;
+        // Capture the target's CURRENT name so conn2 can confirm the right preset is
+        // active before renaming+saving it — a dropped load would otherwise rename+save
+        // a DIFFERENT preset over this slot.
+        let name_before = s
+            .list_my_presets()?
+            .into_iter()
+            .find(|p| p.slot == list_index)
+            .map(|p| p.name)
+            .ok_or_else(|| format!("rename target list index {list_index} out of range"))?;
         s.load_preset(list_index)?;
         drop(s);
         std::thread::sleep(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
         let mut s = Session::connect()?;
+        s.confirm_active(list_index, Some(&name_before))?;
         s.rename_current_preset(&name)?;
         s.save_current_preset(list_index)
     })
@@ -9791,17 +9806,17 @@ async fn bulk_rename(
         rename_rows(lib, &selection, &spec.to_spec())
     };
     // Only valid, changed, matched rows are applied.
-    let jobs: Vec<(u32, String)> = rows
+    let jobs: Vec<(u32, String, String)> = rows
         .into_iter()
         .filter(|r| r.note.is_none())
-        .filter_map(|r| r.list_index.map(|i| (i, r.new_name)))
+        .filter_map(|r| r.list_index.map(|i| (i, r.name, r.new_name)))
         .collect();
     if jobs.is_empty() {
         return Err("nothing to rename (all rows unchanged or invalid)".into());
     }
     with_released_seize(state.session.clone(), move || {
         let mut out = Vec::new();
-        for (idx, new_name) in jobs {
+        for (idx, name_before, new_name) in jobs {
             let mut row = RenameApplyRow {
                 list_index: idx,
                 new_name: new_name.clone(),
@@ -9810,7 +9825,13 @@ async fn bulk_rename(
             };
             let res = (|| -> Result<(), String> {
                 let mut s = Session::connect()?;
-                s.load_preset(idx)?; // make it current
+                // Load (accumulating the PresetLoaded echo) then CONFIRM the target is
+                // active before renaming+saving — a dropped load would otherwise
+                // rename+save the WRONG preset over this slot (same fix as the
+                // single-preset rename_save_preset path).
+                s.clear_raw();
+                s.send_and_collect(&proto::load_preset((idx + 1) as u64, 1), 200)?;
+                s.confirm_active(idx, Some(&name_before))?;
                 s.rename_current_preset(&new_name)?;
                 s.save_current_preset(idx)?; // persist (rename = save-under-new-name)
                 Ok(())
@@ -10122,6 +10143,28 @@ struct MigrationApplyRow {
     error: Option<String>,
 }
 
+/// Snapshot a preset's pre-edit JSON before an in-place migration write, so a mid-run
+/// failure still leaves it revertible (bulkrun's AC2 discipline, which `migration_apply`
+/// bypasses by calling `replace_inplace_core` directly). `Err` ⇒ DO NOT WRITE. `source`
+/// is `"offline-file"`: migration edits a complete `.preset` from the offline library.
+fn snapshot_before_migrate(
+    backup_dir: &std::path::Path,
+    list_index: u32,
+    display_name: &str,
+    before_json: &str,
+) -> Result<std::path::PathBuf, String> {
+    // list_enum 1 = My Presets; source "offline-file" = migration edits a complete
+    // `.preset` from the offline library.
+    bulkrun::save_pre_write_snapshot(
+        backup_dir,
+        1,
+        list_index,
+        display_name,
+        "offline-file",
+        before_json,
+    )
+}
+
 /// Apply the migration plan: per affected preset, swap each renamed block
 /// (Block Replace defaults) and re-import OFFLINE in place. `dry_run` previews the swap
 /// counts without writing (HW-pending — device write gated by the read-only policy).
@@ -10130,10 +10173,11 @@ async fn migration_apply(
     target_catalog: Vec<String>,
     rename_map: std::collections::BTreeMap<String, String>,
     dry_run: bool,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<MigrationApplyRow>, String> {
-    // Build the plan + each affected preset's edited bytes under the lock.
-    let mut jobs: Vec<(u32, usize, Vec<u8>)> = Vec::new();
+    // Build the plan + each affected preset's (original json, edited bytes) under the lock.
+    let mut jobs: Vec<(u32, String, usize, String, Vec<u8>)> = Vec::new();
     {
         let guard = state.library.lock().unwrap();
         let lib = guard.as_ref().ok_or("no library imported")?;
@@ -10148,8 +10192,9 @@ async fn migration_apply(
             let Some(rec) = lib.records.iter().find(|r| r.list_index == Some(li)) else {
                 continue;
             };
+            let before_json = rec.decoded_json.clone();
             let mut v: serde_json::Value =
-                serde_json::from_str(&rec.decoded_json).map_err(|e| e.to_string())?;
+                serde_json::from_str(&before_json).map_err(|e| e.to_string())?;
             let swaps: usize = reps
                 .iter()
                 .map(|r| migration::apply_replacement(&mut v, r))
@@ -10159,17 +10204,36 @@ async fn migration_apply(
                     .map_err(|e| e.to_string())?
                     .as_bytes(),
             );
-            jobs.push((li, swaps, bytes));
+            jobs.push((li, rec.display_name.clone(), swaps, before_json, bytes));
         }
     }
-    let mut rows = Vec::with_capacity(jobs.len());
-    for (li, swaps, bytes) in jobs {
-        if dry_run {
-            rows.push(MigrationApplyRow {
+    // Dry run — preview the swap counts without touching the device or a backup.
+    if dry_run {
+        return Ok(jobs
+            .into_iter()
+            .map(|(li, _name, swaps, _before, _bytes)| MigrationApplyRow {
                 list_index: li,
                 swaps,
                 applied: false,
                 error: None,
+            })
+            .collect());
+    }
+    // A write must be revertible: snapshot each preset's pre-edit state before its
+    // in-place re-import (bulkrun's AC2, which migration bypasses by calling
+    // replace_inplace_core directly). Resolve the backups dir once up front so a whole
+    // run refuses rather than writing the first preset unbacked.
+    let backup_dir = backup::backups_dir(&app)?;
+    let mut rows = Vec::with_capacity(jobs.len());
+    for (li, display_name, swaps, before_json, bytes) in jobs {
+        // AC2 — snapshot before writing; refuse the write if it fails (no backup = not
+        // revertible). Uses the ORIGINAL decoded_json, not the edited bytes.
+        if let Err(e) = snapshot_before_migrate(&backup_dir, li, &display_name, &before_json) {
+            rows.push(MigrationApplyRow {
+                list_index: li,
+                swaps,
+                applied: false,
+                error: Some(format!("snapshot: {e} — NOT written (kept revertible)")),
             });
             continue;
         }
@@ -12402,5 +12466,81 @@ mod copy_level_e2e_tests {
             !ev.contains(&SimEvent::Saved(6)),
             "rejected target B must NOT save: {ev:?}"
         );
+    }
+
+    // ── PR2: confirm-before-save write safety (Session::confirm_active) ──
+
+    #[test]
+    fn confirm_active_ok_when_slot_echo_matches() {
+        // A load the device echoed (PresetLoaded) confirms via the SLOT identity.
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.send_and_collect(&crate::proto::load_preset(6, 1), 50)
+            .unwrap(); // dev slot 6 = 0-based list index 5
+        assert!(
+            s.confirm_active(5, None).is_ok(),
+            "slot echo should confirm: loaded={:?}",
+            s.loaded_slot()
+        );
+        s.save_current_preset(5).unwrap();
+        assert!(sim.events().iter().any(|e| matches!(e, SimEvent::Saved(5))));
+    }
+
+    #[test]
+    fn confirm_active_errs_and_blocks_save_when_load_dropped() {
+        // No PresetLoaded echo and no matching active name (a dropped load) ⇒ confirm
+        // errs, and a caller using `?` never reaches the save (no wrong-content write).
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let attempt = |s: &mut Session| -> Result<(), String> {
+            s.confirm_active(7, Some("Target"))?;
+            s.save_current_preset(7)?; // MUST NOT run
+            Ok(())
+        };
+        assert!(attempt(&mut s).is_err(), "unconfirmed load must not save");
+        assert!(
+            !sim.events().iter().any(|e| matches!(e, SimEvent::Saved(_))),
+            "no save on an unconfirmed load: {:?}",
+            sim.events()
+        );
+    }
+
+    #[test]
+    fn confirm_active_errs_when_a_different_preset_is_active() {
+        // The device says a DIFFERENT slot is active — a possibly-duplicate name must not
+        // override the contradicting slot echo, so confirm errs (never edit the wrong one).
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.send_and_collect(&crate::proto::load_preset(4, 1), 50)
+            .unwrap(); // dev slot 4 = 0-based list index 3
+        assert!(
+            s.confirm_active(5, Some("Target")).is_err(),
+            "slot 3 active but target 5 — must not confirm"
+        );
+    }
+
+    // ── PR2: migration snapshot-before-write (AC2) ──
+
+    #[test]
+    fn migration_refuses_to_snapshot_into_an_unwritable_dir() {
+        // A path whose parent is not a directory ⇒ the snapshot fails; migration_apply
+        // then skips the write and keeps the preset revertible.
+        let bad = std::path::Path::new("/dev/null/tmp-companion-cannot-mkdir");
+        let r = super::snapshot_before_migrate(bad, 3, "Cliff", r#"{"info":{"preset_id":"x"}}"#);
+        assert!(r.is_err(), "unwritable backup dir must refuse: {r:?}");
+    }
+
+    #[test]
+    fn migration_snapshot_captures_the_pre_edit_json() {
+        let dir = std::env::temp_dir()
+            .join(format!("tmp-companion-migsnap-{}", crate::bulkrun::now_stamp()));
+        let before = r#"{"info":{"preset_id":"abc","displayName":"Cliff"}}"#;
+        let p = super::snapshot_before_migrate(&dir, 3, "Cliff", before).unwrap();
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            content.contains("abc"),
+            "snapshot must carry the pre-edit json: {content}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
