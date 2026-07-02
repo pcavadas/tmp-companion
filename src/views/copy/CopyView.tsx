@@ -9,7 +9,7 @@
 import { useMemo, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { AlertBanner, Button } from "../../ui/primitives";
+import { LoadErrorPane } from "../LoadErrorPane";
 import { slotLabel } from "../../lib/format";
 import { copyApply } from "../../lib/invoke";
 import { patchLibraryGraph } from "../level/libraryScan";
@@ -283,17 +283,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
 
   if (lib.error != null) {
     return (
-      <div style={{ padding: 28 }}>
-        <AlertBanner style={{ marginBottom: 14 }}>{lib.error}</AlertBanner>
-        <Button
-          variant="primary"
-          onClick={() => {
-            void lib.refresh();
-          }}
-        >
-          Try again
-        </Button>
-      </div>
+      <LoadErrorPane message={lib.error} onRetry={() => void lib.refresh()} />
     );
   }
 

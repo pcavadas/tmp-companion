@@ -6,8 +6,10 @@
 //
 // The list is a SCENE TREE: each preset row is a parent of its scenes (Base + each
 // footswitch scene). The row checkbox selects the whole preset, the caret reveals the
-// scenes for individual selection, and clicking the row body RECALLS the preset on the
-// unit. The setup dialog only configures (instrument + target) what the list picked;
+// scenes for individual selection, and clicking the row body toggles that preset's
+// selection (it does NOT recall the preset on the unit — app-driven recall was removed;
+// recall is owned by Pro Control / the footswitches). The setup dialog only configures
+// (instrument + target) what the list picked;
 // its footer's backup acknowledgment gates the "Level" commit.
 //
 // HARD RULES: every device WRITE (leveling save) fires only after the backup
@@ -17,7 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { AlertBanner, Button } from "../../ui/primitives";
+import { LoadErrorPane } from "../LoadErrorPane";
 import { usePresetData } from "./usePresetData";
 import { useLiveDevice } from "./useLiveDevice";
 import { useLevelingFlow } from "./useLevelingFlow";
@@ -284,17 +286,7 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
 
   if (phase.kind === "error") {
     return (
-      <div style={{ padding: 28 }}>
-        <AlertBanner style={{ marginBottom: 14 }}>{phase.message}</AlertBanner>
-        <Button
-          variant="primary"
-          onClick={() => {
-            void refresh();
-          }}
-        >
-          Try again
-        </Button>
-      </div>
+      <LoadErrorPane message={phase.message} onRetry={() => void refresh()} />
     );
   }
 

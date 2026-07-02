@@ -3,7 +3,8 @@
 // Filter row → background scene-scan strip → select-all header → scrollable rows.
 // Each PRESET row is a parent of its scenes: the caret reveals Base + footswitch
 // scenes (each independently selectable); the row checkbox selects/clears the WHOLE
-// preset; clicking the row body RECALLS the preset on the unit. Selection is a flat
+// preset; clicking the row body toggles its selection (NOT a recall — app-driven recall
+// was removed; see PresetRow). Selection is a flat
 // set of scene KEYS owned by usePresetData.
 //
 // Two-phase load: rows paint instantly from the snapshot; each preset's scenes (and
