@@ -31,6 +31,10 @@
 //!   probe --measure-adaptive <slot> <topology>
 //!                                  DEVICE A/B: full-capture vs adaptive-capture LUFS +
 //!                                  timings on one preset (the RE-BASELINE decision aid)
+//!   probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]
+//!                                  DEVICE A/B: measure_c per preset with two stimuli →
+//!                                  C/spread/ΔC table (playing-style sensitivity; capture
+//!                                  a real DI clip for one side via --capture-input)
 //!   probe --measure-prefix-sweep <wav>
 //!                                  NO-DEVICE: integrated LUFS over 0.5..6s prefixes vs full
 //!   probe --measure-converge-replay <wav> <eps_lu> <stable_k> <preroll_ms>
@@ -1434,6 +1438,33 @@ fn main() {
         }
         eprintln!("[probe] A/B full vs adaptive capture slot {slot} topology={topology}…");
         match tmp_companion_lib::probe_measure_adaptive(slot, &topology) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--stim-ab") {
+        // --stim-ab <slots_csv> <wavA> <wavB> [ref=0.5]  (DEVICE A/B: two stimuli per preset)
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let slots: Vec<u32> = slots_csv
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        let wav_a = args.get(i + 2).cloned().unwrap_or_default();
+        let wav_b = args.get(i + 3).cloned().unwrap_or_default();
+        let ref_level: f32 = args.get(i + 4).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        if slots.is_empty() || wav_a.is_empty() || wav_b.is_empty() {
+            eprintln!("usage: probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]");
+            std::process::exit(2);
+        }
+        eprintln!("[probe] stimulus A/B on {} preset(s)…", slots.len());
+        match tmp_companion_lib::probe_stim_ab(&slots, &wav_a, &wav_b, ref_level) {
             Ok(r) => {
                 print!("{r}");
                 return;

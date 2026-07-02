@@ -246,6 +246,8 @@ function mockLevelingFixture(
     spreadLu?: number;
     verifyByEar?: boolean;
     footswitch?: boolean;
+    /** Put an envelope filter in the preset's block roster (the "envelope" cause). */
+    envelopeBlock?: boolean;
   } = {},
 ) {
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
@@ -280,7 +282,15 @@ function mockLevelingFixture(
                 { name: "Rhythm", fs: 1 },
                 { name: "Lead", fs: 2 },
               ],
-              blocks: [],
+              blocks: opts.envelopeBlock
+                ? [
+                    {
+                      group_id: "pedals",
+                      node_id: "env0",
+                      fender_id: "ACD_MicroTronIV",
+                    },
+                  ]
+                : [],
               footswitches: opts.footswitch ? [SOLO_FOOTSWITCH] : [],
             },
           ],
@@ -598,6 +608,34 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(
       screen.getByText(
         /worth a quick listen — parallel amps balanced by approximate isolation\./i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();
+  });
+
+  it("envelope-filter preset → 'by ear' with the envelope reason, beating dynamic", async () => {
+    // High spread AND an envelope block: the envelope cause must WIN (it questions the
+    // measurement itself), so the footnote names it and the dynamic reason is absent.
+    mockLevelingFixture({ spreadLu: 8.2, envelopeBlock: true });
+    renderView(true);
+    const user = userEvent.setup();
+    await selectBaseOnly(user);
+    await user.click(
+      await screen.findByRole("button", { name: /level 1 preset/i }),
+    );
+    await ackBackup(user);
+    await user.click(
+      await screen.findByRole("button", { name: /level 1 sound/i }),
+    );
+    expect(
+      await screen.findByText("All 1 sound leveled", undefined, {
+        timeout: 3000,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("by ear").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        /worth a quick listen — an envelope filter responds to the test signal differently than to real playing\./i,
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/loud\/quiet swings/i)).toBeNull();

@@ -279,10 +279,12 @@ export interface RunItem {
   value?: number | null;
   /** Dynamics spread of the measure capture (LU); drives the "dynamic" by-ear cause. */
   spreadLu?: number | null;
-  /** Cause of the "verify by ear" marker (undefined = no flag): `dynamic` = peaks ride
+  /** Cause of the "verify by ear" marker (undefined = no flag): `envelope` = the preset
+   *  contains an envelope-follower effect, which tracks the synthetic stimulus differently
+   *  than real playing (the measurement itself is suspect); `dynamic` = peaks ride
    *  above the gated average; `rebalance` = shallow lane-mute isolation made the parallel
    *  balance approximate. Resolved to a single cause when the RunItem is built. */
-  verifyByEar?: "dynamic" | "rebalance";
+  verifyByEar?: "envelope" | "dynamic" | "rebalance";
 }
 
 /** Turn a checked setup row into a run item with its resolved instrument + target. */

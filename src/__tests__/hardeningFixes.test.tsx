@@ -119,7 +119,11 @@ describe("InstrumentRow — calibration abort on unmount (BUG-6)", () => {
       });
       vi.mocked(invoke).mockImplementation((command: string) =>
         command === "calibrate_profile"
-          ? gate.then(() => -20)
+          ? gate.then(() => ({
+              lufs: -20,
+              clipped: false,
+              stimulus_shortfall_lu: null,
+            }))
           : Promise.resolve(null),
       );
       const onCalibrated = vi.fn();
@@ -151,6 +155,44 @@ describe("InstrumentRow — calibration abort on unmount (BUG-6)", () => {
         await gate;
       });
       expect(onCalibrated).not.toHaveBeenCalled();
+    },
+  );
+
+  it(
+    "clip + stimulus-ceiling caveats surface as a non-fatal warning",
+    { timeout: 10000 },
+    async () => {
+      vi.mocked(invoke).mockImplementation((command: string) =>
+        command === "calibrate_profile"
+          ? Promise.resolve({
+              lufs: -12.4,
+              clipped: true,
+              stimulus_shortfall_lu: 2.3,
+            })
+          : Promise.resolve(null),
+      );
+      const onCalibrated = vi.fn();
+      render(
+        <ThemeProvider>
+          <InstrumentRow
+            profile={{ ...profile, calibration_lufs: -12.4 }}
+            topology={null}
+            connected={true}
+            onCalibrated={onCalibrated}
+            onEdit={vi.fn()}
+            onDelete={vi.fn()}
+            onMove={vi.fn()}
+          />
+        </ThemeProvider>,
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: /re-calibrate/i }));
+      // Both caveats land on the idle sub-line, joined "; " — success still fires.
+      await screen.findByText(/signal clipped/i, undefined, { timeout: 8000 });
+      expect(
+        screen.getByText(/leveling drives ~2\.3 LU softer/i),
+      ).toBeInTheDocument();
+      expect(onCalibrated).toHaveBeenCalled();
     },
   );
 });
