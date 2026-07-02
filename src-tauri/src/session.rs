@@ -1,6 +1,10 @@
 //! High-level TMP control session: handshake, preset enumeration, and the
 //! leveling primitives (load preset, toggle re-amp, set preset level, save).
 //!
+//! The load-bearing USB-protocol invariants (batchStatus grouping, re-amp latch
+//! rules, HID open-lockout, slot +1 addressing, the capture window) are written
+//! up in `notes/protocol.md`.
+//!
 //! Builds on `hid` (transport) + `proto` (wire codec). Replicates the request
 //! sequence that is known-good against a real device. The
 //! handshake REUSES `batchStatus` in the device's exact groups (1; 2×7; 3; 4) —
