@@ -58,7 +58,11 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
 
     Ok(Loudness {
         integrated_lufs: integrated,
-        short_term_max_lufs: if st_max.is_finite() { st_max } else { integrated },
+        short_term_max_lufs: if st_max.is_finite() {
+            st_max
+        } else {
+            integrated
+        },
     })
 }
 

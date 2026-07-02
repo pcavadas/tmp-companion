@@ -1835,7 +1835,10 @@ impl Session {
         fender_id: &str,
     ) -> Result<bool, String> {
         self.clear_raw();
-        self.send_chunked_collect(&proto::insert_node(dest_group, before, fender_id, None), 200)?;
+        self.send_chunked_collect(
+            &proto::insert_node(dest_group, before, fender_id, None),
+            200,
+        )?;
         self.confirm_structural_edit(NODE_INSERTED)
     }
 

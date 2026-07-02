@@ -28,8 +28,14 @@ export async function invoke(
   cmd: string,
   args: Record<string, unknown> = {},
 ): Promise<unknown> {
-  const res = await page.request.post(`${SERVER}/invoke`, { data: { cmd, args } });
-  const env = (await res.json()) as { ok: boolean; data?: unknown; error?: unknown };
+  const res = await page.request.post(`${SERVER}/invoke`, {
+    data: { cmd, args },
+  });
+  const env = (await res.json()) as {
+    ok: boolean;
+    data?: unknown;
+    error?: unknown;
+  };
   if (!env.ok) throw new Error(`${cmd} failed: ${JSON.stringify(env.error)}`);
   return env.data;
 }
@@ -70,7 +76,11 @@ export async function clearScenario(page: Page): Promise<void> {
 
 /** The non-empty values of `attr` on every matching element inside one target's Copy card,
  *  in DOM (signal) order — read at runtime so a spec never hard-codes a unit's block names. */
-function cardAttrValues(page: Page, cardName: string, attr: string): Promise<string[]> {
+function cardAttrValues(
+  page: Page,
+  cardName: string,
+  attr: string,
+): Promise<string[]> {
   return page
     .locator(`[data-target-card="${cardName}"] [${attr}]`)
     .evaluateAll(
@@ -85,5 +95,7 @@ export const tileLabels = (page: Page, cardName: string): Promise<string[]> =>
 
 /** The candidate block labels offered in an OPEN BlockEditor (the reference preset's
  *  distinct blocks) — for same/different-model picks. */
-export const candidateLabels = (page: Page, cardName: string): Promise<string[]> =>
-  cardAttrValues(page, cardName, "data-candidate");
+export const candidateLabels = (
+  page: Page,
+  cardName: string,
+): Promise<string[]> => cardAttrValues(page, cardName, "data-candidate");

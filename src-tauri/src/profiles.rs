@@ -81,9 +81,18 @@ pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
 /// all ≤ −22 LUFS to stay under the device's ~−20 LUFS re-amp tap ceiling.
 fn default_targets() -> Vec<Target> {
     vec![
-        Target { name: "Rhythm".into(), lufs: -26.0 },
-        Target { name: "Crunch".into(), lufs: -24.0 },
-        Target { name: "Lead".into(), lufs: -22.0 },
+        Target {
+            name: "Rhythm".into(),
+            lufs: -26.0,
+        },
+        Target {
+            name: "Crunch".into(),
+            lufs: -24.0,
+        },
+        Target {
+            name: "Lead".into(),
+            lufs: -22.0,
+        },
     ]
 }
 
@@ -132,8 +141,9 @@ fn store_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 /// Read the store from `path`; a missing file yields the default (empty) store.
 pub fn load_from_path(path: &Path) -> Result<Store, String> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| format!("parse {}: {e}", path.display())),
+        Ok(bytes) => {
+            serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
         Err(e) => Err(format!("read {}: {e}", path.display())),
     }
@@ -167,13 +177,24 @@ mod tests {
         by_slot.insert(11u32, "p1".to_string());
         Store {
             profiles: vec![
-                Profile { id: "p1".into(), name: "Telecaster".into(),
-                          topology_id: "guitar-singlecoil".into(), calibration_lufs: None },
-                Profile { id: "p2".into(), name: "Metal Ibanez".into(),
-                          topology_id: "guitar-active".into(), calibration_lufs: Some(-9.5) },
+                Profile {
+                    id: "p1".into(),
+                    name: "Telecaster".into(),
+                    topology_id: "guitar-singlecoil".into(),
+                    calibration_lufs: None,
+                },
+                Profile {
+                    id: "p2".into(),
+                    name: "Metal Ibanez".into(),
+                    topology_id: "guitar-active".into(),
+                    calibration_lufs: Some(-9.5),
+                },
             ],
             profile_by_slot: by_slot,
-            targets: vec![Target { name: "Lead".into(), lufs: -22.0 }],
+            targets: vec![Target {
+                name: "Lead".into(),
+                lufs: -22.0,
+            }],
             playback_level: PlaybackLevel::Rehearsal,
         }
     }
@@ -218,7 +239,11 @@ mod tests {
     #[test]
     fn playback_offsets_compensate_bass_only_below_stage() {
         // Guitar is the spectral reference at every playback level.
-        for lvl in [PlaybackLevel::Quiet, PlaybackLevel::Rehearsal, PlaybackLevel::Stage] {
+        for lvl in [
+            PlaybackLevel::Quiet,
+            PlaybackLevel::Rehearsal,
+            PlaybackLevel::Stage,
+        ] {
             assert_eq!(playback_offset_lu(lvl, "guitar"), 0.0);
         }
         // Bass compensation grows as playback gets quieter; Stage is the

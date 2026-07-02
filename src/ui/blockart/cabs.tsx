@@ -1,6 +1,12 @@
 // Speaker cabs — block-art renderer(s) split from the BlockArt engine.
 // Shared data/helpers (tones, cloth, chassis, speakers) live in ./shared.
-import { PEDAL_TONES, CAB_GRID, CLOTH, clothFor, type PedalTone } from "./shared";
+import {
+  PEDAL_TONES,
+  CAB_GRID,
+  CLOTH,
+  clothFor,
+  type PedalTone,
+} from "./shared";
 import {
   GrilleCloth,
   ChassisBody,
@@ -36,8 +42,7 @@ export function CabBody({
     cl = CLOTH.blackjute; // Rectifier Trad — plain black grille (≠ HBBSClosed's diamond)
   else if (lab.includes("SWR 210"))
     cl = CLOTH.whitegrid; // SWR Redhead — white grid lines on a dark baffle
-  else if (lab.includes("M4 JV30"))
-    cl = CLOTH.silver; // Marshall 1960A V30 — silver grille
+  else if (lab.includes("M4 JV30")) cl = CLOTH.silver; // Marshall 1960A V30 — silver grille
   const grids: Partial<Record<string, [number, number, number]>> = CAB_GRID;
   const [cols, rows] = grids[g] ?? CAB_GRID.cab1;
   // ALL cabs share ONE outer box, head-matching width (x5..59 = the AmpBody head),
@@ -143,7 +148,9 @@ export function CabBody({
       [baffleX + baffleW * 0.7, baffleY + baffleH * 0.7],
     ];
     pts.forEach(([x, y], i) => {
-      speakers.push(<Speaker key={`t${String(i)}`} x={x} y={y} r={rr} cl={cl} />);
+      speakers.push(
+        <Speaker key={`t${String(i)}`} x={x} y={y} r={rr} cl={cl} />,
+      );
     });
   } else {
     for (let ry = 0; ry < rows; ry++)
@@ -247,8 +254,26 @@ export function CabBody({
 export function BluesbreakerBody({ c, uid }: { c: PedalTone; uid: string }) {
   return (
     <g>
-      <ChassisBody x={5} y={6} w={54} h={52} rx={3} c={c} t="bluesbreaker" uid={uid} k="bb" />
-      <GrilleCloth x={9} y={16} w={46} h={36} rx={1.6} tone="bluesbreaker" uid={uid + "bb"} />
+      <ChassisBody
+        x={5}
+        y={6}
+        w={54}
+        h={52}
+        rx={3}
+        c={c}
+        t="bluesbreaker"
+        uid={uid}
+        k="bb"
+      />
+      <GrilleCloth
+        x={9}
+        y={16}
+        w={46}
+        h={36}
+        rx={1.6}
+        tone="bluesbreaker"
+        uid={uid + "bb"}
+      />
     </g>
   );
 }

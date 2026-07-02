@@ -175,7 +175,11 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
                   }}
                 >
                   <span
-                    style={{ fontFamily: t.mono, fontSize: 11, color: t.mutedInk }}
+                    style={{
+                      fontFamily: t.mono,
+                      fontSize: 11,
+                      color: t.mutedInk,
+                    }}
                   >
                     {String(i + 1).padStart(2, "0")}
                   </span>

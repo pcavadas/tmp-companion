@@ -161,8 +161,8 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             backup.
           </CalloutRow>
           <CalloutRow icon="shield" iconColor={t.good}>
-            This is an independent, unaffiliated tool. It talks to your unit over
-            USB and acts only on your own device and presets.
+            This is an independent, unaffiliated tool. It talks to your unit
+            over USB and acts only on your own device and presets.
           </CalloutRow>
         </div>
 

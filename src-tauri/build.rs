@@ -11,7 +11,10 @@ fn main() {
     let dist = Path::new("../dist");
     if !dist.join("index.html").exists() {
         let _ = std::fs::create_dir_all(dist);
-        let _ = std::fs::write(dist.join("index.html"), "<!doctype html><title>stub</title>");
+        let _ = std::fs::write(
+            dist.join("index.html"),
+            "<!doctype html><title>stub</title>",
+        );
     }
 
     tauri_build::build()

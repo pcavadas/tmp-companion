@@ -306,7 +306,12 @@ pub fn change_parameter_str(
 /// `false`), so the device sees an explicit value. Same framing / NO-batchStatus
 /// rule as the float [`change_parameter`]. Used to force a block active/bypassed
 /// while measuring an off-in-base footswitch block for the bake path.
-pub fn change_parameter_bool(group_id: &str, node_id: &str, parameter_id: &str, value: bool) -> Vec<u8> {
+pub fn change_parameter_bool(
+    group_id: &str,
+    node_id: &str,
+    parameter_id: &str,
+    value: bool,
+) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, group_id.as_bytes());
     field_bytes(&mut inner, 2, node_id.as_bytes());
@@ -1611,7 +1616,7 @@ mod tests {
         assert_eq!(first_bytes(&inner, 3), Some(&b"bypass"[..]));
         assert_eq!(first_varint(&inner, 7), Some(0)); // boolVal=false STILL present
         assert!(inner.iter().all(|(n, _)| *n != 5 && *n != 6)); // not float/string
-        // true → boolVal=1
+                                                                // true → boolVal=1
         let off = change_parameter_bool("G1", "ACD_BluesDriver", "bypass", true);
         assert_eq!(first_varint(&edit_inner(&off, 12), 7), Some(1));
     }
@@ -2127,7 +2132,11 @@ mod tests {
         assert_eq!(first_varint(&sfa, 2), Some(1));
         assert_eq!(first_bytes(&sfa, 3), Some(b"{\"func\":\"param\"}".as_ref()));
         assert_eq!(first_varint(&sfa, 4), None, "swap=false omitted (proto3)");
-        assert_eq!(first_varint(&parse(&body), 10), None, "setter: no batchStatus");
+        assert_eq!(
+            first_varint(&parse(&body), 10),
+            None,
+            "setter: no batchStatus"
+        );
 
         // swap=true sets field 4; batch=Some(11) adds top-level field 10.
         let body2 = set_footswitch_assignment(2, 1, "x", true, Some(11));
