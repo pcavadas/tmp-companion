@@ -1649,6 +1649,57 @@ impl Session {
             .find_map(|b| extract_current_preset_display_name(b))
     }
 
+    /// Pure read-only check: is the preset at 0-based `list_index` the ACTIVE one?
+    /// Prefer the `PresetLoaded` slot echo (identity, immune to duplicate display
+    /// names); fall back to the active-preset NAME ONLY when no slot echo has arrived
+    /// — a slot echo that names a DIFFERENT slot must win over a possibly-duplicate
+    /// name. This is the shared shape of every save-over guard site.
+    pub(crate) fn active_matches(&self, list_index: u32, expected_name: Option<&str>) -> bool {
+        let loaded = self.loaded_slot();
+        if loaded == Some(list_index) {
+            return true;
+        }
+        loaded.is_none()
+            && matches!(expected_name, Some(n) if !n.is_empty()
+                && self.active_preset_name().as_deref() == Some(n))
+    }
+
+    /// Confirm the preset at 0-based `list_index` is the ACTIVE one BEFORE a save-over
+    /// write. Checks [`Self::active_matches`]; if inconclusive, re-arms the device's
+    /// reply state ONCE (`connection_request` → `preset_list_request` →
+    /// `current_preset_info_request`) to force a fresh `currentPresetInfoChanged`,
+    /// then re-checks. `Err` when NEITHER the slot echo nor the name confirms — the
+    /// caller MUST NOT save: a load that didn't take leaves a DIFFERENT preset active,
+    /// and saving it overwrites the target slot with the wrong content (HW-demonstrated
+    /// data loss). Only call on a fresh/quiet connection — the re-arm draws a
+    /// `connectionError` on a dense-heartbeat session (the live-line re-arm gotcha).
+    pub fn confirm_active(
+        &mut self,
+        list_index: u32,
+        expected_name: Option<&str>,
+    ) -> Result<(), String> {
+        if self.active_matches(list_index, expected_name) {
+            return Ok(());
+        }
+        self.send_and_collect(&proto::connection_request(), 80)?;
+        self.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
+        self.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+        if let Some(name) = expected_name {
+            self.await_active_preset(name, 8);
+        }
+        if self.active_matches(list_index, expected_name) {
+            return Ok(());
+        }
+        Err(format!(
+            "could not confirm the preset at list index {list_index} is active before \
+             saving (slot echo {:?}, active name {:?}, expected {:?}) — refusing the save \
+             to avoid overwriting the wrong preset",
+            self.loaded_slot(),
+            self.active_preset_name(),
+            expected_name,
+        ))
+    }
+
     /// True if any reply body carries `presetMessage` inner `field` (e.g. 40
     /// `nodeReplaced`, 53 `presetError`).
     fn saw_preset_field(&self, field: u32) -> bool {
