@@ -10,6 +10,12 @@ export default defineConfig({
   workers: 1,
   forbidOnly: !!process.env.CI,
   reporter: process.env.CI ? "line" : [["list"]],
+  // The default per-test timeout is 30 s, but the songs/level CRUD flows run ~20-25 s locally
+  // and comfortably exceed 30 s on a loaded CI runner (2-4x slower), so the whole test is
+  // killed mid-flight ("Test timeout of 30000ms exceeded") even though every assertion set a
+  // 30-240 s timeout — those are dead under a tighter test cap. Grant the same generous room
+  // the online config already does (it uses 300 s); SimDevice is fast, so 120 s is ample.
+  timeout: 120_000,
   use: {
     baseURL: "http://localhost:1421",
     trace: "on-first-retry",
