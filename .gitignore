@@ -3,6 +3,9 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 
+# macOS Finder metadata (this is a macOS-only project)
+.DS_Store
+
 # frontend-rewrite scratch (read-only references, not shipped)
 .design-ref/
 
