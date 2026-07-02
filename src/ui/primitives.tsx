@@ -296,6 +296,8 @@ export function Checkbox({ checked, indeterminate }: CheckboxProps) {
   const on = (checked ?? false) || (indeterminate ?? false);
   return (
     <span
+      role="checkbox"
+      aria-checked={indeterminate ? "mixed" : (checked ?? false)}
       style={{
         width: 14,
         height: 14,
@@ -333,6 +335,8 @@ export function Toggle({ on, onClick }: ToggleProps) {
   const { t } = useTheme();
   return (
     <span
+      role="switch"
+      aria-checked={on}
       onClick={onClick}
       style={{
         display: "inline-block",
@@ -376,6 +380,7 @@ export function MenuItem({ label, onClick, danger }: MenuItemProps) {
   const { t } = useTheme();
   return (
     <div
+      role="menuitem"
       onClick={onClick}
       style={{
         fontFamily: t.sans,

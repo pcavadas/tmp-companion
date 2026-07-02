@@ -645,6 +645,8 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                         setCreatingList(false);
                         setDraftList("");
                       }}
+                      role="button"
+                      aria-label="Cancel"
                       title="Cancel"
                       style={{ cursor: "pointer", display: "flex" }}
                     >
