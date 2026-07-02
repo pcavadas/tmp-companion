@@ -114,7 +114,12 @@ export const PEDAL_TONES: Record<ToneId, PedalTone> = {
   // levant tolex, a grey gold-piped grille, gold script — but NO gold bottom
   // faceplate (deliberately NOT in the marshall bottom-face set, so the head reads
   // tolex-top / grille-bottom with a dark fascia, matching the ref).
-  bluesbreaker: { body: "#262626", knob: "#d8b24a", text: "#e7c45e", panel: "#1c1c1c" },
+  bluesbreaker: {
+    body: "#262626",
+    knob: "#d8b24a",
+    text: "#e7c45e",
+    panel: "#1c1c1c",
+  },
   vox: { body: "#1b1712", knob: "#e7d9b8", text: "#e7c45e", panel: "#9a7838" }, // black tolex, brass panel, fawn diamond grille
   mesa: { body: "#19150f", knob: "#b59a6a", text: "#e7dcc4" },
   orange: { body: "#dd7016", knob: "#1a1208", text: "#1a1208" },

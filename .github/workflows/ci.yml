@@ -33,6 +33,9 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Format check (prettier)
+        run: bun run format:check
+
       - name: Typecheck
         run: bunx tsc --noEmit
 
@@ -46,6 +49,10 @@ jobs:
       - name: Rust clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Rust format check
+        working-directory: src-tauri
+        run: cargo fmt --check
 
   e2e:
     runs-on: macos-14 # exclusive-seize HID + CoreAudio; offline uses the SimDevice fake

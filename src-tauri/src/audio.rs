@@ -406,7 +406,11 @@ fn reamp_capture_real(
                 let total = b.len() / in_ch;
                 let from = consumed_frames * in_ch;
                 let to = total * in_ch;
-                let slice = if to > from { b[from..to].to_vec() } else { Vec::new() };
+                let slice = if to > from {
+                    b[from..to].to_vec()
+                } else {
+                    Vec::new()
+                };
                 (total, slice)
             };
 

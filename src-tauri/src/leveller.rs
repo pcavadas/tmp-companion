@@ -197,11 +197,7 @@ pub fn measure_c(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<Measured
 /// `stimulus` at `ref_level`, return every captured channel. Validated own-conn
 /// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
 /// and the per-channel N1 diagnostic (`probe --channels`) share this.
-pub fn capture_full(
-    slot: u32,
-    stimulus: &[f32],
-    ref_level: f32,
-) -> Result<audio::Capture, String> {
+pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
     let ref_level = ref_level.clamp(0.05, 1.0);
     {
         let mut s = Session::connect()?;
@@ -976,7 +972,10 @@ pub fn level_footswitch(
                 for _ in 0..2 {
                     s.set_footswitch_assignment(switch, spec.function_index, &json, false, None)?;
                     if s.saw_preset_error() {
-                        return Err("device rejected the footswitch assignment (presetError) — not saved".into());
+                        return Err(
+                            "device rejected the footswitch assignment (presetError) — not saved"
+                                .into(),
+                        );
                     }
                     last_seen = s.seen_preset_fields();
                     if last_seen.contains(&54) {
@@ -1012,7 +1011,9 @@ pub fn level_footswitch(
                 if let Some(idx) = clear_stale {
                     s.clear_footswitch_assignment(switch, *idx)?;
                     if s.saw_preset_error() {
-                        return Err("device rejected the footswitch clear (presetError) — not saved".into());
+                        return Err(
+                            "device rejected the footswitch clear (presetError) — not saved".into(),
+                        );
                     }
                     let mut cleared = false;
                     for _ in 0..4 {
@@ -1027,7 +1028,10 @@ pub fn level_footswitch(
                         std::thread::sleep(Duration::from_millis(200));
                     }
                     if !cleared {
-                        return Err("redundant footswitch param fn not confirmed cleared — not saved".into());
+                        return Err(
+                            "redundant footswitch param fn not confirmed cleared — not saved"
+                                .into(),
+                        );
                     }
                 }
                 s.change_parameter(lev.0, lev.1, lev.2, best_v)?;

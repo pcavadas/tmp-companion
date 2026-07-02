@@ -39,8 +39,12 @@ mod imp {
         CFDictionaryRef, CFDictionarySetValue, CFMutableDictionaryRef,
     };
     use core_foundation_sys::number::{kCFNumberSInt32Type, CFNumberCreate};
-    use core_foundation_sys::runloop::{kCFRunLoopDefaultMode, CFRunLoopGetCurrent, CFRunLoopRef, CFRunLoopRun};
-    use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringCreateWithCString, CFStringRef};
+    use core_foundation_sys::runloop::{
+        kCFRunLoopDefaultMode, CFRunLoopGetCurrent, CFRunLoopRef, CFRunLoopRun,
+    };
+    use core_foundation_sys::string::{
+        kCFStringEncodingUTF8, CFStringCreateWithCString, CFStringRef,
+    };
     use std::os::raw::{c_char, c_void};
     use tauri::Emitter;
 
@@ -181,7 +185,11 @@ mod imp {
                 // Matching/removal notifications need only a scheduled manager —
                 // no IOHIDManagerOpen, so the session's exclusive seize is
                 // untouched and no HID I/O happens on this thread.
-                IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+                IOHIDManagerScheduleWithRunLoop(
+                    manager,
+                    CFRunLoopGetCurrent(),
+                    kCFRunLoopDefaultMode,
+                );
                 log::info!("hotplug: watcher armed (VID 0x{VID:04X} PID 0x{PID:02X})");
                 CFRunLoopRun(); // parks this thread for the process's life
             })

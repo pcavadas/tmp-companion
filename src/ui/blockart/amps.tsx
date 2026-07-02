@@ -1847,7 +1847,8 @@ export function AmpBody({
   // bottom-face boutique heads (Bogner Uber) wear.
   const petrolFace = bottomFace && /PETROL|VH4/i.test(lab);
   const gid = "ph" + uid;
-  const faceFill = c.panel ?? (petrolFace ? `url(#${gid})` : "rgba(0,0,0,0.32)");
+  const faceFill =
+    c.panel ?? (petrolFace ? `url(#${gid})` : "rgba(0,0,0,0.32)");
   const knobFill = petrolFace ? "#1c1d20" : c.knob;
   return (
     <g>
@@ -1884,7 +1885,7 @@ export function AmpBody({
         height="8.6"
         rx="1.4"
         fill={faceFill}
-        opacity={c.panel ?? petrolFace ? 0.95 : 1}
+        opacity={(c.panel ?? petrolFace) ? 0.95 : 1}
       />
       {c.jewel && (
         <circle
@@ -1892,9 +1893,7 @@ export function AmpBody({
           cy={knobY}
           r="1.4"
           fill={
-            lab.toUpperCase().includes("5150")
-              ? evhAccentColor(lab)
-              : c.jewel
+            lab.toUpperCase().includes("5150") ? evhAccentColor(lab) : c.jewel
           }
         />
       )}

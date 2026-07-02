@@ -14,9 +14,7 @@ export default defineConfig({
     baseURL: "http://localhost:1421",
     trace: "on-first-retry",
   },
-  projects: [
-    { name: "offline", use: { ...devices["Desktop Chrome"] } },
-  ],
+  projects: [{ name: "offline", use: { ...devices["Desktop Chrome"] } }],
   // Vite serves the real frontend; the Rust e2e_server runs the real commands.
   webServer: [
     {

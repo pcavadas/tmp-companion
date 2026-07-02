@@ -86,7 +86,9 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
     };
     let mut out = Vec::new();
     for (sw_idx, sw) in switches.iter().enumerate() {
-        let Some(assigns) = sw.as_array() else { continue };
+        let Some(assigns) = sw.as_array() else {
+            continue;
+        };
         let mut functions = Vec::new();
         let mut label = String::new();
         let mut link_group = None;
@@ -110,7 +112,12 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
             }
             match func {
                 "on-off" => {
-                    for n in a.get("nodes").and_then(Value::as_array).into_iter().flatten() {
+                    for n in a
+                        .get("nodes")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
                         let g = n.get("groupId").and_then(Value::as_str).unwrap_or_default();
                         let nid = n.get("nodeId").and_then(Value::as_str).unwrap_or_default();
                         if nid.is_empty() {
@@ -156,7 +163,8 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
         }
         // Level-param candidates: continuous [0,1] params of each acted-on block (deduped).
         let mut level_params: Vec<LevelParamCandidate> = Vec::new();
-        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
         for (g, nid) in &acted {
             if let Some((fid, params)) = nodes.get(nid) {
                 let mut keys: Vec<&String> = params.keys().collect();
@@ -220,7 +228,9 @@ pub fn onoff_switches_for(ftsw: &Value, node_id: &str) -> Vec<u32> {
         return out;
     };
     for (i, sw) in switches.iter().enumerate() {
-        let Some(assigns) = sw.as_array() else { continue };
+        let Some(assigns) = sw.as_array() else {
+            continue;
+        };
         let hit = assigns.iter().any(|a| {
             a.get("func").and_then(Value::as_str) == Some("on-off")
                 && a.get("nodes")
@@ -257,7 +267,12 @@ pub fn engaged_bypass_for_switch(
         if a.get("func").and_then(Value::as_str) != Some("on-off") {
             continue;
         }
-        for n in a.get("nodes").and_then(Value::as_array).into_iter().flatten() {
+        for n in a
+            .get("nodes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let g = n.get("groupId").and_then(Value::as_str).unwrap_or_default();
             let nid = n.get("nodeId").and_then(Value::as_str).unwrap_or_default();
             if nid.is_empty() {
@@ -272,7 +287,12 @@ pub fn engaged_bypass_for_switch(
 
 /// Index of an existing `param` function on `switch` targeting `(node_id, param)`, if any —
 /// the assignment a bake makes redundant (cleared so the bake is the single source).
-pub fn existing_param_fn_index(ftsw: &Value, switch: u32, node_id: &str, param: &str) -> Option<u32> {
+pub fn existing_param_fn_index(
+    ftsw: &Value,
+    switch: u32,
+    node_id: &str,
+    param: &str,
+) -> Option<u32> {
     ftsw.as_array()?
         .get(switch as usize)?
         .as_array()?
@@ -309,7 +329,9 @@ pub enum FsLevelPlan {
     /// Write a `param`-change assignment. `engaged` empty = measure the base state (block ON in
     /// base, today's path); non-empty = engaged measurement (the off-in-base fallback, when a
     /// scene or a second footswitch also activates the block so baking would be unsafe).
-    Assign { engaged: Vec<(String, String, bool)> },
+    Assign {
+        engaged: Vec<(String, String, bool)>,
+    },
     /// Not levelable — `String` is the progress-item message.
     Clamp(String),
 }
@@ -330,7 +352,9 @@ pub fn plan_footswitch_jobs(
     for (idx, job) in jobs.iter().enumerate() {
         if !block_bypassed_in_base(preset, job.lev_node) {
             // Block ON in base → part of the base sound → assignment, base measurement (today).
-            plans.push(FsLevelPlan::Assign { engaged: Vec::new() });
+            plans.push(FsLevelPlan::Assign {
+                engaged: Vec::new(),
+            });
             continue;
         }
         let activators = onoff_switches_for(ftsw, job.lev_node);
@@ -564,7 +588,12 @@ mod tests {
     }
 
     fn key(switch: u32, target: f64) -> FsJobKey<'static> {
-        FsJobKey { switch, lev_node: "N", lev_param: "gain", target_bits: target.to_bits() }
+        FsJobKey {
+            switch,
+            lev_node: "N",
+            lev_param: "gain",
+            target_bits: target.to_bits(),
+        }
     }
 
     #[test]
@@ -573,7 +602,10 @@ mod tests {
         let p = preset_with(true, None, serde_json::json!([[onoff(&["N"], true)]]));
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
-            FsLevelPlan::Bake { engaged, clear_stale } => {
+            FsLevelPlan::Bake {
+                engaged,
+                clear_stale,
+            } => {
                 // tuple bool = the `bypass` to WRITE: base off (bypass=true) → engaged un-bypass (false).
                 assert_eq!(engaged, &vec![("G1".into(), "N".into(), false)]);
                 assert_eq!(*clear_stale, None);
@@ -587,7 +619,12 @@ mod tests {
         // N ON in base → assignment, base measurement (engaged empty). Today's path.
         let p = preset_with(false, None, serde_json::json!([[onoff(&["N"], true)]]));
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
-        assert_eq!(plans[0], FsLevelPlan::Assign { engaged: Vec::new() });
+        assert_eq!(
+            plans[0],
+            FsLevelPlan::Assign {
+                engaged: Vec::new()
+            }
+        );
     }
 
     #[test]
@@ -685,7 +722,11 @@ mod tests {
     fn plan_engaged_list_flips_a_multi_block_switch() {
         // Switch enables N (off→on) AND M (on→off): engaged replicates BOTH flips so the target
         // is measured with the switch's full engaged state.
-        let p = preset_with(true, Some(false), serde_json::json!([[onoff(&["N", "M"], true)]]));
+        let p = preset_with(
+            true,
+            Some(false),
+            serde_json::json!([[onoff(&["N", "M"], true)]]),
+        );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
             FsLevelPlan::Bake { engaged, .. } => {

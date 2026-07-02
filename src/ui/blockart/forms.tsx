@@ -546,7 +546,14 @@ export function RockboxBody({ c, lab: _lab }: { c: PedalTone; lab: string }) {
       {/* two vertical slider slots + thumbs (VOL / GAIN) */}
       {[27, 37].map((cx, i) => (
         <g key={i}>
-          <rect x={cx - 1} y="12.5" width="2" height="14" rx="1" fill="#16242e" />
+          <rect
+            x={cx - 1}
+            y="12.5"
+            width="2"
+            height="14"
+            rx="1"
+            fill="#16242e"
+          />
           <rect
             x={cx - 3}
             y={i === 0 ? 16 : 20}

@@ -353,7 +353,11 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
                 Some(session::SongRecord {
                     slot: r.get("slot")?.as_i64()? as u32,
                     name: r.get("name")?.as_str()?.to_string(),
-                    notes: r.get("notes").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    notes: r
+                        .get("notes")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     bpm: r.get("bpm").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
                     bpm_active: r.get("bpmActive").and_then(|v| v.as_i64()).unwrap_or(0) != 0,
                 })
@@ -1406,7 +1410,9 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         report.push_str(&format!(
             "  [swap=true] before: {}\n              after:  {}\n",
             before.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
-            after_fn.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
+            after_fn
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into())
         ));
     }
 
@@ -1416,9 +1422,16 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     let gone = after_clear.as_ref().and_then(&find_probe).is_none();
     report.push_str(&format!(
         "  [clear] {} — switch [{target}] func count: was {} now {}\n",
-        if gone { "✓ PROBE removed" } else { "✗ PROBE still present" },
+        if gone {
+            "✓ PROBE removed"
+        } else {
+            "✗ PROBE still present"
+        },
         func_count(&ftsw0, target),
-        after_clear.as_ref().map(|f| func_count(f, target)).unwrap_or(0)
+        after_clear
+            .as_ref()
+            .map(|f| func_count(f, target))
+            .unwrap_or(0)
     ));
 
     // ── Phase 2: persistence (commit only), then RESTORE ──
@@ -1527,7 +1540,11 @@ pub fn probe_insert_map(
     let name = s
         .list_my_presets()
         .ok()
-        .and_then(|ps| ps.into_iter().find(|p| p.slot == list_index).map(|p| p.name))
+        .and_then(|ps| {
+            ps.into_iter()
+                .find(|p| p.slot == list_index)
+                .map(|p| p.name)
+        })
         .unwrap_or_default();
 
     // Load + re-arm the target preset (the held_insert_one preamble).
@@ -1545,7 +1562,10 @@ pub fn probe_insert_map(
         ));
     }
 
-    report.push_str(&format!("  BEFORE {group}: {:?}\n", ordered_group(&mut s, group)));
+    report.push_str(&format!(
+        "  BEFORE {group}: {:?}\n",
+        ordered_group(&mut s, group)
+    ));
 
     // ONE insert (retry once past the cold-first-edit silent drop, never past a reject).
     let do_insert = |s: &mut Session| match at_index {
@@ -1621,8 +1641,8 @@ fn held_insert_one(
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
     let _ = s.await_active_preset(name, 8); // pump for the fresh currentPresetInfoChanged
-    // SAFETY — confirm the held session re-attached to the TARGET preset (active_matches
-    // prefers the PresetLoaded slot echo, falling back to the active name) before editing.
+                                            // SAFETY — confirm the held session re-attached to the TARGET preset (active_matches
+                                            // prefers the PresetLoaded slot echo, falling back to the active name) before editing.
     if !s.active_matches(list_index, Some(name)) {
         return Ok(BulkReplaceItem {
             slot: list_index,
@@ -2073,8 +2093,7 @@ async fn read_library_via_backup<R: tauri::Runtime>(
     // real decode (lz4 → tar → sqlite → audiograph) doesn't already exercise.
     #[cfg(feature = "e2e")]
     if let Ok(path) = std::env::var("TMP_E2E_BACKUP_FIXTURE") {
-        let blob =
-            std::fs::read(&path).map_err(|e| format!("e2e backup fixture {path}: {e}"))?;
+        let blob = std::fs::read(&path).map_err(|e| format!("e2e backup fixture {path}: {e}"))?;
         return read_backup_archive(&blob);
     }
     use tauri::Emitter;
@@ -2835,11 +2854,11 @@ fn held_replace_one(
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
-    // SAFETY 1 — confirm the held session re-attached to the TARGET preset before
-    // editing+saving (a load that didn't take leaves a DIFFERENT preset active, and
-    // saving it corrupts this slot — HW). active_matches prefers the `PresetLoaded` slot
-    // echo (identity, immune to duplicate display names), falling back to the active
-    // preset NAME only when no slot echo arrived; if NEITHER confirms, SKIP.
+                                             // SAFETY 1 — confirm the held session re-attached to the TARGET preset before
+                                             // editing+saving (a load that didn't take leaves a DIFFERENT preset active, and
+                                             // saving it corrupts this slot — HW). active_matches prefers the `PresetLoaded` slot
+                                             // echo (identity, immune to duplicate display names), falling back to the active
+                                             // preset NAME only when no slot echo arrived; if NEITHER confirms, SKIP.
     if !s.active_matches(list_index, Some(&name)) {
         return Ok(BulkReplaceItem {
             slot: list_index,
@@ -3023,9 +3042,9 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
     s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
-    // SAFETY — confirm the held session re-attached to the TARGET preset before
-    // editing/saving (active_matches prefers the PresetLoaded slot echo, falling back to
-    // the active name only when no slot echo arrived).
+                                             // SAFETY — confirm the held session re-attached to the TARGET preset before
+                                             // editing/saving (active_matches prefers the PresetLoaded slot echo, falling back to
+                                             // the active name only when no slot echo arrived).
     if !s.active_matches(list_index, Some(&name)) {
         return Ok(CopyApplyItem {
             slot: list_index,
@@ -3179,13 +3198,8 @@ fn apply_copy_op(s: &mut Session, op: &CopyOp, retry_drop: bool) -> Result<bool,
             before_fender_id,
             repl,
         } => {
-            let confirmed = apply_copy_insert(
-                s,
-                group,
-                before_fender_id.as_deref(),
-                repl,
-                retry_drop,
-            )?;
+            let confirmed =
+                apply_copy_insert(s, group, before_fender_id.as_deref(), repl, retry_drop)?;
             Ok(confirmed)
         }
     }
@@ -4087,7 +4101,11 @@ pub fn probe_slotread_live(device_slot: u32, rounds: u32) -> Result<String, Stri
                 s.read_slot_preset_json(device_slot)?
             };
             // connectionError frames that arrived DURING this read (raw cleared on entry).
-            let errs = s.push_bodies().iter().filter(|b| is_connection_error(b)).count();
+            let errs = s
+                .push_bodies()
+                .iter()
+                .filter(|b| is_connection_error(b))
+                .count();
             out += &format!(
                 "  read {r}: {} field-9 ({}B), {errs} connectionError, {:?}\n",
                 if res.is_some() { "GOT " } else { "MISS" },
@@ -4101,7 +4119,10 @@ pub fn probe_slotread_live(device_slot: u32, rounds: u32) -> Result<String, Stri
     let mut out = format!(
         "[slotread-live] device slot {device_slot}, {rounds} rounds — field-8 on a LIVE session\n\n"
     );
-    out += &run("WITH connection_request re-arm (read_slot_preset_json)", false)?;
+    out += &run(
+        "WITH connection_request re-arm (read_slot_preset_json)",
+        false,
+    )?;
     std::thread::sleep(std::time::Duration::from_millis(800));
     out += &run("LIVE, no re-arm (read_slot_preset_json_live)", true)?;
     Ok(out)
@@ -5214,12 +5235,12 @@ pub(crate) fn replace_inplace_core(
     // 3) Land it on the original slot. The session layer translates these 0-based
     // list indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
     Session::connect()?.load_preset(scratch_slot)?; // scratch becomes current (persists across reconnect)
-    // Fresh connection re-attaches to the now-current preset; CONFIRM it is the scratch
-    // copy BEFORE saving it over the (real, irreplaceable) original slot. A dropped load
-    // would leave a DIFFERENT preset current, and saving that over orig_list_index is
-    // silent data loss — so the guard lives in the SAME connection as the mutation. On
-    // failure ABORT before the save (and before the clear), leaving the scratch import on
-    // the device for manual recovery.
+                                                    // Fresh connection re-attaches to the now-current preset; CONFIRM it is the scratch
+                                                    // copy BEFORE saving it over the (real, irreplaceable) original slot. A dropped load
+                                                    // would leave a DIFFERENT preset current, and saving that over orig_list_index is
+                                                    // silent data loss — so the guard lives in the SAME connection as the mutation. On
+                                                    // failure ABORT before the save (and before the clear), leaving the scratch import on
+                                                    // the device for manual recovery.
     let mut save_conn = Session::connect()?;
     save_conn
         .confirm_active(scratch_slot, Some(&scratch_name))
@@ -7363,7 +7384,10 @@ fn set_playback_level(app: tauri::AppHandle, level: profiles::PlaybackLevel) -> 
 
 /// Resolve a topology id to its bundled stimulus WAV path in the resource dir.
 /// Returns an error for an unknown id or unbundled WAV.
-fn topology_wav_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>, topology_id: &str) -> Result<String, String> {
+fn topology_wav_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    topology_id: &str,
+) -> Result<String, String> {
     use tauri::Manager;
     topologies::by_id(topology_id)
         .ok_or_else(|| format!("unknown pickup topology '{topology_id}'"))?;
@@ -8400,7 +8424,10 @@ where
 /// quieter, so its target is raised (see `profiles::playback_offset_lu`). `None` /
 /// unknown topology falls back to the guitar default (offset 0); `Stage` (the
 /// store default) is always 0, so legacy stores level exactly as before.
-fn playback_offset_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>, topology_id: Option<&str>) -> f64 {
+fn playback_offset_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    topology_id: Option<&str>,
+) -> f64 {
     let level = profiles::load(app)
         .map(|s| s.playback_level)
         .unwrap_or_default();
@@ -8633,14 +8660,13 @@ fn resolve_footswitch_job(
         .and_then(|s| s.as_array())
         .ok_or_else(|| format!("footswitch {} not found", job.switch))?;
 
-    let value_b = node_param_f64(preset, &job.lev_node_id, &job.lev_parameter_id).ok_or_else(
-        || {
+    let value_b =
+        node_param_f64(preset, &job.lev_node_id, &job.lev_parameter_id).ok_or_else(|| {
             format!(
                 "parameter {} not found on {}",
                 job.lev_parameter_id, job.lev_node_id
             )
-        },
-    )? as f32;
+        })? as f32;
 
     // Edit an existing param fn on (lev_node, lev_param), else add (≤5 cap).
     let existing = footswitch::existing_param_fn_index(
@@ -8710,7 +8736,10 @@ async fn level_footswitches_apply(
         // Read the preset once (resolve every job) + whether it has FS scenes (the bake gate).
         let (preset, has_fs_scenes, _) = read_slot_preset_parsed(slot)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let ftsw = preset.get("ftsw").cloned().unwrap_or(serde_json::Value::Null);
+        let ftsw = preset
+            .get("ftsw")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
         // Plan bake-vs-assign for the whole batch (pure) — block-off-in-base + sole-owner +
         // no-scenes ⇒ bake straight onto the block; otherwise the (engaged-measured) param fn.
@@ -8848,7 +8877,11 @@ pub fn probe_repro_chunked() -> Result<String, String> {
         match r {
             Ok(seen) => out.push_str(&format!(
                 "  [{label}] chunked set → device fields {seen:?}  ({})\n",
-                if seen.contains(&54) { "LANDED" } else { "DROPPED" }
+                if seen.contains(&54) {
+                    "LANDED"
+                } else {
+                    "DROPPED"
+                }
             )),
             Err(e) => out.push_str(&format!("  [{label}] error: {e}\n")),
         }
@@ -8954,7 +8987,12 @@ pub fn probe_bake_validate(
             .and_then(|a| a.get(switch as usize)?.as_array().map(Vec::len))
             .unwrap_or(usize::MAX);
         let engaged = footswitch::engaged_bypass_for_switch(&ftsw, &p, switch);
-        Ok((v, footswitch::block_bypassed_in_base(&p, node), fns, engaged))
+        Ok((
+            v,
+            footswitch::block_bypassed_in_base(&p, node),
+            fns,
+            engaged,
+        ))
     };
 
     let (orig, byp0, fns0, engaged) = snapshot()?;
@@ -9026,7 +9064,10 @@ pub fn probe_bake_validate(
 /// presets (an active on-off enabling an OFF-in-base block).
 pub fn probe_fs_list(slot: u32) -> Result<String, String> {
     let (preset, has_fs_scenes, json_len) = read_slot_preset_parsed(slot)?;
-    let ftsw = preset.get("ftsw").cloned().unwrap_or(serde_json::Value::Null);
+    let ftsw = preset
+        .get("ftsw")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let infos = footswitch::enumerate_block_footswitches(&ftsw, &preset);
     let mut out = format!(
         "[probe --fs-list] slot {} · {} block-footswitch(es) · has_fs_scenes={has_fs_scenes} ({json_len}B)\n",
@@ -9074,7 +9115,9 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
-        std::thread::sleep(std::time::Duration::from_millis(leveller::SETTLE_AFTER_LOAD_MS));
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::SETTLE_AFTER_LOAD_MS,
+        ));
     }
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
@@ -9083,7 +9126,9 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
         if let Some(byp) = force {
             s.change_parameter_bool(group, node, "bypass", byp)?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(leveller::SETTLE_AFTER_SET_MS));
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::SETTLE_AFTER_SET_MS,
+        ));
         Ok(leveller::engage_measure_disengage(&mut s, &stim)?.integrated_lufs)
     };
 
@@ -9098,7 +9143,10 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
         Ok(l) => format!("  {label}: {l:.2} LUFS\n"),
         Err(e) => format!("  {label}: ERROR {e}\n"),
     };
-    let mut out = format!("[probe --measure-forced] slot {} · {group}/{node}\n", slot + 1);
+    let mut out = format!(
+        "[probe --measure-forced] slot {} · {group}/{node}\n",
+        slot + 1
+    );
     out += &row("base (as-is)       ", &base);
     out += &row("forced bypass=true ", &off);
     out += &row("forced bypass=false", &on);
@@ -9147,7 +9195,10 @@ pub fn probe_level_footswitch(
 
     let (preset, has_fs_scenes, _) = read_slot_preset_parsed(slot)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let ftsw = preset.get("ftsw").cloned().unwrap_or(serde_json::Value::Null);
+    let ftsw = preset
+        .get("ftsw")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let job = FootswitchLevelJob {
         switch,
         lev_group_id: lev_group.to_string(),
@@ -9196,7 +9247,15 @@ pub fn probe_level_footswitch(
         _ => Vec::new(),
     };
     let r = leveller::level_footswitch(
-        slot, switch, lev, &engaged, &write, &stim, target_lufs, commit, true,
+        slot,
+        switch,
+        lev,
+        &engaged,
+        &write,
+        &stim,
+        target_lufs,
+        commit,
+        true,
     )?;
     let mut out = format!(
         "[probe --level-footswitch] preset slot {} · FS{switch} · {lev_group}/{lev_node}.{lev_param}  ({})\n",
@@ -10948,9 +11007,7 @@ pub fn run() {
                 .short_version(Some(env!("CARGO_PKG_VERSION")))
                 // The dev binary has no bundle icon, so the panel would show a
                 // generic folder — set it explicitly (same art as the Dock icon).
-                .icon(
-                    tauri::image::Image::from_bytes(include_bytes!("../icons/dock.png")).ok(),
-                )
+                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/dock.png")).ok())
                 // macOS draws `copyright` as the small line and `credits` as the
                 // body. Copyright = the real © line; the affiliation + trademark
                 // notice is the body.
@@ -11048,14 +11105,20 @@ pub fn run_e2e_server() {
     } else if std::env::var("TMP_E2E_BACKUP_FIXTURE").is_err() {
         std::env::set_var(
             "TMP_E2E_BACKUP_FIXTURE",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/backup-fixture.bin"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../e2e/fixtures/backup-fixture.bin"
+            ),
         );
     }
     // The leveling stimulus (MockRuntime can't resolve bundle resources) — a committed WAV.
     if std::env::var("TMP_E2E_STIMULUS").is_err() {
         std::env::set_var(
             "TMP_E2E_STIMULUS",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/resources/samples/guitar-humbucker.wav"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/resources/samples/guitar-humbucker.wav"
+            ),
         );
     }
     // ONLINE (`TMP_E2E_ONLINE=1`): drive the REAL device — no transport factory, so every
@@ -11113,7 +11176,11 @@ pub fn run_e2e_server() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(7600);
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind e2e port");
-    let mode = if online { "ONLINE / real device" } else { "offline / SimDevice" };
+    let mode = if online {
+        "ONLINE / real device"
+    } else {
+        "offline / SimDevice"
+    };
     eprintln!("e2e_server: listening on http://127.0.0.1:{port} ({mode})");
     // Single-threaded serial accept: Playwright runs `workers:1` (the device is
     // exclusive-seize), and the webview handle stays on this one thread.
@@ -11144,9 +11211,18 @@ fn e2e_install_offline_fake() {
     // cloning, and the same presets baked into the backup fixture, so one set of specs
     // runs in both modes. `ensureScenario` finds them present offline and skips seeding.
     let presets = vec![
-        session::PresetEntry { slot: 400, name: "E2E Reference".into() },
-        session::PresetEntry { slot: 401, name: "E2E Target 1".into() },
-        session::PresetEntry { slot: 402, name: "E2E Target 2".into() },
+        session::PresetEntry {
+            slot: 400,
+            name: "E2E Reference".into(),
+        },
+        session::PresetEntry {
+            slot: 401,
+            name: "E2E Target 1".into(),
+        },
+        session::PresetEntry {
+            slot: 402,
+            name: "E2E Target 2".into(),
+        },
     ];
     MONITOR_ENABLED.store(true, SeqCst);
     monitor::e2e_install_snapshot(Some("1.8.45".into()), presets, None);
@@ -11160,9 +11236,15 @@ fn e2e_install_offline_fake() {
 /// read failure falls back to an empty library rather than panicking the server.
 #[cfg(feature = "e2e")]
 fn e2e_install_showcase() {
-    let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/showcase/showcase-fixture.bin");
+    let bin = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/showcase/showcase-fixture.bin"
+    );
     std::env::set_var("TMP_E2E_BACKUP_FIXTURE", bin);
-    let json = concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/showcase/showcase.json");
+    let json = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/showcase/showcase.json"
+    );
 
     // The single curated source — parsed once (`firmware`, `activeSlot`, song/setlist names
     // come from here; presets + graph come from the `.bin`). Null on any read/parse error,
@@ -11176,7 +11258,11 @@ fn e2e_install_showcase() {
             .as_array()
             .map(|a| {
                 a.iter()
-                    .filter_map(|x| x.as_str().or_else(|| x["name"].as_str()).map(str::to_string))
+                    .filter_map(|x| {
+                        x.as_str()
+                            .or_else(|| x["name"].as_str())
+                            .map(str::to_string)
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -11186,7 +11272,10 @@ fn e2e_install_showcase() {
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
 
     // Preset list + hero graph, decoded from the same curated `.bin`.
-    let (presets, graph) = match std::fs::read(bin).ok().and_then(|b| read_backup_archive(&b).ok()) {
+    let (presets, graph) = match std::fs::read(bin)
+        .ok()
+        .and_then(|b| read_backup_archive(&b).ok())
+    {
         Some(res) => {
             // PresetEntry.slot is the 0-based LIST INDEX; the DB `slot` (i64) is index + 1.
             let presets = res
@@ -11199,7 +11288,11 @@ fn e2e_install_showcase() {
                 .collect();
             // Hero = the `activeSlot` preset's routed graph.
             let active = spec["activeSlot"].as_u64().unwrap_or(0);
-            let graph = res.presets.iter().find(|r| r.slot as u64 == active).map(|r| r.graph.clone());
+            let graph = res
+                .presets
+                .iter()
+                .find(|r| r.slot as u64 == active)
+                .map(|r| r.graph.clone());
             (presets, graph)
         }
         None => (Vec::new(), None),
@@ -11262,7 +11355,11 @@ async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
         preset_json: String,
     }
     let path = std::env::var("TMP_E2E_SCENARIO_PRESETS").unwrap_or_else(|_| {
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/scenario-presets.json").into()
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e2e/fixtures/scenario-presets.json"
+        )
+        .into()
     });
     let raw = std::fs::read(&path).map_err(|e| format!("scenario presets {path}: {e}"))?;
     let presets: Vec<ScenarioPreset> =
@@ -11360,7 +11457,9 @@ fn e2e_handle_conn(
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
 
-    let Ok(clone) = stream.try_clone() else { return };
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
     let mut reader = BufReader::new(clone);
     let mut req_line = String::new();
     if reader.read_line(&mut req_line).is_err() {
@@ -11452,7 +11551,10 @@ fn e2e_route(
             };
             ("200 OK", serde_json::to_vec(&env).unwrap_or_default())
         }
-        _ => ("404 Not Found", b"{\"ok\":false,\"error\":\"not found\"}".to_vec()),
+        _ => (
+            "404 Not Found",
+            b"{\"ok\":false,\"error\":\"not found\"}".to_vec(),
+        ),
     }
 }
 
@@ -11513,14 +11615,26 @@ mod e2e_server_spike {
         // The library read decodes the fixture blob through the real backup path.
         std::env::set_var(
             "TMP_E2E_BACKUP_FIXTURE",
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/backup-fixture.bin"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../e2e/fixtures/backup-fixture.bin"
+            ),
         );
         // Pre-fill the startup snapshot so connect/list serve it with no monitor thread —
         // the 3 scenario presets at slots 400/401/402 (matching the backup fixture).
         let presets = vec![
-            crate::session::PresetEntry { slot: 400, name: "E2E Reference".into() },
-            crate::session::PresetEntry { slot: 401, name: "E2E Target 1".into() },
-            crate::session::PresetEntry { slot: 402, name: "E2E Target 2".into() },
+            crate::session::PresetEntry {
+                slot: 400,
+                name: "E2E Reference".into(),
+            },
+            crate::session::PresetEntry {
+                slot: 401,
+                name: "E2E Target 1".into(),
+            },
+            crate::session::PresetEntry {
+                slot: 402,
+                name: "E2E Target 2".into(),
+            },
         ];
         MONITOR_ENABLED.store(true, SeqCst);
         monitor::e2e_install_snapshot(Some("1.8.45".into()), presets, None);
@@ -11535,14 +11649,16 @@ mod e2e_server_spike {
             ])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock app");
-        let webview =
-            tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
-                .build()
-                .expect("build webview");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+            .build()
+            .expect("build webview");
 
         // 1. connect → the pre-filled snapshot (firmware).
         let conn = invoke(&webview, "connect_device", serde_json::json!({})).expect("connect");
-        assert_eq!(conn.get("firmware").and_then(|v| v.as_str()), Some("1.8.45"));
+        assert_eq!(
+            conn.get("firmware").and_then(|v| v.as_str()),
+            Some("1.8.45")
+        );
 
         // 2. list presets → the snapshot's 3 fixture entries.
         let list = invoke(&webview, "list_presets", serde_json::json!({})).expect("list");
@@ -11591,7 +11707,8 @@ mod e2e_server_spike {
         );
         let ev = sim.events();
         assert!(
-            ev.iter().any(|e| matches!(e, crate::sim_device::SimEvent::Replace { .. })),
+            ev.iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::Replace { .. })),
             "the replace reached the fake: {ev:?}"
         );
         assert!(
@@ -11626,12 +11743,16 @@ mod e2e_server_spike {
             verify: true,
             ..Default::default()
         };
-        let r = crate::leveller::level_preset(0, &stim, -30.0, opts, || false).expect("level_preset");
+        let r =
+            crate::leveller::level_preset(0, &stim, -30.0, opts, || false).expect("level_preset");
         assert!(
             r.final_level.is_finite() && r.final_level > 0.0,
             "solved a finite level: {r:?}"
         );
-        assert!(r.measured_lufs.is_finite(), "measured a finite loudness: {r:?}");
+        assert!(
+            r.measured_lufs.is_finite(),
+            "measured a finite loudness: {r:?}"
+        );
         // Dry run — the fake recorded a level set but no save.
         let ev = sim.events();
         assert!(
@@ -11670,22 +11791,37 @@ mod e2e_server_spike {
             ])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock app");
-        let webview =
-            tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
-                .build()
-                .expect("build webview");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+            .build()
+            .expect("build webview");
 
         // Seed: 2 songs, 1 setlist.
         let songs = invoke(&webview, "list_songs", serde_json::json!({})).expect("list_songs");
-        assert_eq!(songs.as_array().map(|a| a.len()), Some(2), "seed songs: {songs}");
+        assert_eq!(
+            songs.as_array().map(|a| a.len()),
+            Some(2),
+            "seed songs: {songs}"
+        );
         let setlists =
             invoke(&webview, "read_setlists", serde_json::json!({})).expect("read_setlists");
-        assert_eq!(setlists.as_array().map(|a| a.len()), Some(1), "seed setlists: {setlists}");
+        assert_eq!(
+            setlists.as_array().map(|a| a.len()),
+            Some(1),
+            "seed setlists: {setlists}"
+        );
 
         // Add → read-back reflects it.
-        let after_add = invoke(&webview, "add_song", serde_json::json!({ "name": "Soundcheck" }))
-            .expect("add_song");
-        assert_eq!(after_add.as_array().map(|a| a.len()), Some(3), "after add: {after_add}");
+        let after_add = invoke(
+            &webview,
+            "add_song",
+            serde_json::json!({ "name": "Soundcheck" }),
+        )
+        .expect("add_song");
+        assert_eq!(
+            after_add.as_array().map(|a| a.len()),
+            Some(3),
+            "after add: {after_add}"
+        );
         assert!(sim.song_names().iter().any(|n| n == "Soundcheck"));
 
         // Remove the first → back to 2.
@@ -11695,7 +11831,11 @@ mod e2e_server_spike {
             serde_json::json!({ "slot": 1, "expectName": "Opening Set" }),
         )
         .expect("remove_song");
-        assert_eq!(after_rm.as_array().map(|a| a.len()), Some(2), "after remove: {after_rm}");
+        assert_eq!(
+            after_rm.as_array().map(|a| a.len()),
+            Some(2),
+            "after remove: {after_rm}"
+        );
         assert!(!sim.song_names().iter().any(|n| n == "Opening Set"));
     }
 }
@@ -11790,8 +11930,10 @@ mod audition_tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let uniq = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir()
-            .join(format!("tmp-companion-backup-{}-{uniq}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "tmp-companion-backup-{}-{uniq}",
+            std::process::id()
+        ));
         let _ = std::fs::create_dir_all(&dir);
         let db_path = dir.join("normalDb.db3");
         let _ = std::fs::remove_file(&db_path);
@@ -11813,7 +11955,11 @@ mod audition_tests {
             header.set_mode(0o644);
             header.set_cksum();
             builder
-                .append_data(&mut header, "databaseBackup", std::io::Cursor::new(&db_bytes))
+                .append_data(
+                    &mut header,
+                    "databaseBackup",
+                    std::io::Cursor::new(&db_bytes),
+                )
                 .expect("tar append");
             builder.finish().expect("tar finish");
         }
@@ -11892,9 +12038,18 @@ mod audition_tests {
         assert_eq!(
             result.song_presets,
             vec![
-                SongPresetBinding { song_slot: 1, preset_slot: 8 },
-                SongPresetBinding { song_slot: 1, preset_slot: 58 },
-                SongPresetBinding { song_slot: 2, preset_slot: 58 },
+                SongPresetBinding {
+                    song_slot: 1,
+                    preset_slot: 8
+                },
+                SongPresetBinding {
+                    song_slot: 1,
+                    preset_slot: 58
+                },
+                SongPresetBinding {
+                    song_slot: 2,
+                    preset_slot: 58
+                },
             ],
         );
     }
@@ -11920,20 +12075,43 @@ mod audition_tests {
         assert_eq!(
             result.songs,
             vec![
-                session::SongRecord { slot: 1, name: "Opener".into(), notes: "capo 2".into(), bpm: 128, bpm_active: true },
-                session::SongRecord { slot: 2, name: "Ballad".into(), notes: String::new(), bpm: 72, bpm_active: false },
+                session::SongRecord {
+                    slot: 1,
+                    name: "Opener".into(),
+                    notes: "capo 2".into(),
+                    bpm: 128,
+                    bpm_active: true
+                },
+                session::SongRecord {
+                    slot: 2,
+                    name: "Ballad".into(),
+                    notes: String::new(),
+                    bpm: 72,
+                    bpm_active: false
+                },
             ],
         );
         assert_eq!(
             result.setlists,
-            vec![session::SetlistRecord { slot: 1, name: "Main Set".into() }],
+            vec![session::SetlistRecord {
+                slot: 1,
+                name: "Main Set".into()
+            }],
         );
         // Setlist 1 holds song slot 2 at position 1, song slot 1 at position 2.
         assert_eq!(
             result.setlist_songs,
             vec![
-                BackupSetlistSong { setlist_slot: 1, song_slot: 2, position: 1 },
-                BackupSetlistSong { setlist_slot: 1, song_slot: 1, position: 2 },
+                BackupSetlistSong {
+                    setlist_slot: 1,
+                    song_slot: 2,
+                    position: 1
+                },
+                BackupSetlistSong {
+                    setlist_slot: 1,
+                    song_slot: 1,
+                    position: 2
+                },
             ],
         );
     }
@@ -11950,7 +12128,10 @@ mod audition_tests {
     #[test]
     #[ignore = "generator: writes showcase-fixture.bin from showcase.json"]
     fn build_showcase_fixture() {
-        let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/showcase/showcase.json");
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e2e/fixtures/showcase/showcase.json"
+        );
         let spec: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(src).expect("read showcase.json"))
                 .expect("parse showcase.json");
@@ -12028,7 +12209,10 @@ mod audition_tests {
         let mut sp_id = 0u64;
         for (si, song) in spec["songs"].as_array().expect("songs").iter().enumerate() {
             let song_id = si as u64 + 1; // Songs.id; slot = positional (1-based)
-            let name = song["name"].as_str().expect("song name").replace('\'', "''");
+            let name = song["name"]
+                .as_str()
+                .expect("song name")
+                .replace('\'', "''");
             sql.push_str(&format!(
                 " INSERT INTO Songs VALUES ({song_id}, {song_id}, '{name}');"
             ));
@@ -12055,9 +12239,15 @@ mod audition_tests {
             .iter()
             .find(|r| r.slot as u64 == active)
             .expect("active preset present");
-        assert!(!hero.graph.stages.is_empty(), "hero graph has routed stages");
+        assert!(
+            !hero.graph.stages.is_empty(),
+            "hero graph has routed stages"
+        );
 
-        let out = concat!(env!("CARGO_MANIFEST_DIR"), "/../e2e/fixtures/showcase/showcase-fixture.bin");
+        let out = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e2e/fixtures/showcase/showcase-fixture.bin"
+        );
         std::fs::write(out, &archive).expect("write showcase-fixture.bin");
         eprintln!(
             "build_showcase_fixture: wrote {} bytes ({} presets, {} songs) → {out}",
@@ -12175,7 +12365,10 @@ mod audition_tests {
         assert_eq!(v["name"], "Lead Tone");
         assert_eq!(v["outcome"], "updated");
         assert_eq!(v["detail"], "5 op(s)");
-        assert!(v.get("graph").is_none(), "None graph is omitted from the wire");
+        assert!(
+            v.get("graph").is_none(),
+            "None graph is omitted from the wire"
+        );
     }
 
     #[test]
@@ -12798,8 +12991,10 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn migration_snapshot_captures_the_pre_edit_json() {
-        let dir = std::env::temp_dir()
-            .join(format!("tmp-companion-migsnap-{}", crate::bulkrun::now_stamp()));
+        let dir = std::env::temp_dir().join(format!(
+            "tmp-companion-migsnap-{}",
+            crate::bulkrun::now_stamp()
+        ));
         let before = r#"{"info":{"preset_id":"abc","displayName":"Cliff"}}"#;
         let p = super::snapshot_before_migrate(&dir, 3, "Cliff", before).unwrap();
         let content = std::fs::read_to_string(&p).unwrap();

@@ -436,7 +436,12 @@ export function PedalBody({
             opacity="0.5"
           />
           {/* big π icon, centered */}
-          <g stroke={piColor} strokeWidth="1.5" strokeLinecap="round" fill="none">
+          <g
+            stroke={piColor}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            fill="none"
+          >
             <line x1="26.5" y1="32" x2="37.5" y2="32" />
             <line x1="29.4" y1="32.4" x2="28.9" y2="37" />
             <line x1="34.6" y1="32.4" x2="35.1" y2="37" />
@@ -1233,10 +1238,38 @@ export function PedalBody({
             </clipPath>
           </defs>
           <g clipPath="url(#gloopclip)">
-            <ellipse cx="20" cy="16" rx="18" ry="16" fill="#3fae84" opacity="0.34" />
-            <ellipse cx="46" cy="30" rx="16" ry="20" fill="#4f8fd0" opacity="0.32" />
-            <ellipse cx="22" cy="46" rx="17" ry="16" fill="#9a7bc8" opacity="0.3" />
-            <ellipse cx="42" cy="54" rx="15" ry="12" fill="#3fb0a0" opacity="0.28" />
+            <ellipse
+              cx="20"
+              cy="16"
+              rx="18"
+              ry="16"
+              fill="#3fae84"
+              opacity="0.34"
+            />
+            <ellipse
+              cx="46"
+              cy="30"
+              rx="16"
+              ry="20"
+              fill="#4f8fd0"
+              opacity="0.32"
+            />
+            <ellipse
+              cx="22"
+              cy="46"
+              rx="17"
+              ry="16"
+              fill="#9a7bc8"
+              opacity="0.3"
+            />
+            <ellipse
+              cx="42"
+              cy="54"
+              rx="15"
+              ry="12"
+              fill="#3fb0a0"
+              opacity="0.28"
+            />
           </g>
         </>
       )}

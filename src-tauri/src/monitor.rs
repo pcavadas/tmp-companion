@@ -104,8 +104,7 @@ pub fn e2e_install_snapshot(
 }
 
 pub(crate) fn startup_snapshot() -> Option<StartupSnapshot> {
-    crate::lock_ok(snapshot_slot())
-        .clone()
+    crate::lock_ok(snapshot_slot()).clone()
 }
 
 /// Just the cached snapshot's graph — clones only the (small) graph, not the whole
@@ -117,8 +116,7 @@ pub(crate) fn startup_graph() -> Option<ActiveGraph> {
 }
 
 pub(crate) fn last_connect_error() -> Option<String> {
-    crate::lock_ok(error_slot())
-        .clone()
+    crate::lock_ok(error_slot()).clone()
 }
 
 pub(crate) fn reset_startup_state() {

@@ -303,12 +303,21 @@ fn main() {
         // --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]
         // Level a block-acting footswitch's engaged state (stimulus via TMP_LEVELLER_STIMULUS).
         // DRY by default (measure + solve, no write); --commit writes valueA + saves.
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
-        let switch: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let switch: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
         let lev_group = args.get(i + 3).cloned().unwrap_or_default();
         let lev_node = args.get(i + 4).cloned().unwrap_or_default();
         let lev_param = args.get(i + 5).cloned().unwrap_or_default();
-        let target: f64 = args.get(i + 6).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN);
+        let target: f64 = args
+            .get(i + 6)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
         let commit = args.iter().any(|a| a == "--commit");
         if slot == u32::MAX || switch == u32::MAX || lev_node.is_empty() || target.is_nan() {
             eprintln!("usage: probe --level-footswitch <slot> <switch> <levGroup> <levNode> <levParam> <target> [--commit]  (TMP_LEVELLER_STIMULUS=<wav>)");
@@ -330,12 +339,21 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--bake-validate") {
         // --bake-validate <slot> <switch> <group> <node> <param> <target>  (commit + restore)
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
-        let switch: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let switch: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
         let group = args.get(i + 3).cloned().unwrap_or_default();
         let node = args.get(i + 4).cloned().unwrap_or_default();
         let param = args.get(i + 5).cloned().unwrap_or_default();
-        let target: f64 = args.get(i + 6).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN);
+        let target: f64 = args
+            .get(i + 6)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
         if slot == u32::MAX || switch == u32::MAX || node.is_empty() || target.is_nan() {
             eprintln!("usage: probe --bake-validate <slot> <switch> <group> <node> <param> <target>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
@@ -354,7 +372,10 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--fs-list") {
         // --fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
         if slot == u32::MAX {
             eprintln!("usage: probe --fs-list <slot>");
             std::process::exit(2);
@@ -373,7 +394,10 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--measure-forced") {
         // --measure-forced <slot> <group> <node>   (GO/NO-GO: does live bypass=false work?)
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         if slot == u32::MAX || group.is_empty() || node.is_empty() {
@@ -407,9 +431,18 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--clear-ftsw") {
         // --clear-ftsw <slot> <switch> <index>   (restore/cleanup)
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
-        let switch: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
-        let index: u32 = args.get(i + 3).and_then(|s| s.parse().ok()).unwrap_or(u32::MAX);
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let switch: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let index: u32 = args
+            .get(i + 3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
         if slot == u32::MAX || switch == u32::MAX || index == u32::MAX {
             eprintln!("usage: probe --clear-ftsw <slot> <switch> <index>");
             std::process::exit(2);
