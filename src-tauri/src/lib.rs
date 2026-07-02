@@ -5340,6 +5340,38 @@ pub fn probe_restore(snapshot_path: &str) -> Result<String, String> {
     )
 }
 
+/// Lock a state mutex, recovering the guard if a previous holder panicked and poisoned it
+/// (`into_inner`). These mutexes guard single-writer state (the session slot, the library,
+/// the run registry, the monitor caches); recovery is always the right move — a poisoned
+/// `unwrap()` would otherwise brick the always-running monitor or every future device op.
+/// Used at every lock site across lib.rs / monitor.rs / watcher.rs.
+pub(crate) fn lock_ok<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+#[cfg(test)]
+mod lock_ok_tests {
+    use super::lock_ok;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn recovers_a_poisoned_mutex_instead_of_panicking() {
+        let m = Arc::new(Mutex::new(5));
+        let m2 = Arc::clone(&m);
+        // Poison the mutex: a thread panics while holding the lock.
+        let _ = std::thread::spawn(move || {
+            let _g = m2.lock().unwrap();
+            panic!("poison the mutex");
+        })
+        .join();
+        assert!(m.lock().is_err(), "the mutex must be poisoned");
+        // A plain .lock().unwrap() would panic here; lock_ok recovers the guard.
+        assert_eq!(*lock_ok(&m), 5);
+        *lock_ok(&m) = 9;
+        assert_eq!(*lock_ok(&m), 9);
+    }
+}
+
 /// Shared device session. `None` until the user connects. Behind an `Arc<Mutex>`
 /// so blocking HID work can run off the UI thread via `spawn_blocking`.
 #[derive(Default)]
@@ -5397,7 +5429,7 @@ async fn connect_device(state: State<'_, AppState>) -> Result<ConnectResult, Str
     tauri::async_runtime::spawn_blocking(move || -> Result<ConnectResult, String> {
         if !MONITOR_ENABLED.load(SeqCst) {
             // Genuinely-disabled path (first connect / post-stop): fresh start.
-            *arc.lock().unwrap() = None;
+            *lock_ok(&arc) = None;
             monitor::reset_startup_state();
             MONITOR_ENABLED.store(true, SeqCst);
         }
@@ -5461,12 +5493,12 @@ async fn list_presets(state: State<'_, AppState>) -> Result<Vec<PresetEntry>, St
         }
         let _op = lock_device_op();
         let maybe_session = {
-            let mut guard = arc.lock().unwrap();
+            let mut guard = lock_ok(&arc);
             guard.take()
         };
         if let Some(mut session) = maybe_session {
             let result = session.list_my_presets_strict();
-            *arc.lock().unwrap() = Some(session);
+            *lock_ok(&arc) = Some(session);
             return result;
         }
         Session::connect()?.list_my_presets_strict()
@@ -7596,11 +7628,11 @@ async fn stop_live_sync(state: State<'_, AppState>) -> Result<Option<String>, St
         // session. Without the gate the reconnect could race the monitor's last seize.
         MONITOR_ENABLED.store(false, SeqCst);
         let _op = lock_device_op();
-        *arc.lock().unwrap() = None;
+        *lock_ok(&arc) = None;
         let fw = match Session::connect_with_firmware() {
             Ok(s) => {
                 let fw = s.firmware_version();
-                *arc.lock().unwrap() = Some(s);
+                *lock_ok(&arc) = Some(s);
                 fw
             }
             Err(_) => None, // no device / not ready — UI session stays None (as before)
@@ -8275,7 +8307,7 @@ impl Drop for MonitorPauseGuard {
 /// bounded *sleep* on `MONITOR_PAUSED_ACK` is never a lock-acquire cycle. The monitor
 /// owns only the device, which the pause protocol forces it to release.
 fn lock_device_op() -> MonitorPauseGuard {
-    let g = DEVICE_OP_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let g = lock_ok(&DEVICE_OP_LOCK);
     MONITOR_PAUSE_REQ.store(true, SeqCst); // ask the monitor to yield its seize
                                            // Only wait for the ack while the monitor is actually enabled — a disabled
                                            // monitor never acks (it idles in its disabled branch), so waiting would burn
@@ -8285,11 +8317,22 @@ fn lock_device_op() -> MonitorPauseGuard {
                                            // before locking) is absorbed by hid.rs's bounded open-retry, as documented
                                            // on PAUSE_WAIT_TRIES.
     if MONITOR_ENABLED.load(SeqCst) {
+        let mut acked = false;
         for _ in 0..PAUSE_WAIT_TRIES {
             if MONITOR_PAUSED_ACK.load(SeqCst) {
+                acked = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(PAUSE_WAIT_STEP_MS));
+        }
+        if !acked {
+            // Proceeding anyway (hid.rs's open-retry covers the seize-recycle race), but a
+            // persistent no-ack means the monitor is wedged — every device op then pays the
+            // full wait. Surface it instead of silently eating the latency.
+            log::warn!(
+                "device op proceeding without a monitor pause-ack ({PAUSE_WAIT_TRIES} tries × \
+                 {PAUSE_WAIT_STEP_MS}ms) — the monitor may be wedged"
+            );
         }
     }
     // Proceed even if not acked within budget (see PAUSE_WAIT_TRIES) — hid.rs's
@@ -8328,7 +8371,7 @@ where
     F: FnOnce() -> Result<T, String>,
 {
     let _op = lock_device_op(); // serialize the whole release→work→reconnect
-    *arc.lock().unwrap() = None;
+    *lock_ok(&arc) = None;
     let result = work();
     // Re-establish the UI session so the connection / preset list survive the
     // command — UNLESS live-sync is active, in which case the MONITOR owns the
@@ -8343,7 +8386,7 @@ where
     if !MONITOR_ENABLED.load(SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
         if let Ok(s) = Session::connect() {
-            *arc.lock().unwrap() = Some(s);
+            *lock_ok(&arc) = Some(s);
         }
     }
     result
@@ -9696,7 +9739,7 @@ async fn import_library(
     .await
     .unwrap_or_default();
     let report = library::reconcile_with_device(&mut records, &device_list);
-    *state.library.lock().unwrap() = Some(library::Library {
+    *lock_ok(&state.library) = Some(library::Library {
         folder: folder_path,
         records,
     });
@@ -9707,7 +9750,7 @@ async fn import_library(
 /// and the UI doesn't need it; bulk ops resolve it backend-side).
 #[tauri::command]
 fn library_records(state: State<'_, AppState>) -> Result<Vec<library::LibraryRecord>, String> {
-    let guard = state.library.lock().unwrap();
+    let guard = lock_ok(&state.library);
     let lib = guard
         .as_ref()
         .ok_or("no library imported — import a .preset folder first")?;
@@ -9731,7 +9774,7 @@ struct FilterArgs {
 /// (sentinel `u32::MAX`) are dropped so they can't be selected for a write.
 #[tauri::command]
 fn library_filter(filter: FilterArgs, state: State<'_, AppState>) -> Result<Vec<u32>, String> {
-    let guard = state.library.lock().unwrap();
+    let guard = lock_ok(&state.library);
     let lib = guard.as_ref().ok_or("no library imported")?;
     let f = search::Filter {
         name_substr: filter.name_substr,
@@ -9758,7 +9801,7 @@ fn bulk_dry_run(
     op: bulk_cmd::OpSpec,
     state: State<'_, AppState>,
 ) -> Result<Vec<bulkrun::DryRunEntry>, String> {
-    let guard = state.library.lock().unwrap();
+    let guard = lock_ok(&state.library);
     let lib = guard.as_ref().ok_or("no library imported")?;
     let targets = targets_from_library(lib, &selection)?;
     let operation = bulk_cmd::build_operation(&op)?;
@@ -9794,7 +9837,7 @@ fn save_block_template(
     state: State<'_, AppState>,
 ) -> Result<Vec<blocklib::BlockTemplate>, String> {
     let template = {
-        let guard = state.library.lock().unwrap();
+        let guard = lock_ok(&state.library);
         let lib = guard.as_ref().ok_or("no library imported")?;
         let rec = lib
             .records
@@ -9877,7 +9920,7 @@ async fn create_variant(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let variant_bytes = {
-        let guard = state.library.lock().unwrap();
+        let guard = lock_ok(&state.library);
         let lib = guard.as_ref().ok_or("no library imported")?;
         let rec = lib
             .records
@@ -9984,7 +10027,7 @@ async fn bulk_rename(
     state: State<'_, AppState>,
 ) -> Result<Vec<RenameApplyRow>, String> {
     let rows: Vec<RenameRow> = {
-        let guard = state.library.lock().unwrap();
+        let guard = lock_ok(&state.library);
         let lib = guard.as_ref().ok_or("no library imported")?;
         rename_rows(lib, &selection, &spec.to_spec())
     };
@@ -10092,7 +10135,7 @@ async fn audition_render(
 ) -> Result<String, String> {
     // Cache hit → return the already-rendered clip, skipping the re-amp pass.
     let cache_key = audition::clip_key(slot, topology_id.as_deref().unwrap_or("default"));
-    if let Some(url) = state.clip_cache.lock().unwrap().get(&cache_key) {
+    if let Some(url) = lock_ok(&state.clip_cache).get(&cache_key) {
         return Ok(url);
     }
     let stim_path = resolve_stimulus(&app, None, topology_id)?;
@@ -10231,7 +10274,7 @@ fn migration_scan(
     target_catalog: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<MigrationRow>, String> {
-    let guard = state.library.lock().unwrap();
+    let guard = lock_ok(&state.library);
     let lib = guard.as_ref().ok_or("no library imported")?;
     // The "old" catalog is every block model actually used across the library.
     let mut in_use: std::collections::BTreeSet<String> = Default::default();
@@ -10312,7 +10355,7 @@ fn migration_plan(
     rename_map: std::collections::BTreeMap<String, String>,
     state: State<'_, AppState>,
 ) -> Result<MigrationPlan, String> {
-    let guard = state.library.lock().unwrap();
+    let guard = lock_ok(&state.library);
     let lib = guard.as_ref().ok_or("no library imported")?;
     Ok(compute_migration_plan(lib, &target_catalog, &rename_map))
 }
@@ -10362,7 +10405,7 @@ async fn migration_apply(
     // Build the plan + each affected preset's (original json, edited bytes) under the lock.
     let mut jobs: Vec<(u32, String, usize, String, Vec<u8>)> = Vec::new();
     {
-        let guard = state.library.lock().unwrap();
+        let guard = lock_ok(&state.library);
         let lib = guard.as_ref().ok_or("no library imported")?;
         let plan = compute_migration_plan(lib, &target_catalog, &rename_map).plan;
         // Group the plan by preset, then apply all its swaps to one decoded copy.
@@ -10466,7 +10509,7 @@ async fn bulk_apply(
     state: State<'_, AppState>,
 ) -> Result<BulkApplyResult, String> {
     let targets = {
-        let guard = state.library.lock().unwrap();
+        let guard = lock_ok(&state.library);
         let lib = guard.as_ref().ok_or("no library imported")?;
         targets_from_library(lib, &selection)?
     };
@@ -10496,7 +10539,7 @@ async fn bulk_apply(
     })
     .await?;
 
-    state.runs.lock().unwrap().insert(
+    lock_ok(&state.runs).insert(
         run_id.clone(),
         bulk_cmd::StoredRun {
             report: report.clone(),
@@ -10513,7 +10556,7 @@ async fn bulk_revert(
     state: State<'_, AppState>,
 ) -> Result<Vec<bulkrun::RevertEntry>, String> {
     let stored = {
-        let guard = state.runs.lock().unwrap();
+        let guard = lock_ok(&state.runs);
         guard
             .get(&run_id)
             .cloned()
@@ -11425,7 +11468,7 @@ mod e2e_server_spike {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+        lock_ok(&SERIAL)
     }
 
     /// Invoke a command through the SAME IPC path the HTTP bridge uses: a JSON body in,

@@ -138,7 +138,9 @@ mod imp {
         let ctx = unsafe { &*(context as *const Ctx) };
         // May briefly block on an in-flight device command holding the lock;
         // that command fails on its own (the device is gone) and releases.
-        *ctx.session.lock().unwrap() = None;
+        // lock_ok (never .unwrap()): a poison-panic here would unwind across the
+        // extern "C" boundary = abort.
+        *crate::lock_ok(&ctx.session) = None;
         crate::monitor::reset_startup_state();
         log::info!("hotplug: TMP detached — session released");
         let _ = ctx.app.emit(EVT_DETACHED, ());

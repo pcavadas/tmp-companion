@@ -96,7 +96,7 @@ pub fn e2e_install_snapshot(
     presets: Vec<PresetEntry>,
     graph: Option<ActiveGraph>,
 ) {
-    *snapshot_slot().lock().unwrap() = Some(StartupSnapshot {
+    *crate::lock_ok(snapshot_slot()) = Some(StartupSnapshot {
         firmware,
         presets,
         graph,
@@ -104,41 +104,35 @@ pub fn e2e_install_snapshot(
 }
 
 pub(crate) fn startup_snapshot() -> Option<StartupSnapshot> {
-    snapshot_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    crate::lock_ok(snapshot_slot())
         .clone()
 }
 
 /// Just the cached snapshot's graph — clones only the (small) graph, not the whole
 /// snapshot (the 504-entry preset list). For the cheap `current_graph` re-seed read.
 pub(crate) fn startup_graph() -> Option<ActiveGraph> {
-    snapshot_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    crate::lock_ok(snapshot_slot())
         .as_ref()
         .and_then(|s| s.graph.clone())
 }
 
 pub(crate) fn last_connect_error() -> Option<String> {
-    error_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    crate::lock_ok(error_slot())
         .clone()
 }
 
 pub(crate) fn reset_startup_state() {
-    *snapshot_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
-    *error_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *crate::lock_ok(snapshot_slot()) = None;
+    *crate::lock_ok(error_slot()) = None;
 }
 
 pub(crate) fn clear_startup_snapshot() {
-    *snapshot_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *crate::lock_ok(snapshot_slot()) = None;
 }
 
 fn store_startup_snapshot(snapshot: StartupSnapshot) {
-    *snapshot_slot().lock().unwrap_or_else(|p| p.into_inner()) = Some(snapshot);
-    *error_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *crate::lock_ok(snapshot_slot()) = Some(snapshot);
+    *crate::lock_ok(error_slot()) = None;
 }
 
 /// Keep the cached startup snapshot's graph aligned with the device's CURRENT
@@ -146,18 +140,14 @@ fn store_startup_snapshot(snapshot: StartupSnapshot) {
 /// already-running `connect_device` (webview reload) returns the current graph,
 /// not the connect-time one. No-op until the handshake stores the first snapshot.
 pub(crate) fn refresh_snapshot_graph(graph: ActiveGraph) {
-    if let Some(snapshot) = snapshot_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_mut()
-    {
+    if let Some(snapshot) = crate::lock_ok(snapshot_slot()).as_mut() {
         snapshot.graph = Some(graph);
     }
 }
 
 fn store_connect_error(error: String) {
-    *snapshot_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
-    *error_slot().lock().unwrap_or_else(|p| p.into_inner()) = Some(error);
+    *crate::lock_ok(snapshot_slot()) = None;
+    *crate::lock_ok(error_slot()) = Some(error);
 }
 
 // ─── Live command lane ─────────────────────────────────────────────────────────
@@ -555,123 +545,160 @@ fn monitor_loop(
     // snapshot and on every deliberate op cycle (pause/resume reconnect).
     let mut graph_retries: u32 = 0;
     loop {
-        // Disabled (default): live-sync not started. Idle-poll; do nothing.
-        if !MONITOR_ENABLED.load(SeqCst) {
-            log_block("disabled");
-            drain_not_live(&live_rx);
-            drain_metadata_not_live(&metadata_rx);
-            sleep(DISABLED_POLL_MS);
-            continue;
-        }
-        // Paused: a command holds the device. Make sure we hold no Session, ack, and
-        // park until the request clears. (Re-checked at the top of every reconnect.)
-        if MONITOR_PAUSE_REQ.load(SeqCst) {
-            log_block("paused");
-            park_while_paused(&app, &live_rx, &metadata_rx);
-            continue;
-        }
-        // Opportunistic ownership: only open HID when no persistent UI session is
-        // holding the seize. `connect_device` releases that session before enabling us,
-        // but a diagnostic stop/reconnect or command bookend can momentarily re-take it.
-        if session_arc.lock().unwrap().is_some() {
-            log_block("ui-session-held");
-            drain_not_live(&live_rx);
-            drain_metadata_not_live(&metadata_rx);
-            sleep(RECONNECT_BACKOFF_MS);
-            continue;
-        }
-        log_block("connecting");
-        // Connect with the firmware request riding the same startup handshake that
-        // carries the preset list and usually the active field-3 graph.
-        emit_sync(&app, true);
-        let mut session = match Session::connect_with_firmware() {
-            Ok(s) => s,
-            Err(e) => {
-                // No device / lost the open race to a command window. Back off and
-                // retry; on detach this is the steady state until replug. (The
-                // watcher remains the authoritative attach/detach signal for the UI.)
-                log::warn!("monitor: connect failed ({e}) — backing off");
-                store_connect_error(e);
-                drain_not_live(&live_rx);
-                drain_metadata_not_live(&metadata_rx);
-                sleep(RECONNECT_BACKOFF_MS);
-                continue;
-            }
-        };
-        // The lean handshake's own streams already carry the current
-        // PresetLoaded/InfoChanged + field-3 graph — decode + emit as the first
-        // state, then clear `sync`.
-        let mut seen = 0usize;
-        {
-            let mut c = cache.lock().unwrap();
-            let bodies = session.push_bodies();
-            log::info!(
-                "monitor: connected, decoding {} handshake bodies",
-                bodies.len()
+        // Contain a panic to ONE iteration: the monitor must never die while
+        // MONITOR_ENABLED (a dead loop would wedge every device op on the pause-ack wait
+        // forever). lock_ok already removes the poisoned-lock panic vector; this catches
+        // anything else (e.g. a decode/emit bug on a malformed device message).
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_monitor_iteration(
+                &app,
+                &session_arc,
+                &cache,
+                &live_rx,
+                &metadata_rx,
+                &mut graph_retries,
+                &mut log_block,
             );
-            for body in &bodies {
-                decode_and_emit(&app, body, &mut c);
-                seen += 1;
-            }
+        }));
+        if outcome.is_err() {
+            // A panic between emit_sync(true) and emit_sync(false) would strand the UI
+            // in the syncing state; clear it on recovery (idempotent when already false).
+            emit_sync(&app, false);
+            log::error!("monitor: loop iteration panicked — recovered; monitor stays alive");
+            graph_retries = 0;
+            sleep(RECONNECT_BACKOFF_MS);
         }
-        let snapshot = assemble_startup_snapshot(&mut session);
-        match snapshot {
-            Ok((snapshot, startup_live, reset_seen)) => {
-                let graph_missing = snapshot.graph.is_none();
-                log::info!(
-                    "monitor: startup snapshot firmware={:?} presets={} graph={}",
-                    snapshot.firmware,
-                    snapshot.presets.len(),
-                    if graph_missing { "none" } else { "ok" }
-                );
-                store_startup_snapshot(snapshot);
-                if reset_seen {
-                    seen = 0;
-                }
-                if graph_missing && graph_retries < GRAPH_RETRY_MAX {
-                    // Every in-session fallback failed (congested handshake) and an
-                    // idle device will never push field-3 on its own — drop the
-                    // session, let the congestion clear, and re-handshake. The
-                    // stored snapshot keeps serving the list meanwhile; a graph-ok
-                    // retry replaces it and its handshake decode emits the graph.
-                    graph_retries += 1;
-                    log::warn!(
-                        "monitor: snapshot has no graph — re-snapshot retry \
-                         {graph_retries}/{GRAPH_RETRY_MAX} in {GRAPH_RETRY_BACKOFF_MS} ms"
-                    );
-                    drop(session);
-                    emit_sync(&app, false);
-                    drain_not_live(&live_rx);
-                    drain_metadata_not_live(&metadata_rx);
-                    sleep(GRAPH_RETRY_BACKOFF_MS);
-                    continue;
-                }
-                if !graph_missing {
-                    graph_retries = 0;
-                }
-                if let Some(live) = startup_live {
-                    let mut c = cache.lock().unwrap();
-                    emit_startup_live(&app, &mut c, live);
-                }
-            }
-            Err(e) => {
-                log::warn!("monitor: startup snapshot failed ({e})");
-                store_connect_error(e);
-            }
-        }
-        emit_sync(&app, false);
-
-        match pump_loop(&app, session, &cache, seen, &live_rx, &metadata_rx) {
-            PumpExit::Disabled => clear_startup_snapshot(),
-            PumpExit::Paused => {
-                // A deliberate op cycle reconnects next — fresh retry budget.
-                graph_retries = 0;
-            }
-            PumpExit::Error => clear_startup_snapshot(),
-        }
-        // pump_loop returns when the device errors, live-sync stops, or a pause is
-        // requested; loop back to the top (pause check → reconnect → re-emit fresh state).
     }
+}
+
+/// ONE iteration of the monitor loop, factored out so [`monitor_loop`] can run it under
+/// `catch_unwind`. A `return` here ends the iteration; the outer `loop` continues (so the
+/// bodies below use `return` where the inline loop used `continue`).
+fn run_monitor_iteration(
+    app: &tauri::AppHandle,
+    session_arc: &Arc<Mutex<Option<Session>>>,
+    cache: &Arc<Mutex<LiveCache>>,
+    live_rx: &Receiver<LiveCmd>,
+    metadata_rx: &Receiver<MetadataReadCmd>,
+    graph_retries: &mut u32,
+    log_block: &mut impl FnMut(&'static str),
+) {
+    // Disabled (default): live-sync not started. Idle-poll; do nothing.
+    if !MONITOR_ENABLED.load(SeqCst) {
+        log_block("disabled");
+        drain_not_live(live_rx);
+        drain_metadata_not_live(metadata_rx);
+        sleep(DISABLED_POLL_MS);
+        return;
+    }
+    // Paused: a command holds the device. Make sure we hold no Session, ack, and
+    // park until the request clears. (Re-checked at the top of every reconnect.)
+    if MONITOR_PAUSE_REQ.load(SeqCst) {
+        log_block("paused");
+        park_while_paused(app, live_rx, metadata_rx);
+        return;
+    }
+    // Opportunistic ownership: only open HID when no persistent UI session is
+    // holding the seize. `connect_device` releases that session before enabling us,
+    // but a diagnostic stop/reconnect or command bookend can momentarily re-take it.
+    if crate::lock_ok(session_arc).is_some() {
+        log_block("ui-session-held");
+        drain_not_live(live_rx);
+        drain_metadata_not_live(metadata_rx);
+        sleep(RECONNECT_BACKOFF_MS);
+        return;
+    }
+    log_block("connecting");
+    // Connect with the firmware request riding the same startup handshake that
+    // carries the preset list and usually the active field-3 graph.
+    emit_sync(app, true);
+    let mut session = match Session::connect_with_firmware() {
+        Ok(s) => s,
+        Err(e) => {
+            // No device / lost the open race to a command window. Back off and
+            // retry; on detach this is the steady state until replug. (The
+            // watcher remains the authoritative attach/detach signal for the UI.)
+            log::warn!("monitor: connect failed ({e}) — backing off");
+            store_connect_error(e);
+            drain_not_live(live_rx);
+            drain_metadata_not_live(metadata_rx);
+            sleep(RECONNECT_BACKOFF_MS);
+            return;
+        }
+    };
+    // The lean handshake's own streams already carry the current
+    // PresetLoaded/InfoChanged + field-3 graph — decode + emit as the first
+    // state, then clear `sync`.
+    let mut seen = 0usize;
+    {
+        let mut c = crate::lock_ok(cache);
+        let bodies = session.push_bodies();
+        log::info!(
+            "monitor: connected, decoding {} handshake bodies",
+            bodies.len()
+        );
+        for body in &bodies {
+            decode_and_emit(app, body, &mut c);
+            seen += 1;
+        }
+    }
+    let snapshot = assemble_startup_snapshot(&mut session);
+    match snapshot {
+        Ok((snapshot, startup_live, reset_seen)) => {
+            let graph_missing = snapshot.graph.is_none();
+            log::info!(
+                "monitor: startup snapshot firmware={:?} presets={} graph={}",
+                snapshot.firmware,
+                snapshot.presets.len(),
+                if graph_missing { "none" } else { "ok" }
+            );
+            store_startup_snapshot(snapshot);
+            if reset_seen {
+                seen = 0;
+            }
+            if graph_missing && *graph_retries < GRAPH_RETRY_MAX {
+                // Every in-session fallback failed (congested handshake) and an
+                // idle device will never push field-3 on its own — drop the
+                // session, let the congestion clear, and re-handshake. The
+                // stored snapshot keeps serving the list meanwhile; a graph-ok
+                // retry replaces it and its handshake decode emits the graph.
+                *graph_retries += 1;
+                log::warn!(
+                    "monitor: snapshot has no graph — re-snapshot retry \
+                     {graph_retries}/{GRAPH_RETRY_MAX} in {GRAPH_RETRY_BACKOFF_MS} ms"
+                );
+                drop(session);
+                emit_sync(app, false);
+                drain_not_live(live_rx);
+                drain_metadata_not_live(metadata_rx);
+                sleep(GRAPH_RETRY_BACKOFF_MS);
+                return;
+            }
+            if !graph_missing {
+                *graph_retries = 0;
+            }
+            if let Some(live) = startup_live {
+                let mut c = crate::lock_ok(cache);
+                emit_startup_live(app, &mut c, live);
+            }
+        }
+        Err(e) => {
+            log::warn!("monitor: startup snapshot failed ({e})");
+            store_connect_error(e);
+        }
+    }
+    emit_sync(app, false);
+
+    match pump_loop(app, session, cache, seen, live_rx, metadata_rx) {
+        PumpExit::Disabled => clear_startup_snapshot(),
+        PumpExit::Paused => {
+            // A deliberate op cycle reconnects next — fresh retry budget.
+            *graph_retries = 0;
+        }
+        PumpExit::Error => clear_startup_snapshot(),
+    }
+    // pump_loop returns when the device errors, live-sync stops, or a pause is
+    // requested; the outer loop then re-checks pause → reconnect → re-emit fresh state.
 }
 
 /// Drop any held Session, ack the pause, show the neutral state, and park until the
@@ -839,7 +866,7 @@ fn pump_loop(
         // Decode every NEWLY-completed stream except the newest (it may still be
         // growing — same "print all but the last" rule as `listen_dump`).
         if bodies.len() > seen + 1 {
-            let mut c = cache.lock().unwrap();
+            let mut c = crate::lock_ok(cache);
             while seen + 1 < bodies.len() {
                 decode_and_emit(app, &bodies[seen], &mut c);
                 seen += 1;
