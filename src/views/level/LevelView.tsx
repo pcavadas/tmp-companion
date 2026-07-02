@@ -51,7 +51,6 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
 
   const {
     phase,
-    setPhase,
     rows,
     store,
     sel,
@@ -101,7 +100,6 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
     footswitchInfo,
     ampCandidates,
     targetLufsByName,
-    setPhase,
     deselectKeys,
     refresh,
   });

@@ -12,7 +12,6 @@
 // per-item failure becomes "skipped", never aborting the run.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
 
 import {
   levelPreset,
@@ -38,8 +37,6 @@ import {
 } from "./leveling";
 import type { Stage } from "../overlays";
 import type { PresetRow } from "../PresetList";
-import type { LoadPhase } from "../../lib/useDeviceLoad";
-import { errMsg } from "../../lib/format";
 import type {
   SceneInfo,
   FootswitchInfo,
@@ -153,7 +150,6 @@ export interface UseLevelingFlowDeps {
    *  0-based list index — so a scene run never needs a live discovery round-trip. */
   ampCandidates: Map<number, AmpCandidate[]>;
   targetLufsByName: (name: string | null) => number;
-  setPhase: Dispatch<SetStateAction<LoadPhase>>;
   /** Drop just the given selection keys (BUG-4: prune the keys a run actually leveled,
    *  accumulating across re-level rounds, so un-run sounds stay selected). */
   deselectKeys: (keys: string[]) => void;
@@ -167,7 +163,6 @@ export function useLevelingFlow({
   footswitchInfo,
   ampCandidates,
   targetLufsByName,
-  setPhase,
   deselectKeys,
   refresh,
 }: UseLevelingFlowDeps) {
@@ -463,18 +458,6 @@ export function useLevelingFlow({
   // Summary "Accept" / "Done" → close, deselecting just the leveled sounds.
   const onAccept = closeFlow;
 
-  // Surface a fatal flow error on the shared phase banner (used by callers). Reset the
-  // run bookkeeping WITHOUT deselecting — an error shouldn't silently drop the selection.
-  const failFlow = useCallback(
-    (e: unknown) => {
-      setStage("closed");
-      didRunRef.current = false;
-      ranKeysRef.current = new Set();
-      setPhase({ kind: "error", message: errMsg(e) });
-    },
-    [setPhase],
-  );
-
   // Toggle the opt-in rebalance (read at run time). Stored in a ref so toggling it
   // doesn't re-render the flow; the SetupBody owns its own checkbox state.
   const setRebalance = useCallback((on: boolean) => {
@@ -495,7 +478,6 @@ export function useLevelingFlow({
     onRunComplete,
     onRelevel,
     onAccept,
-    failFlow,
     setRebalance,
   };
 }

@@ -3223,7 +3223,11 @@ mod tests {
     fn name_fallback_only_confirms_a_uniquely_mapped_slot() {
         let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // Unique name at the target slot ⇒ the fallback may confirm.
-        assert!(name_maps_uniquely(&names(&["Cliff", "Target", "Lead"]), "Target", 1));
+        assert!(name_maps_uniquely(
+            &names(&["Cliff", "Target", "Lead"]),
+            "Target",
+            1
+        ));
         // Same name in two slots ⇒ can't prove which is the target ⇒ fail closed.
         assert!(!name_maps_uniquely(
             &names(&["Target", "Lead", "Target"]),
@@ -3231,7 +3235,11 @@ mod tests {
             0
         ));
         // Name present but at a DIFFERENT slot than claimed ⇒ fail closed.
-        assert!(!name_maps_uniquely(&names(&["Cliff", "Target"]), "Target", 0));
+        assert!(!name_maps_uniquely(
+            &names(&["Cliff", "Target"]),
+            "Target",
+            0
+        ));
         // Name absent ⇒ fail closed.
         assert!(!name_maps_uniquely(&names(&["Cliff", "Lead"]), "Target", 0));
     }
