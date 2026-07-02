@@ -2628,10 +2628,12 @@ fn blockcaps_pre_edit_roster(
             }
         }
     }
-    Err("blockcaps: could not read the pre-edit node roster after load — refusing to \
+    Err(
+        "blockcaps: could not read the pre-edit node roster after load — refusing to \
          emit an unvalidated edit (the device does not enforce the block-count caps, \
          so an unreadable roster must not save)"
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// What a Replace/Remove op's `(group, node_id)` target is replacing/removing, off the
@@ -2668,8 +2670,15 @@ fn blockcaps_check(
         return Ok(());
     };
     let (replaced_id, replaced_dual) = replaced.map_or((None, false), |(id, d)| (Some(id), d));
-    blockcaps::check_op(counts, candidate_id, replaced_id, is_replace, false, replaced_dual)
-        .map_err(|reason| reason.to_string())
+    blockcaps::check_op(
+        counts,
+        candidate_id,
+        replaced_id,
+        is_replace,
+        false,
+        replaced_dual,
+    )
+    .map_err(|reason| reason.to_string())
 }
 
 /// Roll the running `counts` forward after a CONFIRMED op, so the NEXT op in the same
@@ -2693,9 +2702,9 @@ fn blockcaps_advance(
 /// cap-check — see [`blockcaps_check`]).
 fn repl_arg_fender_id(repl: &ReplArg) -> Option<&str> {
     match repl {
-        ReplArg::Model { fender_id } | ReplArg::Ir { fender_id, .. } | ReplArg::Saved { fender_id, .. } => {
-            Some(fender_id.as_str())
-        }
+        ReplArg::Model { fender_id }
+        | ReplArg::Ir { fender_id, .. }
+        | ReplArg::Saved { fender_id, .. } => Some(fender_id.as_str()),
         ReplArg::Remove => None,
     }
 }
@@ -10396,10 +10405,7 @@ fn compute_migration_plan(
     let presets: Vec<(u32, serde_json::Value)> = lib
         .records
         .iter()
-        .filter_map(|r| {
-            r.list_index
-                .and_then(|li| serde_json::from_str(&r.decoded_json).ok().map(|v| (li, v)))
-        })
+        .filter_map(|r| r.list_index.zip(serde_json::from_str(&r.decoded_json).ok()))
         .collect();
     let affected = migration::scan_affected(&presets, &removed);
     let plan = migration::plan_replacements(&affected, rename_map);

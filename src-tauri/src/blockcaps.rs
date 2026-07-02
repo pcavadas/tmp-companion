@@ -69,10 +69,9 @@ struct Sets {
 fn sets() -> &'static Sets {
     static SETS: OnceLock<Sets> = OnceLock::new();
     SETS.get_or_init(|| {
-        let v: Value = serde_json::from_str(include_str!(
-            "../../src/models/block-classification.json"
-        ))
-        .expect("block-classification.json must parse");
+        let v: Value =
+            serde_json::from_str(include_str!("../../src/models/block-classification.json"))
+                .expect("block-classification.json must parse");
         let string_set = |key: &str| -> HashSet<String> {
             v.get(key)
                 .and_then(Value::as_array)
@@ -338,7 +337,14 @@ mod tests {
         let mut c = counts(&roster(&[(BAKED_REVERB_COMBO, false)]));
         // Step 1: replace the wet combo with its dry (cabinet-only) sibling — frees conv.
         assert_eq!(
-            check_op(&c, DRY_VARIANT, Some(BAKED_REVERB_COMBO), true, false, false),
+            check_op(
+                &c,
+                DRY_VARIANT,
+                Some(BAKED_REVERB_COMBO),
+                true,
+                false,
+                false
+            ),
             Ok(())
         );
         c.add(DRY_VARIANT, false);
@@ -398,7 +404,14 @@ mod tests {
             ("ACD_DualRectifierCabIR", false),
         ]));
         assert_eq!(
-            check_op(&c, "ACD_HypersonicAmp6L6BlueCabIR", None, false, false, false),
+            check_op(
+                &c,
+                "ACD_HypersonicAmp6L6BlueCabIR",
+                None,
+                false,
+                false,
+                false
+            ),
             Err(BlockCapError::ProcessorUtilization)
         );
     }
@@ -406,7 +419,10 @@ mod tests {
     #[test]
     fn unknown_id_costs_nothing() {
         let c = counts(&roster(&[]));
-        assert_eq!(check_op(&c, "ACD_NotARealBlock", None, false, false, false), Ok(()));
+        assert_eq!(
+            check_op(&c, "ACD_NotARealBlock", None, false, false, false),
+            Ok(())
+        );
     }
 
     #[test]
