@@ -15,11 +15,17 @@ import { SegmentedControl } from "../../ui/primitives";
 import { resolveBlockArt, shortFallback } from "../../models/blockArt";
 import { cpuStr } from "../../models/cpu";
 import { type EditBlock, type OriginBlock } from "./copyModel";
+import { checkOp, REASON_COPY, type BaseCounts } from "./validateBlockEdit";
 
 export type EditMode = "replace" | "before" | "after";
 
 export interface BlockEditorProps {
   block: EditBlock;
+  /** The target preset's cap standing BEFORE this op — combined with the current
+   *  `mode` (below, local state) to grey out any candidate that would violate a
+   *  firmware cap. `block` doubles as the anchor (its model + dual-cab flag are
+   *  what a `replace` would free). */
+  counts: BaseCounts;
   /** The reference preset's name (chip-row preamble). */
   fromName: string;
   origin: OriginBlock[];
@@ -30,6 +36,7 @@ export interface BlockEditorProps {
 
 export function BlockEditor({
   block,
+  counts,
   fromName,
   origin,
   onRemove,
@@ -40,6 +47,7 @@ export function BlockEditor({
   const [mode, setMode] = useState<EditMode>("replace");
   const headArt = resolveBlockArt(block.model);
   const headName = headArt?.name ?? shortFallback(block.model);
+  const anchor = { model: block.model, dualCab: block.cabSim2Enabled };
 
   return (
     <div
@@ -136,59 +144,73 @@ export function BlockEditor({
           />
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {origin.map((o) => (
-            <span
-              key={o.model}
-              role="button"
-              // e2e hook: pick a candidate by its MODEL id (matches the tile's
-              // `data-block-tile` model exactly; the display label differs between them).
-              data-candidate={o.model}
-              onClick={() => {
-                onApply(mode, o.model);
-              }}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 11px 6px 7px",
-                borderRadius: t.rPill,
-                border: `0.5px solid ${t.hairlineStrong}`,
-                background: t.bg,
-                cursor: "pointer",
-              }}
-            >
-              <BlockArt
-                icon={o.icon}
-                tone={o.tone}
-                lab={o.lab}
-                footswitch={o.footswitch}
-                bodyColor={o.body}
-                accentColor={o.accent}
-                panelColor={o.panel}
-                size={22}
-                label={false}
-              />
+          {origin.map((o) => {
+            // Mode-aware pre-flight: would placing `o.model` via the CURRENT mode
+            // violate a firmware cap? UX only — greys out + explains, doesn't
+            // enforce (the Rust `copy_apply` guard is the real checkpoint).
+            const reason = checkOp(counts, o.model, mode, { anchor });
+            const blocked = reason != null;
+            return (
               <span
+                key={o.model}
+                role="button"
+                aria-disabled={blocked}
+                // e2e hook: pick a candidate by its MODEL id (matches the tile's
+                // `data-block-tile` model exactly; the display label differs between them).
+                data-candidate={o.model}
+                title={blocked ? REASON_COPY[reason] : undefined}
+                onClick={
+                  blocked
+                    ? undefined
+                    : () => {
+                        onApply(mode, o.model);
+                      }
+                }
                 style={{
-                  fontFamily: t.serif,
-                  fontSize: t.fsName2,
-                  color: t.ink,
-                  whiteSpace: "nowrap",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 11px 6px 7px",
+                  borderRadius: t.rPill,
+                  border: `0.5px solid ${t.hairlineStrong}`,
+                  background: t.bg,
+                  cursor: blocked ? "not-allowed" : "pointer",
+                  opacity: blocked ? 0.4 : 1,
                 }}
               >
-                {o.name}
+                <BlockArt
+                  icon={o.icon}
+                  tone={o.tone}
+                  lab={o.lab}
+                  footswitch={o.footswitch}
+                  bodyColor={o.body}
+                  accentColor={o.accent}
+                  panelColor={o.panel}
+                  size={22}
+                  label={false}
+                />
+                <span
+                  style={{
+                    fontFamily: t.serif,
+                    fontSize: t.fsName2,
+                    color: t.ink,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {o.name}
+                </span>
+                <span
+                  style={{
+                    fontFamily: t.mono,
+                    fontSize: t.fsMicro,
+                    color: t.faint,
+                  }}
+                >
+                  {o.cpu == null ? "" : `+${cpuStr(o.cpu, "")}`}
+                </span>
               </span>
-              <span
-                style={{
-                  fontFamily: t.mono,
-                  fontSize: t.fsMicro,
-                  color: t.faint,
-                }}
-              >
-                {o.cpu == null ? "" : `+${cpuStr(o.cpu, "")}`}
-              </span>
-            </span>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

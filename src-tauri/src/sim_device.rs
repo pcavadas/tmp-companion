@@ -111,6 +111,14 @@ struct SimState {
     /// read-back-after-write reflects the change — the Songs tab's contract.
     songs: Vec<String>,
     setlists: Vec<String>,
+    /// The preset JSON `currentPresetDataChanged`(3) echoes right after a `loadPreset` —
+    /// the pre-edit roster the `blockcaps` guard reads before its first structural
+    /// edit. Defaults to a plausible two-node `G1` graph (both ids uncapped by any of
+    /// the 5 firmware block-count caps) so the guard's mandatory roster read succeeds
+    /// without every test having to configure one; [`SimDevice::with_preset_json`]
+    /// overrides it for a test that needs a specific pre-edit roster (e.g. to exercise
+    /// an over-cap refusal).
+    preset_json: String,
 }
 
 impl Default for SimState {
@@ -122,6 +130,11 @@ impl Default for SimState {
             reject_at: None,
             songs: vec!["Opening Set".into(), "Encore".into()],
             setlists: vec!["Saturday Night".into()],
+            preset_json: r#"{"audioGraph":{"guitarNodes":{"G1":[
+                {"FenderId":"ACD_Twin57","nodeId":"n1"},
+                {"FenderId":"ACD_ChorusCE2","nodeId":"n2"}
+            ]}}}"#
+                .to_string(),
         }
     }
 }
@@ -148,6 +161,16 @@ impl SimDevice {
     /// REJECT the `n`th structural edit (1-based) with `presetError` (never save after).
     pub fn with_reject_at(self, n: u32) -> SimDevice {
         self.state.lock().expect("sim lock").reject_at = Some(n);
+        self
+    }
+
+    /// Override the preset JSON a `loadPreset` echoes as `currentPresetDataChanged`(3) —
+    /// the pre-edit roster the `blockcaps` guard reads. Lets a test configure a specific
+    /// `audioGraph` (e.g. one already at a block-count cap) to exercise the guard's
+    /// refusal end-to-end.
+    #[cfg(test)]
+    pub fn with_preset_json(self, json: &str) -> SimDevice {
+        self.state.lock().expect("sim lock").preset_json = json.to_string();
         self
     }
 
@@ -189,7 +212,14 @@ impl SimDevice {
             let dev_slot = proto::first_varint(&proto::parse(lp), 6).unwrap_or(0);
             let slot0 = dev_slot.saturating_sub(1) as u32;
             st.events.push(SimEvent::Loaded(slot0));
-            return vec![frame(&preset_loaded(dev_slot))];
+            // Echo `currentPresetDataChanged`(3) right after the load — the real device's
+            // post-load push the `blockcaps` guard reads as the pre-edit roster
+            // (`Session::current_preset_value`). May exceed one HID frame, so chunk it.
+            let mut reports = vec![frame(&preset_loaded(dev_slot))];
+            reports.extend(frame_multi(&current_preset_data_changed(
+                st.preset_json.as_bytes(),
+            )));
+            return reports;
         }
         if let Some(rn) = proto::first_bytes(&f, F_REPLACE_NODE) {
             let (group, node_id, fender_id) = three_strings(rn);
@@ -414,6 +444,18 @@ fn preset_loaded(dev_slot: u64) -> Vec<u8> {
     proto::field_varint(&mut inner, 1, 1);
     proto::field_varint(&mut inner, 6, dev_slot);
     preset_message(F_PRESET_LOADED, &inner)
+}
+
+/// `currentPresetDataChanged`(3) — `presetJson`(1) = LZ4("stored"/uncompressed-block)
+/// of the preset JSON. Mirrors the wire shape `session.rs`'s own fixtures build
+/// (`decode_current_preset_data_yields_active_graph_with_known_template`) and what
+/// `Session::current_preset_value` (`best_json_payload`'s `(3, 1)` carrier) reads back.
+const F_CURRENT_PRESET_DATA_CHANGED: u32 = 3;
+
+fn current_preset_data_changed(json: &[u8]) -> Vec<u8> {
+    let lz4 = proto::lz4_block_compress_stored(json);
+    let inner = proto::len_delimited(1, &lz4);
+    preset_message(F_CURRENT_PRESET_DATA_CHANGED, &inner)
 }
 
 /// `PresetLevelChanged{ presetLevel(1)=level }` (fixed32 float echo).

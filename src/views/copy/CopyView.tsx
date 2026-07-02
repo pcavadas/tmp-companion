@@ -10,7 +10,6 @@ import { useMemo, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { AlertBanner, Button } from "../../ui/primitives";
-import { CPU_BUDGET } from "../../models/cpu";
 import { slotLabel } from "../../lib/format";
 import { copyApply } from "../../lib/invoke";
 import { patchLibraryGraph } from "../level/libraryScan";
@@ -24,14 +23,24 @@ import { useCopyLibrary } from "./useCopyLibrary";
 import {
   activeFromEditGraph,
   applyEditOp,
-  cpuOfGraph,
   diffToOps,
   initEdit,
   isEdited,
   removeEditBlock,
   type EditMap,
 } from "./copyModel";
+import {
+  checkEdit,
+  REASON_COPY,
+  type BlockEditReason,
+} from "./validateBlockEdit";
 import type { ActiveGraph, CopyApplyItem, CopyJob } from "../../lib/types";
+
+/** One target slot that can't currently be saved, and why. */
+export interface BlockedSlot {
+  slot: number;
+  reason: BlockEditReason;
+}
 
 export interface CopyViewProps {
   connected: boolean;
@@ -118,26 +127,33 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
 
   // ── derived save gating (Step 2) ─────────────────────────────────────────
   // Recomputed only when an edit op lands (or the target set changes), not on every
-  // render — `isEdited` + `cpuOfGraph` walk every block of every target.
-  const { changedCount, overSlots } = useMemo(() => {
+  // render — `isEdited` + `checkEdit` walk every block of every target. `checkEdit`
+  // covers all 5 firmware caps (CPU + the 4 count/coexistence rules) — this is the
+  // UX-only up-front warning; the Rust `copy_apply` guard is the real enforcement.
+  const { changedCount, blockedSlots, blockedSlotNums } = useMemo(() => {
     let changed = 0;
-    const over: number[] = [];
+    const blocked: BlockedSlot[] = [];
     if (edit) {
       for (const s of toSlots) {
         const e = edit[s];
         if (!e) continue;
         if (isEdited(e)) changed += 1;
-        if (cpuOfGraph(e.graph) > CPU_BUDGET) over.push(s);
+        const reason = checkEdit(e);
+        if (reason) blocked.push({ slot: s, reason });
       }
     }
-    return { changedCount: changed, overSlots: over };
+    return {
+      changedCount: changed,
+      blockedSlots: blocked,
+      blockedSlotNums: blocked.map((b) => b.slot),
+    };
   }, [edit, toSlots]);
-  const saveBlocked = !edit || changedCount === 0 || overSlots.length > 0;
+  const saveBlocked = !edit || changedCount === 0 || blockedSlots.length > 0;
   const hint =
-    overSlots.length > 1
-      ? `${String(overSlots.length)} presets are over ${String(CPU_BUDGET)}% — fix them to save.`
-      : overSlots.length === 1
-        ? `${nameOf(overSlots[0])} is over ${String(CPU_BUDGET)}% — remove a block to save.`
+    blockedSlots.length > 1
+      ? `${String(blockedSlots.length)} presets can't save — fix them first.`
+      : blockedSlots.length === 1
+        ? `${nameOf(blockedSlots[0].slot)}: ${REASON_COPY[blockedSlots[0].reason]}.`
         : changedCount === 0
           ? "Tap a block in a preset to change it."
           : null;
@@ -307,7 +323,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
           edit={edit}
           open={open}
           changedCount={changedCount}
-          overSlots={overSlots}
+          blockedSlots={blockedSlotNums}
           saveBlocked={saveBlocked}
           hint={hint}
           backedUp={backedUp}

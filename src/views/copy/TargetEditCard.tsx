@@ -20,6 +20,7 @@ import {
   type OriginBlock,
   type PresetEdit,
 } from "./copyModel";
+import { baseCounts } from "./validateBlockEdit";
 
 export interface TargetEditCardProps {
   slot: number;
@@ -52,6 +53,10 @@ export function TargetEditCard({
   // render (e.g. opening/closing another card's inline editor).
   const cpu = useMemo(() => cpuOfGraph(edit.graph), [edit.graph]);
   const dirty = useMemo(() => isEdited(edit), [edit]);
+  // The graph's standing against each firmware cap, BEFORE the currently-open op —
+  // `BlockEditor` combines this with its own local `mode` (mode-aware grey-out lives
+  // there since `mode` is BlockEditor-local state; this card can't see it).
+  const counts = useMemo(() => baseCounts(edit.graph), [edit.graph]);
   const over = cpu > CPU_BUDGET;
   const openBlock = openUid != null ? findBlock(edit.graph, openUid) : null;
 
@@ -112,6 +117,7 @@ export function TargetEditCard({
       ) : (
         <BlockEditor
           block={openBlock}
+          counts={counts}
           fromName={fromName}
           origin={origin}
           onRemove={() => {

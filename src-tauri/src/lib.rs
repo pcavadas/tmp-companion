@@ -25,6 +25,7 @@ mod audio;
 mod audiograph;
 mod audition;
 mod backup;
+mod blockcaps;
 mod blocklib;
 mod bulk_cmd;
 mod bulkrun;
@@ -2577,6 +2578,111 @@ fn discover_replace_plans_via_backup(
     Ok(plans)
 }
 
+// ─── blockcaps guard plumbing ──────────────────────────────────────────────────
+//
+// Shared by every LIVE structural-edit writer (`replace_one_live`, `held_replace_one`,
+// `copy_apply_one`): the device does NOT enforce the 5 firmware block-count caps (see
+// `blockcaps.rs`'s module docs — two RE passes confirmed the cap logic is entirely
+// client-side in `tone-master-stomp-client` and can never emit a `presetError` for an
+// over-cap edit), so this Rust guard is the SOLE enforcement before a save. Every
+// writer: (1) reads the PRE-edit roster right after load+attach-confirm (before its
+// first structural edit), fail-closed if it can't be read; (2) checks each op's delta
+// against the running counts BEFORE emitting it; (3) on a violation, aborts the WHOLE
+// target with an `error` outcome carrying the reason — never a partial, unvalidated
+// save.
+
+/// Read the just-loaded preset's pre-edit node roster (+ its cap counts) off the held
+/// session, retrying (mirrors [`ordered_group`]'s pattern — the post-load field-3 push
+/// can lag a heartbeat window). Fail-closed: `Err` propagates as the caller's `error`
+/// outcome rather than ever letting an edit through unvalidated.
+fn blockcaps_pre_edit_roster(
+    s: &mut Session,
+) -> Result<(Vec<blockcaps::RosterEntry>, blockcaps::Counts), String> {
+    for i in 0..10 {
+        if i > 0 {
+            let _ = s.heartbeat();
+            let _ = s.pump_collect(250);
+        }
+        if let Ok(v) = s.current_preset_value() {
+            let roster = blockcaps::roster_from_preset(&v);
+            if !roster.is_empty() {
+                let counts = blockcaps::counts(&roster);
+                return Ok((roster, counts));
+            }
+        }
+    }
+    Err("blockcaps: could not read the pre-edit node roster after load — refusing to \
+         emit an unvalidated edit (the device does not enforce the block-count caps, \
+         so an unreadable roster must not save)"
+        .to_string())
+}
+
+/// What a Replace/Remove op's `(group, node_id)` target is replacing/removing, off the
+/// pre-edit roster (an Insert has no target; it only adds). Linear scan — rosters are
+/// tens of nodes; a node inserted by an EARLIER op in the same job resolves to `None`
+/// (its contribution is simply never freed — the strict, safe direction).
+fn blockcaps_replaced<'a>(
+    roster: &'a [blockcaps::RosterEntry],
+    group: &str,
+    node_id: &str,
+) -> Option<(&'a str, bool)> {
+    roster
+        .iter()
+        .find(|e| e.group == group && e.node_id == node_id)
+        .map(|e| (e.fender_id.as_str(), e.dual_cab))
+}
+
+/// Cap-check ONE candidate insert/replace against the running pre-edit `counts`.
+/// `candidate_id = None` is a bare Remove — no candidate to check; removing a node can
+/// only shrink counts, never push a cap over its max. `replaced` is the (fender_id,
+/// dual_cab) of the node a Replace targets, from [`blockcaps_replaced`] (`None` for
+/// an Insert/Remove). `cand_dual_cab` is always `false`: the wire format
+/// (`CopyRepl`/`ReplArg`) never carries a candidate's dual-cab flag — a fresh Model/Ir
+/// insert is never dual by construction; a `Saved` (device-library) block COULD be
+/// dual, but that's only knowable by reading the library entry, which the copy/replace
+/// wire protocol doesn't surface. Known residual gap (documented, not silently assumed).
+fn blockcaps_check(
+    counts: &blockcaps::Counts,
+    candidate_id: Option<&str>,
+    is_replace: bool,
+    replaced: Option<(&str, bool)>,
+) -> Result<(), String> {
+    let Some(candidate_id) = candidate_id else {
+        return Ok(());
+    };
+    let (replaced_id, replaced_dual) = replaced.map_or((None, false), |(id, d)| (Some(id), d));
+    blockcaps::check_op(counts, candidate_id, replaced_id, is_replace, false, replaced_dual)
+        .map_err(|reason| reason.to_string())
+}
+
+/// Roll the running `counts` forward after a CONFIRMED op, so the NEXT op in the same
+/// job/plan is checked against the up-to-date state (a job can carry multiple ops that
+/// each affect the same caps — e.g. two conv inserts in one job must be checked
+/// cumulatively, not each against the stale pre-edit snapshot).
+fn blockcaps_advance(
+    counts: &mut blockcaps::Counts,
+    candidate_id: Option<&str>,
+    replaced: Option<(&str, bool)>,
+) {
+    if let Some(id) = candidate_id {
+        counts.add(id, false); // see `blockcaps_check`'s doc on `cand_dual_cab`.
+    }
+    if let Some((id, dual)) = replaced {
+        counts.remove(id, dual);
+    }
+}
+
+/// The FenderId a [`ReplArg`] would insert, or `None` for `Remove` (no candidate to
+/// cap-check — see [`blockcaps_check`]).
+fn repl_arg_fender_id(repl: &ReplArg) -> Option<&str> {
+    match repl {
+        ReplArg::Model { fender_id } | ReplArg::Ir { fender_id, .. } | ReplArg::Saved { fender_id, .. } => {
+            Some(fender_id.as_str())
+        }
+        ReplArg::Remove => None,
+    }
+}
+
 /// Replace every pre-discovered target node in ONE preset and (if `save`) persist it.
 /// Owns TWO connections — the proven fw-1.8.45 path: conn1 loads the preset (making it
 /// the device's active/edit preset), then conn2's fresh handshake RE-ATTACHES to that
@@ -2588,7 +2694,9 @@ fn discover_replace_plans_via_backup(
 /// (1) conn2's active preset matching the target name (the load took) AND (2) EVERY
 /// `replaceNode` being confirmed by `nodeReplaced(40)` — a `presetError(53)`/no-ack
 /// aborts WITHOUT saving, so a misattached or rejected edit can never persist the
-/// wrong audioGraph.
+/// wrong audioGraph. (3) blockcaps guard — see the module docs above: EVERY target's
+/// delta against the 5 firmware block-count caps is checked against the PRE-edit
+/// roster before it's emitted, since the device enforces none of them.
 fn replace_one_live(
     plan: &ReplacePlan,
     repl: &ReplArg,
@@ -2639,9 +2747,25 @@ fn replace_one_live(
             ),
         });
     }
+    // ── blockcaps guard — read the PRE-edit roster now, before the first structural
+    //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
+    let (roster, mut counts) = blockcaps_pre_edit_roster(&mut s)?;
+    let candidate_id = repl_arg_fender_id(repl);
+
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
     let mut applied = 0usize;
     for (group, node_id) in &plan.targets {
+        let replaced = blockcaps_replaced(&roster, group, node_id);
+        if let Err(reason) = blockcaps_check(&counts, candidate_id, true, replaced) {
+            return Ok(BulkReplaceItem {
+                slot: list_index,
+                name: name.clone(),
+                outcome: "error".to_string(),
+                detail: format!(
+                    "blocked by block-count cap ({reason}) replacing {group}/{node_id} — NOT saved"
+                ),
+            });
+        }
         let confirmed = match repl {
             ReplArg::Saved { fender_id, index } => {
                 s.replace_node_with_block(group, node_id, fender_id, *index)?
@@ -2658,6 +2782,7 @@ fn replace_one_live(
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
+        blockcaps_advance(&mut counts, candidate_id, replaced);
         applied += 1;
     }
     if save {
@@ -2736,9 +2861,25 @@ fn held_replace_one(
             ),
         });
     }
+    // ── blockcaps guard — read the PRE-edit roster now, before the first structural
+    //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
+    let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+    let candidate_id = repl_arg_fender_id(repl);
+
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
     let mut applied = 0usize;
     for (group, node_id) in &plan.targets {
+        let replaced = blockcaps_replaced(&roster, group, node_id);
+        if let Err(reason) = blockcaps_check(&counts, candidate_id, true, replaced) {
+            return Ok(BulkReplaceItem {
+                slot: list_index,
+                name: name.clone(),
+                outcome: "error".to_string(),
+                detail: format!(
+                    "blocked by block-count cap ({reason}) replacing {group}/{node_id} — NOT saved"
+                ),
+            });
+        }
         let confirmed = match repl {
             ReplArg::Saved { fender_id, index } => {
                 s.replace_node_with_block(group, node_id, fender_id, *index)?
@@ -2755,6 +2896,7 @@ fn held_replace_one(
                 detail: format!("device rejected replace of {group}/{node_id} (presetError / no nodeReplaced) — NOT saved"),
             });
         }
+        blockcaps_advance(&mut counts, candidate_id, replaced);
         applied += 1;
     }
     if save {
@@ -2908,13 +3050,54 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         });
     }
 
+    // ── blockcaps guard — read the PRE-edit roster now, before the first structural
+    //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
+    let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+
     // Apply each op in order. The FIRST structural edit after a fresh load can be
     // silently DROPPED — retry it once (but NEVER on a presetError, a real rejection).
     let total = job.ops.len();
     for (i, op) in job.ops.iter().enumerate() {
         let first = i == 0;
+
+        // Candidate/mode/target per op kind: Remove has no candidate (only shrinks —
+        // never a cap check); Replace subtracts its target's contribution, Insert
+        // doesn't (mirrors the TS `checkOp` mode-aware formula).
+        let (candidate_id, is_replace, target): (Option<&str>, bool, Option<(&str, &str)>) =
+            match op {
+                CopyOp::Replace {
+                    group,
+                    node_id,
+                    repl,
+                } => (
+                    Some(repl.insert_fender_id()),
+                    true,
+                    Some((group.as_str(), node_id.as_str())),
+                ),
+                CopyOp::Insert { repl, .. } => (Some(repl.insert_fender_id()), false, None),
+                CopyOp::Remove { group, node_id } => {
+                    (None, false, Some((group.as_str(), node_id.as_str())))
+                }
+            };
+        let replaced = target.and_then(|(g, n)| blockcaps_replaced(&roster, g, n));
+        if let Err(reason) = blockcaps_check(&counts, candidate_id, is_replace, replaced) {
+            return Ok(CopyApplyItem {
+                slot: list_index,
+                name: name.clone(),
+                outcome: "error".to_string(),
+                detail: format!(
+                    "op {}/{total} ({}) blocked by block-count cap: {reason} — NOT saved",
+                    i + 1,
+                    describe_copy_op(op)
+                ),
+                graph: None,
+            });
+        }
+
         match apply_copy_op(s, op, first) {
-            Ok(true) => {}
+            Ok(true) => {
+                blockcaps_advance(&mut counts, candidate_id, replaced);
+            }
             Ok(false) => {
                 return Ok(CopyApplyItem {
                     slot: list_index,
@@ -12401,6 +12584,47 @@ mod copy_level_e2e_tests {
         assert!(
             !ev.contains(&SimEvent::Saved(6)),
             "rejected target B must NOT save: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn copy_apply_refuses_an_over_cap_insert_end_to_end() {
+        // The device does NOT enforce the 5 firmware block-count caps (C-1, see
+        // `blockcaps.rs`'s module docs) — this is the guard's REAL test: an over-cap
+        // edit must be refused HERE, before it ever reaches the device, not by any
+        // device response (the fake would happily confirm it, like the real firmware).
+        let sim = SimDevice::new().with_preset_json(
+            r#"{"audioGraph":{"guitarNodes":{"G1":[
+                {"FenderId":"ACD_AC30BrilliantCabIR","nodeId":"n1"},
+                {"FenderId":"ACD_AC30NormalCabIR","nodeId":"n2"}
+            ]}}}"#,
+        );
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let job = CopyJob {
+            list_index: 5,
+            name: "Stadium Lead".into(),
+            ops: vec![CopyOp::Insert {
+                group: "G1".into(),
+                before_fender_id: None,
+                repl: CopyRepl::Model {
+                    fender_id: "ACD_Ampeg66B15CabIR".into(), // a 3rd cabinet member
+                },
+            }],
+        };
+        let item = copy_apply_one(&mut s, &job, true).unwrap();
+        assert_eq!(item.outcome, "error");
+        assert!(
+            item.detail.contains("ComboHalfStackCabinetsLimit"),
+            "detail: {}",
+            item.detail
+        );
+        let ev = sim.events();
+        assert!(
+            !ev.iter().any(|e| matches!(
+                e,
+                SimEvent::Insert { .. } | SimEvent::Saved(_) | SimEvent::Renamed(_)
+            )),
+            "an over-cap insert must never reach the device, let alone save: {ev:?}"
         );
     }
 }
