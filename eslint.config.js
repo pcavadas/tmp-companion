@@ -87,5 +87,27 @@ export default tseslint.config(
     },
   },
 
+  {
+    // blockArt.ts must NOT import catalog.ts: that closes a module-init cycle
+    // blockArt → catalog → cpu → blockArt (a TDZ "cannot access before
+    // initialization" crash). Cross-cutting form+art decisions resolve at the
+    // view call site (which may import both), never inside a core model module.
+    files: ["src/models/blockArt.ts"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "./catalog",
+              message:
+                "blockArt.ts must not import catalog.ts — it closes the blockArt→catalog→cpu→blockArt module-init cycle (a TDZ crash). Resolve form+art at the view call site.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   eslintConfigPrettier,
 );

@@ -29,13 +29,8 @@ import {
 import type { CSSProperties } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
-import {
-  AlertBanner,
-  Button,
-  Modal,
-  SegmentedControl,
-  Toast,
-} from "../../ui/primitives";
+import { LoadErrorPane } from "../LoadErrorPane";
+import { Button, Modal, SegmentedControl, Toast } from "../../ui/primitives";
 import type { ToastKind } from "../../ui/primitives";
 import { EmptyState, UsbC } from "../EmptyState";
 import {
@@ -180,6 +175,15 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
       }, 4200);
     },
     [mountedRef],
+  );
+
+  // Clear the pending toast-dismiss timer on unmount. The mountedRef guard already
+  // blocks the setState, but don't leave a dangling timer (InstrumentRow's pattern).
+  useEffect(
+    () => () => {
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    },
+    [],
   );
 
   const songsBySlot = useMemo(
@@ -490,12 +494,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
 
   if (phase.kind === "error") {
     return (
-      <div style={{ padding: 28 }}>
-        <AlertBanner style={{ marginBottom: 14 }}>{phase.message}</AlertBanner>
-        <Button variant="primary" onClick={() => void refresh()}>
-          Try again
-        </Button>
-      </div>
+      <LoadErrorPane message={phase.message} onRetry={() => void refresh()} />
     );
   }
 
