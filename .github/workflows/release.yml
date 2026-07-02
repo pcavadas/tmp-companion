@@ -23,8 +23,27 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: src-tauri
+
       - name: Install dependencies
         run: bun install
+
+      # Gate the release: a broken build/test must not cut a signed, notarized
+      # DMG. These run before semantic-release, so a failure aborts the release.
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Frontend tests
+        run: bun run test
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
 
       - name: Release
         env:
