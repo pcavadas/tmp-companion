@@ -179,3 +179,65 @@ describe("libraryScan — songs↔presets axis data", () => {
     expect(lib.footswitchesPerIndex.has(57)).toBe(false);
   });
 });
+
+// A detach fires resetLibraryScan() while a scan is awaiting the ~22 s backup read. The
+// scan's continuation must NOT resurrect stale state or crash on the (now nulled) progress
+// unlisten in its finally — guarded by a module-level generation counter.
+describe("libraryScan — detach mid-scan (generation guard)", () => {
+  const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  beforeEach(() => {
+    resetLibraryScan();
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("abandons an in-flight scan on reset — no resurrect, no crash", async () => {
+    let resolveRead!: (v: BackupReadResult) => void;
+    const pending = new Promise<BackupReadResult>((r) => {
+      resolveRead = r;
+    });
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup" ? pending : Promise.resolve(null),
+    );
+
+    const scan = ensureLibraryScan();
+    await flush(); // let it reach `await readLibraryViaBackup()` (past the progress listen)
+    resetLibraryScan(); // device detaches mid-scan
+    resolveRead(BACKUP); // the read resolves — the continuation must not resurrect state
+    await scan; // the old finally crashed here on a nulled unlistenProgress()
+
+    const lib = getLibraryScan();
+    expect(lib.ready).toBe(false); // abandoned, not settled
+    expect(lib.presets).toEqual([]); // stale results dropped
+  });
+
+  it("a fresh scan runs normally after a detach abandoned the previous one", async () => {
+    let resolveRead!: (v: BackupReadResult) => void;
+    const pending = new Promise<BackupReadResult>((r) => {
+      resolveRead = r;
+    });
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup" ? pending : Promise.resolve(null),
+    );
+    const scan1 = ensureLibraryScan();
+    await flush();
+    resetLibraryScan();
+    resolveRead(BACKUP);
+    await scan1;
+    expect(getLibraryScan().ready).toBe(false);
+
+    // A new connection scans fresh and settles.
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(BACKUP)
+        : Promise.resolve(null),
+    );
+    await ensureLibraryScan();
+    const lib = getLibraryScan();
+    expect(lib.ready).toBe(true);
+    expect(lib.presets).toEqual([
+      { slot: 7, name: "Plexi Crunch" },
+      { slot: 57, name: "Stadium Lead" },
+    ]);
+  });
+});

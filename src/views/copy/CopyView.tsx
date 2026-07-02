@@ -77,6 +77,8 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
   const [saveSlots, setSaveSlots] = useState<number[]>([]);
   const [results, setResults] = useState<Map<number, CopyApplyItem>>(new Map());
   const [saveDone, setSaveDone] = useState(false);
+  // Set when the whole copy_apply run REJECTS (vs per-preset errors in `results`).
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const edit = hist ? hist.stack[hist.idx] : null;
   const canUndo = hist != null && hist.idx > 0;
@@ -189,6 +191,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
     setSaveSlots(jobs.map((j) => j.listIndex));
     setResults(new Map());
     setSaveDone(false);
+    setSaveError(null);
     setSaving(true);
     // Per-preset progress for the overlay (the streamed channel; online only).
     const onResult = (item: CopyApplyItem): void => {
@@ -227,7 +230,10 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
         }
         setSaveDone(true);
       })
-      .catch(() => {
+      .catch((e: unknown) => {
+        // The whole run failed (device error / lost connection) — surface it instead of a
+        // false "saved" (previously this swallowed the rejection and showed success).
+        setSaveError(e instanceof Error ? e.message : String(e));
         setSaveDone(true);
       });
   };
@@ -251,6 +257,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
     setSaveSlots([]);
     setResults(new Map());
     setSaveDone(false);
+    setSaveError(null);
     // Discard the staged work + return to Step 1 (the device now matches the edit).
     setHist(null);
     setOpen(null);
@@ -353,6 +360,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
           results={results}
           activeSlot={activeSaveSlot}
           done={saveDone}
+          failed={saveError}
           onDone={onSaveDone}
         />
       )}

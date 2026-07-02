@@ -24,6 +24,10 @@ export interface SaveOverlayProps {
   activeSlot: number | null;
   /** Every target has a result. */
   done: boolean;
+  /** Set when the whole `copy_apply` run REJECTED (device error / lost connection), as
+   *  opposed to per-preset errors that stream into `results`. Flips the done phase from
+   *  the green success medallion to a warn medallion + this message. */
+  failed?: string | null;
   onDone: () => void;
 }
 
@@ -33,6 +37,7 @@ export function SaveOverlay({
   results,
   activeSlot,
   done,
+  failed,
   onDone,
 }: SaveOverlayProps) {
   const { t } = useTheme();
@@ -57,14 +62,14 @@ export function SaveOverlay({
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  background: t.goodSoft,
-                  border: `0.5px solid ${t.goodBorder}`,
+                  background: failed ? t.warnSoft : t.goodSoft,
+                  border: `0.5px solid ${failed ? t.warnBorder : t.goodBorder}`,
                 }}
               >
                 <Icon
-                  name="check"
+                  name={failed ? "warn-tri" : "check"}
                   size={24}
-                  stroke={t.good}
+                  stroke={failed ? t.warn : t.good}
                   strokeWidth={2.2}
                 />
               </span>
@@ -76,7 +81,7 @@ export function SaveOverlay({
                   marginTop: 12,
                 }}
               >
-                Saved to the unit.
+                {failed ? "Save failed." : "Saved to the unit."}
               </div>
               <div
                 style={{
@@ -86,9 +91,16 @@ export function SaveOverlay({
                   marginTop: 5,
                 }}
               >
-                {String(total - errored)} preset
-                {total - errored === 1 ? "" : "s"} updated
-                {errored > 0 ? ` · ${String(errored)} could not be saved` : ""}.
+                {failed ?? (
+                  <>
+                    {String(total - errored)} preset
+                    {total - errored === 1 ? "" : "s"} updated
+                    {errored > 0
+                      ? ` · ${String(errored)} could not be saved`
+                      : ""}
+                    .
+                  </>
+                )}
               </div>
               {/* Once written, the unit can't be rolled back from here — the only
                   recovery is restoring a Pro Control backup (undo/redo was offline,
