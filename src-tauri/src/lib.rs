@@ -5781,6 +5781,7 @@ fn load_and_filter_amp_candidates(list_index: u32) -> Result<Vec<LevelBlockArg>,
 // Fresh stream per call (NOT the BatchedLive shared stream, whose windowed reads
 // mis-measured scenes — Klon read -6.96 LUFS when the knob's true range is -40..-14).
 // NO save.
+#[allow(clippy::too_many_arguments)] // cohesive per-scene measurement params; a struct would only add ceremony
 fn measure_scene_knob_isolated(
     list_index: u32,
     scene_slot: u32,
@@ -9222,10 +9223,9 @@ fn pick_scene_level_knob(
     let picked = candidates
         .iter()
         .filter(|c| is_amp_output_level_param(&c.parameter_id))
-        .filter(|c| {
+        .find(|c| {
             scenes::block_bypass_in_live_graph(&live_doc, &c.group_id, &c.node_id) == Some(false)
         })
-        .next()
         .ok_or_else(|| format!("no active amp outputLevel control found for scene slot {scene}"))?;
     let (lo, hi) = knob_bounds(picked.value);
     Ok((
@@ -11637,7 +11637,7 @@ mod audition_tests {
         let mut resp = ld(2, &rec("Oversize 4x12", 1));
         resp.extend(ld(2, &rec("Matchless", 0)));
         let body = ld(13, &ld(3, &resp));
-        let irs = find_user_irs(&[body.clone()]);
+        let irs = find_user_irs(std::slice::from_ref(&body));
         assert_eq!(irs.len(), 2);
         assert_eq!(irs[0].name, "Oversize 4x12");
         assert!(irs[0].exists);

@@ -198,10 +198,10 @@ impl SimDevice {
         let Some(pm) = proto::first_bytes(&top, TMS_PRESET) else {
             // Song (11) / Setlist (12) CRUD; else heartbeat / connection / settings (ignored).
             if let Some(sm) = proto::first_bytes(&top, TMS_SONG) {
-                return self.handle_list_msg(&sm.to_vec(), true);
+                return self.handle_list_msg(sm, true);
             }
             if let Some(slm) = proto::first_bytes(&top, TMS_SETLIST) {
-                return self.handle_list_msg(&slm.to_vec(), false);
+                return self.handle_list_msg(slm, false);
             }
             return Vec::new();
         };
@@ -336,12 +336,6 @@ impl SimDevice {
             return Vec::new();
         }
         Vec::new()
-    }
-
-    /// The current song/setlist names (for assertions).
-    #[cfg(test)]
-    pub fn song_names(&self) -> Vec<String> {
-        self.state.lock().expect("sim lock").songs.clone()
     }
 }
 
