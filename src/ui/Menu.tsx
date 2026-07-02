@@ -54,6 +54,7 @@ export function Menu({
     <>
       <Scrim onClose={onClose} zIndex={zIndex - 1} />
       <div
+        role="menu"
         style={{
           ...(surface === "popover" ? s.popoverCard : s.menuCard),
           position: "absolute",

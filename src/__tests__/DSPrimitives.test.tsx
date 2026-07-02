@@ -1,15 +1,17 @@
 // Smoke + behavior tests for the design foundation (theme/ + ui/).
 //
-// Covers the light-only token set and the icon catalogs (Icon + the shared
-// BlockArt illustration engine).
+// Covers the light-only token set, the icon catalogs (Icon + the shared
+// BlockArt illustration engine), and the a11y roles on the interactive
+// primitives (Checkbox / Toggle / MenuItem).
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { light, microLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
+import { Checkbox, Toggle, MenuItem } from "../ui/primitives";
 import type { ReactNode } from "react";
 
 function under(node: ReactNode) {
@@ -79,5 +81,33 @@ describe("icons — fuller catalogs", () => {
       <BlockArt icon="combo" tone="tweed" size={58} label={false} />,
     );
     expect(container.querySelector("svg")).not.toBeNull();
+  });
+});
+
+describe("primitives — a11y roles (VoiceOver)", () => {
+  it("Checkbox exposes role=checkbox with aria-checked", () => {
+    under(<Checkbox checked />);
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
+      "true",
+    );
+  });
+
+  it("Checkbox indeterminate → aria-checked=mixed", () => {
+    under(<Checkbox indeterminate />);
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe(
+      "mixed",
+    );
+  });
+
+  it("Toggle exposes role=switch with aria-checked", () => {
+    under(<Toggle on onClick={() => undefined} />);
+    expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe(
+      "true",
+    );
+  });
+
+  it("MenuItem exposes role=menuitem", () => {
+    under(<MenuItem label="Delete" onClick={() => undefined} />);
+    expect(screen.getByRole("menuitem")).toBeTruthy();
   });
 });

@@ -303,6 +303,8 @@ export function InstrumentRow({
               {count}
             </span>
             <span
+              role="button"
+              aria-label="Cancel"
               onClick={cancel}
               title="Cancel"
               style={{ cursor: "pointer", display: "inline-flex" }}
@@ -342,6 +344,8 @@ export function InstrumentRow({
               />
               Recording {rec.toFixed(1)} / {CALIBRATE_SECS}s
               <span
+                role="button"
+                aria-label="Cancel"
                 onClick={cancel}
                 title="Cancel"
                 style={{

@@ -99,6 +99,8 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
           </span>
         </div>
         <span
+          role="button"
+          aria-label="Save"
           onClick={save}
           title="Save"
           style={{ cursor: "pointer", display: "flex", padding: 3 }}
@@ -106,6 +108,8 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
           <Icon name="check" size={15} stroke={t.accentDeep} />
         </span>
         <span
+          role="button"
+          aria-label="Cancel"
           onClick={onCancel}
           title="Cancel"
           style={{ cursor: "pointer", display: "flex", padding: 3 }}
