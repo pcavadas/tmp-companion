@@ -129,6 +129,23 @@ pub fn is_empty_slot_name(name: &str) -> bool {
     n.is_empty() || n == "--" || n == "\u{2014}" || n.eq_ignore_ascii_case("empty")
 }
 
+/// True iff `name` appears at EXACTLY ONE position in the My Presets `names` list and
+/// that position is `list_index`. The uniqueness proof the [`Session::active_matches`]
+/// name fallback needs before it may confirm a save target: a duplicated display name
+/// (two slots, same name) or a name that matches no/other slot must fail closed.
+pub(crate) fn name_maps_uniquely(names: &[String], name: &str, list_index: u32) -> bool {
+    let mut hit = None;
+    for (i, n) in names.iter().enumerate() {
+        if n == name {
+            if hit.is_some() {
+                return false; // duplicate name ⇒ can't prove which slot is the target
+            }
+            hit = Some(i as u32);
+        }
+    }
+    hit == Some(list_index)
+}
+
 /// A level-type block control discoverable from a preset's `audioGraph` — a
 /// candidate leveling knob. `group_id`/`node_id`/`parameter_id` are the
 /// `ChangeParameter` coordinates; `model_id` is the stable Fender block id for
@@ -1649,6 +1666,72 @@ impl Session {
             .find_map(|b| extract_current_preset_display_name(b))
     }
 
+    /// Pure read-only check: is the preset at 0-based `list_index` the ACTIVE one?
+    /// Prefer the `PresetLoaded` slot echo (identity, immune to duplicate display
+    /// names); fall back to the active-preset NAME ONLY when no slot echo has arrived
+    /// — a slot echo that names a DIFFERENT slot must win over a possibly-duplicate
+    /// name. This is the shared shape of every save-over guard site.
+    ///
+    /// The name fallback FAILS CLOSED unless the accumulated My Presets list proves
+    /// `expected_name` maps to EXACTLY ONE slot and that slot is `list_index`: two
+    /// presets can share a display name (or the name can be an empty-slot label), so a
+    /// bare name match on a dropped load could otherwise confirm — and then save over —
+    /// the WRONG preset. No proven-unique list ⇒ no confirmation.
+    pub(crate) fn active_matches(&self, list_index: u32, expected_name: Option<&str>) -> bool {
+        let loaded = self.loaded_slot();
+        if loaded == Some(list_index) {
+            return true;
+        }
+        if loaded.is_some() {
+            return false;
+        }
+        let Some(n) = expected_name else {
+            return false;
+        };
+        if n.is_empty() || is_empty_slot_name(n) || self.active_preset_name().as_deref() != Some(n)
+        {
+            return false;
+        }
+        self.best_preset_list()
+            .is_some_and(|names| name_maps_uniquely(&names, n, list_index))
+    }
+
+    /// Confirm the preset at 0-based `list_index` is the ACTIVE one BEFORE a save-over
+    /// write. Checks [`Self::active_matches`]; if inconclusive, re-arms the device's
+    /// reply state ONCE (`connection_request` → `preset_list_request` →
+    /// `current_preset_info_request`) to force a fresh `currentPresetInfoChanged`,
+    /// then re-checks. `Err` when NEITHER the slot echo nor the name confirms — the
+    /// caller MUST NOT save: a load that didn't take leaves a DIFFERENT preset active,
+    /// and saving it overwrites the target slot with the wrong content (HW-demonstrated
+    /// data loss). Only call on a fresh/quiet connection — the re-arm draws a
+    /// `connectionError` on a dense-heartbeat session (the live-line re-arm gotcha).
+    pub fn confirm_active(
+        &mut self,
+        list_index: u32,
+        expected_name: Option<&str>,
+    ) -> Result<(), String> {
+        if self.active_matches(list_index, expected_name) {
+            return Ok(());
+        }
+        self.send_and_collect(&proto::connection_request(), 80)?;
+        self.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
+        self.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+        if let Some(name) = expected_name {
+            self.await_active_preset(name, 8);
+        }
+        if self.active_matches(list_index, expected_name) {
+            return Ok(());
+        }
+        Err(format!(
+            "could not confirm the preset at list index {list_index} is active before \
+             saving (slot echo {:?}, active name {:?}, expected {:?}) — refusing the save \
+             to avoid overwriting the wrong preset",
+            self.loaded_slot(),
+            self.active_preset_name(),
+            expected_name,
+        ))
+    }
+
     /// True if any reply body carries `presetMessage` inner `field` (e.g. 40
     /// `nodeReplaced`, 53 `presetError`).
     fn saw_preset_field(&self, field: u32) -> bool {
@@ -3132,6 +3215,23 @@ fn push_split(stages: &mut Vec<Stage>, a: Vec<GraphNode>, b: Vec<GraphNode>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_fallback_only_confirms_a_uniquely_mapped_slot() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Unique name at the target slot ⇒ the fallback may confirm.
+        assert!(name_maps_uniquely(&names(&["Cliff", "Target", "Lead"]), "Target", 1));
+        // Same name in two slots ⇒ can't prove which is the target ⇒ fail closed.
+        assert!(!name_maps_uniquely(
+            &names(&["Target", "Lead", "Target"]),
+            "Target",
+            0
+        ));
+        // Name present but at a DIFFERENT slot than claimed ⇒ fail closed.
+        assert!(!name_maps_uniquely(&names(&["Cliff", "Target"]), "Target", 0));
+        // Name absent ⇒ fail closed.
+        assert!(!name_maps_uniquely(&names(&["Cliff", "Lead"]), "Target", 0));
+    }
 
     #[test]
     fn extract_active_graph_reads_nodes_and_routing() {
