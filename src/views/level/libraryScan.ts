@@ -77,6 +77,11 @@ const emptyScan = (): LibraryScan => ({
 
 let state: LibraryScan = emptyScan();
 let inFlight = false;
+// Bumped by resetLibraryScan (a device detach). An in-flight scan captures this at entry
+// and abandons — never settles `ready`, never touches the listener — if it changed by the
+// time an await resolves, so a detach mid-scan can't resurrect stale state or double-free
+// the progress listener (the finally used to crash on a nulled unlistenProgress()).
+let generation = 0;
 let unlistenProgress: UnlistenFn | null = null;
 const subs = new Set<() => void>();
 
@@ -104,12 +109,21 @@ export function getLibraryScan(): LibraryScan {
 export async function ensureLibraryScan(): Promise<void> {
   if (inFlight || state.ready) return;
   inFlight = true;
+  const gen = generation;
   set({ ...emptyScan(), scanning: true });
-  unlistenProgress = await onBackupProgress((p) => {
-    set({ percent: p.percent });
+  const unlisten = await onBackupProgress((p) => {
+    if (gen === generation) set({ percent: p.percent });
   });
+  // A reset (detach) during the listen await → clean up this listener and bail before
+  // publishing it or touching state.
+  if (gen !== generation) {
+    unlisten();
+    return;
+  }
+  unlistenProgress = unlisten;
   try {
     const res = await readLibraryViaBackup();
+    if (gen !== generation) return; // reset mid-scan → drop the stale results
     const m = new Map<number, SceneInfo[]>();
     const amps = new Map<number, AmpCandidate[]>();
     const fsw = new Map<number, FootswitchInfo[]>();
@@ -166,11 +180,17 @@ export async function ensureLibraryScan(): Promise<void> {
     // Non-fatal: scene details stay unknown; whole-preset ticks degrade to Base-only.
     console.warn("library backup scene read failed:", e);
   } finally {
-    // `unlistenProgress` was assigned just above (before the try), so it's set.
-    unlistenProgress();
-    unlistenProgress = null;
-    inFlight = false;
-    set({ scanning: false, percent: 100, ready: true });
+    // Only the CURRENT scan settles. A reset (detach) already cleared state + the
+    // listener; settling `ready` here would strand a stale scan and double-free the
+    // listener (the old bug: unlistenProgress() on a nulled ref threw).
+    if (gen === generation) {
+      // Provably non-null here: reset (the only nuller) bumps `generation`, so
+      // gen === generation means it hasn't run since we published the listener.
+      unlistenProgress();
+      unlistenProgress = null;
+      inFlight = false;
+      set({ scanning: false, percent: 100, ready: true });
+    }
   }
 }
 
@@ -204,6 +224,7 @@ export function invalidateLibrarySongs(): void {
 
 /** Reset on disconnect so the NEXT connection scans fresh. */
 export function resetLibraryScan(): void {
+  generation++; // invalidate any in-flight scan so its continuation can't resurrect state
   if (unlistenProgress) {
     unlistenProgress();
     unlistenProgress = null;

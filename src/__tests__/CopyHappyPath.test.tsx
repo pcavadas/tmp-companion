@@ -47,7 +47,7 @@ import { backupRow } from "./copyFixtures";
 
 let copyApplyArgs: { jobs: unknown[]; save: boolean } | null = null;
 
-function installInvoke() {
+function installInvoke(rejectSave = false) {
   copyApplyArgs = null;
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     switch (command) {
@@ -82,6 +82,8 @@ function installInvoke() {
           onResult?: { onmessage?: (i: unknown) => void };
         };
         copyApplyArgs = { jobs: a.jobs, save: a.save };
+        if (rejectSave)
+          return Promise.reject(new Error("device disconnected mid-save"));
         const items = a.jobs.map((j) => ({
           slot: j.listIndex,
           name: j.name,
@@ -107,6 +109,52 @@ function renderView() {
   return r;
 }
 
+// Drive Step 1 (pick reference + target) → Step 2 (replace TwinReverb with DynaComp, tick
+// the backup box) → click Save. Stops the moment the copy_apply run is fired; the caller
+// asserts the resulting overlay state.
+async function driveToSave(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  await screen.findByText("Copy blocks between presets", undefined, {
+    timeout: 3000,
+  });
+  const stadiumMatches = await screen.findAllByText("Stadium Lead", undefined, {
+    timeout: 3000,
+  });
+  await user.click(stadiumMatches[0]);
+  const cleanMatches = await screen.findAllByText("Clean Verse", undefined, {
+    timeout: 3000,
+  });
+  await user.click(cleanMatches[cleanMatches.length - 1]);
+  const place = await screen.findByRole(
+    "button",
+    { name: /place the blocks/i },
+    { timeout: 3000 },
+  );
+  await user.click(place);
+  const twinTiles = await screen.findAllByText("65 TWN", undefined, {
+    timeout: 3000,
+  });
+  await user.click(twinTiles[twinTiles.length - 1]);
+  const dynaChip = await screen.findByText("DYNAMIC COMPRESSOR", undefined, {
+    timeout: 3000,
+  });
+  await user.click(dynaChip);
+  await user.click(
+    await screen.findByText(/backed up with pro control/i, undefined, {
+      timeout: 3000,
+    }),
+  );
+  const save = await screen.findByRole(
+    "button",
+    { name: /save to the unit/i },
+    { timeout: 3000 },
+  );
+  await act(async () => {
+    await user.click(save);
+  });
+}
+
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
   listeners.clear();
@@ -119,74 +167,7 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     installInvoke();
     const user = userEvent.setup();
     renderView();
-
-    // ── Step 1: ChoosePresets ────────────────────────────────────────────────
-    await screen.findByText("Copy blocks between presets", undefined, {
-      timeout: 3000,
-    });
-
-    // Each preset name appears in BOTH the "Copy from" (radio) and "Copy to"
-    // (checkbox) lists, which render in document order (from-list first, to-list
-    // second). Pick "Stadium Lead" as the reference from the FROM list (first
-    // occurrence), then tick "Clean Verse" as a target from the TO list (the
-    // to-list excludes the reference, so its sole occurrence is the last match).
-    const stadiumMatches = await screen.findAllByText(
-      "Stadium Lead",
-      undefined,
-      {
-        timeout: 3000,
-      },
-    );
-    await user.click(stadiumMatches[0]);
-
-    const cleanMatches = await screen.findAllByText("Clean Verse", undefined, {
-      timeout: 3000,
-    });
-    await user.click(cleanMatches[cleanMatches.length - 1]);
-
-    // "Place the blocks" only renders once the backup has settled (lib.ready).
-    const place = await screen.findByRole(
-      "button",
-      { name: /place the blocks/i },
-      { timeout: 3000 },
-    );
-    await user.click(place);
-
-    // ── Step 2: PlaceBlocks ──────────────────────────────────────────────────
-    // The target card renders its path; tap the TwinReverb tile to open the inline
-    // editor. The tile caption is the blockArt short, normalized to "65 TWN"
-    // (normalizeShort splits digit→letter). It renders in BOTH the read-only
-    // reference strip and the editable target card — the last occurrence is the
-    // editable target tile (the reference strip renders first).
-    const twinTiles = await screen.findAllByText("65 TWN", undefined, {
-      timeout: 3000,
-    });
-    await user.click(twinTiles[twinTiles.length - 1]);
-
-    // The editor opens with "Replace" active by default. Click an ORIGIN chip whose
-    // model differs from TwinReverb — "DYNAMIC COMPRESSOR" (ACD_DynaComp) → a clean
-    // replace op. (The chip is the origin palette entry rendered by its full name.)
-    const dynaChip = await screen.findByText("DYNAMIC COMPRESSOR", undefined, {
-      timeout: 3000,
-    });
-    await user.click(dynaChip);
-
-    // Tick "I've backed up with Pro Control" (gates Save).
-    await user.click(
-      await screen.findByText(/backed up with pro control/i, undefined, {
-        timeout: 3000,
-      }),
-    );
-
-    // Save to the unit.
-    const save = await screen.findByRole(
-      "button",
-      { name: /save to the unit/i },
-      { timeout: 3000 },
-    );
-    await act(async () => {
-      await user.click(save);
-    });
+    await driveToSave(user);
 
     // ── SaveOverlay reaches the done state ───────────────────────────────────
     await screen.findByText("Saved to the unit.", undefined, { timeout: 3000 });
@@ -227,5 +208,18 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     await screen.findByText("Copy blocks between presets", undefined, {
       timeout: 3000,
     });
+  });
+
+  it("surfaces a copy_apply rejection as a failure, not a false 'saved'", async () => {
+    installInvoke(true); // copy_apply REJECTS (device error / lost connection)
+    const user = userEvent.setup();
+    renderView();
+    await driveToSave(user);
+
+    // The overlay shows the FAILURE — not the green success + "N presets updated".
+    await screen.findByText("Save failed.", undefined, { timeout: 3000 });
+    expect(screen.getByText(/device disconnected mid-save/i)).toBeTruthy();
+    expect(screen.queryByText("Saved to the unit.")).toBeNull();
+    expect(screen.queryByText(/preset.*updated/i)).toBeNull();
   });
 });
