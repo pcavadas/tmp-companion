@@ -1,1 +1,3 @@
+set -e
 bunx lint-staged
+bash scripts/leak-guard.sh

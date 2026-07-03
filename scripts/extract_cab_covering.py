@@ -31,9 +31,8 @@ import sys
 import zlib
 from pathlib import Path
 
-DEFAULT_BIN = Path.home() / (
-    "Documents/Personal/tmp/firmware/1.8.45/rootfs/home/root/tone-master-stomp-client"
-)
+# Placeholder — pass the extracted client binary path as argv[1] (see usage above).
+DEFAULT_BIN = Path("tone-master-stomp-client")
 OUT = Path(__file__).resolve().parent.parent / "src/models/cabCovering.generated.ts"
 
 # Slug covering token / family base → a companion ToneId (src/ui/blockart/shared.tsx).

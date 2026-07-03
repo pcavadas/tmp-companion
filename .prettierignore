@@ -3,3 +3,6 @@ src-tauri/
 node_modules/
 bun.lock
 .design-ref/
+
+# Dense, hand-maintained agent doc — don't let prettier reflow its layout
+CLAUDE.md

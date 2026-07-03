@@ -19,8 +19,10 @@ ds-bundle/
 .design-sync/
 dts-gen/
 
-# Claude local state (skills symlink, scheduled-task locks, etc.)
-.claude/
-
-# CLAUDE.md — internal RE/working notes, kept local (not part of the public repo)
-/CLAUDE.md
+# Claude Code local & ephemeral state
+.claude/settings.local.json
+.claude/worktrees/
+.claude/projects/
+.claude/*.local.md
+.claude/scheduled_tasks.lock
+CLAUDE.local.md

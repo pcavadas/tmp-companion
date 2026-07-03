@@ -18,7 +18,7 @@ A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that
 
 ## Platform constraints
 
-- macOS 14+ on Apple Silicon. The IOKit HID seize and cpal CoreAudio paths are `cfg(target_os = "macos")`.
+- macOS 12+ on Apple Silicon. The IOKit HID seize and cpal CoreAudio paths are `cfg(target_os = "macos")`.
 - Exclusive HID seize blocks Pro Control — the app surfaces a "close Pro Control" error if it is running.
 - The device is single-connection: every device command is serialized through a process-global lock.
 - Behaviour is firmware-version dependent (validated on 1.7.75 and 1.8.45).
