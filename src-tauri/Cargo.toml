@@ -23,7 +23,7 @@ serde_json = "1"
 crossbeam-channel = "0.5"
 # Re-amp playback + capture of the processed return. cpal IS native CoreAudio
 # (AUHAL) on macOS — same backend the emulator uses.
-cpal = "0.15"
+cpal = "0.18"
 # Pure-Rust EBU R128 / ITU-R BS.1770 loudness measurement (no C dependency).
 ebur128 = "0.1"
 # WAV decode for sound samples + capture dumps.
