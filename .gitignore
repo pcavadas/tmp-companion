@@ -19,15 +19,10 @@ ds-bundle/
 .design-sync/
 dts-gen/
 
-# Claude local state — ignore everything under .claude/ by default …
-.claude/*
-# … but commit the vetted-public agent skills as real files (explicit allowlist).
-# Re-include the dir before excluding its children so the leaf negations can reach;
-# fails safe — a forgotten !line means a public skill is merely missing, never a
-# private one leaked.
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/tmp-companion-frontend/
-!.claude/skills/tmp-companion-catalog/
-!.claude/skills/tmp-companion-write-safety/
-!.claude/skills/tmp-companion-device-ops/
+# Claude Code local & ephemeral state
+.claude/settings.local.json
+.claude/worktrees/
+.claude/projects/
+.claude/*.local.md
+.claude/scheduled_tasks.lock
+CLAUDE.local.md

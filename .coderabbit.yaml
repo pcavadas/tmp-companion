@@ -65,8 +65,8 @@ knowledge_base:
     filePatterns:
       - ".claude/skills/tmp-companion-frontend/SKILL.md"
       - ".claude/skills/tmp-companion-catalog/SKILL.md"
-      - ".claude/skills/tmp-companion-write-safety/SKILL.md"
-      - ".claude/skills/tmp-companion-device-ops/SKILL.md"
+      - ".claude/skills/tmp-companion-protocol/SKILL.md"
+      - ".claude/skills/tmp-companion-data-model/SKILL.md"
       - "notes/**"
 
 chat:
