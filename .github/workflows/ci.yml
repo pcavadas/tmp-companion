@@ -13,6 +13,8 @@ jobs:
     runs-on: macos-14 # the Rust crate is macOS-only (IOKit/CoreAudio)
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
 
@@ -25,7 +27,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build frontend (also produces dist/ for tauri-build)
         run: bun run build
@@ -71,7 +73,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Install frontend dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Install Playwright Chromium
         run: bunx playwright install chromium
@@ -86,5 +88,18 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6
+
+  leak-guard:
+    # Belt-and-braces for the pre-commit hook: block private firmware-emulator
+    # content in tracked files. Pure grep — no macOS/HID/bun needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Scan tracked files for private-project markers
+        run: bash scripts/leak-guard.sh --all

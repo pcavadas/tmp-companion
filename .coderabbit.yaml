@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit is ADVISORY here: it is never a required status check and its review
+# never counts as an approval (both enforced by the "protect main" ruleset, which
+# requires a human code-owner review). Its verdict is computed over author-controlled
+# text and must never gate a merge.
+language: en-US
+
+reviews:
+  profile: assertive # public repo — bias toward surfacing issues over quiet reviews
+  auto_review:
+    enabled: true
+    drafts: false # drafts stay UNREVIEWED; review fires on promote-to-ready
+    base_branches:
+      - main
+
+  # File-scoped invariants — the load-bearing rules that break SILENTLY (no error,
+  # no failing test unless an oracle is updated). Scoped to the exact files where a
+  # violation appears in a diff, so CodeRabbit flags it reliably.
+  path_instructions:
+    - path: "src-tauri/src/{audiograph,bulk_cmd,preset_io}.rs"
+      instructions: |
+        A signal-chain block lives in THREE differently-keyed places; a mutation must touch ALL or leave dangling state:
+        (1) audioGraph.guitarNodes/micNodes (roster, by FenderId), (2) scenes[].<group>.<FenderId> (per-scene overrides, by FenderId),
+        (3) ftsw[i][].nodes[].nodeId (footswitch assignments, by EXACT nodeId).
+        Flag a remove/replace/insert/create-variant that updates the roster but not the scene overrides (drop_scene_overrides) or the ftsw map (retarget_ftsw).
+        The backend matches by EXACT FenderId — a frontend suffix-normalized id (resolveDeviceId strips CabIR/ConvRvb/…) reaching a backend OpSpec silently fail-matches. Flag it.
+    - path: "src-tauri/src/session.rs"
+      instructions: |
+        Setters/commands and the heartbeat MUST omit batchStatus (only *requests* carry it) — a setter sent WITH a batchStatus is silently ignored by the device.
+        Slot translation is owned here: callers pass a 0-based list index; slot-addressed setters (loadPreset/saveCurrentPreset/clearUserPreset/moveUserPreset) send index+1.
+        Before any destructive op (clear/move/save-over) keyed on a slot mapping, require a non-destructive read confirming the mapping in the SAME address space as the mutation.
+    - path: "src-tauri/src/{leveller,audio,lufs}.rs"
+      instructions: |
+        The 6 s + 0.8 s capture window is load-bearing — flag trimming, early-exit, tail-drop, or preroll-skip of the DEFAULT measure path (adaptive is opt-in only).
+        Never re-engage re-amp on a held connection (disengage→re-engage wedged the device and rebooted the host). Never reintroduce unbounded capture accumulation — reuse one LiveReamp stream pair per preset.
+        Per-scene leveling may change ONLY the amp outputLevel (never preamp/master/volume).
+    - path: "src-tauri/src/backup.rs"
+      instructions: |
+        The preset XOR key is a committed const PRESET_XOR_KEY = *b"JLD". Do NOT reintroduce runtime derive_key / learn_key / panic-recovery key discovery.
+    - path: "src/lib/types.ts"
+      instructions: |
+        These are hand-written mirrors of serialized Rust structs. If the PR adds/renames a field on a Rust Serialize struct without updating the matching mirror here, flag it — the mismatch fails SILENTLY (test mocks are untyped).
+        Check serde casing PER FIELD: an explicit #[serde(rename)] overrides the enum rename_all (Copy's CopyJob/CopyOp/CopyRepl use camelCase nested keys despite snake_case rename_all).
+    - path: "src/lib/invoke.ts"
+      instructions: |
+        invoke.test.ts asserts the EXACT cmd-wrapper count. Adding/removing a wrapper INSIDE the `cmd` namespace must update that count; the fire-and-forget cancel* wrappers are named-export-only (outside cmd) and must NOT move it.
+        A new tmp:// event needs the LIVE_EVENT registry entry + onXxx wrapper + types.ts payload mirror together (liveEvents.test.ts asserts the whole registry).
+    - path: "src/**/*.{ts,tsx}"
+      instructions: |
+        No escape hatches: no eslint-disable / @ts-nocheck / @ts-ignore / @ts-expect-error, no any / as any, no non-null `!`. Fix by changing code, not silencing.
+        Every line-icon routes through <Icon name=...> and every block illustration through BlockIcon — flag inline glyph <svg> in a view.
+        React hooks must precede any conditional early return. Dialogs/overlays go through the ONE DS Dialog (ui/Dialog.tsx) — flag a per-view position:absolute/fixed scrim.
+        The app is click-only — flag added keyboard-shortcut / onKeyDown-submit handlers.
+    - path: ".github/workflows/**"
+      instructions: |
+        Security-critical. Flag: a new pull_request_target trigger; a job that checks out a PR head AND has access to secrets; interpolating untrusted ${{ github.event.* }} into a run: block (use an env: var); a widened permissions: scope; an un-pinned action (must be a full commit SHA). Keep least-privilege.
+
+knowledge_base:
+  code_guidelines:
+    enabled: true # keeps defaults incl. **/CLAUDE.md (repo-wide guidelines)
+    # Additive to the defaults. These self-govern their own directories (used when a
+    # skill/note is edited); the real src/ enforcement is the path_instructions above.
+    # Enumerated explicitly — never a .claude/skills/** wildcard.
+    filePatterns:
+      - ".claude/skills/tmp-companion-frontend/SKILL.md"
+      - ".claude/skills/tmp-companion-catalog/SKILL.md"
+      - ".claude/skills/tmp-companion-write-safety/SKILL.md"
+      - ".claude/skills/tmp-companion-device-ops/SKILL.md"
+      - "notes/**"
+
+chat:
+  auto_reply: true
+  # Don't let arbitrary fork users drive the bot with @coderabbitai commands.
+  allow_non_org_members: false

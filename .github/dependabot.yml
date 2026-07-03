@@ -1,0 +1,59 @@
+# Dependency version updates with a 7-day maturity cooldown (a window against
+# freshly-published compromised releases). Security fixes are a SEPARATE lane
+# (repo setting "Dependabot security updates") and are NOT delayed by this cooldown.
+# Bot PRs are never auto-merged — every bump is reviewed and merged by hand.
+version: 2
+
+updates:
+  # Frontend — Bun (package.json + bun.lock at repo root)
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      frontend-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Backend — Cargo (src-tauri/Cargo.toml + Cargo.lock)
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      rust-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # CI — GitHub Actions (bumps the SHA pins + their `# vN` comments together)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      actions-all:
+        applies-to: version-updates
+        patterns:
+          - "*"
