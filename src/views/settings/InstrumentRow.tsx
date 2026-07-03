@@ -49,6 +49,8 @@ export function InstrumentRow({
   const [rec, setRec] = useState(0);
   const [menu, setMenu] = useState(false);
   const [calibErr, setCalibErr] = useState<string | null>(null);
+  // Non-fatal quality caveats from the last calibration (clip / stimulus ceiling).
+  const [calibWarn, setCalibWarn] = useState<string | null>(null);
 
   // Live timers. `abortedRef` gates the in-flight calibrate_profile promise's resolve so a
   // cancelled / unmounted row never applies its result (setState after unmount, or a
@@ -87,6 +89,7 @@ export function InstrumentRow({
     setMenu(false);
     abortedRef.current = false;
     clearTimers();
+    setCalibWarn(null);
     setPhase("countdown");
     let n = 3;
     setCount(n);
@@ -114,9 +117,19 @@ export function InstrumentRow({
     }, stepMs);
 
     calibrateProfile(profile.id, CALIBRATE_SECS)
-      .then(() => {
+      .then((res) => {
         if (abortedRef.current) return;
         clearTimers();
+        const warns: string[] = [];
+        if (res.clipped)
+          warns.push(
+            "signal clipped — re-calibrate with softer playing or the guitar volume rolled back",
+          );
+        if (res.stimulus_shortfall_lu != null)
+          warns.push(
+            `instrument hotter than the test signal can reproduce — leveling drives ~${res.stimulus_shortfall_lu.toFixed(1)} LU softer`,
+          );
+        setCalibWarn(warns.join("; ") || null);
         setPhase("idle");
         onCalibrated();
       })
@@ -146,7 +159,9 @@ export function InstrumentRow({
       : phase === "recording"
         ? t.record
         : calibrated && phase === "idle"
-          ? t.good
+          ? calibWarn != null
+            ? t.sevWarn
+            : t.good
           : t.sevWarn;
   const dot = statusColor;
   const subColor = statusColor;
@@ -159,7 +174,9 @@ export function InstrumentRow({
         : phase === "error"
           ? (calibErr ?? "too quiet to read — last attempt failed")
           : calibrated
-            ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS`
+            ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS${
+                calibWarn != null ? ` — ${calibWarn}` : ""
+              }`
             : "not calibrated";
 
   // Type = the topology's instrument label; Pickup = the topology's label.
@@ -245,6 +262,7 @@ export function InstrumentRow({
             )}
           </div>
           <div
+            title={sub}
             style={{
               fontFamily: t.mono,
               fontSize: t.fsData2,

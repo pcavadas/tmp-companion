@@ -61,6 +61,18 @@ const AMP_BIDS = new Set(
     .filter((bid): bid is string => bid != null),
 );
 
+// Envelope-follower effects (`effect_type: "Envelope Filter"` — the guide's own
+// discriminator, so manual CryBaby wahs, which are expression-driven, stay out).
+// Their response tracks the stimulus's attack/decay envelope, so the synthetic clip
+// can park them in a different regime than real playing — any preset carrying one
+// gets the "envelope" verify-by-ear cause regardless of how clean the numbers look.
+// Pedal fender_ids on the wire are exact (no CabIR-class suffixes) → plain Set.has.
+const ENVELOPE_BIDS = new Set(
+  MODELS.filter((m) => m.et === "Envelope Filter")
+    .map((m) => m.bid)
+    .filter((bid): bid is string => bid != null),
+);
+
 interface Candidate {
   groupId: string;
   nodeId: string;
@@ -149,6 +161,9 @@ export interface UseLevelingFlowDeps {
   /** Per-preset amp `outputLevel` candidates from the SAME backup read, keyed by
    *  0-based list index — so a scene run never needs a live discovery round-trip. */
   ampCandidates: Map<number, AmpCandidate[]>;
+  /** Per-preset block roster (fender_ids) from the SAME backup read, keyed by
+   *  0-based list index — drives the envelope-follower verify-by-ear cause. */
+  blocksByIndex: Map<number, string[]>;
   targetLufsByName: (name: string | null) => number;
   /** Drop just the given selection keys (BUG-4: prune the keys a run actually leveled,
    *  accumulating across re-level rounds, so un-run sounds stay selected). */
@@ -162,6 +177,7 @@ export function useLevelingFlow({
   sceneInfo,
   footswitchInfo,
   ampCandidates,
+  blocksByIndex,
   targetLufsByName,
   deselectKeys,
   refresh,
@@ -292,6 +308,14 @@ export function useLevelingFlow({
         publish(i, false, false);
         const profile = profileById(it.instId);
         const targetLufs = targetLufsByName(it.targetName);
+        // Envelope-follower presets get the "envelope" cause over any result-derived
+        // one: the effect tracks the stimulus envelope, so the measurement itself is
+        // suspect no matter how clean the numbers look.
+        const envelope = (blocksByIndex.get(it.slot) ?? []).some((id) =>
+          ENVELOPE_BIDS.has(id),
+        );
+        const causeOf = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
+          envelope ? "envelope" : byEarCause(r);
         try {
           if (it.isBase) {
             const res = await levelPreset(
@@ -300,7 +324,7 @@ export function useLevelingFlow({
             it.outcome = outcomeOf(res);
             it.value = valueOf(res);
             it.spreadLu = res.dynamic_spread_lu;
-            it.verifyByEar = byEarCause(res);
+            it.verifyByEar = causeOf(res);
           } else if (it.footswitch != null) {
             // A block-acting FOOTSWITCH — level its engaged state so stomping it lands
             // on target. One job per call (one footswitch at a time, like a scene); the
@@ -335,7 +359,7 @@ export function useLevelingFlow({
               it.outcome = outcomeOf(r);
               it.value = valueOf(r);
               it.spreadLu = r.dynamic_spread_lu;
-              it.verifyByEar = byEarCause(r);
+              it.verifyByEar = causeOf(r);
             }
           } else {
             let cands = candCache.get(it.slot);
@@ -374,7 +398,7 @@ export function useLevelingFlow({
                 it.outcome = outcomeOf(r);
                 it.value = valueOf(r);
                 it.spreadLu = r.dynamic_spread_lu;
-                it.verifyByEar = byEarCause(r);
+                it.verifyByEar = causeOf(r);
               }
             }
           }
@@ -407,7 +431,7 @@ export function useLevelingFlow({
       }
       publish(total, true, stopped);
     },
-    [profileById, targetLufsByName, refresh, ampCandidates],
+    [profileById, targetLufsByName, refresh, ampCandidates, blocksByIndex],
   );
 
   // Set-up "Level N sounds" (the COMMIT) → build run items and start. The backup

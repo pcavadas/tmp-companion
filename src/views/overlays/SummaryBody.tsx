@@ -262,10 +262,15 @@ export function SummaryBody({
     skipped.length === 0 &&
     notrun.length === 0 &&
     !stopped;
-  // The footnote is reason-aware: a row earns the "by ear" chip for one of two causes,
+  // The footnote is reason-aware: a row earns the "by ear" chip for one of three causes,
   // which prompt DIFFERENT listening — keep one chip per row, but spell out only the
-  // causes actually present, joined by "; ".
+  // causes actually present, joined by "; ". Envelope first (it questions the
+  // measurement itself, matching its precedence over the result-derived causes).
   const byEarReasons: string[] = [];
+  if (items.some((it) => byEarOf(it) === "envelope"))
+    byEarReasons.push(
+      "an envelope filter responds to the test signal differently than to real playing",
+    );
   if (items.some((it) => byEarOf(it) === "dynamic"))
     byEarReasons.push("loud/quiet swings make the number an average");
   if (items.some((it) => byEarOf(it) === "rebalance"))

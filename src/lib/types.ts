@@ -173,6 +173,18 @@ export interface Profile {
   calibration_lufs: number | null;
 }
 
+/** What one Tier-2 calibration measured + its quality caveats (mirrors
+ * lib::CalibrateResult). */
+export interface CalibrateResult {
+  /** Measured dry-instrument loudness (K-weighted LUFS), stored on the profile. */
+  lufs: number;
+  /** Dry capture hit 0 dBFS — measurement biased low; re-calibrate softer. */
+  clipped: boolean;
+  /** LU the topology stimulus falls short of reproducing `lufs` (peak-capped);
+   * null when reachable. */
+  stimulus_shortfall_lu: number | null;
+}
+
 /** A named loudness target the user can apply per preset (mirrors profiles::Target). */
 export interface Target {
   name: string;

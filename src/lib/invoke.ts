@@ -17,6 +17,7 @@ import type {
   FootswitchLevelResult,
   LevelBlock,
   Profile,
+  CalibrateResult,
   Target,
   Store,
   PlaybackLevel,
@@ -168,12 +169,12 @@ export const setPlaybackLevel = (level: PlaybackLevel): Promise<void> =>
   invoke("set_playback_level", { level });
 
 /** Settings — Tier-2 calibration: capture dry instrument for `secs` (clamped
- * 2..30), store K-weighted LUFS, return it. DEVICE WRITE (persists calibration).
- * Use a countdown, NOT window.confirm. */
+ * 2..30), store K-weighted LUFS, return it + clip/stimulus-ceiling caveats.
+ * DEVICE WRITE (persists calibration). Use a countdown, NOT window.confirm. */
 export const calibrateProfile = (
   profileId: string,
   secs: number,
-): Promise<number> => invoke("calibrate_profile", { profileId, secs });
+): Promise<CalibrateResult> => invoke("calibrate_profile", { profileId, secs });
 
 /** Settings — shipped pickup-topology catalog. */
 export const listPickupTopologies = (): Promise<TopologyInfo[]> =>

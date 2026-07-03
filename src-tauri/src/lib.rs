@@ -5711,6 +5711,49 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
     ))
 }
 
+/// HW A/B of TWO stimuli per preset: for each slot, `measure_c` with stimulus A then
+/// B and report the solved ceilings + dynamics spreads and ΔC. Quantifies how
+/// sensitive each preset's leveling is to the stimulus character (e.g. the shipped
+/// plucked noise vs a real chord DI captured with `--capture-input`) — data for the
+/// playing-style question before any product change. Read-only (no save, no level
+/// write persists); ends with a guaranteed re-amp OFF. Per-slot errors print in-row
+/// and the sweep continues.
+pub fn probe_stim_ab(
+    slots: &[u32],
+    wav_a: &str,
+    wav_b: &str,
+    ref_level: f32,
+) -> Result<String, String> {
+    let stim_a = read_stimulus_48k(wav_a)?;
+    let stim_b = read_stimulus_48k(wav_b)?;
+    let mut out = format!(
+        "stimulus A/B @ ref {ref_level:.2}\n  A = {wav_a}\n  B = {wav_b}\n\
+         \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"
+    );
+    for &slot in slots {
+        // measure_c owns its own connection/gap pacing (the level_setlist precedent).
+        let row = leveller::measure_c(slot, &stim_a, ref_level)
+            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level).map(|b| (a, b)));
+        match row {
+            Ok((a, b)) => {
+                out += &format!(
+                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}\n",
+                    a.c,
+                    b.c,
+                    b.c - a.c,
+                    a.dynamic_spread_lu,
+                    b.dynamic_spread_lu
+                );
+            }
+            Err(e) => out += &format!("  {slot:>4} | FAILED: {e}\n"),
+        }
+    }
+    // Guaranteed re-amp OFF on a fresh connection — propagate a cleanup failure so a
+    // "successful" A/B can't silently leave the device stuck in re-amp mode.
+    session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()))?;
+    Ok(out)
+}
+
 /// Read a stimulus WAV as mono f32, requiring the device's 48 kHz clock rate.
 fn read_stimulus_48k(path: &str) -> Result<Vec<f32>, String> {
     let (stim, srate) = read_wav_mono(path)?;
@@ -5726,15 +5769,29 @@ fn read_stimulus_48k(path: &str) -> Result<Vec<f32>, String> {
 /// — verified on device). K-weighted (not flat RMS): the perceptual weighting that
 /// tracks how hard a pickup actually drives the amp — bright pickups aren't
 /// under-counted — and it's the same scale the leveler targets on the output.
-/// Caps the gain so the scaled peak stays ≤ 0.99 (no digital clip).
-fn read_stimulus_calibrated(path: &str, calibration_lufs: Option<f32>) -> Result<Vec<f32>, String> {
+/// Caps the gain so the scaled peak stays ≤ 0.99 (no digital clip); when that cap
+/// engages the calibrated loudness is UNREACHABLE and every measurement under-drives
+/// the amp — the second return element is how many LU short the stimulus falls
+/// (`None` when the target is reachable). Surfaced to the user at calibrate time
+/// (`calibrate_profile`); the `log::warn!` covers every leveling caller.
+fn read_stimulus_calibrated_with_shortfall(
+    path: &str,
+    calibration_lufs: Option<f32>,
+) -> Result<(Vec<f32>, Option<f32>), String> {
     let mut stim = read_stimulus_48k(path)?;
+    let mut shortfall_lu = None;
     if let Some(target_lufs) = calibration_lufs {
         let stim_lufs = lufs::measure_mono(&stim, 48_000)?.integrated_lufs;
         if stim_lufs.is_finite() {
             let mut g = 10f32.powf((target_lufs - stim_lufs as f32) / 20.0);
             let peak = stim.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
             if peak * g > 0.99 {
+                let shortfall = 20.0 * (peak * g / 0.99).log10();
+                log::warn!(
+                    "stimulus calibration capped: {path} cannot reach {target_lufs:.1} LUFS \
+                     without clipping — driving {shortfall:.1} LU softer"
+                );
+                shortfall_lu = Some(shortfall);
                 g = 0.99 / peak; // guard against clipping the injected signal
             }
             for s in &mut stim {
@@ -5742,7 +5799,49 @@ fn read_stimulus_calibrated(path: &str, calibration_lufs: Option<f32>) -> Result
             }
         }
     }
-    Ok(stim)
+    Ok((stim, shortfall_lu))
+}
+
+/// [`read_stimulus_calibrated_with_shortfall`] for the callers that only need the
+/// samples (all leveling/probe paths — the warn above still fires for them).
+fn read_stimulus_calibrated(path: &str, calibration_lufs: Option<f32>) -> Result<Vec<f32>, String> {
+    read_stimulus_calibrated_with_shortfall(path, calibration_lufs).map(|(stim, _)| stim)
+}
+
+#[cfg(test)]
+mod stimulus_shortfall_tests {
+    use super::read_stimulus_calibrated_with_shortfall;
+
+    fn wav() -> String {
+        format!(
+            "{}/resources/samples/guitar-humbucker.wav",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    #[test]
+    fn unreachable_target_reports_shortfall_and_caps_peak() {
+        let (stim, shortfall) = read_stimulus_calibrated_with_shortfall(&wav(), Some(0.0)).unwrap();
+        let shortfall = shortfall.expect("0 LUFS is far above the stimulus ceiling");
+        assert!(
+            shortfall > 0.0,
+            "shortfall must be positive LU: {shortfall}"
+        );
+        let peak = stim.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(peak <= 0.99 + 1e-4, "capped peak must stay ≤ 0.99: {peak}");
+    }
+
+    #[test]
+    fn reachable_target_has_no_shortfall() {
+        let (_, shortfall) = read_stimulus_calibrated_with_shortfall(&wav(), Some(-60.0)).unwrap();
+        assert_eq!(shortfall, None);
+    }
+
+    #[test]
+    fn uncalibrated_has_no_shortfall() {
+        let (_, shortfall) = read_stimulus_calibrated_with_shortfall(&wav(), None).unwrap();
+        assert_eq!(shortfall, None);
+    }
 }
 
 /// M3 one-shot leveling (the real path): fresh-connect, load `slot`, measure at
@@ -9688,17 +9787,33 @@ async fn level_setlist(
     .await
 }
 
+/// What one Tier-2 calibration measured, plus its two quality caveats.
+/// Mirrored in `src/lib/types.ts` (`CalibrateResult`).
+#[derive(Debug, Clone, Copy, Serialize)]
+struct CalibrateResult {
+    /// Measured K-weighted loudness of the dry capture (stored on the profile).
+    lufs: f32,
+    /// The dry tap (USB-Out 3, no limiter) hit 0 dBFS — the measurement is biased
+    /// LOW (clipped transients flatten the brightness K-weighting credits).
+    clipped: bool,
+    /// The topology stimulus cannot be scaled up to `lufs` without clipping (the
+    /// 0.99 peak cap in `read_stimulus_calibrated_with_shortfall`): leveling will
+    /// drive the amp this many LU softer than the real instrument. `None` = reachable.
+    stimulus_shortfall_lu: Option<f32>,
+}
+
 /// Tier-2 calibration: capture the dry instrument (USB-Out 3) for `secs` while
 /// the user plays their real guitar, measure its K-weighted loudness (LUFS), store
-/// it on the profile's `calibration_lufs`, and return the measured value. The
-/// device must be in normal mode with the guitar in the front INSTRUMENT input.
+/// it on the profile's `calibration_lufs`, and return the measured value plus the
+/// clip/stimulus-ceiling caveats. The device must be in normal mode with the
+/// guitar in the front INSTRUMENT input.
 #[tauri::command]
 async fn calibrate_profile(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     profile_id: String,
     secs: f32,
-) -> Result<f32, String> {
+) -> Result<CalibrateResult, String> {
     let app2 = app.clone();
     with_released_seize(state.session.clone(), move || {
         // Force normal mode so the dry instrument flows on USB-Out 3.
@@ -9729,8 +9844,20 @@ async fn calibrate_profile(
             .find(|p| p.id == profile_id)
             .ok_or_else(|| format!("unknown profile '{profile_id}'"))?;
         p.calibration_lufs = Some(lufs);
+        let topology_id = p.topology_id.clone();
         profiles::save(&app2, &store)?;
-        Ok(lufs)
+
+        // Best-effort caveats (calibration is already persisted; a WAV-resolution
+        // failure must not fail the command).
+        let stimulus_shortfall_lu = resolve_stimulus(&app2, None, Some(topology_id))
+            .and_then(|path| read_stimulus_calibrated_with_shortfall(&path, Some(lufs)))
+            .map(|(_, shortfall)| shortfall)
+            .unwrap_or(None);
+        Ok(CalibrateResult {
+            lufs,
+            clipped: peak >= 0.99,
+            stimulus_shortfall_lu,
+        })
     })
     .await
 }
