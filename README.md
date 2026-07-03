@@ -31,12 +31,8 @@ upload, or share presets.
 Grab the latest `.dmg` from the [Releases](https://github.com/pcavadas/tmp-companion/releases)
 page. macOS 12+ on **Apple Silicon** only.
 
-The app is **not code-signed or notarized** (this project has no paid Apple
-Developer membership), so Gatekeeper blocks it on first launch. After copying
-**TMP Companion.app** to `/Applications`, either:
-
-- right-click the app → **Open**, then confirm in the dialog, or
-- run `xattr -dr com.apple.quarantine "/Applications/TMP Companion.app"`.
+The app is code-signed and notarized, so it opens normally — just copy
+**TMP Companion.app** to `/Applications` and launch it.
 
 Plug in your Tone Master Pro and close Fender's Pro Control first — the app needs
 exclusive USB access.
