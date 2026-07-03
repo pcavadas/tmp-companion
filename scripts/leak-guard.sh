@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 #
 # leak-guard.sh — keep PRIVATE firmware-emulator content out of this PUBLIC repo.
 #

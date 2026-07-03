@@ -11,7 +11,7 @@ TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~80 `invoke` com
 
 ## Layout at a glance
 
-```
+```text
 src/
   theme/      tokens.ts (LIGHT-ONLY design tokens) · styles.ts (composed-style registry) · ThemeContext.tsx (provider + useTheme/useStyles)
   ui/         primitives.tsx (Button/Slider/Modal/Scrim/MenuItem/…) · Glyph.tsx (line icons) · BlockIcon.tsx + blockart/ (procedural SVG amp/cab/pedal art)
@@ -72,7 +72,7 @@ export const listLevelBlocks = (slot: number): Promise<LevelBlock[]> =>
 
 Two load-bearing rules:
 
-- **Casing:** the _top-level_ arg keys you pass to `invoke` are **camelCase** — Tauri auto-converts them to the Rust handler's snake_case params. But keys _inside_ a JSON payload struct stay **snake_case** to match `serde` (e.g. a `LevelJob` carries `target_lufs`, `topology_id`). Get this wrong and the command silently receives `undefined`.
+- **Casing:** the _top-level_ arg keys you pass to `invoke` are **camelCase** — Tauri auto-converts them to the Rust handler's snake*case params. But keys \_inside* a JSON payload struct stay **snake_case** to match `serde` (e.g. a `LevelJob` carries `target_lufs`, `topology_id`). Get this wrong and the command silently receives `undefined`.
 - **The type mirror:** `src/lib/types.ts` holds hand-written TS interfaces mirroring the Rust `serde` structs. Adding a Rust field without updating the mirror **fails silently** (test mocks are untyped, so nothing complains until runtime). When you touch a command's shape, update both sides. `invoke.test.ts` asserts the exact wrapper count (`Object.keys(cmd).length`) with a history comment — update it when you add **or remove** a wrapper IN the `cmd` namespace (a feature deletion decrements it). Caveat: some wrappers are deliberately named-export-only and NOT in `cmd` (the fire-and-forget leveling cancel lane `cancel{Preset,Scene,Footswitch}Leveling`), so adding one does **not** move the count — assert it with its own `expectCall` instead. Check whether your new wrapper belongs in `cmd` before assuming the count changes.
 
 If a command you need doesn't exist yet, that's a backend change (Rust `lib.rs` `generate_handler!` + an engine function) — coordinate it; don't fake the data on the frontend. Conversely, before _assuming_ a backend command is missing, grep the existing seams first — `src-tauri/src/session.rs` (e.g. `replace_node`/`insert_node`/`remove_node`/`extract_active_graph`), `proto.rs` (often already golden-tested), and the `probe` subcommands. The Copy feature's whole save path was a thin Tauri wrapper because the live structural-edit primitives were already RE'd + present (`probe --insert-active`); per-preset data was likewise already on the one `read_library_via_backup`/`BackupPresetRow` backup (one added field, no new device read).

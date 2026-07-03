@@ -13,7 +13,7 @@ export default defineConfig({
 });
 ```
 
-Run with `bun run test` (`vitest run`). Tests live at `src/__tests__/*.test.tsx`.
+Run with `bun run test` (`vitest run`). Tests match `src/**/*.{test,spec}.{ts,tsx}` (Vitest's `include`); most live in `src/__tests__/`.
 
 ## The global invoke mock (`src/__tests__/setup.ts`)
 

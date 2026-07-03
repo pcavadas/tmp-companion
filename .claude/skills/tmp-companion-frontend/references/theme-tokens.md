@@ -6,40 +6,40 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 
 ## Colors (palette)
 
-| Token                                           | Value                                                | Use                                                                   |
-| ----------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------- |
-| `bg`                                            | `#ffffff`                                            | base surface                                                          |
-| `bgAlt`                                         | `#f6f7f9`                                            | alt surface (README `alt`)                                            |
-| `inset`                                         | `#eef0f3`                                            | recessed inset wells (rare)                                           |
-| `ink`                                           | `#0f1115`                                            | primary text                                                          |
-| `ink2`                                          | `#33373f`                                            | secondary text                                                        |
-| `mutedInk`                                      | `#6b7280`                                            | muted text (README `muted`)                                           |
-| `faint`                                         | `#9aa0a9`                                            | quaternary text / icon strokes                                        |
-| `onInk`                                         | `#ffffff`                                            | text/icon on an ink fill (== bg, so primary buttons invert)           |
-| `hairline`                                      | `rgba(15,17,21,0.09)`                                | hairline borders (README `hair`)                                      |
-| `hairlineStrong`                                | `rgba(15,17,21,0.18)`                                | stronger hairline (README `hairStrong`)                               |
-| `accent`                                        | `#d97757`                                            | terracotta — fills                                                    |
-| `accentDeep`                                    | `#a7461f`                                            | accent-colored text / counts / kickers                                |
-| `accentSoft`                                    | `rgba(217,119,87,0.10)`                              | accent pill background                                                |
-| `accentBadgeSoft`                               | `rgba(217,119,87,0.14)`                              | active-scene badge fill                                               |
-| `accentBorder`                                  | `rgba(217,119,87,0.45)`                              | accent pill border                                                    |
-| `warn` / `err`                                  | `#a7461f`                                            | warning/error text (terracotta)                                       |
-| `warnSoft`                                      | `rgba(167,70,31,0.08)`                               | error chip background                                                 |
-| `warnBorder`                                    | `rgba(167,70,31,0.45)`                               | error badge border                                                    |
-| `sevWarn`                                       | `#b07d1c`                                            | amber "measuring" severity (distinct from `err`)                      |
-| `sevWarnSoft` / `sevWarnBorder`                 | amber soft / border                                  | measuring pill                                                        |
-| `good`                                          | `#3f7d4e`                                            | connected / healthy / ACTIVE / measured (green)                       |
-| `goodSoft`                                      | `rgba(63,125,78,0.10)`                               | green chip background (README `okSoft`)                               |
-| `goodBorder`                                    | `rgba(63,125,78,0.4)`                                | green badge border                                                    |
-| `danger*`                                       | `dangerBorder` / `dangerBorderStrong` / `dangerSoft` | destructive-confirm red (distinct from `warn`)                        |
-| `record`                                        | `#c0392b`                                            | recording indicator red (off-palette, audio semantics) + `recordSoft` |
-| `rowSel`                                        | `rgba(15,17,21,0.035)`                               | selected-row tint (non-active)                                        |
-| `hover`                                         | `rgba(15,17,21,0.05)`                                | row/menu-item hover tint                                              |
-| `track` / `knob` / `knobRing`                   | slider track / knob fill / knob ring                 | sliders                                                               |
-| `shadow`                                        | `rgba(15,17,21,0.28)`                                | popover drop-shadow base                                              |
-| `badgeStereo` `#2f6c98` / `badgeConv` `#6a4ba0` | model badge foregrounds                              |
-| `info`                                          | `#6b7280`                                            | == `mutedInk` (severity)                                              |
-| `ok`                                            | `#d97757`                                            | == `accent` (severity "ok"; green status uses `good`)                 |
+| Token                           | Value                                                | Use                                                                   |
+| ------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------- |
+| `bg`                            | `#ffffff`                                            | base surface                                                          |
+| `bgAlt`                         | `#f6f7f9`                                            | alt surface (README `alt`)                                            |
+| `inset`                         | `#eef0f3`                                            | recessed inset wells (rare)                                           |
+| `ink`                           | `#0f1115`                                            | primary text                                                          |
+| `ink2`                          | `#33373f`                                            | secondary text                                                        |
+| `mutedInk`                      | `#6b7280`                                            | muted text (README `muted`)                                           |
+| `faint`                         | `#9aa0a9`                                            | quaternary text / icon strokes                                        |
+| `onInk`                         | `#ffffff`                                            | text/icon on an ink fill (== bg, so primary buttons invert)           |
+| `hairline`                      | `rgba(15,17,21,0.09)`                                | hairline borders (README `hair`)                                      |
+| `hairlineStrong`                | `rgba(15,17,21,0.18)`                                | stronger hairline (README `hairStrong`)                               |
+| `accent`                        | `#d97757`                                            | terracotta — fills                                                    |
+| `accentDeep`                    | `#a7461f`                                            | accent-colored text / counts / kickers                                |
+| `accentSoft`                    | `rgba(217,119,87,0.10)`                              | accent pill background                                                |
+| `accentBadgeSoft`               | `rgba(217,119,87,0.14)`                              | active-scene badge fill                                               |
+| `accentBorder`                  | `rgba(217,119,87,0.45)`                              | accent pill border                                                    |
+| `warn` / `err`                  | `#a7461f`                                            | warning/error text (terracotta)                                       |
+| `warnSoft`                      | `rgba(167,70,31,0.08)`                               | error chip background                                                 |
+| `warnBorder`                    | `rgba(167,70,31,0.45)`                               | error badge border                                                    |
+| `sevWarn`                       | `#b07d1c`                                            | amber "measuring" severity (distinct from `err`)                      |
+| `sevWarnSoft` / `sevWarnBorder` | amber soft / border                                  | measuring pill                                                        |
+| `good`                          | `#3f7d4e`                                            | connected / healthy / ACTIVE / measured (green)                       |
+| `goodSoft`                      | `rgba(63,125,78,0.10)`                               | green chip background (README `okSoft`)                               |
+| `goodBorder`                    | `rgba(63,125,78,0.4)`                                | green badge border                                                    |
+| `danger*`                       | `dangerBorder` / `dangerBorderStrong` / `dangerSoft` | destructive-confirm red (distinct from `warn`)                        |
+| `record`                        | `#c0392b`                                            | recording indicator red (off-palette, audio semantics) + `recordSoft` |
+| `rowSel`                        | `rgba(15,17,21,0.035)`                               | selected-row tint (non-active)                                        |
+| `hover`                         | `rgba(15,17,21,0.05)`                                | row/menu-item hover tint                                              |
+| `track` / `knob` / `knobRing`   | slider track / knob fill / knob ring                 | sliders                                                               |
+| `shadow`                        | `rgba(15,17,21,0.28)`                                | popover drop-shadow base                                              |
+| `badgeStereo` / `badgeConv`     | `#2f6c98` / `#6a4ba0`                                | model badge foregrounds (stereo / convolution)                        |
+| `info`                          | `#6b7280`                                            | == `mutedInk` (severity)                                              |
+| `ok`                            | `#d97757`                                            | == `accent` (severity "ok"; green status uses `good`)                 |
 
 Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` / `t.ok` semantically — but for green status badges use `good`/`goodSoft`/`goodBorder`, not `ok`.
 

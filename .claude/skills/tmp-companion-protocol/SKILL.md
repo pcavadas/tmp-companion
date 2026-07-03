@@ -20,7 +20,7 @@ Live per-node structural edits (insert / replace / remove a signal-chain block) 
 
 ## Preset `.preset` codec
 
-`.preset` files are **LZ4-block(XOR-encoded compact JSON)**. The 3-byte XOR key is a committed constant: `PRESET_XOR_KEY: [u8; 3] = *b"JLD"` in `src-tauri/src/backup.rs` (do NOT reintroduce runtime key derivation/recovery). The on-device DB (`normalDb.db3`, streamed via the `BackupMessage` bulk path — `read_library_via_backup`) stores `presetJson` as **plaintext**; only the exported `.preset` file is XOR+LZ4. The offline `.preset` is the canonical full-preset read (USB reads return a partial).
+`.preset` files are **XOR-encoded compact JSON** (the 3-byte JLD cipher — LZ4 is NOT applied to the file itself). The 3-byte XOR key is a committed constant: `PRESET_XOR_KEY: [u8; 3] = *b"JLD"` in `src-tauri/src/backup.rs` (do NOT reintroduce runtime key derivation/recovery). The on-device DB (`normalDb.db3`, streamed via the `BackupMessage` bulk path — `read_library_via_backup`) stores `presetJson` as **plaintext**; the exported `.preset` file XOR-encodes it (LZ4 wraps the raw `.preset` bytes only inside the `importPresetRequest.presetJson` wire field, not the file). The offline `.preset` is the canonical full-preset read (USB reads return a partial).
 
 `scripts/preset_toolkit.py` is a pure-Python JLD codec for debugging a `.preset` while working a write path:
 
