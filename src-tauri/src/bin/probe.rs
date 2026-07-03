@@ -1452,13 +1452,36 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--stim-ab") {
         // --stim-ab <slots_csv> <wavA> <wavB> [ref=0.5]  (DEVICE A/B: two stimuli per preset)
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let slots: Vec<u32> = slots_csv
+        // Reject a malformed slot token instead of silently dropping it (which would
+        // produce a valid-looking A/B table for a different set of presets).
+        let slots: Vec<u32> = match slots_csv
             .split(',')
-            .filter_map(|x| x.trim().parse().ok())
-            .collect();
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!(
+                    "[probe] --stim-ab: invalid slot in '{slots_csv}' (expected comma-separated integers)"
+                );
+                std::process::exit(2);
+            }
+        };
         let wav_a = args.get(i + 2).cloned().unwrap_or_default();
         let wav_b = args.get(i + 3).cloned().unwrap_or_default();
-        let ref_level: f32 = args.get(i + 4).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        // Reject a malformed ref_level rather than silently reverting to 0.5.
+        let ref_level: f32 = match args.get(i + 4) {
+            Some(s) => match s.parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("[probe] --stim-ab: invalid ref_level '{s}' (expected a float)");
+                    std::process::exit(2);
+                }
+            },
+            None => 0.5,
+        };
         if slots.is_empty() || wav_a.is_empty() || wav_b.is_empty() {
             eprintln!("usage: probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]");
             std::process::exit(2);

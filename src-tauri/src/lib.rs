@@ -5748,8 +5748,9 @@ pub fn probe_stim_ab(
             Err(e) => out += &format!("  {slot:>4} | FAILED: {e}\n"),
         }
     }
-    // Guaranteed re-amp OFF on a fresh connection.
-    let _ = session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    // Guaranteed re-amp OFF on a fresh connection — propagate a cleanup failure so a
+    // "successful" A/B can't silently leave the device stuck in re-amp mode.
+    session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()))?;
     Ok(out)
 }
 
