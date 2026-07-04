@@ -285,6 +285,60 @@ pub fn engaged_bypass_for_switch(
     out
 }
 
+/// One switch's `func:"on-off"` `(groupId, nodeId)` pairs (empty nodeIds skipped).
+fn onoff_nodes(sw: &Value) -> impl Iterator<Item = (String, String)> + '_ {
+    sw.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a.get("func").and_then(Value::as_str) == Some("on-off"))
+        .filter_map(|a| a.get("nodes").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|n| {
+            let nid = n
+                .get("nodeId")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())?;
+            let g = n.get("groupId").and_then(Value::as_str).unwrap_or_default();
+            Some((g.to_string(), nid.to_string()))
+        })
+}
+
+/// Every `(groupId, nodeId)` referenced by ANY switch's `func:"on-off"` assignments, deduped
+/// (order-preserving). Drives off the raw `nodes[]` lists — NOT `isActive` (a snapshot, not
+/// enable/disable; see the `onoff_switches_for` note). This is the full set of footswitch-owned
+/// on/off blocks — used to force every footswitch's block OFF while isolating one switch.
+pub fn all_onoff_blocks(ftsw: &Value) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let Some(switches) = ftsw.as_array() else {
+        return out;
+    };
+    for sw in switches {
+        for pair in onoff_nodes(sw) {
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
+    }
+    out
+}
+
+/// `all_onoff_blocks` minus `switch`'s OWN on-off targets, each forced to `bypass=true` (off) —
+/// "every OTHER footswitch's block off", the isolation force-list for leveling one switch. The
+/// excluded nodes are `switch`'s own (the caller owns them: `engaged_bypass_for_switch` flips
+/// them, or an on-in-base block keeps its saved state), so this list is disjoint from that flip.
+pub fn siblings_off_excluding(ftsw: &Value, switch: u32) -> Vec<(String, String, bool)> {
+    let own: std::collections::HashSet<String> = ftsw
+        .as_array()
+        .and_then(|a| a.get(switch as usize))
+        .map(|sw| onoff_nodes(sw).map(|(_, n)| n).collect())
+        .unwrap_or_default();
+    all_onoff_blocks(ftsw)
+        .into_iter()
+        .filter(|(_, nid)| !own.contains(nid))
+        .map(|(g, n)| (g, n, true))
+        .collect()
+}
+
 /// Index of an existing `param` function on `switch` targeting `(node_id, param)`, if any —
 /// the assignment a bake makes redundant (cleared so the bake is the single source).
 pub fn existing_param_fn_index(
@@ -351,9 +405,13 @@ pub fn plan_footswitch_jobs(
         std::collections::HashMap::new();
     for (idx, job) in jobs.iter().enumerate() {
         if !block_bypassed_in_base(preset, job.lev_node) {
-            // Block ON in base → part of the base sound → assignment, base measurement (today).
+            // Block ON in base → part of the base sound → assignment, its own block measured
+            // as-saved; only force every OTHER footswitch's block off (isolation).
+            // ponytail: accepted edge case — an always-on `param`-target block that some OTHER
+            // switch's on-off also toggles gets forced off here while being the leveled block.
+            // Exotic layout, not the reported bug; acknowledged not handled.
             plans.push(FsLevelPlan::Assign {
-                engaged: Vec::new(),
+                engaged: siblings_off_excluding(ftsw, job.switch),
             });
             continue;
         }
@@ -364,7 +422,10 @@ pub fn plan_footswitch_jobs(
             ));
             continue;
         }
-        let engaged = engaged_bypass_for_switch(ftsw, preset, job.switch);
+        // Off in base, this switch enables it: every other switch's block off (siblings) PLUS
+        // this switch's own flip. Disjoint by construction (siblings excludes own nodes).
+        let mut engaged = siblings_off_excluding(ftsw, job.switch);
+        engaged.extend(engaged_bypass_for_switch(ftsw, preset, job.switch));
         // Sole-/group-owner: every active on-off activator of N must be in this (N,P,T) group.
         let group: std::collections::HashSet<u32> = jobs
             .iter()
@@ -599,7 +660,12 @@ mod tests {
     #[test]
     fn plan_bakes_single_owner_off_in_base() {
         // N off in base, switch 0 has an active on-off for N, no other owner, no scenes → Bake.
-        let p = preset_with(true, None, serde_json::json!([[onoff(&["N"], true)]]));
+        // A SIBLING switch owns M → M forced off (isolation) alongside N's own flip.
+        let p = preset_with(
+            true,
+            None,
+            serde_json::json!([[onoff(&["N"], true)], [onoff(&["M"], true)]]),
+        );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
             FsLevelPlan::Bake {
@@ -607,7 +673,9 @@ mod tests {
                 clear_stale,
             } => {
                 // tuple bool = the `bypass` to WRITE: base off (bypass=true) → engaged un-bypass (false).
-                assert_eq!(engaged, &vec![("G1".into(), "N".into(), false)]);
+                assert!(engaged.contains(&("G1".into(), "N".into(), false)));
+                // sibling switch's block M forced off (bypass=true).
+                assert!(engaged.contains(&("G1".into(), "M".into(), true)));
                 assert_eq!(*clear_stale, None);
             }
             other => panic!("expected Bake, got {other:?}"),
@@ -616,15 +684,20 @@ mod tests {
 
     #[test]
     fn plan_assigns_when_block_on_in_base() {
-        // N ON in base → assignment, base measurement (engaged empty). Today's path.
-        let p = preset_with(false, None, serde_json::json!([[onoff(&["N"], true)]]));
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
-        assert_eq!(
-            plans[0],
-            FsLevelPlan::Assign {
-                engaged: Vec::new()
-            }
+        // N ON in base → assignment; N's own block stays as-saved, but a SIBLING switch's block
+        // M is forced off (isolation) so N is measured against the clean base, not base + M.
+        let p = preset_with(
+            false,
+            None,
+            serde_json::json!([[onoff(&["N"], true)], [onoff(&["M"], true)]]),
         );
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        match &plans[0] {
+            FsLevelPlan::Assign { engaged } => {
+                assert_eq!(engaged, &vec![("G1".into(), "M".into(), true)]);
+            }
+            other => panic!("expected Assign, got {other:?}"),
+        }
     }
 
     #[test]
@@ -656,7 +729,13 @@ mod tests {
         );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
-            FsLevelPlan::Assign { engaged } => assert!(!engaged.is_empty()),
+            FsLevelPlan::Assign { engaged } => {
+                assert!(!engaged.is_empty());
+                // switch 1 targets the SAME node N → excluded from switch 0's siblings, so N is
+                // NOT force-bypassed; it's engaged (flipped on) by switch 0's own flip.
+                assert!(engaged.contains(&("G1".into(), "N".into(), false)));
+                assert!(!engaged.contains(&("G1".into(), "N".into(), true)));
+            }
             other => panic!("expected engaged Assign, got {other:?}"),
         }
     }
@@ -721,11 +800,11 @@ mod tests {
     #[test]
     fn plan_engaged_list_flips_a_multi_block_switch() {
         // Switch enables N (off→on) AND M (on→off): engaged replicates BOTH flips so the target
-        // is measured with the switch's full engaged state.
+        // is measured with the switch's full engaged state. A SIBLING switch owns P → P forced off.
         let p = preset_with(
             true,
             Some(false),
-            serde_json::json!([[onoff(&["N", "M"], true)]]),
+            serde_json::json!([[onoff(&["N", "M"], true)], [onoff(&["P"], true)]]),
         );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
@@ -733,9 +812,54 @@ mod tests {
                 // bypass to write: N off→on = false ; M on→off = true.
                 assert!(engaged.contains(&("G1".into(), "N".into(), false)));
                 assert!(engaged.contains(&("G1".into(), "M".into(), true)));
+                // sibling switch's block P forced off (isolation).
+                assert!(engaged.contains(&("G1".into(), "P".into(), true)));
             }
             other => panic!("expected Bake, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn all_onoff_blocks_dedups_and_ignores_isactive_and_malformed() {
+        // Two switches both on-off for N (active + inactive) + one for M → deduped {N, M},
+        // order-preserving. scene/param funcs ignored; a nodes-less on-off contributes nothing.
+        let ftsw = serde_json::json!([
+            [onoff(&["N"], true)],
+            [onoff(&["N"], false)],
+            [onoff(&["M"], true)],
+            [{ "func": "scene", "sceneSlot": 1, "isActive": true }],
+            [{ "func": "param", "groupId": "G1", "nodeId": "P", "parameterId": "gain" }],
+            [{ "func": "on-off" }],
+        ]);
+        assert_eq!(
+            all_onoff_blocks(&ftsw),
+            vec![
+                ("G1".to_string(), "N".to_string()),
+                ("G1".to_string(), "M".to_string()),
+            ]
+        );
+        // Empty / missing / malformed → empty (never panics).
+        assert!(all_onoff_blocks(&serde_json::Value::Null).is_empty());
+        assert!(all_onoff_blocks(&serde_json::json!([])).is_empty());
+        assert!(all_onoff_blocks(&serde_json::json!("garbage")).is_empty());
+    }
+
+    #[test]
+    fn siblings_off_excludes_own_and_shared_nodes() {
+        // Switch 0 owns N; switch 1 owns N (SHARED) + M; switch 2 owns P.
+        let ftsw = serde_json::json!([
+            [onoff(&["N"], true)],
+            [onoff(&["N", "M"], true)],
+            [onoff(&["P"], true)],
+        ]);
+        // For switch 0: own = {N}. Siblings = M, P — N is excluded even though switch 1 also
+        // targets it (the shared-node case). Every entry forced OFF (bypass=true).
+        let sibs = siblings_off_excluding(&ftsw, 0);
+        assert!(sibs.iter().all(|(_, _, byp)| *byp));
+        let ids: Vec<&str> = sibs.iter().map(|(_, n, _)| n.as_str()).collect();
+        assert_eq!(ids, vec!["M", "P"]);
+        // Missing / empty ftsw → empty.
+        assert!(siblings_off_excluding(&serde_json::Value::Null, 0).is_empty());
     }
 
     // AC — applying a layout to the fixture re-encodes losslessly.
