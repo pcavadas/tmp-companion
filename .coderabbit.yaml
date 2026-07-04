@@ -1,13 +1,16 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 #
-# CodeRabbit is ADVISORY here: it is never a required status check and its review
-# never counts as an approval (both enforced by the "protect main" ruleset, which
-# requires a human code-owner review). Its verdict is computed over author-controlled
-# text and must never gate a merge.
+# CodeRabbit is a qualifying reviewer on "protect main": its GitHub App has write
+# access to this repo, so its formal Approve/Request-changes review (below) counts
+# toward the ruleset's required_approving_review_count the same way @pcavadas's does.
+# Non-collaborator reviews still never count — that's GitHub's own write-access
+# requirement for required reviews, unrelated to this file. CodeRabbit CAN now block
+# a merge on unresolved findings; it is no longer purely advisory.
 language: en-US
 
 reviews:
   profile: assertive # public repo — bias toward surfacing issues over quiet reviews
+  request_changes_workflow: true # submit a real Approve/Request-changes review (not just comments) so it counts toward "protect main"
   auto_review:
     enabled: true
     drafts: false # drafts stay UNREVIEWED; review fires on promote-to-ready
