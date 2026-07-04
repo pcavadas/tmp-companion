@@ -70,6 +70,12 @@ export default tseslint.config(
       globals: globals.node,
     },
   },
+  // Root-level config files aren't part of the tsconfig `include` (src/e2e only), so they
+  // have no type info for the type-checked presets above — drop just those rules, keep the rest.
+  {
+    files: ["*.config.{js,ts}", "vite.config.ts", "vitest.config.ts"],
+    ...tseslint.configs.disableTypeChecked,
+  },
 
   // The Playwright e2e harness (specs + fixtures) — type-aware linting under the same strict
   // presets as src/. Browser globals (the page-context spec callbacks) + node globals.
