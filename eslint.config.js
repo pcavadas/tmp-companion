@@ -15,6 +15,8 @@ export default tseslint.config(
       // The e2e browser shim is hand-written JS that pokes at Tauri's window internals —
       // it isn't in any TS project, so type-aware linting can't apply to it.
       "e2e/bridge-client.js",
+      // Root-level tool config, same reason — outside the TS project, no type info available.
+      "commitlint.config.js",
     ],
   },
 
