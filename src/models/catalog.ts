@@ -16,13 +16,7 @@ import { resolveDeviceId } from "./blockArt";
 
 export type Channels = "mono" | "stereo";
 export type Form =
-  | "combo"
-  | "head"
-  | "half_stack"
-  | "product"
-  | "loop"
-  | "ir"
-  | "ext_speaker";
+  "combo" | "head" | "half_stack" | "product" | "loop" | "ir" | "ext_speaker";
 
 /** A single raw row from the Model Guide export (`blocks[]`). */
 interface RawBlock {
