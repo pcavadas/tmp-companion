@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use crate::lufs::IncrementalLoudness;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, SampleFormat, SampleRate, SupportedStreamConfig};
+use cpal::{Device, SampleFormat, SupportedStreamConfig};
 use serde::Serialize;
 
 /// 0-based output channel that maps to the device's USB-In 3 (re-amp instrument
@@ -63,14 +63,14 @@ pub fn enumerate() -> Vec<AudioDevice> {
 
     if let Ok(devs) = host.input_devices() {
         for d in devs {
-            let name = d.name().unwrap_or_else(|_| "<unknown>".into());
+            let name = d.to_string();
             let (ch, rates) = max_channels_and_rates(d.supported_input_configs().ok());
             note(name, ch, 0, &rates);
         }
     }
     if let Ok(devs) = host.output_devices() {
         for d in devs {
-            let name = d.name().unwrap_or_else(|_| "<unknown>".into());
+            let name = d.to_string();
             let (ch, rates) = max_channels_and_rates(d.supported_output_configs().ok());
             note(name, 0, ch, &rates);
         }
@@ -126,7 +126,7 @@ impl SupportedConfigLike for cpal::SupportedStreamConfigRange {
         cpal::SupportedStreamConfigRange::channels(self)
     }
     fn sample_rate_range(&self) -> (u32, u32) {
-        (self.min_sample_rate().0, self.max_sample_rate().0)
+        (self.min_sample_rate(), self.max_sample_rate())
     }
 }
 
@@ -204,11 +204,7 @@ fn emit_live_lufs(v: f64) {
 }
 
 fn find_device<I: Iterator<Item = Device>>(mut devs: I) -> Option<Device> {
-    devs.find(|d| {
-        d.name()
-            .map(|n| n.to_lowercase().contains("tone master"))
-            .unwrap_or(false)
-    })
+    devs.find(|d| d.to_string().to_lowercase().contains("tone master"))
 }
 
 /// Pick an f32 config on `target_rate` with at least `min_ch` channels.
@@ -221,11 +217,11 @@ fn pick_config(
         .filter(|r| {
             r.channels() >= min_ch
                 && r.sample_format() == SampleFormat::F32
-                && r.min_sample_rate().0 <= target_rate
-                && r.max_sample_rate().0 >= target_rate
+                && r.min_sample_rate() <= target_rate
+                && r.max_sample_rate() >= target_rate
         })
         .min_by_key(|r| r.channels()) // smallest channel count that fits
-        .map(|r| r.with_sample_rate(SampleRate(target_rate)))
+        .map(|r| r.with_sample_rate(target_rate))
 }
 
 /// The resolved TMP devices + f32 stream configs for a re-amp session. Shared by
@@ -287,7 +283,7 @@ fn build_oneshot_output_stream(
     streams
         .out_dev
         .build_output_stream(
-            &streams.out_cfg.config(),
+            streams.out_cfg.config(),
             move |data: &mut [f32], _| {
                 for frame in data.chunks_mut(out_ch) {
                     let i = cursor.fetch_add(1, Ordering::Relaxed);
@@ -313,7 +309,7 @@ fn build_capture_input_stream(
     streams
         .in_dev
         .build_input_stream(
-            &streams.in_cfg.config(),
+            streams.in_cfg.config(),
             move |data: &[f32], _| {
                 if let Ok(mut buf) = captured.lock() {
                     buf.extend_from_slice(data);
@@ -812,7 +808,7 @@ impl LiveReamp {
         let cur_cb = cursor.clone();
         let out_stream = out_dev
             .build_output_stream(
-                &out_cfg.config(),
+                out_cfg.config(),
                 move |data: &mut [f32], _| {
                     for frame in data.chunks_mut(out_ch) {
                         let i = cur_cb.fetch_add(1, Ordering::Relaxed) % stim_cb.len();
@@ -836,7 +832,7 @@ impl LiveReamp {
         let cap_cb = captured.clone();
         let in_stream = in_dev
             .build_input_stream(
-                &in_cfg.config(),
+                in_cfg.config(),
                 move |data: &[f32], _| {
                     if let Ok(mut buf) = cap_cb.lock() {
                         buf.extend(data.iter().copied());
@@ -909,7 +905,7 @@ pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
     let cap_cb = captured.clone();
     let in_stream = in_dev
         .build_input_stream(
-            &in_cfg.config(),
+            in_cfg.config(),
             move |data: &[f32], _| {
                 if let Ok(mut buf) = cap_cb.lock() {
                     buf.extend_from_slice(data);
