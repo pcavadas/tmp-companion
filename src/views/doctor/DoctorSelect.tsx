@@ -124,6 +124,7 @@ export function DoctorSelect(props: DoctorSelectProps) {
           onToggleExpand={onToggleExpand}
           onToggleKey={onToggleKey}
           onToggleAll={onToggleAll}
+          selectTitle="Select preset to check"
         />
       </div>
 

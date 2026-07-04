@@ -45,8 +45,11 @@ export function sevRank(sev: Sev): number {
 const SCENE_JUMP_HIGH_DB = 5;
 
 /** The worst severity across a preset's sounds, bumped to "high" by a big
- *  scene-consistency jump (>5 dB). An errored sound carries no severity (it shows
- *  a message, not a diagnosis). */
+ *  scene-consistency jump (>5 dB). A present-but-moderate scene jump still counts
+ *  as at least "med" so the header/badge tint matches `presetLookCount` (which
+ *  counts the scene finding) instead of painting a flagged preset "all clear"
+ *  green. An errored sound carries no severity (it shows a message, not a
+ *  diagnosis). */
 export function presetWorstSev(preset: DoctorPresetResult): Sev {
   let worst: Sev = "ok";
   for (const sound of preset.sounds) {
@@ -56,7 +59,10 @@ export function presetWorstSev(preset: DoctorPresetResult): Sev {
     }
   }
   const sc = preset.sceneConsistency;
-  if (sc && Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB) return "high";
+  if (sc) {
+    if (Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB) return "high";
+    if (worst === "ok") worst = "med";
+  }
   return worst;
 }
 

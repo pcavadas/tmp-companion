@@ -119,14 +119,20 @@ async fn doctor_check(
             });
             let stim_key = (path.clone(), item.calibration_lufs.map(f32::to_bits));
             let stim = match stims.entry(stim_key) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Occupied(e) => Ok(&*e.into_mut()),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(read_stimulus_calibrated(path, item.calibration_lufs)?)
+                    read_stimulus_calibrated(path, item.calibration_lufs).map(|s| &*e.insert(s))
                 }
             };
-            match leveller::doctor_capture(item.list_index, item.scene, stim, 0.5) {
-                Ok((samples, rate)) => {
-                    let profile = doctor::SoundProfile::from_capture(&samples, rate, stim.len())?;
+            let result = stim.and_then(|stim| {
+                leveller::doctor_capture(item.list_index, item.scene, stim, 0.5).and_then(
+                    |(samples, rate)| {
+                        doctor::SoundProfile::from_capture(&samples, rate, stim.len())
+                    },
+                )
+            });
+            match result {
+                Ok(profile) => {
                     measured.push((i, profile));
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
@@ -367,10 +373,14 @@ async fn doctor_apply(
                     Ok(false) => "the device rejected the edit".to_string(),
                     Err(e) => e,
                 };
-                let _ = leveller::restore_saved_preset(job.list_index);
-                return Err(format!(
-                    "couldn't apply — the preset was restored unchanged: {detail}"
-                ));
+                return Err(match leveller::restore_saved_preset(job.list_index) {
+                    Ok(()) => {
+                        format!("couldn't apply — the preset was restored unchanged: {detail}")
+                    }
+                    Err(restore_err) => format!(
+                        "couldn't apply ({detail}) AND the restore also failed ({restore_err}) — verify the preset on the unit"
+                    ),
+                });
             }
         }
 

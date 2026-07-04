@@ -74,6 +74,10 @@ function countTerminal(
 export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
   const [run, setRun] = useState<DoctorRunState>(EMPTY_RUN);
   const [result, setResult] = useState<DoctorCheckResult | null>(null);
+  // Set only when the whole `doctor_check` command REJECTS (an IPC/backend
+  // failure) — distinct from a user Stop, which resolves normally with results.
+  // Lets the results stage show a failure notice instead of a blank page.
+  const [error, setError] = useState<string | null>(null);
   const runningRef = useRef(false);
 
   // Turn each chosen list row into a wire DoctorInputArg. The scene wire index is
@@ -117,6 +121,7 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
     if (runningRef.current) return;
     runningRef.current = true;
     setResult(null);
+    setError(null);
     const statusByKey: Record<string, DoctorRunStatus> = {};
     items.forEach((it) => (statusByKey[it.key] = "queued"));
     setRun({
@@ -147,9 +152,11 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
           currentIndex: prev.total,
         }));
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         // A whole-run failure ends the run (the rows keep their last streamed
-        // status); there's nothing to advance into, so it lands "stopped".
+        // status). Record the error so the results stage surfaces a failure
+        // notice rather than looking like an intentional Stop with no results.
+        setError(e instanceof Error ? e.message : String(e));
         setRun((prev) => ({ ...prev, done: true, stopped: true }));
       })
       .finally(() => {
@@ -167,7 +174,8 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
   const reset = useCallback(() => {
     setRun(EMPTY_RUN);
     setResult(null);
+    setError(null);
   }, []);
 
-  return { run, result, buildItems, startRun, stopRun, reset };
+  return { run, result, error, buildItems, startRun, stopRun, reset };
 }

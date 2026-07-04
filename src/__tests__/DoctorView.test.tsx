@@ -179,7 +179,7 @@ describe("DoctorView — select → setup → run → results", () => {
     await screen.findByText("Studio Clean");
 
     // Tick the preset → a single "Whole preset" sound → "Check 1 sound…" (singular).
-    await user.click(screen.getAllByTitle("Select preset to level")[0]);
+    await user.click(screen.getAllByTitle("Select preset to check")[0]);
     await user.click(
       await screen.findByRole("button", { name: /check 1 sound…/i }),
     );

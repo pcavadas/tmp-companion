@@ -698,17 +698,26 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             ));
             rx
         }
-        "boomy" => cut_move(
-            nodes,
-            &facts,
-            true,
-            90.0,
-            "Raise the cab's low cut to 90 Hz",
-            "Add a low cut at 90 Hz",
-            "Rolls off the sub-lows the speaker can't use anyway, so the low end tightens up.",
-        )
-        .into_iter()
-        .collect(),
+        "boomy" => {
+            let mut rx: Vec<Rx> = cut_move(
+                nodes,
+                &facts,
+                true,
+                90.0,
+                "Raise the cab's low cut to 90 Hz",
+                "Add a low cut at 90 Hz",
+                "Rolls off the sub-lows the speaker can't use anyway, so the low end tightens up.",
+            )
+            .into_iter()
+            .collect();
+            if rx.is_empty() {
+                rx.push(advisory(
+                    "Roll the amp's Bass back a notch",
+                    "If a low-cut block won't fit, turning Bass down 1–2 on the amp does most of the same job.",
+                ));
+            }
+            rx
+        }
         "harsh" => {
             let mut rx = vec![advisory(
                 "Nudge Presence (and Treble) down a notch",
@@ -725,17 +734,26 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             }
             rx
         }
-        "fizzy" => cut_move(
-            nodes,
-            &facts,
-            false,
-            8000.0,
-            "Lower the cab's high cut to tame the fizz",
-            "Add a high cut at 8 kHz",
-            "Pulls the cabinet's high cut down to about 8 kHz, which is where the fizz lives.",
-        )
-        .into_iter()
-        .collect(),
+        "fizzy" => {
+            let mut rx: Vec<Rx> = cut_move(
+                nodes,
+                &facts,
+                false,
+                8000.0,
+                "Lower the cab's high cut to tame the fizz",
+                "Add a high cut at 8 kHz",
+                "Pulls the cabinet's high cut down to about 8 kHz, which is where the fizz lives.",
+            )
+            .into_iter()
+            .collect();
+            if rx.is_empty() {
+                rx.push(advisory(
+                    "Ease the amp's Presence/Treble",
+                    "If a high-cut block won't fit, backing Presence and Treble off a notch tames the fizz.",
+                ));
+            }
+            rx
+        }
         "washed" => match &facts.reverb_mix {
             Some((group, node, param)) => vec![Rx {
                 kind: RxKind::OneClick,
@@ -1204,6 +1222,17 @@ mod tests {
                 assert_eq!(params[0].0, "hpffc");
             }
             other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boomy_and_fizzy_fall_back_to_advisory_when_cut_cannot_fit() {
+        // No cab and no front group (empty graph) → cut_move yields nothing, so
+        // the flagged problem must still carry an advisory rather than zero cards.
+        for key in ["boomy", "fizzy"] {
+            let rx = generate_rx(key, &[], Instrument::Guitar);
+            assert_eq!(rx.len(), 1, "{key} should fall back to one advisory");
+            assert_eq!(rx[0].kind, RxKind::Advisory);
         }
     }
 

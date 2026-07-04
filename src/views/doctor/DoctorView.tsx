@@ -35,6 +35,12 @@ export interface DoctorViewProps {
   onScan?: () => void;
 }
 
+// Doctor measures a preset's BASE and its scenes — the check wire has no
+// engaged-footswitch state, so footswitch rows are excluded from this tab's
+// tree. A frozen module-level empty map (mirroring `NO_CPU` in DoctorSelect)
+// keeps a stable identity without a per-mount allocation.
+const NO_FOOTSWITCHES = new Map<number, never[]>();
+
 export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const {
     phase,
@@ -84,18 +90,13 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
     [rows],
   );
 
-  // Doctor measures a preset's BASE and its scenes — the check wire has no
-  // engaged-footswitch state, so footswitch rows are excluded from this tab's
-  // tree entirely (measuring the base while labelled "FS2" would lie).
-  const noFootswitches = useMemo(() => new Map<number, never[]>(), []);
-
   // Select → Set up: resolve the list's ticked scene keys into the setup rows.
   const handleCheck = useCallback(() => {
-    const options = chosenFrom(sel, rows, sceneInfo, noFootswitches);
+    const options = chosenFrom(sel, rows, sceneInfo, NO_FOOTSWITCHES);
     if (options.length === 0) return;
     setChosen(options);
     setStage("setup");
-  }, [sel, rows, sceneInfo, noFootswitches]);
+  }, [sel, rows, sceneInfo]);
 
   // Set up → Run: build the wire items and fire the ONE check command.
   const handleRun = useCallback(
@@ -160,6 +161,18 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
     );
   }
 
+  // The run rejected outright (backend/IPC failure) — no results to show. Surface
+  // it instead of silently dropping back to the list (a failed run otherwise
+  // looks identical to an intentional Stop).
+  if (stage === "results" && flow.error) {
+    return (
+      <LoadErrorPane
+        message={`The check couldn't finish: ${flow.error}`}
+        onRetry={handleCheckMore}
+      />
+    );
+  }
+
   return (
     <>
       <DoctorSelect
@@ -172,7 +185,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
         loading={phase.kind === "loading"}
         scan={scan}
         sceneInfo={sceneInfo}
-        footswitchInfo={noFootswitches}
+        footswitchInfo={NO_FOOTSWITCHES}
         presetCount={presetCount}
         sceneCount={sceneCount}
         onFilterChange={setFilter}

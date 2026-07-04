@@ -3,7 +3,7 @@
 // nothing to apply). The apply path writes LIVE (unsaved) and the save is gated on
 // the backup acknowledgment, mirroring the Leveling / Copy save-disclaimer model.
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
@@ -19,6 +19,7 @@ import {
   type StripGraph,
 } from "../SignalChainView";
 import { ABAudition } from "./ABAudition";
+import { useApplyLock } from "./applyLock";
 import type {
   DoctorApplyResult,
   DoctorChainPreview,
@@ -80,6 +81,12 @@ export function PrescriptionCard({
   const [clips, setClips] = useState<DoctorApplyResult | null>(null);
   const [acked, setAcked] = useState(false);
 
+  // Sibling guard: cards in the same preset share one device edit buffer, so only
+  // one may hold an applied-but-unsaved edit at a time (see `applyLock`).
+  const cardId = useId();
+  const lock = useApplyLock();
+  const lockedByOther = lock.activeCard !== null && lock.activeCard !== cardId;
+
   // Only oneclick / chain non-scene prescriptions have an Apply path; advisory and
   // scene-consistency cards are static.
   const applicable = !scene && (rx.kind === "oneclick" || rx.kind === "chain");
@@ -105,6 +112,7 @@ export function PrescriptionCard({
       });
       setClips(res);
       setPhase("applied");
+      lock.acquire(cardId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
     } finally {
@@ -120,6 +128,7 @@ export function PrescriptionCard({
       setPhase("draft");
       setClips(null);
       setAcked(false);
+      lock.release(cardId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't discard.");
     } finally {
@@ -133,6 +142,7 @@ export function PrescriptionCard({
     try {
       await doctorSave(listIndex, presetName);
       setPhase("saved");
+      lock.release(cardId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save to the preset.");
     } finally {
@@ -369,7 +379,7 @@ export function PrescriptionCard({
                 variant="primary"
                 small
                 icon={busy ? undefined : "check"}
-                disabled={busy}
+                disabled={busy || lockedByOther}
                 onClick={() => {
                   void runApply();
                 }}
@@ -399,6 +409,18 @@ export function PrescriptionCard({
                   "Apply to the unit"
                 )}
               </Button>
+              {lockedByOther && (
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontFamily: t.sans,
+                    fontSize: t.fsLabel,
+                    color: t.mutedInk,
+                  }}
+                >
+                  Save or discard the applied fix on this preset first.
+                </div>
+              )}
             </div>
           )}
         </div>

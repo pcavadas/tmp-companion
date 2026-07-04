@@ -135,7 +135,7 @@ pub const CANCELLED: &str = "cancelled";
 /// Reload the stored preset to discard temporary level edits made while
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
-pub fn restore_saved_preset(slot: u32) -> Result<(), String> {
+pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     s.load_preset(slot)?;
