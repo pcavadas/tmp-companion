@@ -15,8 +15,6 @@ export default tseslint.config(
       // The e2e browser shim is hand-written JS that pokes at Tauri's window internals —
       // it isn't in any TS project, so type-aware linting can't apply to it.
       "e2e/bridge-client.js",
-      // Root-level tool config, same reason — outside the TS project, no type info available.
-      "commitlint.config.js",
     ],
   },
 
@@ -71,6 +69,12 @@ export default tseslint.config(
     languageOptions: {
       globals: globals.node,
     },
+  },
+  // Root-level config files aren't part of the tsconfig `include` (src/e2e only), so they
+  // have no type info for the type-checked presets above — drop just those rules, keep the rest.
+  {
+    files: ["*.config.{js,ts}", "vite.config.ts", "vitest.config.ts"],
+    ...tseslint.configs.disableTypeChecked,
   },
 
   // The Playwright e2e harness (specs + fixtures) — type-aware linting under the same strict
