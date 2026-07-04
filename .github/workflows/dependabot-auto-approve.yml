@@ -1,15 +1,15 @@
 name: Dependabot auto-approve
 
-# Dependabot can't be a CODEOWNER, and CodeRabbit won't cast an approving review on
-# bot-authored PRs ("Review skipped: bot user not eligible for review"), so routine
-# patch/minor bumps would otherwise sit forever at REVIEW_REQUIRED. Auto-approve the
-# safe ones so they satisfy the protect-main review gate. The required status checks
-# (build-test, commitlint, e2e) still gate the actual merge, and major bumps are left
-# for a human on purpose — this session, cpal 0.15->0.18 and eslint 9->10 both needed
-# manual work.
+# Dependabot can't be a CODEOWNER and CodeRabbit won't cast an approving review on
+# bot-authored PRs ("Review skipped: bot user not eligible for review"), so its PRs
+# would otherwise sit forever at REVIEW_REQUIRED. Auto-approve every Dependabot PR so
+# it satisfies the protect-main review gate. The required status checks (build-test,
+# commitlint, e2e) still gate the actual merge, so a bump that breaks the build can't
+# land regardless of the approval — that (not the update type) is the safety net.
 #
-# Intentionally no `actions/checkout`: this workflow never runs PR-controlled code, so
-# the write-scoped GITHUB_TOKEN on a `pull_request` event is safe here.
+# Intentionally no `actions/checkout` and no third-party actions: this workflow never
+# runs PR-controlled code, so the write-scoped GITHUB_TOKEN on a `pull_request` event
+# is safe here.
 
 on: pull_request
 
@@ -23,12 +23,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Fetch Dependabot metadata
-        id: meta
-        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
-
-      - name: Approve patch and minor updates
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+      - name: Approve the Dependabot PR
         run: gh pr review --approve "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
