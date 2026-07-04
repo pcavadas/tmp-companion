@@ -58,7 +58,7 @@
     "jsdom": "^29.1.1",
     "lint-staged": "^17.0.8",
     "prettier": "^3.9.0",
-    "semantic-release": "^24.2.9",
+    "semantic-release": "^25.0.5",
     "@semantic-release/exec": "^7.1.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8",
