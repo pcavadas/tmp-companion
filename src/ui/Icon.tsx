@@ -313,6 +313,19 @@ export function Icon({
           <path d="M9 12l2 2 4-4" />
         </svg>
       );
+    case "play":
+      return (
+        <svg {...props}>
+          <path d="M8 5.5 L18 12 L8 18.5 Z" />
+        </svg>
+      );
+    case "pause":
+      return (
+        <svg {...props}>
+          <line x1="9" y1="5" x2="9" y2="19" />
+          <line x1="15" y1="5" x2="15" y2="19" />
+        </svg>
+      );
     default:
       return null;
   }

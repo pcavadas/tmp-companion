@@ -28,6 +28,7 @@ import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { DeviceStatus } from "./ui/DeviceStatus";
 import { Disclaimer } from "./views/Disclaimer";
 import { LevelView } from "./views/level";
+import { DoctorView } from "./views/doctor";
 import { CopyView } from "./views/copy";
 import { SongsView } from "./views/songs";
 import { CatalogView } from "./views/CatalogView";
@@ -44,15 +45,17 @@ import { DISCLAIMER_PERM_KEY, DISCLAIMER_SESSION_KEY } from "./lib/gates";
 const RETRY_MS = 3000; // legacy auto-connect retry cadence.
 
 // Route keys, labels, and view components all agree (no Presets/Models discrepancy):
-// Level · Copy · Songs · Catalog · Settings — the leveling page is `level` → <LevelView>,
-// the reference catalog is `catalog` → <CatalogView>.
-type Tab = "level" | "copy" | "songs" | "catalog" | "settings";
+// Level · Doctor · Copy · Songs · Catalog · Settings — the leveling page is `level` →
+// <LevelView>, the reference catalog is `catalog` → <CatalogView>.
+type Tab = "level" | "doctor" | "copy" | "songs" | "catalog" | "settings";
 type ConnStatus = "connecting" | "connected" | "disconnected";
 
 // `deviceIndependent` tabs render without a connected TMP, so the connection
 // gate is suppressed while they're active (Catalog is a static reference catalog).
+// Doctor is device-dependent (no `deviceIndependent`) and stays firmware-gated.
 const TABS: { id: Tab; label: string; deviceIndependent?: boolean }[] = [
   { id: "level", label: "Level" },
+  { id: "doctor", label: "Doctor" },
   { id: "copy", label: "Copy" },
   { id: "songs", label: "Songs" },
   { id: "catalog", label: "Catalog", deviceIndependent: true },
@@ -285,6 +288,9 @@ function AppShell() {
                   onScan={retry}
                   initialGraph={initialGraph}
                 />
+              )}
+              {tab === "doctor" && (
+                <DoctorView connected={connected} onScan={retry} />
               )}
               {tab === "copy" && (
                 <CopyView

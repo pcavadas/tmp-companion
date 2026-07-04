@@ -468,14 +468,25 @@ pub fn scene_fs_map(ftsw: &Value) -> std::collections::HashMap<u32, u32> {
     let Some(switches) = ftsw.as_array() else {
         return map;
     };
-    for (sw_idx, sw) in switches.iter().enumerate() {
-        let Some(assigns) = sw.as_array() else {
-            continue;
-        };
-        for a in assigns {
-            if a.get("func").and_then(Value::as_str) == Some("scene")
-                && a.get("isActive").and_then(Value::as_bool).unwrap_or(true)
-            {
+    // A scene stays BOUND to its footswitch even when the assignment is
+    // `isActive: false` (the switch is disabled in the current layout) — the
+    // device still numbers the scene, so the tag must show `FS{n}`, not "—".
+    // Two passes so an ACTIVE binding always wins the slot; an inactive one
+    // only fills a scene that has no active binding at all. First-wins within
+    // each pass (switch order) preserves the original collision rule.
+    for want_active in [true, false] {
+        for (sw_idx, sw) in switches.iter().enumerate() {
+            let Some(assigns) = sw.as_array() else {
+                continue;
+            };
+            for a in assigns {
+                if a.get("func").and_then(Value::as_str) != Some("scene") {
+                    continue;
+                }
+                let is_active = a.get("isActive").and_then(Value::as_bool).unwrap_or(true);
+                if is_active != want_active {
+                    continue;
+                }
                 if let Some(slot) = a.get("sceneSlot").and_then(Value::as_u64) {
                     map.entry(slot as u32).or_insert(sw_idx as u32);
                 }
@@ -544,12 +555,15 @@ mod tests {
 
     // AC — flag assignments that can't bind (scene out of range).
 
-    // Live-sync FS tags: sceneSlot → switch index, active-only, indexed by position.
+    // Live-sync FS tags: sceneSlot → switch index. Inactive bindings still tag
+    // (the device numbers a scene bound to a disabled switch); active wins the
+    // slot; first-wins within a pass.
     #[test]
-    fn scene_fs_map_active_only_first_wins() {
+    fn scene_fs_map_inactive_binds_active_wins() {
         let inactive = |label: &str, slot: u64| serde_json::json!({ "func": "scene", "sceneSlot": slot, "customLabel": label, "isActive": false });
         // switch 0 → scene 1 ; switch 1 → scene 2 (INACTIVE) ; switch 2 empty ;
-        // switch 3 → a non-scene func ; switch 4 → scene 0 ; switch 5 → scene 0 (collision).
+        // switch 3 → a non-scene func ; switch 4 → scene 0 ; switch 5 → scene 0 (collision) ;
+        // switch 6 → scene 3 ACTIVE while switch 7 → scene 3 INACTIVE (active must win).
         let ftsw = serde_json::json!([
             [scene_switch("R", 1)],
             [inactive("L", 2)],
@@ -557,6 +571,8 @@ mod tests {
             [{ "func": "bypass", "isActive": true }],
             [scene_switch("A", 0)],
             [scene_switch("dup", 0)],
+            [scene_switch("C", 3)],
+            [inactive("C-off", 3)],
         ]);
         let m = scene_fs_map(&ftsw);
         assert_eq!(m.get(&1), Some(&0), "scene 1 → switch 0");
@@ -565,8 +581,17 @@ mod tests {
             Some(&4),
             "scene 0 → switch 4 (first wins over switch 5)"
         );
-        assert_eq!(m.get(&2), None, "inactive assignment excluded");
-        assert_eq!(m.len(), 2);
+        assert_eq!(
+            m.get(&2),
+            Some(&1),
+            "scene 2 → switch 1 even though its binding is inactive (device still numbers it)"
+        );
+        assert_eq!(
+            m.get(&3),
+            Some(&6),
+            "scene 3 → switch 6 (ACTIVE binding wins over the inactive one on switch 7)"
+        );
+        assert_eq!(m.len(), 4);
         // Empty / malformed ftsw → empty map (never panics).
         assert!(scene_fs_map(&serde_json::Value::Null).is_empty());
         assert!(scene_fs_map(&serde_json::json!([])).is_empty());

@@ -41,6 +41,8 @@ export const ICONS = [
   "trash",
   "lock",
   "shield",
+  "play",
+  "pause",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

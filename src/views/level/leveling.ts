@@ -113,6 +113,35 @@ export function targetFromCandidate(
  *  same +1 scene rows use, verified against `footswitch::scene_fs_map`). */
 const fsTagOf = (switchIndex: number): string => `FS${String(switchIndex + 1)}`;
 
+/** The instrument `Pick` options shared by the Level and Doctor setup steps:
+ *  "None" (the no-instrument path — level/diagnose against the default reference)
+ *  followed by each saved profile, calibrated ones flagged with their reference dB. */
+export function instrumentOptions(
+  profiles: Profile[] | undefined,
+): PickOption[] {
+  return [
+    { id: "none", label: "None" },
+    ...(profiles ?? []).map((p) => {
+      const cal = p.calibration_lufs;
+      return {
+        id: p.id,
+        label: p.name,
+        sub: cal != null ? `${cal.toFixed(1)} dB` : undefined,
+        calibrated: cal != null,
+      };
+    }),
+  ];
+}
+
+/** Resolve an instrument profile id → its display name (the run-row chip); falls
+ *  back to the raw id for an unknown/removed profile. */
+export function instrumentName(
+  profiles: Profile[] | undefined,
+  id: string,
+): string {
+  return (profiles ?? []).find((p) => p.id === id)?.name ?? id;
+}
+
 /** The row name for a footswitch: the player's own `customLabel` when set, else the
  *  toggled block's friendly name (many presets leave the label blank — a nameless row
  *  is useless, so fall back to e.g. "Tube Screamer" from the leveled block's id). */

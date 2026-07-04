@@ -560,6 +560,11 @@ function DiamondNode({ kind, ink, skeleton }: DiamondNodeProps) {
       >
         <div
           style={{
+            // border-box + no shrink so the 1.5px border stays INSIDE the 12×12
+            // box and the flex cell can't squash the width — otherwise the
+            // square renders a touch wider than tall (a lopsided diamond).
+            boxSizing: "border-box",
+            flexShrink: 0,
             width: 12,
             height: 12,
             transform: "rotate(45deg)",
@@ -592,7 +597,12 @@ function DiamondNode({ kind, ink, skeleton }: DiamondNodeProps) {
   );
 }
 
-function EmptyLane({ ink, size }: { ink: string; size: Size }) {
+// An empty split branch reserves the lane's height/width but draws NO wire of
+// its own: `SplitGroup` paints the straight-through as one full-width line at
+// the exact measured bracket-border y (see `emptyLine`), so the branch wire and
+// the bracket corners are one continuous stroke instead of two elements that
+// drift apart vertically (and double up where they overlap the vertical bar).
+function EmptyLane({ size }: { size: Size }) {
   const artH = size === "sm" ? 46 : 58;
   const minW = size === "sm" ? 56 : 70;
   return (
@@ -600,22 +610,13 @@ function EmptyLane({ ink, size }: { ink: string; size: Size }) {
       style={{
         display: "flex",
         flexDirection: "column",
+        // Grow to fill the lane row (its sibling populated lane sets the column
+        // width) so the painted line spans the whole SPLIT→MIX distance.
+        flex: 1,
         minWidth: minW,
-        flexShrink: 0,
       }}
     >
-      <div
-        style={{
-          flex: 1,
-          minHeight: artH,
-          display: "flex",
-          alignItems: "center",
-          paddingLeft: 4,
-          paddingRight: 4,
-        }}
-      >
-        <div style={{ width: "100%", height: 1.5, background: ink }} />
-      </div>
+      <div style={{ flex: 1, minHeight: artH }} />
       <div style={{ height: STRIP_LBL }} />
     </div>
   );
@@ -764,11 +765,23 @@ function SplitGroup({
     );
   }, [sig]);
 
+  // The "[" / "]" cap. `boxSizing:border-box` is load-bearing: with the default
+  // content-box the two 1.5px horizontal borders render OUTSIDE the `height`, so
+  // the border-box grows to `brk.height + 3` and the bottom border lands ~3px
+  // below `brk.top + brk.height` (bC) — the gap `emptyLine` used to leave. With
+  // border-box the border box is exactly `brk.height`: borderTop occupies
+  // [brk.top, brk.top+1.5] (top at aC) and borderBottom [brk.top+brk.height-1.5,
+  // brk.top+brk.height] (bottom flush at bC) — coinciding with `emptyLine` below.
+  // It also fixes X: border-box folds the 1.5px vertical border INTO the 9px, so
+  // the left cap's border box spans [-9, 0] (was [-9, 1.5]) and its top/bottom
+  // strokes end exactly at x=0, abutting `emptyLine`'s `left:0` with no overlap;
+  // symmetrically the right cap's strokes start at x=W, abutting `right:0`.
   const bracket = (side: BracketSide) =>
     brk ? (
       <div
         style={{
           position: "absolute",
+          boxSizing: "border-box",
           [side]: -9,
           top: brk.top,
           height: brk.height,
@@ -778,6 +791,25 @@ function SplitGroup({
           [side === "left" ? "borderLeft" : "borderRight"]:
             `1.5px solid ${ink}`,
           borderRadius: side === "left" ? "5px 0 0 5px" : "0 5px 5px 0",
+        }}
+      />
+    ) : null;
+
+  // The straight-through line for an EMPTY branch, painted here (not by
+  // `EmptyLane`) so it lands on the SAME measured y as the bracket's top/bottom
+  // border and reads as one continuous stroke. `atTop` picks the branch: the top
+  // matches the border-box bracket's borderTop at [brk.top, brk.top+1.5]; the
+  // bottom matches its borderBottom at [brk.top+brk.height-1.5, brk.top+brk.height].
+  const emptyLine = (atTop: boolean) =>
+    brk ? (
+      <div
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: atTop ? brk.top : brk.top + brk.height - 1.5,
+          height: 1.5,
+          background: ink,
         }}
       />
     ) : null;
@@ -798,6 +830,8 @@ function SplitGroup({
       >
         {bracket("left")}
         {bracket("right")}
+        {a.length === 0 && emptyLine(true)}
+        {b.length === 0 && emptyLine(false)}
         <div
           ref={aRef}
           style={{ display: "flex", alignItems: "stretch", gap: 10 }}
@@ -844,7 +878,7 @@ function SignalChainViewImpl({
                 tile(b, `${pfx}t${String(i)}`),
               ],
         )
-      : [<EmptyLane key={`${pfx}empty`} ink={ink} size={size} />];
+      : [<EmptyLane key={`${pfx}empty`} size={size} />];
 
   const splitSection = (
     st: { a: StripBlock[]; b: StripBlock[] },

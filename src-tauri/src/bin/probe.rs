@@ -31,6 +31,11 @@
 //!   probe --measure-adaptive <slot> <topology>
 //!                                  DEVICE A/B: full-capture vs adaptive-capture LUFS +
 //!                                  timings on one preset (the RE-BASELINE decision aid)
+//!   probe --doctor <slots_csv> <topology>
+//!                                  Doctor calibration sweep: capture each 0-based list
+//!                                  index's BASE sound (Doctor tail), print band profiles +
+//!                                  metrics + fired diagnoses (JSON per sound + table).
+//!                                  READ-ONLY: loads + captures, never saves
 //!   probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]
 //!                                  DEVICE A/B: measure_c per preset with two stimuli →
 //!                                  C/spread/ΔC table (playing-style sensitivity; capture
@@ -1438,6 +1443,39 @@ fn main() {
         }
         eprintln!("[probe] A/B full vs adaptive capture slot {slot} topology={topology}…");
         match tmp_companion_lib::probe_measure_adaptive(slot, &topology) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor") {
+        // --doctor <slots_csv> <topology>  (Doctor calibration sweep, read-only)
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let topology = args.get(i + 2).cloned().unwrap_or_default();
+        let slots: Vec<u32> = match slots_csv
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) if !s.is_empty() && !topology.is_empty() => s,
+            _ => {
+                eprintln!("usage: probe --doctor <slots_csv> <topology>");
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "[probe] doctor sweep over {} slot(s), topology={topology}…",
+            slots.len()
+        );
+        match tmp_companion_lib::probe_doctor(&slots, &topology) {
             Ok(r) => {
                 print!("{r}");
                 return;
