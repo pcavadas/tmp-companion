@@ -12,6 +12,10 @@ const MONO = "'JetBrains Mono', ui-monospace, monospace";
 const STRIP_LBL = 18;
 const GHOST_INK = "rgba(15,17,21,0.12)";
 const ACCENT = "#d97757";
+/** Shared bracket/diamond/emptyLine border width — the SPLIT/MIX geometry comments
+ *  below rely on these strokes lining up pixel-for-pixel, so they share one constant. */
+const STROKE_W = 1.5;
+const STROKE_W_PX = `${String(STROKE_W)}px`;
 
 /** How a tile was changed by an edit (Copy feature). `added` → a `+` badge (inserted
  *  block); `replaced` → a `refresh` ⟳ badge (in-place model swap). Drives the badge
@@ -568,7 +572,7 @@ function DiamondNode({ kind, ink, skeleton }: DiamondNodeProps) {
             width: 12,
             height: 12,
             transform: "rotate(45deg)",
-            border: `1.5px solid ${ink}`,
+            border: `${STROKE_W_PX} solid ${ink}`,
             borderRadius: 2,
           }}
         />
@@ -786,10 +790,10 @@ function SplitGroup({
           top: brk.top,
           height: brk.height,
           width: 9,
-          borderTop: `1.5px solid ${ink}`,
-          borderBottom: `1.5px solid ${ink}`,
+          borderTop: `${STROKE_W_PX} solid ${ink}`,
+          borderBottom: `${STROKE_W_PX} solid ${ink}`,
           [side === "left" ? "borderLeft" : "borderRight"]:
-            `1.5px solid ${ink}`,
+            `${STROKE_W_PX} solid ${ink}`,
           borderRadius: side === "left" ? "5px 0 0 5px" : "0 5px 5px 0",
         }}
       />
@@ -807,8 +811,8 @@ function SplitGroup({
           position: "absolute",
           left: 0,
           right: 0,
-          top: atTop ? brk.top : brk.top + brk.height - 1.5,
-          height: 1.5,
+          top: atTop ? brk.top : brk.top + brk.height - STROKE_W,
+          height: STROKE_W,
           background: ink,
         }}
       />
