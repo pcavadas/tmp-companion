@@ -8608,6 +8608,9 @@ async fn level_preset<R: tauri::Runtime>(
                 // blocks). Optimization path: thread an all-on/off force-list hint from the
                 // frontend backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered
                 // to levelable-param switches, while isolation needs ALL on-off blocks).
+                if cancelled() {
+                    return leveller::level_preset(slot, &stim, target_lufs, opts, &[], cancelled);
+                }
                 let (preset, _, _) = read_slot_preset_parsed(slot)?;
                 std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
                 let force_bypass: Vec<(String, String, bool)> = footswitch::all_onoff_blocks(

@@ -393,6 +393,10 @@ pub fn level_preset(
             // Silence == output not routed to USB 1/2 (a routing state, can happen on ANY preset):
             // report the honest "not on USB 1/2" clamp instead of a generic read failure.
             Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+                // `measure_c` already set `presetLevel`/forced bypasses on the live device;
+                // discard that before returning (this is an Ok result, so
+                // `restore_after_unsaved_error` below never runs for it).
+                let _ = restore_saved_preset(slot);
                 return Ok(LevelResult {
                     slot,
                     ref_level,
@@ -942,6 +946,12 @@ pub fn level_footswitch(
         Ok(l) => l,
         Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
             reamp_off();
+            // Discard the forced-bypass/swept-param pollution `measure_at` left on the live
+            // device — mirrors the reload every other exit from this function does.
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            if let Ok(mut s) = Session::connect() {
+                let _ = s.load_preset(slot);
+            }
             return Ok(FootswitchLevelResult {
                 switch,
                 measured_lufs: MUTE_FLOOR_SILENT_LUFS,
