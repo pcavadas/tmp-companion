@@ -8611,14 +8611,30 @@ async fn level_preset<R: tauri::Runtime>(
                 if cancelled() {
                     return leveller::level_preset(slot, &stim, target_lufs, opts, &[], cancelled);
                 }
-                let (preset, _, _) = read_slot_preset_parsed(slot)?;
-                std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                let force_bypass: Vec<(String, String, bool)> = footswitch::all_onoff_blocks(
-                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
-                )
-                .into_iter()
-                .map(|(g, n)| (g, n, true))
-                .collect();
+                // Best-effort: isolation is a quality improvement, not a precondition for
+                // leveling at all. A read hiccup (or, offline, a preset-read the fake device
+                // doesn't model) must not fail the whole Base run — degrade to no isolation
+                // (pre-this-feature behavior) instead of propagating the error.
+                let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
+                {
+                    Ok((preset, _, _)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            leveller::RECONNECT_GAP_MS,
+                        ));
+                        footswitch::all_onoff_blocks(
+                            preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                        )
+                        .into_iter()
+                        .map(|(g, n)| (g, n, true))
+                        .collect()
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "level_preset slot={slot}: base-isolation preset read failed ({e}), leveling without isolation"
+                        );
+                        Vec::new()
+                    }
+                };
                 leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
             }
         };
