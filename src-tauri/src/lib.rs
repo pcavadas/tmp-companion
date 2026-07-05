@@ -5732,8 +5732,8 @@ pub fn probe_stim_ab(
     );
     for &slot in slots {
         // measure_c owns its own connection/gap pacing (the level_setlist precedent).
-        let row = leveller::measure_c(slot, &stim_a, ref_level)
-            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level).map(|b| (a, b)));
+        let row = leveller::measure_c(slot, &stim_a, ref_level, &[])
+            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level, &[]).map(|b| (a, b)));
         match row {
             Ok((a, b)) => {
                 out += &format!(
@@ -5867,7 +5867,7 @@ pub fn probe_level_preset(
         verify,
         ..Default::default()
     };
-    let r = leveller::level_preset(slot, &stim, target_lufs, opts, || false)?;
+    let r = leveller::level_preset(slot, &stim, target_lufs, opts, &[], || false)?;
 
     let mut out = format!(
         "slot {slot}: measured {:.2} LUFS @ ref {:.2}  (C={:.2})\n\
@@ -6085,7 +6085,7 @@ pub fn probe_level_preset_scenes(
         verify: true,
         ..Default::default()
     };
-    let br = leveller::level_preset(list_index, &stim, base_target, opts, || false)?;
+    let br = leveller::level_preset(list_index, &stim, base_target, opts, &[], || false)?;
     out += &format!(
         "Base  → target {:.1}  presetLevel={:.4}  verify {:.2} LU (err {:+.2}){}{}\n",
         base_target,
@@ -8601,7 +8601,42 @@ async fn level_preset<R: tauri::Runtime>(
                 let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
                 leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
             }
-            None => leveller::level_preset(slot, &stim, target_lufs, opts, cancelled),
+            None => {
+                // Isolate the Base measurement: force EVERY footswitch on/off block OFF so we
+                // measure the clean base sound, not "base + whatever pedals are saved on".
+                // ponytail: costs one ~1 s preset read per Base run (even presets with no FS
+                // blocks). Optimization path: thread an all-on/off force-list hint from the
+                // frontend backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered
+                // to levelable-param switches, while isolation needs ALL on-off blocks).
+                if cancelled() {
+                    return leveller::level_preset(slot, &stim, target_lufs, opts, &[], cancelled);
+                }
+                // Best-effort: isolation is a quality improvement, not a precondition for
+                // leveling at all. A read hiccup (or, offline, a preset-read the fake device
+                // doesn't model) must not fail the whole Base run — degrade to no isolation
+                // (pre-this-feature behavior) instead of propagating the error.
+                let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
+                {
+                    Ok((preset, _, _)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            leveller::RECONNECT_GAP_MS,
+                        ));
+                        footswitch::all_onoff_blocks(
+                            preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                        )
+                        .into_iter()
+                        .map(|(g, n)| (g, n, true))
+                        .collect()
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "level_preset slot={slot}: base-isolation preset read failed ({e}), leveling without isolation"
+                        );
+                        Vec::new()
+                    }
+                };
+                leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
+            }
         };
         match &result {
             Ok(r) => log::info!(
@@ -9376,9 +9411,13 @@ pub fn probe_level_footswitch(
         r.measured_lufs,
         r.target_lufs,
         r.final_value,
-        match &r.clamp_reason {
-            Some(reason) if r.clamped => format!("  [CLAMPED — {reason}]"),
-            _ => String::new(),
+        if r.clamped {
+            match &r.clamp_reason {
+                Some(reason) => format!("  [CLAMPED — {reason}]"),
+                None => "  [CLAMPED]".to_string(),
+            }
+        } else {
+            String::new()
         },
         r.predicted_lufs,
         r.iterations,
@@ -11876,8 +11915,8 @@ mod e2e_server_spike {
             verify: true,
             ..Default::default()
         };
-        let r =
-            crate::leveller::level_preset(0, &stim, -30.0, opts, || false).expect("level_preset");
+        let r = crate::leveller::level_preset(0, &stim, -30.0, opts, &[], || false)
+            .expect("level_preset");
         assert!(
             r.final_level.is_finite() && r.final_level > 0.0,
             "solved a finite level: {r:?}"

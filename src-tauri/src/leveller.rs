@@ -51,6 +51,9 @@ const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 600;
 const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
 const LEVEL_MAX: f32 = 1.0;
+/// `loudest_loudness`'s sentinel error text for a capture with no measurable signal — shared
+/// so producer and consumers can't drift.
+const NO_SIGNAL_CAPTURED: &str = "no signal captured";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LevelResult {
@@ -111,8 +114,12 @@ impl Default for LevelOptions {
 /// Fresh-connect, set `level` (NO load — the current preset is already the one
 /// we want), engage re-amp once, capture, and return the loudest channel's
 /// loudness. The one-shot `presetLevel` case of `measure_knob_at`.
-fn measure_at_level(stimulus: &[f32], level: f32) -> Result<lufs::Loudness, String> {
-    measure_knob_at(stimulus, &LevelKnob::PresetLevel, level)
+fn measure_at_level(
+    stimulus: &[f32],
+    level: f32,
+    force_bypass: &[(String, String, bool)],
+) -> Result<lufs::Loudness, String> {
+    measure_knob_at(stimulus, &LevelKnob::PresetLevel, level, force_bypass)
 }
 
 /// Sentinel error returned when a cooperative cancel flag is observed at a leveling
@@ -175,7 +182,12 @@ pub struct MeasuredC {
 /// in-connection), then measure its captured loudness at `ref_level` on a fresh
 /// connection, and solve `C` in `LUFS = 20·log10(level) + C`. `C` is the preset's
 /// max reachable captured loudness.
-pub fn measure_c(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<MeasuredC, String> {
+pub fn measure_c(
+    slot: u32,
+    stimulus: &[f32],
+    ref_level: f32,
+    force_bypass: &[(String, String, bool)],
+) -> Result<MeasuredC, String> {
     let ref_level = ref_level.clamp(0.05, 1.0);
     {
         let mut s = Session::connect()?;
@@ -184,7 +196,7 @@ pub fn measure_c(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<Measured
     }
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     // No load → the set inside measure_at_level sticks on the now-current preset.
-    let loudness = measure_at_level(stimulus, ref_level)?;
+    let loudness = measure_at_level(stimulus, ref_level, force_bypass)?;
     let c = loudness.integrated_lufs - 20.0 * (ref_level as f64).log10();
     Ok(MeasuredC {
         measured_lufs: loudness.integrated_lufs,
@@ -366,6 +378,7 @@ pub fn level_preset(
     stimulus: &[f32],
     target_lufs: f64,
     opts: LevelOptions,
+    force_bypass: &[(String, String, bool)],
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<LevelResult, String> {
     // Pre-measure cancel: nothing has touched the device yet, so return WITHOUT the
@@ -375,21 +388,57 @@ pub fn level_preset(
     }
     let result = (|| {
         let ref_level = opts.ref_level.clamp(0.05, 1.0);
-        let m = measure_c(slot, stimulus, ref_level)?;
+        let m = match measure_c(slot, stimulus, ref_level, force_bypass) {
+            Ok(m) => m,
+            // Silence == output not routed to USB 1/2 (a routing state, can happen on ANY preset):
+            // report the honest "not on USB 1/2" clamp instead of a generic read failure.
+            Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+                // `measure_c` already set `presetLevel`/forced bypasses on the live device;
+                // discard that before returning (this is an Ok result, so
+                // `restore_after_unsaved_error` below never runs for it).
+                let _ = restore_saved_preset(slot);
+                return Ok(LevelResult {
+                    slot,
+                    ref_level,
+                    measured_lufs: MUTE_FLOOR_SILENT_LUFS,
+                    constant_c: MUTE_FLOOR_SILENT_LUFS,
+                    final_level: ref_level,
+                    target_lufs,
+                    predicted_lufs: MUTE_FLOOR_SILENT_LUFS,
+                    clamped: true,
+                    saved: false,
+                    verify_lufs: None,
+                    iterations: 1,
+                    dynamic_spread_lu: None,
+                    clamp_reason: Some("no signal on USB 1/2".into()),
+                    verify_by_ear: false,
+                });
+            }
+            Err(e) => return Err(e),
+        };
         // Post-measure cancel: `measure_c` left `presetLevel` at `ref_level`; bail before
         // the apply+save. The restore wrapper reloads the stored preset (see CANCELLED).
         if cancelled() {
             return Err(CANCELLED.to_string());
         }
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
-        // The preset is still current from measure_c's load → no reload needed.
+        // With forced footswitch bypasses, the device edit buffer is dirty (bypasses persist
+        // across HID reconnects), so `apply_level` must reload FIRST to reset it before setting
+        // only `presetLevel` and saving. And skip verify: its capture runs AFTER that reload, so
+        // it would measure the un-isolated (Base + all FS blocks) state — a misleading number, and
+        // re-forcing there would risk persisting the bypasses. The solve already used the
+        // correctly-isolated measure_c, and the UI falls back to `predicted_lufs`.
+        let mut apply_opts = opts;
+        if !force_bypass.is_empty() {
+            apply_opts.verify = false;
+        }
         let (saved, verify_lufs) = apply_level(
             slot,
             stimulus,
             &LevelKnob::PresetLevel,
             final_level,
-            opts,
-            false,
+            apply_opts,
+            !force_bypass.is_empty(),
         )?;
 
         Ok(LevelResult {
@@ -455,7 +504,7 @@ pub fn level_setlist(
     // Pass 1 — measure C for every entry (C is intrinsic, independent of target).
     let mut measured: Vec<MeasuredC> = Vec::with_capacity(entries.len());
     for e in entries {
-        measured.push(measure_c(e.slot, e.stimulus, ref_level)?);
+        measured.push(measure_c(e.slot, e.stimulus, ref_level, &[])?);
     }
 
     // Common target: just below the quietest-capable preset's ceiling, in
@@ -706,7 +755,7 @@ fn loudest_loudness(cap: Result<audio::Capture, String>) -> Result<lufs::Loudnes
     m.integrated_lufs
         .is_finite()
         .then_some(m)
-        .ok_or_else(|| "no signal captured".to_string())
+        .ok_or_else(|| NO_SIGNAL_CAPTURED.to_string())
 }
 
 /// Engage re-amp on `s` (latching the already-set knob/scene), settle, capture the
@@ -745,8 +794,14 @@ fn measure_knob_at(
     stimulus: &[f32],
     knob: &LevelKnob,
     value: f32,
+    force_bypass: &[(String, String, bool)],
 ) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect()?;
+    // Force footswitch-block bypasses BEFORE the knob set + single re-amp engage so they latch —
+    // the same connect → bypasses → set → engage ordering the footswitch `measure_at` proves.
+    for (g, n, byp) in force_bypass {
+        s.change_parameter_bool(g, n, "bypass", *byp)?;
+    }
     set_knob(&mut s, knob, value)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     engage_measure_disengage(&mut s, stimulus)
@@ -874,9 +929,49 @@ pub fn level_footswitch(
         engage_measure_disengage(&mut s, stimulus)
     };
 
+    // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
+    // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
+    let reamp_off = || {
+        let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+    };
+
     // Seed two real points and run a bounded generic secant.
     let (v_lo, v_hi) = (0.25f32, 0.75f32);
-    let l_lo = measure_at(v_lo)?;
+    // The FIRST seed doubles as the routing probe: a genuinely silent capture (device output not
+    // on USB 1/2) makes `loudest_loudness` error "no signal captured" — convert THAT one to the
+    // honest "not on USB 1/2" clamp (mirrors the scene mute-floor idiom below). Signal-present but
+    // flat/short-of-target is a headroom/authority clamp with NO reason, not a routing error. Only
+    // the first seed catches: broken routing is silent from capture #1; later silences stay errors.
+    let l_lo = match measure_at(v_lo) {
+        Ok(l) => l,
+        Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+            reamp_off();
+            // Discard the forced-bypass/swept-param pollution `measure_at` left on the live
+            // device — mirrors the reload every other exit from this function does.
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            if let Ok(mut s) = Session::connect() {
+                let _ = s.load_preset(slot);
+            }
+            return Ok(FootswitchLevelResult {
+                switch,
+                measured_lufs: MUTE_FLOOR_SILENT_LUFS,
+                final_value: v_lo,
+                target_lufs,
+                predicted_lufs: MUTE_FLOOR_SILENT_LUFS,
+                clamped: true,
+                clamp_reason: Some("no signal on USB 1/2".into()),
+                saved: false,
+                verify_lufs: None,
+                iterations: 1,
+                dynamic_spread_lu: None,
+                method: match write {
+                    FsWrite::Bake { .. } => "baked".into(),
+                    FsWrite::Assign { .. } => "assigned".into(),
+                },
+            });
+        }
+        Err(e) => return Err(e),
+    };
     let l_hi = measure_at(v_hi)?;
     let mut iterations = 2u32;
     let err = |l: f64| (l - target_lufs).abs();
@@ -886,21 +981,17 @@ pub fn level_footswitch(
         } else {
             (v_hi, l_hi.integrated_lufs, l_hi.spread_lu())
         };
-    let mut clamp_reason: Option<String> = None;
-    if (l_hi.integrated_lufs - l_lo.integrated_lufs).abs() < KNOB_TOL_LU {
-        clamp_reason = Some("parameter has little effect on loudness".into());
-    } else if err(best_lufs) > KNOB_TOL_LU {
+    // Run the secant only when not already converged AND the knob has authority (a flat seed pair
+    // can't be solved — leave it as an honest, reason-less clamp).
+    if err(best_lufs) > KNOB_TOL_LU
+        && (l_hi.integrated_lufs - l_lo.integrated_lufs).abs() >= KNOB_TOL_LU
+    {
         let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
         let mut p1 = (v_hi as f64, l_hi.integrated_lufs);
         for _ in 0..MEASURE_CORRECT_MAX {
             let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
-                clamp_reason
-                    .get_or_insert_with(|| "parameter has little effect on loudness".into());
-                break;
+                break; // flat response — the knob can't move loudness here
             };
-            if !(-1e-9..=1.0 + 1e-9).contains(&raw) {
-                clamp_reason.get_or_insert_with(|| "target outside parameter range".into());
-            }
             let v2 = raw.clamp(0.0, 1.0) as f32;
             let l2 = measure_at(v2)?;
             iterations += 1;
@@ -916,18 +1007,9 @@ pub fn level_footswitch(
             p1 = (v2 as f64, l2.integrated_lufs);
         }
     }
+    // Signal is present past the seed probe, so a miss is a headroom/authority clamp, never a
+    // routing error → `clamp_reason` stays None (the UI shows "clamped at X LUFS").
     let clamped = err(best_lufs) > KNOB_TOL_LU;
-    if !clamped {
-        clamp_reason = None; // converged — drop any transient out-of-range hint
-    } else if clamp_reason.is_none() {
-        clamp_reason = Some("could not reach target".into());
-    }
-
-    // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
-    // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
-    let reamp_off = || {
-        let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
-    };
 
     // ── Write (save only): reload to DISCARD the measurement pollution (incl. the forced
     //    bypass), then write per the mode and persist ──
@@ -1059,7 +1141,7 @@ pub fn level_footswitch(
         target_lufs,
         predicted_lufs: best_lufs,
         clamped,
-        clamp_reason,
+        clamp_reason: None,
         saved,
         verify_lufs,
         iterations,
@@ -1879,7 +1961,7 @@ fn measure_knobs_at(
 fn measure_mute_floor(stimulus: &[f32], a: &LevelKnob, b: &LevelKnob) -> Result<f64, String> {
     match measure_knobs_at(stimulus, &[(a, 0.0), (b, 0.0)]) {
         Ok(l) => Ok(l.integrated_lufs),
-        Err(e) if e.contains("no signal captured") => Ok(MUTE_FLOOR_SILENT_LUFS),
+        Err(e) if e.contains(NO_SIGNAL_CAPTURED) => Ok(MUTE_FLOOR_SILENT_LUFS),
         Err(e) => Err(e),
     }
 }
@@ -2235,7 +2317,7 @@ pub fn level_preset_block(
         if cancelled() {
             return Err(CANCELLED.to_string());
         }
-        let first = measure_knob_at(stimulus, knob, from_c(ca))?;
+        let first = measure_knob_at(stimulus, knob, from_c(ca), &[])?;
         // The spread is gain-invariant, so the first capture characterizes the preset.
         let dynamic_spread_lu = first.spread_lu();
         let mut ya = first.integrated_lufs;
@@ -2243,7 +2325,7 @@ pub fn level_preset_block(
             return Err(CANCELLED.to_string());
         }
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-        let mut yb = measure_knob_at(stimulus, knob, from_c(cb))?.integrated_lufs;
+        let mut yb = measure_knob_at(stimulus, knob, from_c(cb), &[])?.integrated_lufs;
         let mut iterations = 2u32;
 
         // Track the best (closest-to-target) measured point as the result.
@@ -2267,7 +2349,7 @@ pub fn level_preset_block(
                 return Err(CANCELLED.to_string());
             }
             std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-            let ynext = measure_knob_at(stimulus, knob, from_c(cnext))?.integrated_lufs;
+            let ynext = measure_knob_at(stimulus, knob, from_c(cnext), &[])?.integrated_lufs;
             iterations += 1;
             if (ynext - target_lufs).abs() < (best.1 - target_lufs).abs() {
                 best = (cnext, ynext);
@@ -2322,7 +2404,7 @@ mod tests {
         let stim = [0.0f32; 16];
         let opts = LevelOptions::default();
         assert_eq!(
-            level_preset(0, &stim, -30.0, opts, || true).unwrap_err(),
+            level_preset(0, &stim, -30.0, opts, &[], || true).unwrap_err(),
             CANCELLED
         );
         let knob = LevelKnob::PresetLevel;

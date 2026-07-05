@@ -288,7 +288,7 @@ The firmware exposes the following screens / modals. Each is a _product surface_
 ## Why this matters for the companion
 
 - **Copy** (`src/views/copy/copyModel.ts` + `audiograph.rs`): a preset is a signal-path template + block list + per-block `(model_id, params, bypass, scene_edit_flag)` + scenes (a sparse bypass+parameter overlay) + footswitch/EXP assigns. Because **all scenes share one block list**, a Copy insert/remove must land in every scene, and the block lives in three keyed places (see `tmp-companion-write-safety`).
-- **Leveling** (`leveller.rs` / `audio.rs`): `presetLevel` is a **global multiplier** over all scenes → level the base scene first; each footswitch scene is leveled on its **active amp's `outputLevel`**. Reamp routes the DAW track into the chain's first block and bypasses the analog Loops 1–2, and the inject is not AGC'd — the model above is why.
+- **Leveling** (`leveller.rs` / `audio.rs`): `presetLevel` is a **global multiplier** over all scenes → level the base scene first; each footswitch scene is leveled on its **active amp's `outputLevel`**. Block-acting footswitches level in ISOLATION: engage only that footswitch's on/off block(s), force every sibling footswitch's block OFF, and measure "Base" with ALL footswitches off (not as-saved) — otherwise sibling blocks bleed into the capture and inflate the reading. Reamp routes the DAW track into the chain's first block and bypasses the analog Loops 1–2, and the inject is not AGC'd — the model above is why.
 - **Signal chain + Catalog** (`SignalChainView` / `models/`): the 11 templates + block types + the cabinet sub-model are what the strip renders; `tmp-companion-catalog` owns the id→art/name mapping.
 
 ## Sources
