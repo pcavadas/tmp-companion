@@ -192,6 +192,12 @@ impl SimDevice {
         self.state.lock().expect("sim lock").events.clone()
     }
 
+    /// The current song names (read-back-after-write CRUD mutates them).
+    #[cfg(all(test, feature = "e2e"))]
+    pub fn song_names(&self) -> Vec<String> {
+        self.state.lock().expect("sim lock").songs.clone()
+    }
+
     /// Parse one request body and produce the device's framed reply reports.
     fn handle(&self, body: &[u8]) -> Vec<Vec<u8>> {
         let top = proto::parse(body);
