@@ -1,0 +1,352 @@
+use super::*;
+use crate::session;
+
+    #[test]
+    fn backup_preset_scenes_parse_names_and_fs_tags() {
+        // The DB presetJson is the same plaintext shape as the live field-3 doc:
+        // scenes[].sceneName slot-ordered + an ftsw map assigning footswitches to
+        // scene slots. decode_preset_scenes must yield names + 1-based FS tags.
+        let json = br#"{"ftsw":[[{"func":"scene","sceneSlot":1,"isActive":true}],[{"func":"scene","sceneSlot":2,"isActive":true}]],"lastLoadedScene":0,"scenes":[{"sceneName":"Rhythm","uuid":"a"},{"sceneName":"Crunch","uuid":"b"},{"sceneName":"Lead","uuid":"c"}]}"#;
+        let ps = decode_preset_scenes(json).expect("parse");
+        assert_eq!(ps.scenes, vec!["Rhythm", "Crunch", "Lead"]);
+        // ftsw assigns FS1→scene 1, FS2→scene 2 (1-based tag = switch index + 1);
+        // scene 0 has no footswitch.
+        assert_eq!(ps.fs, vec![None, Some(1), Some(2)]);
+    }
+
+    /// Build a real in-memory device-backup archive from one SQL script: run it through
+    /// `sqlite3` to a fresh temp `normalDb.db3`, tar it under the firmware's logical
+    /// `databaseBackup` entry name, then LZ4-frame compress — the exact shape
+    /// `read_backup_archive` decodes. Shared by the two backup-decode tests and the
+    /// showcase-fixture generator (a per-call counter keeps parallel temp dirs distinct).
+    fn build_backup_archive(sql: &str) -> Vec<u8> {
+        use std::io::Write as _;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let uniq = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "tmp-companion-backup-{}-{uniq}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let db_path = dir.join("normalDb.db3");
+        let _ = std::fs::remove_file(&db_path);
+        let status = std::process::Command::new("sqlite3")
+            .arg(&db_path)
+            .arg(sql)
+            .status()
+            .expect("spawn sqlite3");
+        assert!(status.success(), "sqlite3 create failed");
+        let db_bytes = std::fs::read(&db_path).expect("read db");
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_dir(&dir);
+
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(db_bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "databaseBackup",
+                    std::io::Cursor::new(&db_bytes),
+                )
+                .expect("tar append");
+            builder.finish().expect("tar finish");
+        }
+        let mut archive = Vec::new();
+        {
+            let mut enc = lz4_flex::frame::FrameEncoder::new(&mut archive);
+            enc.write_all(&tar_bytes).expect("lz4 write");
+            enc.finish().expect("lz4 finish");
+        }
+        archive
+    }
+
+    /// A decoded backup row carries the routed signal-chain `graph` (lanes/stages)
+    /// for a NON-active preset — the "Copy blocks between presets" frontend reads each
+    /// preset's real topology from this without a device round-trip. Builds a real
+    /// in-memory backup archive (sqlite → tar `databaseBackup` → LZ4-frame) so the
+    /// FULL `read_backup_archive` path is exercised, then asserts the multi-block
+    /// `gtrSeries` preset's row has a non-empty `graph.stages` (and `graph.nodes`).
+    #[test]
+    fn backup_row_carries_routed_graph() {
+        // A known multi-block series preset doc (the live field-3 shape): two guitar
+        // blocks in G1 under a `gtrSeries` template → extract_active_graph yields one
+        // Series stage with both nodes.
+        let preset_json = r#"{"info":{"displayName":"Copy Test","userSlot":3},"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[{"nodeId":"ACD_Comp","FenderId":"ACD_Comp","dspUnitParameters":{"bypass":false}},{"nodeId":"ACD_TwinReverb","FenderId":"ACD_TwinReverb","dspUnitParameters":{"bypass":false}}]}},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+
+        let archive = build_backup_archive(&format!(
+            "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+             INSERT INTO UserPresets VALUES (3, 'Copy Test', '{}');",
+            preset_json.replace('\'', "''")
+        ));
+
+        let result = read_backup_archive(&archive).expect("decode archive");
+        let row = result
+            .presets
+            .iter()
+            .find(|p| p.name == "Copy Test")
+            .expect("the row is present");
+        // Block roster survives (the pre-existing field) …
+        assert_eq!(row.blocks.len(), 2, "two-block roster");
+        // … AND the new routed graph carries the topology the frontend renders.
+        assert_eq!(row.graph.template.as_deref(), Some("gtrSeries"));
+        assert!(
+            !row.graph.stages.is_empty(),
+            "graph.stages must be non-empty"
+        );
+        assert!(!row.graph.nodes.is_empty(), "graph.nodes must be non-empty");
+        let session::Stage::Series { blocks } = &row.graph.stages[0] else {
+            panic!("gtrSeries → a Series stage");
+        };
+        assert_eq!(blocks.len(), 2, "both blocks in the series stage");
+    }
+
+    /// A backup archive carries the song→preset bindings out of the `SongPresets`
+    /// table (Songs.slot → UserPresets.slot), so the Songs tab's Presets axis can show
+    /// "which songs use this preset" with ZERO new device reads. Builds the full
+    /// archive (sqlite → tar → LZ4) with `Songs` + `SongPresets` rows and asserts the
+    /// decoded `song_presets` carry the expected `{song_slot, preset_slot}` pairs.
+    #[test]
+    fn backup_carries_song_preset_bindings() {
+        // UserPresets (slot 8, 58) + two Songs + three SongPresets bindings:
+        //   Song slot 1 → presets 8, 58 ; Song slot 2 → preset 58.
+        let archive = build_backup_archive(
+            "CREATE TABLE UserPresets(id INTEGER PRIMARY KEY, slot INTEGER, displayName TEXT, presetJson TEXT); \
+             INSERT INTO UserPresets VALUES (10, 8, 'Plexi Crunch', '{}'); \
+             INSERT INTO UserPresets VALUES (11, 58, 'Stadium Lead', '{}'); \
+             CREATE TABLE Songs(id INTEGER PRIMARY KEY, slot INTEGER, name TEXT); \
+             INSERT INTO Songs VALUES (1, 1, 'Song A'); \
+             INSERT INTO Songs VALUES (2, 2, 'Song B'); \
+             CREATE TABLE SongPresets(id INTEGER PRIMARY KEY, Songs_id INTEGER, UserPresets_id INTEGER, slot INTEGER); \
+             INSERT INTO SongPresets VALUES (1, 1, 10, 1); \
+             INSERT INTO SongPresets VALUES (2, 1, 11, 2); \
+             INSERT INTO SongPresets VALUES (3, 2, 11, 1);",
+        );
+
+        let result = read_backup_archive(&archive).expect("decode archive");
+        assert_eq!(
+            result.song_presets,
+            vec![
+                SongPresetBinding {
+                    song_slot: 1,
+                    preset_slot: 8
+                },
+                SongPresetBinding {
+                    song_slot: 1,
+                    preset_slot: 58
+                },
+                SongPresetBinding {
+                    song_slot: 2,
+                    preset_slot: 58
+                },
+            ],
+        );
+    }
+
+    /// The Songs tab is sourced from the startup backup: the archive carries the full
+    /// `Songs` (name/notes/bpm) + `Setlists` (name) + `SetlistSongs` (membership) tables,
+    /// so the tab can paint with ZERO live device reads. Builds the full archive (sqlite →
+    /// tar → LZ4) and asserts the decoded `songs`/`setlists`/`setlist_songs`.
+    #[test]
+    fn backup_carries_songs_setlists_membership() {
+        let archive = build_backup_archive(
+            "CREATE TABLE UserPresets(id INTEGER PRIMARY KEY, slot INTEGER, displayName TEXT, presetJson TEXT); \
+             CREATE TABLE Songs(id INTEGER PRIMARY KEY, slot INTEGER, name TEXT, notes TEXT, bpmActive INTEGER, bpm INTEGER); \
+             INSERT INTO Songs VALUES (1, 1, 'Opener', 'capo 2', 1, 128); \
+             INSERT INTO Songs VALUES (2, 2, 'Ballad', '', 0, 72); \
+             CREATE TABLE Setlists(id INTEGER PRIMARY KEY, slot INTEGER, name TEXT); \
+             INSERT INTO Setlists VALUES (1, 1, 'Main Set'); \
+             CREATE TABLE SetlistSongs(id INTEGER PRIMARY KEY, Setlists_id INTEGER, Songs_id INTEGER, slot INTEGER); \
+             INSERT INTO SetlistSongs VALUES (1, 1, 2, 1); \
+             INSERT INTO SetlistSongs VALUES (2, 1, 1, 2);",
+        );
+        let result = read_backup_archive(&archive).expect("decode archive");
+        assert_eq!(
+            result.songs,
+            vec![
+                session::SongRecord {
+                    slot: 1,
+                    name: "Opener".into(),
+                    notes: "capo 2".into(),
+                    bpm: 128,
+                    bpm_active: true
+                },
+                session::SongRecord {
+                    slot: 2,
+                    name: "Ballad".into(),
+                    notes: String::new(),
+                    bpm: 72,
+                    bpm_active: false
+                },
+            ],
+        );
+        assert_eq!(
+            result.setlists,
+            vec![session::SetlistRecord {
+                slot: 1,
+                name: "Main Set".into()
+            }],
+        );
+        // Setlist 1 holds song slot 2 at position 1, song slot 1 at position 2.
+        assert_eq!(
+            result.setlist_songs,
+            vec![
+                BackupSetlistSong {
+                    setlist_slot: 1,
+                    song_slot: 2,
+                    position: 1
+                },
+                BackupSetlistSong {
+                    setlist_slot: 1,
+                    song_slot: 1,
+                    position: 2
+                },
+            ],
+        );
+    }
+
+    /// GENERATOR (not a gate — `#[ignore]`): expand the curated, non-personal
+    /// `e2e/fixtures/showcase/showcase.json` into a real device-backup archive
+    /// (`showcase-fixture.bin`) the marketing-screenshot tour decodes through the SAME
+    /// `read_backup_archive` path the app uses. Reuses the archive-building recipe of
+    /// `backup_row_carries_routed_graph` / `backup_carries_song_preset_bindings`
+    /// (sqlite → tar `databaseBackup` → LZ4-frame). Run with:
+    ///   `cargo test --features e2e build_showcase_fixture -- --ignored`
+    /// (also chained by `bun run screenshots`). Committed output, regenerated only when
+    /// `showcase.json` changes.
+    #[test]
+    #[ignore = "generator: writes showcase-fixture.bin from showcase.json"]
+    fn build_showcase_fixture() {
+        let src = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e2e/fixtures/showcase/showcase.json"
+        );
+        let spec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(src).expect("read showcase.json"))
+                .expect("parse showcase.json");
+
+        // Expand one compact preset spec → a full `.preset` doc (the live field-3 shape).
+        let build_preset_json = |p: &serde_json::Value| -> String {
+            let slot = p["slot"].as_u64().expect("slot");
+            let name = p["name"].as_str().expect("name");
+            let template = p["template"].as_str().unwrap_or("gtrSeries");
+            let mk_node = |fender: &str| {
+                serde_json::json!({
+                    "FenderId": fender,
+                    "nodeId": fender,
+                    "nodeType": "dspUnit",
+                    "dspUnitParameters": { "bypass": false }
+                })
+            };
+            // G1..G7 (+ M1..M4 empty) — empty for any group the spec omits.
+            let mut guitar = serde_json::Map::new();
+            for g in ["G1", "G2", "G3", "G4", "G5", "G6", "G7"] {
+                let arr: Vec<_> = p["groups"][g]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).map(mk_node).collect())
+                    .unwrap_or_default();
+                guitar.insert(g.to_string(), serde_json::Value::Array(arr));
+            }
+            let mut mic = serde_json::Map::new();
+            for m in ["M1", "M2", "M3", "M4"] {
+                mic.insert(m.to_string(), serde_json::json!([]));
+            }
+            // Named scenes (count + names drive the Level list's "N scenes" breakdown).
+            let scenes: Vec<_> = p["scenes"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .enumerate()
+                        .map(|(i, s)| {
+                            serde_json::json!({
+                                "sceneName": s,
+                                "uuid": format!("5cffe000-0000-0000-0000-{:012}", slot * 100 + i as u64),
+                                "guitarNodes": {}
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let doc = serde_json::json!({
+                "audioGraph": {
+                    "guitarNodes": guitar,
+                    "micNodes": mic,
+                    "presetLevel": 0.5,
+                    "template": template
+                },
+                "scenes": scenes,
+                "info": { "displayName": name, "userSlot": slot, "version": "5.0" }
+            });
+            doc.to_string()
+        };
+
+        // Build the SQL: UserPresets (id = slot) + Songs (id = ordinal) + SongPresets.
+        let mut sql = String::from(
+            "CREATE TABLE UserPresets(id INTEGER PRIMARY KEY, slot INTEGER, displayName TEXT, presetJson TEXT); \
+             CREATE TABLE Songs(id INTEGER PRIMARY KEY, slot INTEGER, name TEXT); \
+             CREATE TABLE SongPresets(id INTEGER PRIMARY KEY, Songs_id INTEGER, UserPresets_id INTEGER, slot INTEGER);",
+        );
+        for p in spec["presets"].as_array().expect("presets") {
+            let slot = p["slot"].as_u64().expect("slot");
+            let name = p["name"].as_str().expect("name").replace('\'', "''");
+            let json = build_preset_json(p).replace('\'', "''");
+            sql.push_str(&format!(
+                " INSERT INTO UserPresets VALUES ({slot}, {slot}, '{name}', '{json}');"
+            ));
+        }
+        let mut sp_id = 0u64;
+        for (si, song) in spec["songs"].as_array().expect("songs").iter().enumerate() {
+            let song_id = si as u64 + 1; // Songs.id; slot = positional (1-based)
+            let name = song["name"]
+                .as_str()
+                .expect("song name")
+                .replace('\'', "''");
+            sql.push_str(&format!(
+                " INSERT INTO Songs VALUES ({song_id}, {song_id}, '{name}');"
+            ));
+            for (pi, ps) in song["presets"].as_array().into_iter().flatten().enumerate() {
+                sp_id += 1;
+                let preset_slot = ps.as_u64().expect("preset slot"); // = UserPresets.id
+                let ord = pi as u64 + 1;
+                sql.push_str(&format!(
+                    " INSERT INTO SongPresets VALUES ({sp_id}, {song_id}, {preset_slot}, {ord});"
+                ));
+            }
+        }
+
+        // sqlite → tar `databaseBackup` → LZ4-frame, the exact device-backup shape.
+        let archive = build_backup_archive(&sql);
+
+        // Self-check: the archive round-trips through the real decoder before we commit it.
+        let decoded = read_backup_archive(&archive).expect("decode generated archive");
+        let n_presets = spec["presets"].as_array().unwrap().len();
+        assert_eq!(decoded.presets.len(), n_presets, "all presets decode");
+        let active = spec["activeSlot"].as_u64().unwrap();
+        let hero = decoded
+            .presets
+            .iter()
+            .find(|r| r.slot as u64 == active)
+            .expect("active preset present");
+        assert!(
+            !hero.graph.stages.is_empty(),
+            "hero graph has routed stages"
+        );
+
+        let out = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../e2e/fixtures/showcase/showcase-fixture.bin"
+        );
+        std::fs::write(out, &archive).expect("write showcase-fixture.bin");
+        eprintln!(
+            "build_showcase_fixture: wrote {} bytes ({} presets, {} songs) → {out}",
+            archive.len(),
+            n_presets,
+            spec["songs"].as_array().unwrap().len(),
+        );
+    }
