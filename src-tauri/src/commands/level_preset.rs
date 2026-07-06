@@ -171,9 +171,6 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
                 {
                     Ok((preset, _, _)) => {
-                        std::thread::sleep(std::time::Duration::from_millis(
-                            leveller::RECONNECT_GAP_MS,
-                        ));
                         footswitch::all_onoff_blocks(
                             preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
                         )
@@ -188,6 +185,10 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                         Vec::new()
                     }
                 };
+                // The isolation read opened (or tried to open) its own session either way —
+                // gap before level_preset reconnects, else the quick reopen risks the HID
+                // open-lockout (0xe00002c5).
+                std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
                 leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
             }
         };
