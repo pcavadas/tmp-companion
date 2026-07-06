@@ -1,14 +1,14 @@
 //! Probe entry points: preset write ops (import / clear / map / diag) + block discovery + bulk apply + connect/firmware.
 
-use crate::session::Session;
-use crate::PresetEntry;
+use super::songs::read_song_presets;
 use crate::bulk_cmd;
 use crate::bulkrun;
 use crate::library;
 use crate::proto;
 use crate::session;
+use crate::session::Session;
+use crate::PresetEntry;
 use crate::{format_dry_run, io_for_path, library_categories, targets_from_library};
-use super::songs::read_song_presets;
 
 /// Headless hardware probe used by the `probe` bin: connect (seizing the
 /// device), run the handshake, and return the "My Presets" list. Lets us verify

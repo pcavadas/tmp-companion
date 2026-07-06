@@ -4,8 +4,8 @@
 //! as `<libcrate>::probe_xxx`. Helpers that stayed-in-lib commands still call are
 //! `pub(crate)` and re-listed in `lib.rs`'s explicit `pub(crate) use` seam.
 
-pub(crate) mod ftsw;
 pub(crate) mod fs_level;
+pub(crate) mod ftsw;
 pub(crate) mod insert;
 pub(crate) mod inspect;
 pub(crate) mod level;
@@ -20,8 +20,8 @@ pub(crate) mod slot_write;
 pub(crate) mod songs;
 pub(crate) mod stimulus;
 
-pub use ftsw::*;
 pub use fs_level::*;
+pub use ftsw::*;
 pub use insert::*;
 pub use inspect::*;
 pub use level::*;

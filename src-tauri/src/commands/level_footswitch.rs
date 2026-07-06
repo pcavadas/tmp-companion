@@ -36,7 +36,9 @@ pub(crate) fn cancel_footswitch_leveling() {
 /// scene gate (`Some(empty)` = definitely no FS scenes; truncated/unknown or non-empty →
 /// conservative `true`), and the raw byte length. Shared by the footswitch leveling command +
 /// probes (the connect→drain→read→parse→scene-check boilerplate).
-pub(crate) fn read_slot_preset_parsed(slot: u32) -> Result<(serde_json::Value, bool, usize), String> {
+pub(crate) fn read_slot_preset_parsed(
+    slot: u32,
+) -> Result<(serde_json::Value, bool, usize), String> {
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
     let json = s
@@ -49,7 +51,11 @@ pub(crate) fn read_slot_preset_parsed(slot: u32) -> Result<(serde_json::Value, b
 }
 
 /// A numeric `dspUnitParameter` of `node_id` (e.g. the lev param's current value = `valueB`).
-pub(crate) fn node_param_f64(preset: &serde_json::Value, node_id: &str, param: &str) -> Option<f64> {
+pub(crate) fn node_param_f64(
+    preset: &serde_json::Value,
+    node_id: &str,
+    param: &str,
+) -> Option<f64> {
     let mut found = None;
     audiograph::for_each_node(preset, |obj| {
         if obj.get("nodeId").and_then(|v| v.as_str()) == Some(node_id) {

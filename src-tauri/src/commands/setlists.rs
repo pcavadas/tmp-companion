@@ -13,7 +13,9 @@ use crate::*;
 
 /// Read every Setlist's name for the Songs page — strict fail-closed live read.
 #[tauri::command]
-pub(crate) async fn read_setlists(state: State<'_, AppState>) -> Result<Vec<session::SetlistRecord>, String> {
+pub(crate) async fn read_setlists(
+    state: State<'_, AppState>,
+) -> Result<Vec<session::SetlistRecord>, String> {
     with_released_seize(state.session.clone(), read_setlist_list).await
 }
 

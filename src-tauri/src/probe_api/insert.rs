@@ -1,10 +1,10 @@
 //! Probe entry points: live block-insert into a preset group + roster-order helpers.
 
-use crate::session::Session;
 use crate::audiograph;
 use crate::proto;
 use crate::session;
-use crate::{BulkReplaceItem};
+use crate::session::Session;
+use crate::BulkReplaceItem;
 
 /// ADD a block to the device's CURRENT ACTIVE preset over USB — the live `insertNode`
 /// (field 34) path, RE'd byte-exact from a Pro Control add-block capture

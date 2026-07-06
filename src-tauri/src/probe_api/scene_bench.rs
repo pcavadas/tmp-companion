@@ -1,15 +1,15 @@
 //! Probe entry point: batched-live per-scene leveling benchmark harness.
 
-use crate::session::Session;
-use std::sync::atomic::Ordering::SeqCst;
-use crate::leveller;
-use crate::proto;
-use crate::session;
-use crate::{SCENE_LEVEL_CANCEL};
 use super::level::filter_amp_candidates;
 use super::scene_jobs::build_scene_jobs;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
+use crate::leveller;
+use crate::proto;
+use crate::session;
+use crate::session::Session;
+use crate::SCENE_LEVEL_CANCEL;
+use std::sync::atomic::Ordering::SeqCst;
 
 pub fn probe_bench_scene_leveling(
     slots: Vec<u32>,

@@ -416,7 +416,12 @@ mod copy_level_e2e_tests {
         // A path whose parent is not a directory ⇒ the snapshot fails; migration_apply
         // then skips the write and keeps the preset revertible.
         let bad = std::path::Path::new("/dev/null/tmp-companion-cannot-mkdir");
-        let r = crate::commands::migration::snapshot_before_migrate(bad, 3, "Cliff", r#"{"info":{"preset_id":"x"}}"#);
+        let r = crate::commands::migration::snapshot_before_migrate(
+            bad,
+            3,
+            "Cliff",
+            r#"{"info":{"preset_id":"x"}}"#,
+        );
         assert!(r.is_err(), "unwritable backup dir must refuse: {r:?}");
     }
 
@@ -427,7 +432,8 @@ mod copy_level_e2e_tests {
             crate::bulkrun::now_stamp()
         ));
         let before = r#"{"info":{"preset_id":"abc","displayName":"Cliff"}}"#;
-        let p = crate::commands::migration::snapshot_before_migrate(&dir, 3, "Cliff", before).unwrap();
+        let p =
+            crate::commands::migration::snapshot_before_migrate(&dir, 3, "Cliff", before).unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(
             content.contains("abc"),

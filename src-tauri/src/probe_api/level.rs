@@ -1,11 +1,5 @@
 //! Probe entry points: preset leveling + amp-candidate filtering + channel/capture/AGC diagnostics.
 
-use crate::session::Session;
-use crate::audio;
-use crate::leveller;
-use crate::lufs;
-use crate::session;
-use crate::{LevelBlockArg};
 use super::scene_bench::knob_bounds;
 use super::scene_jobs::is_amp_model_id;
 use super::scene_jobs::is_amp_output_level_param;
@@ -13,6 +7,12 @@ use super::slot_write::load_then_discover_blocks;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_48k;
 use super::stimulus::read_stimulus_calibrated;
+use crate::audio;
+use crate::leveller;
+use crate::lufs;
+use crate::session;
+use crate::session::Session;
+use crate::LevelBlockArg;
 
 /// Measure the currently selected preset/scene through re-amp without changing
 /// preset level or block parameters. Optional `slot` loads a preset first in its
@@ -251,7 +251,9 @@ pub(crate) fn filter_amp_candidates(blocks: Vec<session::LevelBlock>) -> Vec<Lev
 
 /// Run the 1.8.45-safe block discovery (`load_then_discover_blocks`) and filter it to
 /// amp `outputLevel` leveling candidates.
-pub(crate) fn load_and_filter_amp_candidates(list_index: u32) -> Result<Vec<LevelBlockArg>, String> {
+pub(crate) fn load_and_filter_amp_candidates(
+    list_index: u32,
+) -> Result<Vec<LevelBlockArg>, String> {
     Ok(filter_amp_candidates(load_then_discover_blocks(
         list_index,
     )?))

@@ -1,10 +1,10 @@
 //! Probe entry points: Setlists CRUD + shared setlist-read helpers (used by the setlist commands).
 
-use crate::session::Session;
-use crate::proto;
-use crate::session;
 use super::songs::find_song_slot;
 use super::songs::read_song_list;
+use crate::proto;
+use crate::session;
+use crate::session::Session;
 
 /// Read every Setlist's name — the net-new live `setlistListResponse` read. Same
 /// in-burst + `batchStatus`-sweep contract as [`read_song_list`] (setlist reads ride

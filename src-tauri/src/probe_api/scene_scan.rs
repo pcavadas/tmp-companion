@@ -1,9 +1,5 @@
 //! Probe entry points: scene enumeration (passive / load / full-live) + scene classify + one-shot level.
 
-use crate::session::Session;
-use crate::leveller;
-use crate::proto;
-use crate::session;
 use super::level::load_and_filter_amp_candidates;
 use super::scene_jobs::build_scene_jobs;
 use super::scene_jobs::prepass_scene_docs;
@@ -11,6 +7,10 @@ use super::scene_jobs::structure_graph;
 use super::slot_write::probe_connect_and_list;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
+use crate::leveller;
+use crate::proto;
+use crate::session;
+use crate::session::Session;
 
 /// NO-SAVE joint-k leveling run (`probe --level-scenes <listIdx> <target> <topology> [scene…]`):
 /// the REAL `build_scene_jobs` → `level_scenes_oneshot` path with `save=false`, so it

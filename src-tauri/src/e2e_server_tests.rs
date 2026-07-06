@@ -47,9 +47,7 @@ fn offline_copy_journey_through_real_backend() {
     // One shared fake: every Session::connect* (command lane) clones it.
     let sim = crate::sim_device::SimDevice::new();
     let sim_for_factory = sim.clone();
-    crate::session::e2e_transport::set_factory(Box::new(move || {
-        Box::new(sim_for_factory.clone())
-    }));
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim_for_factory.clone())));
     // The library read decodes the fixture blob through the real backup path.
     std::env::set_var(
         "TMP_E2E_BACKUP_FIXTURE",
@@ -103,8 +101,7 @@ fn offline_copy_journey_through_real_backend() {
     assert_eq!(list.as_array().map(|a| a.len()), Some(3), "presets: {list}");
 
     // 3. read the library via the fixture backup → 3 rows, decoded graphs.
-    let lib =
-        invoke(&webview, "read_library_via_backup", serde_json::json!({})).expect("library");
+    let lib = invoke(&webview, "read_library_via_backup", serde_json::json!({})).expect("library");
     let rows = lib
         .get("presets")
         .and_then(|p| p.as_array())
@@ -166,9 +163,7 @@ fn offline_level_preset_runs_against_the_fake_audio() {
     let _serial = serial();
     let sim = crate::sim_device::SimDevice::new();
     let sim_for_factory = sim.clone();
-    crate::session::e2e_transport::set_factory(Box::new(move || {
-        Box::new(sim_for_factory.clone())
-    }));
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim_for_factory.clone())));
 
     // 0.5 s of a 440 Hz tone at 48 kHz — non-silent so the loudness meter is finite.
     let rate = 48_000usize;
@@ -181,8 +176,8 @@ fn offline_level_preset_runs_against_the_fake_audio() {
         verify: true,
         ..Default::default()
     };
-    let r = crate::leveller::level_preset(0, &stim, -30.0, opts, &[], || false)
-        .expect("level_preset");
+    let r =
+        crate::leveller::level_preset(0, &stim, -30.0, opts, &[], || false).expect("level_preset");
     assert!(
         r.final_level.is_finite() && r.final_level > 0.0,
         "solved a finite level: {r:?}"
@@ -214,9 +209,7 @@ fn offline_songs_crud_through_real_backend() {
     let _serial = serial();
     let sim = crate::sim_device::SimDevice::new();
     let sim_for_factory = sim.clone();
-    crate::session::e2e_transport::set_factory(Box::new(move || {
-        Box::new(sim_for_factory.clone())
-    }));
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim_for_factory.clone())));
 
     let app = tauri::test::mock_builder()
         .manage(AppState::default())
@@ -240,8 +233,7 @@ fn offline_songs_crud_through_real_backend() {
         Some(2),
         "seed songs: {songs}"
     );
-    let setlists =
-        invoke(&webview, "read_setlists", serde_json::json!({})).expect("read_setlists");
+    let setlists = invoke(&webview, "read_setlists", serde_json::json!({})).expect("read_setlists");
     assert_eq!(
         setlists.as_array().map(|a| a.len()),
         Some(1),

@@ -16,7 +16,9 @@ fn block_lib_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> 
 
 /// The saved block templates.
 #[tauri::command]
-pub(crate) fn list_block_templates(app: tauri::AppHandle) -> Result<Vec<blocklib::BlockTemplate>, String> {
+pub(crate) fn list_block_templates(
+    app: tauri::AppHandle,
+) -> Result<Vec<blocklib::BlockTemplate>, String> {
     Ok(blocklib::load_library_from_path(&block_lib_path(&app)?).unwrap_or_default())
 }
 

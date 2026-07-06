@@ -1,13 +1,13 @@
 //! Probe entry points: footswitch-scene leveling (list / bake-validate / level / repro / forced measure).
 
-use crate::session::Session;
-use crate::audio;
-use crate::footswitch;
-use crate::leveller;
-use crate::{FootswitchLevelJob, node_param_f64, read_slot_preset_parsed, resolve_footswitch_job};
 use super::ftsw::read_slot_ftsw;
 use super::stimulus::read_stimulus_48k;
 use super::stimulus::read_stimulus_calibrated;
+use crate::audio;
+use crate::footswitch;
+use crate::leveller;
+use crate::session::Session;
+use crate::{node_param_f64, read_slot_preset_parsed, resolve_footswitch_job, FootswitchLevelJob};
 
 /// Probe entry: isolate the in-process CoreAudio → chunked-HID failure. Sends a chunked
 /// `set_footswitch_assignment` (1) BEFORE any audio, (2) after ONE re-amp CoreAudio capture,

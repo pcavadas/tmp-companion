@@ -5,7 +5,9 @@ use crate::*;
 /// Read every Song's metadata (name / notes / BPM) for the Songs overview — the
 /// net-new live `songListResponse` read (rides the handshake burst).
 #[tauri::command]
-pub(crate) async fn list_songs(state: State<'_, AppState>) -> Result<Vec<session::SongRecord>, String> {
+pub(crate) async fn list_songs(
+    state: State<'_, AppState>,
+) -> Result<Vec<session::SongRecord>, String> {
     // Strict, fail-closed read (retry-until-complete): a read immediately after a
     // write is the worst case for the multi-packet truncation, and the Songs page
     // re-reads after every mutation, so accept only a strictly-complete response.

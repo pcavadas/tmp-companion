@@ -28,13 +28,18 @@ pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
 
 /// Load the persisted profile store (instrument profiles + per-slot assignments).
 #[tauri::command]
-pub(crate) fn get_store<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<profiles::Store, String> {
+pub(crate) fn get_store<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<profiles::Store, String> {
     profiles::load(&app)
 }
 
 /// Replace the profile list (keeps the per-slot assignment map intact).
 #[tauri::command]
-pub(crate) fn save_profiles(app: tauri::AppHandle, profiles: Vec<profiles::Profile>) -> Result<(), String> {
+pub(crate) fn save_profiles(
+    app: tauri::AppHandle,
+    profiles: Vec<profiles::Profile>,
+) -> Result<(), String> {
     let mut store = self::profiles::load(&app)?;
     store.profiles = profiles;
     // Drop assignments that now point at a deleted profile.
@@ -48,7 +53,10 @@ pub(crate) fn save_profiles(app: tauri::AppHandle, profiles: Vec<profiles::Profi
 
 /// Replace the user's loudness targets (the named live levels edited in Settings).
 #[tauri::command]
-pub(crate) fn save_targets(app: tauri::AppHandle, targets: Vec<profiles::Target>) -> Result<(), String> {
+pub(crate) fn save_targets(
+    app: tauri::AppHandle,
+    targets: Vec<profiles::Target>,
+) -> Result<(), String> {
     let mut store = self::profiles::load(&app)?;
     store.targets = targets;
     self::profiles::save(&app, &store)
@@ -56,7 +64,10 @@ pub(crate) fn save_targets(app: tauri::AppHandle, targets: Vec<profiles::Target>
 
 /// Set the playback loudness leveling compensates for (Settings "Playback level").
 #[tauri::command]
-pub(crate) fn set_playback_level(app: tauri::AppHandle, level: profiles::PlaybackLevel) -> Result<(), String> {
+pub(crate) fn set_playback_level(
+    app: tauri::AppHandle,
+    level: profiles::PlaybackLevel,
+) -> Result<(), String> {
     let mut store = self::profiles::load(&app)?;
     store.playback_level = level;
     self::profiles::save(&app, &store)

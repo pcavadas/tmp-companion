@@ -1,11 +1,13 @@
 //! Probe entry points: live block-replace (`bulk_replace_live` / `replace-held` / bulk saved-block).
 
-use crate::session::Session;
 use crate::audiograph;
 use crate::proto;
-use crate::saved_blocks::{SavedBlock, find_block_presets_blob, parse_block_presets_map};
+use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
 use crate::session;
-use crate::{BulkReplaceItem, ReplArg, discover_replace_plans, held_replace_one, replace_many_held};
+use crate::session::Session;
+use crate::{
+    discover_replace_plans, held_replace_one, replace_many_held, BulkReplaceItem, ReplArg,
+};
 
 /// Instrumented single-node ReplaceNode diagnostic (`probe --replace-debug SLOT FROM TO`):
 /// loads the preset, settles, sends `replaceNode`, and DUMPS the device's reply (looking

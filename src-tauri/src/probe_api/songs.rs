@@ -1,9 +1,9 @@
 //! Probe entry points: Songs CRUD + shared song-read helpers (used by the song commands).
 
-use crate::session::Session;
+use super::slot_write::discover_active_graph;
 use crate::proto;
 use crate::session;
-use super::slot_write::discover_active_graph;
+use crate::session::Session;
 
 /// Read a Song's preset assignments. Song reads ride the handshake burst AND
 /// need a top-level `batchStatus` (like preset *reads*; unlike setters, which omit
@@ -220,7 +220,10 @@ pub fn probe_set_song_notes(name: &str, notes: &str) -> Result<String, String> {
 /// retries were exhausted (the caller decides whether that's an error). `Err` only on
 /// an actual connection/transact failure. Shared by the `set_song_bpm` command and
 /// `probe_set_song_bpm` so this fragile, HW-derived flow lives once.
-pub(crate) fn converge_song_bpm(slot: u32, bpm: f32) -> Result<(Vec<session::SongRecord>, bool), String> {
+pub(crate) fn converge_song_bpm(
+    slot: u32,
+    bpm: f32,
+) -> Result<(Vec<session::SongRecord>, bool), String> {
     // Read the currently-active preset (to restore afterward) + the song's existing
     // footswitch bindings (to avoid clobbering one). Both best-effort reads.
     let prior_active = discover_active_graph().ok().and_then(|(g, _)| g.slot);

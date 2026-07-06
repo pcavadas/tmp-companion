@@ -1,8 +1,8 @@
 //! Probe entry points: footswitch structure read + validation.
 
-use crate::session::Session;
 use crate::audiograph;
 use crate::session;
+use crate::session::Session;
 
 /// The `ftsw` array of the SAVED preset at `device_slot` (1-based), via a field-8 slot
 /// read on a fresh quiet session — the reliable post-save source.

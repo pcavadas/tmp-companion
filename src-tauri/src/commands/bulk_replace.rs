@@ -132,7 +132,10 @@ pub(crate) struct ReplacePlan {
 /// Read the selected slots ONCE on a single session and build the per-preset target
 /// list. Field-8 reads are reliable on a clean session but flaky right after a
 /// reconnect, so all reads are batched here, away from the edit reconnect churn.
-pub(crate) fn discover_replace_plans(device_slots: &[u32], from_id: &str) -> Result<Vec<ReplacePlan>, String> {
+pub(crate) fn discover_replace_plans(
+    device_slots: &[u32],
+    from_id: &str,
+) -> Result<Vec<ReplacePlan>, String> {
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
     let mut plans = Vec::new();

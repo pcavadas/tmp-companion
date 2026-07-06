@@ -84,7 +84,9 @@ pub(crate) async fn import_library(
 /// The imported library's records (decoded JSON omitted from the wire — it's large
 /// and the UI doesn't need it; bulk ops resolve it backend-side).
 #[tauri::command]
-pub(crate) fn library_records(state: State<'_, AppState>) -> Result<Vec<library::LibraryRecord>, String> {
+pub(crate) fn library_records(
+    state: State<'_, AppState>,
+) -> Result<Vec<library::LibraryRecord>, String> {
     let guard = lock_ok(&state.library);
     let lib = guard
         .as_ref()
@@ -108,7 +110,10 @@ pub(crate) struct FilterArgs {
 /// Only **writable** (matched) records are returned — unmatched/ambiguous ones
 /// (sentinel `u32::MAX`) are dropped so they can't be selected for a write.
 #[tauri::command]
-pub(crate) fn library_filter(filter: FilterArgs, state: State<'_, AppState>) -> Result<Vec<u32>, String> {
+pub(crate) fn library_filter(
+    filter: FilterArgs,
+    state: State<'_, AppState>,
+) -> Result<Vec<u32>, String> {
     let guard = lock_ok(&state.library);
     let lib = guard.as_ref().ok_or("no library imported")?;
     let f = search::Filter {

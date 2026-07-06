@@ -272,10 +272,12 @@ pub(crate) fn read_stimulus_calibrated_with_shortfall(
 
 /// [`read_stimulus_calibrated_with_shortfall`] for the callers that only need the
 /// samples (all leveling/probe paths — the warn above still fires for them).
-pub(crate) fn read_stimulus_calibrated(path: &str, calibration_lufs: Option<f32>) -> Result<Vec<f32>, String> {
+pub(crate) fn read_stimulus_calibrated(
+    path: &str,
+    calibration_lufs: Option<f32>,
+) -> Result<Vec<f32>, String> {
     read_stimulus_calibrated_with_shortfall(path, calibration_lufs).map(|(stim, _)| stim)
 }
-
 
 pub(crate) fn probe_stimulus_path(topology_id: &str) -> Result<String, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;

@@ -1,10 +1,10 @@
 //! Probe entry points: read-only device inspection (roster, slot JSON, discover, saved blocks, backup).
 
-use crate::session::Session;
-use crate::saved_blocks::{SavedBlock, find_block_presets_blob, parse_block_presets_map};
 use crate::audiograph;
 use crate::proto;
+use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
 use crate::session;
+use crate::session::Session;
 use crate::{discover_replace_plans, read_backup_archive};
 
 /// READ-ONLY RE spike (`probe --re-blocks`): fire `RequestAllBlockPresets` (135) +

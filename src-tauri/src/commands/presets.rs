@@ -12,7 +12,9 @@ use crate::*;
 /// (blocks + routing, read live via the field-78 discovery handshake). No load —
 /// reads whatever preset is currently active on the device.
 #[tauri::command]
-pub(crate) async fn read_active_preset(state: State<'_, AppState>) -> Result<session::ActiveGraph, String> {
+pub(crate) async fn read_active_preset(
+    state: State<'_, AppState>,
+) -> Result<session::ActiveGraph, String> {
     with_released_seize(state.session.clone(), move || {
         discover_active_graph().map(|(graph, _)| graph)
     })
@@ -177,7 +179,9 @@ pub(crate) struct SceneListRow {
 /// command is a manual diagnostic top-up. Routed through `with_released_seize`
 /// so it serializes via `DEVICE_OP_LOCK` (pausing the monitor) like every device op.
 #[tauri::command]
-pub(crate) async fn request_scene_list(state: State<'_, AppState>) -> Result<Vec<SceneListRow>, String> {
+pub(crate) async fn request_scene_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<SceneListRow>, String> {
     with_released_seize(state.session.clone(), move || {
         let names = Session::connect()?.request_scene_list()?;
         Ok(names
@@ -191,7 +195,10 @@ pub(crate) async fn request_scene_list(state: State<'_, AppState>) -> Result<Vec
 /// it switches the live tone — so it's a kebab item, never a row-tap. `list_index`
 /// is 0-based; `session.load_preset` adds the device +1.
 #[tauri::command]
-pub(crate) async fn load_preset_on_amp(state: State<'_, AppState>, list_index: u32) -> Result<(), String> {
+pub(crate) async fn load_preset_on_amp(
+    state: State<'_, AppState>,
+    list_index: u32,
+) -> Result<(), String> {
     let arc = state.session.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Fast path: while live-sync is on, fire the loadPreset on the monitor's
@@ -229,7 +236,11 @@ pub(crate) async fn delete_preset(
 /// Reorder a user preset (`moveUserPreset`). DESTRUCTIVE to slot positions (no
 /// undo). 0-based list indices; `session.move_user_preset` adds the device +1.
 #[tauri::command]
-pub(crate) async fn move_preset(state: State<'_, AppState>, from: u32, to: u32) -> Result<(), String> {
+pub(crate) async fn move_preset(
+    state: State<'_, AppState>,
+    from: u32,
+    to: u32,
+) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         let mut s = Session::connect()?;
         s.move_user_preset(from, to)
@@ -356,7 +367,9 @@ pub(crate) async fn read_library_via_backup<R: tauri::Runtime>(
 /// (mirrors [`read_song_list`]'s fail-closed retry) rather than spuriously surfacing an
 /// empty saved-block palette. Each attempt early-exits the moment the `136` arrives.
 #[tauri::command]
-pub(crate) async fn list_saved_blocks(state: State<'_, AppState>) -> Result<Vec<SavedBlock>, String> {
+pub(crate) async fn list_saved_blocks(
+    state: State<'_, AppState>,
+) -> Result<Vec<SavedBlock>, String> {
     with_released_seize(state.session.clone(), move || {
         for _attempt in 0..4 {
             let mut s =

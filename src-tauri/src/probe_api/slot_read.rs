@@ -1,8 +1,8 @@
 //! Probe entry points: slot-addressed preset read (export / forensics / live / dump / listen).
 
-use crate::session::Session;
 use crate::proto;
 use crate::session;
+use crate::session::Session;
 
 /// Tier-4 diagnostic: capture the live `currentPresetDataChanged` (field 3) preset
 /// JSON on a dense-heartbeat session, write the full decompressed body to

@@ -1,12 +1,12 @@
 //! Scene-leveling job planning: amp classification, knob classification, and job build (shared with the scene-leveling commands).
 
-use crate::session::Session;
+use super::scene_bench::knob_bounds;
 use crate::leveller;
 use crate::proto;
 use crate::scenes;
 use crate::session;
+use crate::session::Session;
 use crate::{AmpKnobSpec, LevelBlockArg};
-use super::scene_bench::knob_bounds;
 
 pub(crate) fn is_amp_category(category: &str) -> bool {
     matches!(
@@ -68,7 +68,9 @@ pub(crate) fn is_amp_output_level_param(parameter_id: &str) -> bool {
 /// scene. Returns `None` when no doc carries a known template — the live field-3
 /// partial truncates before the `template` tail, and silently defaulting to "series"
 /// would re-introduce the parallel mislevel, so the caller must skip instead.
-pub(crate) fn structure_graph(docs: &[(u32, Option<serde_json::Value>)]) -> Option<session::ActiveGraph> {
+pub(crate) fn structure_graph(
+    docs: &[(u32, Option<serde_json::Value>)],
+) -> Option<session::ActiveGraph> {
     docs.iter()
         .filter_map(|(_, d)| d.as_ref())
         .map(|d| session::extract_active_graph(d, None))
