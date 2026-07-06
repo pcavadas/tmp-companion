@@ -1,0 +1,65 @@
+import type { CatalogCategory } from "./types";
+
+export const BASS_CATEGORY: CatalogCategory = {
+  key: "bass",
+  label: "Bass Amps",
+  blurb: "Modeled bass amplifiers and heads.",
+  blocks: [
+    [
+      "ACD_TMBassmanTV",
+      "BASSTV",
+      "combo",
+      "tweed",
+      "BASSMAN TV",
+      "Fender Bassman TV (1x15 bass combo)",
+    ],
+    [
+      "ACD_SuperBassmanVintage",
+      "SBASS-V",
+      "amp",
+      "blackface",
+      "FENDER SUPER BASSMAN VINTAGE",
+      "Fender Super Bassman (Vintage channel)",
+    ],
+    [
+      "ACD_SuperBassman",
+      "SBASS-OD",
+      "amp",
+      "blackface",
+      "FENDER SUPER BASSMAN OVERDRIVE",
+      "Fender Super Bassman (Overdrive channel)",
+    ],
+    [
+      "ACD_Redhead",
+      "REDHD",
+      "combo",
+      "swr",
+      "SWR REDHEAD",
+      "SWR Redhead (bass combo)",
+    ],
+    [
+      "ACD_SVTBlueLine",
+      "SVT",
+      "amp",
+      "svt",
+      "RAMPAGE BLUELINE",
+      "Ampeg SVT 'Blue Line' (300W head)",
+    ],
+    [
+      "ACD_Ampeg66B15",
+      "B-15",
+      "amp",
+      "b15",
+      "'66 FLIP TOP",
+      "Ampeg B-15 'flip top' (1966)",
+    ],
+    [
+      "ACD_GK800RB",
+      "400RB",
+      "amp",
+      "gk",
+      "ROCK-BOTTOM 400",
+      "Gallien-Krueger 400RB",
+    ],
+  ],
+};
