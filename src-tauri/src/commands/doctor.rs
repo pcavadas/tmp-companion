@@ -70,7 +70,7 @@ pub struct DoctorCheckResult {
 static DOCTOR_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-fn cancel_doctor_check() {
+pub(crate) fn cancel_doctor_check() {
     DOCTOR_CANCEL.store(true, SeqCst);
 }
 
@@ -81,7 +81,7 @@ fn cancel_doctor_check() {
 /// One command per run (the `copy_apply`/`level_scenes_apply_batched` shape):
 /// per-sound progress streams over `on_result`, structured results return.
 #[tauri::command]
-async fn doctor_check(
+pub(crate) async fn doctor_check(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     items: Vec<DoctorInput>,
@@ -309,7 +309,7 @@ fn doctor_validate_ops(ops: &[doctor::DoctorOp]) -> Result<(), String> {
 /// the edit buffer WITHOUT reloading (a load would discard the unsaved edit).
 /// Persist with `doctor_save`; revert with `doctor_discard`.
 #[tauri::command]
-async fn doctor_apply(
+pub(crate) async fn doctor_apply(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     job: DoctorApplyJob,
@@ -403,7 +403,7 @@ async fn doctor_apply(
 /// Persist the applied (still-live) edit buffer to `list_index`. Fresh session,
 /// identity-guarded — `confirm_active` never loads, so the edit buffer survives.
 #[tauri::command]
-async fn doctor_save(
+pub(crate) async fn doctor_save(
     state: State<'_, AppState>,
     list_index: u32,
     expect_name: String,
@@ -419,7 +419,10 @@ async fn doctor_save(
 
 /// Discard the applied edit buffer by reloading the stored preset.
 #[tauri::command]
-async fn doctor_discard(state: State<'_, AppState>, list_index: u32) -> Result<(), String> {
+pub(crate) async fn doctor_discard(
+    state: State<'_, AppState>,
+    list_index: u32,
+) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         leveller::restore_saved_preset(list_index)
     })
