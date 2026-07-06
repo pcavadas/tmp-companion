@@ -197,7 +197,7 @@ Instrument-aware: a profile links a real instrument to a pickup topology whose s
 
 - **React hooks precede any conditional early return** (a violation blanked the whole window pre-ErrorBoundary; top-level + per-tab `ErrorBoundary` now defends).
 - **`window.confirm()`/`alert()` silently no-op in WKWebView** (`confirm` returns `false`) — never gate logic on them; use inline UI/countdowns.
-- **`Pick`/`BlockPick` display `options[0]` when `value` isn't in `options`** — derive defaults from the live option source, never hard-coded ids (a hard-coded default silently levelled to −30).
+- **`Pick`-family dropdowns display `options[0]` when `value` isn't in `options`** — derive defaults from the live option source, never hard-coded ids (a hard-coded default silently levelled to −30).
 - **Tauri `core:default` does NOT grant window creation** — a second `WebviewWindow` silently fails without the `core:window:allow-*` capabilities (all removed; Settings is a tab now).
 - **Editing `index.html` triggers a FULL page reload** (not HMR) in `tauri dev` — re-runs connect-on-mount; reload via the UI instead.
 - **Device tabs refresh on the `connected` flag flipping true** (not mount-only) — plugging in later auto-populates.

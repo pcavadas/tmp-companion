@@ -27,6 +27,7 @@ CI (`.github/workflows/ci.yml`) runs all of the above plus the offline Playwrigh
 - **Conventional commits are enforced** (commitlint, in the pre-commit hook + CI) and drive releases (semantic-release): `feat:` / `fix:` / `docs:` / `chore:` / `refactor:` … A non-conforming message fails CI.
 - **Format only the files you touched.** `main` is not repo-wide `cargo fmt` / prettier clean; a blanket reformat buries the real change. Revert reflows of untouched files before committing.
 - **No lint escape hatches in `src/`** — no `eslint-disable` / `@ts-ignore` / `@ts-expect-error` / `any` / non-null `!`. Fix findings by changing code.
+- **Renamed a doc-cited symbol?** Run `bash scripts/check-doc-anchors.sh` (warn-only; also a CI step) and fix any docs that still cite the old name.
 - PRs open as **draft**; the automated reviewer runs on promote-to-ready. Since 2026-07-04, either a repo-owner approval **or CodeRabbit's own approval** satisfies the protect-main gate (write access is the real gate — bots can't be CODEOWNERS).
 - **Commit identity:** this is a public repo — commit as your personal identity (the maintainer commits as `cavpedro@gmail.com`), never a work email.
 

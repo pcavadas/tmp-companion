@@ -103,3 +103,16 @@ jobs:
 
       - name: Scan tracked files for private-project markers
         run: bash scripts/leak-guard.sh --all
+
+  doc-anchors:
+    # Warn-only staleness guard: doc-cited symbols should resolve in the tree.
+    # Never fails the build (the script always exits 0) — read its output when
+    # a docs PR renames things. Promote to blocking once stably clean.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Check doc-cited symbol anchors (warn-only)
+        run: bash scripts/check-doc-anchors.sh
