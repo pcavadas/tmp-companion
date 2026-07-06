@@ -1,5 +1,9 @@
 # TMP Companion — Pre-release deep E2E + monkey-test plan
 
+> **Status: point-in-time discovery snapshot (2026-06-30).** The scenario inventory is still
+> useful; §8's doc-correction items are resolved unless marked open — do not treat them as
+> current bugs.
+
 Discovery-only artifact (no implementation). Maps **every** interactive surface, state
 machine, edge state, and chaos sequence across the 5 tabs, consolidates them into a runnable
 scenario set, and tags each scenario with a regression-automation recommendation.
@@ -293,17 +297,27 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 ## 8. CLAUDE.md corrections found during discovery
 
-1. **No "Disclaimer/Backup" wizard stage.** The leveling wizard is `setup → run → summary` (3
-   stages). The backup acknowledgment is an **inline checkbox in the Setup footer**, not a step. The
-   CLAUDE.md/handoff "4-step rail (Back up · Set up · Level · Summary)" describes the _visual rail_,
-   but there is no separate backup **stage** to navigate to — anyone scripting one will not find it.
-2. **Row click does not recall the preset.** `LevelView.tsx:8-13` header comment says clicking a row
-   "RECALLS the preset"; the actual `PresetRow` only calls `onTogglePreset` (selection), matching the
-   `PresetRow.tsx:11-13` comment. The stale comment at the top of LevelView contradicts the code.
-3. **Catalog Effects disclosure has no collapse path** — `fxOpen` is only ever set `true`; once
-   opened, the subcategory rows can't be hidden again. Minor, but a real one-way toggle.
-4. **Copy "Back" silently discards staged edits** (fresh `initEdit` on re-entering Step 2) — a UX
-   trap worth either a guard/confirm or a doc note.
+1. ✅ resolved (2026-07-05): **No "Disclaimer/Backup" wizard stage.** The leveling wizard is
+   `setup → run → summary` (3 stages). The backup acknowledgment is an **inline checkbox in the
+   Setup footer**, not a step. The CLAUDE.md/handoff "4-step rail (Back up · Set up · Level ·
+   Summary)" describes the _visual rail_, but there is no separate backup **stage** to navigate to
+   — anyone scripting one will not find it. CLAUDE.md now reads "3-step rail (Set up · Level ·
+   Summary)", and `WizardShell.tsx`'s `StepRail` matches that 3-node rail — the doc mismatch this
+   item flagged is gone.
+2. ✅ resolved (2026-07-05): **Row click does not recall the preset.** `LevelView.tsx:8-13` header
+   comment says clicking a row "RECALLS the preset"; the actual `PresetRow` only calls
+   `onTogglePreset` (selection), matching the `PresetRow.tsx:11-13` comment. The stale comment at
+   the top of LevelView contradicts the code. Both files now say clicking does **not** recall the
+   preset (recall is owned by Pro Control / the footswitches) — the comments agree with the code.
+3. ⚠️ still open (2026-07-05): **Catalog Effects disclosure has no collapse path** — `fxOpen` is
+   only ever set `true`; once opened, the subcategory rows can't be hidden again. Minor, but a real
+   one-way toggle. Confirmed via grep (`src/views/CatalogView.tsx`): `setFxOpen` is called exactly
+   once, with `true` — the behavior described is unchanged.
+4. ⚠️ still open (2026-07-05): **Copy "Back" silently discards staged edits** (fresh `initEdit` on
+   re-entering Step 2) — a UX trap worth either a guard/confirm or a doc note. Confirmed via grep
+   (`src/views/copy/CopyView.tsx`): `onBack` only does `setStep(1)`, and `onContinue`/`enterStep2`
+   re-runs `initEdit(toSlots, graphForSlot)` on return to Step 2 — still discards the prior history
+   stack.
 
 ---
 
