@@ -7,6 +7,12 @@ description: "The USB wire-protocol + `.preset` codec reference for the Tone Mas
 
 The TMP speaks **Protocol Buffers (FenderMessageTMS) over USB HID**, and its exported presets are XOR+LZ4-encoded JSON. This skill is the wire-format _reference_; the operational rules (what wedges the device, batch grouping, slot addressing, re-amp latching) live in **`notes/protocol.md`** and **`CLAUDE.md`**'s Gotchas — when this skill and `CLAUDE.md` disagree, `CLAUDE.md` wins. The shipped implementation is `src-tauri/src/proto.rs` (byte-exact vs golden vectors captured from the real device), `session.rs`, and `backup.rs`.
 
+## How to verify a wire claim
+
+- **Codec claim** (encoding, field number, framing) → a golden-vector test in `proto.rs` (`cd src-tauri && cargo test --lib`); add a vector when you add a message.
+- **Live-behavior claim** (what the device answers, latch/order rules) → re-verify with a non-destructive `probe` subcommand against the real unit; never extrapolate from the codec.
+- **Never trust a device ack alone** — echoes are flaky (`ReAmpModeChanged`) and edits can silently no-op; verify by observed effect (finite captured loudness, a read-back, the specific `nodeXxx` confirm).
+
 ## Wire envelope (the load-bearing bytes)
 
 - **Framing.** Outgoing frames are `0x35 0x00 <body_len> <FenderMessageTMS>` padded; multi-packet outbound is `0x33` start / `0x34` continue / `0x35` final, each `MAGIC 00 LEN ≤60B`. Inbound streams use the same `0x33/0x34/0x35` markers (0x35 = single-frame / final). Reassembly must handle both an interleaved-`0x35` mid-flood and a terminal `0x35` tail frame.
