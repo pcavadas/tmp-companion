@@ -430,9 +430,13 @@ pub fn probe_level_footswitch(
         r.measured_lufs,
         r.target_lufs,
         r.final_value,
-        match &r.clamp_reason {
-            Some(reason) if r.clamped => format!("  [CLAMPED — {reason}]"),
-            _ => String::new(),
+        if r.clamped {
+            match &r.clamp_reason {
+                Some(reason) => format!("  [CLAMPED — {reason}]"),
+                None => "  [CLAMPED]".to_string(),
+            }
+        } else {
+            String::new()
         },
         r.predicted_lufs,
         r.iterations,

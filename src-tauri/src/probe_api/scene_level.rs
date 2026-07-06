@@ -157,7 +157,7 @@ pub fn probe_level_preset_scenes(
         verify: true,
         ..Default::default()
     };
-    let br = leveller::level_preset(list_index, &stim, base_target, opts, || false)?;
+    let br = leveller::level_preset(list_index, &stim, base_target, opts, &[], || false)?;
     out += &format!(
         "Base  → target {:.1}  presetLevel={:.4}  verify {:.2} LU (err {:+.2}){}{}\n",
         base_target,

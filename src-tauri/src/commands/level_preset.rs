@@ -154,7 +154,42 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
                 leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
             }
-            None => leveller::level_preset(slot, &stim, target_lufs, opts, cancelled),
+            None => {
+                // Isolate the Base measurement: force EVERY footswitch on/off block OFF so we
+                // measure the clean base sound, not "base + whatever pedals are saved on".
+                // ponytail: costs one ~1 s preset read per Base run (even presets with no FS
+                // blocks). Optimization path: thread an all-on/off force-list hint from the
+                // frontend backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered
+                // to levelable-param switches, while isolation needs ALL on-off blocks).
+                if cancelled() {
+                    return leveller::level_preset(slot, &stim, target_lufs, opts, &[], cancelled);
+                }
+                // Best-effort: isolation is a quality improvement, not a precondition for
+                // leveling at all. A read hiccup (or, offline, a preset-read the fake device
+                // doesn't model) must not fail the whole Base run — degrade to no isolation
+                // (pre-this-feature behavior) instead of propagating the error.
+                let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
+                {
+                    Ok((preset, _, _)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            leveller::RECONNECT_GAP_MS,
+                        ));
+                        footswitch::all_onoff_blocks(
+                            preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                        )
+                        .into_iter()
+                        .map(|(g, n)| (g, n, true))
+                        .collect()
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "level_preset slot={slot}: base-isolation preset read failed ({e}), leveling without isolation"
+                        );
+                        Vec::new()
+                    }
+                };
+                leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
+            }
         };
         match &result {
             Ok(r) => log::info!(

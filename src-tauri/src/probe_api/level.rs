@@ -184,7 +184,7 @@ pub fn probe_level_preset(
         verify,
         ..Default::default()
     };
-    let r = leveller::level_preset(slot, &stim, target_lufs, opts, || false)?;
+    let r = leveller::level_preset(slot, &stim, target_lufs, opts, &[], || false)?;
 
     let mut out = format!(
         "slot {slot}: measured {:.2} LUFS @ ref {:.2}  (C={:.2})\n\

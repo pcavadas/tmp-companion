@@ -200,8 +200,8 @@ pub fn probe_stim_ab(
     );
     for &slot in slots {
         // measure_c owns its own connection/gap pacing (the level_setlist precedent).
-        let row = leveller::measure_c(slot, &stim_a, ref_level)
-            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level).map(|b| (a, b)));
+        let row = leveller::measure_c(slot, &stim_a, ref_level, &[])
+            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level, &[]).map(|b| (a, b)));
         match row {
             Ok((a, b)) => {
                 out += &format!(

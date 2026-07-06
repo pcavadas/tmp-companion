@@ -112,9 +112,12 @@ interface LevelOutcomeFields {
   verify_by_ear?: boolean;
 }
 
-// A `clamp_reason` is set ONLY for the no-authority case (the amp doesn't reach the USB 1/2
-// capture) → its own `offbranch` outcome, which a re-level can't fix. A plain headroom clamp
-// has `clamped` set with no reason.
+// A `clamp_reason` is set ONLY when the leveled signal isn't effectively reaching the USB 1/2
+// capture — a silent capture for preset/footswitch jobs (output not routed to USB), or the
+// scene path's no-authority case (a big amp-outputLevel change doesn't move the capture:
+// off-branch) → its own `offbranch` outcome ("not on USB 1/2"), which a re-level can't fix.
+// A plain headroom/authority clamp (the knob has real effect but can't reach target) has
+// `clamped` set with NO reason → "clamped at X".
 const outcomeOf = (r: LevelOutcomeFields): RunItem["outcome"] =>
   r.clamp_reason != null ? "offbranch" : r.clamped ? "clamped" : "done";
 const valueOf = (r: LevelOutcomeFields): number =>
