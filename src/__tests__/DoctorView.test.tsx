@@ -57,11 +57,12 @@ interface DoctorCheckArgs {
     scene: number | null;
     nodes: unknown[];
   }[];
+  restoreListIndex: number | null;
   onResult?: { onmessage?: (item: unknown) => void };
 }
 let lastDoctorArgs: DoctorCheckArgs | null = null;
 
-function mockOnePreset() {
+function mockOnePreset(opts: { hangCheck?: boolean } = {}) {
   lastDoctorArgs = null;
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     switch (command) {
@@ -97,6 +98,12 @@ function mockOnePreset() {
       case "doctor_check": {
         const a = args as DoctorCheckArgs;
         lastDoctorArgs = a;
+        // Hanging run — for the unmount-mid-run cancel test.
+        if (opts.hangCheck === true) {
+          return new Promise(() => {
+            /* never resolves */
+          });
+        }
         // Stream the single sound active → done, then resolve the cohort result.
         a.items.forEach((it) => {
           a.onResult?.onmessage?.({
@@ -211,6 +218,8 @@ describe("DoctorView — select → setup → run → results", () => {
     expect(lastDoctorArgs?.items[0].listIndex).toBe(0);
     expect(lastDoctorArgs?.items[0].scene).toBeNull();
     expect(lastDoctorArgs?.items[0].nodes).toEqual([]);
+    // No live-preset event fired in this test → no slot to restore.
+    expect(lastDoctorArgs?.restoreListIndex).toBeNull();
 
     // The list never recalled a preset, and the whole flow never saved.
     expect(fired("load_preset_on_amp")).toBe(false);
@@ -218,5 +227,26 @@ describe("DoctorView — select → setup → run → results", () => {
     expect(fired("doctor_save")).toBe(false);
     expect(fired("doctor_apply")).toBe(false);
     expect(fired("level_preset")).toBe(false);
+  });
+
+  it("fires cancel_doctor_check on unmount while a check is in flight", async () => {
+    mockOnePreset({ hangCheck: true });
+    const { unmount } = renderView(true);
+    const user = userEvent.setup();
+
+    await screen.findByText("Studio Clean");
+    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      await screen.findByRole("button", { name: /check 1 sound…/i }),
+    );
+    await screen.findByText("What are you playing?");
+    await user.click(
+      screen.getByRole("button", { name: /run check on 1 sound/i }),
+    );
+
+    // The check hangs — a tab switch (unmount) must cancel the orphaned run.
+    expect(fired("cancel_doctor_check")).toBe(false);
+    unmount();
+    expect(fired("cancel_doctor_check")).toBe(true);
   });
 });

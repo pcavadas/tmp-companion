@@ -27,7 +27,7 @@ import { ActiveSignalChainView } from "../views/ActiveSignalChainView";
 import { blockArtTile, resolveBlockArt } from "../models/blockArt";
 
 function node(model: string): GraphNode {
-  return { group_id: "G1", node_id: "n0", model, bypassed: false };
+  return { group_id: "G1", node_id: "n0", model, bypassed: false, params: {} };
 }
 
 function oneBlockGraph(model: string): ActiveGraph {

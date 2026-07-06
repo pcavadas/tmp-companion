@@ -214,7 +214,7 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
                     .collect()
             });
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, None, &stim, 0.5) {
+        match leveller::doctor_capture(slot, None, &stim, Some(0.5)) {
             Ok((samples, rate)) => {
                 let profile = doctor::SoundProfile::from_capture(&samples, rate, stim.len())?;
                 sounds.push((slot, profile, nodes));

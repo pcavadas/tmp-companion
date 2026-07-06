@@ -26,6 +26,8 @@
 //! against real-library captures (probe --doctor); tune values there, never
 //! inline numbers in rules.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -151,9 +153,16 @@ impl SoundProfile {
         let bands: [f64; 6] = crate::spectrum::band_energies(samples, rate as f32, &doctor_bands())
             .try_into()
             .map_err(|_| "band count".to_string())?;
+        let integrated_lufs = crate::lufs::measure_mono(samples, rate)?.integrated_lufs;
+        // A silent capture measures −inf — route the sound to the errors lane
+        // (the leveller's sentinel philosophy) instead of poisoning the cohort
+        // median and the scene deltas with non-finite numbers.
+        if !integrated_lufs.is_finite() {
+            return Err("no signal on USB 1/2 — the sound is silent".to_string());
+        }
         Ok(SoundProfile {
             bands,
-            integrated_lufs: crate::lufs::measure_mono(samples, rate)?.integrated_lufs,
+            integrated_lufs,
             tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples),
         })
     }
@@ -197,6 +206,25 @@ pub fn cohort_median(profiles: &[&SoundProfile]) -> [f64; 6] {
 // ponytail: cohort median, add a persisted rolling baseline only if
 // single-sound runs prove unreliable in calibration.
 pub const MIN_COHORT: usize = 4;
+
+/// Per-instrument cohort medians `(guitar, bass)`: each instrument's sounds are
+/// judged against their OWN library median — a bass preset judged against a
+/// guitar cohort reads falsely boomy. `None` for an instrument whose group is
+/// under [`MIN_COHORT`] (that group's sounds diagnose with the absolute
+/// fallback).
+pub fn cohorts_by_instrument(
+    profiles: &[(Instrument, &SoundProfile)],
+) -> (Option<[f64; 6]>, Option<[f64; 6]>) {
+    let median_of = |inst: Instrument| {
+        let refs: Vec<&SoundProfile> = profiles
+            .iter()
+            .filter(|(i, _)| *i == inst)
+            .map(|(_, p)| *p)
+            .collect();
+        (refs.len() >= MIN_COHORT).then(|| cohort_median(&refs))
+    };
+    (median_of(Instrument::Guitar), median_of(Instrument::Bass))
+}
 
 /// Post-stimulus tail energy vs stimulus-body energy, in dB (≤ 0 in practice;
 /// a dry sound decays fast → strongly negative; a drowning reverb/delay tail
@@ -397,10 +425,25 @@ const REVERB_MIX: [(&str, Option<&str>); 36] = [
     ("ACD_TMWarmPlateConv", None),
 ];
 
+/// Compressors — the `dyn` family's comp rows (`src/models/blockArtCatalog/dyn.ts`
+/// is the reference list). Raw catalog FenderIds, exact-match like `DIST_IDS`
+/// (the backend never suffix-normalizes).
+const COMP_IDS: [&str; 5] = [
+    "ACD_CS3",
+    "ACD_CompressorSimple",
+    "ACD_CompressorSimpleSoftKnee",
+    "ACD_DynaComp",
+    "ACD_Sustain",
+];
+
 const CAB_STANDALONE: &str = "ACD_CabSimTMS";
 const EQ10_STEREO: &str = "ACD_TenBandEQStereo"; // never the Mono variant (absent from the product profile)
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob comp, cheapest schema-verified pick
+
+/// EQ-10 band gain range (dB). ponytail: ±12 is the graphic-EQ standard; the
+/// band controlIds' fw schema is the source to re-derive from if a rev differs.
+const EQ10_BAND_RANGE_DB: f64 = 12.0;
 
 // ─── graph facts ─────────────────────────────────────────────────────────────
 
@@ -424,6 +467,11 @@ pub struct DoctorNode {
     /// cabinet slots in the firmware caps).
     #[serde(default)]
     pub cab_sim2_enabled: Option<bool>,
+    /// The node's allowlisted current param values (reverb mix names + EQ-10
+    /// band gains — see `session::GraphNode.params`), for value-aware
+    /// prescriptions. `default` so pre-params payloads still deserialize.
+    #[serde(default)]
+    pub params: HashMap<String, f64>,
 }
 
 impl DoctorNode {
@@ -437,6 +485,7 @@ impl DoctorNode {
             bypassed: n.bypassed,
             cab_sim_id: n.cab_sim_id.clone(),
             cab_sim2_enabled: n.cab_sim2_enabled,
+            params: n.params.clone(),
         }
     }
 }
@@ -450,12 +499,17 @@ struct GraphFacts {
     /// cab (`cab_sim_id` present). Both expose the same `hpf`/`lpf`
     /// controlIds (schema-verified).
     cab: Option<(String, String)>,
-    /// Existing EQ-10 stereo node, if any.
-    eq10: Option<(String, String)>,
-    /// First reverb with a real mix param: (group, node_id, mix_param).
-    reverb_mix: Option<(String, String, String)>,
+    /// Existing EQ-10 stereo node, if any: (group, node_id, current band gains).
+    eq10: Option<(String, String, HashMap<String, f64>)>,
+    /// First reverb with a real mix param: (group, node_id, mix_param, current
+    /// mix value when the graph carried it).
+    reverb_mix: Option<(String, String, String, Option<f64>)>,
     /// Any drive/dist pedal present (bypassed ones don't count).
     has_drive: bool,
+    /// A compressor in the chain: `Some(bypassed)` — an ACTIVE comp (`Some(false)`)
+    /// wins over a bypassed one. Unlike the carriers above, a BYPASSED comp is
+    /// still a fact (the fix is "switch it back on").
+    comp: Option<bool>,
     /// First node of the first guitar group (the "front of chain" insert anchor).
     front: Option<(String, String)>,
 }
@@ -466,6 +520,9 @@ fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
         if f.front.is_none() && n.group_id.starts_with('G') {
             f.front = Some((n.group_id.clone(), n.model.clone()));
         }
+        if COMP_IDS.contains(&n.model.as_str()) && f.comp != Some(false) {
+            f.comp = Some(n.bypassed);
+        }
         if n.bypassed {
             continue;
         }
@@ -473,11 +530,16 @@ fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
             f.cab = Some((n.group_id.clone(), n.node_id.clone()));
         }
         if n.model == EQ10_STEREO {
-            f.eq10 = Some((n.group_id.clone(), n.node_id.clone()));
+            f.eq10 = Some((n.group_id.clone(), n.node_id.clone(), n.params.clone()));
         }
         if f.reverb_mix.is_none() {
             if let Some((_, Some(p))) = REVERB_MIX.iter().find(|(id, _)| *id == n.model) {
-                f.reverb_mix = Some((n.group_id.clone(), n.node_id.clone(), (*p).to_string()));
+                f.reverb_mix = Some((
+                    n.group_id.clone(),
+                    n.node_id.clone(),
+                    (*p).to_string(),
+                    n.params.get(*p).copied(),
+                ));
             }
         }
         if DIST_IDS.contains(&n.model.as_str()) {
@@ -554,29 +616,63 @@ fn eq10_insert(nodes: &[DoctorNode], group: &str, gains: &[(&str, f64)]) -> Opti
     })
 }
 
+/// Player-facing band label from an EQ-10 gain controlId:
+/// `gain250hz` → "250 Hz", `gain2khz` → "2 kHz".
+fn eq_band_label(param: &str) -> String {
+    let core = param.trim_start_matches("gain").trim_end_matches("hz");
+    match core.strip_suffix('k') {
+        Some(k) => format!("{k} kHz"),
+        None => format!("{core} Hz"),
+    }
+}
+
 /// The muddy/harsh EQ move: reuse the chain's EQ-10 when present, else insert
-/// one. Returns None when no EQ-10 exists and the insert fails the caps.
+/// one. `gains` are RELATIVE moves (e.g. −3 = cut 3 dB): on an existing EQ-10
+/// whose current band values are known they're applied on top (`current + move`,
+/// clamped to the band range) under `reuse_title`; when a band's current value
+/// is unknown the write is the absolute value and the title says that truth
+/// ("Set the 250 Hz band to −3 dB"). A fresh insert starts at 0 dB, so absolute
+/// == relative there. Returns None when no EQ-10 exists and the insert fails
+/// the caps.
 fn eq_move(
     nodes: &[DoctorNode],
     facts: &GraphFacts,
-    title: &str,
-    detail: &str,
+    reuse_title: &str,
+    reuse_detail: &str,
+    insert_title: &str,
+    insert_detail: &str,
     gains: &[(&str, f64)],
 ) -> Option<Rx> {
-    if let Some((group, node)) = &facts.eq10 {
+    if let Some((group, node, current)) = &facts.eq10 {
+        let known = gains.iter().all(|(p, _)| current.contains_key(*p));
         let ops = gains
             .iter()
             .map(|(p, v)| DoctorOp::Param {
                 group_id: group.clone(),
                 node_id: node.clone(),
                 param: (*p).to_string(),
-                value: *v,
+                value: match current.get(*p) {
+                    Some(cur) => (cur + v).clamp(-EQ10_BAND_RANGE_DB, EQ10_BAND_RANGE_DB),
+                    None => *v,
+                },
             })
             .collect();
+        let title = if known {
+            reuse_title.to_string()
+        } else {
+            // Unknown current values → the write is absolute, say so honestly.
+            let bands: Vec<String> = gains.iter().map(|(p, _)| eq_band_label(p)).collect();
+            format!(
+                "Set the {} band{} to {:.0} dB",
+                bands.join(" and "),
+                if bands.len() > 1 { "s" } else { "" },
+                gains[0].1
+            )
+        };
         return Some(Rx {
             kind: RxKind::OneClick,
-            title: title.to_string(),
-            detail: detail.to_string(),
+            title,
+            detail: reuse_detail.to_string(),
             cpu_note: "no CPU change".to_string(),
             ops,
             chain: None,
@@ -591,8 +687,8 @@ fn eq_move(
     let op = eq10_insert(nodes, &group, gains)?;
     Some(Rx {
         kind: RxKind::Chain,
-        title: title.to_string(),
-        detail: detail.to_string(),
+        title: insert_title.to_string(),
+        detail: insert_detail.to_string(),
         cpu_note,
         ops: vec![op],
         chain: Some(chain_preview(nodes, "after · +EQ", EQ10_STEREO, false)),
@@ -647,8 +743,25 @@ fn cut_move(
     })
 }
 
-/// The compressor-in-front chain move (lost / buried).
+/// The compressor move (lost / buried). Comp-aware: an ACTIVE comp already in
+/// the chain → advisory to raise its sustain; a BYPASSED one → advisory to
+/// switch it back on; none → insert one in front.
 fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
+    match facts.comp {
+        Some(false) => {
+            return Some(advisory(
+                "Bring up the sustain on the compressor you already have",
+                "Your chain already runs a compressor — raising its sustain evens out your picking without adding another block.",
+            ));
+        }
+        Some(true) => {
+            return Some(advisory(
+                "Switch your compressor back on",
+                "There's a compressor in the chain but it's switched off — turning it back on evens out your picking.",
+            ));
+        }
+        None => {}
+    }
     let (group, first_fid) = facts.front.clone()?;
     let cpu_note = insert_cpu_note(nodes, COMPRESSOR)?;
     Some(Rx {
@@ -676,20 +789,12 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             if let Some(m) = eq_move(
                 nodes,
                 &facts,
+                "Cut 3 dB around 300 Hz on your EQ",
+                "Dips the muddy low-mids on the EQ you already have — the note stays, the mud goes.",
                 "Add a 10-band EQ and cut 3 dB around 300 Hz",
                 "Puts a graphic EQ after the cab and dips the muddy low-mids — the note stays, the mud goes.",
                 &[("gain250hz", -3.0)],
             ) {
-                let m = if m.kind == RxKind::OneClick {
-                    Rx {
-                        title: "Cut 3 dB around 300 Hz on your EQ".to_string(),
-                        detail: "Dips the muddy low-mids on the EQ you already have — the note stays, the mud goes."
-                            .to_string(),
-                        ..m
-                    }
-                } else {
-                    m
-                };
                 rx.push(m);
             }
             rx.push(advisory(
@@ -723,12 +828,16 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
                 "Nudge Presence (and Treble) down a notch",
                 "This peak lives on the amp's Presence and Treble — easing them off by one is the quickest fix.",
             )];
+            // Detection is band 3 (1–3 kHz), so the cut targets the SAME band:
+            // the 1 kHz + 2 kHz EQ-10 bands.
             if let Some(m) = eq_move(
                 nodes,
                 &facts,
-                "Cut 2 dB around 3 kHz",
-                "Adds a narrow dip right on the harsh spot and leaves the rest of the tone alone.",
-                &[("gain2khz", -2.0), ("gain4khz", -2.0)],
+                "Cut 2 dB around 1–3 kHz",
+                "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
+                "Cut 2 dB around 1–3 kHz",
+                "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
+                &[("gain1khz", -2.0), ("gain2khz", -2.0)],
             ) {
                 rx.push(m);
             }
@@ -755,7 +864,10 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             rx
         }
         "washed" => match &facts.reverb_mix {
-            Some((group, node, param)) => vec![Rx {
+            // Value-aware: only set the mix when it's KNOWN to sit above the
+            // 25% target — a blind write on an already-low mix would RAISE it
+            // (the wash is delay-driven then, not this reverb's).
+            Some((group, node, param, Some(cur))) if *cur > 0.25 => vec![Rx {
                 kind: RxKind::OneClick,
                 title: "Bring the reverb mix down to 25%".to_string(),
                 detail: "Keeps the space but lets the dry note lead again.".to_string(),
@@ -768,8 +880,9 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
                 }],
                 chain: None,
             }],
-            // Dwell-style springs (and delay wash) have no wet/dry mix to set.
-            None => vec![advisory(
+            // Dwell-style springs (and delay wash) have no wet/dry mix to set;
+            // an unknown or already-low mix means the wash lives elsewhere.
+            _ => vec![advisory(
                 "Turn the reverb (or delay) down a touch",
                 "This one has no single mix knob Doctor can set — ease the reverb's dwell or the delay's level until the dry note leads again.",
             )],
@@ -791,12 +904,19 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
         "buried" => {
             let mut rx = Vec::new();
             if let Some(m) = comp_front(nodes, &facts) {
-                rx.push(Rx {
-                    detail:
-                        "Evens the picking out so the clean low end holds its spot under the drive."
-                            .to_string(),
-                    ..m
-                });
+                // Only the INSERT variant gets the buried-specific detail — the
+                // comp-aware advisories keep their own copy.
+                let m = if m.kind == RxKind::Chain {
+                    Rx {
+                        detail:
+                            "Evens the picking out so the clean low end holds its spot under the drive."
+                                .to_string(),
+                        ..m
+                    }
+                } else {
+                    m
+                };
+                rx.push(m);
             }
             rx.push(advisory(
                 "Ease the drive's gain and bring its level up",
@@ -885,7 +1005,7 @@ pub fn diagnose(
             "Harsh",
             Sev::High,
             vec![3],
-            format!("spike around 2.5–3.5 kHz ({:+.1} dB)", dev(3)),
+            format!("spike around 1–3 kHz ({:+.1} dB)", dev(3)),
             "A sharp peak in the high-mids makes it harsh and tiring to listen to.",
         );
     }
@@ -976,7 +1096,9 @@ pub fn scene_consistency(
     instrument: Instrument,
 ) -> Option<SceneConsistency> {
     let t = instrument.thresholds();
-    if scenes.is_empty() {
+    // A non-finite base (silent capture) can't anchor any delta; non-finite
+    // scenes are skipped below — belt-and-braces with the from_capture guard.
+    if scenes.is_empty() || !base_lufs.is_finite() {
         return None;
     }
     let mut rows = vec![SceneDeltaRow {
@@ -987,6 +1109,9 @@ pub fn scene_consistency(
     }];
     let mut worst: Option<(&str, f64, u32)> = None;
     for (name, tag, lufs, scene) in scenes {
+        if !lufs.is_finite() {
+            continue;
+        }
         let delta = lufs - base_lufs;
         rows.push(SceneDeltaRow {
             name: name.clone(),
@@ -1002,19 +1127,41 @@ pub fn scene_consistency(
     if worst_delta.abs() <= t.scene_delta_db {
         return None;
     }
-    let rx = vec![Rx {
-        kind: RxKind::OneClick,
-        title: format!("Trim {worst_name} to +2 dB and add a mid boost"),
-        detail: format!(
-            "Pros keep lead sounds only +1–3 dB louder and lean on a mid boost to cut through — not raw volume. This trims {worst_name} and nudges its mids up."
-        ),
-        cpu_note: "no CPU change".to_string(),
-        ops: vec![DoctorOp::SceneTrim {
-            scene: worst_scene,
-            target_delta_db: 2.0,
-        }],
-        chain: None,
-    }];
+    let rx = if worst_delta < 0.0 {
+        // Quieter-than-base worst: trimming DOWN is wrong — leveling it UP is
+        // the Level tab's job, so advise instead of prescribing a SceneTrim.
+        vec![advisory(
+            &format!("{worst_name} is much quieter than the others"),
+            &format!(
+                "{worst_name} sits {:.1} dB under the base scene — if that's not intentional, bring it up from the Level tab.",
+                -worst_delta
+            ),
+        )]
+    } else if worst_scene == 0 {
+        // The open loadScene(0) anomaly: USB scene-0 recall can materialize a
+        // different amp state than the physical footswitch tap, so its reading
+        // isn't trustworthy enough for a wire trim — ask for ears instead.
+        vec![advisory(
+            &format!("Verify {worst_name} by ear"),
+            &format!(
+                "{worst_name} measured {worst_delta:+.1} dB vs the base scene, but the first scene's USB reading can differ from the footswitch (a known device quirk) — check it by ear before trimming."
+            ),
+        )]
+    } else {
+        vec![Rx {
+            kind: RxKind::OneClick,
+            title: format!("Trim {worst_name} to +2 dB and add a mid boost"),
+            detail: format!(
+                "Pros keep lead sounds only +1–3 dB louder and lean on a mid boost to cut through — not raw volume. This trims {worst_name} and nudges its mids up."
+            ),
+            cpu_note: "no CPU change".to_string(),
+            ops: vec![DoctorOp::SceneTrim {
+                scene: worst_scene,
+                target_delta_db: 2.0,
+            }],
+            chain: None,
+        }]
+    };
     Some(SceneConsistency {
         rows,
         worst_name: worst_name.to_string(),
@@ -1164,6 +1311,7 @@ mod tests {
                 cab_sim_id: (cabbed.contains(m) || *m == "ACD_CabSimTMS")
                     .then(|| "SomeCab".to_string()),
                 cab_sim2_enabled: None,
+                params: HashMap::new(),
             })
             .collect()
     }
@@ -1265,7 +1413,8 @@ mod tests {
 
     #[test]
     fn washed_targets_reverb_mix_param_per_model() {
-        let plate = chain(&["ACD_TMLargePlate"], &[]);
+        let mut plate = chain(&["ACD_TMLargePlate"], &[]);
+        plate[0].params.insert("wetdrymix".into(), 0.6);
         let rx = generate_rx("washed", &plate, Instrument::Guitar);
         match &rx[0].ops[0] {
             DoctorOp::Param { param, value, .. } => {
@@ -1279,6 +1428,25 @@ mod tests {
         let rx = generate_rx("washed", &spring, Instrument::Guitar);
         assert_eq!(rx[0].kind, RxKind::Advisory);
         assert!(rx[0].ops.is_empty());
+    }
+
+    #[test]
+    fn washed_mix_set_only_when_known_and_high() {
+        // Unknown current mix → advisory (a blind 0.25 write could RAISE it).
+        let unknown = chain(&["ACD_TMLargeRoom"], &[]);
+        let rx = generate_rx("washed", &unknown, Instrument::Guitar);
+        assert_eq!(rx[0].kind, RxKind::Advisory);
+        assert!(rx[0].ops.is_empty());
+        // Known but already ≤ 0.25 → the wash is delay-driven, keep the advisory.
+        let mut low = chain(&["ACD_TMLargeRoom"], &[]);
+        low[0].params.insert("mix".into(), 0.2);
+        let rx = generate_rx("washed", &low, Instrument::Guitar);
+        assert_eq!(rx[0].kind, RxKind::Advisory);
+        // Known high mix → the one-click cut to 25%.
+        let mut high = chain(&["ACD_TMLargeRoom"], &[]);
+        high[0].params.insert("mix".into(), 0.6);
+        let rx = generate_rx("washed", &high, Instrument::Guitar);
+        assert_eq!(rx[0].kind, RxKind::OneClick);
     }
 
     #[test]
@@ -1301,6 +1469,88 @@ mod tests {
             other => panic!("expected InsertNode, got {other:?}"),
         }
         assert!(chain.chain.is_some());
+    }
+
+    #[test]
+    fn eq_move_is_value_aware_on_existing_eq10() {
+        // Known band value → relative cut on top of it, relative title kept.
+        let mut p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
+        p[1].params.insert("gain250hz".into(), 2.0);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        assert_eq!(rx[0].title, "Cut 3 dB around 300 Hz on your EQ");
+        match &rx[0].ops[0] {
+            DoctorOp::Param { value, .. } => assert!((value - (-1.0)).abs() < 1e-9),
+            other => panic!("expected Param, got {other:?}"),
+        }
+        // Clamped to the band range: −11 current − 3 → floor −12.
+        p[1].params.insert("gain250hz".into(), -11.0);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        match &rx[0].ops[0] {
+            DoctorOp::Param { value, .. } => {
+                assert!((value - (-EQ10_BAND_RANGE_DB)).abs() < 1e-9);
+            }
+            other => panic!("expected Param, got {other:?}"),
+        }
+        // Unknown current value → absolute write + the absolute-truth title.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        assert_eq!(rx[0].title, "Set the 250 Hz band to -3 dB");
+        match &rx[0].ops[0] {
+            DoctorOp::Param { value, .. } => assert!((value + 3.0).abs() < f64::EPSILON),
+            other => panic!("expected Param, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn harsh_cuts_the_detection_band() {
+        // Detection is band 3 (1–3 kHz) → the cut rides gain1khz + gain2khz.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
+        let rx = generate_rx("harsh", &p, Instrument::Guitar);
+        let eq = rx
+            .iter()
+            .find(|r| r.kind == RxKind::OneClick)
+            .expect("eq move");
+        let params: Vec<&str> = eq
+            .ops
+            .iter()
+            .map(|op| match op {
+                DoctorOp::Param { param, .. } => param.as_str(),
+                other => panic!("expected Param, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(params, ["gain1khz", "gain2khz"]);
+    }
+
+    #[test]
+    fn comp_moves_are_graph_aware() {
+        // Active comp already in the chain → sustain advisory, never an insert.
+        let mut p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
+        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        assert!(rx
+            .iter()
+            .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
+        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
+        // Bypassed comp → "switch it back on" advisory.
+        p[0].bypassed = true;
+        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        assert!(rx
+            .iter()
+            .any(|r| r.title == "Switch your compressor back on"));
+        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
+        // Active wins over bypassed (order-independent).
+        let mut p = chain(&["ACD_CS3", "ACD_Sustain", "ACD_TweedDeluxe"], &[]);
+        p[0].bypassed = true;
+        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        assert!(rx
+            .iter()
+            .any(|r| r.title.contains("sustain on the compressor")));
+        // Buried takes the same comp-aware path.
+        let p = chain(&["ACD_DynaComp", "ACD_ModernBassOverdrive"], &[]);
+        let rx = generate_rx("buried", &p, Instrument::Bass);
+        assert!(rx
+            .iter()
+            .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
+        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
     }
 
     #[test]
@@ -1372,6 +1622,69 @@ mod tests {
         // All within 3 dB → no flag.
         let tame = vec![("Lead".to_string(), None, -18.0, 1u32)];
         assert!(scene_consistency("Rhythm", -20.0, &tame, Instrument::Guitar).is_none());
+    }
+
+    #[test]
+    fn scene_quieter_worst_gets_advisory_not_trim() {
+        // A much QUIETER worst scene: trimming down is wrong — point to the
+        // Level tab instead of prescribing a SceneTrim.
+        let scenes = vec![("Ballad".to_string(), Some("FS1".to_string()), -27.0, 1u32)];
+        let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
+            .expect("7 dB quieter still flags");
+        assert!((sc.worst_delta_db + 7.0).abs() < 1e-9);
+        assert_eq!(sc.rx[0].kind, RxKind::Advisory);
+        assert!(sc.rx[0].ops.is_empty());
+        assert!(sc.rx[0].detail.contains("Level tab"));
+    }
+
+    #[test]
+    fn scene_zero_worst_never_gets_wire_trim() {
+        // The open loadScene(0) anomaly: a worst scene at wire index 0 gets a
+        // verify-by-ear advisory, never a SceneTrim op.
+        let scenes = vec![("Lead".to_string(), Some("FS1".to_string()), -14.0, 0u32)];
+        let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
+            .expect("6 dB jump flags");
+        assert_eq!(sc.rx[0].kind, RxKind::Advisory);
+        assert!(sc.rx[0].ops.is_empty());
+        assert!(sc.rx[0].title.contains("by ear"));
+        // The same jump on wire index 1 keeps the trim (control).
+        let scenes = vec![("Lead".to_string(), Some("FS1".to_string()), -14.0, 1u32)];
+        let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar).unwrap();
+        assert!(matches!(sc.rx[0].ops[0], DoctorOp::SceneTrim { .. }));
+    }
+
+    #[test]
+    fn scene_consistency_guards_non_finite() {
+        let dead = vec![("Dead".to_string(), None, f64::NEG_INFINITY, 1u32)];
+        assert!(scene_consistency("Rhythm", -20.0, &dead, Instrument::Guitar).is_none());
+        let ok = vec![("Lead".to_string(), None, -14.0, 1u32)];
+        assert!(scene_consistency("Rhythm", f64::NEG_INFINITY, &ok, Instrument::Guitar).is_none());
+    }
+
+    // ── per-instrument cohorts ──
+
+    #[test]
+    fn cohorts_partition_by_instrument() {
+        let guitars: Vec<SoundProfile> = (0..MIN_COHORT).map(|_| profile_with(0, 0.0)).collect();
+        let basses: Vec<SoundProfile> = (0..2).map(|_| profile_with(0, 6.0)).collect();
+        let mut all: Vec<(Instrument, &SoundProfile)> =
+            guitars.iter().map(|p| (Instrument::Guitar, p)).collect();
+        all.extend(basses.iter().map(|p| (Instrument::Bass, p)));
+        let (guitar, bass) = cohorts_by_instrument(&all);
+        assert!(guitar.is_some(), "guitar group reaches MIN_COHORT");
+        assert!(bass.is_none(), "under-minimum bass group stays absolute");
+        // The guitar median must not be dragged toward the hot bass lows.
+        assert!((guitar.unwrap()[0] - flat_cohort()[0]).abs() < 1e-9);
+    }
+
+    // ── silent capture (#6) ──
+
+    #[test]
+    fn silent_capture_errors_instead_of_minus_inf() {
+        let silence = vec![0.0f32; 96_000];
+        let err = SoundProfile::from_capture(&silence, 48_000, 48_000)
+            .expect_err("silence must not produce a profile");
+        assert!(err.contains("silent"), "{err}");
     }
 
     // ── serde wire shapes ──

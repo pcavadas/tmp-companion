@@ -155,7 +155,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     expectCall("cancel_preset_leveling", undefined);
   });
 
-  it("doctor_check passes the sound list with a progress channel", async () => {
+  it("doctor_check passes the sound list + restore slot with a progress channel", async () => {
     const items = [
       {
         key: "p3",
@@ -171,13 +171,13 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     const onResult = vi.fn(() => {
       /* no-op */
     });
-    await doctorCheck(items, onResult);
+    await doctorCheck(items, 5, onResult);
     const [calledName, calledArgs] = invokeMock.mock.calls[0];
     expect(calledName).toBe("doctor_check");
     if (calledArgs === undefined) {
       throw new Error("expected doctor_check args but got none");
     }
-    expect(calledArgs).toMatchObject({ items });
+    expect(calledArgs).toMatchObject({ items, restoreListIndex: 5 });
     const channel = calledArgs.onResult;
     if (!(channel instanceof Object) || !("onmessage" in channel)) {
       throw new Error("expected an onResult channel with an onmessage handler");

@@ -22,7 +22,7 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 // Imported AFTER the mock so the view + prescription cards pick up the mocks.
 import { doctorApply, doctorSave, doctorDiscard } from "../lib/invoke";
 import { DoctorResults } from "../views/doctor/DoctorResults";
-import type { DoctorCheckResult } from "../lib/types";
+import type { DoctorApplyResult, DoctorCheckResult } from "../lib/types";
 
 const NAMES = new Map<number, string>([
   [0, "Studio Clean"],
@@ -184,13 +184,13 @@ function fixture(): DoctorCheckResult {
   };
 }
 
-function renderResults() {
+function renderResults(onCheckMore: () => void = () => undefined) {
   return render(
     <ThemeProvider>
       <DoctorResults
         result={fixture()}
         presetNames={NAMES}
-        onCheckMore={() => undefined}
+        onCheckMore={onCheckMore}
       />
     </ThemeProvider>,
   );
@@ -350,5 +350,100 @@ describe("DoctorResults — prescription lifecycle", () => {
     ).toBeInTheDocument();
     expect(doctorDiscard).toHaveBeenCalledWith(1);
     expect(doctorSave).not.toHaveBeenCalled();
+  });
+
+  it("locks sibling Apply buttons from the moment an apply is IN FLIGHT", async () => {
+    // A hanging apply: the lock must be taken BEFORE the command resolves, so a
+    // sibling can't fire into the same device edit buffer mid-flight.
+    let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
+    vi.mocked(doctorApply).mockImplementation(
+      () =>
+        new Promise<DoctorApplyResult>((res) => {
+          resolveApply = res;
+        }),
+    );
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByRole("button", { name: "Washed out" }));
+    const applies = screen.getAllByRole("button", {
+      name: /apply to the unit/i,
+    });
+    expect(applies).toHaveLength(2);
+    await user.click(applies[0]);
+
+    // The busy card reads "Applying…", so the one remaining Apply button is the
+    // sibling — disabled, with the lock explainer.
+    const sibling = screen.getByRole("button", { name: /apply to the unit/i });
+    expect(sibling).toBeDisabled();
+    expect(
+      screen.getByText("Save or discard the applied fix first."),
+    ).toBeInTheDocument();
+
+    // Still locked once the apply lands (applied-but-unsaved).
+    resolveApply({
+      beforeClip: "data:audio/wav;base64,AAAA",
+      afterClip: "data:audio/wav;base64,BBBB",
+    });
+    expect(await screen.findByText("Listen & compare")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    ).toBeDisabled();
+  });
+
+  it("discards the applied-but-unsaved edit on 'Check other sounds' (once)", async () => {
+    const onCheckMore = vi.fn();
+    const user = userEvent.setup();
+    const { unmount } = renderResults(onCheckMore);
+
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    await screen.findByText("Listen & compare");
+
+    await user.click(
+      screen.getByRole("button", { name: /check other sounds/i }),
+    );
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(onCheckMore).toHaveBeenCalled();
+
+    // The reset path already discarded — the unmount cleanup must not re-fire.
+    unmount();
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards the applied-but-unsaved edit on unmount", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderResults();
+
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    await screen.findByText("Listen & compare");
+    expect(doctorDiscard).not.toHaveBeenCalled();
+
+    unmount();
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not discard on leave when nothing is applied (or after a save)", async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderResults();
+
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    await screen.findByText("Listen & compare");
+    await user.click(screen.getByText("I've backed up with Pro Control"));
+    await user.click(screen.getByRole("button", { name: /save to preset/i }));
+    await screen.findByText("Saved to the preset.");
+
+    unmount();
+    expect(doctorDiscard).not.toHaveBeenCalled();
   });
 });

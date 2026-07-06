@@ -15,6 +15,7 @@ import { useCallback, useMemo, useState } from "react";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { EmptyState, UsbC } from "../EmptyState";
 import { usePresetData } from "../level/usePresetData";
+import { useLiveDevice } from "../level/useLiveDevice";
 import {
   chosenFrom,
   instrumentOptions,
@@ -69,6 +70,10 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
 
   const flow = useDoctorFlow({ store, graphByIndex });
 
+  // The run recalls presets on the unit — remember the player's live slot so
+  // the backend can restore it when the check ends (null → last-scanned slot).
+  const { activeListIndex } = useLiveDevice(connected);
+
   // Instrument options — "None" + the store's profiles, calibrated ones flagged
   // (shared with the Level tab's Set up step). Drives every instrument Pick.
   const instOptions = useMemo<PickOption[]>(
@@ -102,10 +107,10 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const handleRun = useCallback(
     (map: Record<string, string>) => {
       setInstByKey(map);
-      flow.startRun(flow.buildItems(chosen, map));
+      flow.startRun(flow.buildItems(chosen, map), activeListIndex);
       setStage("run");
     },
-    [flow, chosen],
+    [flow, chosen, activeListIndex],
   );
 
   // Results → Select (fresh check on new sounds).

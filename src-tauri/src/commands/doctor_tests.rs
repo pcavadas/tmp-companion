@@ -41,6 +41,25 @@ fn doctor_apply_job_round_trips_from_frontend_json() {
     }
 }
 
+/// A DoctorInput node payload WITHOUT `params` (pre-params frontend) and one
+/// WITH it both deserialize — `#[serde(default)]` keeps the wire
+/// backward-compatible.
+#[test]
+fn doctor_node_params_are_optional_on_the_wire() {
+    let json = r#"{
+            "key": "p4", "listIndex": 4, "scene": null, "label": "Lead",
+            "tag": null, "topologyId": null, "calibrationLufs": null,
+            "nodes": [
+                { "group_id": "G1", "node_id": "n1", "model": "ACD_TMLargeRoom" },
+                { "group_id": "G1", "node_id": "n2", "model": "ACD_TenBandEQStereo",
+                  "params": { "gain250hz": 2.0 } }
+            ]
+        }"#;
+    let input: DoctorInput = serde_json::from_str(json).expect("DoctorInput deserializes");
+    assert!(input.nodes[0].params.is_empty());
+    assert_eq!(input.nodes[1].params.get("gain250hz"), Some(&2.0));
+}
+
 #[test]
 fn doctor_validate_ops_rejects_scene_trim() {
     let ok = vec![doctor::DoctorOp::Param {

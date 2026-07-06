@@ -22,6 +22,7 @@ import type { ActiveGraph, GraphNode } from "../lib/types";
 
 const blk = (model: string): GraphNode => ({
   group_id: "",
+  params: {},
   node_id: model,
   model,
   bypassed: false,
@@ -204,6 +205,7 @@ const cabNode = (
   opts: { dual?: boolean } = {},
 ): GraphNode => ({
   group_id: "G1",
+  params: {},
   node_id: "ACD_CabSimTMS",
   model: "ACD_CabSimTMS",
   bypassed: false,
@@ -216,6 +218,7 @@ const cabNode = (
 // (`...CabIR`) on a British 4×12 — the device sets cabsimid but NO dual-cab split.
 const ampWithCab = (model: string, cabSimId: string): GraphNode => ({
   group_id: "G1",
+  params: {},
   node_id: model,
   model,
   bypassed: false,

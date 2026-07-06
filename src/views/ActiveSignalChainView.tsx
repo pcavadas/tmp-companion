@@ -121,11 +121,13 @@ function toStripGraph(graph: ActiveGraph): StripGraph | null {
       }
     : null;
   const lanes = graph.lanes
-    ? graph.lanes.map((lane): StripIndependentLane => ({
-        input: lane.input,
-        output: lane.output,
-        blocks: lane.blocks.map(toStripBlock),
-      }))
+    ? graph.lanes.map(
+        (lane): StripIndependentLane => ({
+          input: lane.input,
+          output: lane.output,
+          blocks: lane.blocks.map(toStripBlock),
+        }),
+      )
     : null;
   const hasRoute =
     stages.length > 0 ||

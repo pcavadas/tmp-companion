@@ -37,6 +37,7 @@ const ampNode = (model: string, cabSimId: string): GraphNode => ({
   node_id: model,
   model,
   bypassed: false,
+  params: {},
   cab_sim_id: cabSimId,
 });
 

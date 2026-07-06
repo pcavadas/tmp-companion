@@ -6,16 +6,22 @@
 // plus SceneConsistency). Nothing is written to the unit until a prescription is
 // applied + saved (each backup-gated, revertible).
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button } from "../../ui/primitives";
+import { doctorDiscard } from "../../lib/invoke";
 import { slotLabel } from "../../lib/format";
 import { StepRail } from "../overlays/WizardShell";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { PresetResultCard } from "./PresetResultCard";
 import { presetLookCount, presetWorstSev, sevRank } from "./severity";
+import {
+  ApplyLockContext,
+  type ActiveApplyCard,
+  type ApplyLock,
+} from "./applyLock";
 import type { DoctorCheckResult } from "../../lib/types";
 
 export interface DoctorResultsProps {
@@ -32,6 +38,49 @@ export function DoctorResults({
 }: DoctorResultsProps) {
   const { t } = useTheme();
   const [openChips, setOpenChips] = useState<Set<string>>(new Set());
+
+  // ONE applied-but-unsaved prescription across the whole page — the device has
+  // a single edit buffer, so a second card's apply (even in another preset)
+  // would clobber the first card's live edit. Hence the lock lives here, not per
+  // preset card.
+  const [activeCard, setActiveCard] = useState<ActiveApplyCard | null>(null);
+  const lock = useMemo<ApplyLock>(
+    () => ({
+      activeCard,
+      acquire: (id, listIndex) => {
+        setActiveCard({ id, listIndex });
+      },
+      release: (id) => {
+        setActiveCard((cur) => (cur?.id === id ? null : cur));
+      },
+    }),
+    [activeCard],
+  );
+
+  // An applied-but-unsaved edit sits in the DEVICE's edit buffer — leaving this
+  // page (unmount, or "Check other sounds" → flow.reset) must drop it, or the
+  // orphaned edit silently rides the next preset interaction. Fire-and-forget
+  // (the cancel-lane pattern); the ref is cleared first so the unmount cleanup
+  // can't double-fire after the reset path already discarded.
+  const activeCardRef = useRef<ActiveApplyCard | null>(null);
+  useEffect(() => {
+    activeCardRef.current = activeCard;
+  }, [activeCard]);
+  const discardActive = useCallback(() => {
+    const cur = activeCardRef.current;
+    activeCardRef.current = null;
+    if (cur) {
+      void doctorDiscard(cur.listIndex).catch(() => undefined);
+    }
+  }, []);
+  useEffect(() => {
+    return discardActive; // unmount only (discardActive is stable)
+  }, [discardActive]);
+
+  const handleCheckMore = useCallback(() => {
+    discardActive();
+    onCheckMore();
+  }, [discardActive, onCheckMore]);
 
   const toggleChip = useCallback((id: string) => {
     setOpenChips((prev) => {
@@ -81,124 +130,130 @@ export function DoctorResults({
   }
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        zIndex: 40,
-        display: "flex",
-        flexDirection: "column",
-        background: t.bg,
-        color: t.ink,
-        fontFamily: t.sans,
-      }}
-    >
+    <ApplyLockContext.Provider value={lock}>
       <div
         style={{
-          flexShrink: 0,
-          padding: "15px 22px",
-          borderBottom: `0.5px solid ${t.hairline}`,
-          background: t.bgAlt,
-        }}
-      >
-        <StepRail current={2} steps={DOCTOR_STEPS} />
-      </div>
-
-      <div
-        style={{
-          flexShrink: 0,
+          position: "absolute",
+          inset: 0,
+          zIndex: 40,
           display: "flex",
-          gap: 14,
-          alignItems: "flex-start",
-          padding: "18px 22px 14px",
+          flexDirection: "column",
+          background: t.bg,
+          color: t.ink,
+          fontFamily: t.sans,
         }}
       >
         <div
           style={{
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: allClear ? t.goodSoft : t.accentSoft,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
             flexShrink: 0,
+            padding: "15px 22px",
+            borderBottom: `0.5px solid ${t.hairline}`,
+            background: t.bgAlt,
           }}
         >
-          <Icon
-            name={allClear ? "check" : "wave"}
-            size={20}
-            stroke={allClear ? t.good : t.warn}
-          />
+          <StepRail current={2} steps={DOCTOR_STEPS} />
         </div>
-        <div style={{ minWidth: 0 }}>
+
+        <div
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            gap: 14,
+            alignItems: "flex-start",
+            padding: "18px 22px 14px",
+          }}
+        >
           <div
-            style={{ fontFamily: t.serif, fontSize: t.fsCard, color: t.ink }}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 10,
+              background: allClear ? t.goodSoft : t.accentSoft,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
           >
-            {title}
+            <Icon
+              name={allClear ? "check" : "wave"}
+              size={20}
+              stroke={allClear ? t.good : t.warn}
+            />
           </div>
-          <div
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{ fontFamily: t.serif, fontSize: t.fsCard, color: t.ink }}
+            >
+              {title}
+            </div>
+            <div
+              style={{
+                fontFamily: t.sans,
+                fontSize: t.fsLabel,
+                color: t.mutedInk,
+                marginTop: 3,
+                lineHeight: 1.5,
+              }}
+            >
+              {subtitle}
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            padding: "0 22px 16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+          }}
+        >
+          {sorted.map((preset) => (
+            <PresetResultCard
+              key={preset.listIndex}
+              preset={preset}
+              presetName={
+                presetNames.get(preset.listIndex) ??
+                `Slot ${slotLabel(preset.listIndex)}`
+              }
+              openChips={openChips}
+              onToggleChip={toggleChip}
+            />
+          ))}
+        </div>
+
+        <div
+          style={{
+            flexShrink: 0,
+            borderTop: `0.5px solid ${t.hairline}`,
+            background: t.bgAlt,
+            padding: "12px 22px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span
             style={{
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.mutedInk,
-              marginTop: 3,
-              lineHeight: 1.5,
             }}
           >
-            {subtitle}
-          </div>
+            Applied fixes are saved per prescription — nothing here is written
+            until you save it.
+          </span>
+          <Button variant="primary" icon="refresh" onClick={handleCheckMore}>
+            Check other sounds
+          </Button>
         </div>
       </div>
-
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          padding: "0 22px 16px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-        }}
-      >
-        {sorted.map((preset) => (
-          <PresetResultCard
-            key={preset.listIndex}
-            preset={preset}
-            presetName={
-              presetNames.get(preset.listIndex) ??
-              `Slot ${slotLabel(preset.listIndex)}`
-            }
-            openChips={openChips}
-            onToggleChip={toggleChip}
-          />
-        ))}
-      </div>
-
-      <div
-        style={{
-          flexShrink: 0,
-          borderTop: `0.5px solid ${t.hairline}`,
-          background: t.bgAlt,
-          padding: "12px 22px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
-        <span
-          style={{ fontFamily: t.sans, fontSize: t.fsLabel, color: t.mutedInk }}
-        >
-          Applied fixes are saved per prescription — nothing here is written
-          until you save it.
-        </span>
-        <Button variant="primary" icon="refresh" onClick={onCheckMore}>
-          Check other sounds
-        </Button>
-      </div>
-    </div>
+    </ApplyLockContext.Provider>
   );
 }
 

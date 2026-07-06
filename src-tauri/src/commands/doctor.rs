@@ -21,6 +21,17 @@ pub struct DoctorInput {
     pub nodes: Vec<doctor::DoctorNode>,
 }
 
+/// The instrument a sound is judged as — from its topology, guitar by default.
+fn instrument_of(item: &DoctorInput) -> doctor::Instrument {
+    doctor::Instrument::from_topology(
+        item.topology_id
+            .as_deref()
+            .and_then(topologies::by_id)
+            .map(|t| t.instrument)
+            .unwrap_or("guitar"),
+    )
+}
+
 /// Streamed per-sound progress row (`active` → `done`/`error`). Diagnoses ride
 /// the command's RETURN value, not this channel — they're cohort-relative, so
 /// they can only be computed once every sound is measured.
@@ -80,11 +91,16 @@ pub(crate) fn cancel_doctor_check() {
 /// the unit: loads + captures, never a save; every capture ends re-amp OFF.
 /// One command per run (the `copy_apply`/`level_scenes_apply_batched` shape):
 /// per-sound progress streams over `on_result`, structured results return.
+/// `restore_list_index` is the pre-run ACTIVE preset (the frontend's
+/// `activeListIndex`): the run ends by reloading it — falling back to the
+/// last-scanned slot — so the unit is back where the player left it and the
+/// 0.5 reference `presetLevel` never lingers in the edit buffer.
 #[tauri::command]
-pub(crate) async fn doctor_check(
-    app: tauri::AppHandle,
+pub(crate) async fn doctor_check<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     items: Vec<DoctorInput>,
+    restore_list_index: Option<u32>,
     on_result: tauri::ipc::Channel<DoctorProgressItem>,
 ) -> Result<DoctorCheckResult, String> {
     if items.is_empty() {
@@ -107,11 +123,13 @@ pub(crate) async fn doctor_check(
         let mut measured: Vec<(usize, doctor::SoundProfile)> = Vec::new();
         let mut errors: Vec<(usize, String)> = Vec::new();
         let mut stopped = false;
+        let mut last_scanned: Option<u32> = None;
         for (i, (item, path)) in resolved.iter().enumerate() {
             if DOCTOR_CANCEL.load(SeqCst) {
                 stopped = true;
                 break;
             }
+            last_scanned = Some(item.list_index);
             let _ = on_result.send(DoctorProgressItem {
                 key: item.key.clone(),
                 status: "active".to_string(),
@@ -125,7 +143,7 @@ pub(crate) async fn doctor_check(
                 }
             };
             let result = stim.and_then(|stim| {
-                leveller::doctor_capture(item.list_index, item.scene, stim, 0.5).and_then(
+                leveller::doctor_capture(item.list_index, item.scene, stim, Some(0.5)).and_then(
                     |(samples, rate)| {
                         doctor::SoundProfile::from_capture(&samples, rate, stim.len())
                     },
@@ -152,29 +170,31 @@ pub(crate) async fn doctor_check(
             std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         }
 
-        let cohort = (measured.len() >= doctor::MIN_COHORT).then(|| {
-            let refs: Vec<&doctor::SoundProfile> = measured.iter().map(|(_, p)| p).collect();
-            doctor::cohort_median(&refs)
-        });
+        // Cohorts are PER INSTRUMENT — a bass preset judged against a guitar
+        // median reads falsely boomy. An under-minimum group gets None
+        // (absolute fallback), independently of the other group.
+        let by_inst: Vec<(doctor::Instrument, &doctor::SoundProfile)> = measured
+            .iter()
+            .map(|(i, p)| (instrument_of(&resolved[*i].0), p))
+            .collect();
+        let (guitar_cohort, bass_cohort) = doctor::cohorts_by_instrument(&by_inst);
 
         // Group results per preset, in first-seen item order.
         let mut presets: Vec<DoctorPresetResult> = Vec::new();
         let sound_of = |i: usize, profile: Option<&doctor::SoundProfile>, err: Option<&String>| {
             let (item, _) = &resolved[i];
-            let instrument = doctor::Instrument::from_topology(
-                item.topology_id
-                    .as_deref()
-                    .and_then(topologies::by_id)
-                    .map(|t| t.instrument)
-                    .unwrap_or("guitar"),
-            );
+            let instrument = instrument_of(item);
+            let cohort = match instrument {
+                doctor::Instrument::Guitar => guitar_cohort.as_ref(),
+                doctor::Instrument::Bass => bass_cohort.as_ref(),
+            };
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
                     doctor::diagnose(
                         p,
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
                         instrument,
-                        cohort.as_ref(),
+                        cohort,
                     ),
                     p.integrated_lufs,
                     p.tail_ratio_db,
@@ -230,15 +250,11 @@ pub(crate) async fn doctor_check(
                 })
                 .collect();
             if let Some(base) = base {
-                let instrument = doctor::Instrument::from_topology(
-                    resolved
-                        .iter()
-                        .find(|(it, _)| it.key == base.key)
-                        .and_then(|(it, _)| it.topology_id.as_deref())
-                        .and_then(topologies::by_id)
-                        .map(|t| t.instrument)
-                        .unwrap_or("guitar"),
-                );
+                let instrument = resolved
+                    .iter()
+                    .find(|(it, _)| it.key == base.key)
+                    .map(|(it, _)| instrument_of(it))
+                    .unwrap_or(doctor::Instrument::Guitar);
                 p.scene_consistency = doctor::scene_consistency(
                     &base.label,
                     base.integrated_lufs,
@@ -247,12 +263,21 @@ pub(crate) async fn doctor_check(
                 );
             }
         }
-        // Belt-and-braces: never leave the unit in re-amp after a run.
-        let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+        // Belt-and-braces: never leave the unit in re-amp after a run, and put
+        // it back on the pre-run active preset (fallback: the last-scanned
+        // slot) — the reload also clears the 0.5 reference presetLevel from
+        // the edit buffer.
+        let _ = Session::connect().and_then(|mut s| {
+            let _ = s.set_reamp_mode(false);
+            match restore_list_index.or(last_scanned) {
+                Some(slot) => s.load_preset(slot),
+                None => Ok(()),
+            }
+        });
         Ok(DoctorCheckResult {
             presets,
             stopped,
-            cohort: if cohort.is_some() {
+            cohort: if guitar_cohort.is_some() || bass_cohort.is_some() {
                 "median".to_string()
             } else {
                 "absolute".to_string()
@@ -309,8 +334,8 @@ fn doctor_validate_ops(ops: &[doctor::DoctorOp]) -> Result<(), String> {
 /// the edit buffer WITHOUT reloading (a load would discard the unsaved edit).
 /// Persist with `doctor_save`; revert with `doctor_discard`.
 #[tauri::command]
-pub(crate) async fn doctor_apply(
-    app: tauri::AppHandle,
+pub(crate) async fn doctor_apply<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     job: DoctorApplyJob,
 ) -> Result<DoctorApplyResult, String> {
@@ -321,7 +346,9 @@ pub(crate) async fn doctor_apply(
 
         // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
         //     the slot, so (b) below confirms the already-current preset — no reload.
-        let (before, rate) = leveller::doctor_capture(job.list_index, None, &stim, 0.5)?;
+        //     ref_level None: capture at the preset's OWN level — never write a
+        //     reference presetLevel a later doctor_save would PERSIST (#1).
+        let (before, rate) = leveller::doctor_capture(job.list_index, None, &stim, None)?;
         let before_clip = format!(
             "data:audio/wav;base64,{}",
             base64_encode(&wav_bytes(&before, rate)?)
@@ -353,7 +380,9 @@ pub(crate) async fn doctor_apply(
                             let mut r = Ok(true);
                             for (p, v) in params {
                                 // The fresh node's id == its fender id — Doctor only
-                                // inserts models ABSENT from the chain, so no collision.
+                                // inserts models ABSENT from the chain (guaranteed at
+                                // GENERATION: comp/EQ/cut inserts only fire when
+                                // graph_facts found none), so no collision.
                                 if let Err(e) =
                                     s.change_parameter(group_id, fender_id, p, *v as f32)
                                 {
@@ -384,9 +413,10 @@ pub(crate) async fn doctor_apply(
             }
         }
 
-        // (c) AFTER: capture the live edit buffer WITHOUT reloading, at the SAME
-        //     reference level the before-capture used (level-fair A/B).
-        let (after, rate) = leveller::doctor_capture_current(&stim, 0.5)?;
+        // (c) AFTER: capture the live edit buffer WITHOUT reloading. ref_level
+        //     None like (a): nothing touched the level between the captures, so
+        //     the A/B is inherently level-fair at the preset's own level.
+        let (after, rate) = leveller::doctor_capture_current(&stim, None)?;
         let after_clip = format!(
             "data:audio/wav;base64,{}",
             base64_encode(&wav_bytes(&after, rate)?)

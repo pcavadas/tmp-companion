@@ -16,6 +16,7 @@ export const graphNode = (
   node_id: id,
   model,
   bypassed: false,
+  params: {},
 });
 
 /** A real 3-block series preset (DynaComp → '65 Twin → Small Hall). `slot` is null for the

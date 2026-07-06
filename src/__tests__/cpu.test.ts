@@ -13,6 +13,7 @@ const node = (model: string, bypassed = false): GraphNode => ({
   node_id: model,
   model,
   bypassed,
+  params: {},
 });
 
 const graphOf = (models: string[]): ActiveGraph => ({

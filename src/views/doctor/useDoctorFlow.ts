@@ -8,7 +8,7 @@
 // wire DoctorInputArgs). Mirrors useLevelingFlow's structure, minus the
 // per-item command composition — Doctor is ONE backend command for the whole run.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { doctorCheck, cancelDoctorCheck } from "../../lib/invoke";
 import type { SetupOption } from "../level/leveling";
@@ -115,54 +115,70 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
     [store, graphByIndex],
   );
 
+  // Unmounting mid-run (a tab switch) would orphan the backend check — fire the
+  // cooperative cancel so it winds down (the in-flight ~9 s capture still
+  // finishes, then the run resolves with nobody listening, which is fine).
+  useEffect(
+    () => () => {
+      if (runningRef.current) {
+        void cancelDoctorCheck().catch(() => undefined);
+      }
+    },
+    [],
+  );
+
   // Fire the ONE backend command for the whole run. Progress rows update per key
   // as the stream lands; the cohort-relative diagnoses ride the resolved value.
-  const startRun = useCallback((items: DoctorInputArg[]) => {
-    if (runningRef.current) return;
-    runningRef.current = true;
-    setResult(null);
-    setError(null);
-    const statusByKey: Record<string, DoctorRunStatus> = {};
-    items.forEach((it) => (statusByKey[it.key] = "queued"));
-    setRun({
-      items,
-      statusByKey,
-      currentIndex: 0,
-      total: items.length,
-      done: false,
-      stopped: false,
-    });
+  // `restoreListIndex` = the pre-run active preset, reloaded when the run ends.
+  const startRun = useCallback(
+    (items: DoctorInputArg[], restoreListIndex: number | null) => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      setResult(null);
+      setError(null);
+      const statusByKey: Record<string, DoctorRunStatus> = {};
+      items.forEach((it) => (statusByKey[it.key] = "queued"));
+      setRun({
+        items,
+        statusByKey,
+        currentIndex: 0,
+        total: items.length,
+        done: false,
+        stopped: false,
+      });
 
-    void doctorCheck(items, (p) => {
-      setRun((prev) => {
-        const nextStatus = { ...prev.statusByKey, [p.key]: p.status };
-        return {
-          ...prev,
-          statusByKey: nextStatus,
-          currentIndex: countTerminal(prev.items, nextStatus),
-        };
-      });
-    })
-      .then((res) => {
-        setResult(res);
-        setRun((prev) => ({
-          ...prev,
-          done: true,
-          stopped: res.stopped,
-          currentIndex: prev.total,
-        }));
+      void doctorCheck(items, restoreListIndex, (p) => {
+        setRun((prev) => {
+          const nextStatus = { ...prev.statusByKey, [p.key]: p.status };
+          return {
+            ...prev,
+            statusByKey: nextStatus,
+            currentIndex: countTerminal(prev.items, nextStatus),
+          };
+        });
       })
-      .catch((e: unknown) => {
-        // A whole-run failure ends the run (the rows keep their last streamed
-        // status). Record the error so the results stage surfaces a failure
-        // notice rather than looking like an intentional Stop with no results.
-        setError(e instanceof Error ? e.message : String(e));
-        setRun((prev) => ({ ...prev, done: true, stopped: true }));
-      })
-      .finally(() => {
-        runningRef.current = false;
-      });
-  }, []);
+        .then((res) => {
+          setResult(res);
+          setRun((prev) => ({
+            ...prev,
+            done: true,
+            stopped: res.stopped,
+            currentIndex: prev.total,
+          }));
+        })
+        .catch((e: unknown) => {
+          // A whole-run failure ends the run (the rows keep their last streamed
+          // status). Record the error so the results stage surfaces a failure
+          // notice rather than looking like an intentional Stop with no results.
+          setError(e instanceof Error ? e.message : String(e));
+          setRun((prev) => ({ ...prev, done: true, stopped: true }));
+        })
+        .finally(() => {
+          runningRef.current = false;
+        });
+    },
+    [],
+  );
 
   // Stop the in-flight check — already-checked sounds keep their results. The
   // backend resolves `doctor_check` with `stopped: true`, so the run lands

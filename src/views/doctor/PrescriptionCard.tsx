@@ -81,11 +81,12 @@ export function PrescriptionCard({
   const [clips, setClips] = useState<DoctorApplyResult | null>(null);
   const [acked, setAcked] = useState(false);
 
-  // Sibling guard: cards in the same preset share one device edit buffer, so only
-  // one may hold an applied-but-unsaved edit at a time (see `applyLock`).
+  // Global guard: every card targets the device's ONE edit buffer, so only one
+  // card app-wide may hold an applied-but-unsaved edit at a time (see `applyLock`).
   const cardId = useId();
   const lock = useApplyLock();
-  const lockedByOther = lock.activeCard !== null && lock.activeCard !== cardId;
+  const lockedByOther =
+    lock.activeCard !== null && lock.activeCard.id !== cardId;
 
   // Only oneclick / chain non-scene prescriptions have an Apply path; advisory and
   // scene-consistency cards are static.
@@ -102,6 +103,10 @@ export function PrescriptionCard({
   async function runApply() {
     setBusy(true);
     setError(null);
+    // Take the lock BEFORE the await: the device's edit buffer is dirty from the
+    // moment the command starts, so a sibling Apply during the in-flight window
+    // would clobber it. Released in the catch (a failed apply auto-restores).
+    lock.acquire(cardId, listIndex);
     try {
       const res = await doctorApply({
         listIndex,
@@ -112,8 +117,8 @@ export function PrescriptionCard({
       });
       setClips(res);
       setPhase("applied");
-      lock.acquire(cardId);
     } catch (e) {
+      lock.release(cardId);
       setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
     } finally {
       setBusy(false);
@@ -418,7 +423,7 @@ export function PrescriptionCard({
                     color: t.mutedInk,
                   }}
                 >
-                  Save or discard the applied fix on this preset first.
+                  Save or discard the applied fix first.
                 </div>
               )}
             </div>

@@ -214,6 +214,7 @@ function editBlockToNode(b: EditBlock): GraphNode {
     node_id: b.nodeId ?? b.uid,
     model: b.model,
     bypassed: false,
+    params: {}, // the edit model doesn't carry params; the optimistic cache doesn't need them
   };
 }
 

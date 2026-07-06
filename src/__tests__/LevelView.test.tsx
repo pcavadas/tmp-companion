@@ -930,7 +930,9 @@ describe("LevelView — hero survives a tab-switch remount after a live change",
     stages: [
       {
         kind: "series",
-        blocks: [{ group_id: "G1", node_id: "n0", model, bypassed: false }],
+        blocks: [
+          { group_id: "G1", node_id: "n0", model, bypassed: false, params: {} },
+        ],
       },
     ],
   });

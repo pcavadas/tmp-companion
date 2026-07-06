@@ -227,10 +227,9 @@ fn capture_full_at(
     slot: u32,
     scene: Option<u32>,
     stimulus: &[f32],
-    ref_level: f32,
+    ref_level: Option<f32>,
     tail_ms: u64,
 ) -> Result<audio::Capture, String> {
-    let ref_level = ref_level.clamp(0.05, 1.0);
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
@@ -245,8 +244,12 @@ fn capture_full_at(
         s.load_scene(scene)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
-    set_knob(&mut s, &LevelKnob::PresetLevel, ref_level)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    // `None` = capture at the preset's OWN stored level (Doctor's apply A/B),
+    // leaving the edit buffer's presetLevel untouched.
+    if let Some(ref_level) = ref_level {
+        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
     let _ = s.set_reamp_mode(true)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
     let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
@@ -259,7 +262,7 @@ fn capture_full_at(
 /// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
 /// and the per-channel N1 diagnostic (`probe --channels`) share this.
 pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
-    capture_full_at(slot, None, stimulus, ref_level, CAPTURE_TAIL_MS)
+    capture_full_at(slot, None, stimulus, Some(ref_level), CAPTURE_TAIL_MS)
 }
 
 /// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the
@@ -280,11 +283,14 @@ pub fn capture_samples(
 /// first (0-based `scenes[]` wire index, `None` = base) and captures with the longer
 /// `DOCTOR_TAIL_MS` tail so reverb/delay wash is analyzable. Shares `capture_full_at`
 /// with the leveling capture path — the leveling window/timings are untouched.
+/// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None` for
+/// the apply A/B (capture at the preset's own level — never writes presetLevel,
+/// so a later `doctor_save` can't persist a reference level).
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
     stimulus: &[f32],
-    ref_level: f32,
+    ref_level: Option<f32>,
 ) -> Result<(Vec<f32>, u32), String> {
     let cap = capture_full_at(slot, scene, stimulus, ref_level, u64::from(DOCTOR_TAIL_MS))?;
     let (ch, _) = cap.loudest_channel();
@@ -293,16 +299,21 @@ pub fn doctor_capture(
 
 /// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
 /// loading — a load would discard the unsaved `doctor_apply` prescription edit.
-/// Mirrors `capture_full_at` MINUS the load block: fresh-connect → set the
-/// reference level BEFORE engaging → engage re-amp once → capture with the Doctor
-/// tail → guaranteed re-amp off → loudest channel. `ref_level` MUST match the
-/// before-capture's reference so the A/B is level-fair (`doctor_capture` uses 0.5).
-pub fn doctor_capture_current(stimulus: &[f32], ref_level: f32) -> Result<(Vec<f32>, u32), String> {
-    let ref_level = ref_level.clamp(0.05, 1.0);
+/// Mirrors `capture_full_at` MINUS the load block: fresh-connect → optionally set
+/// the reference level BEFORE engaging → engage re-amp once → capture with the
+/// Doctor tail → guaranteed re-amp off → loudest channel. `ref_level` MUST match
+/// the before-capture's so the A/B is level-fair (`doctor_apply` passes `None`
+/// to both: the preset's own level, never a presetLevel write).
+pub fn doctor_capture_current(
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+) -> Result<(Vec<f32>, u32), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
-    set_knob(&mut s, &LevelKnob::PresetLevel, ref_level)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    if let Some(ref_level) = ref_level {
+        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
     let _ = s.set_reamp_mode(true)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
     let cap = audio::reamp_capture(stimulus, RATE, u64::from(DOCTOR_TAIL_MS));
