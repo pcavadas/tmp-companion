@@ -25,6 +25,6 @@ A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that
 
 ## Where things live
 
-- Backend: `src-tauri/src/` — `hid.rs` (seize), `session.rs` (handshake + commands), `proto.rs` (wire codec), `monitor.rs` (live session + startup snapshot), `leveller.rs` / `lufs.rs` / `audio.rs` (measurement), `audiograph.rs` (node ops), `lib.rs` (the Tauri commands + `probe` entry points).
+- Backend: `src-tauri/src/` — `hid.rs` (seize), `session.rs` (handshake + commands), `proto.rs` (wire codec), `monitor.rs` (live session + startup snapshot), `leveller.rs` / `lufs.rs` / `audio.rs` (measurement), `audiograph.rs` (node ops), `commands/` (the Tauri commands, one file per domain) + `bootstrap.rs` (Builder setup + handler list) + `probe_api/` (probe entry points); `lib.rs` is the slim crate hub.
 - Frontend: `src/` — `views/` (one folder per tab), `lib/invoke.ts` (typed command wrappers) + `lib/types.ts` (wire types), `ui/` (primitives + block art), `models/` (catalog data).
 - The `probe` and `gen_samples` binaries (`src-tauri/src/bin/`) are the headless hardware-revalidation and stimulus-generation tools.
