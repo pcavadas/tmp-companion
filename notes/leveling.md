@@ -22,6 +22,12 @@ Per-scene rules:
 - Only the amp `outputLevel` parameter is changed (preamp/master/volume are forbidden — they alter the sound).
 - Scene Edit mode gives full per-scene isolation; enable + confirm it before writing a scene value.
 
+### Capture-stream rules (HW-load-bearing)
+
+- `audio::LiveReamp` is **ring-buffered** (`LIVE_RING_SECS`). Its capture buffer once grew unboundedly (multi-channel 48 kHz × minutes × dozens of rows) and **OOM'd the whole Mac**. Never re-introduce unbounded capture accumulation; reuse ONE stream pair per preset rather than rebuilding per scene (coreaudiod churn).
+- Do NOT measure per-scene loudness off one continuous shared stream with windowed reads — it returns impossible values (a knob whose true range is −40…−14 LUFS read −6.96) and any closed loop fed on it clamps on garbage. Each measurement point gets an **isolated fresh re-amp capture** (the `measure_knob_at` shape). The closed loop is also unnecessary: `outputLevel` is linear in dB with full authority, so one-shot open-loop hits ±0.07 LU.
+- The 6 s stimulus + 0.8 s tail capture window is load-bearing — see `notes/protocol.md` (re-amp measurement).
+
 ## Footswitch leveling — the chosen block parameter
 
 A block-acting footswitch toggles a block on/off. Each one is leveled one at a time (`level_footswitches_apply`, jobs from `footswitchesPerIndex`) by sweeping the **user-chosen block parameter** (`levGroupId`/`levNodeId`/`levParameterId`) — a secant search in _parameter_ space (not amplitude, since the parameter is not necessarily a linear gain). The solved value is applied either **baked** (a direct `changeParameter` on the block) or **assigned** (the footswitch's param-change function carries it as `valueA`); the backend picks based on whether the block is the sole owner of that parameter. Method is internal, never surfaced.
