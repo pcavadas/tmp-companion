@@ -1,5 +1,4 @@
 //! Device connect/status/list + sample enumeration Tauri commands.
-#![allow(clippy::too_many_arguments)]
 use crate::*;
 
 #[derive(Serialize)]

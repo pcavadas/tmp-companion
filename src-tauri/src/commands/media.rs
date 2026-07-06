@@ -75,11 +75,7 @@ pub(crate) async fn audition_render(
         Ok(format!("data:audio/wav;base64,{}", base64_encode(&wav)))
     })
     .await?;
-    state
-        .clip_cache
-        .lock()
-        .unwrap()
-        .insert(&cache_key, url.clone());
+    lock_ok(&state.clip_cache).insert(&cache_key, url.clone());
     Ok(url)
 }
 
