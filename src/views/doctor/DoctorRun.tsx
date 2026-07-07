@@ -15,11 +15,13 @@ import { Icon } from "../../ui/Icon";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DOCTOR_STEPS, type DoctorRunStatus } from "./useDoctorFlow";
+import { estimateSecsLeft } from "./estimateSecsLeft";
 import type { DoctorInputArg } from "../../lib/types";
 
 /** Auto-advance delay from a natural completion to the Results page. */
 const AUTO_ADVANCE_MS = 650;
-/** Rough per-sound check duration (s) — drives the "about Ys left" estimate. */
+/** Rough per-sound check duration (s) — the prior before any sound completes,
+ *  and still what the header prose quotes ("about 9 seconds each"). */
 const SECS_PER_SOUND = 9;
 
 export interface DoctorRunProps {
@@ -68,9 +70,40 @@ export function DoctorRun({
     }
   }, [done, stopped]);
 
+  // Live "about Ns left": a 1 Hz tick plus a mark of when the current sound
+  // started, so the estimate counts down between sound completions instead
+  // of only updating every ~9 s.
+  const [startAt] = useState(() => Date.now());
+  const [mark, setMark] = useState({ index: 0, at: startAt });
+  const [now, setNow] = useState(startAt);
+
+  // Render-phase adjust: a new sound started, so mark its start time. Reuses
+  // the latest ticked `now` rather than a fresh `Date.now()` — render must
+  // stay pure, and `now` is at most one tick (1 s) stale. Uses the OLD `mark`
+  // below for this render; the re-render with the new mark follows immediately.
+  if (currentIndex !== mark.index) {
+    setMark({ index: currentIndex, at: now });
+  }
+
+  useEffect(() => {
+    if (done) return;
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [done]);
+
   const stepNo = Math.min(currentIndex + 1, total);
   const pct = total > 0 ? (currentIndex / total) * 100 : 0;
-  const secsLeft = Math.max(0, (total - currentIndex) * SECS_PER_SOUND);
+  // `mark.at > startAt` guards the rare case where `now` hasn't ticked yet
+  // when the first sound completes (avgMs would otherwise divide to 0).
+  const avgMs =
+    mark.index > 0 && mark.at > startAt
+      ? (mark.at - startAt) / mark.index
+      : SECS_PER_SOUND * 1000;
+  const secsLeft = estimateSecsLeft(total - currentIndex, avgMs, now - mark.at);
 
   const headerTitle = (): string => {
     if (stopped) return "Check stopped";
