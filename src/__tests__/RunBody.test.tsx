@@ -40,6 +40,7 @@ function runBody(
         stopped={false}
         stopping={false}
         liveLufs={liveLufs}
+        liveTrace={[]}
         instrumentName={() => ""}
         onCancel={vi.fn()}
         onComplete={vi.fn()}

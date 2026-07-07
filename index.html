@@ -104,23 +104,6 @@
       .tmp-spin {
         animation: tmp-spin 0.9s linear infinite;
       }
-      /* Live "VU" bars while a leveling capture streams (src/ui/LiveVU.tsx). Pure
-         decoration: each bar bounces on its own per-bar duration/delay (set inline) —
-         longhand props here so the inline animation-duration/-delay compose, not reset. */
-      @keyframes tmp-vu {
-        0% {
-          transform: scaleY(0.14);
-        }
-        100% {
-          transform: scaleY(1);
-        }
-      }
-      .tmp-vu {
-        animation-name: tmp-vu;
-        animation-timing-function: ease-in-out;
-        animation-iteration-count: infinite;
-        animation-direction: alternate;
-      }
       /* Device-status dot while reading the firmware (src/ui/DeviceStatus.tsx). */
       @keyframes tmp-fwpulse {
         0%,
@@ -150,10 +133,6 @@
         }
         .tmp-toast-in {
           animation: none;
-        }
-        .tmp-vu {
-          animation: none;
-          transform: scaleY(0.5);
         }
       }
       /* DS Slider (src/ui/primitives.tsx Slider): native range thumb/track can

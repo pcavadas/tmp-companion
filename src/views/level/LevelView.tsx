@@ -361,6 +361,7 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
           runStopped={flow.run.stopped}
           runStopping={flow.run.stopping}
           liveLufs={flow.liveLufs}
+          liveTrace={flow.liveTrace}
           onCancel={flow.onCancel}
           onStart={flow.onSetupStart}
           onRunCancel={flow.onRunCancel}

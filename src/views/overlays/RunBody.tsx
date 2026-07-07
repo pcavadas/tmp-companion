@@ -37,6 +37,8 @@ export interface RunBodyProps {
   /** Advisory live measured loudness for the active row's "measuring…" readout (null =
    *  nothing streaming). Reference-level, NOT the final value — the result row is the confirm. */
   liveLufs: number | null;
+  /** Rolling per-hop momentary levels (dB, newest last) driving the live VU bars. */
+  liveTrace: number[];
   /** Resolve an instrument profile id to its display name (the per-row chip). */
   instrumentName: (id: string) => string;
   /** Stop the run (sets the cancel flag; the loop publishes done+stopped). */
@@ -53,6 +55,7 @@ export function RunBody({
   stopped,
   stopping,
   liveLufs,
+  liveTrace,
   instrumentName,
   onCancel,
   onComplete,
@@ -312,7 +315,7 @@ export function RunBody({
                     paddingRight: 2,
                   }}
                 >
-                  <LiveVU />
+                  <LiveVU values={liveTrace} />
                   <LiveReadout
                     value={live}
                     format={fmtLufs}
