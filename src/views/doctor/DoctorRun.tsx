@@ -15,14 +15,16 @@ import { Icon } from "../../ui/Icon";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DOCTOR_STEPS, type DoctorRunStatus } from "./useDoctorFlow";
-import { estimateSecsLeft } from "./estimateSecsLeft";
+import { estimateSecsLeft, avgSoundMs } from "./estimateSecsLeft";
 import type { DoctorInputArg } from "../../lib/types";
 
 /** Auto-advance delay from a natural completion to the Results page. */
 const AUTO_ADVANCE_MS = 650;
-/** Rough per-sound check duration (s) — the prior before any sound completes,
- *  and still what the header prose quotes ("about 9 seconds each"). */
-const SECS_PER_SOUND = 9;
+/** Rough per-sound check duration (s) — the shrinkage prior before any sound
+ *  completes, and still what the header prose quotes ("about 15 seconds
+ *  each"). HW-measured: one capture iteration is ~8.5 s capture window +
+ *  ~2.8 s settles/gaps + 2 handshakes + the per-preset read ≈ 15 s. */
+const SECS_PER_SOUND = 15;
 
 export interface DoctorRunProps {
   items: DoctorInputArg[];
@@ -70,19 +72,25 @@ export function DoctorRun({
     }
   }, [done, stopped]);
 
-  // Live "about Ns left": a 1 Hz tick plus a mark of when the current sound
-  // started, so the estimate counts down between sound completions instead
-  // of only updating every ~9 s.
+  // Live "about Ns left": a 1 Hz tick plus a completion-timestamp history, so
+  // the estimate counts down between sound completions instead of only
+  // updating every ~15 s, and the average is a running rate rather than a
+  // mean-from-run-start that snaps upward on a slow first sound.
   const [startAt] = useState(() => Date.now());
-  const [mark, setMark] = useState({ index: 0, at: startAt });
+  const [doneAts, setDoneAts] = useState<number[]>(() => [startAt]);
   const [now, setNow] = useState(startAt);
 
-  // Render-phase adjust: a new sound started, so mark its start time. Reuses
-  // the latest ticked `now` rather than a fresh `Date.now()` — render must
-  // stay pure, and `now` is at most one tick (1 s) stale. Uses the OLD `mark`
-  // below for this render; the re-render with the new mark follows immediately.
-  if (currentIndex !== mark.index) {
-    setMark({ index: currentIndex, at: now });
+  // Render-phase adjust: one or more sounds completed since the last render,
+  // so record their completion time. Reuses the latest ticked `now` rather
+  // than a fresh `Date.now()` — render must stay pure, and `now` is at most
+  // one tick (1 s) stale. Uses the OLD `doneAts` below for this render; the
+  // re-render with the appended entries follows immediately.
+  if (currentIndex > doneAts.length - 1) {
+    const next = [...doneAts];
+    for (let i = doneAts.length - 1; i < currentIndex; i++) {
+      next.push(now);
+    }
+    setDoneAts(next);
   }
 
   useEffect(() => {
@@ -97,13 +105,9 @@ export function DoctorRun({
 
   const stepNo = Math.min(currentIndex + 1, total);
   const pct = total > 0 ? (currentIndex / total) * 100 : 0;
-  // `mark.at > startAt` guards the rare case where `now` hasn't ticked yet
-  // when the first sound completes (avgMs would otherwise divide to 0).
-  const avgMs =
-    mark.index > 0 && mark.at > startAt
-      ? (mark.at - startAt) / mark.index
-      : SECS_PER_SOUND * 1000;
-  const secsLeft = estimateSecsLeft(total - currentIndex, avgMs, now - mark.at);
+  const avgMs = avgSoundMs(SECS_PER_SOUND * 1000, doneAts);
+  const last = doneAts[doneAts.length - 1];
+  const secsLeft = estimateSecsLeft(total - currentIndex, avgMs, now - last);
 
   const headerTitle = (): string => {
     if (stopped) return "Check stopped";

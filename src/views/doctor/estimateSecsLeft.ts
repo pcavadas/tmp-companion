@@ -17,3 +17,21 @@ export function estimateSecsLeft(
   const floor = (remaining - 1) * avgMs;
   return Math.ceil(Math.max(raw, floor) / 1000);
 }
+
+/** Measured per-sound rate with a pseudo-count prior: the prior counts as one
+ *  observation, so early completions NUDGE the rate instead of replacing it
+ *  (a slow first sound — per-preset read + connect retries — must not
+ *  multiply the whole remaining estimate). Zero-length gaps (batched events)
+ *  are not real durations and are skipped. */
+export function avgSoundMs(priorMs: number, doneAts: number[]): number {
+  let sum = priorMs;
+  let n = 1;
+  for (let i = 1; i < doneAts.length; i++) {
+    const d = doneAts[i] - doneAts[i - 1];
+    if (d > 0) {
+      sum += d;
+      n += 1;
+    }
+  }
+  return sum / n;
+}
