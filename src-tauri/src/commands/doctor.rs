@@ -332,13 +332,15 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // it back on the pre-run active preset (fallback: the last-scanned
         // slot) — the reload also clears the 0.5 reference presetLevel from
         // the edit buffer.
-        let _ = Session::connect().and_then(|mut s| {
+        if let Err(e) = Session::connect().and_then(|mut s| {
             let _ = s.set_reamp_mode(false);
             match restore_list_index.or(last_scanned) {
                 Some(slot) => s.load_preset(slot),
                 None => Ok(()),
             }
-        });
+        }) {
+            log::warn!("doctor_check: failed to restore active preset after run: {e}");
+        }
         Ok(DoctorCheckResult {
             presets,
             stopped,
