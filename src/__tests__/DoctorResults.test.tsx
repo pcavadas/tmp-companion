@@ -1,7 +1,9 @@
-// src/__tests__/DoctorResults.test.tsx — the Doctor RESULTS page: summary line,
-// worst-first ordering, per-card status badges, chip expand, the opt-in frequency
-// toggle, and the prescription lifecycle (apply → ack-gated save → saved; discard).
-// The device commands (apply/save/discard) are mocked.
+// src/__tests__/DoctorResults.test.tsx — the Doctor RESULTS page in its dense
+// row-per-sound form: summary copy + counts, worst-first ordering, the "Needs a
+// look" filter, per-row expansion (explainer + prescription), the healthy-collapse
+// reveal, the shared-block caption at row level, the synthetic Level-jumps row, and
+// the prescription lifecycle (apply → ack-gated save → saved; discard). The device
+// commands (apply/save/discard) are mocked.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -25,6 +27,7 @@ import { DoctorResults } from "../views/doctor/DoctorResults";
 import type {
   DoctorApplyResult,
   DoctorCheckResult,
+  DoctorDiag,
   DoctorOp,
   DoctorSoundResult,
   FootswitchInfo,
@@ -194,11 +197,14 @@ function fixture(): DoctorCheckResult {
   };
 }
 
-function renderResults(onCheckMore: () => void = () => undefined) {
+function renderResults(
+  result: DoctorCheckResult = fixture(),
+  onCheckMore: () => void = () => undefined,
+) {
   return render(
     <ThemeProvider>
       <DoctorResults
-        result={fixture()}
+        result={result}
         presetNames={NAMES}
         footswitchInfo={new Map()}
         onCheckMore={onCheckMore}
@@ -207,38 +213,87 @@ function renderResults(onCheckMore: () => void = () => undefined) {
   );
 }
 
-describe("DoctorResults — summary + cards", () => {
-  beforeEach(() => {
-    vi.mocked(doctorApply).mockReset();
-    vi.mocked(doctorSave).mockReset();
-    vi.mocked(doctorDiscard).mockReset();
-    vi.mocked(doctorApply).mockResolvedValue({
-      beforeClip: "data:audio/wav;base64,AAAA",
-      afterClip: "data:audio/wav;base64,BBBB",
-    });
-    vi.mocked(doctorSave).mockResolvedValue(undefined);
-    vi.mocked(doctorDiscard).mockResolvedValue(undefined);
+function resetMocks() {
+  vi.mocked(doctorApply).mockReset();
+  vi.mocked(doctorSave).mockReset();
+  vi.mocked(doctorDiscard).mockReset();
+  vi.mocked(doctorApply).mockResolvedValue({
+    beforeClip: "data:audio/wav;base64,AAAA",
+    afterClip: "data:audio/wav;base64,BBBB",
   });
+  vi.mocked(doctorSave).mockResolvedValue(undefined);
+  vi.mocked(doctorDiscard).mockResolvedValue(undefined);
+}
+
+describe("DoctorResults — summary + cards", () => {
+  beforeEach(resetMocks);
 
   it("summarizes worst-first with the right counts", () => {
     renderResults();
     expect(screen.getByText("1 of 3 presets need a look")).toBeInTheDocument();
-    // Plural sounds flagged, singular need attention.
+    // n-of-total flagged, singular "needs attention" clause.
     expect(
-      screen.getByText(/2 sounds flagged · 1 needs attention/),
+      screen.getByText(/2 of 4 sounds flagged · 1 needs attention/),
     ).toBeInTheDocument();
   });
 
-  it("shows per-card status badges (singular error/all-clear + plural)", () => {
+  it("shows an all-clear summary + no filter when nothing is flagged", () => {
+    const clean: DoctorCheckResult = {
+      presets: [
+        {
+          listIndex: 0,
+          sounds: [
+            {
+              key: "p0",
+              listIndex: 0,
+              scene: null,
+              footswitch: null,
+              label: "Clean Base",
+              tag: null,
+              diags: [],
+              integratedLufs: -20,
+              tailRatioDb: 0,
+              balanceDb: [],
+              error: null,
+            },
+          ],
+          sceneConsistency: null,
+        },
+      ],
+      stopped: false,
+      cohort: "absolute",
+    };
+    renderResults(clean);
+    expect(screen.getByText("All 1 sound sounds good")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Nothing to fix — Doctor didn't find any tone problems.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("radiogroup", { name: "Filter results" }),
+    ).not.toBeInTheDocument();
+    // The happy path shows the clean card itself — no "Show all" strip hiding it.
+    expect(screen.getByText("Clean Base")).toBeInTheDocument();
+    expect(screen.queryByText("Show all")).not.toBeInTheDocument();
+  });
+
+  it("shows per-card status badges (count + all-clear)", async () => {
+    const user = userEvent.setup();
     renderResults();
-    // The high preset: 2 diagnoses + 1 scene finding = 3 things (plural).
-    expect(screen.getByText("3 things to look at")).toBeInTheDocument();
-    // The all-clear preset and the errored preset both read "All clear".
+    // The high preset: 2 diagnoses + 1 scene finding = 3 things.
+    expect(screen.getByText("3 to look at")).toBeInTheDocument();
+    // Default filter hides the fully-clean preset; the errored preset stays and
+    // reads "All clear" (no diagnoses). Reveal the clean one via "Everything".
+    expect(screen.getAllByText("All clear")).toHaveLength(1);
+    await user.click(screen.getByRole("radio", { name: "Everything" }));
     expect(screen.getAllByText("All clear")).toHaveLength(2);
   });
 
-  it("orders the cards worst-first, ties broken by slot", () => {
+  it("orders the cards worst-first, ties broken by slot", async () => {
+    const user = userEvent.setup();
     const { container } = renderResults();
+    await user.click(screen.getByRole("radio", { name: "Everything" }));
     const text = container.textContent;
     const muddy = text.indexOf("Muddy Rhythm");
     const clean = text.indexOf("Studio Clean");
@@ -255,40 +310,159 @@ describe("DoctorResults — summary + cards", () => {
     ).toBeInTheDocument();
   });
 
-  it("expands a chip to show its explanation + detail", async () => {
+  it("expands a problem row to show its explanation, detail, and fix; collapses on a second click", async () => {
     const user = userEvent.setup();
     renderResults();
     const explain =
       "Low-mids are piling up and swallowing your note definition.";
     expect(screen.queryByText(explain)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+
+    await user.click(screen.getByText("Rhythm Crunch"));
     expect(screen.getByText(explain)).toBeInTheDocument();
     expect(screen.getByText("+4.2 dB around 250 Hz")).toBeInTheDocument();
+    expect(screen.getByText("Add a low cut at 90 Hz")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    expect(screen.queryByText(explain)).not.toBeInTheDocument();
   });
 
-  it("offers the frequency toggle only for banded diagnoses", async () => {
+  it("shows the full BandMeter only for a banded diagnosis, no toggle", async () => {
     const user = userEvent.setup();
     renderResults();
-    // Open BOTH diagnoses; only the banded one (Muddy) offers "Show the frequencies".
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
-    await user.click(screen.getByRole("button", { name: "Washed out" }));
-    expect(screen.getAllByText("Show the frequencies")).toHaveLength(1);
+    // Muddy (bands: [1]) draws the labelled BandMeter; Washed out (no bands) doesn't.
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(screen.getByText("Lead Solo"));
+    expect(screen.getAllByText("Lows")).toHaveLength(1);
+    expect(screen.queryByText("Show the frequencies")).not.toBeInTheDocument();
+  });
+
+  it("does not expand a clear or errored row", async () => {
+    const user = userEvent.setup();
+    renderResults();
+    await user.click(screen.getByRole("radio", { name: "Everything" }));
+    // Clear row: clicking reveals nothing (no prescription surfaces).
+    await user.click(screen.getByText("Clean Base"));
+    // Errored row: clicking keeps the message, opens nothing.
+    await user.click(screen.getByText("Broken Base"));
+    expect(
+      screen.queryByRole("button", { name: /apply to the unit/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("gives an advisory prescription no Apply button", async () => {
     const user = userEvent.setup();
     renderResults();
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByText("Rhythm Crunch"));
     // Only the oneclick rx is applicable; the advisory is static.
     expect(
       screen.getAllByRole("button", { name: /apply to the unit/i }),
     ).toHaveLength(1);
     expect(screen.getByText("Nudge Bass down a notch")).toBeInTheDocument();
   });
+});
 
-  it("gives a scene-consistency prescription no Apply button", () => {
+describe("DoctorResults — filter", () => {
+  beforeEach(resetMocks);
+
+  it("hides fully-clean presets by default and flips via the 'Show all' strip", async () => {
+    const user = userEvent.setup();
     renderResults();
-    // The scene section is always visible; its fix is advised, not applied.
+    // Default "Needs a look": the clean preset is hidden.
+    expect(screen.queryByText("Studio Clean")).not.toBeInTheDocument();
+    const strip = screen.getByText("1 preset sounds good");
+    expect(strip).toBeInTheDocument();
+    await user.click(strip);
+    expect(screen.getByText("Studio Clean")).toBeInTheDocument();
+  });
+});
+
+describe("DoctorResults — healthy collapse", () => {
+  beforeEach(resetMocks);
+
+  // A flagged preset that also has a clear sound → the collapse line appears.
+  function mixedFixture(): DoctorCheckResult {
+    const muddy: DoctorDiag = {
+      key: "muddy",
+      label: "Muddy",
+      sev: "high",
+      bands: [1],
+      detail: "+4 dB around 250 Hz",
+      explain: "Low-mids are piling up.",
+      rx: [
+        {
+          kind: "advisory",
+          title: "Nudge Bass",
+          detail: "Roll it back.",
+          cpuNote: "",
+          ops: [],
+        },
+      ],
+    };
+    return {
+      presets: [
+        {
+          listIndex: 1,
+          sounds: [
+            {
+              key: "p1s0",
+              listIndex: 1,
+              scene: null,
+              footswitch: null,
+              label: "Rhythm Crunch",
+              tag: "BASE",
+              diags: [muddy],
+              integratedLufs: -18,
+              tailRatioDb: 0,
+              balanceDb: [-6, 4, -2, -8, -12, -18],
+              error: null,
+            },
+            {
+              key: "p1s1",
+              listIndex: 1,
+              scene: 0,
+              footswitch: null,
+              label: "Clean Lead",
+              tag: "FS1",
+              diags: [],
+              integratedLufs: -19,
+              tailRatioDb: 0,
+              balanceDb: [-4, -2, 0, -3, -5, -7],
+              error: null,
+            },
+          ],
+          sceneConsistency: null,
+        },
+      ],
+      stopped: false,
+      cohort: "absolute",
+    };
+  }
+
+  it("collapses clear rows and reveals them on click", async () => {
+    const user = userEvent.setup();
+    renderResults(mixedFixture());
+    expect(screen.queryByText("Clean Lead")).not.toBeInTheDocument();
+    await user.click(screen.getByText("1 sound checks out"));
+    expect(screen.getByText("Clean Lead")).toBeInTheDocument();
+  });
+});
+
+describe("DoctorResults — Level jumps (scene consistency) row", () => {
+  beforeEach(resetMocks);
+
+  it("renders as a synthetic row and expands to the advisory scene fix", async () => {
+    const user = userEvent.setup();
+    renderResults();
+    expect(screen.getByText("Level jumps")).toBeInTheDocument();
+    expect(screen.getByText("Crunch +6.0 dB vs base")).toBeInTheDocument();
+    // Collapsed: no Apply button (the scene fix is advised, not applied).
+    expect(
+      screen.queryByText(
+        "Run scene leveling from the Level tab to apply this one.",
+      ),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Level jumps"));
     expect(
       screen.getByText(
         "Run scene leveling from the Level tab to apply this one.",
@@ -301,28 +475,17 @@ describe("DoctorResults — summary + cards", () => {
 });
 
 describe("DoctorResults — prescription lifecycle", () => {
-  beforeEach(() => {
-    vi.mocked(doctorApply).mockReset();
-    vi.mocked(doctorSave).mockReset();
-    vi.mocked(doctorDiscard).mockReset();
-    vi.mocked(doctorApply).mockResolvedValue({
-      beforeClip: "data:audio/wav;base64,AAAA",
-      afterClip: "data:audio/wav;base64,BBBB",
-    });
-    vi.mocked(doctorSave).mockResolvedValue(undefined);
-    vi.mocked(doctorDiscard).mockResolvedValue(undefined);
-  });
+  beforeEach(resetMocks);
 
   it("applies, auditions, then ack-gates the save through to saved", async () => {
     const user = userEvent.setup();
     renderResults();
 
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByText("Rhythm Crunch"));
     await user.click(
       screen.getByRole("button", { name: /apply to the unit/i }),
     );
 
-    // Applied → the A/B audition + the unsaved pill appear.
     expect(await screen.findByText("Listen & compare")).toBeInTheDocument();
     expect(
       screen.getByText("Applied to the unit · not saved"),
@@ -331,7 +494,6 @@ describe("DoctorResults — prescription lifecycle", () => {
       expect.objectContaining({ listIndex: 1, name: "Muddy Rhythm" }),
     );
 
-    // Save is gated on the backup acknowledgment.
     const save = screen.getByRole("button", { name: /save to preset/i });
     expect(save).toBeDisabled();
     expect(doctorSave).not.toHaveBeenCalled();
@@ -348,14 +510,13 @@ describe("DoctorResults — prescription lifecycle", () => {
     const user = userEvent.setup();
     renderResults();
 
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByText("Rhythm Crunch"));
     await user.click(
       screen.getByRole("button", { name: /apply to the unit/i }),
     );
     const discard = await screen.findByRole("button", { name: /discard/i });
     await user.click(discard);
 
-    // Back to draft — the Apply button returns and nothing was saved.
     expect(
       await screen.findByRole("button", { name: /apply to the unit/i }),
     ).toBeInTheDocument();
@@ -364,8 +525,6 @@ describe("DoctorResults — prescription lifecycle", () => {
   });
 
   it("locks sibling Apply buttons from the moment an apply is IN FLIGHT", async () => {
-    // A hanging apply: the lock must be taken BEFORE the command resolves, so a
-    // sibling can't fire into the same device edit buffer mid-flight.
     let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
     vi.mocked(doctorApply).mockImplementation(
       () =>
@@ -376,23 +535,21 @@ describe("DoctorResults — prescription lifecycle", () => {
     const user = userEvent.setup();
     renderResults();
 
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
-    await user.click(screen.getByRole("button", { name: "Washed out" }));
+    // Expand both problem rows → two Apply buttons.
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(screen.getByText("Lead Solo"));
     const applies = screen.getAllByRole("button", {
       name: /apply to the unit/i,
     });
     expect(applies).toHaveLength(2);
     await user.click(applies[0]);
 
-    // The busy card reads "Applying…", so the one remaining Apply button is the
-    // sibling — disabled, with the lock explainer.
     const sibling = screen.getByRole("button", { name: /apply to the unit/i });
     expect(sibling).toBeDisabled();
     expect(
       screen.getByText("Save or discard the applied fix first."),
     ).toBeInTheDocument();
 
-    // Still locked once the apply lands (applied-but-unsaved).
     resolveApply({
       beforeClip: "data:audio/wav;base64,AAAA",
       afterClip: "data:audio/wav;base64,BBBB",
@@ -406,9 +563,9 @@ describe("DoctorResults — prescription lifecycle", () => {
   it("discards the applied-but-unsaved edit on 'Check other sounds' (once)", async () => {
     const onCheckMore = vi.fn();
     const user = userEvent.setup();
-    const { unmount } = renderResults(onCheckMore);
+    const { unmount } = renderResults(fixture(), onCheckMore);
 
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByText("Rhythm Crunch"));
     await user.click(
       screen.getByRole("button", { name: /apply to the unit/i }),
     );
@@ -420,7 +577,6 @@ describe("DoctorResults — prescription lifecycle", () => {
     expect(doctorDiscard).toHaveBeenCalledWith(1);
     expect(onCheckMore).toHaveBeenCalled();
 
-    // The reset path already discarded — the unmount cleanup must not re-fire.
     unmount();
     expect(doctorDiscard).toHaveBeenCalledTimes(1);
   });
@@ -429,7 +585,7 @@ describe("DoctorResults — prescription lifecycle", () => {
     const user = userEvent.setup();
     const { unmount } = renderResults();
 
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByText("Rhythm Crunch"));
     await user.click(
       screen.getByRole("button", { name: /apply to the unit/i }),
     );
@@ -445,7 +601,7 @@ describe("DoctorResults — prescription lifecycle", () => {
     const user = userEvent.setup();
     const { unmount } = renderResults();
 
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    await user.click(screen.getByText("Rhythm Crunch"));
     await user.click(
       screen.getByRole("button", { name: /apply to the unit/i }),
     );
@@ -460,14 +616,35 @@ describe("DoctorResults — prescription lifecycle", () => {
 });
 
 describe("DoctorResults — shared-block caption", () => {
+  beforeEach(resetMocks);
+
   const CAPTION =
     "This block is shared — the change affects all sounds of this preset.";
 
-  // A single-preset result whose one sound carries a `muddy` diag with one
-  // prescription op — the caller supplies the op + whether the sound is a
-  // footswitch (key `f0:0`, so its FootswitchInfo array index is 0).
+  function diag(op: DoctorOp, key: string): DoctorDiag {
+    return {
+      key,
+      label: key === "muddy" ? "Muddy" : "Harsh",
+      sev: "high",
+      bands: [1],
+      detail: "+4 dB around 250 Hz",
+      explain: "Low-mids are piling up.",
+      rx: [
+        {
+          kind: "oneclick",
+          title: "Add a low cut",
+          detail: "Trims the boom.",
+          cpuNote: "+0.4% CPU",
+          ops: [op],
+        },
+      ],
+    };
+  }
+
+  // A single-preset result whose one sound carries the given diagnoses — the caller
+  // supplies whether the sound is a footswitch (key `f0:0`, FootswitchInfo index 0).
   function fsFixture(
-    op: DoctorOp,
+    diags: DoctorDiag[],
     footswitch: number | null,
   ): DoctorCheckResult {
     const sound: DoctorSoundResult = {
@@ -477,25 +654,7 @@ describe("DoctorResults — shared-block caption", () => {
       footswitch,
       label: "Overdrive",
       tag: footswitch == null ? null : "FS4",
-      diags: [
-        {
-          key: "muddy",
-          label: "Muddy",
-          sev: "high",
-          bands: [1],
-          detail: "+4 dB around 250 Hz",
-          explain: "Low-mids are piling up.",
-          rx: [
-            {
-              kind: "oneclick",
-              title: "Add a low cut",
-              detail: "Trims the boom.",
-              cpuNote: "+0.4% CPU",
-              ops: [op],
-            },
-          ],
-        },
-      ],
+      diags,
       integratedLufs: -18,
       tailRatioDb: 0,
       balanceDb: [-6, 4, -2, -8, -12, -18],
@@ -555,24 +714,30 @@ describe("DoctorResults — shared-block caption", () => {
     );
   }
 
-  it("captions an FS fix that edits a block outside the switch's own set", async () => {
+  it("captions an FS fix that edits a block outside the switch's own set — once per row", async () => {
     const user = userEvent.setup();
-    renderShared(fsFixture(paramOp("CAB1"), 3));
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
-    expect(screen.getByText(CAPTION)).toBeInTheDocument();
+    // Two diags both editing the shared CAB1 → the caption still shows exactly once.
+    renderShared(
+      fsFixture(
+        [diag(paramOp("CAB1"), "muddy"), diag(paramOp("CAB1"), "harsh")],
+        3,
+      ),
+    );
+    await user.click(screen.getByText("Overdrive"));
+    expect(screen.getAllByText(CAPTION)).toHaveLength(1);
   });
 
   it("omits the caption when the fix edits the switch's own block", async () => {
     const user = userEvent.setup();
-    renderShared(fsFixture(paramOp("DRV1"), 3));
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    renderShared(fsFixture([diag(paramOp("DRV1"), "muddy")], 3));
+    await user.click(screen.getByText("Overdrive"));
     expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
   });
 
   it("never captions a Base sound (footswitch == null)", async () => {
     const user = userEvent.setup();
-    renderShared(fsFixture(paramOp("CAB1"), null));
-    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], null));
+    await user.click(screen.getByText("Overdrive"));
     expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
   });
 });

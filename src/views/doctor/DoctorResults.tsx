@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
-import { Button } from "../../ui/primitives";
+import { Button, SegmentedControl } from "../../ui/primitives";
 import { doctorDiscard } from "../../lib/invoke";
 import { slotLabel } from "../../lib/format";
 import { StepRail } from "../overlays/WizardShell";
@@ -22,7 +22,19 @@ import {
   type ActiveApplyCard,
   type ApplyLock,
 } from "./applyLock";
-import type { DoctorCheckResult, FootswitchInfo } from "../../lib/types";
+import type {
+  DoctorCheckResult,
+  DoctorPresetResult,
+  FootswitchInfo,
+} from "../../lib/types";
+
+type Filter = "look" | "all";
+
+/** A preset the "Needs a look" filter should keep visible: it has a diagnosis /
+ *  scene finding, or an errored sound the player needs to see. */
+function hasIssue(p: DoctorPresetResult): boolean {
+  return presetLookCount(p) > 0 || p.sounds.some((s) => s.error != null);
+}
 
 export interface DoctorResultsProps {
   result: DoctorCheckResult;
@@ -41,7 +53,8 @@ export function DoctorResults({
   onCheckMore,
 }: DoctorResultsProps) {
   const { t } = useTheme();
-  const [openChips, setOpenChips] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState<Filter>("look");
 
   // ONE applied-but-unsaved prescription across the whole page — the device has
   // a single edit buffer, so a second card's apply (even in another preset)
@@ -86,8 +99,8 @@ export function DoctorResults({
     onCheckMore();
   }, [discardActive, onCheckMore]);
 
-  const toggleChip = useCallback((id: string) => {
-    setOpenChips((prev) => {
+  const toggleRow = useCallback((id: string) => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -118,19 +131,26 @@ export function DoctorResults({
     return r !== 0 ? r : a.listIndex - b.listIndex;
   });
 
+  // "Needs a look" hides fully-clean presets; the segmented control + the
+  // "sound good · Show all" strip only appear when there is one to hide.
+  const cleanGroups = sorted.filter((p) => !hasIssue(p));
+  // All-clear is the happy path: show every card, no filtering, no strip.
+  const shown = allClear || filter === "all" ? sorted : sorted.filter(hasIssue);
+  const showFilter = !allClear && cleanGroups.length > 0;
+
   const title = allClear
-    ? `All ${String(totalSounds)} sounds sound good`
+    ? `All ${String(totalSounds)} sound${totalSounds === 1 ? " sounds" : "s sound"} good`
     : `${String(flagged)} of ${String(totalPresets)} presets need a look`;
 
   let subtitle: string;
   if (allClear) {
     subtitle = "Nothing to fix — Doctor didn't find any tone problems.";
   } else {
-    subtitle = `Worst first · ${String(soundsFlagged)} sound${soundsFlagged === 1 ? "" : "s"} flagged`;
+    subtitle = `Worst first · ${String(soundsFlagged)} of ${String(totalSounds)} sound${totalSounds === 1 ? "" : "s"} flagged`;
     if (needAttention > 0) {
       subtitle += ` · ${String(needAttention)} need${needAttention === 1 ? "s" : ""} attention`;
     }
-    subtitle += ". Tap a tag to see what it means and fix it.";
+    subtitle += ". Open a row to see what it means and fix it.";
   }
 
   return (
@@ -185,7 +205,7 @@ export function DoctorResults({
               stroke={allClear ? t.good : t.warn}
             />
           </div>
-          <div style={{ minWidth: 0 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div
               style={{ fontFamily: t.serif, fontSize: t.fsCard, color: t.ink }}
             >
@@ -203,6 +223,20 @@ export function DoctorResults({
               {subtitle}
             </div>
           </div>
+          {showFilter && (
+            <div style={{ flexShrink: 0 }}>
+              <SegmentedControl<Filter>
+                size="sm"
+                ariaLabel="Filter results"
+                value={filter}
+                onChange={setFilter}
+                options={[
+                  { value: "look", label: "Needs a look" },
+                  { value: "all", label: "Everything" },
+                ]}
+              />
+            </div>
+          )}
         </div>
 
         <div
@@ -216,7 +250,7 @@ export function DoctorResults({
             gap: 12,
           }}
         >
-          {sorted.map((preset) => (
+          {shown.map((preset) => (
             <PresetResultCard
               key={preset.listIndex}
               preset={preset}
@@ -225,10 +259,51 @@ export function DoctorResults({
                 `Slot ${slotLabel(preset.listIndex)}`
               }
               footswitchInfo={footswitchInfo}
-              openChips={openChips}
-              onToggleChip={toggleChip}
+              expanded={expanded}
+              onToggleRow={toggleRow}
             />
           ))}
+          {showFilter && filter === "look" && (
+            <div
+              onClick={() => {
+                setFilter("all");
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 9,
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: `0.5px dashed ${t.hairlineStrong}`,
+                background: t.bgAlt,
+                cursor: "pointer",
+              }}
+            >
+              <Icon name="check" size={14} stroke={t.good} />
+              <span
+                style={{
+                  fontFamily: t.sans,
+                  fontSize: 12.5,
+                  color: t.ink2,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {`${String(cleanGroups.length)} preset${cleanGroups.length === 1 ? "" : "s"} sound${cleanGroups.length === 1 ? "s" : ""} good`}
+              </span>
+              <span style={{ flex: 1 }} />
+              <span
+                style={{
+                  fontFamily: t.mono,
+                  fontSize: 10,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  color: t.mutedInk,
+                }}
+              >
+                Show all
+              </span>
+            </div>
+          )}
         </div>
 
         <div

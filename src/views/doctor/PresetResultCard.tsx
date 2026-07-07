@@ -1,14 +1,23 @@
-// src/views/doctor/PresetResultCard.tsx — one preset's result card (bespoke,
-// flagged design-sync candidate): a severity-tinted header with a status badge over
-// its checked sounds, plus the scene-consistency section when present. `flexShrink:0`
-// is REQUIRED so the results flex column never compresses a card.
+// src/views/doctor/PresetResultCard.tsx — one preset's result group: a
+// severity-tinted header with a status badge, then its sound rows (problems
+// worst-first, then errored rows), the synthetic scene-consistency row when present,
+// and a collapsed healthy summary that reveals its clear rows on click.
+// `flexShrink:0` is REQUIRED so the results flex column never compresses a card.
+
+import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { slotLabel } from "../../lib/format";
-import { SoundRow } from "./SoundRow";
+import { SevDot, SoundRow } from "./SoundRow";
 import { SceneConsistency } from "./SceneConsistency";
-import { presetLookCount, presetWorstSev, sevRank, sevTone } from "./severity";
+import {
+  presetLookCount,
+  presetWorstSev,
+  sevRank,
+  sevTone,
+  soundSev,
+} from "./severity";
 import type {
   DoctorPresetResult,
   DoctorSoundResult,
@@ -19,8 +28,9 @@ export interface PresetResultCardProps {
   preset: DoctorPresetResult;
   presetName: string;
   footswitchInfo: Map<number, FootswitchInfo[]>;
-  openChips: Set<string>;
-  onToggleChip: (id: string) => void;
+  /** Open row ids, keyed `${listIndex}|${sound.key}` (and `|consistency`). */
+  expanded: Set<string>;
+  onToggleRow: (id: string) => void;
 }
 
 /** The node ids a footswitch SOUND owns — the blocks its own switch toggles.
@@ -39,24 +49,55 @@ export function PresetResultCard({
   preset,
   presetName,
   footswitchInfo,
-  openChips,
-  onToggleChip,
+  expanded,
+  onToggleRow,
 }: PresetResultCardProps) {
   const { t } = useTheme();
   const worst = presetWorstSev(preset);
   const count = presetLookCount(preset);
   const tone = sevTone(t, worst);
-  const headerBg = sevRank(worst) > 0 ? tone.soft : t.bgAlt;
+  const tinted = sevRank(worst) > 0;
+  const [showHealthy, setShowHealthy] = useState(count === 0);
 
-  // The apply lock (one applied-but-unsaved prescription app-wide — the device
-  // has ONE edit buffer) is provided by DoctorResults, not per preset card.
+  // Problems worst-first, then errored rows (visible, non-expandable), then the
+  // healthy rows (collapsed by default unless the whole group is clear).
+  const problems = preset.sounds
+    .filter((s) => s.diags.length > 0)
+    .sort((a, b) => sevRank(soundSev(b)) - sevRank(soundSev(a)));
+  const errored = preset.sounds.filter(
+    (s) => s.diags.length === 0 && s.error != null,
+  );
+  const healthy = preset.sounds.filter(
+    (s) => s.diags.length === 0 && s.error == null,
+  );
+  const visibleProblemRows = [...problems, ...errored];
+
+  const row = (sound: DoctorSoundResult) => {
+    const id = `${String(preset.listIndex)}|${sound.key}`;
+    return (
+      <SoundRow
+        key={sound.key}
+        sound={sound}
+        listIndex={preset.listIndex}
+        presetName={presetName}
+        ownNodeIds={ownNodeIdsFor(sound, footswitchInfo.get(preset.listIndex))}
+        open={expanded.has(id)}
+        onToggle={() => {
+          onToggleRow(id);
+        }}
+      />
+    );
+  };
+
+  const consistencyId = `${String(preset.listIndex)}|consistency`;
+
   return (
     <div
       style={{
         flexShrink: 0,
         borderRadius: 14,
         overflow: "hidden",
-        border: `0.5px solid ${t.hairline}`,
+        border: `0.5px solid ${tinted ? tone.border : t.hairlineStrong}`,
         background: t.bg,
       }}
     >
@@ -66,7 +107,7 @@ export function PresetResultCard({
           alignItems: "center",
           gap: 10,
           padding: "12px 14px",
-          background: headerBg,
+          background: tinted ? tone.soft : t.bgAlt,
         }}
       >
         <span
@@ -121,33 +162,52 @@ export function PresetResultCard({
             }}
           >
             <Icon name="warn-tri" size={12} stroke={tone.fg} />
-            {`${String(count)} thing${count === 1 ? "" : "s"} to look at`}
+            {`${String(count)} to look at`}
           </span>
         )}
       </div>
-      <div style={{ padding: "4px 14px 12px" }}>
-        {preset.sounds.map((sound, i) => (
-          <SoundRow
-            key={sound.key}
-            sound={sound}
-            listIndex={preset.listIndex}
-            presetName={presetName}
-            ownNodeIds={ownNodeIdsFor(
-              sound,
-              footswitchInfo.get(preset.listIndex),
-            )}
-            first={i === 0}
-            openChips={openChips}
-            onToggleChip={onToggleChip}
-          />
-        ))}
+      <div style={{ padding: "0 8px 4px" }}>
+        {visibleProblemRows.map(row)}
         {preset.sceneConsistency && (
           <SceneConsistency
             sc={preset.sceneConsistency}
             listIndex={preset.listIndex}
             presetName={presetName}
+            open={expanded.has(consistencyId)}
+            onToggle={() => {
+              onToggleRow(consistencyId);
+            }}
           />
         )}
+        {healthy.length > 0 &&
+          (showHealthy ? (
+            healthy.map(row)
+          ) : (
+            <div
+              onClick={() => {
+                setShowHealthy(true);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                minHeight: 34,
+                padding: "0 8px 0 6px",
+                borderTop: `0.5px solid ${t.hairline}`,
+                cursor: "pointer",
+              }}
+            >
+              <SevDot sev="ok" />
+              <span
+                style={{ fontFamily: t.sans, fontSize: 12, color: t.mutedInk }}
+              >
+                {`${String(healthy.length)} sound${healthy.length === 1 ? "" : "s"} check${healthy.length === 1 ? "s" : ""} out`}
+              </span>
+              <span style={{ display: "inline-flex", opacity: 0.6 }}>
+                <Icon name="chev-right" size={12} stroke={t.mutedInk} />
+              </span>
+            </div>
+          ))}
       </div>
     </div>
   );

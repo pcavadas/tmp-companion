@@ -44,8 +44,6 @@ const ADVISORY_LINE =
 // v1 descope: the wire rejects scene trims, so a scene-consistency fix is advised,
 // not applied — the player runs it from the Level tab's scene leveling instead.
 const SCENE_LINE = "Run scene leveling from the Level tab to apply this one.";
-const SHARED_LINE =
-  "This block is shared — the change affects all sounds of this preset.";
 
 /** Build a one-stage strip graph straight from the chain preview's model ids —
  *  `nodeTileArt` resolves both the block art AND its caption from the model alone,
@@ -68,10 +66,6 @@ export interface PrescriptionCardProps {
   /** Scene-consistency prescriptions can't be applied by the wire (it rejects
    *  scene trims) — render with no Apply button regardless of kind. */
   scene?: boolean;
-  /** For an FS sound: the nodes its own switch toggles. When a prescription op
-   *  touches a node OUTSIDE this set, the edit is on a shared block (affects
-   *  every sound of the preset), so we caption it. Undefined = Base/scene sound. */
-  ownNodeIds?: string[];
 }
 
 export function PrescriptionCard({
@@ -79,7 +73,6 @@ export function PrescriptionCard({
   listIndex,
   presetName,
   scene = false,
-  ownNodeIds,
 }: PrescriptionCardProps) {
   const { t } = useTheme();
   const [phase, setPhase] = useState<Phase>("draft");
@@ -98,21 +91,6 @@ export function PrescriptionCard({
   // Only oneclick / chain non-scene prescriptions have an Apply path; advisory and
   // scene-consistency cards are static.
   const applicable = !scene && (rx.kind === "oneclick" || rx.kind === "chain");
-
-  // FS sound whose fix edits a block its own switch doesn't toggle → a SHARED
-  // block, so applying it changes every sound of the preset. (`param` targets a
-  // nodeId, `insert_node` a fenderId; `scene_trim` has no node.)
-  const affectsShared =
-    ownNodeIds != null &&
-    rx.ops.some((op) => {
-      const n =
-        op.kind === "param"
-          ? op.nodeId
-          : op.kind === "insert_node"
-            ? op.fenderId
-            : null;
-      return n != null && !ownNodeIds.includes(n);
-    });
 
   const card: CSSProperties = {
     flexShrink: 0,
@@ -386,7 +364,6 @@ export function PrescriptionCard({
             <div style={noteLine}>{ADVISORY_LINE}</div>
           )}
           {scene && <div style={noteLine}>{SCENE_LINE}</div>}
-          {affectsShared && <div style={noteLine}>{SHARED_LINE}</div>}
           {errorBlock}
           {applicable && (
             <div style={{ marginTop: 10 }}>

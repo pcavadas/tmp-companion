@@ -522,6 +522,9 @@ export interface SegmentedControlProps<T extends string> {
   /** Required: a role="radiogroup" needs an accessible name. */
   ariaLabel: string;
   variant?: "filled" | "light";
+  /** `sm` shrinks the filled variant (shorter, smaller type) — e.g. an inline
+   *  header filter. Defaults to the standard size. */
+  size?: "sm" | "md";
 }
 
 export function SegmentedControl<T extends string>({
@@ -530,10 +533,12 @@ export function SegmentedControl<T extends string>({
   onChange,
   ariaLabel,
   variant = "filled",
+  size = "md",
 }: SegmentedControlProps<T>) {
   const { t } = useTheme();
   const [hover, setHover] = useState<T | null>(null);
   const light = variant === "light";
+  const sm = size === "sm";
 
   // Each variant is a complete named design (palette + typography + casing +
   // shadow), so resolve the full per-variant style once rather than threading a
@@ -618,12 +623,12 @@ export function SegmentedControl<T extends string>({
               gap: 6,
               borderRadius: t.rMd,
               fontFamily: t.mono,
-              fontSize: v.fontSize,
+              fontSize: sm ? t.fsData2 : v.fontSize,
               letterSpacing: v.letterSpacing,
               textTransform: v.textTransform,
               whiteSpace: "nowrap",
-              padding: v.padding,
-              height: v.height,
+              padding: sm ? "0 10px" : v.padding,
+              height: sm && !light ? 24 : v.height,
               color: on ? v.onFg : v.offFg,
               backgroundColor: on
                 ? v.onBg

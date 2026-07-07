@@ -5,7 +5,12 @@
 // Colors map 1:1 onto theme tokens EXCEPT the med soft tint (see MED_SOFT).
 
 import type { ThemeTokens } from "../../theme/tokens";
-import type { DoctorPresetResult, DoctorSev } from "../../lib/types";
+import type {
+  DoctorPresetResult,
+  DoctorSceneConsistency,
+  DoctorSev,
+  DoctorSoundResult,
+} from "../../lib/types";
 
 /** The two diagnosis severities plus the "all good" green. */
 export type Sev = DoctorSev | "ok";
@@ -15,6 +20,8 @@ export interface SevTone {
   fg: string;
   /** Soft header / panel tint. */
   soft: string;
+  /** 0.5px chip / card border tint. */
+  border: string;
 }
 
 // The med soft tint is the ONE color with no exact theme token: the handoff
@@ -25,11 +32,11 @@ const MED_SOFT = "rgba(176,125,28,0.10)";
 export function sevTone(t: ThemeTokens, sev: Sev): SevTone {
   switch (sev) {
     case "high":
-      return { fg: t.warn, soft: t.warnSoft };
+      return { fg: t.warn, soft: t.warnSoft, border: t.warnBorder };
     case "med":
-      return { fg: t.sevWarn, soft: MED_SOFT };
+      return { fg: t.sevWarn, soft: MED_SOFT, border: t.sevWarnBorder };
     case "ok":
-      return { fg: t.good, soft: t.goodSoft };
+      return { fg: t.good, soft: t.goodSoft, border: t.goodBorder };
   }
 }
 
@@ -44,23 +51,38 @@ export function sevRank(sev: Sev): number {
  *  "high" — a big volume leap between scenes is a headline problem. */
 const SCENE_JUMP_HIGH_DB = 5;
 
-/** The worst severity across a preset's sounds, bumped to "high" by a big
- *  scene-consistency jump (>5 dB). A present-but-moderate scene jump still counts
- *  as at least "med" so the header/badge tint matches `presetLookCount` (which
- *  counts the scene finding) instead of painting a flagged preset "all clear"
- *  green. An errored sound carries no severity (it shows a message, not a
- *  diagnosis). */
+/** The severity of the synthetic "Level jumps" row: a big jump (>5 dB) is a
+ *  headline problem, a present-but-moderate one is worth a look. */
+export function sceneConsistencySev(sc: DoctorSceneConsistency): Sev {
+  return Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB ? "high" : "med";
+}
+
+/** The worst severity across one sound's diagnoses ("ok" when it has none). An
+ *  errored sound carries no severity (it shows a message, not a diagnosis). */
+export function soundSev(sound: DoctorSoundResult): Sev {
+  let worst: Sev = "ok";
+  for (const diag of sound.diags) {
+    if (diag.sev === "high") return "high";
+    worst = "med";
+  }
+  return worst;
+}
+
+/** The worst severity across a preset's sounds, bumped by the scene-consistency
+ *  finding via `sceneConsistencySev`. A present-but-moderate scene jump still
+ *  counts as at least "med" so the header/badge tint matches `presetLookCount`
+ *  (which counts the scene finding) instead of painting a flagged preset "all
+ *  clear" green. */
 export function presetWorstSev(preset: DoctorPresetResult): Sev {
   let worst: Sev = "ok";
   for (const sound of preset.sounds) {
-    for (const diag of sound.diags) {
-      if (diag.sev === "high") return "high";
-      worst = "med";
-    }
+    const s = soundSev(sound);
+    if (s === "high") return "high";
+    if (s === "med") worst = "med";
   }
   const sc = preset.sceneConsistency;
   if (sc) {
-    if (Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB) return "high";
+    if (sceneConsistencySev(sc) === "high") return "high";
     if (worst === "ok") worst = "med";
   }
   return worst;
