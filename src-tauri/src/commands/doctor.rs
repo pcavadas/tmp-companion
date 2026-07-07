@@ -300,20 +300,19 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 }),
             }
         }
-        // Scene consistency per preset — needs the base sound as the reference.
+        // Sound consistency per preset — needs the base sound as the reference.
         for p in &mut presets {
             let base = p
                 .sounds
                 .iter()
                 .find(|s| s.scene.is_none() && s.footswitch.is_none() && s.error.is_none());
-            let scenes: Vec<(String, Option<String>, f64, u32)> = p
+            // Scene sounds carry Some(wire index); footswitch sounds carry
+            // None — both are stomp destinations, so both enter the table.
+            let others: Vec<(String, Option<String>, f64, Option<u32>)> = p
                 .sounds
                 .iter()
-                .filter(|s| s.error.is_none())
-                .filter_map(|s| {
-                    s.scene
-                        .map(|sc| (s.label.clone(), s.tag.clone(), s.integrated_lufs, sc))
-                })
+                .filter(|s| s.error.is_none() && (s.scene.is_some() || s.footswitch.is_some()))
+                .map(|s| (s.label.clone(), s.tag.clone(), s.integrated_lufs, s.scene))
                 .collect();
             if let Some(base) = base {
                 let instrument = resolved
@@ -324,7 +323,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 p.scene_consistency = doctor::scene_consistency(
                     &base.label,
                     base.integrated_lufs,
-                    &scenes,
+                    &others,
                     instrument,
                 );
             }

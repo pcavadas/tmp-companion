@@ -1086,19 +1086,21 @@ pub struct SceneConsistency {
     pub rx: Vec<Rx>,
 }
 
-/// Scene-loudness consistency: deltas vs the base scene, flagged when any
-/// scene jumps more than the threshold. `scenes` = (name, fs-tag, integrated
-/// LUFS, wire scene index). Returns None when nothing jumps.
+/// Sound-loudness consistency: deltas vs the base sound, flagged when any
+/// scene or footswitch sound jumps more than the threshold. `others` =
+/// (name, fs-tag, integrated LUFS, wire scene index): the last element is
+/// `Some(index)` for a scene sound and `None` for a footswitch sound. Returns
+/// None when nothing jumps.
 pub fn scene_consistency(
     base_name: &str,
     base_lufs: f64,
-    scenes: &[(String, Option<String>, f64, u32)],
+    others: &[(String, Option<String>, f64, Option<u32>)],
     instrument: Instrument,
 ) -> Option<SceneConsistency> {
     let t = instrument.thresholds();
     // A non-finite base (silent capture) can't anchor any delta; non-finite
-    // scenes are skipped below — belt-and-braces with the from_capture guard.
-    if scenes.is_empty() || !base_lufs.is_finite() {
+    // rows are skipped below — belt-and-braces with the from_capture guard.
+    if others.is_empty() || !base_lufs.is_finite() {
         return None;
     }
     let mut rows = vec![SceneDeltaRow {
@@ -1107,8 +1109,8 @@ pub fn scene_consistency(
         delta_db: 0.0,
         is_ref: true,
     }];
-    let mut worst: Option<(&str, f64, u32)> = None;
-    for (name, tag, lufs, scene) in scenes {
+    let mut worst: Option<(&str, f64, Option<u32>)> = None;
+    for (name, tag, lufs, scene) in others {
         if !lufs.is_finite() {
             continue;
         }
@@ -1133,34 +1135,45 @@ pub fn scene_consistency(
         vec![advisory(
             &format!("{worst_name} is much quieter than the others"),
             &format!(
-                "{worst_name} sits {:.1} dB under the base scene — if that's not intentional, bring it up from the Level tab.",
+                "{worst_name} sits {:.1} dB under the base sound — if that's not intentional, bring it up from the Level tab.",
                 -worst_delta
             ),
         )]
-    } else if worst_scene == 0 {
-        // The open loadScene(0) anomaly: USB scene-0 recall can materialize a
-        // different amp state than the physical footswitch tap, so its reading
-        // isn't trustworthy enough for a wire trim — ask for ears instead.
-        vec![advisory(
-            &format!("Verify {worst_name} by ear"),
-            &format!(
-                "{worst_name} measured {worst_delta:+.1} dB vs the base scene, but the first scene's USB reading can differ from the footswitch (a known device quirk) — check it by ear before trimming."
-            ),
-        )]
     } else {
-        vec![Rx {
-            kind: RxKind::OneClick,
-            title: format!("Trim {worst_name} to +2 dB and add a mid boost"),
-            detail: format!(
-                "Pros keep lead sounds only +1–3 dB louder and lean on a mid boost to cut through — not raw volume. This trims {worst_name} and nudges its mids up."
-            ),
-            cpu_note: "no CPU change".to_string(),
-            ops: vec![DoctorOp::SceneTrim {
-                scene: worst_scene,
-                target_delta_db: 2.0,
+        match worst_scene {
+            // A block-acting FOOTSWITCH sound louder than base: there's no
+            // wire scene index to trim, so advise leveling it (the Level tab
+            // levels footswitch sounds) or backing off the block's knob.
+            None => vec![advisory(
+                &format!("{worst_name} is much louder than the base sound"),
+                &format!(
+                    "{worst_name} jumps {worst_delta:+.1} dB when you step on it — pros keep it to +1–3 dB. Level it from the Level tab (it can level footswitch sounds), or back off the block's level knob."
+                ),
+            )],
+            // The open loadScene(0) anomaly: USB scene-0 recall can
+            // materialize a different amp state than the physical footswitch
+            // tap, so its reading isn't trustworthy enough for a wire trim —
+            // ask for ears instead.
+            Some(0) => vec![advisory(
+                &format!("Verify {worst_name} by ear"),
+                &format!(
+                    "{worst_name} measured {worst_delta:+.1} dB vs the base scene, but the first scene's USB reading can differ from the footswitch (a known device quirk) — check it by ear before trimming."
+                ),
+            )],
+            Some(scene) => vec![Rx {
+                kind: RxKind::OneClick,
+                title: format!("Trim {worst_name} to +2 dB and add a mid boost"),
+                detail: format!(
+                    "Pros keep lead sounds only +1–3 dB louder and lean on a mid boost to cut through — not raw volume. This trims {worst_name} and nudges its mids up."
+                ),
+                cpu_note: "no CPU change".to_string(),
+                ops: vec![DoctorOp::SceneTrim {
+                    scene,
+                    target_delta_db: 2.0,
+                }],
+                chain: None,
             }],
-            chain: None,
-        }]
+        }
     };
     Some(SceneConsistency {
         rows,
@@ -1599,8 +1612,18 @@ mod tests {
     #[test]
     fn scene_consistency_flags_big_jump_only() {
         let scenes = vec![
-            ("Crunch".to_string(), Some("FS1".to_string()), -14.0, 1u32),
-            ("Lead".to_string(), Some("FS2".to_string()), -18.5, 2u32),
+            (
+                "Crunch".to_string(),
+                Some("FS1".to_string()),
+                -14.0,
+                Some(1u32),
+            ),
+            (
+                "Lead".to_string(),
+                Some("FS2".to_string()),
+                -18.5,
+                Some(2u32),
+            ),
         ];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");
@@ -1620,7 +1643,7 @@ mod tests {
             other => panic!("expected SceneTrim, got {other:?}"),
         }
         // All within 3 dB → no flag.
-        let tame = vec![("Lead".to_string(), None, -18.0, 1u32)];
+        let tame = vec![("Lead".to_string(), None, -18.0, Some(1u32))];
         assert!(scene_consistency("Rhythm", -20.0, &tame, Instrument::Guitar).is_none());
     }
 
@@ -1628,7 +1651,12 @@ mod tests {
     fn scene_quieter_worst_gets_advisory_not_trim() {
         // A much QUIETER worst scene: trimming down is wrong — point to the
         // Level tab instead of prescribing a SceneTrim.
-        let scenes = vec![("Ballad".to_string(), Some("FS1".to_string()), -27.0, 1u32)];
+        let scenes = vec![(
+            "Ballad".to_string(),
+            Some("FS1".to_string()),
+            -27.0,
+            Some(1u32),
+        )];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("7 dB quieter still flags");
         assert!((sc.worst_delta_db + 7.0).abs() < 1e-9);
@@ -1641,24 +1669,80 @@ mod tests {
     fn scene_zero_worst_never_gets_wire_trim() {
         // The open loadScene(0) anomaly: a worst scene at wire index 0 gets a
         // verify-by-ear advisory, never a SceneTrim op.
-        let scenes = vec![("Lead".to_string(), Some("FS1".to_string()), -14.0, 0u32)];
+        let scenes = vec![(
+            "Lead".to_string(),
+            Some("FS1".to_string()),
+            -14.0,
+            Some(0u32),
+        )];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar)
             .expect("6 dB jump flags");
         assert_eq!(sc.rx[0].kind, RxKind::Advisory);
         assert!(sc.rx[0].ops.is_empty());
         assert!(sc.rx[0].title.contains("by ear"));
         // The same jump on wire index 1 keeps the trim (control).
-        let scenes = vec![("Lead".to_string(), Some("FS1".to_string()), -14.0, 1u32)];
+        let scenes = vec![(
+            "Lead".to_string(),
+            Some("FS1".to_string()),
+            -14.0,
+            Some(1u32),
+        )];
         let sc = scene_consistency("Rhythm", -20.0, &scenes, Instrument::Guitar).unwrap();
         assert!(matches!(sc.rx[0].ops[0], DoctorOp::SceneTrim { .. }));
     }
 
     #[test]
     fn scene_consistency_guards_non_finite() {
-        let dead = vec![("Dead".to_string(), None, f64::NEG_INFINITY, 1u32)];
+        let dead = vec![("Dead".to_string(), None, f64::NEG_INFINITY, Some(1u32))];
         assert!(scene_consistency("Rhythm", -20.0, &dead, Instrument::Guitar).is_none());
-        let ok = vec![("Lead".to_string(), None, -14.0, 1u32)];
+        let ok = vec![("Lead".to_string(), None, -14.0, Some(1u32))];
         assert!(scene_consistency("Rhythm", f64::NEG_INFINITY, &ok, Instrument::Guitar).is_none());
+    }
+
+    #[test]
+    fn footswitch_worst_gets_advisory_not_trim() {
+        // A footswitch sound (no wire scene index) as the worst jump: there is
+        // nothing to SceneTrim — advise leveling / backing off the knob.
+        let others = vec![
+            ("Boost".to_string(), Some("FS3".to_string()), -13.0, None),
+            (
+                "Lead".to_string(),
+                Some("FS1".to_string()),
+                -18.0,
+                Some(1u32),
+            ),
+        ];
+        let sc = scene_consistency("Rhythm", -20.0, &others, Instrument::Guitar)
+            .expect("7 dB FS jump flags");
+        assert_eq!(sc.worst_name, "Boost");
+        assert_eq!(sc.rx.len(), 1);
+        assert_eq!(sc.rx[0].kind, RxKind::Advisory);
+        assert!(sc.rx[0].ops.is_empty());
+        assert!(sc.rx[0].title.contains("louder than the base sound"));
+        assert!(sc.rx[0].detail.contains("Level tab"));
+    }
+
+    #[test]
+    fn scene_worst_keeps_trim_with_footswitch_rows_present() {
+        // An FS row present but a SCENE is the worst: the SceneTrim branch
+        // still fires and the FS row still appears in the delta table.
+        let others = vec![
+            ("Boost".to_string(), Some("FS3".to_string()), -19.0, None),
+            (
+                "Lead".to_string(),
+                Some("FS1".to_string()),
+                -14.0,
+                Some(1u32),
+            ),
+        ];
+        let sc = scene_consistency("Rhythm", -20.0, &others, Instrument::Guitar)
+            .expect("6 dB scene jump flags");
+        assert_eq!(sc.worst_name, "Lead");
+        assert!(matches!(
+            sc.rx[0].ops[0],
+            DoctorOp::SceneTrim { scene: 1, .. }
+        ));
+        assert!(sc.rows.iter().any(|r| r.name == "Boost"));
     }
 
     // ── per-instrument cohorts ──
