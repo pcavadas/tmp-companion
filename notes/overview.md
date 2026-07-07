@@ -5,6 +5,7 @@ A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that
 ## Tabs
 
 - **Level** — measures a preset's loudness by re-amping a synthetic stimulus through its DSP chain, then sets the `presetLevel` (and, per scene, the active amp's `outputLevel`) to hit a target LUFS. See `leveling.md`.
+- **Doctor** — tone diagnosis: re-amps each selected sound (Base with all block-acting footswitches forced off, each scene, each footswitch in isolation), runs spectral checks (boomy/harsh/lost…), and offers one-click fixes. See `doctor-calibration.md`.
 - **Copy** — copies signal-chain blocks from one reference preset into other presets, with per-target placement (replace / insert before|after / remove). See `block-copy.md`.
 - **Songs** — device-backed songs and setlists CRUD (the unit is the source of truth). See `songs-setlists.md`.
 - **Catalog** — a device-independent reference catalog of amps/cabs/effects with per-block art and CPU cost.

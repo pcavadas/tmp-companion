@@ -115,7 +115,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
 - **`bunx tsc --noEmit`** also catches what the Vite build won't (the build transpiles without typechecking).
 - **Fresh checkout:** `node_modules` and `dist/` are gitignored. Run `bun install` (else hundreds of phantom "Cannot find module 'react'" errors) and `bun run build` (else the Rust `tauri-build` `generate_context!` panics on a missing `frontendDist`) before the checks.
 - **TypeScript 6** no longer resolves `node:` imports from `@types/node` alone — `tsconfig.json` needs `"types": ["node"]`.
-- The IDE/LSP emits **stale phantom diagnostics during rapid file moves** — `bunx tsc --noEmit` from the CLI is authoritative; trust it over live editor squiggles mid-refactor.
+- The IDE/LSP emits **stale phantom diagnostics during rapid file moves or while another editor/agent rewrites a file concurrently** — `bunx tsc --noEmit` from the CLI is authoritative; trust it over live editor squiggles mid-refactor. A concurrent save can also silently REVERT a tool write with no error — after a multi-file edit, re-grep a distinctive symbol to confirm each write LANDED.
 
 ## Before you call it done
 
