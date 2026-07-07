@@ -36,12 +36,6 @@ export interface DoctorViewProps {
   onScan?: () => void;
 }
 
-// Doctor measures a preset's BASE and its scenes — the check wire has no
-// engaged-footswitch state, so footswitch rows are excluded from this tab's
-// tree. A frozen module-level empty map (mirroring `NO_CPU` in DoctorSelect)
-// keeps a stable identity without a per-mount allocation.
-const NO_FOOTSWITCHES = new Map<number, never[]>();
-
 export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const {
     phase,
@@ -54,6 +48,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
     presetCount,
     sceneCount,
     sceneInfo,
+    footswitchInfo,
     graphByIndex,
     scan,
     togglePreset,
@@ -96,12 +91,15 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   );
 
   // Select → Set up: resolve the list's ticked scene keys into the setup rows.
+  // ponytail: FS rows reuse the leveling filter (level_params-gated) — a
+  // tone-changing FS with no levelable param won't appear; lift with a
+  // diagnosis-specific chosenFrom if ever needed.
   const handleCheck = useCallback(() => {
-    const options = chosenFrom(sel, rows, sceneInfo, NO_FOOTSWITCHES);
+    const options = chosenFrom(sel, rows, sceneInfo, footswitchInfo);
     if (options.length === 0) return;
     setChosen(options);
     setStage("setup");
-  }, [sel, rows, sceneInfo]);
+  }, [sel, rows, sceneInfo, footswitchInfo]);
 
   // Set up → Run: build the wire items and fire the ONE check command.
   const handleRun = useCallback(
@@ -161,6 +159,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
       <DoctorResults
         result={flow.result}
         presetNames={presetNames}
+        footswitchInfo={footswitchInfo}
         onCheckMore={handleCheckMore}
       />
     );
@@ -190,7 +189,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
         loading={phase.kind === "loading"}
         scan={scan}
         sceneInfo={sceneInfo}
-        footswitchInfo={NO_FOOTSWITCHES}
+        footswitchInfo={footswitchInfo}
         presetCount={presetCount}
         sceneCount={sceneCount}
         onFilterChange={setFilter}

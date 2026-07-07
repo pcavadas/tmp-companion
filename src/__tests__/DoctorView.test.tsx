@@ -55,6 +55,8 @@ interface DoctorCheckArgs {
     key: string;
     listIndex: number;
     scene: number | null;
+    footswitch: number | null;
+    tag: string | null;
     nodes: unknown[];
   }[];
   restoreListIndex: number | null;
@@ -62,7 +64,27 @@ interface DoctorCheckArgs {
 }
 let lastDoctorArgs: DoctorCheckArgs | null = null;
 
-function mockOnePreset(opts: { hangCheck?: boolean } = {}) {
+// A block-acting footswitch with a levelable candidate (the leveling filter's
+// gate) — mirrors LevelView.test.tsx's `SOLO_FOOTSWITCH` fixture.
+const SOLO_FOOTSWITCH = {
+  switch: 3, // → tag FS4
+  label: "Solo",
+  link_group: null,
+  functions: [],
+  level_params: [
+    {
+      group_id: "amp",
+      node_id: "fs0",
+      fender_id: "ACD_BluesDriver",
+      parameter_id: "gain",
+      current: 0.5,
+    },
+  ],
+};
+
+function mockOnePreset(
+  opts: { hangCheck?: boolean; footswitch?: boolean } = {},
+) {
   lastDoctorArgs = null;
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     switch (command) {
@@ -87,7 +109,7 @@ function mockOnePreset(opts: { hangCheck?: boolean } = {}) {
               scene_count: 0,
               scenes: [],
               blocks: [],
-              footswitches: [],
+              footswitches: opts.footswitch === true ? [SOLO_FOOTSWITCH] : [],
             },
           ],
           song_presets: [],
@@ -104,7 +126,7 @@ function mockOnePreset(opts: { hangCheck?: boolean } = {}) {
             /* never resolves */
           });
         }
-        // Stream the single sound active → done, then resolve the cohort result.
+        // Stream each sound active → done, then resolve the cohort result.
         a.items.forEach((it) => {
           a.onResult?.onmessage?.({
             key: it.key,
@@ -121,20 +143,19 @@ function mockOnePreset(opts: { hangCheck?: boolean } = {}) {
           presets: [
             {
               listIndex: 0,
-              sounds: [
-                {
-                  key: "p0",
-                  listIndex: 0,
-                  scene: null,
-                  label: "Studio Clean",
-                  tag: null,
-                  diags: [],
-                  integratedLufs: -20,
-                  tailRatioDb: 0,
-                  balanceDb: [],
-                  error: null,
-                },
-              ],
+              sounds: a.items.map((it) => ({
+                key: it.key,
+                listIndex: it.listIndex,
+                scene: it.scene,
+                footswitch: it.footswitch,
+                label: it.key,
+                tag: it.tag,
+                diags: [],
+                integratedLufs: -20,
+                tailRatioDb: 0,
+                balanceDb: [],
+                error: null,
+              })),
               sceneConsistency: null,
             },
           ],
@@ -227,6 +248,39 @@ describe("DoctorView — select → setup → run → results", () => {
     expect(fired("doctor_save")).toBe(false);
     expect(fired("doctor_apply")).toBe(false);
     expect(fired("level_preset")).toBe(false);
+  });
+
+  it("includes a block-acting footswitch sound (footswitch set, scene null, FS tag)", async () => {
+    mockOnePreset({ footswitch: true });
+    renderView(true);
+    const user = userEvent.setup();
+
+    await screen.findByText("Studio Clean");
+
+    // Whole-row select includes Base + the footswitch child key → 2 sounds.
+    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      await screen.findByRole("button", { name: /check 2 sounds…/i }),
+    );
+    await screen.findByText("What are you playing?");
+    await user.click(
+      screen.getByRole("button", { name: /run check on 2 sounds/i }),
+    );
+    expect(
+      await screen.findByRole(
+        "button",
+        { name: /check other sounds/i },
+        { timeout: 3000 },
+      ),
+    ).toBeInTheDocument();
+
+    expect(callsFor("doctor_check")).toBe(1);
+    const items = lastDoctorArgs?.items ?? [];
+    expect(items).toHaveLength(2);
+    const fsItem = items.find((it) => it.footswitch !== null);
+    expect(fsItem?.footswitch).toBe(3);
+    expect(fsItem?.scene).toBeNull();
+    expect(fsItem?.tag).toMatch(/^FS\d/);
   });
 
   it("fires cancel_doctor_check on unmount while a check is in flight", async () => {

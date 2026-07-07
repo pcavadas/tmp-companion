@@ -11,6 +11,9 @@ export interface SoundRowProps {
   sound: DoctorSoundResult;
   listIndex: number;
   presetName: string;
+  /** The nodes this footswitch sound's own switch toggles; undefined for
+   *  Base/scene sounds (drives the "shared block" prescription caption). */
+  ownNodeIds?: string[];
   /** First row in the card — skips the top hairline. */
   first: boolean;
   openChips: Set<string>;
@@ -21,6 +24,7 @@ export function SoundRow({
   sound,
   listIndex,
   presetName,
+  ownNodeIds,
   first,
   openChips,
   onToggleChip,
@@ -117,6 +121,7 @@ export function SoundRow({
                 balanceDb={sound.balanceDb}
                 listIndex={listIndex}
                 presetName={presetName}
+                ownNodeIds={ownNodeIds}
                 open={openChips.has(id)}
                 onToggle={() => {
                   onToggleChip(id);

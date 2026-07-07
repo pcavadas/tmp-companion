@@ -226,6 +226,7 @@ pub fn measure_c(
 fn capture_full_at(
     slot: u32,
     scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     ref_level: Option<f32>,
     tail_ms: u64,
@@ -243,6 +244,12 @@ fn capture_full_at(
     if let Some(scene) = scene {
         s.load_scene(scene)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+    // Force-bypass isolation AFTER the scene recall, BEFORE the presetLevel set +
+    // engage (the `measure_knob_at` ordering): a scene load would re-assert the
+    // scene's own bypass state, so isolation must land after it.
+    for (g, n, byp) in force_bypass {
+        s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     // `None` = capture at the preset's OWN stored level (Doctor's apply A/B),
     // leaving the edit buffer's presetLevel untouched.
@@ -262,7 +269,7 @@ fn capture_full_at(
 /// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
 /// and the per-channel N1 diagnostic (`probe --channels`) share this.
 pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
-    capture_full_at(slot, None, stimulus, Some(ref_level), CAPTURE_TAIL_MS)
+    capture_full_at(slot, None, &[], stimulus, Some(ref_level), CAPTURE_TAIL_MS)
 }
 
 /// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the
@@ -289,10 +296,18 @@ pub fn capture_samples(
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     ref_level: Option<f32>,
 ) -> Result<(Vec<f32>, u32), String> {
-    let cap = capture_full_at(slot, scene, stimulus, ref_level, u64::from(DOCTOR_TAIL_MS))?;
+    let cap = capture_full_at(
+        slot,
+        scene,
+        force_bypass,
+        stimulus,
+        ref_level,
+        u64::from(DOCTOR_TAIL_MS),
+    )?;
     let (ch, _) = cap.loudest_channel();
     Ok((cap.channel(ch), cap.sample_rate))
 }

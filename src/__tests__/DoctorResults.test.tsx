@@ -22,7 +22,13 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 // Imported AFTER the mock so the view + prescription cards pick up the mocks.
 import { doctorApply, doctorSave, doctorDiscard } from "../lib/invoke";
 import { DoctorResults } from "../views/doctor/DoctorResults";
-import type { DoctorApplyResult, DoctorCheckResult } from "../lib/types";
+import type {
+  DoctorApplyResult,
+  DoctorCheckResult,
+  DoctorOp,
+  DoctorSoundResult,
+  FootswitchInfo,
+} from "../lib/types";
 
 const NAMES = new Map<number, string>([
   [0, "Studio Clean"],
@@ -43,6 +49,7 @@ function fixture(): DoctorCheckResult {
             key: "p0",
             listIndex: 0,
             scene: null,
+            footswitch: null,
             label: "Clean Base",
             tag: null,
             diags: [],
@@ -61,6 +68,7 @@ function fixture(): DoctorCheckResult {
             key: "p1s0",
             listIndex: 1,
             scene: null,
+            footswitch: null,
             label: "Rhythm Crunch",
             tag: "BASE",
             diags: [
@@ -107,6 +115,7 @@ function fixture(): DoctorCheckResult {
             key: "p1s1",
             listIndex: 1,
             scene: 0,
+            footswitch: null,
             label: "Lead Solo",
             tag: "FS1",
             diags: [
@@ -167,6 +176,7 @@ function fixture(): DoctorCheckResult {
             key: "p2",
             listIndex: 2,
             scene: null,
+            footswitch: null,
             label: "Broken Base",
             tag: null,
             diags: [],
@@ -190,6 +200,7 @@ function renderResults(onCheckMore: () => void = () => undefined) {
       <DoctorResults
         result={fixture()}
         presetNames={NAMES}
+        footswitchInfo={new Map()}
         onCheckMore={onCheckMore}
       />
     </ThemeProvider>,
@@ -445,5 +456,123 @@ describe("DoctorResults — prescription lifecycle", () => {
 
     unmount();
     expect(doctorDiscard).not.toHaveBeenCalled();
+  });
+});
+
+describe("DoctorResults — shared-block caption", () => {
+  const CAPTION =
+    "This block is shared — the change affects all sounds of this preset.";
+
+  // A single-preset result whose one sound carries a `muddy` diag with one
+  // prescription op — the caller supplies the op + whether the sound is a
+  // footswitch (key `f0:0`, so its FootswitchInfo array index is 0).
+  function fsFixture(
+    op: DoctorOp,
+    footswitch: number | null,
+  ): DoctorCheckResult {
+    const sound: DoctorSoundResult = {
+      key: footswitch == null ? "p0" : "f0:0",
+      listIndex: 0,
+      scene: null,
+      footswitch,
+      label: "Overdrive",
+      tag: footswitch == null ? null : "FS4",
+      diags: [
+        {
+          key: "muddy",
+          label: "Muddy",
+          sev: "high",
+          bands: [1],
+          detail: "+4 dB around 250 Hz",
+          explain: "Low-mids are piling up.",
+          rx: [
+            {
+              kind: "oneclick",
+              title: "Add a low cut",
+              detail: "Trims the boom.",
+              cpuNote: "+0.4% CPU",
+              ops: [op],
+            },
+          ],
+        },
+      ],
+      integratedLufs: -18,
+      tailRatioDb: 0,
+      balanceDb: [-6, 4, -2, -8, -12, -18],
+      error: null,
+    };
+    return {
+      presets: [{ listIndex: 0, sounds: [sound], sceneConsistency: null }],
+      stopped: false,
+      cohort: "absolute",
+    };
+  }
+
+  // FS4 (switch index 3) toggles one block, node "DRV1".
+  const fsInfo = new Map<number, FootswitchInfo[]>([
+    [
+      0,
+      [
+        {
+          switch: 3,
+          label: "Drive",
+          link_group: null,
+          functions: [
+            {
+              func: "on-off",
+              group_id: "g",
+              node_id: "DRV1",
+              fender_id: "ACD_Overdrive",
+              parameter_id: null,
+              value_a: null,
+              value_b: null,
+            },
+          ],
+          level_params: [],
+        },
+      ],
+    ],
+  ]);
+
+  const paramOp = (nodeId: string): DoctorOp => ({
+    kind: "param",
+    groupId: "g",
+    nodeId,
+    param: "hpf",
+    value: 90,
+  });
+
+  function renderShared(result: DoctorCheckResult) {
+    return render(
+      <ThemeProvider>
+        <DoctorResults
+          result={result}
+          presetNames={new Map([[0, "Overdrive Rhythm"]])}
+          footswitchInfo={fsInfo}
+          onCheckMore={() => undefined}
+        />
+      </ThemeProvider>,
+    );
+  }
+
+  it("captions an FS fix that edits a block outside the switch's own set", async () => {
+    const user = userEvent.setup();
+    renderShared(fsFixture(paramOp("CAB1"), 3));
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    expect(screen.getByText(CAPTION)).toBeInTheDocument();
+  });
+
+  it("omits the caption when the fix edits the switch's own block", async () => {
+    const user = userEvent.setup();
+    renderShared(fsFixture(paramOp("DRV1"), 3));
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
+  });
+
+  it("never captions a Base sound (footswitch == null)", async () => {
+    const user = userEvent.setup();
+    renderShared(fsFixture(paramOp("CAB1"), null));
+    await user.click(screen.getByRole("button", { name: "Muddy" }));
+    expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
   });
 });

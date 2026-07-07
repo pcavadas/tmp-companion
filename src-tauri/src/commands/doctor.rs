@@ -13,12 +13,38 @@ pub struct DoctorInput {
     pub key: String,
     pub list_index: u32,
     pub scene: Option<u32>,
+    /// Block-acting footswitch index (0-based `switch`) when this sound is a
+    /// footswitch state; `None` for base/scene sounds.
+    pub footswitch: Option<u32>,
     pub label: String,
     pub tag: Option<String>,
     pub topology_id: Option<String>,
     pub calibration_lufs: Option<f32>,
     #[serde(default)]
     pub nodes: Vec<doctor::DoctorNode>,
+}
+
+/// The force-bypass isolation list for capturing one sound cleanly (mirrors the
+/// leveller's base/footswitch isolation, `footswitch.rs`): Base forces EVERY
+/// footswitch on/off block OFF; a footswitch flips its OWN blocks engaged while
+/// forcing every other switch's block off; a scene contributes NOTHING (its own
+/// bypass overrides define it). `(group_id, node_id, bypass_to_write)`.
+fn doctor_force_bypass(
+    ftsw: &serde_json::Value,
+    preset: &serde_json::Value,
+    footswitch: Option<u32>,
+) -> Vec<(String, String, bool)> {
+    match footswitch {
+        Some(s) => {
+            let mut out = footswitch::siblings_off_excluding(ftsw, s);
+            out.extend(footswitch::engaged_bypass_for_switch(ftsw, preset, s));
+            out
+        }
+        None => footswitch::all_onoff_blocks(ftsw)
+            .into_iter()
+            .map(|(g, n)| (g, n, true))
+            .collect(),
+    }
 }
 
 /// The instrument a sound is judged as — from its topology, guitar by default.
@@ -49,6 +75,7 @@ pub struct DoctorSoundResult {
     pub key: String,
     pub list_index: u32,
     pub scene: Option<u32>,
+    pub footswitch: Option<u32>,
     pub label: String,
     pub tag: Option<String>,
     pub diags: Vec<doctor::Diag>,
@@ -122,6 +149,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             std::collections::HashMap::new();
         let mut measured: Vec<(usize, doctor::SoundProfile)> = Vec::new();
         let mut errors: Vec<(usize, String)> = Vec::new();
+        // One field-8 preset read per list index, reused across that preset's base
+        // + footswitch sounds — the source for each sound's force-bypass isolation.
+        let mut preset_cache: std::collections::HashMap<u32, serde_json::Value> =
+            std::collections::HashMap::new();
         let mut stopped = false;
         let mut last_scanned: Option<u32> = None;
         for (i, (item, path)) in resolved.iter().enumerate() {
@@ -142,8 +173,42 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     read_stimulus_calibrated(path, item.calibration_lufs).map(|s| &*e.insert(s))
                 }
             };
+            // Force-bypass isolation for this sound. A scene sound contributes
+            // nothing (its own bypass overrides define it), so skip the preset read
+            // entirely for it (the optimization guard) — base + footswitch sounds
+            // share one cached read per list index. A read hiccup degrades to no
+            // isolation (best-effort, like `level_preset`), never fails the run.
+            let fb = if item.scene.is_some() {
+                Vec::new()
+            } else {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    preset_cache.entry(item.list_index)
+                {
+                    let preset = match read_slot_preset_parsed(item.list_index) {
+                        Ok((p, _, _)) => p,
+                        Err(err) => {
+                            log::warn!(
+                                "doctor_check slot={}: isolation preset read failed ({err}), capturing without isolation",
+                                item.list_index
+                            );
+                            serde_json::Value::Null
+                        }
+                    };
+                    e.insert(preset);
+                    // The read opened (or tried to open) its own session — gap before
+                    // the capture reconnects, else the quick reopen risks the HID
+                    // open-lockout (0xe00002c5).
+                    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                }
+                let preset = &preset_cache[&item.list_index];
+                doctor_force_bypass(
+                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                    preset,
+                    item.footswitch,
+                )
+            };
             let result = stim.and_then(|stim| {
-                leveller::doctor_capture(item.list_index, item.scene, stim, Some(0.5)).and_then(
+                leveller::doctor_capture(item.list_index, item.scene, &fb, stim, Some(0.5)).and_then(
                     |(samples, rate)| {
                         doctor::SoundProfile::from_capture(&samples, rate, stim.len())
                     },
@@ -206,6 +271,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 key: item.key.clone(),
                 list_index: item.list_index,
                 scene: item.scene,
+                footswitch: item.footswitch,
                 label: item.label.clone(),
                 tag: item.tag.clone(),
                 diags,
@@ -239,7 +305,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let base = p
                 .sounds
                 .iter()
-                .find(|s| s.scene.is_none() && s.error.is_none());
+                .find(|s| s.scene.is_none() && s.footswitch.is_none() && s.error.is_none());
             let scenes: Vec<(String, Option<String>, f64, u32)> = p
                 .sounds
                 .iter()
@@ -348,7 +414,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         //     the slot, so (b) below confirms the already-current preset — no reload.
         //     ref_level None: capture at the preset's OWN level — never write a
         //     reference presetLevel a later doctor_save would PERSIST (#1).
-        let (before, rate) = leveller::doctor_capture(job.list_index, None, &stim, None)?;
+        let (before, rate) = leveller::doctor_capture(job.list_index, None, &[], &stim, None)?;
         let before_clip = format!(
             "data:audio/wav;base64,{}",
             base64_encode(&wav_bytes(&before, rate)?)

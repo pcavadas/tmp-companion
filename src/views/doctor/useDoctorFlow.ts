@@ -105,6 +105,7 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
           key: o.key,
           listIndex: o.slot,
           scene: o.sceneSlot,
+          footswitch: o.footswitch?.switchIndex ?? null,
           label,
           tag: o.tag,
           topologyId: profile?.topology_id ?? null,

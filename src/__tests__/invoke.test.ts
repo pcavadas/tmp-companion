@@ -161,6 +161,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         key: "p3",
         listIndex: 3,
         scene: null,
+        footswitch: null,
         label: "Synth",
         tag: null,
         topologyId: "guitar-humbucker",

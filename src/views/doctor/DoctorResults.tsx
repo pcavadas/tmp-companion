@@ -22,18 +22,22 @@ import {
   type ActiveApplyCard,
   type ApplyLock,
 } from "./applyLock";
-import type { DoctorCheckResult } from "../../lib/types";
+import type { DoctorCheckResult, FootswitchInfo } from "../../lib/types";
 
 export interface DoctorResultsProps {
   result: DoctorCheckResult;
   /** 0-based list index → preset name (for the per-preset card headers). */
   presetNames: Map<number, string>;
+  /** 0-based list index → the preset's block-acting footswitches (their toggled
+   *  nodes drive the "shared block" caption on FS-sound prescriptions). */
+  footswitchInfo: Map<number, FootswitchInfo[]>;
   onCheckMore: () => void;
 }
 
 export function DoctorResults({
   result,
   presetNames,
+  footswitchInfo,
   onCheckMore,
 }: DoctorResultsProps) {
   const { t } = useTheme();
@@ -220,6 +224,7 @@ export function DoctorResults({
                 presetNames.get(preset.listIndex) ??
                 `Slot ${slotLabel(preset.listIndex)}`
               }
+              footswitchInfo={footswitchInfo}
               openChips={openChips}
               onToggleChip={toggleChip}
             />

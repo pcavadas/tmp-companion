@@ -20,6 +20,8 @@ export interface DiagnosisChipProps {
   balanceDb: number[];
   listIndex: number;
   presetName: string;
+  /** Forwarded to each prescription — the FS sound's own toggled nodes. */
+  ownNodeIds?: string[];
   open: boolean;
   onToggle: () => void;
 }
@@ -29,6 +31,7 @@ export function DiagnosisChip({
   balanceDb,
   listIndex,
   presetName,
+  ownNodeIds,
   open,
   onToggle,
 }: DiagnosisChipProps) {
@@ -151,6 +154,7 @@ export function DiagnosisChip({
                 rx={rx}
                 listIndex={listIndex}
                 presetName={presetName}
+                ownNodeIds={ownNodeIds}
               />
             ))}
           </div>

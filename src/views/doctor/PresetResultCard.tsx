@@ -9,18 +9,36 @@ import { slotLabel } from "../../lib/format";
 import { SoundRow } from "./SoundRow";
 import { SceneConsistency } from "./SceneConsistency";
 import { presetLookCount, presetWorstSev, sevRank, sevTone } from "./severity";
-import type { DoctorPresetResult } from "../../lib/types";
+import type {
+  DoctorPresetResult,
+  DoctorSoundResult,
+  FootswitchInfo,
+} from "../../lib/types";
 
 export interface PresetResultCardProps {
   preset: DoctorPresetResult;
   presetName: string;
+  footswitchInfo: Map<number, FootswitchInfo[]>;
   openChips: Set<string>;
   onToggleChip: (id: string) => void;
+}
+
+/** The node ids a footswitch SOUND owns — the blocks its own switch toggles.
+ *  Base/scene sounds (`footswitch == null`) own nothing (undefined). The `f${slot}:${i}`
+ *  key's `i` indexes the preset's `FootswitchInfo[]`. */
+function ownNodeIdsFor(
+  sound: DoctorSoundResult,
+  fsList: FootswitchInfo[] | undefined,
+): string[] | undefined {
+  if (sound.footswitch == null) return undefined;
+  const i = Number(sound.key.split(":")[1]);
+  return fsList?.[i]?.functions.map((f) => f.node_id);
 }
 
 export function PresetResultCard({
   preset,
   presetName,
+  footswitchInfo,
   openChips,
   onToggleChip,
 }: PresetResultCardProps) {
@@ -114,6 +132,10 @@ export function PresetResultCard({
             sound={sound}
             listIndex={preset.listIndex}
             presetName={presetName}
+            ownNodeIds={ownNodeIdsFor(
+              sound,
+              footswitchInfo.get(preset.listIndex),
+            )}
             first={i === 0}
             openChips={openChips}
             onToggleChip={onToggleChip}

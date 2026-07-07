@@ -2,8 +2,10 @@
 
 use crate::audio;
 use crate::doctor;
+use crate::footswitch;
 use crate::leveller;
 use crate::lufs;
+use crate::read_slot_preset_parsed;
 use crate::session;
 use crate::topologies;
 
@@ -198,23 +200,34 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
 
     let mut sounds: Vec<(u32, doctor::SoundProfile, Option<Vec<doctor::DoctorNode>>)> = Vec::new();
     for &slot in slots {
-        // Graph facts via a field-8 slot read (quiet line, NO LoadPreset). The
-        // read is truncated JSON, so this often parses to None — diagnosis
-        // still runs, only graph-dependent prescriptions are absent (the app
-        // path feeds the backup scan's full graph instead).
-        let nodes: Option<Vec<doctor::DoctorNode>> = session::Session::connect()
-            .ok()
-            .and_then(|mut s| s.read_slot_preset_json(slot + 1).ok().flatten())
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .map(|v| {
-                session::extract_active_graph(&v, None)
-                    .nodes
-                    .iter()
-                    .map(doctor::DoctorNode::from_graph_node)
-                    .collect()
-            });
+        // One field-8 slot read (quiet line, NO LoadPreset) drives BOTH the graph
+        // facts and the base-sound force-bypass isolation (every on/off block off).
+        // Truncated JSON still yields the guitarNodes prefix + ftsw; on read error
+        // we degrade to no graph facts + no isolation.
+        let mut nodes: Option<Vec<doctor::DoctorNode>> = None;
+        let mut fb: Vec<(String, String, bool)> = Vec::new();
+        match read_slot_preset_parsed(slot) {
+            Ok((preset, _, _)) => {
+                nodes = Some(
+                    session::extract_active_graph(&preset, None)
+                        .nodes
+                        .iter()
+                        .map(doctor::DoctorNode::from_graph_node)
+                        .collect(),
+                );
+                fb = footswitch::all_onoff_blocks(
+                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                )
+                .into_iter()
+                .map(|(g, n)| (g, n, true))
+                .collect();
+            }
+            Err(e) => eprintln!(
+                "[probe] slot {slot}: preset read failed ({e}) — no graph facts, no isolation"
+            ),
+        }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, None, &stim, Some(0.5)) {
+        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5)) {
             Ok((samples, rate)) => {
                 let profile = doctor::SoundProfile::from_capture(&samples, rate, stim.len())?;
                 sounds.push((slot, profile, nodes));

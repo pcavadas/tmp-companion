@@ -697,6 +697,9 @@ export interface DoctorInputArg {
   key: string;
   listIndex: number;
   scene: number | null;
+  /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
+   *  Base/scene sounds. */
+  footswitch: number | null;
   label: string;
   tag: string | null;
   topologyId: string | null;
@@ -766,6 +769,9 @@ export interface DoctorSoundResult {
   key: string;
   listIndex: number;
   scene: number | null;
+  /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
+   *  Base/scene sounds. */
+  footswitch: number | null;
   label: string;
   tag: string | null;
   diags: DoctorDiag[];

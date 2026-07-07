@@ -8,9 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { errMsg } from "./format";
 
 export type LoadPhase =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "ready" };
+  { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready" };
 
 /**
  * Owns the load `phase` + a mounted guard so a fetch that resolves after unmount
