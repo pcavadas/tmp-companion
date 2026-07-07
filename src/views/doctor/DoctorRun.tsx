@@ -335,8 +335,7 @@ export function DoctorRun({
           }}
         >
           <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
-            Stop the check? Sounds already checked keep their results — safe to
-            stop anytime.
+            Stop the check? Checked sounds keep their results.
           </span>
           <div style={{ display: "flex", gap: 9 }}>
             <Button
@@ -347,7 +346,7 @@ export function DoctorRun({
               }}
               style={{ height: 30, padding: "0 13px" }}
             >
-              Keep going
+              Continue
             </Button>
             <Button
               variant="warn"
@@ -366,30 +365,17 @@ export function DoctorRun({
         <WizardFooter
           left={<span />}
           right={
-            stopped ? (
+            // Read-only check: "See results" and Close would do the same thing,
+            // so both Stopped-early and Complete show one primary "See results".
+            done ? (
               <Button
                 variant="primary"
                 small
                 onClick={onComplete}
                 style={{ height: 32, padding: "0 18px" }}
               >
-                Continue
+                See results
               </Button>
-            ) : done ? (
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 7,
-                  fontFamily: t.mono,
-                  fontSize: 10.5,
-                  letterSpacing: "0.04em",
-                  color: t.mutedInk,
-                }}
-              >
-                <Icon name="check" size={13} stroke={t.good} strokeWidth={2} />
-                done
-              </span>
             ) : (
               <Button
                 variant="ghost"

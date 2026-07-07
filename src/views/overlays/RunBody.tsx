@@ -138,7 +138,7 @@ export function RunBody({
               : `Step ${String(stepNo)} of ${String(total)}`}
           </span>
           <span style={{ fontFamily: t.mono, fontSize: 10.5, color: t.faint }}>
-            {done ? "" : "saving as it goes"}
+            {done ? "" : "saves automatically"}
           </span>
         </div>
         <ProgressBar percent={pct} />
@@ -340,7 +340,7 @@ export function RunBody({
           }}
         >
           <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
-            Stop leveling? Levels already written stay.
+            Stop leveling? Progress so far stays saved.
           </span>
           <div style={{ display: "flex", gap: 9 }}>
             <Button
@@ -351,7 +351,7 @@ export function RunBody({
               }}
               style={{ height: 30, padding: "0 13px" }}
             >
-              Keep going
+              Continue
             </Button>
             <Button
               variant="warn"
