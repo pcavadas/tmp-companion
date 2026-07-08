@@ -153,12 +153,14 @@ impl SimDevice {
     }
 
     /// Silently DROP the first structural edit (forces the held-session retry path).
+    #[cfg(test)]
     pub fn with_drop_first(self) -> SimDevice {
         self.state.lock().expect("sim lock").drop_first = true;
         self
     }
 
     /// REJECT the `n`th structural edit (1-based) with `presetError` (never save after).
+    #[cfg(test)]
     pub fn with_reject_at(self, n: u32) -> SimDevice {
         self.state.lock().expect("sim lock").reject_at = Some(n);
         self
@@ -188,6 +190,7 @@ impl SimDevice {
     }
 
     /// The ordered list of device actions observed so far.
+    #[cfg(test)]
     pub fn events(&self) -> Vec<SimEvent> {
         self.state.lock().expect("sim lock").events.clone()
     }

@@ -50,7 +50,13 @@ jobs:
 
       - name: Rust clippy
         working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        # Two lanes: default features, then the e2e feature. The e2e lane is
+        # required because sim_device (+ e2e_server) only compile under
+        # `feature = "e2e"`, so default-features clippy never sees their dead
+        # code. Keep both — the default lane still guards default-only paths.
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --features e2e -- -D warnings
 
       - name: Rust format check
         working-directory: src-tauri
