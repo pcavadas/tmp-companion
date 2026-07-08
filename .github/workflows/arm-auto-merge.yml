@@ -32,9 +32,13 @@ jobs:
   arm:
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
-    # Scoped to this job (least privilege): arming auto-merge needs PR write.
+    # Scoped to this job (least privilege). Enabling GitHub's native auto-merge
+    # via the GITHUB_TOKEN needs contents:write (auto-merge is a merge/contents
+    # op) in addition to pull-requests:write — with pull-requests:write alone the
+    # enablePullRequestAutoMerge mutation returns "Resource not accessible by
+    # integration". The workflow-level default stays contents:read.
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     steps:
       - name: Arm or re-gate auto-merge
