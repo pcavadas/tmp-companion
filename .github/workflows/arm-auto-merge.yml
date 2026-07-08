@@ -41,31 +41,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          trusted=false
+          # Decide once: arm auto-merge, disarm it, or leave it alone.
+          decision=none
           case "$ASSOC" in
-            OWNER|MEMBER|COLLABORATOR) trusted=true ;;
+            OWNER|MEMBER|COLLABORATOR) decision=arm ;;
           esac
-          [ "$AUTHOR" = "dependabot[bot]" ] && trusted=true
+          [ "$AUTHOR" = "dependabot[bot]" ] && decision=arm
 
-          if [ "$trusted" = true ]; then
-            echo "Trusted author ($AUTHOR / $ASSOC) — arming auto-merge."
-            gh pr merge --auto --squash "$PR"
-            exit 0
+          if [ "$decision" != arm ]; then
+            # External author.
+            if [ "$EVENT" = "pull_request_review" ] \
+               && [ "$REVIEW_STATE" = "approved" ] \
+               && [ "$REVIEWER" = "pcavadas" ]; then
+              decision=arm
+            elif [ "$EVENT" = "pull_request_target" ] && [ "$ACTION" = "synchronize" ]; then
+              decision=disarm  # new external commits — re-gate until @pcavadas re-approves
+            fi
           fi
 
-          # External author from here on.
-          if [ "$EVENT" = "pull_request_review" ] \
-             && [ "$REVIEW_STATE" = "approved" ] \
-             && [ "$REVIEWER" = "pcavadas" ]; then
-            echo "External PR approved by @pcavadas — arming auto-merge."
-            gh pr merge --auto --squash "$PR"
-            exit 0
-          fi
-
-          if [ "$EVENT" = "pull_request_target" ] && [ "$ACTION" = "synchronize" ]; then
-            echo "External PR pushed new commits — disarming until @pcavadas re-approves."
-            gh pr merge --disable-auto "$PR" || true
-            exit 0
-          fi
-
-          echo "External PR not approved by @pcavadas — leaving un-armed."
+          case "$decision" in
+            arm)
+              echo "Arming auto-merge (author=$AUTHOR assoc=$ASSOC)."
+              gh pr merge --auto --squash "$PR"
+              ;;
+            disarm)
+              echo "External PR pushed new commits — disarming until @pcavadas re-approves."
+              gh pr merge --disable-auto "$PR" || true
+              ;;
+            *)
+              echo "External PR not approved by @pcavadas — leaving un-armed."
+              ;;
+          esac
