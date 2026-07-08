@@ -1,0 +1,71 @@
+name: Arm auto-merge
+
+# Decides WHETHER to arm GitHub's native auto-merge, per author. GitHub's "protect main"
+# ruleset (1 approval + build-test/commitlint/e2e green) is the floor; this workflow adds the
+# one thing a ruleset can't express — "require a human review only for external authors":
+#
+#   - Trusted author (OWNER/MEMBER/COLLABORATOR, or dependabot[bot]) → arm auto-merge now.
+#     GitHub merges once the ruleset clears (CodeRabbit's approval counts).
+#   - External author → arm ONLY after @pcavadas approves; disarm on any new external push.
+#     CodeRabbit-alone can never AUTO-merge an external PR.
+#
+# Intentionally no `actions/checkout` and no third-party actions: this never runs PR-controlled
+# code, so the write-scoped GITHUB_TOKEN on pull_request_target is safe here (same discipline as
+# dependabot-auto-approve.yml).
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Arm or re-gate auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.html_url }}
+          ASSOC: ${{ github.event.pull_request.author_association }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER: ${{ github.event.review.user.login }}
+        run: |
+          set -euo pipefail
+
+          trusted=false
+          case "$ASSOC" in
+            OWNER|MEMBER|COLLABORATOR) trusted=true ;;
+          esac
+          [ "$AUTHOR" = "dependabot[bot]" ] && trusted=true
+
+          if [ "$trusted" = true ]; then
+            echo "Trusted author ($AUTHOR / $ASSOC) — arming auto-merge."
+            gh pr merge --auto --squash "$PR"
+            exit 0
+          fi
+
+          # External author from here on.
+          if [ "$EVENT" = "pull_request_review" ] \
+             && [ "$REVIEW_STATE" = "approved" ] \
+             && [ "$REVIEWER" = "pcavadas" ]; then
+            echo "External PR approved by @pcavadas — arming auto-merge."
+            gh pr merge --auto --squash "$PR"
+            exit 0
+          fi
+
+          if [ "$EVENT" = "pull_request_target" ] && [ "$ACTION" = "synchronize" ]; then
+            echo "External PR pushed new commits — disarming until @pcavadas re-approves."
+            gh pr merge --disable-auto "$PR" || true
+            exit 0
+          fi
+
+          echo "External PR not approved by @pcavadas — leaving un-armed."
