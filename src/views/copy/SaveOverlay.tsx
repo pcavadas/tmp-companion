@@ -170,7 +170,7 @@ export function SaveOverlay({
                     color: t.faint,
                   }}
                 >
-                  one preset at a time
+                  saves automatically
                 </span>
               </div>
               <ProgressBar percent={pct} height={5} />

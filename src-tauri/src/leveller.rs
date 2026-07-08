@@ -42,6 +42,11 @@ const SETTLE_AFTER_REAMP_MS: u64 = 500;
 /// rationale isn't duplicated as a magic number elsewhere.
 pub(crate) const RECONNECT_GAP_MS: u64 = 400;
 const CAPTURE_TAIL_MS: u64 = 800;
+/// Doctor-only capture tail: Doctor diagnostic captures (reverb/delay wash analysis)
+/// keep a longer post-stimulus tail than the leveling capture, whose 800 ms tail is
+/// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change. 2.5 s
+/// covers typical reverb/delay decay without doubling the leveling run time.
+pub const DOCTOR_TAIL_MS: u32 = 2500;
 // Scene mode (`SetNodeSceneEdit`) MUST be enabled AND confirmed before the value
 // write, or the write hits the BASE/global value and leaks across scenes
 // (HW). It is a fire-and-forget setter (no ack), so give it a generous
@@ -130,7 +135,7 @@ pub const CANCELLED: &str = "cancelled";
 /// Reload the stored preset to discard temporary level edits made while
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
-fn restore_saved_preset(slot: u32) -> Result<(), String> {
+pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     s.load_preset(slot)?;
@@ -205,12 +210,27 @@ pub fn measure_c(
     })
 }
 
-/// MEASURE seam returning the FULL multi-channel capture: load `slot`, re-amp
-/// `stimulus` at `ref_level`, return every captured channel. Validated own-conn
-/// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
-/// and the per-channel N1 diagnostic (`probe --channels`) share this.
-pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
-    let ref_level = ref_level.clamp(0.05, 1.0);
+/// Shared MEASURE seam behind `capture_full` and `doctor_capture`: load `slot` in
+/// its own connection, settle, drop; fresh-connect → (when `scene` is `Some`)
+/// re-activate that 0-based `scenes[]` wire index ON THE CAPTURE CONNECTION → set
+/// the reference level → engage re-amp once → `audio::reamp_capture(.., tail_ms)`
+/// → guaranteed re-amp off.
+///
+/// The scene MUST be loaded on the capture connection, not the load connection:
+/// the preset survives the load→capture reconnect but **the active scene does
+/// not** (see `set_knob`'s "scene + scene-edit don't survive the leveller's
+/// reconnects" — HW). Loading it only in the dropped load connection measured
+/// whatever scene the unit was already on, so every scene read the same signal.
+/// `scene` is `None` and `tail_ms` is `CAPTURE_TAIL_MS` for every existing
+/// `capture_full` call, so that path is byte-identical to before this extraction.
+fn capture_full_at(
+    slot: u32,
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+    tail_ms: u64,
+) -> Result<audio::Capture, String> {
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
@@ -218,13 +238,38 @@ pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio
     }
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
-    set_knob(&mut s, &LevelKnob::PresetLevel, ref_level)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    // Re-assert the scene on THIS (capture) connection before setting the level —
+    // load_scene recalls the scene's own state, so it must precede the reference-
+    // level write, not follow it.
+    if let Some(scene) = scene {
+        s.load_scene(scene)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+    // Force-bypass isolation AFTER the scene recall, BEFORE the presetLevel set +
+    // engage (the `measure_knob_at` ordering): a scene load would re-assert the
+    // scene's own bypass state, so isolation must land after it.
+    for (g, n, byp) in force_bypass {
+        s.change_parameter_bool(g, n, "bypass", *byp)?;
+    }
+    // `None` = capture at the preset's OWN stored level (Doctor's apply A/B),
+    // leaving the edit buffer's presetLevel untouched.
+    if let Some(ref_level) = ref_level {
+        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
     let _ = s.set_reamp_mode(true)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
-    let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
+    let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
     cap
+}
+
+/// MEASURE seam returning the FULL multi-channel capture: load `slot`, re-amp
+/// `stimulus` at `ref_level`, return every captured channel. Validated own-conn
+/// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
+/// and the per-channel N1 diagnostic (`probe --channels`) share this.
+pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
+    capture_full_at(slot, None, &[], stimulus, Some(ref_level), CAPTURE_TAIL_MS)
 }
 
 /// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the
@@ -237,6 +282,58 @@ pub fn capture_samples(
     ref_level: f32,
 ) -> Result<(Vec<f32>, u32), String> {
     let cap = capture_full(slot, stimulus, ref_level)?;
+    let (ch, _) = cap.loudest_channel();
+    Ok((cap.channel(ch), cap.sample_rate))
+}
+
+/// Doctor-only MEASURE seam: like `capture_samples`, but optionally activates a scene
+/// first (0-based `scenes[]` wire index, `None` = base) and captures with the longer
+/// `DOCTOR_TAIL_MS` tail so reverb/delay wash is analyzable. Shares `capture_full_at`
+/// with the leveling capture path — the leveling window/timings are untouched.
+/// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None` for
+/// the apply A/B (capture at the preset's own level — never writes presetLevel,
+/// so a later `doctor_save` can't persist a reference level).
+pub fn doctor_capture(
+    slot: u32,
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+) -> Result<(Vec<f32>, u32), String> {
+    let cap = capture_full_at(
+        slot,
+        scene,
+        force_bypass,
+        stimulus,
+        ref_level,
+        u64::from(DOCTOR_TAIL_MS),
+    )?;
+    let (ch, _) = cap.loudest_channel();
+    Ok((cap.channel(ch), cap.sample_rate))
+}
+
+/// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
+/// loading — a load would discard the unsaved `doctor_apply` prescription edit.
+/// Mirrors `capture_full_at` MINUS the load block: fresh-connect → optionally set
+/// the reference level BEFORE engaging → engage re-amp once → capture with the
+/// Doctor tail → guaranteed re-amp off → loudest channel. `ref_level` MUST match
+/// the before-capture's so the A/B is level-fair (`doctor_apply` passes `None`
+/// to both: the preset's own level, never a presetLevel write).
+pub fn doctor_capture_current(
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+) -> Result<(Vec<f32>, u32), String> {
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let mut s = Session::connect()?;
+    if let Some(ref_level) = ref_level {
+        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+    let _ = s.set_reamp_mode(true)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+    let cap = audio::reamp_capture(stimulus, RATE, u64::from(DOCTOR_TAIL_MS));
+    let _ = s.set_reamp_mode(false);
+    let cap = cap?;
     let (ch, _) = cap.loudest_channel();
     Ok((cap.channel(ch), cap.sample_rate))
 }

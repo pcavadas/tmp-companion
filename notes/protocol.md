@@ -68,6 +68,11 @@ Load-bearing latch rules (fw 1.8.45):
 - `changeParameter` IS audible mid-engage (live knob nudges work), but `loadScene`
   mid-engage is INAUDIBLE (the active scene latches at engage). Per-scene leveling therefore
   requires one engage per scene.
+- **The active scene does NOT survive a reconnect** (the preset does). Any capture/measure
+  path that addresses a scene must re-assert `loadScene` on the SAME connection that engages
+  re-amp — loading it in a throwaway load connection (then reconnecting to capture) measures
+  whatever scene the unit was already on. Bit the Doctor capture (`capture_full_at`); the
+  leveling `set_knob` re-asserts scene + scene-edit per connection for the same reason.
 - **`outputLevel = 0` is deep digital silence**; `loudest_loudness` errors ("no signal
   captured") on a silent capture — treat that error as a sentinel deep floor, never
   propagate it (else it aborts the scene).

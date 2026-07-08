@@ -1,9 +1,13 @@
 //! Stimulus WAV I/O + calibration + probe measurement entry points.
 
 use crate::audio;
+use crate::doctor;
+use crate::footswitch;
 use crate::leveller;
 use crate::lufs;
+use crate::read_slot_preset_parsed;
 use crate::session;
+use crate::topologies;
 
 /// Read a WAV file and downmix to mono f32 in [-1, 1] (fixed mono convention).
 /// Returns (samples, sample_rate).
@@ -177,6 +181,103 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
         adapt_lufs - full_lufs,
         full_ms.saturating_sub(adapt_ms)
     ))
+}
+
+/// Doctor calibration sweep (`probe --doctor`): for each 0-based list index,
+/// capture the BASE sound with the Doctor tail (`leveller::doctor_capture`),
+/// compute its band profile + time-domain metrics, then diagnose the whole
+/// cohort (median-relative when ≥ `doctor::MIN_COHORT` sounds) and print one
+/// JSON line per sound plus a human table — the headless iteration loop for
+/// tuning `doctor::Thresholds`. Read-only: loads + captures, NEVER saves;
+/// every capture path ends re-amp OFF.
+pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> {
+    let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
+    let instrument = doctor::Instrument::from_topology(
+        topologies::by_id(topology_id)
+            .map(|t| t.instrument)
+            .unwrap_or("guitar"),
+    );
+
+    let mut sounds: Vec<(u32, doctor::SoundProfile, Option<Vec<doctor::DoctorNode>>)> = Vec::new();
+    for &slot in slots {
+        // One field-8 slot read (quiet line, NO LoadPreset) drives BOTH the graph
+        // facts and the base-sound force-bypass isolation (every on/off block off).
+        // Truncated JSON still yields the guitarNodes prefix + ftsw; on read error
+        // we degrade to no graph facts + no isolation.
+        let mut nodes: Option<Vec<doctor::DoctorNode>> = None;
+        let mut fb: Vec<(String, String, bool)> = Vec::new();
+        match read_slot_preset_parsed(slot) {
+            Ok((preset, _, _)) => {
+                nodes = Some(
+                    session::extract_active_graph(&preset, None)
+                        .nodes
+                        .iter()
+                        .map(doctor::DoctorNode::from_graph_node)
+                        .collect(),
+                );
+                fb = footswitch::all_onoff_blocks(
+                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                )
+                .into_iter()
+                .map(|(g, n)| (g, n, true))
+                .collect();
+            }
+            Err(e) => eprintln!(
+                "[probe] slot {slot}: preset read failed ({e}) — no graph facts, no isolation"
+            ),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5)) {
+            Ok((samples, rate)) => {
+                let profile = doctor::SoundProfile::from_capture(&samples, rate, stim.len())?;
+                sounds.push((slot, profile, nodes));
+            }
+            Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
+        }
+    }
+    if sounds.is_empty() {
+        return Err("no sound captured".to_string());
+    }
+
+    let cohort = (sounds.len() >= doctor::MIN_COHORT).then(|| {
+        let refs: Vec<&doctor::SoundProfile> = sounds.iter().map(|(_, p, _)| p).collect();
+        doctor::cohort_median(&refs)
+    });
+
+    let mut out = format!(
+        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB (Lo Lm Mid Hm Hi Air) | diagnoses\n",
+        sounds.len(),
+        if cohort.is_some() { "median" } else { "absolute" }
+    );
+    for (slot, profile, nodes) in &sounds {
+        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_ref());
+        let bal = doctor::balance(&profile.bands);
+        out += &format!(
+            "  {slot:>4} | {:>8.2} | {:>8.1} | {} | {}\n",
+            profile.integrated_lufs,
+            profile.tail_ratio_db,
+            bal.iter()
+                .map(|b| format!("{b:>+5.1}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            if diags.is_empty() {
+                "—".to_string()
+            } else {
+                diags.iter().map(|d| d.key).collect::<Vec<_>>().join(", ")
+            }
+        );
+        // Machine-readable line per sound (jq-able for calibration notes).
+        let json = serde_json::json!({
+            "slot": slot,
+            "profile": profile,
+            "balanceDb": bal.to_vec(),
+            "diagnoses": diags,
+        });
+        println!("{json}");
+    }
+    // Belt-and-braces: leave the unit re-amp OFF even if a capture errored out.
+    let _ = session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    Ok(out)
 }
 
 /// HW A/B of TWO stimuli per preset: for each slot, `measure_c` with stimulus A then

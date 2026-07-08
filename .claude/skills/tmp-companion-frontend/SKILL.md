@@ -1,6 +1,6 @@
 ---
 name: tmp-companion-frontend
-description: "How to build and change the TMP Companion app's React/TypeScript frontend (a Tauri 2 desktop app) the way this codebase expects. Use this skill whenever working in src/ — implementing a design handoff, adding or editing a view in the Level/Copy/Songs/Catalog/Settings tabs, wiring a Tauri command into the UI, removing a command or feature as a full vertical slice (UI + invoke wrapper + types + the backend command), writing a Vitest test or a Playwright e2e spec for a screen, or debugging why a frontend change fails lint or tsc. Covers the theme-token system (useTheme/useStyles), one-component-per-file layout, the ui/primitives + Icon/BlockArt catalog, the typed lib/invoke wrappers and their camelCase/snake_case rule, the Vitest + mocked-invoke test pattern (real-timers gotcha) plus the dual-mode Playwright e2e harness, and the lint/tsc traps that are easy to miss — most importantly that react-hooks/refs errors on reading ref.current during render, so 'derive state into a useRef' refactors are false positives here."
+description: "How to build and change the TMP Companion app's React/TypeScript frontend (a Tauri 2 desktop app) the way this codebase expects. Use this skill whenever working in src/ — implementing a design handoff, adding or editing a view in the Level/Doctor/Copy/Songs/Catalog/Settings tabs, wiring a Tauri command into the UI, removing a command or feature as a full vertical slice (UI + invoke wrapper + types + the backend command), writing a Vitest test or a Playwright e2e spec for a screen, or debugging why a frontend change fails lint or tsc. Covers the theme-token system (useTheme/useStyles), one-component-per-file layout, the ui/primitives + Icon/BlockArt catalog, the typed lib/invoke wrappers and their camelCase/snake_case rule, the Vitest + mocked-invoke test pattern (real-timers gotcha) plus the dual-mode Playwright e2e harness, and the lint/tsc traps that are easy to miss — most importantly that react-hooks/refs errors on reading ref.current during render, so 'derive state into a useRef' refactors are false positives here."
 ---
 
 # TMP Companion frontend
@@ -17,9 +17,9 @@ src/
   ui/         primitives.tsx (Button/Slider/Modal/Scrim/MenuItem/…) · Icon.tsx + iconNames.ts (line icons) · BlockArt.tsx (dispatch + AMP_FORM_ICON) + blockart/ (procedural SVG amp/cab/pedal art, split per family — amps/ampsCombo/ampsHead*, mics/micBodies*, pedals/pedalsMotif*/pedalsSpecial/pedalKnobs, forms/formsPedal/formsRack, parts/partsCloth/partsPanel, shared.ts + sharedIds/sharedTones/sharedCloth, cabs.tsx, blockColors.generated.ts)
   lib/        invoke.ts (typed Tauri-command wrappers) · types.ts (hand-written mirrors of Rust structs) · format.ts · gates.ts
   models/     catalog.ts (taxonomy) · blockArt.ts (resolvers) · blockArtCatalog/ (the catalog rows, one file per category) · tmp-model-guide.json — the model-catalog DATA layer the CatalogView reads, NOT a view folder
-  views/      level/ · copy/ · songs/ · settings/ — feature folders, one component per file + a barrel index.ts; flat views (CatalogView, PresetList, SignalChainView…) sit directly under views/.
+  views/      level/ · doctor/ · copy/ · songs/ · settings/ — feature folders, one component per file + a barrel index.ts; flat views (CatalogView, PresetList, SignalChainView…) sit directly under views/.
   views/overlays/  the multi-step WIZARD — LevelingWizard (one file per *Step.tsx body). (The Bulk Block Edit `overlays/bulk/` wizard was DELETED — superseded by the Copy tab.)
-  App.tsx     shell routing the 5-tab IA (Level / Copy / Songs / Catalog / Settings)
+  App.tsx     shell routing the 6-tab IA (Level / Doctor / Copy / Songs / Catalog / Settings)
   __tests__/  setup.ts (global invoke mock + jsdom shims) + *.test.tsx
 ```
 
@@ -115,7 +115,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
 - **`bunx tsc --noEmit`** also catches what the Vite build won't (the build transpiles without typechecking).
 - **Fresh checkout:** `node_modules` and `dist/` are gitignored. Run `bun install` (else hundreds of phantom "Cannot find module 'react'" errors) and `bun run build` (else the Rust `tauri-build` `generate_context!` panics on a missing `frontendDist`) before the checks.
 - **TypeScript 6** no longer resolves `node:` imports from `@types/node` alone — `tsconfig.json` needs `"types": ["node"]`.
-- The IDE/LSP emits **stale phantom diagnostics during rapid file moves** — `bunx tsc --noEmit` from the CLI is authoritative; trust it over live editor squiggles mid-refactor.
+- The IDE/LSP emits **stale phantom diagnostics during rapid file moves or while another editor/agent rewrites a file concurrently** — `bunx tsc --noEmit` from the CLI is authoritative; trust it over live editor squiggles mid-refactor. A concurrent save can also silently REVERT a tool write with no error — after a multi-file edit, re-grep a distinctive symbol to confirm each write LANDED.
 
 ## Before you call it done
 

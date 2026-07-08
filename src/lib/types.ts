@@ -367,6 +367,10 @@ export interface GraphNode {
   cab_sim_id2?: string;
   /** Whether this CabSim runs two cabinets in parallel (`cabsim2enabled`). */
   cab_sim2_enabled?: boolean;
+  /** Allowlisted numeric params (reverb-mix + EQ-10 band gains) harvested from
+   *  `dspUnitParameters` — Doctor's value-aware prescriptions read these.
+   *  Always present server-side (empty map when none). */
+  params: Record<string, number>;
 }
 
 /** One ordered stage of the chain (mirrors session::Stage). A `series` run of
@@ -680,4 +684,148 @@ export interface BackupProgress {
   percent: number;
   build_size: number;
   build_ticks: number;
+}
+
+// ─── Doctor (tone diagnosis) ─────────────────────────────────────────────────
+
+/** One sound for `doctor_check` (`lib::DoctorInput`, camelCase wire): a
+ * preset's base (`scene: null`) or one scene (0-based `scenes[]` wire index).
+ * `nodes` is the preset's chain from the backup scan's graph, passed verbatim
+ * (`ActiveGraph.nodes`) so prescriptions target real blocks with no extra
+ * device reads. */
+export interface DoctorInputArg {
+  key: string;
+  listIndex: number;
+  scene: number | null;
+  /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
+   *  Base/scene sounds. */
+  footswitch: number | null;
+  label: string;
+  tag: string | null;
+  topologyId: string | null;
+  calibrationLufs: number | null;
+  nodes: GraphNode[];
+}
+
+/** Streamed per-sound progress row (`lib::DoctorProgressItem`). Diagnoses ride
+ * the command's return value (cohort-relative — computable only at the end). */
+export interface DoctorProgressItem {
+  key: string;
+  status: "active" | "done" | "error";
+  message: string | null;
+}
+
+export type DoctorSev = "high" | "med";
+export type DoctorRxKind = "oneclick" | "advisory" | "chain";
+
+/** One concrete device edit inside a prescription (`doctor::DoctorOp`). */
+export type DoctorOp =
+  | {
+      kind: "param";
+      groupId: string;
+      nodeId: string;
+      param: string;
+      value: number;
+    }
+  | {
+      kind: "insert_node";
+      groupId: string;
+      beforeFenderId: string | null;
+      fenderId: string;
+      params: [string, number][];
+    }
+  | { kind: "scene_trim"; scene: number; targetDeltaDb: number };
+
+/** Chain-preview DTO on a `chain`-kind prescription: the resulting block list
+ * by model id (the UI resolves art through its existing strip engine). */
+export interface DoctorChainPreview {
+  template: string;
+  blocks: { model: string; added?: boolean }[];
+}
+
+/** One prescription (`doctor::Rx`). `ops` is empty for advisory cards. */
+export interface DoctorRx {
+  kind: DoctorRxKind;
+  title: string;
+  detail: string;
+  cpuNote: string;
+  ops: DoctorOp[];
+  chain?: DoctorChainPreview;
+}
+
+/** One diagnosis (`doctor::Diag`). `bands` indexes the six player bands
+ * (Lows · Low-mids · Mids · High-mids · Highs · Air); empty = time-domain. */
+export interface DoctorDiag {
+  key: string;
+  label: string;
+  sev: DoctorSev;
+  bands: number[];
+  detail: string;
+  explain: string;
+  rx: DoctorRx[];
+}
+
+export interface DoctorSoundResult {
+  key: string;
+  listIndex: number;
+  scene: number | null;
+  /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
+   *  Base/scene sounds. */
+  footswitch: number | null;
+  label: string;
+  tag: string | null;
+  diags: DoctorDiag[];
+  integratedLufs: number;
+  tailRatioDb: number;
+  balanceDb: number[];
+  /** Set when this sound's capture failed (no diags then); the run continued. */
+  error: string | null;
+}
+
+export interface DoctorSceneDeltaRow {
+  name: string;
+  tag: string | null;
+  deltaDb: number;
+  isRef: boolean;
+}
+
+/** Scene-loudness consistency for one preset (`doctor::SceneConsistency`). */
+export interface DoctorSceneConsistency {
+  rows: DoctorSceneDeltaRow[];
+  worstName: string;
+  worstDeltaDb: number;
+  rx: DoctorRx[];
+}
+
+export interface DoctorPresetResult {
+  listIndex: number;
+  sounds: DoctorSoundResult[];
+  sceneConsistency: DoctorSceneConsistency | null;
+}
+
+export interface DoctorCheckResult {
+  presets: DoctorPresetResult[];
+  stopped: boolean;
+  /** "median" (≥ 4 sounds measured) or "absolute" (small-run fallback). */
+  cohort: "median" | "absolute";
+}
+
+/** One prescription's apply job (`lib::DoctorApplyJob`, camelCase wire).
+ * `name` is the identity guard — apply refuses if the loaded slot's name
+ * doesn't match. Scene-trim ops are NOT accepted here (the frontend routes
+ * them through the existing scene-leveling command). */
+export interface DoctorApplyJob {
+  listIndex: number;
+  name: string;
+  ops: DoctorOp[];
+  topologyId: string | null;
+  calibrationLufs: number | null;
+}
+
+/** Result of a live (unsaved) prescription apply: before/after audition clips
+ * as `data:audio/wav;base64,…` URLs, rendered in the same command so the A/B
+ * compares the stored state against the applied-but-unsaved edit buffer. */
+export interface DoctorApplyResult {
+  beforeClip: string;
+  afterClip: string;
 }

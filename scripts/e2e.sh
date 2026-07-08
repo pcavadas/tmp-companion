@@ -45,7 +45,7 @@ for a in "$@"; do
     online|offline) MODE="$a" ;;
     -h|--help)
       cat >&2 <<'USAGE'
-Usage: scripts/e2e.sh [online|offline] [copy|level|songs|all ...]
+Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|all ...]
   (no args)        OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy     OFFLINE — only the copy spec
   online           ONLINE  — songs, copy, level vs the real unit (~9 min; Pro Control closed)
@@ -154,7 +154,17 @@ log "device connected — snapshot seeded"
 fail=0
 first=1
 for s in "${SPECS[@]}"; do
-  [ "$first" -eq 0 ] && { log "resting the unit between specs…"; sleep 12; }
+  if [ "$first" -eq 1 ]; then
+    # The server-start handshake arms the device's post-close open LOCKOUT (tens of
+    # seconds; hid.rs's own retries reset it instead of riding it out — HW-measured:
+    # a seed ~5 s after server-ready fails through 41 s of ladder retries, while a
+    # 60 s true quiet then opens in seconds). Rest BEFORE the first spec's seed.
+    log "resting the unit before the first spec (post-handshake open lockout)…"
+    sleep 60
+  else
+    log "resting the unit between specs…"
+    sleep 12
+  fi
   first=0
   log "running specs/$s.spec.ts (online)"
   # No outer timeout: Playwright's own 300 s/test governs; a short wrapper would kill it mid-run.

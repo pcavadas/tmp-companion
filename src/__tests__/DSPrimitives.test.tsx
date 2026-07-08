@@ -71,7 +71,9 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).not.toContain("sun"); // dark toggle removed
     expect(ICONS).not.toContain("moon");
     expect(ICONS).toContain("shield");
-    expect(ICONS.length).toBe(36);
+    expect(ICONS).toContain("play"); // Doctor tab (WP0)
+    expect(ICONS).toContain("pause");
+    expect(ICONS.length).toBe(38);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });

@@ -53,6 +53,9 @@ export interface PresetRowProps {
   onTogglePreset: (slot: number) => void;
   onToggleExpand: (slot: number) => void;
   onToggleKey: (key: string) => void;
+  /** Checkbox tooltip verb — the row is shared across tabs (Level "…to level",
+   *  Doctor "…to check"). Defaults to the Level wording. */
+  selectTitle?: string;
 }
 
 export function PresetRow({
@@ -68,6 +71,7 @@ export function PresetRow({
   onTogglePreset,
   onToggleExpand,
   onToggleKey,
+  selectTitle = "Select preset to level",
 }: PresetRowProps) {
   const { t } = useTheme();
   const empty = row.empty;
@@ -199,7 +203,7 @@ export function PresetRow({
             e.stopPropagation();
             if (!empty) onTogglePreset(row.slot);
           }}
-          title="Select preset to level"
+          title={selectTitle}
           style={{
             display: "flex",
             alignItems: "center",

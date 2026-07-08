@@ -6,7 +6,7 @@ use crate::*;
 
 /// Standard-alphabet base64 (no padding omitted) — small + dependency-free, for
 /// embedding a rendered WAV as a `data:` URL the webview can play.
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
@@ -33,7 +33,7 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Encode mono f32 samples as a 32-bit-float WAV (in memory).
-fn wav_bytes(samples: &[f32], rate: u32) -> Result<Vec<u8>, String> {
+pub(crate) fn wav_bytes(samples: &[f32], rate: u32) -> Result<Vec<u8>, String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: rate,

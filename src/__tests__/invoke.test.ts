@@ -38,6 +38,11 @@ import {
   removeSetlist,
   removeSetlistSong,
   moveSetlistSong,
+  doctorCheck,
+  cancelDoctorCheck,
+  doctorApply,
+  doctorSave,
+  doctorDiscard,
   cmd,
 } from "../lib/invoke";
 import type {
@@ -150,6 +155,68 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     expectCall("cancel_preset_leveling", undefined);
   });
 
+  it("doctor_check passes the sound list + restore slot with a progress channel", async () => {
+    const items = [
+      {
+        key: "p3",
+        listIndex: 3,
+        scene: null,
+        footswitch: null,
+        label: "Synth",
+        tag: null,
+        topologyId: "guitar-humbucker",
+        calibrationLufs: null,
+        nodes: [],
+      },
+    ];
+    const onResult = vi.fn(() => {
+      /* no-op */
+    });
+    await doctorCheck(items, 5, onResult);
+    const [calledName, calledArgs] = invokeMock.mock.calls[0];
+    expect(calledName).toBe("doctor_check");
+    if (calledArgs === undefined) {
+      throw new Error("expected doctor_check args but got none");
+    }
+    expect(calledArgs).toMatchObject({ items, restoreListIndex: 5 });
+    const channel = calledArgs.onResult;
+    if (!(channel instanceof Object) || !("onmessage" in channel)) {
+      throw new Error("expected an onResult channel with an onmessage handler");
+    }
+    expect((channel as { onmessage: unknown }).onmessage).toBe(onResult);
+  });
+
+  it("cancel_doctor_check invokes the cooperative cancel command", async () => {
+    await cancelDoctorCheck();
+    expectCall("cancel_doctor_check", undefined);
+  });
+
+  it("doctor_apply wraps the job; save + discard are identity-addressed", async () => {
+    const job = {
+      listIndex: 3,
+      name: "Synth",
+      ops: [
+        {
+          kind: "param" as const,
+          groupId: "G1",
+          nodeId: "ACD_CabSimTMS",
+          param: "lpf",
+          value: 8000,
+        },
+      ],
+      topologyId: null,
+      calibrationLufs: null,
+    };
+    await doctorApply(job);
+    expectCall("doctor_apply", { job });
+    invokeMock.mockClear();
+    await doctorSave(3, "Synth");
+    expectCall("doctor_save", { listIndex: 3, expectName: "Synth" });
+    invokeMock.mockClear();
+    await doctorDiscard(3);
+    expectCall("doctor_discard", { listIndex: 3 });
+  });
+
   it("level_footswitches_apply passes footswitch jobs with a progress channel", async () => {
     const jobs = [
       {
@@ -252,9 +319,9 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 73 contract commands", () => {
+  it("cmd exposes exactly the 29 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(25);
+    expect(Object.keys(cmd).length).toBe(29);
   });
 });

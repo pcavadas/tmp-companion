@@ -201,6 +201,7 @@ describe("PresetList (scene tree)", () => {
           node_id: "N1",
           model: "ACD_TweedDeluxe",
           bypassed: false,
+          params: {},
         },
       ],
       stages: [],

@@ -61,6 +61,9 @@ export interface PresetListProps {
   onToggleExpand: (slot: number) => void;
   onToggleKey: (key: string) => void;
   onToggleAll: () => void;
+  /** Checkbox tooltip verb passed to each row (Level "…to level" default, Doctor
+   *  "…to check"). */
+  selectTitle?: string;
 }
 
 const COLUMNS = "34px 26px 52px 1fr";
@@ -120,6 +123,7 @@ export function PresetList(props: PresetListProps) {
     onToggleExpand,
     onToggleKey,
     onToggleAll,
+    selectTitle,
   } = props;
   const { t } = useTheme();
 
@@ -197,6 +201,7 @@ export function PresetList(props: PresetListProps) {
             onTogglePreset={onTogglePreset}
             onToggleExpand={onToggleExpand}
             onToggleKey={onToggleKey}
+            selectTitle={selectTitle}
           />
         );
       }),
@@ -213,6 +218,7 @@ export function PresetList(props: PresetListProps) {
       onTogglePreset,
       onToggleExpand,
       onToggleKey,
+      selectTitle,
     ],
   );
 

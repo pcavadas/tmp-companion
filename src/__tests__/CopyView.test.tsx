@@ -26,6 +26,7 @@ const node = (group: string, id: string, model: string): GraphNode => ({
   node_id: id,
   model,
   bypassed: false,
+  params: {},
 });
 
 // A simple 3-block series preset in one group.

@@ -29,6 +29,7 @@ import { PresetList } from "../PresetList";
 import { EmptyState, UsbC } from "../EmptyState";
 import { LevelingWizard } from "../overlays";
 import { HowLevelingSheet, LevelingInfoRow } from "./HowLevelingSheet";
+import { instrumentOptions, instrumentName } from "./leveling";
 import type { PickOption } from "../overlays/Pick";
 import type { ActiveGraph } from "../../lib/types";
 import { currentGraph, readActivePreset } from "../../lib/invoke";
@@ -210,21 +211,8 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
   }, []);
 
   // ── derived (declared BEFORE the phase early-returns — constant hook count) ─
-  const instrumentOptions = useMemo<PickOption[]>(
-    () => [
-      // "None" makes the no-instrument path selectable (levels against the default
-      // reference); it drives the Set up step's good→better→best nudge.
-      { id: "none", label: "None" },
-      ...(store?.profiles ?? []).map((p) => {
-        const cal = p.calibration_lufs;
-        return {
-          id: p.id,
-          label: p.name,
-          sub: cal != null ? `${cal.toFixed(1)} dB` : undefined,
-          calibrated: cal != null,
-        };
-      }),
-    ],
+  const instOptions = useMemo<PickOption[]>(
+    () => instrumentOptions(store?.profiles),
     [store?.profiles],
   );
   const targetOptions = useMemo<PickOption[]>(
@@ -238,9 +226,8 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
   const defaultInst = store?.profiles[0]?.id ?? "";
   const defaultTarget = store?.targets[0]?.name ?? "";
   // Resolve an instrument profile id → its display name (the run-row instrument chip).
-  const instrumentName = useCallback(
-    (id: string): string =>
-      store?.profiles.find((p) => p.id === id)?.name ?? id,
+  const instName = useCallback(
+    (id: string): string => instrumentName(store?.profiles, id),
     [store?.profiles],
   );
 
@@ -362,11 +349,11 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
           chosen={flow.chosen}
           flowPresetCount={flow.flowPresetCount}
           isRelevel={flow.isRelevel}
-          instrumentOptions={instrumentOptions}
+          instrumentOptions={instOptions}
           targetOptions={targetOptions}
           defaultInst={defaultInst}
           defaultTarget={defaultTarget}
-          instrumentName={instrumentName}
+          instrumentName={instName}
           runItems={flow.run.items}
           runCurrentIndex={flow.run.currentIndex}
           runTotal={flow.run.total}

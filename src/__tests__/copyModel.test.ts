@@ -23,6 +23,7 @@ const node = (id: string, model: string, group = "G1"): GraphNode => ({
   node_id: id,
   model,
   bypassed: false,
+  params: {},
 });
 
 function graph(): ActiveGraph {

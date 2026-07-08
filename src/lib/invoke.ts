@@ -31,6 +31,11 @@ import type {
   BackupReadResult,
   CopyJob,
   CopyApplyItem,
+  DoctorInputArg,
+  DoctorProgressItem,
+  DoctorCheckResult,
+  DoctorApplyJob,
+  DoctorApplyResult,
 } from "./types";
 
 /**
@@ -150,6 +155,48 @@ export const levelFootswitchesApply = (
 /** Cooperatively stop an in-flight footswitch-leveling run. */
 export const cancelFootswitchLeveling = (): Promise<void> =>
   invoke("cancel_footswitch_leveling");
+
+// ─── Doctor (tone diagnosis) ─────────────────────────────────────────────────
+
+/** The Doctor RUN: capture + measure every selected sound (one backend command,
+ * ~9 s each, read-only on the unit), streaming a progress row per sound; the
+ * cohort-relative diagnoses + per-preset scene consistency ride the return.
+ * `restoreListIndex` is the pre-run active preset (0-based), reloaded when the
+ * run ends so the player's slot survives the check; null → the backend reloads
+ * the last-scanned slot (either way the reference-level edit buffer is cleared). */
+export const doctorCheck = (
+  items: DoctorInputArg[],
+  restoreListIndex: number | null,
+  onResult: (item: DoctorProgressItem) => void,
+): Promise<DoctorCheckResult> => {
+  const channel = new Channel<DoctorProgressItem>();
+  channel.onmessage = onResult;
+  return invoke("doctor_check", { items, restoreListIndex, onResult: channel });
+};
+
+/** Cooperatively stop an in-flight Doctor check — already-measured sounds keep
+ * their results. */
+export const cancelDoctorCheck = (): Promise<void> =>
+  invoke("cancel_doctor_check");
+
+/** Apply one prescription's ops LIVE (no save): captures the stored state
+ * (before clip), applies the edits to the device's edit buffer, captures again
+ * without reloading (after clip). Revert with `doctorDiscard`; persist with
+ * `doctorSave`. On a failed structural edit the preset is auto-restored. */
+export const doctorApply = (job: DoctorApplyJob): Promise<DoctorApplyResult> =>
+  invoke("doctor_apply", { job });
+
+/** Persist an applied prescription (`save_current_preset`, identity-guarded).
+ * Only offered behind the backup acknowledgment. */
+export const doctorSave = (
+  listIndex: number,
+  expectName: string,
+): Promise<void> => invoke("doctor_save", { listIndex, expectName });
+
+/** Discard an applied-but-unsaved prescription by reloading the stored preset
+ * (the device's edit buffer is dropped on load — the established revert). */
+export const doctorDiscard = (listIndex: number): Promise<void> =>
+  invoke("doctor_discard", { listIndex });
 
 // ─── Instrument profiles + persisted store (Settings window) ──────────────────
 
@@ -346,4 +393,9 @@ export const cmd = {
   addSetlistSongs,
   // Copy blocks between presets
   copyApply,
+  // Doctor (tone diagnosis)
+  doctorCheck,
+  doctorApply,
+  doctorSave,
+  doctorDiscard,
 } as const;

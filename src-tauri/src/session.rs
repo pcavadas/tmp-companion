@@ -200,6 +200,11 @@ pub struct GraphNode {
     /// Whether this CabSim runs two cabinets in parallel (`cabsim2enabled`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cab_sim2_enabled: Option<bool>,
+    /// ALLOWLISTED current `dspUnitParameters` values for Doctor's value-aware
+    /// prescriptions: the reverb wet/dry mix names (`mix`, `wetdrymix`) + the
+    /// EQ-10 `gain*hz` band gains. Empty for every other param/node — the full
+    /// param map would bloat every snapshot/backup row for nothing.
+    pub params: std::collections::HashMap<String, f64>,
 }
 
 /// One ordered stage of the signal chain: a `series` run of blocks, or a `split`
@@ -3004,6 +3009,20 @@ pub(crate) fn extract_active_graph(
                 let cab_sim2_enabled = dual
                     .and_then(|p| p.get("cabsim2enabled"))
                     .and_then(|b| b.as_bool());
+                // Doctor's allowlist: reverb mix names + EQ-10 band gains (see
+                // the GraphNode.params doc) — numeric values only.
+                let keep = |k: &str| {
+                    k == "mix" || k == "wetdrymix" || (k.starts_with("gain") && k.ends_with("hz"))
+                };
+                let node_params: std::collections::HashMap<String, f64> = params
+                    .and_then(|p| p.as_object())
+                    .map(|o| {
+                        o.iter()
+                            .filter(|(k, _)| keep(k))
+                            .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 blocks.push(GraphNode {
                     group_id: group_id.clone(),
                     node_id: node_id.to_string(),
@@ -3012,6 +3031,7 @@ pub(crate) fn extract_active_graph(
                     cab_sim_id,
                     cab_sim_id2,
                     cab_sim2_enabled,
+                    params: node_params,
                 });
             }
             if !blocks.is_empty() {
