@@ -143,7 +143,9 @@ export interface ThemeTokens {
   /** stronger danger border (modal panel edge). */
   dangerBorderStrong: string;
   dangerSoft: string;
-  /** recording indicator red (off-palette, audio-feedback semantics) + soft bg. */
+  /** recording indicator red (off-palette, audio-feedback semantics) + soft bg —
+   *  also the Toast "error" status color (same true-failure red, no need for a
+   *  second token). */
   record: string;
   recordSoft: string;
   /** model badge foregrounds (stereo / convolution). */

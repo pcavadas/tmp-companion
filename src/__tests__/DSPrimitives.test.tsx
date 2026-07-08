@@ -4,14 +4,14 @@
 // BlockArt illustration engine), and the a11y roles on the interactive
 // primitives (Checkbox / Toggle / MenuItem).
 
-import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { light, microLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
-import { Checkbox, Toggle, MenuItem } from "../ui/primitives";
+import { Checkbox, Toggle, MenuItem, Toast } from "../ui/primitives";
 import type { ReactNode } from "react";
 
 function under(node: ReactNode) {
@@ -73,7 +73,8 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("shield");
     expect(ICONS).toContain("play"); // Doctor tab (WP0)
     expect(ICONS).toContain("pause");
-    expect(ICONS.length).toBe(38);
+    expect(ICONS).toContain("download"); // Toast update-available status
+    expect(ICONS.length).toBe(39);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
@@ -111,5 +112,61 @@ describe("primitives — a11y roles (VoiceOver)", () => {
   it("MenuItem exposes role=menuitem", () => {
     under(<MenuItem label="Delete" onClick={() => undefined} />);
     expect(screen.getByRole("menuitem")).toBeTruthy();
+  });
+});
+
+describe("Toast — update-lifecycle statuses", () => {
+  it("resolves the label per explicit status (available/success/error)", () => {
+    under(<Toast status="available" title="Version 1.4 is ready" />);
+    expect(screen.getByText("UPDATE AVAILABLE")).toBeTruthy();
+  });
+
+  it("downloading has no label row and shows the live percent", () => {
+    under(
+      <Toast status="downloading" title="Downloading update…" percent={42} />,
+    );
+    expect(screen.queryByText("UPDATE AVAILABLE")).toBeNull();
+    expect(screen.getByText("42%")).toBeTruthy();
+  });
+
+  it("legacy warn maps to an amber NOTICE, not the red FAILED tone", () => {
+    under(<Toast kind="warn" message="Saved, but BPM didn't stick: x" />);
+    expect(screen.getByText("NOTICE")).toBeTruthy();
+    expect(screen.queryByText("FAILED")).toBeNull();
+  });
+
+  it("legacy err maps to FAILED, with message falling back into the title slot", () => {
+    under(<Toast kind="err" message="rename refused" />);
+    expect(screen.getByText("FAILED")).toBeTruthy();
+    expect(screen.getByText("rename refused")).toBeTruthy();
+  });
+
+  it("renders actions and dismisses via the aria-label", () => {
+    const onAction = vi.fn();
+    const onDismiss = vi.fn();
+    under(
+      <Toast
+        status="success"
+        title="Update downloaded"
+        actions={[{ label: "Restart now", onClick: onAction, primary: true }]}
+        onDismiss={onDismiss}
+      />,
+    );
+    fireEvent.click(screen.getByText("Restart now"));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses the dismiss button while downloading", () => {
+    under(
+      <Toast
+        status="downloading"
+        title="Downloading update…"
+        percent={10}
+        onDismiss={() => undefined}
+      />,
+    );
+    expect(screen.queryByLabelText("Dismiss")).toBeNull();
   });
 });

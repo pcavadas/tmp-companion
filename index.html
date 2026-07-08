@@ -76,6 +76,20 @@
       .tmp-extpulse {
         animation: tmp-extpulse 1.15s ease-out;
       }
+      /* Toast entrance (src/ui/primitives.tsx Toast): fade + rise-in on mount. */
+      @keyframes tmp-toast-in {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .tmp-toast-in {
+        animation: tmp-toast-in 0.24s cubic-bezier(0.2, 0.7, 0.2, 1);
+      }
       .tmp-skel {
         background: linear-gradient(
           100deg,
@@ -132,6 +146,9 @@
           animation: none;
         }
         .tmp-extpulse {
+          animation: none;
+        }
+        .tmp-toast-in {
           animation: none;
         }
         .tmp-vu {

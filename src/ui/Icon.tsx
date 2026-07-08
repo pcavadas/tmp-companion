@@ -252,6 +252,13 @@ export function Icon({
           <path d="M12 3a9 9 0 1 0 9 9" />
         </svg>
       );
+    case "download":
+      return (
+        <svg {...props}>
+          <path d="M12 4v11M7 10l5 5 5-5" />
+          <path d="M5 19h14" />
+        </svg>
+      );
     case "warn-tri":
       return (
         <svg {...props}>
