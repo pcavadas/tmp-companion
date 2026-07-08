@@ -333,7 +333,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // slot) — the reload also clears the 0.5 reference presetLevel from
         // the edit buffer.
         if let Err(e) = Session::connect().and_then(|mut s| {
-            let _ = s.set_reamp_mode(false);
+            if let Err(re) = s.set_reamp_mode(false) {
+                log::warn!("doctor_check: failed to disable re-amp mode after run: {re}");
+            }
             match restore_list_index.or(last_scanned) {
                 Some(slot) => s.load_preset(slot),
                 None => Ok(()),
