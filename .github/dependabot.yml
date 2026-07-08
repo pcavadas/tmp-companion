@@ -1,7 +1,11 @@
 # Dependency version updates with a 7-day maturity cooldown (a window against
 # freshly-published compromised releases). Security fixes are a SEPARATE lane
 # (repo setting "Dependabot security updates") and are NOT delayed by this cooldown.
-# Bot PRs are never auto-merged — every bump is reviewed and merged by hand.
+# Dependabot is a trusted author for arm-auto-merge.yml: its PRs arm GitHub's
+# native auto-merge and merge once the branch ruleset clears (green CI + an
+# approval). The maturity guard is the cooldown below — it delays when each bump
+# PR is OPENED, so a freshly-published compromised release is not picked up until
+# it has aged, even though the merge itself is hands-off.
 version: 2
 
 updates:
