@@ -19,14 +19,23 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Serialize per-PR so a review-approval (arm) and a synchronize (disarm) firing
+# close together can't race to a non-deterministic final auto-merge state.
+concurrency:
+  group: arm-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   arm:
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
+    # Scoped to this job (least privilege): arming auto-merge needs PR write.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Arm or re-gate auto-merge
         env:
