@@ -1,0 +1,87 @@
+name: Arm auto-merge
+
+# Decides WHETHER to arm GitHub's native auto-merge, per author. GitHub's "protect main"
+# ruleset (1 approval + build-test/commitlint/e2e green) is the floor; this workflow adds the
+# one thing a ruleset can't express — "require a human review only for external authors":
+#
+#   - Trusted author (OWNER/MEMBER/COLLABORATOR, or dependabot[bot]) → arm auto-merge now.
+#     GitHub merges once the ruleset clears (CodeRabbit's approval counts).
+#   - External author → arm ONLY after @pcavadas approves; disarm on any new external push.
+#     CodeRabbit-alone can never AUTO-merge an external PR.
+#
+# Intentionally no `actions/checkout` and no third-party actions: this never runs PR-controlled
+# code, so the write-scoped GITHUB_TOKEN on pull_request_target is safe here (same discipline as
+# dependabot-auto-approve.yml).
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  pull_request_review:
+    types: [submitted]
+
+# Serialize per-PR so a review-approval (arm) and a synchronize (disarm) firing
+# close together can't race to a non-deterministic final auto-merge state.
+concurrency:
+  group: arm-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    # Scoped to this job (least privilege). Enabling GitHub's native auto-merge
+    # via the GITHUB_TOKEN needs contents:write (auto-merge is a merge/contents
+    # op) in addition to pull-requests:write — with pull-requests:write alone the
+    # enablePullRequestAutoMerge mutation returns "Resource not accessible by
+    # integration". The workflow-level default stays contents:read.
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Arm or re-gate auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.html_url }}
+          ASSOC: ${{ github.event.pull_request.author_association }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REVIEW_STATE: ${{ github.event.review.state }}
+          REVIEWER: ${{ github.event.review.user.login }}
+        run: |
+          set -euo pipefail
+
+          # Decide once: arm auto-merge, disarm it, or leave it alone.
+          decision=none
+          case "$ASSOC" in
+            OWNER|MEMBER|COLLABORATOR) decision=arm ;;
+          esac
+          [ "$AUTHOR" = "dependabot[bot]" ] && decision=arm
+
+          if [ "$decision" != arm ]; then
+            # External author.
+            if [ "$EVENT" = "pull_request_review" ] \
+               && [ "$REVIEW_STATE" = "approved" ] \
+               && [ "$REVIEWER" = "pcavadas" ]; then
+              decision=arm
+            elif [ "$EVENT" = "pull_request_target" ] && [ "$ACTION" = "synchronize" ]; then
+              decision=disarm  # new external commits — re-gate until @pcavadas re-approves
+            fi
+          fi
+
+          case "$decision" in
+            arm)
+              echo "Arming auto-merge (author=$AUTHOR assoc=$ASSOC)."
+              gh pr merge --auto --squash "$PR"
+              ;;
+            disarm)
+              echo "External PR pushed new commits — disarming until @pcavadas re-approves."
+              gh pr merge --disable-auto "$PR" || true
+              ;;
+            *)
+              echo "External PR not approved by @pcavadas — leaving un-armed."
+              ;;
+          esac
