@@ -119,6 +119,12 @@ describe("Toast — update-lifecycle statuses", () => {
   it("resolves the label per explicit status (available/success/error)", () => {
     under(<Toast status="available" title="Version 1.4 is ready" />);
     expect(screen.getByText("UPDATE AVAILABLE")).toBeTruthy();
+
+    under(<Toast status="success" title="Done" />);
+    expect(screen.getByText("SUCCESS")).toBeTruthy();
+
+    under(<Toast status="error" title="Failed" />);
+    expect(screen.getByText("FAILED")).toBeTruthy();
   });
 
   it("downloading has no label row and shows the live percent", () => {

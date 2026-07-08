@@ -318,11 +318,14 @@ export function Toast({
   const titleNode = title ?? message;
   const messageNode = title ? message : undefined;
   const pct =
-    isDownloading && typeof percent === "number" ? percent : undefined;
+    isDownloading && typeof percent === "number"
+      ? Math.max(0, Math.min(100, percent))
+      : undefined;
 
   return (
     <div
       className="tmp-toast-in"
+      role={resolved === "error" ? "alert" : "status"}
       style={{
         position: "absolute",
         right: 18,
@@ -333,7 +336,7 @@ export function Toast({
         border: `0.5px solid ${t.hairlineStrong}`,
         borderLeft: `2.5px solid ${tone.edge}`,
         borderRadius: t.rLg,
-        boxShadow: "0 24px 48px -18px rgba(15,17,21,0.30)",
+        boxShadow: `0 24px 48px -18px ${t.shadow}`,
         padding: "13px 14px 14px 14px",
         display: "flex",
         gap: 11,
