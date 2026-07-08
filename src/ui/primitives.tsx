@@ -7,8 +7,9 @@ import { useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Dialog, DialogBody, DialogFooter } from "./Dialog";
 import { Icon, type IconName } from "./Icon";
+import { ProgressBar } from "./ProgressBar";
 import { useTheme, useStyles } from "../theme/ThemeContext";
-import { plainInput } from "../theme/tokens";
+import { plainInput, type ThemeTokens } from "../theme/tokens";
 
 // ===========================================================================
 // Button — primary (ink fill / bg text), inverse alias, ghost (bordered), warn.
@@ -52,7 +53,6 @@ export function Button({
     padding: small ? "7px 12px" : "10px 16px",
     cursor: disabled ? "default" : "pointer",
     opacity: disabled ? 0.45 : 1,
-    ...style,
   };
   const variantStyle: CSSProperties =
     variant === "primary"
@@ -74,7 +74,7 @@ export function Button({
       type={type}
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
-      style={{ ...base, ...variantStyle }}
+      style={{ ...base, ...variantStyle, ...style }}
     >
       {icon && (
         <Icon
@@ -202,65 +202,283 @@ export function Modal({
 
 // ===========================================================================
 // Toast — transient bottom-right notice. Auto-dismiss is the caller's job.
+// Covers the update-notification lifecycle (available/downloading/success/error)
+// plus the legacy ok/warn/err/info severity kind for back-compat call sites.
 // ===========================================================================
 
 export type ToastKind = "ok" | "warn" | "err" | "info";
+export type ToastStatus = "available" | "downloading" | "success" | "error";
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+  /** Filled/high-emphasis button. Only one action per toast should be primary. */
+  primary?: boolean;
+}
 
 export interface ToastProps {
-  message: ReactNode;
+  message?: ReactNode;
+  /** Bold headline. Falls back to `message` when omitted (legacy kind-only callers). */
+  title?: ReactNode;
+  /** Legacy severity — mapped to `status` when `status` isn't given directly. */
   kind?: ToastKind;
+  /** Drives icon, left-accent + label. Overrides the `kind` mapping when given. */
+  status?: ToastStatus;
+  /** 0–100. Only relevant when status === "downloading". */
+  percent?: number;
+  /** Show the live "NN%" readout next to the downloading title. Default true. */
+  showPercent?: boolean;
+  /** Rendered left to right. Max 2 recommended. */
+  actions?: ToastAction[];
   onDismiss?: () => void;
 }
 
-export function Toast({ message, kind = "info", onDismiss }: ToastProps) {
+/** Legacy `kind` isn't just a `status` alias: `warn` gets its own amber "notice"
+ *  tone rather than the shared red `error` tone, since the app's one live `warn`
+ *  caller (SongsView's BPM-didn't-stick message) is a partial SUCCESS, not a
+ *  failure — folding it into "FAILED" would misrepresent it. `info`/`ok` map
+ *  straight onto `available`/`success` (accepted: no call site passes them
+ *  today, so they don't inherit the update-specific copy in practice). */
+type ResolvedStatus = ToastStatus | "notice";
+
+function resolveStatus(
+  status: ToastStatus | undefined,
+  kind: ToastKind,
+): ResolvedStatus {
+  if (status) return status;
+  if (kind === "ok") return "success";
+  if (kind === "err") return "error";
+  if (kind === "warn") return "notice";
+  return "available";
+}
+
+interface ToastTone {
+  edge: string;
+  chipBg: string;
+  label: string | null;
+  icon: IconName;
+  spin?: boolean;
+}
+
+function toneFor(t: ThemeTokens, status: ResolvedStatus): ToastTone {
+  switch (status) {
+    case "available":
+      return {
+        edge: t.accent,
+        chipBg: t.accentBadgeSoft,
+        label: "UPDATE AVAILABLE",
+        icon: "download",
+      };
+    case "downloading":
+      return {
+        edge: t.accent,
+        chipBg: t.accentBadgeSoft,
+        label: null,
+        icon: "spinner",
+        spin: true,
+      };
+    case "success":
+      return {
+        edge: t.good,
+        chipBg: t.goodSoft,
+        label: "SUCCESS",
+        icon: "check",
+      };
+    case "error":
+      return {
+        edge: t.record,
+        chipBg: t.recordSoft,
+        label: "FAILED",
+        icon: "warn-tri",
+      };
+    case "notice":
+      return {
+        edge: t.sevWarn,
+        chipBg: t.sevWarnSoft,
+        label: "NOTICE",
+        icon: "warn-tri",
+      };
+  }
+}
+
+export function Toast({
+  message,
+  title,
+  kind = "info",
+  status,
+  percent,
+  showPercent = true,
+  actions,
+  onDismiss,
+}: ToastProps) {
   const { t } = useTheme();
-  const edge =
-    kind === "ok"
-      ? t.accent
-      : kind === "warn"
-        ? t.sevWarn
-        : kind === "err"
-          ? t.warn
-          : t.mutedInk;
+  const resolved = resolveStatus(status, kind);
+  const tone = toneFor(t, resolved);
+  const isDownloading = resolved === "downloading";
+  const titleNode = title ?? message;
+  const messageNode = title ? message : undefined;
+  const pct =
+    isDownloading && typeof percent === "number"
+      ? Math.max(0, Math.min(100, percent))
+      : undefined;
+
   return (
     <div
+      className="tmp-toast-in"
+      role={resolved === "error" ? "alert" : "status"}
       style={{
         position: "absolute",
         right: 18,
         bottom: 18,
-        minWidth: 240,
-        maxWidth: 380,
+        width: 360,
         background: t.bg,
         color: t.ink,
         border: `0.5px solid ${t.hairlineStrong}`,
-        borderLeft: `2px solid ${edge}`,
-        borderRadius: t.rSm,
-        padding: "10px 14px",
-        boxShadow: "0 24px 48px -16px rgba(0,0,0,0.35)",
-        fontFamily: t.sans,
-        fontSize: t.fsUi,
+        borderLeft: `2.5px solid ${tone.edge}`,
+        borderRadius: t.rLg,
+        boxShadow: `0 24px 48px -18px ${t.shadow}`,
+        padding: "13px 14px 14px 14px",
         display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
+        gap: 11,
+        fontFamily: t.sans,
         zIndex: 60,
       }}
     >
-      <span>{message}</span>
-      {onDismiss && (
+      <div
+        style={{
+          flexShrink: 0,
+          width: 26,
+          height: 26,
+          borderRadius: 7,
+          background: tone.chipBg,
+          color: tone.edge,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          marginTop: 1,
+        }}
+      >
+        {tone.spin ? (
+          <span className="tmp-spin" style={{ display: "inline-flex" }}>
+            <Icon name={tone.icon} size={15} strokeWidth={2.4} />
+          </span>
+        ) : (
+          <Icon name={tone.icon} size={15} strokeWidth={2} />
+        )}
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          gap: isDownloading ? 8 : 3,
+          paddingRight: 14,
+        }}
+      >
+        {tone.label && (
+          <span
+            style={{
+              fontFamily: t.mono,
+              fontSize: t.fsMicro2,
+              fontWeight: 600,
+              letterSpacing: t.lsKicker,
+              textTransform: "uppercase",
+              color: tone.edge,
+            }}
+          >
+            {tone.label}
+          </span>
+        )}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              fontSize: t.fsBody,
+              fontWeight: 600,
+              lineHeight: 1.35,
+              color: t.ink,
+            }}
+          >
+            {titleNode}
+          </span>
+          {pct !== undefined && showPercent && (
+            <span
+              style={{
+                fontFamily: t.mono,
+                fontSize: t.fsData,
+                fontWeight: 600,
+                color: t.ink2,
+                flexShrink: 0,
+              }}
+            >
+              {Math.round(pct)}%
+            </span>
+          )}
+        </div>
+        {messageNode && (
+          <div
+            style={{
+              fontSize: t.fsControl,
+              lineHeight: 1.45,
+              color: t.mutedInk,
+            }}
+          >
+            {messageNode}
+          </div>
+        )}
+        {pct !== undefined && <ProgressBar percent={pct} height={6} />}
+        {actions && actions.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 9,
+            }}
+          >
+            {actions.map((a) => (
+              <Button
+                key={a.label}
+                small
+                variant={a.primary ? "primary" : "ghost"}
+                onClick={a.onClick}
+                style={a.primary ? { background: tone.edge } : undefined}
+              >
+                {a.label}
+              </Button>
+            ))}
+          </div>
+        )}
+      </div>
+      {onDismiss && !isDownloading && (
         <button
           type="button"
           onClick={onDismiss}
+          aria-label="Dismiss"
           style={{
+            position: "absolute",
+            top: 9,
+            right: 9,
+            width: 22,
+            height: 22,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             background: "transparent",
             border: 0,
+            borderRadius: 5,
             color: t.mutedInk,
             cursor: "pointer",
-            fontFamily: t.mono,
-            fontSize: t.fsUi,
           }}
         >
-          ×
+          <Icon name="x" size={13} strokeWidth={2} />
         </button>
       )}
     </div>
