@@ -1009,8 +1009,7 @@ function SignalChainViewImpl({
     justifyContent: "safe center",
     gap: 10,
     // Right 10 clears the added-block badge's right:-5 overhang; bottom 8 gives the
-    // slim scrollbar breathing room. Top stays 2 — the stripScroll wrapper already
-    // adds +7 (paddingTop:7/marginTop:-7), so the effective top clearance is 9.
+    // slim scrollbar room. Top stays 2 — the stripScroll wrapper adds the badge's +7.
     padding: "2px 10px 8px",
   };
 
