@@ -29,7 +29,7 @@ import type {
 
 const KIND_ICON: Record<DoctorRxKind, IconName> = {
   oneclick: "sliders",
-  chain: "cable",
+  chain: "link",
   advisory: "settings",
 };
 

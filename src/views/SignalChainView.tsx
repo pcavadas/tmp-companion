@@ -1008,7 +1008,10 @@ function SignalChainViewImpl({
     // e.g. SWELL, became unreachable and the next was cropped).
     justifyContent: "safe center",
     gap: 10,
-    padding: "2px 8px 4px",
+    // Right 10 clears the added-block badge's right:-5 overhang; bottom 8 gives the
+    // slim scrollbar breathing room. Top stays 2 — the stripScroll wrapper already
+    // adds +7 (paddingTop:7/marginTop:-7), so the effective top clearance is 9.
+    padding: "2px 10px 8px",
   };
 
   // The horizontal scroll lives on this wrapper, not the strip: an overflowX:auto box
@@ -1024,7 +1027,7 @@ function SignalChainViewImpl({
   };
   if (graph.lanes && graph.lanes.length > 0) {
     return (
-      <div style={stripScroll}>
+      <div style={stripScroll} className="tmp-block-strip">
         <div
           style={{
             ...stripStyle,
@@ -1111,7 +1114,7 @@ function SignalChainViewImpl({
   }
 
   return (
-    <div style={stripScroll}>
+    <div style={stripScroll} className="tmp-block-strip">
       <div style={stripStyle}>{kids}</div>
     </div>
   );
