@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated, NON-personal demo library for the marketing screenshots. The ONLY hand-edited source. Run `bun run screenshots` (or `cargo test --features e2e build_showcase_fixture -- --ignored`) to regenerate showcase-fixture.bin from this. Block ids map the Claude Design handoff's abstract glyph codes to real Fender model ids verified present in src/models/blockArt.ts. Preset `slot` = device user slot (= list index + 1). `activeSlot` is the hero preset shown on the Level tab.",
+  "_comment": "Curated, NON-personal demo library for the marketing screenshots. The ONLY hand-edited source. Run `bun run screenshots` (or `cargo test --features e2e build_showcase_fixture -- --ignored`) to regenerate showcase-fixture.bin from this. Block ids map the Claude Design handoff's abstract glyph codes to real Fender model ids verified present in src/models/blockArt.ts. Preset `slot` = device user slot (= list index + 1). `activeSlot` is the hero preset shown on the Level tab. DOCTOR TOUR: slots 5 (Scooped Verse), 12 (Tweed Warm), 168 (Direct Acoustic) are the three presets the Doctor showcase step checks — they MUST stay PLAIN (no `scenes`) so the run is 3 sounds (< MIN_COHORT). Their list indices 4/11/167 map to curated diagnoses in doctor::showcase_profile; Scooped Verse has the lowest slot so it sorts first (worst-first ties break by slot), and its 'lost' row is the one the tour expands to feature the add-a-compressor fix.",
   "firmware": "1.8.45",
   "activeSlot": 146,
   "presets": [
@@ -16,6 +16,14 @@
         ]
       },
       "scenes": ["Clean", "Bright"]
+    },
+    {
+      "slot": 5,
+      "name": "Scooped Verse",
+      "template": "gtrSeries",
+      "groups": {
+        "G1": ["ACD_DeluxeReverb65NoFx", "ACD_CabSimTMS", "ACD_TMSmallHall"]
+      }
     },
     {
       "slot": 7,

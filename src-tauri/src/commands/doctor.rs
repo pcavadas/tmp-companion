@@ -160,6 +160,20 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 stopped = true;
                 break;
             }
+            // Marketing-screenshot showcase: the offline fake re-amp is a stimulus
+            // passthrough (every sound measures identically → "All clear"), so inject
+            // curated profiles instead and let the real `diagnose` engine render cards.
+            // Skips the device reads + reconnect sleeps for this item entirely.
+            #[cfg(feature = "e2e")]
+            if crate::e2e_showcase() {
+                measured.push((i, doctor::showcase_profile(item.list_index)));
+                let _ = on_result.send(DoctorProgressItem {
+                    key: item.key.clone(),
+                    status: "done".to_string(),
+                    message: None,
+                });
+                continue;
+            }
             last_scanned = Some(item.list_index);
             let _ = on_result.send(DoctorProgressItem {
                 key: item.key.clone(),

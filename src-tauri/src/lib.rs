@@ -177,4 +177,6 @@ pub(crate) static MONITOR_PAUSED_ACK: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_online;
 #[cfg(feature = "e2e")]
+pub(crate) use e2e_server::e2e_showcase;
+#[cfg(feature = "e2e")]
 pub use e2e_server::run_e2e_server;

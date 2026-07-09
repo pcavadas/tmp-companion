@@ -322,8 +322,10 @@
       }
 
       /* ---- footer ---- */
+      /* The last feature row (Catalog) is white, so the footer takes the hero row's
+         ivory to bookend the page instead of blending white-on-white. */
       footer {
-        background: #fff;
+        background: var(--bg-ivory);
         border-top: 0.5px solid var(--hairline);
       }
       .footer-inner {
@@ -562,7 +564,34 @@
         </div>
       </section>
 
-      <section id="copy" class="feature grey reverse">
+      <section id="doctor" class="feature grey reverse">
+        <div class="feature-row wrap">
+          <div class="shot-col">
+            <div class="shot">
+              <span class="placeholder">Doctor</span>
+              <img
+                src="assets/doctor.png"
+                alt="The Doctor tab diagnosing preset tone problems and suggesting fixes"
+                loading="lazy"
+                onerror="this.remove()"
+              />
+            </div>
+          </div>
+          <div class="text-col">
+            <span class="kicker">Doctor</span>
+            <h2>Find and fix tone problems.</h2>
+            <p>
+              Doctor re-amps each selected preset, scene, and footswitch through
+              the unit, measures its frequency balance and reverb tail, and
+              flags common problems — boomy, muddy, harsh, fizzy, scooped mids,
+              or washed-out reverb. Each finding shows what it measured and
+              offers a fix you can apply to the unit or discard.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="copy" class="feature white">
         <div class="feature-row wrap">
           <div class="shot-col">
             <div class="shot">
@@ -588,7 +617,7 @@
         </div>
       </section>
 
-      <section id="songs" class="feature white">
+      <section id="songs" class="feature grey reverse">
         <div class="feature-row wrap">
           <div class="shot-col">
             <div class="shot">
@@ -613,7 +642,7 @@
         </div>
       </section>
 
-      <section id="catalog" class="feature grey reverse">
+      <section id="catalog" class="feature white">
         <div class="feature-row wrap">
           <div class="shot-col">
             <div class="shot">
