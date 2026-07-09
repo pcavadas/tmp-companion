@@ -301,7 +301,7 @@ export function SoundRow({
                 padding: "6px 10px",
               }}
             >
-              <Icon name="cable" size={13} stroke={t.accentDeep} />
+              <Icon name="link" size={13} stroke={t.accentDeep} />
               <span>{SHARED_CAPTION}</span>
             </div>
           )}
