@@ -123,6 +123,30 @@ test.describe("Marketing screenshots", () => {
     await expect(page.locator('[title*="—"]').first()).toBeVisible(); // a model card
     await grab("catalog");
 
+    // ── Doctor: check three PLAIN presets (Base only → 3 sounds < MIN_COHORT, so the
+    // engine uses the absolute-fallback path). The backend injects curated SoundProfiles
+    // in showcase mode (doctor::showcase_profile), so the REAL diagnose engine renders
+    // genuine cards covering all six guitar diagnoses (lost/washed, muddy/boomy,
+    // harsh/fizzy) — the offline fake capture would otherwise read "All clear".
+    await page.getByRole("button", { name: "Doctor" }).click();
+    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    for (const name of ["Scooped Verse", "Tweed Warm", "Direct Acoustic"]) {
+      await filter.fill(name);
+      await page.getByTitle("Select preset to check").first().click();
+    }
+    await filter.fill("");
+    await page.getByRole("button", { name: /Check 3 sounds/ }).click();
+    await page.getByRole("button", { name: /Run check on 3 sounds/ }).click();
+    // The run auto-advances to Results on a natural finish (fake capture is instant).
+    // Capture the COLLAPSED results — the full list of diagnoses as chips across the
+    // three cards. Wait on a chip from the first and last card so the list is painted.
+    await expect(page.getByText(/presets? need a look/).first()).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect(page.getByText("Gets lost in the mix").first()).toBeVisible();
+    await expect(page.getByText("Harsh").first()).toBeVisible();
+    await grab("doctor");
+
     // ── Frame pass: composite each captured tab into a floating macOS window. Done last
     // because setContent replaces the app page (so it can't run mid-tour).
     for (const s of shots) {
