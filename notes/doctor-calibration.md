@@ -51,3 +51,18 @@ through a cab sim.
   backup JSON; engine unit tests cover rx generation.
 - Re-run: `cargo run --bin probe -- --doctor 0,1,2,3,4,5,6,7,11,12,13,14,15,16
 guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
+- `spiky` keys on `spread_lu > 4.0` (provisional, both instruments). The
+  0.12–0.8 LU library range above was measured under the 0.8 s **leveling**
+  capture; the Doctor capture's 2.5 s tail could in principle inflate spread on
+  wet presets, so a fresh doctor-capture baseline was swept (2026-07-09, the
+  re-run commands above): **0.12–0.81 LU across all 16 sounds** — the tail
+  inflation did not materialize (the wettest preset, slot 3 at tail −2.7 dB,
+  topped out at 0.81), `spiky` fired on zero library presets (by design: only
+  envelope-heavy sounds — swells/tremolo/delay buildup — can cross 4 LU on this
+  dense stimulus), and no washed co-firing was observed, so the contingent
+  `tail_ratio_db` gate was not needed. The probe sweep's per-sound JSON
+  `profile` carries `spreadLu`, directly usable to re-derive the value. The
+  sweep's graph facts come from the truncated field-8 JSON, so `has_drive`
+  there is unreliable — sanity-check any firing preset's drive blocks against
+  the real graph (Pro Control / the backup scan) before drawing threshold
+  conclusions.

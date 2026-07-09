@@ -75,6 +75,12 @@ pub struct Thresholds {
     pub wash_tail_db: f64,
     /// Lows deficit on a driven bass ⇒ buried clean tone (bass rule).
     pub buried_lows_db: f64,
+    /// Dynamics spread (short-term-max − integrated LU) on a clean chain ⇒
+    /// spiky. PROVISIONAL: ordinary presets read 0.12–0.8 LU under the 0.8 s
+    /// LEVELING capture (see notes/doctor-calibration.md) — the Doctor capture
+    /// appends a 2.5 s tail that can inflate spread on wet presets, so this
+    /// value needs a fresh probe --doctor baseline before it is trusted.
+    pub spiky_spread_lu: f64,
     /// Scene-to-base loudness jump ⇒ scene-consistency flag.
     pub scene_delta_db: f64,
 }
@@ -93,6 +99,7 @@ pub const GUITAR: Thresholds = Thresholds {
     lost_db: 4.5,
     wash_tail_db: -13.0,
     buried_lows_db: f64::INFINITY, // bass-only rule
+    spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
 };
 
@@ -104,6 +111,7 @@ pub const BASS: Thresholds = Thresholds {
     lost_db: 5.0,
     wash_tail_db: -13.0,
     buried_lows_db: 4.0,
+    spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
 };
 
@@ -137,6 +145,9 @@ pub struct SoundProfile {
     /// Mean Goertzel band power per [`doctor_bands`] band (raw power, not dB).
     pub bands: [f64; 6],
     pub integrated_lufs: f64,
+    /// Short-term-max − integrated LUFS (see `lufs::Loudness::spread_lu`):
+    /// gain-invariant dynamics spread of the capture.
+    pub spread_lu: f64,
     /// Post-stimulus tail RMS vs body RMS, in dB (see [`tail_energy_ratio`]).
     pub tail_ratio_db: f64,
 }
@@ -153,7 +164,8 @@ impl SoundProfile {
         let bands: [f64; 6] = crate::spectrum::band_energies(samples, rate as f32, &doctor_bands())
             .try_into()
             .map_err(|_| "band count".to_string())?;
-        let integrated_lufs = crate::lufs::measure_mono(samples, rate)?.integrated_lufs;
+        let loudness = crate::lufs::measure_mono(samples, rate)?;
+        let integrated_lufs = loudness.integrated_lufs;
         // A silent capture measures −inf — route the sound to the errors lane
         // (the leveller's sentinel philosophy) instead of poisoning the cohort
         // median and the scene deltas with non-finite numbers.
@@ -163,6 +175,7 @@ impl SoundProfile {
         Ok(SoundProfile {
             bands,
             integrated_lufs,
+            spread_lu: loudness.spread_lu(),
             tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples),
         })
     }
@@ -195,6 +208,8 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
     SoundProfile {
         bands: db.map(|d| 10f64.powf(d / 10.0)),
         integrated_lufs: -18.0,
+        // Steady by construction — the showcase never features the spiky card.
+        spread_lu: 0.0,
         tail_ratio_db: tail,
     }
 }
@@ -470,7 +485,10 @@ const COMP_IDS: [&str; 5] = [
 const CAB_STANDALONE: &str = "ACD_CabSimTMS";
 const EQ10_STEREO: &str = "ACD_TenBandEQStereo"; // never the Mono variant (absent from the product profile)
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
-const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob comp, cheapest schema-verified pick
+const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
+/// Soft-knee studio comp: transparent post-cab leveling (1.0% CPU vs the
+/// DynaComp's 4.8; DynaComp stays the front-of-chain pedal-squish pick).
+const COMPRESSOR_STUDIO: &str = "ACD_CompressorSimpleSoftKnee";
 
 /// EQ-10 band gain range (dB). ponytail: ±12 is the graphic-EQ standard; the
 /// band controlIds' fw schema is the source to re-derive from if a rev differs.
@@ -621,17 +639,12 @@ fn advisory(title: &str, detail: &str) -> Rx {
 }
 
 /// Chain-preview DTO: the current roster's models plus the inserted one.
-fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at_front: bool) -> Value {
+fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at: usize) -> Value {
     let mut blocks: Vec<Value> = nodes
         .iter()
         .map(|n| serde_json::json!({ "model": n.model }))
         .collect();
-    let added = serde_json::json!({ "model": inserted, "added": true });
-    if at_front {
-        blocks.insert(0, added);
-    } else {
-        blocks.push(added);
-    }
+    blocks.insert(at, serde_json::json!({ "model": inserted, "added": true }));
     serde_json::json!({ "template": template, "blocks": blocks })
 }
 
@@ -722,7 +735,12 @@ fn eq_move(
         detail: insert_detail.to_string(),
         cpu_note,
         ops: vec![op],
-        chain: Some(chain_preview(nodes, "after · +EQ", EQ10_STEREO, false)),
+        chain: Some(chain_preview(
+            nodes,
+            "after · +EQ",
+            EQ10_STEREO,
+            nodes.len(),
+        )),
     })
 }
 
@@ -806,7 +824,59 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
             fender_id: COMPRESSOR.to_string(),
             params: Vec::new(),
         }],
-        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR, true)),
+        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR, 0)),
+    })
+}
+
+/// The post-cab compressor move (spiky). Comp-aware like `comp_front`, but
+/// the insert lands immediately AFTER the cab — studio-style channel
+/// compression taming output swings. No cab (and no comp) → None; the
+/// caller's advisory covers it.
+fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
+    match facts.comp {
+        Some(false) => {
+            return Some(advisory(
+                "Turn up the compression on the compressor you already have",
+                "Your chain already runs a compressor — raising its compression (or sustain) knob reins in the level swings without adding another block.",
+            ));
+        }
+        Some(true) => {
+            return Some(advisory(
+                "Switch your compressor back on",
+                "There's a compressor in the chain but it's switched off — turning it back on reins in the level swings.",
+            ));
+        }
+        None => {}
+    }
+    let (cab_group, cab_node) = facts.cab.as_ref()?;
+    let idx = nodes
+        .iter()
+        .position(|n| &n.group_id == cab_group && &n.node_id == cab_node)?;
+    // Anchor = the NEXT node in the SAME group: the wire's beforeFenderId is a
+    // same-group anchor and a cross-group one is silently dropped (proto.rs
+    // field 2), so a cab that ends its group appends (None) — same position.
+    // Bypassed neighbours still anchor: position is chain order, not
+    // audibility — skipping one would drift the comp when it's re-enabled.
+    // ponytail: model-anchored insert — a duplicate model earlier in the group
+    // would mis-anchor; needs a node-id-anchored wire op that doesn't exist.
+    let before = nodes
+        .get(idx + 1)
+        .filter(|n| &n.group_id == cab_group)
+        .map(|n| n.model.clone());
+    let cpu_note = insert_cpu_note(nodes, COMPRESSOR_STUDIO)?;
+    Some(Rx {
+        kind: RxKind::Chain,
+        title: "Add a studio compressor after the cab".to_string(),
+        detail: "Evens out the level after the cab, transparently — the right fix when the swings come from your playing rather than an effect doing its job."
+            .to_string(),
+        cpu_note,
+        ops: vec![DoctorOp::InsertNode {
+            group_id: cab_group.clone(),
+            before_fender_id: before,
+            fender_id: COMPRESSOR_STUDIO.to_string(),
+            params: Vec::new(),
+        }],
+        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR_STUDIO, idx + 1)),
     })
 }
 
@@ -955,6 +1025,16 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             ));
             rx
         }
+        "spiky" => {
+            let mut rx = vec![advisory(
+                "Tame the swings at the source",
+                "If the swings come from a volume swell, tremolo, or a delay building up, easing that effect's depth or level is the honest fix — a compressor would flatten the effect.",
+            )];
+            if let Some(m) = comp_after_cab(nodes, &facts) {
+                rx.push(m);
+            }
+            rx
+        }
         _ => Vec::new(),
     }
 }
@@ -1077,6 +1157,19 @@ pub fn diagnose(
             vec![],
             detail,
             "The reverb is drowning the note — it washes out instead of ringing clearly.",
+        );
+    }
+    // Spread is gain-invariant and preset-intrinsic (lufs::spread_lu), so it's
+    // judged absolutely, cohort-independent — like fizzy. Graph required: a
+    // drive pedal compresses naturally, so spiky is a CLEAN-chain finding.
+    if profile.spread_lu > t.spiky_spread_lu && facts.as_ref().map(|f| f.has_drive) == Some(false) {
+        push(
+            "spiky",
+            "Spiky",
+            Sev::Med,
+            vec![],
+            format!("swings {:.1} LU between peaks and average", profile.spread_lu),
+            "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
         );
     }
     if instrument == Instrument::Bass
@@ -1231,6 +1324,7 @@ mod tests {
         SoundProfile {
             bands,
             integrated_lufs: -20.0,
+            spread_lu: 0.0,
             tail_ratio_db: -40.0,
         }
     }
@@ -1595,6 +1689,158 @@ mod tests {
             .iter()
             .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
         assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
+    }
+
+    #[test]
+    fn spiky_fires_on_clean_spread_only() {
+        let cohort = flat_cohort();
+        let clean = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let driven = chain(
+            &["ACD_TubeScreamer", "ACD_TweedDeluxe", "ACD_CabSimTMS"],
+            &[],
+        );
+
+        let mut hot = profile_with(0, 0.0);
+        hot.spread_lu = GUITAR.spiky_spread_lu + 1.0;
+        assert!(keys(&diagnose(
+            &hot,
+            Some(&clean),
+            Instrument::Guitar,
+            Some(&cohort)
+        ))
+        .contains(&"spiky"));
+        // A drive block in the chain means the amp is already compressing it —
+        // spiky is a clean-chain-only finding.
+        assert!(!keys(&diagnose(
+            &hot,
+            Some(&driven),
+            Instrument::Guitar,
+            Some(&cohort)
+        ))
+        .contains(&"spiky"));
+
+        let mut cold = profile_with(0, 0.0);
+        cold.spread_lu = GUITAR.spiky_spread_lu - 1.0;
+        assert!(!keys(&diagnose(
+            &cold,
+            Some(&clean),
+            Instrument::Guitar,
+            Some(&cohort)
+        ))
+        .contains(&"spiky"));
+
+        // Without a graph we can't assert "clean" — never fires.
+        assert!(!keys(&diagnose(&hot, None, Instrument::Guitar, Some(&cohort))).contains(&"spiky"));
+    }
+
+    #[test]
+    fn spiky_comp_inserts_right_after_cab() {
+        let p = chain(
+            &["ACD_TweedDeluxe", "ACD_TMSmallHall"],
+            &["ACD_TweedDeluxe"],
+        );
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let chain_rx: Vec<&Rx> = rx.iter().filter(|r| r.kind == RxKind::Chain).collect();
+        assert_eq!(chain_rx.len(), 1);
+        assert_eq!(chain_rx[0].ops.len(), 1);
+        match &chain_rx[0].ops[0] {
+            DoctorOp::InsertNode {
+                group_id,
+                before_fender_id,
+                fender_id,
+                ..
+            } => {
+                assert_eq!(group_id, "G1");
+                assert_eq!(before_fender_id.as_deref(), Some("ACD_TMSmallHall"));
+                assert_eq!(fender_id, "ACD_CompressorSimpleSoftKnee");
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+        let blocks = &chain_rx[0].chain.as_ref().expect("chain preview")["blocks"];
+        assert_eq!(
+            blocks[1],
+            serde_json::json!({"model": "ACD_CompressorSimpleSoftKnee", "added": true})
+        );
+    }
+
+    #[test]
+    fn spiky_comp_appends_when_cab_ends_group() {
+        // Cab last in its group → append (before_fender_id: None).
+        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let chain_rx = rx
+            .iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .expect("chain rx");
+        match &chain_rx.ops[0] {
+            DoctorOp::InsertNode {
+                group_id,
+                before_fender_id,
+                ..
+            } => {
+                assert_eq!(group_id, "G1");
+                assert!(before_fender_id.is_none());
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+
+        // A node in a DIFFERENT group right after the cab must never anchor
+        // cross-group (the firmware silently drops a cross-group anchor).
+        let mut p2 = p;
+        p2.push(DoctorNode {
+            group_id: "M1".into(),
+            node_id: "ACD_Beta57".into(),
+            model: "ACD_Beta57".into(),
+            bypassed: false,
+            cab_sim_id: None,
+            cab_sim2_enabled: None,
+            params: HashMap::new(),
+        });
+        let rx = generate_rx("spiky", &p2, Instrument::Guitar);
+        let chain_rx = rx
+            .iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .expect("chain rx");
+        match &chain_rx.ops[0] {
+            DoctorOp::InsertNode {
+                group_id,
+                before_fender_id,
+                ..
+            } => {
+                assert_eq!(group_id, "G1");
+                assert!(before_fender_id.is_none());
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spiky_is_comp_aware_and_advisory_without_cab() {
+        // Active comp in the chain → advisory about compression, no Chain rx.
+        // Every case also carries the leading "Tame the swings at the source"
+        // advisory, so assert Chain-rx absence rather than an exact count.
+        let p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        assert!(rx
+            .iter()
+            .any(|r| r.kind == RxKind::Advisory && r.title.contains("compression")));
+        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
+
+        // Bypassed comp → "switch it back on" advisory.
+        let mut p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
+        p[0].bypassed = true;
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        assert!(rx
+            .iter()
+            .any(|r| r.title == "Switch your compressor back on"));
+        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
+
+        // No comp, no cab → advisory-only, empty ops.
+        let p = chain(&["ACD_TweedDeluxe"], &[]);
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        assert!(!rx.is_empty());
+        assert!(rx.iter().all(|r| r.kind == RxKind::Advisory));
+        assert!(rx.iter().all(|r| r.ops.is_empty()));
     }
 
     #[test]

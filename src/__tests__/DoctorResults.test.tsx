@@ -741,3 +741,105 @@ describe("DoctorResults — shared-block caption", () => {
     expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
   });
 });
+
+describe("DoctorResults — spiky (time-domain chain rx)", () => {
+  beforeEach(resetMocks);
+
+  // A time-domain diag (bands: []) whose rx pairs an advisory with a chain
+  // insert — pins that a chain-kind rx renders (the strip preview + the
+  // "Rebuilds the chain" badge) alongside an advisory, with no BandMeter.
+  function spikyFixture(): DoctorCheckResult {
+    return {
+      presets: [
+        {
+          listIndex: 0,
+          sounds: [
+            {
+              key: "p0",
+              listIndex: 0,
+              scene: null,
+              footswitch: null,
+              label: "Ambient Swell",
+              tag: null,
+              diags: [
+                {
+                  key: "spiky",
+                  label: "Spiky",
+                  sev: "med",
+                  bands: [],
+                  detail: "swings 5.0 LU between peaks and average",
+                  explain:
+                    "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
+                  rx: [
+                    {
+                      kind: "advisory",
+                      title: "Tame the swings at the source",
+                      detail:
+                        "If the swings come from a volume swell, tremolo, or a delay building up, easing that effect's depth or level is the honest fix.",
+                      cpuNote: "",
+                      ops: [],
+                    },
+                    {
+                      kind: "chain",
+                      title: "Add a studio compressor after the cab",
+                      detail:
+                        "Evens out the level after the cab, transparently.",
+                      cpuNote: "+1.0% CPU",
+                      ops: [
+                        {
+                          kind: "insert_node",
+                          groupId: "g",
+                          beforeFenderId: null,
+                          fenderId: "ACD_CompressorSimpleSoftKnee",
+                          params: [],
+                        },
+                      ],
+                      chain: {
+                        template: "after · +COMP",
+                        blocks: [
+                          { model: "ACD_TweedDeluxe" },
+                          {
+                            model: "ACD_CompressorSimpleSoftKnee",
+                            added: true,
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              ],
+              integratedLufs: -20,
+              tailRatioDb: 0,
+              balanceDb: [0, 0, 0, 0, 0, 0],
+              error: null,
+            },
+          ],
+          sceneConsistency: null,
+        },
+      ],
+      stopped: false,
+      cohort: "absolute",
+    };
+  }
+
+  it("renders the chain-preview rx + advisory with no BandMeter", async () => {
+    const user = userEvent.setup();
+    renderResults(spikyFixture());
+    await user.click(screen.getByText("Ambient Swell"));
+    expect(
+      screen.getByText("Tame the swings at the source"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Add a studio compressor after the cab"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("You turn the knob")).toBeInTheDocument();
+    expect(screen.getByText("Rebuilds the chain")).toBeInTheDocument();
+    expect(screen.getByTitle("added")).toBeInTheDocument();
+    // Time-domain finding: no band chip renders.
+    expect(screen.queryByText("Lows")).not.toBeInTheDocument();
+    // Only the chain rx is applicable (the advisory has nothing to apply).
+    expect(
+      screen.getAllByRole("button", { name: /apply to the unit/i }),
+    ).toHaveLength(1);
+  });
+});
