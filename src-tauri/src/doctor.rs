@@ -792,24 +792,34 @@ fn cut_move(
     })
 }
 
+/// The comp-aware early-out shared by the compressor moves: an ACTIVE comp
+/// already in the chain → advisory to work its knob (per-caller copy); a
+/// BYPASSED one → advisory to switch it back on; none → None (the caller
+/// inserts one).
+fn comp_present_advisory(
+    facts: &GraphFacts,
+    active_title: &str,
+    active_detail: &str,
+    bypassed_detail: &str,
+) -> Option<Rx> {
+    match facts.comp {
+        Some(false) => Some(advisory(active_title, active_detail)),
+        Some(true) => Some(advisory("Switch your compressor back on", bypassed_detail)),
+        None => None,
+    }
+}
+
 /// The compressor move (lost / buried). Comp-aware: an ACTIVE comp already in
 /// the chain → advisory to raise its sustain; a BYPASSED one → advisory to
 /// switch it back on; none → insert one in front.
 fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
-    match facts.comp {
-        Some(false) => {
-            return Some(advisory(
-                "Bring up the sustain on the compressor you already have",
-                "Your chain already runs a compressor — raising its sustain evens out your picking without adding another block.",
-            ));
-        }
-        Some(true) => {
-            return Some(advisory(
-                "Switch your compressor back on",
-                "There's a compressor in the chain but it's switched off — turning it back on evens out your picking.",
-            ));
-        }
-        None => {}
+    if let Some(a) = comp_present_advisory(
+        facts,
+        "Bring up the sustain on the compressor you already have",
+        "Your chain already runs a compressor — raising its sustain evens out your picking without adding another block.",
+        "There's a compressor in the chain but it's switched off — turning it back on evens out your picking.",
+    ) {
+        return Some(a);
     }
     let (group, first_fid) = facts.front.clone()?;
     let cpu_note = insert_cpu_note(nodes, COMPRESSOR)?;
@@ -833,20 +843,13 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
 /// compression taming output swings. No cab (and no comp) → None; the
 /// caller's advisory covers it.
 fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
-    match facts.comp {
-        Some(false) => {
-            return Some(advisory(
-                "Turn up the compression on the compressor you already have",
-                "Your chain already runs a compressor — raising its compression (or sustain) knob reins in the level swings without adding another block.",
-            ));
-        }
-        Some(true) => {
-            return Some(advisory(
-                "Switch your compressor back on",
-                "There's a compressor in the chain but it's switched off — turning it back on reins in the level swings.",
-            ));
-        }
-        None => {}
+    if let Some(a) = comp_present_advisory(
+        facts,
+        "Turn up the compression on the compressor you already have",
+        "Your chain already runs a compressor — raising its compression (or sustain) knob reins in the level swings without adding another block.",
+        "There's a compressor in the chain but it's switched off — turning it back on reins in the level swings.",
+    ) {
+        return Some(a);
     }
     let (cab_group, cab_node) = facts.cab.as_ref()?;
     let idx = nodes
@@ -1765,29 +1768,32 @@ mod tests {
 
     #[test]
     fn spiky_comp_appends_when_cab_ends_group() {
-        // Cab last in its group → append (before_fender_id: None).
-        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
-        let chain_rx = rx
-            .iter()
-            .find(|r| r.kind == RxKind::Chain)
-            .expect("chain rx");
-        match &chain_rx.ops[0] {
-            DoctorOp::InsertNode {
-                group_id,
-                before_fender_id,
-                ..
-            } => {
-                assert_eq!(group_id, "G1");
-                assert!(before_fender_id.is_none());
+        let assert_appends_in_g1 = |nodes: &[DoctorNode]| {
+            let rx = generate_rx("spiky", nodes, Instrument::Guitar);
+            let chain_rx = rx
+                .iter()
+                .find(|r| r.kind == RxKind::Chain)
+                .expect("chain rx");
+            match &chain_rx.ops[0] {
+                DoctorOp::InsertNode {
+                    group_id,
+                    before_fender_id,
+                    ..
+                } => {
+                    assert_eq!(group_id, "G1");
+                    assert!(before_fender_id.is_none());
+                }
+                other => panic!("expected InsertNode, got {other:?}"),
             }
-            other => panic!("expected InsertNode, got {other:?}"),
-        }
+        };
+
+        // Cab last in its group → append (before_fender_id: None).
+        let mut p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        assert_appends_in_g1(&p);
 
         // A node in a DIFFERENT group right after the cab must never anchor
         // cross-group (the firmware silently drops a cross-group anchor).
-        let mut p2 = p;
-        p2.push(DoctorNode {
+        p.push(DoctorNode {
             group_id: "M1".into(),
             node_id: "ACD_Beta57".into(),
             model: "ACD_Beta57".into(),
@@ -1796,22 +1802,7 @@ mod tests {
             cab_sim2_enabled: None,
             params: HashMap::new(),
         });
-        let rx = generate_rx("spiky", &p2, Instrument::Guitar);
-        let chain_rx = rx
-            .iter()
-            .find(|r| r.kind == RxKind::Chain)
-            .expect("chain rx");
-        match &chain_rx.ops[0] {
-            DoctorOp::InsertNode {
-                group_id,
-                before_fender_id,
-                ..
-            } => {
-                assert_eq!(group_id, "G1");
-                assert!(before_fender_id.is_none());
-            }
-            other => panic!("expected InsertNode, got {other:?}"),
-        }
+        assert_appends_in_g1(&p);
     }
 
     #[test]
