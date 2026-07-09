@@ -225,7 +225,9 @@ pub fn probe_live_lufs(
     save: bool,
     verify: bool,
 ) -> Result<String, String> {
-    audio::set_live_lufs_sink(Box::new(|lufs| println!("live {lufs:.2} LUFS")));
+    audio::set_live_lufs_sink(Box::new(|lufs, mom| {
+        println!("live {lufs:.2} LUFS  (mom {mom:.1} dB)")
+    }));
     let r = probe_level_preset(slot, target_lufs, save, verify);
     audio::clear_live_lufs_sink();
     r

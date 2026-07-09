@@ -506,6 +506,8 @@ export interface SyncEvent {
  * NOT the final preset level; the run result row is the authoritative value. */
 export interface LiveLufsEvent {
   lufs: number;
+  /** Current hop's plain RMS in dB — decorative fuel for the live VU bars, not the solve. */
+  momentary: number;
 }
 
 // ─── Device-backup fast library read (the Presets-tab two-phase load) ──────────

@@ -28,10 +28,12 @@ pub(crate) struct SceneLevelProgressItem {
 /// Wire payload for `tmp://leveling-lufs` — the advisory live measured loudness streamed
 /// while a leveling capture runs, so the UI can show a "measuring…" readout. ADVISORY: this
 /// is the loudness at the reference level, NOT the final preset level (the result row is the
-/// confirm). Mirrored in `src/lib/types.ts`.
+/// confirm). `momentary` is the current hop's plain RMS in dB (decorative fuel for the live
+/// VU bars, not the solve). Mirrored in `src/lib/types.ts`.
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct LiveLufsEvent {
     lufs: f64,
+    momentary: f64,
 }
 
 /// RAII guard: installs an advisory live-LUFS sink that emits `tmp://leveling-lufs` for the
@@ -42,8 +44,8 @@ pub(crate) struct LiveLufsGuard;
 impl LiveLufsGuard {
     pub(crate) fn install<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
         use tauri::Emitter;
-        audio::set_live_lufs_sink(Box::new(move |lufs| {
-            let _ = app.emit("tmp://leveling-lufs", LiveLufsEvent { lufs });
+        audio::set_live_lufs_sink(Box::new(move |lufs, momentary| {
+            let _ = app.emit("tmp://leveling-lufs", LiveLufsEvent { lufs, momentary });
         }));
         LiveLufsGuard
     }

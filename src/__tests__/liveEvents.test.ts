@@ -138,7 +138,7 @@ describe("each wrapper subscribes to its event and forwards the typed payload", 
     });
     const [name, cb] = listenMock.mock.calls[0];
     expect(name).toBe("tmp://leveling-lufs");
-    cb({ payload: { lufs: -23.4 } satisfies LiveLufsEvent });
-    expect(got).toEqual({ lufs: -23.4 });
+    cb({ payload: { lufs: -23.4, momentary: -30.0 } satisfies LiveLufsEvent });
+    expect(got).toEqual({ lufs: -23.4, momentary: -30.0 });
   });
 });

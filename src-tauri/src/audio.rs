@@ -166,11 +166,14 @@ impl Capture {
 // ponytail: global advisory sink — safe only because DEVICE_OP_LOCK serializes all leveling
 // measurement (one capture at a time). If concurrent measurement is ever introduced, switch
 // to a callback threaded through engage_measure_disengage.
-type LiveLufsSink = Box<dyn Fn(f64) + Send>;
+type LiveLufsSink = Box<dyn Fn(f64, f64) + Send>;
 static LIVE_LUFS_SINK: Mutex<Option<LiveLufsSink>> = Mutex::new(None);
 
 /// Hop cadence for the advisory live-LUFS emit loop (~5 readings/sec).
 const LIVE_LUFS_HOP_MS: u64 = 200;
+
+/// Silent-hop level for the advisory momentary meter (the dB the VU rests at).
+const MOMENTARY_FLOOR_DB: f64 = -70.0;
 
 /// Install the advisory live-LUFS sink for the duration of one leveling run. Replaces any
 /// prior sink (runs are serialized, so there is never more than one in flight).
@@ -193,12 +196,13 @@ fn live_lufs_active() -> bool {
     LIVE_LUFS_SINK.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// Emit one advisory reading to the installed sink, if any. The lock is held only for the
+/// Emit one advisory reading to the installed sink, if any. `momentary` is the current hop's
+/// plain RMS in dB (decorative meter fuel, not the solve). The lock is held only for the
 /// call (per hop) — nothing else contends for it during a serialized run.
-fn emit_live_lufs(v: f64) {
+fn emit_live_lufs(integrated: f64, momentary: f64) {
     if let Ok(g) = LIVE_LUFS_SINK.lock() {
         if let Some(f) = g.as_ref() {
-            f(v);
+            f(integrated, momentary);
         }
     }
 }
@@ -392,6 +396,9 @@ fn reamp_capture_real(
         let mut loud_ch: Option<usize> = None;
         let mut meter: Option<IncrementalLoudness> = None;
         let mut consumed_frames = 0usize;
+        // Decorative per-hop momentary level (plain RMS dB, NOT K-weighted) for the live VU
+        // bars — an empty hop re-emits the previous value (the floor before any audio).
+        let mut momentary = MOMENTARY_FLOOR_DB;
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             std::thread::sleep(remaining.min(Duration::from_millis(LIVE_LUFS_HOP_MS)));
@@ -434,6 +441,12 @@ fn reamp_capture_real(
                         .copied()
                         .collect();
                     consumed_frames = total_frames;
+                    let r = rms(&mono) as f64;
+                    momentary = if r > 0.0 {
+                        (20.0 * r.log10()).max(MOMENTARY_FLOOR_DB)
+                    } else {
+                        MOMENTARY_FLOOR_DB
+                    };
                     if let Some(m) = meter.as_mut() {
                         let _ = m.add(&mono);
                     }
@@ -446,7 +459,7 @@ fn reamp_capture_real(
                 .and_then(|m| m.integrated().ok())
                 .filter(|v| v.is_finite())
             {
-                emit_live_lufs(v);
+                emit_live_lufs(v, momentary);
             }
         }
     } else {
@@ -931,6 +944,11 @@ pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
     })
 }
 
+/// RMS amplitude (linear) of a sample slice.
+fn rms(samples: &[f32]) -> f32 {
+    (samples.iter().map(|x| x * x).sum::<f32>() / samples.len().max(1) as f32).sqrt()
+}
+
 impl Capture {
     /// Per-channel peak absolute amplitude (linear, 0..1).
     pub fn channel_peak(&self, ch: usize) -> f32 {
@@ -941,8 +959,7 @@ impl Capture {
     /// Tier-2 calibration metric) far better than peak, which is dominated by
     /// pick-attack transients regardless of pickup output.
     pub fn channel_rms(&self, ch: usize) -> f32 {
-        let s = self.channel(ch);
-        (s.iter().map(|x| x * x).sum::<f32>() / s.len().max(1) as f32).sqrt()
+        rms(&self.channel(ch))
     }
 }
 
@@ -963,16 +980,16 @@ mod tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(0.0f64));
         let (h, l) = (hits.clone(), last.clone());
-        set_live_lufs_sink(Box::new(move |v| {
+        set_live_lufs_sink(Box::new(move |v, _m| {
             h.fetch_add(1, Ordering::SeqCst);
             *l.lock().unwrap() = v;
         }));
         assert!(live_lufs_active());
-        emit_live_lufs(-23.4);
-        emit_live_lufs(-18.0);
+        emit_live_lufs(-23.4, -30.0);
+        emit_live_lufs(-18.0, -25.0);
         clear_live_lufs_sink();
         assert!(!live_lufs_active());
-        emit_live_lufs(-99.0); // no sink installed → ignored
+        emit_live_lufs(-99.0, -99.0); // no sink installed → ignored
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert_eq!(*last.lock().unwrap(), -18.0);
     }
