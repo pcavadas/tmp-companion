@@ -4,7 +4,7 @@ Tauri 2 (Rust backend + React/TypeScript frontend) **macOS-only** desktop app th
 
 > **Architecture.** Click-only **6-tab UI** — Level · Doctor · Copy · Songs · Catalog · Settings (`src/views/`, route keys `level`/`doctor`/`copy`/`songs`/`catalog`/`settings`). Feature docs: `notes/`.
 > - **Backend (`src-tauri/src/`):** `hid.rs` exclusive HID seize on a dedicated CFRunLoop thread; `session.rs` handshake + device commands; `proto.rs` FenderMessageTMS codec (golden-tested); `monitor.rs` the live ~250 ms-heartbeat session + startup snapshot; `leveller.rs`/`lufs.rs`/`audio.rs` re-amp measurement; `audiograph.rs` node ops; `library.rs` (OFFLINE `.preset` folder ingestion + `decode_preset_bytes` + device reconciliation with a duplicate-name ambiguity guard) / `preset_io.rs` (`OfflineIo` in-place re-import + identity guard; `LiveIo` diff→`changeParameter`+save) / `bulk_cmd.rs` (enum-tagged `OpSpec` + `build_operation` + `IoPath` + `RunRegistry`) the bulk-run engine; `commands/` the Tauri commands (one file per feature area, registered in `bootstrap.rs`) + `probe_api/` the `probe` entry points (`lib.rs` is the slim crate hub: mod tree + re-export seams + `AppState` + the `MONITOR_*` statics). Backend modules beyond the UI's commands (the bulk engine, re-amp analysis, library import/search) are reachable via the `probe` bin + tests.
-> - **Frontend (`src/`):** `theme/` (light-only `tokens.ts` + `styles.ts` `buildStyles(t)` via `useStyles()`), `ui/` (`Icon`, `BlockArt` + `blockart/` per-family SVG renderers (~31 files split by form/tone family — amps + ampsCombo\*/ampsHead\*, pedals + pedalsMotif\*/pedalsSpecial/pedalKnobs, mics + micBodies\*, forms → formsPedal/formsRack, parts → partsCloth/partsPanel, cabs, `shared.ts` barrel over sharedIds/sharedTones/sharedCloth; + generated `blockColors.generated.ts` — produced by the maintainer-machine catalog pipeline (not in this repo), never hand-edit; component files export only components so the data/helper modules keep Fast Refresh), `primitives`, `ActionBar`, `Skeleton`), `lib/` (typed `invoke` wrappers + `types.ts` wire mirror + `format.ts` + `useDeviceLoad`), `views/` (feature folders `level/` · `doctor/` · `copy/` · `songs/` · `settings/` · `overlays/`, one component per file; flat `CatalogView`/`PresetList`/`ActiveSignalChainView`/`SignalChainView`/`EmptyState`), `models/` (`catalog.ts` + `lineage.ts` + `blockArt.ts` (resolvers only — the `TMP_CATALOG` rows live in `blockArtCatalog/`, one file per category) + the bundled `tmp-model-guide.json`). Block art is original SVG through the BlockArt engine, shared by the signal chain and the Catalog tab — never `<img>` photo tiles (Fender IP; the photo PNGs are not bundled). `App.tsx` routes the 6 tabs; the app is **click-only** (no keyboard shortcuts, no command palette). Catalog is device-independent (`deviceIndependent` on `TABS`). Values with no backing command render explicit empty / "—" / disabled states; slow regions render `.tmp-skel` skeletons (keyframes in `index.html`). The Songs tab is device-backed (the unit is the source of truth; every CRUD action is a read-back-after-write command); its **Presets axis** (the rail's "Setlists ⇄ Presets" pivot) is READ-ONLY and sourced from the shared startup backup scan (the song↔preset map decoded from `normalDb.db3`'s `SongPresets` table), not live reads — song↔preset assignments are unit-owned (edited in Pro Control).
+> - **Frontend (`src/`):** `theme/` (light-only `tokens.ts` + `styles.ts` `buildStyles(t)` via `useStyles()`), `ui/` (`Icon`, `BlockArt` + `blockart/` per-family SVG renderers (~31 files split by form/tone family — amps + ampsCombo\*/ampsHead\*, pedals + pedalsMotif\*/pedalsSpecial/pedalKnobs, mics + micBodies\*, forms → formsPedal/formsRack, parts → partsCloth/partsPanel, cabs, `shared.ts` barrel over sharedIds/sharedTones/sharedCloth; + generated `blockColors.generated.ts` — produced by the maintainer-machine catalog pipeline (not in this repo), never hand-edit; component files export only components so the data/helper modules keep Fast Refresh), `primitives`, `ActionBar`, `Skeleton`, + the DS atoms/scaffolds — full list in the `ui/` tree below; REUSE these, don't hand-roll a chip/spinner/empty-state/meter/run-row), `lib/` (typed `invoke` wrappers + `types.ts` wire mirror + `format.ts` + `useDeviceLoad`), `views/` (feature folders `level/` · `doctor/` · `copy/` · `songs/` · `settings/` · `overlays/`, one component per file; flat `CatalogView`/`PresetList`/`ActiveSignalChainView`/`SignalChainView`/`EmptyState`), `models/` (`catalog.ts` + `lineage.ts` + `blockArt.ts` (resolvers only — the `TMP_CATALOG` rows live in `blockArtCatalog/`, one file per category) + the bundled `tmp-model-guide.json`). Block art is original SVG through the BlockArt engine, shared by the signal chain and the Catalog tab — never `<img>` photo tiles (Fender IP; the photo PNGs are not bundled). `App.tsx` routes the 6 tabs; the app is **click-only** (no keyboard shortcuts, no command palette). Catalog is device-independent (`deviceIndependent` on `TABS`). Values with no backing command render explicit empty / "—" / disabled states; slow regions render `.tmp-skel` skeletons (keyframes in `index.html`). The Songs tab is device-backed (the unit is the source of truth; every CRUD action is a read-back-after-write command); its **Presets axis** (the rail's "Setlists ⇄ Presets" pivot) is READ-ONLY and sourced from the shared startup backup scan (the song↔preset map decoded from `normalDb.db3`'s `SongPresets` table), not live reads — song↔preset assignments are unit-owned (edited in Pro Control).
 > - **UX north-star:** fewest possible clicks per action; the audience is thousands of users, many of them not comfortable with computers; every feature ships whole in v1 (no subsetting).
 > - **Shared seams:** `backup::xor_jld` (`pub(crate)`, the `.preset` codec) + `library::decode_preset_bytes`; `crate::replace_inplace_core` (in-place re-import); `audiograph::for_each_node` / `for_each_node_mut` + `node_id` — the node-walk helpers the scan/edit modules share.
 
@@ -151,7 +151,7 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
   theme/              tokens.ts (LIGHT-ONLY scalar+color+letter-spacing tokens — incl. rDialog=14 (the
                       DS Dialog card radius) + the plainInput(t,extra) inline-edit input-style helper
                       lifted here from songs/songUtil.ts) + styles.ts
-                      (buildStyles(t) composed-style registry) + ThemeContext (useTheme()→{t},
+                      (buildStyles(t) composed-style registry, incl. the shared `kickerWide` micro-label) + ThemeContext (useTheme()→{t},
                       useStyles()→composed styles). Dark mode removed; call-site pattern is
                       `const { t } = useTheme(); const s = useStyles();`
   ui/                 Icon.tsx + iconNames.ts (line icons), BlockArt.tsx (engine dispatch) +
@@ -164,18 +164,28 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                       DeviceStatus.tsx (top-bar 3-phase indicator: hollow disconnected →
                       amber-pulse "reading firmware…" → green "connected · <fw>"; tmp-fwpulse
                       keyframes live in index.html),
+                      DS atoms Tag.tsx (chip — own file now, extracted FROM primitives) / Spinner.tsx /
+                      Dot.tsx / SlotLabel.tsx / Meter.tsx (STATIC track+fill CPU meter — deliberately
+                      NOT ProgressBar, whose 0.4s transition would lag the paint; don't "consolidate"
+                      them) / PaneEmpty.tsx (medallion detail-pane empty state) + wizard/table
+                      scaffolds ConfirmBar.tsx (run stop-confirm) / RunRow.tsx (run progress row —
+                      opaque icon/status ReactNode slots, Doctor + Leveling share it) /
+                      SetupGroupHeader.tsx / PresetOptionRow.tsx / ApplyToBar.tsx / Rail.tsx (the
+                      210px left rail: Songs setlists + Settings categories),
                       primitives (Dialog — the ONE DS dialog shell: position-FIXED blurred backdrop
                       (covers the whole window incl. the tab bar) + DialogHeader/DialogBody (scrolls)/
                       DialogFooter slots, sm/md size scale, viewport-capped maxHeight; Modal +
                       SaveOverlay + WizardShell + HowLevelingSheet ALL route through it / Menu (+
                       MenuDivider) the ONE anchored dropdown/context menu (Scrim + anchored card) /
-                      Modal/Button/Scrim/Slider/Toast/Select/SearchInput/Tag/Panel/
+                      Modal/Button/Scrim/Slider/Toast/Select/SearchInput/Panel/
                       Checkbox/Toggle/MenuItem/AlertBanner) — every prop-bearing component declares a
                       named XxxProps interface. DialogCardCtx (the Pick-portal context) lives in
                       ui/dialogContext.ts, re-exported from views/overlays/wizardContext.ts
   lib/                typed invoke wrappers + types.ts + format.ts (DASH, pad2, pad3, slotLabel)
                       + useDeviceLoad.ts (shared loading→ready|error state machine for the views)
                       + connectError.ts (classifies a connect failure → red banner vs friendly gate)
+                      + useAutoAdvance.ts (run-wizard auto-advance to summary; a manual stop
+                      suppresses it) + usePickedRows.ts (the setup steps' shared bulk-pick selection)
   views/            the 6-tab IA bodies, named per the TMP ubiquitous language (Domain noun + View).
                       The 3 large views are FEATURE FOLDERS,
                       each a re-export index.ts over one file per substantial component + a private
@@ -270,8 +280,10 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                                 severity.ts ranks findings, applyLock.ts serializes applies.
                       songs/    SongsView (device-backed songs+setlists CRUD + a "Setlists ⇄ Presets" rail
                                 pivot whose Presets axis is a READ-ONLY songs-per-preset view sourced from the
-                                shared backup scan, not live reads) + SongForm / SongList / AddSongs /
-                                SetlistDetail / Seg (the pivot toggle) / PresetDetail (+UnitBadge) / skeletons + shared.tsx
+                                shared backup scan, not live reads) + SongForm / SongList (+ ListHeader /
+                                SongRow) / AddSongs / SetlistDetail / PresetDetail (+UnitBadge) /
+                                skeletons + shared.tsx; the pivot toggle is the primitives SegmentedControl
+                                (the songs-local Seg is gone)
                       settings/ SettingsView (user-owned loudness targets + playback level + instrument
                                 profiles + Tier-2 calibration) + TargetRow (editable: drag-reorder / inline-
                                 rename / draggable slider · TMIN −32 TMAX −16, NO upper ceiling/clamp · ⋯
