@@ -21,11 +21,11 @@ export function SetupGroupHeader({ slot, name }: SetupGroupHeaderProps) {
         display: "flex",
         alignItems: "baseline",
         gap: 9,
-        marginBottom: 6,
+        marginBottom: t.rowPadY,
       }}
     >
       <SlotLabel index={slot} />
-      <span style={{ fontFamily: t.serif, fontSize: 15, color: t.ink }}>
+      <span style={{ fontFamily: t.serif, fontSize: t.fsName, color: t.ink }}>
         {name}
       </span>
     </div>

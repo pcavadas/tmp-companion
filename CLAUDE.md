@@ -178,7 +178,8 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                       SaveOverlay + WizardShell + HowLevelingSheet ALL route through it / Menu (+
                       MenuDivider) the ONE anchored dropdown/context menu (Scrim + anchored card) /
                       Modal/Button/Scrim/Slider/Toast/Select/SearchInput/Panel/
-                      Checkbox/Toggle/MenuItem/AlertBanner) — every prop-bearing component declares a
+                      Checkbox/Toggle/MenuItem/AlertBanner/SegmentedControl (generic radio pill)) —
+                      every prop-bearing component declares a
                       named XxxProps interface. DialogCardCtx (the Pick-portal context) lives in
                       ui/dialogContext.ts, re-exported from views/overlays/wizardContext.ts
   lib/                typed invoke wrappers + types.ts + format.ts (DASH, pad2, pad3, slotLabel)

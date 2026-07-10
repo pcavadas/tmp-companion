@@ -96,8 +96,12 @@ export function NeedsDevicePill() {
   );
 }
 
+interface EmptyHintProps {
+  children: ReactNode;
+}
+
 // Italic muted empty-state bar shared by the Targets and Instruments panes.
-function EmptyHint({ children }: { children: ReactNode }) {
+function EmptyHint({ children }: EmptyHintProps) {
   const { t } = useTheme();
   return (
     <div
