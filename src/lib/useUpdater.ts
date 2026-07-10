@@ -130,6 +130,7 @@ export function useUpdater(): UpdaterApi {
   }, [onFound]);
 
   const check = useCallback(async (): Promise<"found" | "none" | "error"> => {
+    if (phase === "downloading" || phase === "ready") return "found";
     try {
       const found = await checkForUpdate();
       if (!found) return "none";
@@ -138,7 +139,7 @@ export function useUpdater(): UpdaterApi {
     } catch {
       return "error";
     }
-  }, [onFound, autoInstall]);
+  }, [onFound, autoInstall, phase]);
 
   const setAutoInstall = useCallback((on: boolean) => {
     setAutoInstallState(on); // optimistic — persistence is best-effort

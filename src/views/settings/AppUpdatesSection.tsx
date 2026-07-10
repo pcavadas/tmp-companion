@@ -50,7 +50,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
         <div
           style={{
             fontFamily: t.serif,
-            fontSize: 13.5,
+            fontSize: t.fsBody2,
             color: t.ink,
             whiteSpace: "nowrap",
           }}
@@ -76,7 +76,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
               alignItems: "center",
               gap: 6,
               fontFamily: t.mono,
-              fontSize: 10,
+              fontSize: t.fsData2,
               color: t.sevWarn,
             }}
           >
@@ -98,7 +98,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
               alignItems: "center",
               gap: 5,
               fontFamily: t.mono,
-              fontSize: 10,
+              fontSize: t.fsData2,
               color: t.good,
             }}
           >
@@ -116,7 +116,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
             marginTop: 4,
           }}
         >
-          <span style={{ fontFamily: t.sans, fontSize: 12, color: t.ink2 }}>
+          <span style={{ fontFamily: t.sans, fontSize: t.fsUi, color: t.ink2 }}>
             Install updates automatically
           </span>
           <Toggle

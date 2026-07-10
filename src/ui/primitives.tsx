@@ -159,7 +159,7 @@ export function Modal({
           {headline}
         </h2>
         {body && (
-          <p
+          <div
             style={{
               fontFamily: t.serif,
               fontSize: t.fsName,
@@ -169,7 +169,7 @@ export function Modal({
             }}
           >
             {body}
-          </p>
+          </div>
         )}
         {code != null && (
           <div

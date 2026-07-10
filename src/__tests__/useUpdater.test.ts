@@ -186,6 +186,134 @@ describe("useUpdater — dev-build guard", () => {
   });
 });
 
+describe("useUpdater — manual check()", () => {
+  it("returns found and transitions to available", async () => {
+    const u = mkUpdate("1.1.0", null);
+    h.checkForUpdate.mockResolvedValue(u.found);
+
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.phase).toBe("available");
+    });
+
+    h.checkForUpdate.mockClear();
+    const other = mkUpdate("1.2.0", null);
+    h.checkForUpdate.mockResolvedValue(other.found);
+
+    let outcome: "found" | "none" | "error" | undefined;
+    await act(async () => {
+      outcome = await result.current.check();
+    });
+    expect(outcome).toBe("found");
+    expect(result.current.version).toBe("1.2.0");
+  });
+
+  it("returns none and stays idle when nothing is available", async () => {
+    h.checkForUpdate.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.currentVersion).toBe("1.0.0");
+    });
+
+    let outcome: "found" | "none" | "error" | undefined;
+    await act(async () => {
+      outcome = await result.current.check();
+    });
+    expect(outcome).toBe("none");
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("returns error when the check rejects", async () => {
+    h.checkForUpdate.mockResolvedValueOnce(null);
+
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.currentVersion).toBe("1.0.0");
+    });
+
+    h.checkForUpdate.mockRejectedValueOnce(new Error("offline"));
+    let outcome: "found" | "none" | "error" | undefined;
+    await act(async () => {
+      outcome = await result.current.check();
+    });
+    expect(outcome).toBe("error");
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("no-ops while a download is already in progress", async () => {
+    const u = mkUpdate("1.1.0", null);
+    h.checkForUpdate.mockResolvedValue(u.found);
+
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.phase).toBe("available");
+    });
+
+    act(() => {
+      result.current.startDownload();
+    });
+    expect(result.current.phase).toBe("downloading");
+
+    h.checkForUpdate.mockClear();
+    let outcome: "found" | "none" | "error" | undefined;
+    await act(async () => {
+      outcome = await result.current.check();
+    });
+    expect(outcome).toBe("found");
+    expect(h.checkForUpdate).not.toHaveBeenCalled();
+    expect(result.current.phase).toBe("downloading");
+    expect(u.download).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useUpdater — dismiss / restart / setAutoInstall", () => {
+  it("dismiss() resets any dismissible phase to idle", async () => {
+    const u = mkUpdate("1.1.0", null);
+    h.checkForUpdate.mockResolvedValue(u.found);
+
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.phase).toBe("available");
+    });
+
+    act(() => {
+      result.current.dismiss();
+    });
+    expect(result.current.phase).toBe("idle");
+  });
+
+  it("restart() calls relaunchApp", async () => {
+    h.checkForUpdate.mockResolvedValue(null);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.currentVersion).toBe("1.0.0");
+    });
+
+    act(() => {
+      result.current.restart();
+    });
+    expect(h.relaunchApp).toHaveBeenCalledTimes(1);
+  });
+
+  it("setAutoInstall() updates state optimistically and persists it", async () => {
+    h.checkForUpdate.mockResolvedValue(null);
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.currentVersion).toBe("1.0.0");
+    });
+    expect(result.current.autoInstall).toBe(false);
+
+    act(() => {
+      result.current.setAutoInstall(true);
+    });
+    expect(result.current.autoInstall).toBe(true);
+    await waitFor(() => {
+      expect(h.setAutoInstallUpdates).toHaveBeenCalledWith(true);
+    });
+  });
+});
+
 describe("formatReleaseNotes", () => {
   it("strips headings, links and bullets, drops blanks, caps at 10", () => {
     expect(

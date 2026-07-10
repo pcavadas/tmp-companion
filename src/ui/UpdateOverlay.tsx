@@ -9,7 +9,11 @@ import { Modal, Toast } from "./primitives";
 import { formatReleaseNotes } from "../lib/useUpdater";
 import type { UpdaterApi } from "../lib/useUpdater";
 
-export function UpdateOverlay({ u }: { u: UpdaterApi }) {
+interface UpdateOverlayProps {
+  u: UpdaterApi;
+}
+
+export function UpdateOverlay({ u }: UpdateOverlayProps) {
   const { t } = useTheme();
   const version = u.version ?? "";
 
@@ -48,7 +52,7 @@ export function UpdateOverlay({ u }: { u: UpdaterApi }) {
               <div
                 style={{
                   fontFamily: t.mono,
-                  fontSize: 11,
+                  fontSize: t.fsData,
                   color: t.faint,
                   marginBottom: 10,
                 }}
@@ -60,7 +64,7 @@ export function UpdateOverlay({ u }: { u: UpdaterApi }) {
                   key={i}
                   style={{
                     fontFamily: t.sans,
-                    fontSize: 13.5,
+                    fontSize: t.fsBody2,
                     lineHeight: 1.75,
                     color: t.ink2,
                   }}
