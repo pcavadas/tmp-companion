@@ -78,6 +78,9 @@ export interface LevelJob {
   topology_id: string | null;
   /** Tier-2 measured dry-instrument loudness (K-weighted LUFS). */
   calibration_lufs: number | null;
+  /** Chosen instrument profile id — backend resolves its Tier-2 calibration capture
+   * WAV as the re-amp stimulus when present. */
+  profile_id: string | null;
   /** Explicit stimulus override (wins over topology_id). */
   stimulus_path?: string | null;
   /** Block-knob leveling coordinates (from `list_level_blocks`). */
@@ -181,7 +184,7 @@ export interface CalibrateResult {
   /** Dry capture hit 0 dBFS — measurement biased low; re-calibrate softer. */
   clipped: boolean;
   /** LU the topology stimulus falls short of reproducing `lufs` (peak-capped);
-   * null when reachable. */
+   * null when reachable — always null when the capture was stored as the stimulus. */
   stimulus_shortfall_lu: number | null;
 }
 

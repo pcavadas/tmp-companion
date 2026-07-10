@@ -16,6 +16,10 @@ pub(crate) struct LevelJob {
     calibration_lufs: Option<f32>,
     /// Optional explicit stimulus override (takes precedence over `topology_id`).
     stimulus_path: Option<String>,
+    /// Instrument profile id: when it has a stored Tier-2 DI capture, that WAV is
+    /// the stimulus (injected verbatim), overriding the synthetic topology sample.
+    #[serde(default)]
+    profile_id: Option<String>,
     /// Block-knob leveling: when all three are set, level by driving this block
     /// control (ChangeParameter, closed loop) instead of the master `presetLevel`.
     /// Coordinates come from `list_level_blocks`.
@@ -50,32 +54,72 @@ pub(crate) async fn list_level_blocks(
     );
     Ok(blocks)
 }
-/// Resolve the stimulus WAV: explicit path → selected topology → `TMP_LEVELLER_STIMULUS`
-/// env → the default bundled synthetic sample.
+/// Resolve the stimulus WAV for the profile-UNAWARE callers (audition/spectrum/
+/// migration/doctor — the Doctor deliberately keeps the synthetic stimulus until
+/// its thresholds are recalibrated against captures). Precedence:
+/// `TMP_E2E_STIMULUS` (e2e) → explicit path → selected topology WAV →
+/// `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample.
 pub(crate) fn resolve_stimulus<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     explicit: Option<String>,
     topology_id: Option<String>,
 ) -> Result<String, String> {
+    resolve_stimulus_impl(app, explicit, topology_id, None).map(|(p, _)| p)
+}
+
+/// The leveling variant: also consults the profile's stored Tier-2 DI capture and
+/// returns the EFFECTIVE calibration scalar — `None` when the capture won, so a
+/// real DI is injected VERBATIM (never re-scaled). Enforcing the no-scaling rule
+/// inside this seam means a future leveling caller cannot forget it.
+pub(crate) fn resolve_stimulus_for_leveling<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    explicit: Option<String>,
+    topology_id: Option<String>,
+    profile_id: Option<&str>,
+    calibration_lufs: Option<f32>,
+) -> Result<(String, Option<f32>), String> {
+    let (path, from_capture) = resolve_stimulus_impl(app, explicit, topology_id, profile_id)?;
+    Ok((path, if from_capture { None } else { calibration_lufs }))
+}
+
+/// Shared precedence chain (ORDER IS LOAD-BEARING): `TMP_E2E_STIMULUS` (e2e) →
+/// explicit path → the profile's stored Tier-2 DI capture → selected topology WAV
+/// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample.
+fn resolve_stimulus_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    explicit: Option<String>,
+    topology_id: Option<String>,
+    profile_id: Option<&str>,
+) -> Result<(String, bool), String> {
     // Offline e2e: a fixed repo stimulus WAV (MockRuntime can't resolve bundle resources).
     #[cfg(feature = "e2e")]
     if let Ok(p) = std::env::var("TMP_E2E_STIMULUS") {
         if !p.is_empty() {
-            return Ok(p);
+            return Ok((p, false));
         }
     }
     if let Some(p) = explicit.filter(|p| !p.is_empty()) {
-        return Ok(p);
+        return Ok((p, false));
+    }
+    if let Some(id) = profile_id.filter(|s| !s.is_empty()) {
+        if let Some(p) = profiles::existing_capture_for(app, id) {
+            log::info!(
+                "resolve_stimulus: profile {id} → captured DI stimulus {}",
+                p.display()
+            );
+            return Ok((p.to_string_lossy().into_owned(), true));
+        }
+        log::info!("resolve_stimulus: profile {id} has no captured DI → synthetic fallback");
     }
     if let Some(tid) = topology_id.filter(|t| !t.is_empty()) {
-        return topology_wav_path(app, &tid);
+        return topology_wav_path(app, &tid).map(|p| (p, false));
     }
     if let Ok(p) = std::env::var("TMP_LEVELLER_STIMULUS") {
         if !p.is_empty() {
-            return Ok(p);
+            return Ok((p, false));
         }
     }
-    topology_wav_path(app, topologies::DEFAULT_TOPOLOGY_ID)
+    topology_wav_path(app, topologies::DEFAULT_TOPOLOGY_ID).map(|p| (p, false))
 }
 /// Fletcher–Munson playback compensation for a leveling job: the LU offset added
 /// to the target, from the store's playback level × the stimulus topology's
@@ -119,6 +163,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         topology_id,
         calibration_lufs,
         stimulus_path,
+        profile_id,
         block_group_id,
         block_node_id,
         block_parameter_id,
@@ -129,7 +174,13 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         log::info!("level_preset slot={slot}: playback compensation {offset_lu:+.1} LU on target {target_lufs:.1}");
     }
     let target_lufs = target_lufs + offset_lu;
-    let stim_path = resolve_stimulus(&app, stimulus_path, topology_id)?;
+    let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
+        &app,
+        stimulus_path,
+        topology_id,
+        profile_id.as_deref(),
+        calibration_lufs,
+    )?;
     // A block knob is selected only when all three coordinates are present;
     // otherwise level the master `presetLevel` (the validated one-shot path).
     let block = match (block_group_id, block_node_id, block_parameter_id) {
@@ -228,8 +279,69 @@ pub(crate) struct CalibrateResult {
     clipped: bool,
     /// The topology stimulus cannot be scaled up to `lufs` without clipping (the
     /// 0.99 peak cap in `read_stimulus_calibrated_with_shortfall`): leveling will
-    /// drive the amp this many LU softer than the real instrument. `None` = reachable.
+    /// drive the amp this many LU softer than the real instrument. `None` = reachable
+    /// OR a capture was stored (the capture IS the stimulus, so a shortfall can't arise).
     stimulus_shortfall_lu: Option<f32>,
+}
+
+/// Fraction of 500 ms windows whose RMS is within 30 dB of the loudest window's —
+/// a coarse "did the player actually keep playing?" gate for a calibration capture.
+/// ponytail: crude broadband-energy heuristic — a sustained hum or one held note
+/// reads as fully active. Upgrade to per-window spectral/hum discrimination only if
+/// false accepts show up in the field.
+fn active_window_fraction(samples: &[f32], sample_rate: u32) -> f64 {
+    let win = (sample_rate as usize / 2).max(1); // 500 ms
+    let rms: Vec<f64> = samples
+        .chunks(win)
+        .map(|w| {
+            let sum: f64 = w.iter().map(|&x| (x as f64) * (x as f64)).sum();
+            (sum / w.len() as f64).sqrt()
+        })
+        .collect();
+    let loudest = rms.iter().copied().fold(0.0f64, f64::max);
+    if rms.is_empty() || loudest <= 0.0 {
+        return 0.0;
+    }
+    let thresh = loudest * 10f64.powf(-30.0 / 20.0); // within 30 dB of the loudest
+    rms.iter().filter(|&&r| r >= thresh).count() as f64 / rms.len() as f64
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::active_window_fraction;
+
+    const SR: u32 = 48_000;
+
+    #[test]
+    fn mostly_silent_capture_fails_the_gate() {
+        // 8 s buffer, only the first 1.5 s carries a tone; the rest is silence.
+        let mut buf = vec![0.0f32; (SR as usize) * 8];
+        for (i, s) in buf.iter_mut().take((SR as usize) * 3 / 2).enumerate() {
+            *s = (i as f32 * 0.05).sin() * 0.4;
+        }
+        assert!(active_window_fraction(&buf, SR) < 0.5);
+    }
+
+    #[test]
+    fn continuous_pluck_train_passes_the_gate() {
+        // A pluck every 300 ms (gap ≤ 0.5 s) across 8 s: every 500 ms window has
+        // pluck energy, so the active fraction is high.
+        let mut buf = vec![0.0f32; (SR as usize) * 8];
+        let step = (SR as usize) * 3 / 10; // 300 ms
+        let mut start = 0;
+        while start < buf.len() {
+            for k in 0..(SR as usize / 4) {
+                // 250 ms decaying pluck
+                if start + k >= buf.len() {
+                    break;
+                }
+                let env = (-(k as f32) / (SR as f32 * 0.08)).exp();
+                buf[start + k] += (k as f32 * 0.06).sin() * 0.5 * env;
+            }
+            start += step;
+        }
+        assert!(active_window_fraction(&buf, SR) >= 0.5);
+    }
 }
 
 /// Tier-2 calibration: capture the dry instrument (USB-Out 3) for `secs` while
@@ -246,26 +358,32 @@ pub(crate) async fn calibrate_profile(
 ) -> Result<CalibrateResult, String> {
     let app2 = app.clone();
     with_released_seize(state.session.clone(), move || {
-        // Force normal mode so the dry instrument flows on USB-Out 3.
-        if let Ok(mut s) = Session::connect() {
-            let _ = s.set_reamp_mode(false);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let cap = audio::capture_input(secs.clamp(2.0, 30.0), 48_000)?;
-
-        let peak = cap.channel_peak(audio::DRY_INSTRUMENT_IN_CH);
-        if peak < 1e-4 {
-            return Err("no instrument signal captured — play continuously during \
-                        calibration (guitar in the front INSTRUMENT input, volume up)"
-                .to_string());
+        let (mono, peak) = crate::probe_api::stimulus::capture_dry_di(secs)?;
+        // Reject a capture that's mostly silence (a valid capture becomes the stimulus,
+        // so a few plucks + long gaps would inject a mostly-dead re-amp signal).
+        if active_window_fraction(&mono, 48_000) < 0.5 {
+            return Err(
+                "play continuously during calibration — too much silence in the capture"
+                    .to_string(),
+            );
         }
         // K-weighted loudness (perceptual), not flat RMS — see read_stimulus_calibrated.
-        let lufs =
-            lufs::measure_mono(&cap.channel(audio::DRY_INSTRUMENT_IN_CH), 48_000)?.integrated_lufs;
+        let lufs = lufs::measure_mono(&mono, 48_000)?.integrated_lufs;
         if !lufs.is_finite() {
             return Err("captured signal too quiet to measure — play louder/longer".to_string());
         }
         let lufs = lufs as f32;
+        let clipped = peak >= 0.99;
+
+        // Store the capture (or clear a stale one on a clipped run) BEFORE persisting the
+        // scalar — a WAV write failure fails the whole command so the scalar never lands
+        // paired with a torn/absent capture.
+        let capture_stored = profiles::store_capture(
+            &profiles::app_config_dir(&app2)?,
+            &profile_id,
+            &mono,
+            clipped,
+        )?;
 
         let mut store = profiles::load(&app2)?;
         let p = store
@@ -277,15 +395,20 @@ pub(crate) async fn calibrate_profile(
         let topology_id = p.topology_id.clone();
         profiles::save(&app2, &store)?;
 
-        // Best-effort caveats (calibration is already persisted; a WAV-resolution
-        // failure must not fail the command).
-        let stimulus_shortfall_lu = resolve_stimulus(&app2, None, Some(topology_id))
-            .and_then(|path| read_stimulus_calibrated_with_shortfall(&path, Some(lufs)))
-            .map(|(_, shortfall)| shortfall)
-            .unwrap_or(None);
+        // With a stored capture the stimulus IS the capture (gain 1) — a synthetic
+        // shortfall is impossible, so skip the computation (the old warning would be
+        // false). Otherwise report the best-effort synthetic-scaling shortfall.
+        let stimulus_shortfall_lu = if capture_stored {
+            None
+        } else {
+            resolve_stimulus(&app2, None, Some(topology_id))
+                .and_then(|path| read_stimulus_calibrated_with_shortfall(&path, Some(lufs)))
+                .map(|(_, shortfall)| shortfall)
+                .unwrap_or(None)
+        };
         Ok(CalibrateResult {
             lufs,
-            clipped: peak >= 0.99,
+            clipped,
             stimulus_shortfall_lu,
         })
     })

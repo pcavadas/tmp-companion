@@ -40,8 +40,9 @@ pub fn measure_wav_file(path: &str) -> Result<lufs::Loudness, String> {
     lufs::measure_mono(&mono, rate)
 }
 
-/// Write a mono f32 buffer to a WAV (the offline reference-clip corpus format).
-fn write_wav_mono(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
+/// Write a mono f32 buffer to a WAV (the offline reference-clip corpus format +
+/// the Tier-2 calibration capture store via `profiles::store_capture`).
+pub(crate) fn write_wav_mono(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate,
@@ -422,10 +423,11 @@ pub(crate) fn probe_stimulus_path(topology_id: &str) -> Result<String, String> {
         .ok_or_else(|| format!("no bundled stimulus found for topology {topology_id:?}"))
 }
 
-/// Capture the dry instrument (USB-Out 3) for `secs` while the user plays and
-/// save it as a 48 kHz mono f32 WAV — the real-DI side of `--stim-ab`. Reports
-/// peak (clip check — the dry tap has no limiter) and integrated LUFS.
-pub fn probe_capture_wav(path: &str, secs: f32) -> Result<String, String> {
+/// Capture the dry instrument (USB-Out 3) for `secs` (normal mode forced, re-amp
+/// OFF) and return `(mono samples, peak)`. The ONE dry-DI capture recipe — shared
+/// by `calibrate_profile` (Tier-2) and `probe --capture-wav` so their peak/silence
+/// guards can't drift apart.
+pub(crate) fn capture_dry_di(secs: f32) -> Result<(Vec<f32>, f32), String> {
     // Ensure normal mode (re-amp OFF) so the front instrument input flows.
     if let Ok(mut s) = session::Session::connect() {
         let _ = s.set_reamp_mode(false);
@@ -435,8 +437,18 @@ pub fn probe_capture_wav(path: &str, secs: f32) -> Result<String, String> {
     let mono = cap.channel(audio::DRY_INSTRUMENT_IN_CH);
     let peak = cap.channel_peak(audio::DRY_INSTRUMENT_IN_CH);
     if peak < 1e-4 {
-        return Err("no instrument signal captured — play continuously during the capture".into());
+        return Err("no instrument signal captured — play continuously during \
+                    the capture (guitar in the front INSTRUMENT input, volume up)"
+            .to_string());
     }
+    Ok((mono, peak))
+}
+
+/// Capture the dry instrument (USB-Out 3) for `secs` while the user plays and
+/// save it as a 48 kHz mono f32 WAV — the real-DI side of `--stim-ab`. Reports
+/// peak (clip check — the dry tap has no limiter) and integrated LUFS.
+pub fn probe_capture_wav(path: &str, secs: f32) -> Result<String, String> {
+    let (mono, peak) = capture_dry_di(secs)?;
     let lufs = lufs::measure_mono(&mono, 48_000)?.integrated_lufs;
     write_wav_mono(path, &mono, 48_000)?;
     Ok(format!(

@@ -136,14 +136,19 @@ impl Default for Store {
     }
 }
 
+/// The app config dir (`profiles.json` + `captures/` live here).
+pub(crate) fn app_config_dir<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    app.path()
+        .app_config_dir()
+        .map_err(|e| format!("resolve app config dir: {e}"))
+}
+
 /// `profiles.json` under the app config dir.
 fn store_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    use tauri::Manager;
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("resolve app config dir: {e}"))?;
-    Ok(dir.join("profiles.json"))
+    Ok(app_config_dir(app)?.join("profiles.json"))
 }
 
 /// Read the store from `path`; a missing file yields the default (empty) store.
@@ -175,6 +180,111 @@ pub fn load<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Store, Strin
 /// so runtime-generic commands (e.g. `set_auto_install_updates`) can call it.
 pub fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, store: &Store) -> Result<(), String> {
     save_to_path(&store_path(app)?, store)
+}
+
+// ───────────────────────── Tier-2 calibration capture store ─────────────────────────
+//
+// A profile's calibration capture is the dry-DI WAV recorded during `calibrate_profile`;
+// leveling injects it verbatim as the re-amp stimulus (no synthetic scaling). Stored at
+// `<app_config_dir>/captures/<profile_id>.wav`. The pure `*_in` helpers take the config
+// dir so they unit-test without an `AppHandle`.
+
+/// Map a UI-generated profile id to a single safe filename stem — profile ids are
+/// uuid/timestamp strings, but never trust them as path components (a `../` id must
+/// not escape the captures dir). Non `[A-Za-z0-9_-]` chars collapse to `_`.
+fn sanitize_id(profile_id: &str) -> String {
+    profile_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// `<config_dir>/captures/<sanitized-id>.wav` — pure, no filesystem touch.
+pub(crate) fn capture_wav_path_in(config_dir: &Path, profile_id: &str) -> PathBuf {
+    config_dir
+        .join("captures")
+        .join(format!("{}.wav", sanitize_id(profile_id)))
+}
+
+/// The stored capture path for a profile, only if the file exists.
+pub(crate) fn existing_capture(config_dir: &Path, profile_id: &str) -> Option<PathBuf> {
+    let p = capture_wav_path_in(config_dir, profile_id);
+    p.is_file().then_some(p)
+}
+
+/// The stored capture path for a profile of the running app, only if it exists.
+pub(crate) fn existing_capture_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    profile_id: &str,
+) -> Option<PathBuf> {
+    existing_capture(&app_config_dir(app).ok()?, profile_id)
+}
+
+/// Store (or clear) a profile's calibration capture, keeping the on-disk WAV
+/// consistent with the scalar `calibrate_profile` is about to save:
+/// - ALWAYS unlink any existing capture first (a clipped/aborted run must not leave
+///   a stale WAV paired with a fresh scalar).
+/// - `clipped` → store nothing, return `Ok(false)` (leveling falls back to synthetic).
+/// - else write the mono 48 kHz f32 samples via temp-file + rename (no torn WAV can
+///   pass an existence check) and return `Ok(true)`. A write failure is an `Err` so
+///   the caller fails the command BEFORE persisting the scalar.
+pub(crate) fn store_capture(
+    config_dir: &Path,
+    profile_id: &str,
+    samples: &[f32],
+    clipped: bool,
+) -> Result<bool, String> {
+    let path = capture_wav_path_in(config_dir, profile_id);
+    let _ = std::fs::remove_file(&path);
+    if clipped {
+        return Ok(false);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "capture path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    let tmp = path.with_extension("wav.part");
+    let tmp_str = tmp.to_str().ok_or("capture temp path not UTF-8")?;
+    crate::probe_api::stimulus::write_wav_mono(tmp_str, samples, 48_000)?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename capture {}: {e}", path.display()))?;
+    Ok(true)
+}
+
+/// Unlink the stored captures for `ids` (best-effort — a failed unlink is logged,
+/// never an error). Keeps all capture-file ownership in this module; the config
+/// dir is resolved once for the whole batch.
+pub(crate) fn unlink_captures<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ids: &[String]) {
+    let Ok(dir) = app_config_dir(app) else { return };
+    for id in ids {
+        if let Some(path) = existing_capture(&dir, id) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                log::warn!("could not unlink stale capture {id}: {e}");
+            }
+        }
+    }
+}
+
+/// Profile capture ids to unlink after a profile-list edit: ids REMOVED from the
+/// store, plus RETAINED ids whose `topology_id` changed (re-picking the pickup must
+/// not keep leveling with the old instrument's captured DI). A rename-only edit
+/// keeps the same id + topology, so its capture survives.
+pub(crate) fn captures_to_unlink(old: &Store, new: &Store) -> Vec<String> {
+    let new_by_id: HashMap<&str, &Profile> =
+        new.profiles.iter().map(|p| (p.id.as_str(), p)).collect();
+    old.profiles
+        .iter()
+        .filter(|op| match new_by_id.get(op.id.as_str()) {
+            None => true,                                 // removed
+            Some(np) => np.topology_id != op.topology_id, // pickup re-picked
+        })
+        .map(|op| op.id.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -255,6 +365,111 @@ mod tests {
         let store: Store = serde_json::from_str(legacy).unwrap();
         assert!(store.auto_install_updates);
         assert!(Store::default().auto_install_updates);
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "tmp-cap-test-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn store_capture_clipped_unlinks_and_stores_nothing() {
+        let dir = tmp_dir("clip");
+        let path = capture_wav_path_in(&dir, "p1");
+        // Pre-existing capture on disk.
+        store_capture(&dir, "p1", &[0.1, -0.1, 0.2, -0.2], false).unwrap();
+        assert!(path.is_file(), "sanity: capture written");
+        // A clipped run must delete it and store nothing.
+        let stored = store_capture(&dir, "p1", &[0.5; 8], true).unwrap();
+        assert!(!stored, "clipped run stores nothing");
+        assert!(!path.is_file(), "clipped run unlinks the stale capture");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_capture_writes_48k_mono_f32() {
+        let dir = tmp_dir("write");
+        let samples: Vec<f32> = (0..1234).map(|i| (i as f32 * 0.001).sin() * 0.3).collect();
+        let stored = store_capture(&dir, "p1", &samples, false).unwrap();
+        assert!(stored);
+        let path = capture_wav_path_in(&dir, "p1");
+        let reader = hound::WavReader::open(&path).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 48_000);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Float);
+        assert_eq!(reader.len() as usize, samples.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_capture_unlink_first_replaces_content() {
+        let dir = tmp_dir("replace");
+        store_capture(&dir, "p1", &[0.0; 100], false).unwrap();
+        store_capture(&dir, "p1", &[0.0; 42], false).unwrap();
+        let path = capture_wav_path_in(&dir, "p1");
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.len() as usize, 42, "second write replaces the first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_capture_presence_and_no_escape() {
+        let dir = tmp_dir("exist");
+        assert_eq!(existing_capture(&dir, "p1"), None);
+        store_capture(&dir, "p1", &[0.1; 4], false).unwrap();
+        assert!(existing_capture(&dir, "p1").is_some());
+        // A traversal-shaped id must not escape the captures dir.
+        let evil = existing_capture(&dir, "../evil");
+        assert_eq!(evil, None);
+        let evil_path = capture_wav_path_in(&dir, "../evil");
+        assert!(
+            evil_path.starts_with(dir.join("captures")),
+            "sanitized id stays inside captures: {}",
+            evil_path.display()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn captures_to_unlink_lists_removed_and_retopologized() {
+        let prof = |id: &str, topo: &str| Profile {
+            id: id.into(),
+            name: id.into(),
+            topology_id: topo.into(),
+            calibration_lufs: Some(-9.0),
+        };
+        let old = Store {
+            profiles: vec![
+                prof("keep", "guitar-singlecoil"),
+                prof("removed", "guitar-humbucker"),
+                prof("retopo", "guitar-singlecoil"),
+                prof("rename", "bass-singlecoil"),
+            ],
+            ..Store::default()
+        };
+        let new = Store {
+            profiles: vec![
+                prof("keep", "guitar-singlecoil"),
+                prof("retopo", "guitar-active"), // pickup re-picked
+                Profile {
+                    name: "renamed".into(),
+                    ..prof("rename", "bass-singlecoil")
+                },
+            ],
+            ..Store::default()
+        };
+        let mut ids = captures_to_unlink(&old, &new);
+        ids.sort();
+        assert_eq!(ids, vec!["removed".to_string(), "retopo".to_string()]);
     }
 
     #[test]

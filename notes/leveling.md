@@ -49,7 +49,7 @@ Opt-in ("Even out parallel amps"), only on a path MERGE (two amps in parallel th
 
 ## Instrument profiles & calibration
 
-A profile links a real instrument to a shipped pickup topology whose stimulus WAV is re-amped when leveling a preset the profile is assigned to. Tier-2 calibration captures the dry instrument (K-weighted LUFS) and scales the stimulus to that loudness so the amp is driven like the real instrument.
+A profile links a real instrument to a shipped pickup topology whose stimulus WAV is re-amped when leveling a preset the profile is assigned to. Tier-2 calibration captures the dry instrument (K-weighted LUFS) — and **stores the capture as the profile's leveling stimulus** (`<app_config>/captures/<profile_id>.wav`), re-amped **verbatim** (no scaling; `calibration_lufs` is ignored when the capture resolves). Why: an HW `probe --stim-ab` A/B showed the synthetic stimulus — even LUFS-matched — mis-levels presets by −5.4…+2.2 LU preset-dependently (crest/spectrum/harmonic structure drive nonlinear presets, not integrated LUFS). Fallback for legacy/capture-less calibrations: the topology WAV scaled to the stored loudness. Consistency: `store_capture` unlinks-first and writes temp+rename before the scalar is saved; clipped captures store nothing; `save_profiles` unlinks captures on profile delete or topology change; an activity-ratio gate (500 ms windows, ≥50% within 30 dB of the loudest) rejects mostly-silent takes. The Doctor deliberately keeps the synthetic stimulus until its thresholds are recalibrated against captures (open follow-up).
 
 ## Playback-level (Fletcher–Munson) compensation
 

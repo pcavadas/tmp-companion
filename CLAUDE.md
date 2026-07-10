@@ -362,8 +362,17 @@ resources/samples/  7 committed per-topology shaped-noise WAVs — one per picku
 >
 > **Tier-2 real-guitar calibration** (`calibrate_profile`): captures the dry instrument (USB-Out 3 =
 > input ch `audio::DRY_INSTRUMENT_IN_CH`) while you play, stores its **K-weighted loudness (LUFS)** on
-> `Profile.calibration_lufs`, and `read_stimulus_calibrated` scales the topology WAV to that loudness
-> (capping peak ≤ 0.99) so the amp is driven like the real instrument. K-weighted, not flat RMS/peak:
+> `Profile.calibration_lufs`, **and stores the capture itself** at `<app_config>/captures/<profile_id>.wav` —
+> **the capture IS the leveling stimulus** when present (`resolve_stimulus` precedence: e2e env → explicit →
+> profile capture → topology WAV → env → default), injected **VERBATIM** (`calibration_lufs` nulled when
+> `from_capture` — no scaling, killing the scalar/WAV-mismatch bug class). HW-justified: a `probe --stim-ab`
+> A/B (Tele DI vs the LUFS-matched synthetic) measured preset-dependent errors of −5.4…+2.2 LU that no
+> constant offset absorbs. Consistency rules: unlink-first + temp+rename in `store_capture`; a CLIPPED
+> capture stores nothing (scalar-only, old behavior); `save_profiles` unlinks captures for removed ids AND
+> topology-changed profiles; an activity-ratio gate rejects mostly-silent takes. The **Doctor keeps the
+> synthetic stimulus** (its thresholds were calibrated against it — switching needs a recal sweep, an open
+> follow-up). For legacy/capture-less calibrated profiles `read_stimulus_calibrated` still scales the topology
+> WAV to the stored loudness (capping peak ≤ 0.99) so the amp is driven like the real instrument. K-weighted, not flat RMS/peak:
 > peak is pick-transient-dominated and barely tracks output; flat RMS under-counts bright pickups (a
 > bright guitar that drives the preamp hard reads low in broadband RMS) — K-weighting matches perceived
 > drive and unifies the metric with the leveler's output target (loudness in → loudness out). **Validated on hardware** (both gates passed): the dry instrument is capturable

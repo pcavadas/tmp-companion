@@ -128,6 +128,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         rebalance: false,
         topologyId: null,
         calibrationLufs: null,
+        profileId: null,
       },
       onResult,
     );
@@ -147,6 +148,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
       rebalance: false,
       topologyId: null,
       calibrationLufs: null,
+      profileId: null,
     });
     // The progress channel is wrapped under `onResult`; its `onmessage` must be
     // the callback the wrapper was given. Narrow the channel before reading it.
@@ -249,6 +251,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         save: false,
         topologyId: null,
         calibrationLufs: null,
+        profileId: null,
       },
       onResult,
     );
@@ -263,6 +266,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
       save: false,
       topologyId: null,
       calibrationLufs: null,
+      profileId: null,
     });
     const channel = calledArgs.onResult;
     if (!(channel instanceof Object) || !("onmessage" in channel)) {
@@ -285,6 +289,7 @@ describe("single-struct / nested-payload args (snake_case inside the payload)", 
       save: false,
       topology_id: null,
       calibration_lufs: null,
+      profile_id: null,
       block_group_id: null,
       block_node_id: null,
       block_parameter_id: null,

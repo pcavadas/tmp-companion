@@ -245,6 +245,7 @@ pub(crate) async fn level_scenes_apply_batched(
     rebalance: bool,
     topology_id: Option<String>,
     calibration_lufs: Option<f32>,
+    profile_id: Option<String>,
     on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
 ) -> Result<Vec<leveller::LevelResult>, String> {
     if !candidates
@@ -258,7 +259,13 @@ pub(crate) async fn level_scenes_apply_batched(
     }
     SCENE_LEVEL_CANCEL.store(false, SeqCst);
     let target_lufs = target_lufs + playback_offset_for(&app, topology_id.as_deref());
-    let stim_path = resolve_stimulus(&app, None, topology_id)?;
+    let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
+        &app,
+        None,
+        topology_id,
+        profile_id.as_deref(),
+        calibration_lufs,
+    )?;
     let app_evt = app.clone();
     with_released_seize(state.session.clone(), move || {
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
