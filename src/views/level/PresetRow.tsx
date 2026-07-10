@@ -17,7 +17,7 @@ import { Checkbox } from "../../ui/primitives";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Spinner } from "../../ui/Spinner";
-import { slotLabel } from "../../lib/format";
+import { SlotLabel } from "../../ui/SlotLabel";
 import {
   baseKey,
   childKeys,
@@ -216,15 +216,7 @@ export function PresetRow({
 
         {caret}
 
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsData,
-            color: empty ? t.faint : t.mutedInk,
-          }}
-        >
-          {slotLabel(row.slot)}
-        </span>
+        <SlotLabel index={row.slot} faint={empty} />
 
         <span
           style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}

@@ -13,7 +13,7 @@
 
 import { Fragment } from "react";
 
-import { useTheme } from "../../theme/ThemeContext";
+import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
 import { Icon, type IconName } from "../../ui/Icon";
 import { WizardFooter, WizTitle } from "./WizardShell";
@@ -50,6 +50,7 @@ function Banner({
   children: React.ReactNode;
 }) {
   const { t } = useTheme();
+  const s = useStyles();
   return (
     <div
       style={{
@@ -70,18 +71,7 @@ function Banner({
         />
       </span>
       <div style={{ minWidth: 0 }}>
-        <div
-          style={{
-            fontFamily: t.mono,
-            fontSize: 9.5,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            color,
-            marginBottom: 3,
-          }}
-        >
-          {title}
-        </div>
+        <div style={{ ...s.kickerWide(color), marginBottom: 3 }}>{title}</div>
         <div
           style={{
             fontFamily: t.sans,
@@ -109,6 +99,7 @@ function SectionLabel({
   color: string;
 }) {
   const { t } = useTheme();
+  const s = useStyles();
   return (
     <div
       style={{
@@ -118,17 +109,7 @@ function SectionLabel({
         padding: "12px 10px 5px",
       }}
     >
-      <span
-        style={{
-          fontFamily: t.mono,
-          fontSize: 9.5,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color,
-        }}
-      >
-        {children}
-      </span>
+      <span style={s.kickerWide(color)}>{children}</span>
       <span style={{ fontFamily: t.mono, fontSize: 9.5, color: t.faint }}>
         {n}
       </span>

@@ -84,6 +84,6 @@ Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` 
 | `s.popoverCard`                        | object  | floating popover/dropdown card frame (modal shadow)                                                                              |
 | `s.menuCard`                           | object  | scrollable dropdown-menu card (lighter, closer shadow than `popoverCard`)                                                        |
 | `s.iconBtnBox({box, radius, danger?})` | factory | square hairline icon button; `danger` flips to the terracotta error border + color                                               |
-| `s.measurePill(phase)`                 | factory | Presets measure-control pill across `idle`/`measuring`/`done`/`error` phases                                                     |
+| `s.kickerWide(color)`                  | factory | `kicker` variant with the tighter `lsWide` (0.12em) tracking — rail/setup section labels. Built on `microLabel(t)`.              |
 
 When you need a shared style that doesn't exist yet, prefer adding a factory/object here (built from tokens) over duplicating an inline literal across files — that's the whole point of this registry. Also available from `tokens.ts`: `microLabel(t)` (the bare kicker style) and `plainInput(t, extra?)` (the border-less transparent inline-edit input style — lifted here from `songs/songUtil.ts`). For a search/filter box prefer the `SearchInput` primitive (icon + transparent input + optional clear, built on `s.searchBox`) over re-inlining the `s.searchBox` frame.

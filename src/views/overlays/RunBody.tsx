@@ -11,7 +11,7 @@
 // Continue button appears only when the user manually STOPPED the run. Cancel opens an
 // inline confirm that replaces the footer.
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
@@ -21,12 +21,12 @@ import { Dot } from "../../ui/Dot";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { LiveVU } from "../../ui/LiveVU";
 import { LiveReadout } from "../../ui/LiveReadout";
+import { ConfirmBar } from "../../ui/ConfirmBar";
+import { RunRow } from "../../ui/RunRow";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { fmtLufs } from "../../lib/format";
+import { useAutoAdvance } from "../../lib/useAutoAdvance";
 import type { RunItem } from "../level/leveling";
-
-/** Auto-advance delay from a natural completion to the Summary step. */
-const AUTO_ADVANCE_MS = 650;
 
 export interface RunBodyProps {
   items: RunItem[];
@@ -65,23 +65,8 @@ export function RunBody({
   const { t } = useTheme();
   const [confirm, setConfirm] = useState(false);
 
-  // Natural completion auto-advances; a stopped run waits for Continue. The timer
-  // is (re)armed only by done/stopped changes; `onComplete` is read through a ref
-  // so a new callback identity from the parent doesn't reset the in-flight timer.
-  const onCompleteRef = useRef(onComplete);
-  useEffect(() => {
-    onCompleteRef.current = onComplete;
-  });
-  useEffect(() => {
-    if (done && !stopped) {
-      const id = window.setTimeout(() => {
-        onCompleteRef.current();
-      }, AUTO_ADVANCE_MS);
-      return () => {
-        window.clearTimeout(id);
-      };
-    }
-  }, [done, stopped]);
+  // Natural completion auto-advances; a stopped run waits for Continue.
+  useAutoAdvance(done, stopped, onComplete);
 
   const stepNo = Math.min(currentIndex + 1, total);
   // currentIndex reaches `total` on a natural finish (→ 100%) and stays partial on a
@@ -165,25 +150,23 @@ export function RunBody({
           // only flow while a capture runs. The readout then owns the right status cell.
           // Bind the number (not a boolean) so TS narrows `live` to `number` at the readout.
           const live: number | null = active ? liveLufs : null;
+          const statusColor = active
+            ? t.sevWarn
+            : result
+              ? resultColor(it)
+              : t.faint;
           return (
-            <div
+            <RunRow
               key={it.key}
-              style={{
-                padding: "9px 10px",
-                borderRadius: 8,
-                background: active ? t.accentSoft : "transparent",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span
-                  style={{
-                    width: 18,
-                    flexShrink: 0,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
+              active={active}
+              dim={it.status === "queued"}
+              statusWidth={150}
+              name={it.label}
+              tag={it.tag ?? undefined}
+              tagColor={it.isBase ? t.faint : t.accentDeep}
+              instrument={it.instId ? instrumentName(it.instId) : undefined}
+              icon={
+                <>
                   {active && (
                     <Spinner size={14} stroke={t.sevWarn} strokeWidth={1.8} />
                   )}
@@ -218,75 +201,14 @@ export function RunBody({
                         strokeWidth={2}
                       />
                     ))}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: 8,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: t.serif,
-                      fontSize: 14.5,
-                      color: it.status === "queued" ? t.mutedInk : t.ink,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {it.label}
-                  </span>
-                  {it.tag && (
-                    <span
-                      style={{
-                        fontFamily: t.mono,
-                        fontSize: 8.5,
-                        letterSpacing: "0.04em",
-                        color: it.isBase ? t.faint : t.accentDeep,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {it.tag}
-                    </span>
-                  )}
-                </span>
-                {it.instId && (
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: 10.5,
-                      color: t.mutedInk,
-                      border: `0.5px solid ${t.hairlineStrong}`,
-                      borderRadius: 5,
-                      padding: "2px 7px",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {instrumentName(it.instId)}
-                  </span>
-                )}
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: 11,
-                    flexShrink: 0,
-                    width: 150,
-                    whiteSpace: "nowrap",
-                    textAlign: "right",
-                    color: active
-                      ? t.sevWarn
-                      : result
-                        ? resultColor(it)
-                        : t.faint,
-                  }}
-                >
+                </>
+              }
+              status={
+                <span style={{ color: statusColor }}>
                   {live !== null ? "" : rowStatus(it)}
                 </span>
-              </div>
+              }
+            >
               {live !== null && (
                 <div
                   style={{
@@ -307,51 +229,22 @@ export function RunBody({
                   />
                 </div>
               )}
-            </div>
+            </RunRow>
           );
         })}
       </div>
 
       {confirm ? (
-        <div
-          style={{
-            flexShrink: 0,
-            borderTop: `0.5px solid ${t.hairline}`,
-            padding: "13px 22px",
-            background: t.bgAlt,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 14,
+        <ConfirmBar
+          message="Stop leveling? Progress so far stays saved."
+          onCancel={() => {
+            setConfirm(false);
           }}
-        >
-          <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
-            Stop leveling? Progress so far stays saved.
-          </span>
-          <div style={{ display: "flex", gap: 9 }}>
-            <Button
-              variant="ghost"
-              small
-              onClick={() => {
-                setConfirm(false);
-              }}
-              style={{ height: 30, padding: "0 13px" }}
-            >
-              Continue
-            </Button>
-            <Button
-              variant="warn"
-              small
-              onClick={() => {
-                setConfirm(false);
-                onCancel();
-              }}
-              style={{ height: 30, padding: "0 14px" }}
-            >
-              Stop
-            </Button>
-          </div>
-        </div>
+          onConfirm={() => {
+            setConfirm(false);
+            onCancel();
+          }}
+        />
       ) : (
         <WizardFooter
           left={<span />}

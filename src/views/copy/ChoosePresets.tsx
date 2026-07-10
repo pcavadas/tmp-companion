@@ -10,6 +10,7 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Button, Checkbox, SearchInput } from "../../ui/primitives";
 import { ActionBar } from "../../ui/ActionBar";
 import { ReadingPill } from "../../ui/ReadingPill";
+import { SlotLabel } from "../../ui/SlotLabel";
 import { slotLabel } from "../../lib/format";
 import { OnUnitChip, StepBadge, MiniLink } from "./copyBits";
 import type { CopyPreset } from "./useCopyLibrary";
@@ -109,13 +110,9 @@ export function ChoosePresets({
     overflow: "hidden",
     textOverflow: "ellipsis",
   };
-  const slotCell: React.CSSProperties = {
-    fontFamily: t.mono,
-    fontSize: t.fsData,
-    color: t.mutedInk,
-    width: 30,
-    flexShrink: 0,
-  };
+  // Fixed-width slot column — one shared object so the mapped rows don't
+  // rebuild it per row.
+  const slotCell: React.CSSProperties = { width: 30, flexShrink: 0 };
   return (
     <div
       style={{
@@ -255,7 +252,7 @@ export function ChoosePresets({
                           />
                         )}
                       </span>
-                      <span style={slotCell}>{slotLabel(p.slot)}</span>
+                      <SlotLabel index={p.slot} style={slotCell} />
                       <span style={rowName}>{p.name}</span>
                       {p.onUnit && <OnUnitChip />}
                     </div>
@@ -346,7 +343,7 @@ export function ChoosePresets({
                       }}
                     >
                       <Checkbox checked={on} />
-                      <span style={slotCell}>{slotLabel(p.slot)}</span>
+                      <SlotLabel index={p.slot} style={slotCell} />
                       <span style={rowName}>{p.name}</span>
                     </div>
                   );

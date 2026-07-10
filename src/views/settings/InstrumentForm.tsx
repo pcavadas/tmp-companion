@@ -5,7 +5,7 @@
 import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import type { ThemeTokens } from "../../theme/tokens";
+import { plainInput, type ThemeTokens } from "../../theme/tokens";
 import { Button } from "../../ui/primitives";
 import type { Profile, TopologyInfo } from "../../lib/types";
 
@@ -123,16 +123,13 @@ export function InstrumentForm({
         onFocus={(e) => (e.currentTarget.style.borderColor = t.accent)}
         onBlur={(e) => (e.currentTarget.style.borderColor = t.hairlineStrong)}
         placeholder="Instrument name (e.g. Telecaster)"
-        style={{
+        style={plainInput(t, {
           border: `0.5px solid ${t.hairlineStrong}`,
           borderRadius: t.rMd,
-          outline: "none",
-          background: "transparent",
           padding: "7px 9px",
           fontFamily: t.serif,
           fontSize: t.fsName,
-          color: t.ink,
-        }}
+        })}
       />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

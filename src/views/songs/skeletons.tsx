@@ -7,6 +7,7 @@
 import type { CSSProperties } from "react";
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Skel, SkelStatus } from "../../ui/Skeleton";
+import { ListHeader } from "./ListHeader";
 import { SONG_COLS } from "./shared";
 
 // Per-row name/notes-bar widths, so the ghost library reads as varied songs.
@@ -169,27 +170,15 @@ export function SongsLoadingSkeleton() {
               <SkelStatus label="Reading songs & setlists…" />
             </div>
           </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: SONG_COLS,
-              alignItems: "center",
-              height: 28,
-              padding: "0 16px 0 18px",
-              borderBottom: `0.5px solid ${t.hairline}`,
-              borderTop: `0.5px solid ${t.hairline}`,
-              fontFamily: t.mono,
-              fontSize: t.fsMicro,
-              letterSpacing: t.lsLabel,
-              color: t.faint,
-              textTransform: "uppercase",
-            }}
-          >
-            <span>№</span>
-            <span>song</span>
-            <span>bpm</span>
-            <span />
-          </div>
+          <ListHeader
+            cols={SONG_COLS}
+            cells={[
+              { label: "№" },
+              { label: "song" },
+              { label: "bpm" },
+              { label: "" },
+            ]}
+          />
           <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
             <LibraryRowsSkeleton rows={9} />
           </div>
