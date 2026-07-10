@@ -372,7 +372,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
             <span
               style={{
                 fontFamily: t.mono,
-                fontSize: 9,
+                fontSize: t.fsMicro2,
                 color: t.faint,
                 letterSpacing: "0.02em",
                 lineHeight: 1.4,
@@ -402,7 +402,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
             <div
               style={{
                 fontFamily: t.serif,
-                fontSize: 21,
+                fontSize: t.fsSheet,
                 color: t.ink,
                 letterSpacing: "-0.01em",
               }}
@@ -412,7 +412,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
             <div
               style={{
                 fontFamily: t.sans,
-                fontSize: 12.5,
+                fontSize: t.fsControl,
                 color: t.mutedInk,
                 lineHeight: 1.5,
                 marginTop: 5,
@@ -573,7 +573,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                 <div
                   style={{
                     fontFamily: t.sans,
-                    fontSize: 12,
+                    fontSize: t.fsUi,
                     color: t.faint,
                     padding: "14px 0",
                     fontStyle: "italic",
@@ -620,7 +620,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                   style={{
                     marginTop: 18,
                     fontFamily: t.sans,
-                    fontSize: 11.5,
+                    fontSize: t.fsLabel,
                     color: t.faint,
                     lineHeight: 1.5,
                     fontStyle: "italic",
@@ -653,7 +653,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                   <span
                     style={{
                       fontFamily: t.sans,
-                      fontSize: 12,
+                      fontSize: t.fsUi,
                       color: t.mutedInk,
                       lineHeight: 1.5,
                       textWrap: "pretty",
