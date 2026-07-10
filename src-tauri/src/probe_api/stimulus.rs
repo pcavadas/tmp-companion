@@ -296,45 +296,26 @@ pub fn probe_stim_ab(
 ) -> Result<String, String> {
     let stim_a = read_stimulus_48k(wav_a)?;
     let stim_b = read_stimulus_48k(wav_b)?;
-    // A plucked stimulus through ANY chain has a dynamics spread ≫ 0 — a near-zero
-    // spread means the capture was the device's stationary output floor (silent
-    // inject / failed engage), which solves to a plausible-looking but bogus C.
-    // Observed live: a 20-engage sweep read the floor on 19/20 measurements with
-    // spread 0.01 while real measurements ran 1+ LU.
-    const FLOOR_SPREAD_LU: f64 = 0.15;
-    let measure = |slot: u32, stim: &[f32]| -> Result<(leveller::MeasuredC, bool), String> {
-        let first = leveller::measure_c(slot, stim, ref_level, &[])?;
-        if first.dynamic_spread_lu > FLOOR_SPREAD_LU {
-            return Ok((first, false));
-        }
-        // Suspected floor read — quiet gap, then one retry (fresh connections +
-        // fresh audio streams come free with measure_c).
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        let second = leveller::measure_c(slot, stim, ref_level, &[])?;
-        let still_floor = second.dynamic_spread_lu <= FLOOR_SPREAD_LU;
-        Ok((second, still_floor))
-    };
+    // Floor reads are handled INSIDE measure_c now (the production floor guard:
+    // stimulus-aware spread trip → same-ref retry → level-shift confirm) — a
+    // persistent floor read surfaces as leveller::FLOOR_READ_ERR in the row.
     let mut out = format!(
         "stimulus A/B @ ref {ref_level:.2}\n  A = {wav_a}\n  B = {wav_b}\n\
          \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"
     );
     for &slot in slots {
         // measure_c owns its own connection/gap pacing (the level_setlist precedent).
-        let row = measure(slot, &stim_a).and_then(|a| measure(slot, &stim_b).map(|b| (a, b)));
+        let row = leveller::measure_c(slot, &stim_a, ref_level, &[])
+            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level, &[]).map(|b| (a, b)));
         match row {
-            Ok(((a, a_floor), (b, b_floor))) => {
+            Ok((a, b)) => {
                 out += &format!(
-                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}{}\n",
+                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}\n",
                     a.c,
                     b.c,
                     b.c - a.c,
                     a.dynamic_spread_lu,
                     b.dynamic_spread_lu,
-                    if a_floor || b_floor {
-                        "  ⚠ FLOOR? (near-zero spread after retry — inject not reaching the DSP)"
-                    } else {
-                        ""
-                    }
                 );
             }
             Err(e) => out += &format!("  {slot:>4} | FAILED: {e}\n"),
