@@ -156,10 +156,15 @@ impl SoundProfile {
     /// Build a profile from one captured mono signal: the 6 Doctor-band
     /// energies, integrated loudness, and the reverb-wash tail ratio. Shared by
     /// the `doctor_check` command and the `probe --doctor` calibration sweep.
+    /// `onset` = where the stimulus starts inside the capture (0 = un-aligned).
+    /// Bands + loudness deliberately stay WHOLE-BUFFER (leading silence dilutes
+    /// band powers uniformly, so the relative `balance` space is unchanged and
+    /// the gated LUFS discards it) — only the body/tail split aligns.
     pub fn from_capture(
         samples: &[f32],
         rate: u32,
         stimulus_samples: usize,
+        onset: usize,
     ) -> Result<SoundProfile, String> {
         let bands: [f64; 6] = crate::spectrum::band_energies(samples, rate as f32, &doctor_bands())
             .try_into()
@@ -176,7 +181,7 @@ impl SoundProfile {
             bands,
             integrated_lufs,
             spread_lu: loudness.spread_lu(),
-            tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples),
+            tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples, onset),
         })
     }
 }
@@ -276,8 +281,21 @@ pub fn cohorts_by_instrument(
 /// a dry sound decays fast → strongly negative; a drowning reverb/delay tail
 /// keeps ringing → closer to 0). Returns −80 (a "silent tail" floor) when the
 /// capture has no tail window.
-pub fn tail_energy_ratio(samples: &[f32], _rate: u32, stimulus_samples: usize) -> f64 {
-    if samples.len() <= stimulus_samples || stimulus_samples == 0 {
+///
+/// `onset` is where the stimulus actually starts in the capture (the buffer
+/// begins at stream start, BEFORE the audio propagated through cpal/USB/DSP —
+/// see `audio::estimate_onset`). Splitting at `stimulus_samples` alone leaks the
+/// last ~latency of body-level signal into the tail, inflating a bone-dry
+/// preset's ratio toward the washed threshold (~−17 dB vs the −13 dB gate for a
+/// 50 ms leak into a 2.5 s tail). Pass 0 to keep the un-aligned legacy split.
+pub fn tail_energy_ratio(
+    samples: &[f32],
+    _rate: u32,
+    stimulus_samples: usize,
+    onset: usize,
+) -> f64 {
+    let body_end = onset.saturating_add(stimulus_samples);
+    if samples.len() <= body_end || stimulus_samples == 0 {
         return -80.0;
     }
     let rms = |s: &[f32]| -> f64 {
@@ -286,8 +304,8 @@ pub fn tail_energy_ratio(samples: &[f32], _rate: u32, stimulus_samples: usize) -
         }
         (s.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>() / s.len() as f64).sqrt()
     };
-    let body = rms(&samples[..stimulus_samples]);
-    let tail = rms(&samples[stimulus_samples..]);
+    let body = rms(&samples[onset..body_end]);
+    let tail = rms(&samples[body_end..]);
     if body <= 0.0 {
         return -80.0;
     }
@@ -1363,6 +1381,52 @@ pub fn scene_consistency(
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod onset_split_tests {
+    use super::*;
+
+    const SR: u32 = 48_000;
+
+    /// The D3 regression: a bone-dry chain whose capture starts with 50 ms of
+    /// I/O-latency silence. The un-aligned split leaks the last 50 ms of BODY
+    /// into the tail window (reads ≈ −17 dB, hugging the −13 dB washed
+    /// threshold); the onset-aligned split reads the true near-silent tail.
+    #[test]
+    fn onset_aligned_split_stops_body_leak_into_the_tail() {
+        let stim_n = SR as usize * 6;
+        let lag = SR as usize / 20; // 50 ms
+        let tail_n = SR as usize * 5 / 2; // 2.5 s Doctor tail
+        let mut cap = vec![0.0f32; lag];
+        cap.extend(std::iter::repeat_n(0.5f32, stim_n)); // body
+        cap.extend(std::iter::repeat_n(0.0005f32, tail_n)); // truly dry tail
+        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0);
+        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
+        assert!(
+            unaligned > -20.0,
+            "leak should inflate the unaligned tail (got {unaligned:.1})"
+        );
+        assert!(
+            aligned <= -30.0,
+            "aligned split must read the dry tail (got {aligned:.1})"
+        );
+    }
+
+    /// A wet sound's ratio barely moves under alignment (the tail really rings).
+    #[test]
+    fn wet_tail_survives_alignment() {
+        let stim_n = SR as usize * 6;
+        let lag = SR as usize / 20;
+        let tail_n = SR as usize * 5 / 2;
+        let mut cap = vec![0.0f32; lag];
+        cap.extend(std::iter::repeat_n(0.5f32, stim_n));
+        cap.extend(std::iter::repeat_n(0.25f32, tail_n)); // ringing reverb
+        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0);
+        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
+        assert!((unaligned - aligned).abs() < 2.0);
+        assert!(aligned > -13.0); // stays on the washed side
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1474,17 +1538,17 @@ mod tests {
         let wet_tail = vec![0.3f32; (rate / 2) as usize];
         let dry: Vec<f32> = body.iter().chain(dry_tail.iter()).copied().collect();
         let wet: Vec<f32> = body.iter().chain(wet_tail.iter()).copied().collect();
-        let d = tail_energy_ratio(&dry, rate, body.len());
-        let w = tail_energy_ratio(&wet, rate, body.len());
+        let d = tail_energy_ratio(&dry, rate, body.len(), 0);
+        let w = tail_energy_ratio(&wet, rate, body.len(), 0);
         assert!(w > d, "wet tail must read hotter ({w} vs {d})");
         assert!(w > -6.0 && d < -40.0);
     }
 
     #[test]
     fn tail_ratio_guards_short_capture() {
-        assert_eq!(tail_energy_ratio(&[0.1; 100], 48_000, 100), -80.0);
-        assert_eq!(tail_energy_ratio(&[0.1; 50], 48_000, 100), -80.0);
-        assert_eq!(tail_energy_ratio(&[], 48_000, 0), -80.0);
+        assert_eq!(tail_energy_ratio(&[0.1; 100], 48_000, 100, 0), -80.0);
+        assert_eq!(tail_energy_ratio(&[0.1; 50], 48_000, 100, 0), -80.0);
+        assert_eq!(tail_energy_ratio(&[], 48_000, 0, 0), -80.0);
     }
 
     // ── graph-driven prescriptions ──
@@ -2140,7 +2204,7 @@ mod tests {
     #[test]
     fn silent_capture_errors_instead_of_minus_inf() {
         let silence = vec![0.0f32; 96_000];
-        let err = SoundProfile::from_capture(&silence, 48_000, 48_000)
+        let err = SoundProfile::from_capture(&silence, 48_000, 48_000, 0)
             .expect_err("silence must not produce a profile");
         assert!(err.contains("silent"), "{err}");
     }

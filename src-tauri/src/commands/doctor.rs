@@ -224,7 +224,16 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let result = stim.and_then(|stim| {
                 leveller::doctor_capture(item.list_index, item.scene, &fb, stim, Some(0.5)).and_then(
                     |(samples, rate)| {
-                        doctor::SoundProfile::from_capture(&samples, rate, stim.len())
+                        // Align the body/tail split to where the stimulus actually starts
+                        // (I/O latency); low confidence keeps the legacy un-aligned split.
+                        let (onset, confident) = audio::estimate_onset(stim, &samples, rate);
+                        if !confident {
+                            log::warn!(
+                                "doctor: onset not confidently found for {} — un-aligned tail split",
+                                item.key
+                            );
+                        }
+                        doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset)
                     },
                 )
             });

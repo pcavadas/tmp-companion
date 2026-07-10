@@ -963,6 +963,145 @@ impl Capture {
     }
 }
 
+// ───────────────────────── Capture onset estimation ─────────────────────────
+
+/// Longest lag the onset search considers (USB round-trip latency is tens of ms;
+/// 250 ms is a generous ceiling).
+const ONSET_MAX_LAG_MS: usize = 250;
+/// Envelope hop — sets the estimate's resolution (well inside the ±5 ms goal).
+const ONSET_HOP_MS: usize = 2;
+/// Normalized-correlation floor below which the estimate is not trusted.
+const ONSET_MIN_CORR: f64 = 0.5;
+
+/// Estimate where the played stimulus actually STARTS inside a capture (the
+/// capture begins at stream start, before the audio has propagated through
+/// cpal/USB/DSP). Envelope cross-correlation, not waveform: distortion
+/// decorrelates the waveform but the amplitude envelope survives any chain, and
+/// a constant hiss floor (high-gain presets hiss from engage) defeats an
+/// energy-onset detector but not a correlator. Returns `(onset_samples,
+/// confident)`; low confidence returns `(0, false)` — the caller keeps the
+/// un-aligned behavior.
+pub(crate) fn estimate_onset(stimulus: &[f32], capture: &[f32], rate: u32) -> (usize, bool) {
+    let hop = (rate as usize * ONSET_HOP_MS / 1000).max(1);
+    let max_lag_hops = ONSET_MAX_LAG_MS / ONSET_HOP_MS;
+    // Envelope of the stimulus head (~1.5 s) and of the capture head (+ lag room).
+    let head_hops = (1500 / ONSET_HOP_MS).min(stimulus.len() / hop);
+    if head_hops < 50 {
+        return (0, false); // too short to correlate meaningfully
+    }
+    let env = |x: &[f32], hops: usize| -> Vec<f64> {
+        (0..hops)
+            .map(|i| {
+                let s = &x[i * hop..((i + 1) * hop).min(x.len())];
+                (s.iter().map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>()
+                    / s.len().max(1) as f64)
+                    .sqrt()
+            })
+            .collect()
+    };
+    let cap_hops = (head_hops + max_lag_hops).min(capture.len() / hop);
+    if cap_hops <= head_hops {
+        return (0, false);
+    }
+    let se = env(stimulus, head_hops);
+    let ce = env(capture, cap_hops);
+    // Zero-mean the stimulus envelope once; correlate at each candidate lag.
+    let smean = se.iter().sum::<f64>() / se.len() as f64;
+    let sz: Vec<f64> = se.iter().map(|v| v - smean).collect();
+    let snorm = sz.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if snorm <= 0.0 {
+        return (0, false);
+    }
+    let mut best = (0usize, f64::NEG_INFINITY);
+    for lag in 0..=(cap_hops - head_hops).min(max_lag_hops) {
+        let win = &ce[lag..lag + head_hops];
+        let cmean = win.iter().sum::<f64>() / win.len() as f64;
+        let mut dot = 0.0;
+        let mut cnorm = 0.0;
+        for (s, c) in sz.iter().zip(win.iter().map(|v| v - cmean)) {
+            dot += s * c;
+            cnorm += c * c;
+        }
+        let corr = if cnorm > 0.0 {
+            dot / (snorm * cnorm.sqrt())
+        } else {
+            f64::NEG_INFINITY
+        };
+        if corr > best.1 {
+            best = (lag, corr);
+        }
+    }
+    if best.1 >= ONSET_MIN_CORR {
+        (best.0 * hop, true)
+    } else {
+        (0, false)
+    }
+}
+
+#[cfg(test)]
+mod onset_tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    const SR: u32 = 48_000;
+
+    /// A pluck train with a distinctive envelope (like the shipped stimuli).
+    fn plucky(secs: f32) -> Vec<f32> {
+        let n = (secs * SR as f32) as usize;
+        let note = SR as usize / 2; // 500 ms notes
+        (0..n)
+            .map(|i| {
+                let t = (i % note) as f32 / SR as f32;
+                let env = (-t / 0.12).exp();
+                env * (2.0 * PI * 220.0 * i as f32 / SR as f32).sin() * 0.5
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recovers_a_known_lag_through_a_clipping_chain() {
+        let stim = plucky(2.0);
+        let lag = (SR as usize) * 75 / 1000; // 75 ms of leading silence
+        let mut cap = vec![0.0f32; lag];
+        // A crushing nonlinear "chain" — waveform decorrelates, envelope survives.
+        cap.extend(stim.iter().map(|&x| (x * 8.0).tanh() * 0.4));
+        cap.extend(std::iter::repeat_n(0.0f32, SR as usize / 2));
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(confident);
+        let err = (onset as i64 - lag as i64).unsigned_abs() as usize;
+        assert!(err <= SR as usize * 5 / 1000, "onset {onset} vs lag {lag}");
+    }
+
+    #[test]
+    fn hiss_before_the_onset_does_not_fool_it() {
+        let stim = plucky(2.0);
+        let lag = (SR as usize) * 120 / 1000; // 120 ms
+                                              // Constant hiss floor from engage (the high-gain preset case).
+        let mut cap: Vec<f32> = (0..lag).map(|i| ((i * 7919) % 97) as f32 * 2e-4).collect();
+        cap.extend(
+            stim.iter()
+                .enumerate()
+                .map(|(i, &x)| (x * 3.0).tanh() * 0.4 + ((i * 7919) % 97) as f32 * 2e-4),
+        );
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(confident);
+        let err = (onset as i64 - lag as i64).unsigned_abs() as usize;
+        assert!(err <= SR as usize * 5 / 1000, "onset {onset} vs lag {lag}");
+    }
+
+    #[test]
+    fn uncorrelated_capture_reports_no_confidence_and_zero() {
+        let stim = plucky(2.0);
+        // Stationary noise, no envelope relation to the stimulus.
+        let cap: Vec<f32> = (0..(SR as usize * 3))
+            .map(|i| ((i * 104729) % 1009) as f32 / 1009.0 * 0.2 - 0.1)
+            .collect();
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(!confident);
+        assert_eq!(onset, 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

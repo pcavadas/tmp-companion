@@ -230,7 +230,14 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5)) {
             Ok((samples, rate)) => {
-                let profile = doctor::SoundProfile::from_capture(&samples, rate, stim.len())?;
+                let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
+                if !confident {
+                    eprintln!(
+                        "[probe] slot {slot}: onset not confidently found — un-aligned split"
+                    );
+                }
+                let profile =
+                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset)?;
                 sounds.push((slot, profile, nodes));
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
