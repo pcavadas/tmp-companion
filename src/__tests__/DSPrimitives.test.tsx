@@ -74,7 +74,8 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("play"); // Doctor tab (WP0)
     expect(ICONS).toContain("pause");
     expect(ICONS).toContain("download"); // Toast update-available status
-    expect(ICONS.length).toBe(39);
+    expect(ICONS).toContain("info");
+    expect(ICONS.length).toBe(40);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
