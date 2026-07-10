@@ -40,6 +40,12 @@
 //!                                  DEVICE A/B: measure_c per preset with two stimuli →
 //!                                  C/spread/ΔC table (playing-style sensitivity; capture
 //!                                  a real DI clip for one side via --capture-input)
+//!   probe --capture-wav <out.wav> [secs=12]
+//!                                  DEVICE: save the dry instrument (USB-Out 3) to a
+//!                                  48 kHz WAV while you play (the --stim-ab DI side)
+//!   probe --scale-wav <in.wav> <out.wav> <target_lufs>
+//!                                  NO-DEVICE: LUFS-match a WAV via the Tier-2
+//!                                  calibration transform (0.99 peak cap)
 //!   probe --measure-prefix-sweep <wav>
 //!                                  NO-DEVICE: integrated LUFS over 0.5..6s prefixes vs full
 //!   probe --measure-converge-replay <wav> <eps_lu> <stable_k> <preroll_ms>
@@ -1476,6 +1482,48 @@ fn main() {
             slots.len()
         );
         match tmp_companion_lib::probe_doctor(&slots, &topology) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--capture-wav") {
+        // --capture-wav <out.wav> [secs=12]  (DEVICE: save the dry DI to a WAV)
+        let path = args.get(i + 1).cloned().unwrap_or_default();
+        let secs: f32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(12.0);
+        if path.is_empty() {
+            eprintln!("usage: probe --capture-wav <out.wav> [secs=12]");
+            std::process::exit(2);
+        }
+        eprintln!("[probe] capturing dry instrument for {secs:.0}s — play continuously NOW…");
+        match tmp_companion_lib::probe_capture_wav(&path, secs) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--scale-wav") {
+        // --scale-wav <in.wav> <out.wav> <target_lufs>  (NO-DEVICE: Tier-2 LUFS match)
+        let src = args.get(i + 1).cloned().unwrap_or_default();
+        let dst = args.get(i + 2).cloned().unwrap_or_default();
+        let target: Option<f32> = args.get(i + 3).and_then(|s| s.parse().ok());
+        let (Some(target), false) = (target, src.is_empty() || dst.is_empty()) else {
+            eprintln!("usage: probe --scale-wav <in.wav> <out.wav> <target_lufs>");
+            std::process::exit(2);
+        };
+        match tmp_companion_lib::probe_scale_wav(&src, &dst, target) {
             Ok(r) => {
                 print!("{r}");
                 return;
