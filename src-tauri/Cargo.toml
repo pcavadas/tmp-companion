@@ -32,6 +32,10 @@ hound = "3"
 # records to the OS log dir + stdout. `log` provides the macros + LevelFilter.
 tauri-plugin-log = "2"
 log = "0.4"
+# In-app auto-update: checks the GitHub `latest.json` endpoint, downloads +
+# verifies the signed `.app.tar.gz`, and (process plugin) relaunches to apply.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 # Device-backup fast DB read (`probe --device-backup`): the unit streams a
 # GNU-tar + LZ4-frame archive of /data (built by `tm-stomp-server`'s libarchive).
 # Both pure-Rust, no C dependency. SQLite itself is read via the system `sqlite3`.

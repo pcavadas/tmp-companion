@@ -113,6 +113,13 @@ pub struct Store {
     /// `Stage` = no compensation, preserving their existing leveling baseline).
     #[serde(default)]
     pub playback_level: PlaybackLevel,
+    /// Auto-download updates in the background (Settings → App updates).
+    #[serde(default = "default_true")]
+    pub auto_install_updates: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // Manual `Default` (not derived) so the missing-file path — `load_from_path` returns
@@ -124,6 +131,7 @@ impl Default for Store {
             profile_by_slot: HashMap::new(),
             targets: default_targets(),
             playback_level: PlaybackLevel::default(),
+            auto_install_updates: true,
         }
     }
 }
@@ -163,8 +171,9 @@ pub fn load<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Store, Strin
     load_from_path(&store_path(app)?)
 }
 
-/// Persist the store for the running app.
-pub fn save(app: &tauri::AppHandle, store: &Store) -> Result<(), String> {
+/// Persist the store for the running app. Generic over the runtime (like `load`)
+/// so runtime-generic commands (e.g. `set_auto_install_updates`) can call it.
+pub fn save<R: tauri::Runtime>(app: &tauri::AppHandle<R>, store: &Store) -> Result<(), String> {
     save_to_path(&store_path(app)?, store)
 }
 
@@ -196,6 +205,7 @@ mod tests {
                 lufs: -22.0,
             }],
             playback_level: PlaybackLevel::Rehearsal,
+            auto_install_updates: false,
         }
     }
 
@@ -234,6 +244,17 @@ mod tests {
         // Likewise pre-playback_level stores: Stage = no compensation, so a
         // migrated store levels exactly as it did before the field existed.
         assert_eq!(store.playback_level, PlaybackLevel::Stage);
+    }
+
+    #[test]
+    fn legacy_json_without_auto_install_updates_is_true() {
+        // A store written before the `auto_install_updates` field existed must
+        // migrate to opt-in-on (background updates default enabled), matching
+        // `Store::default()`.
+        let legacy = r#"{"profiles":[],"profile_by_slot":{}}"#;
+        let store: Store = serde_json::from_str(legacy).unwrap();
+        assert!(store.auto_install_updates);
+        assert!(Store::default().auto_install_updates);
     }
 
     #[test]

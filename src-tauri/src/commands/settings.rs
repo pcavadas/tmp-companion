@@ -73,6 +73,19 @@ pub(crate) fn set_playback_level(
     self::profiles::save(&app, &store)
 }
 
+/// Toggle background auto-download of app updates (Settings → App updates).
+/// Generic over the runtime (like `get_store`) so it also registers on the e2e
+/// MockRuntime handler.
+#[tauri::command]
+pub(crate) fn set_auto_install_updates<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    on: bool,
+) -> Result<(), String> {
+    let mut store = self::profiles::load(&app)?;
+    store.auto_install_updates = on;
+    self::profiles::save(&app, &store)
+}
+
 /// Resolve a topology id to its bundled stimulus WAV path in the resource dir.
 /// Returns an error for an unknown id or unbundled WAV.
 pub(crate) fn topology_wav_path<R: tauri::Runtime>(

@@ -281,7 +281,7 @@ function toneFor(t: ThemeTokens, status: ResolvedStatus): ToastTone {
       return {
         edge: t.good,
         chipBg: t.goodSoft,
-        label: "SUCCESS",
+        label: "READY",
         icon: "check",
       };
     case "error":

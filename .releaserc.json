@@ -6,7 +6,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "node -e \"const f='src-tauri/tauri.conf.json',c=require('fs');const j=JSON.parse(c.readFileSync(f));j.version='${nextRelease.version}';c.writeFileSync(f,JSON.stringify(j,null,2)+'\\n')\" && bun run tauri build --target aarch64-apple-darwin && DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg) && xcrun notarytool submit \"$DMG\" --apple-id \"$APPLE_ID\" --password \"$APPLE_PASSWORD\" --team-id \"$APPLE_TEAM_ID\" --wait && xcrun stapler staple \"$DMG\""
+        "prepareCmd": "node -e \"const f='src-tauri/tauri.conf.json',c=require('fs');const j=JSON.parse(c.readFileSync(f));j.version='${nextRelease.version}';c.writeFileSync(f,JSON.stringify(j,null,2)+'\\n')\" && bun run tauri build --target aarch64-apple-darwin && DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg) && xcrun notarytool submit \"$DMG\" --apple-id \"$APPLE_ID\" --password \"$APPLE_PASSWORD\" --team-id \"$APPLE_TEAM_ID\" --wait && xcrun stapler staple \"$DMG\" && node scripts/latest-json.mjs \"${nextRelease.version}\" \"${Buffer.from(nextRelease.notes || '').toString('base64')}\""
       }
     ],
     [
@@ -16,6 +16,13 @@
           {
             "path": "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
             "name": "TMP-Companion-AppleSilicon.dmg"
+          },
+          {
+            "path": "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz",
+            "name": "TMP-Companion-AppleSilicon.app.tar.gz"
+          },
+          {
+            "path": "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/latest.json"
           }
         ]
       }

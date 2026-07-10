@@ -121,7 +121,7 @@ describe("Toast — update-lifecycle statuses", () => {
     expect(screen.getByText("UPDATE AVAILABLE")).toBeTruthy();
 
     under(<Toast status="success" title="Done" />);
-    expect(screen.getByText("SUCCESS")).toBeTruthy();
+    expect(screen.getByText("READY")).toBeTruthy();
 
     under(<Toast status="error" title="Failed" />);
     expect(screen.getByText("FAILED")).toBeTruthy();

@@ -11,6 +11,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
+  AppInfo,
   PresetEntry,
   LevelJob,
   LevelResult,
@@ -49,6 +50,9 @@ export function isTauri(): boolean {
 }
 
 // ─── Connection + app ─────────────────────────────────────────────────────────
+
+/** App identity — name + the running build's version (Tauri config). */
+export const appInfo = (): Promise<AppInfo> => invoke("app_info");
 
 /** Seize the TMP + combined handshake (firmware + discovery in one
  * burst, mirroring Pro Control). Returns both firmware version and the active
@@ -215,6 +219,10 @@ export const saveTargets = (targets: Target[]): Promise<void> =>
 export const setPlaybackLevel = (level: PlaybackLevel): Promise<void> =>
   invoke("set_playback_level", { level });
 
+/** Settings — persist the auto-install-updates preference. */
+export const setAutoInstallUpdates = (on: boolean): Promise<void> =>
+  invoke("set_auto_install_updates", { on });
+
 /** Settings — Tier-2 calibration: capture dry instrument for `secs` (clamped
  * 2..30), store K-weighted LUFS, return it + clip/stimulus-ceiling caveats.
  * DEVICE WRITE (persists calibration). Use a countdown, NOT window.confirm. */
@@ -363,6 +371,7 @@ export const addSetlistSongs = (
  */
 export const cmd = {
   // Connection + app
+  appInfo,
   connectDevice,
   listPresets,
   // Leveling
@@ -373,6 +382,7 @@ export const cmd = {
   saveProfiles,
   saveTargets,
   setPlaybackLevel,
+  setAutoInstallUpdates,
   calibrateProfile,
   listPickupTopologies,
   // LevelView — active preset + songs

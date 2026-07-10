@@ -1,10 +1,13 @@
 // Settings view — the user-owned loudness targets (handoff design_handoff_
-// settings_targets) + the Playback level segmented control.
+// settings_targets) + the Playback level segmented control + the App updates
+// section.
 //
 //   • Targets render from the store; "Add target" appends a row in rename mode
 //     and persists via save_targets (no ceiling clamp — value seeds at −22.0).
 //   • Deleting the last target shows the empty-state line.
 //   • The Playback level control persists the picked level via set_playback_level.
+//   • App updates: version readout, manual check → "up to date", auto-install
+//     toggle — driven entirely off the injected `updater` prop (no invoke calls).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -13,6 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { SettingsView } from "../views/settings";
+import type { UpdaterApi } from "../lib/useUpdater";
 
 const SEED_TARGETS = [
   { name: "Rhythm", lufs: -26.0 },
@@ -35,10 +39,37 @@ function mockStore(targets = SEED_TARGETS, playback = "stage") {
   });
 }
 
+// Named refs (not accessed through the interface-typed object) so assertions
+// don't trip `@typescript-eslint/unbound-method` on the interface's method
+// signatures.
+const checkFn = vi.fn<() => Promise<"found" | "none" | "error">>();
+const setAutoInstallFn = vi.fn<(on: boolean) => void>();
+
+function makeStubUpdater(): UpdaterApi {
+  checkFn.mockReset().mockResolvedValue("none");
+  setAutoInstallFn.mockReset();
+  return {
+    phase: "idle",
+    version: null,
+    notes: null,
+    percent: 0,
+    autoInstall: true,
+    currentVersion: "1.2.3",
+    setAutoInstall: setAutoInstallFn,
+    check: checkFn,
+    review: vi.fn(),
+    cancelReview: vi.fn(),
+    startDownload: vi.fn(),
+    dismiss: vi.fn(),
+    retry: vi.fn(),
+    restart: vi.fn(),
+  };
+}
+
 function renderView() {
-  return render(
+  render(
     <ThemeProvider>
-      <SettingsView connected={false} />
+      <SettingsView connected={false} updater={makeStubUpdater()} />
     </ThemeProvider>,
   );
 }
@@ -127,5 +158,46 @@ describe("SettingsView — playback level", () => {
     );
     // Quiet → the bass +1.5 LU chip (mirrors profiles::playback_offset_lu).
     expect(screen.getByText("bass +1.5 LU")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsView — app updates", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    mockStore();
+  });
+
+  it("renders the version readout, check button, and auto-install label", async () => {
+    renderView();
+    expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /check for updates/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Install updates automatically"),
+    ).toBeInTheDocument();
+  });
+
+  it("checks for updates and shows up to date", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Version 1.2.3");
+
+    await user.click(
+      screen.getByRole("button", { name: /check for updates/i }),
+    );
+
+    expect(checkFn).toHaveBeenCalled();
+    expect(await screen.findByText("up to date")).toBeInTheDocument();
+  });
+
+  it("toggles auto-install", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Version 1.2.3");
+
+    await user.click(screen.getByRole("switch"));
+
+    expect(setAutoInstallFn).toHaveBeenCalledWith(false);
   });
 });

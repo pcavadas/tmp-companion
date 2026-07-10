@@ -82,6 +82,7 @@ pub fn run_e2e_server() {
             copy_apply,
             cancel_copy_apply,
             get_store,
+            set_auto_install_updates,
             level_preset,
             doctor_check,
             cancel_doctor_check,

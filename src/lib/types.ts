@@ -205,6 +205,8 @@ export interface Store {
   targets: Target[];
   /** Playback loudness the leveling targets are compensated for. */
   playback_level: PlaybackLevel;
+  /** Download + install app updates automatically (Settings toggle). */
+  auto_install_updates: boolean;
 }
 
 /** A shipped pickup topology (mirrors lib::TopologyInfo). */

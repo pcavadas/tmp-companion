@@ -21,6 +21,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  appInfo,
+  setAutoInstallUpdates,
   connectDevice,
   listPresets,
   levelPreset,
@@ -91,12 +93,22 @@ describe("no-arg commands", () => {
     await listPresets();
     expectCall("list_presets");
   });
+
+  it("app_info — no args", async () => {
+    await appInfo();
+    expectCall("app_info");
+  });
 });
 
 describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () => {
   it("calibrate_profile uses profileId + secs", async () => {
     await calibrateProfile("p1", 8);
     expectCall("calibrate_profile", { profileId: "p1", secs: 8 });
+  });
+
+  it("set_auto_install_updates uses on", async () => {
+    await setAutoInstallUpdates(true);
+    expectCall("set_auto_install_updates", { on: true });
   });
 
   it("level_scenes_apply_batched passes scene jobs with a progress channel", async () => {
@@ -319,9 +331,9 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 29 contract commands", () => {
+  it("cmd exposes exactly the 31 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(29);
+    expect(Object.keys(cmd).length).toBe(31);
   });
 });

@@ -41,10 +41,12 @@ import type {
   Target,
   TopologyInfo,
 } from "../../lib/types";
+import type { UpdaterApi } from "../../lib/useUpdater";
 import { TargetRow } from "./TargetRow";
 import { InstrumentRow } from "./InstrumentRow";
 import { InstrumentForm } from "./InstrumentForm";
 import { PlaybackLevelSection } from "./PlaybackLevelSection";
+import { AppUpdatesSection } from "./AppUpdatesSection";
 
 // The wire target is name-only ({name, lufs}); the UI carries a transient `uid`
 // so React keys, drag-reorder, and the auto-rename of a freshly added row stay
@@ -93,9 +95,10 @@ export function NeedsDevicePill() {
 
 interface SettingsViewProps {
   connected: boolean;
+  updater: UpdaterApi;
 }
 
-export function SettingsView({ connected }: SettingsViewProps) {
+export function SettingsView({ connected, updater }: SettingsViewProps) {
   const { t } = useTheme();
   const s = useStyles();
 
@@ -486,6 +489,10 @@ export function SettingsView({ connected }: SettingsViewProps) {
               Add instrument
             </Button>
           )}
+
+          <div style={{ marginTop: 24 }}>
+            <AppUpdatesSection updater={updater} />
+          </div>
         </div>
 
         {/* ── FOOTER — spans both columns ── */}
