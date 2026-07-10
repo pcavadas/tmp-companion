@@ -12,6 +12,8 @@ import { useEffect, useRef, useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
 import { Icon } from "../../ui/Icon";
+import { Spinner } from "../../ui/Spinner";
+import { Dot } from "../../ui/Dot";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DOCTOR_STEPS, type DoctorRunStatus } from "./useDoctorFlow";
@@ -213,28 +215,9 @@ export function DoctorRun({
                   }}
                 >
                   {active && (
-                    <span
-                      className="tmp-spin"
-                      style={{ display: "inline-flex" }}
-                    >
-                      <Icon
-                        name="spinner"
-                        size={14}
-                        stroke={t.sevWarn}
-                        strokeWidth={1.8}
-                      />
-                    </span>
+                    <Spinner size={14} stroke={t.sevWarn} strokeWidth={1.8} />
                   )}
-                  {status === "queued" && (
-                    <span
-                      style={{
-                        width: 7,
-                        height: 7,
-                        borderRadius: 999,
-                        background: t.faint,
-                      }}
-                    />
-                  )}
+                  {status === "queued" && <Dot color={t.faint} />}
                   {status === "done" && (
                     <Icon
                       name="check"

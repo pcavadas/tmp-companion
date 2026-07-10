@@ -7,6 +7,7 @@
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Checkbox } from "../../ui/primitives";
+import { Tag } from "../../ui/Tag";
 
 export interface SceneRowProps {
   kind: "base" | "fs";
@@ -49,21 +50,7 @@ export function SceneRow({
       <span
         style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}
       >
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsTag,
-            letterSpacing: "0.06em",
-            color: isBase ? t.mutedInk : t.accentDeep,
-            border: `0.5px solid ${isBase ? t.hairlineStrong : "rgba(217,119,87,0.45)"}`,
-            background: isBase ? "transparent" : t.accentSoft,
-            borderRadius: t.rSm,
-            padding: "1px 5px",
-            flexShrink: 0,
-          }}
-        >
-          {tag}
-        </span>
+        <Tag tone={isBase ? "neutral" : "accent"}>{tag}</Tag>
         <span
           style={{
             fontFamily: t.serif,

@@ -16,7 +16,7 @@ import { useMemo } from "react";
 
 import { slotLabel } from "../lib/format";
 import { useTheme } from "../theme/ThemeContext";
-import { Icon } from "../ui/Icon";
+import { Spinner } from "../ui/Spinner";
 import { Skel, SkelStatus } from "../ui/Skeleton";
 import { ProgressBar } from "../ui/ProgressBar";
 import { Checkbox, SearchInput } from "../ui/primitives";
@@ -294,9 +294,7 @@ export function PresetList(props: PresetListProps) {
                 color: t.accentDeep,
               }}
             >
-              <span className="tmp-spin" style={{ display: "inline-flex" }}>
-                <Icon name="spinner" size={12} stroke={t.accentDeep} />
-              </span>
+              <Spinner size={12} stroke={t.accentDeep} />
               Reading preset details…
             </span>
             <span

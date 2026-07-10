@@ -4,27 +4,10 @@
 // footnote, never in the chip wording). Shown in the Set-up Run-option caveat, on
 // flagged Summary rows, and in the Summary's reason-aware footnote.
 
-import { useTheme } from "../../theme/ThemeContext";
+import { Tag } from "../../ui/Tag";
 
 export function ByEarChip() {
-  const { t } = useTheme();
-  return (
-    <span
-      style={{
-        fontFamily: t.mono,
-        fontSize: 8.5,
-        letterSpacing: "0.04em",
-        color: t.accentDeep,
-        background: t.accentSoft,
-        border: `0.5px solid ${t.accentBorder}`,
-        borderRadius: 3,
-        padding: "1px 5px",
-        flexShrink: 0,
-      }}
-    >
-      by ear
-    </span>
-  );
+  return <Tag tone="accent">by ear</Tag>;
 }
 
 export default ByEarChip;

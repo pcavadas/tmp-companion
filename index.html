@@ -24,16 +24,6 @@
       #root {
         height: 100%;
       }
-      @keyframes blink {
-        0%,
-        49% {
-          opacity: 1;
-        }
-        50%,
-        100% {
-          opacity: 0;
-        }
-      }
       /* Loading-state skeletons (see src/ui/Skeleton.tsx). The shimmer fill +
          caption spinner ride every slow-to-arrive region; reduced-motion swaps
          the sweep for a calm opacity pulse and stops the spinner. */
@@ -58,23 +48,6 @@
         to {
           transform: rotate(360deg);
         }
-      }
-      /* Device-push row flash (src/views/presets/PresetRow.tsx): when the UNIT
-         moves the app on its own (footswitch tap / preset change on the hardware),
-         the moved active row gets a brief terracotta inset glow so the user notices
-         the app moved without them. ~1.15s ease-out, fading from rgba(217,119,87,0.22)
-         (the accent) to transparent. App-initiated changes do NOT pulse (the user
-         caused them). */
-      @keyframes tmp-extpulse {
-        0% {
-          box-shadow: inset 0 0 0 9999px rgba(217, 119, 87, 0.22);
-        }
-        100% {
-          box-shadow: inset 0 0 0 9999px rgba(217, 119, 87, 0);
-        }
-      }
-      .tmp-extpulse {
-        animation: tmp-extpulse 1.15s ease-out;
       }
       /* Toast entrance (src/ui/primitives.tsx Toast): fade + rise-in on mount. */
       @keyframes tmp-toast-in {
@@ -164,75 +137,9 @@
         .tmp-fwpulse {
           animation: none;
         }
-        .tmp-extpulse {
-          animation: none;
-        }
         .tmp-toast-in {
           animation: none;
         }
-      }
-      /* DS Slider (src/ui/primitives.tsx Slider): native range thumb/track can
-         only be styled via ::-webkit-slider-* / ::-moz-range-* pseudo-elements,
-         which cannot be set inline — hence this rule. Colors mirror the theme
-         tokens: accent #d97757, track rgba(15,17,21,0.07), knob #ffffff,
-         knobRing rgba(15,17,21,0.25). The left fill is driven by the --fill
-         custom property set inline from the value. */
-      .ds-slider-input {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 100%;
-        height: 13px;
-        background: transparent;
-        cursor: pointer;
-        margin: 0;
-        display: block;
-      }
-      .ds-slider-input:focus {
-        outline: none;
-      }
-      .ds-slider-input::-webkit-slider-runnable-track {
-        height: 5px;
-        border-radius: 999px;
-        background: linear-gradient(
-          to right,
-          #d97757 0,
-          #d97757 var(--fill, 0%),
-          rgba(15, 17, 21, 0.07) var(--fill, 0%),
-          rgba(15, 17, 21, 0.07) 100%
-        );
-      }
-      .ds-slider-input::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 13px;
-        height: 13px;
-        margin-top: -4px;
-        border: none;
-        border-radius: 999px;
-        background: #ffffff;
-        box-shadow:
-          0 0 0 0.5px rgba(15, 17, 21, 0.25),
-          0 1px 3px rgba(0, 0, 0, 0.2);
-      }
-      .ds-slider-input::-moz-range-track {
-        height: 5px;
-        border-radius: 999px;
-        background: rgba(15, 17, 21, 0.07);
-      }
-      .ds-slider-input::-moz-range-progress {
-        height: 5px;
-        border-radius: 999px;
-        background: #d97757;
-      }
-      .ds-slider-input::-moz-range-thumb {
-        width: 13px;
-        height: 13px;
-        border: none;
-        border-radius: 999px;
-        background: #ffffff;
-        box-shadow:
-          0 0 0 0.5px rgba(15, 17, 21, 0.25),
-          0 1px 3px rgba(0, 0, 0, 0.2);
       }
     </style>
   </head>

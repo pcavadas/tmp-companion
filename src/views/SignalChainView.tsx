@@ -7,6 +7,7 @@ import React from "react";
 import { BlockArt, HalfStackArt } from "../ui/BlockArt";
 import type { HalfStackSpec } from "../models/blockArt";
 import { Icon, type IconName } from "../ui/Icon";
+import { Skel } from "../ui/Skeleton";
 
 const MONO = "'JetBrains Mono', ui-monospace, monospace";
 const STRIP_LBL = 18;
@@ -140,10 +141,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
             justifyContent: "center",
           }}
         >
-          <div
-            className="tmp-skel"
-            style={{ width: dims.art, height: dims.art, borderRadius: 9 }}
-          />
+          <Skel w={dims.art} h={dims.art} r={9} />
         </div>
         <div
           style={{
@@ -154,14 +152,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
             paddingTop: 5,
           }}
         >
-          <div
-            className="tmp-skel"
-            style={{
-              width: Math.round(dims.w * 0.52),
-              height: 6,
-              borderRadius: 3,
-            }}
-          />
+          <Skel w={Math.round(dims.w * 0.52)} h={6} r={3} />
         </div>
       </div>
     );
@@ -449,10 +440,7 @@ function EndpointNode({
             justifyContent: "center",
           }}
         >
-          <div
-            className="tmp-skel"
-            style={{ width: 34, height: 34, borderRadius: 999 }}
-          />
+          <Skel w={34} h={34} r={999} />
         </div>
         <div
           style={{
@@ -463,10 +451,7 @@ function EndpointNode({
             paddingTop: 5,
           }}
         >
-          <div
-            className="tmp-skel"
-            style={{ width: skeletonLabelWidth, height: 6, borderRadius: 3 }}
-          />
+          <Skel w={skeletonLabelWidth} h={6} r={3} />
         </div>
       </div>
     );

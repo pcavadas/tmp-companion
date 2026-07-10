@@ -20,7 +20,7 @@
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
-import { Icon } from "./Icon";
+import { Spinner } from "./Spinner";
 
 export interface SkelProps {
   /** width (px or any CSS length). */
@@ -66,9 +66,7 @@ export function SkelStatus({ label, style }: SkelStatusProps) {
         ...style,
       }}
     >
-      <span className="tmp-spin" style={{ display: "inline-flex" }}>
-        <Icon name="spinner" size={12} stroke={t.faint} />
-      </span>
+      <Spinner size={12} stroke={t.faint} />
       {label}
     </span>
   );

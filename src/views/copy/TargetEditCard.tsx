@@ -8,6 +8,7 @@
 import { useMemo } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { Tag } from "../../ui/Tag";
 import { slotLabel } from "../../lib/format";
 import { CPU_BUDGET } from "../../models/cpu";
 import { CopyPath } from "./CopyPath";
@@ -81,21 +82,9 @@ export function TargetEditCard({
           {name}
         </span>
         {dirty && (
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsTag,
-              letterSpacing: t.lsTag,
-              textTransform: "uppercase",
-              color: t.accentDeep,
-              border: `0.5px solid ${t.accentBorder}`,
-              background: t.accentSoft,
-              borderRadius: t.rSm,
-              padding: "1px 5px",
-            }}
-          >
+          <Tag tone="accent" uppercase>
             edited
-          </span>
+          </Tag>
         )}
         <span style={{ flex: 1 }} />
         <CpuMeter value={cpu} />

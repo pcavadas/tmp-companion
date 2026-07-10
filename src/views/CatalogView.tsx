@@ -20,6 +20,7 @@ import { useTheme } from "../theme/ThemeContext";
 import type { ThemeTokens } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { SearchInput } from "../ui/primitives";
+import { Tag } from "../ui/Tag";
 import { BlockArt, HalfStackArt } from "../ui/BlockArt";
 import { toneBodyHex } from "../ui/blockart/shared";
 import {
@@ -149,32 +150,6 @@ function ModelTile({ r, size }: ModelTileProps) {
 
 // ── badges ────────────────────────────────────────────────────────────────
 
-interface TagProps {
-  t: ThemeTokens;
-  label: string;
-  fg: string;
-}
-
-function Tag({ t, label, fg }: TagProps) {
-  return (
-    <span
-      style={{
-        fontFamily: t.mono,
-        fontSize: t.fsTag,
-        letterSpacing: t.lsTag,
-        color: fg,
-        border: `0.5px solid ${fg}66`,
-        borderRadius: t.rSm,
-        padding: "0 3px",
-        lineHeight: 1.5,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
 /** The STEREO / CONV badges for a record — shown on cards and in the detail bar. */
 interface ModelTagsProps {
   r: ModelRecord;
@@ -184,8 +159,8 @@ interface ModelTagsProps {
 function ModelTags({ r, t }: ModelTagsProps) {
   return (
     <>
-      {r.ch === "stereo" && <Tag t={t} label="STEREO" fg={t.badgeStereo} />}
-      {r.conv && <Tag t={t} label="CONV" fg={t.badgeConv} />}
+      {r.ch === "stereo" && <Tag fg={t.badgeStereo}>STEREO</Tag>}
+      {r.conv && <Tag fg={t.badgeConv}>CONV</Tag>}
     </>
   );
 }
@@ -194,29 +169,11 @@ function ModelTags({ r, t }: ModelTagsProps) {
  *  model is not a costed DSP module (mics / FX-loop markers → `cpu` null). */
 interface CpuChipProps {
   cpu: number | null;
-  t: ThemeTokens;
 }
 
-function CpuChip({ cpu, t }: CpuChipProps) {
+function CpuChip({ cpu }: CpuChipProps) {
   if (cpu == null) return null;
-  return (
-    <span
-      style={{
-        fontFamily: t.mono,
-        fontSize: t.fsTag,
-        letterSpacing: "0.03em",
-        color: t.ink2,
-        background: t.inset,
-        border: `0.5px solid ${t.hairline}`,
-        borderRadius: t.rSm,
-        padding: "0 4px",
-        lineHeight: 1.5,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {cpuStr(cpu)} CPU
-    </span>
-  );
+  return <Tag tone="neutralFill">{cpuStr(cpu)} CPU</Tag>;
 }
 
 // Card geometry (px), relative to the icon size: the card is `icon + CARD_PAD`
@@ -303,7 +260,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
           gap: 4,
         }}
       >
-        <CpuChip cpu={r.cpu} t={t} />
+        <CpuChip cpu={r.cpu} />
         {(r.ch === "stereo" || r.conv) && (
           <div
             style={{

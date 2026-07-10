@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 import { useTheme } from "../../theme/ThemeContext";
+import { Tag } from "../../ui/Tag";
 
 export interface StepBadgeProps {
   n: number;
@@ -34,25 +35,7 @@ export function StepBadge({ n }: StepBadgeProps) {
 
 /** The green "ON UNIT" chip — the preset currently loaded on the device. */
 export function OnUnitChip() {
-  const { t } = useTheme();
-  return (
-    <span
-      style={{
-        fontFamily: t.mono,
-        fontSize: t.fsTag,
-        letterSpacing: t.lsWide,
-        color: t.good,
-        border: `0.5px solid ${t.goodBorder}`,
-        background: t.goodSoft,
-        borderRadius: t.rSm,
-        padding: "1px 5px",
-        whiteSpace: "nowrap",
-        flexShrink: 0,
-      }}
-    >
-      ON UNIT
-    </span>
-  );
+  return <Tag tone="good">ON UNIT</Tag>;
 }
 
 export interface MiniLinkProps {

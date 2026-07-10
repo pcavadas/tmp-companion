@@ -12,6 +12,8 @@ import { Dialog, DialogBody, DialogFooter } from "../../ui/Dialog";
 import { Icon } from "../../ui/Icon";
 import { Button } from "../../ui/primitives";
 import { ProgressBar } from "../../ui/ProgressBar";
+import { Spinner } from "../../ui/Spinner";
+import { Dot } from "../../ui/Dot";
 import { slotLabel } from "../../lib/format";
 import type { CopyApplyItem } from "../../lib/types";
 
@@ -207,23 +209,9 @@ export function SaveOverlay({
                   }}
                 >
                   {status === "active" && (
-                    <span
-                      className="tmp-spin"
-                      style={{ display: "inline-flex" }}
-                    >
-                      <Icon name="spinner" size={13} stroke={t.sevWarn} />
-                    </span>
+                    <Spinner size={13} stroke={t.sevWarn} />
                   )}
-                  {status === "queued" && (
-                    <span
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: t.rPill,
-                        background: t.faint,
-                      }}
-                    />
-                  )}
+                  {status === "queued" && <Dot size={6} color={t.faint} />}
                   {status === "done" && (
                     <Icon
                       name="check"
