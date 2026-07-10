@@ -6,6 +6,7 @@ import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
+import { PaneEmpty } from "../../ui/PaneEmpty";
 import { DASH, pad2 } from "../../lib/format";
 import type { SetlistRecord, SongRecord } from "../../lib/types";
 import { LIST_COLS, IconBtn } from "./shared";
@@ -331,60 +332,24 @@ export function SetlistDetail({
           reading this setlist…
         </div>
       ) : songsInList.length === 0 ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            borderTop: `0.5px solid ${t.hairline}`,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 14,
-            padding: "0 40px",
-            textAlign: "center",
-          }}
-        >
-          <span
-            style={{
-              width: 46,
-              height: 46,
-              borderRadius: t.rPopover,
-              border: `0.5px solid ${t.hairlineStrong}`,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Icon name="music" size={20} stroke={t.faint} />
-          </span>
-          <div style={{ fontFamily: t.serif, fontSize: 18, color: t.ink2 }}>
-            No songs in this setlist yet
-          </div>
-          <div
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsBody,
-              color: t.mutedInk,
-              maxWidth: 320,
-              lineHeight: 1.5,
-            }}
-          >
-            Add songs from your library — a song can sit in this setlist and
-            others at the same time.
-          </div>
-          <Button
-            variant="primary"
-            icon="plus"
-            small
-            disabled={busy}
-            onClick={() => {
-              setPicker(true);
-            }}
-          >
-            Add songs
-          </Button>
-        </div>
+        <PaneEmpty
+          icon="music"
+          title="No songs in this setlist yet"
+          body="Add songs from your library — a song can sit in this setlist and others at the same time."
+          cta={
+            <Button
+              variant="primary"
+              icon="plus"
+              small
+              disabled={busy}
+              onClick={() => {
+                setPicker(true);
+              }}
+            >
+              Add songs
+            </Button>
+          }
+        />
       ) : (
         <>
           <div

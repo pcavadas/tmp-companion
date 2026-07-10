@@ -28,7 +28,7 @@
 // Split into ./TargetRow, ./PlaybackLevelSection, ./InstrumentRow,
 // ./InstrumentForm; NeedsDevicePill stays co-located (shared by body + row).
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
@@ -93,6 +93,24 @@ export function NeedsDevicePill() {
       <Icon name="cable" size={13} stroke={t.faint} />
       Needs device
     </span>
+  );
+}
+
+// Italic muted empty-state bar shared by the Targets and Instruments panes.
+function EmptyHint({ children }: { children: ReactNode }) {
+  const { t } = useTheme();
+  return (
+    <div
+      style={{
+        fontFamily: t.sans,
+        fontSize: t.fsUi,
+        color: t.faint,
+        padding: "14px 0",
+        fontStyle: "italic",
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -463,17 +481,9 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                 ))}
 
                 {targets.length === 0 && (
-                  <div
-                    style={{
-                      fontFamily: t.sans,
-                      fontSize: t.fsUi,
-                      color: t.faint,
-                      padding: "14px 0",
-                      fontStyle: "italic",
-                    }}
-                  >
+                  <EmptyHint>
                     No targets yet — add one to start leveling.
-                  </div>
+                  </EmptyHint>
                 )}
 
                 <Button
@@ -570,17 +580,9 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
               )}
 
               {profiles.length === 0 && (
-                <div
-                  style={{
-                    fontFamily: t.sans,
-                    fontSize: t.fsUi,
-                    color: t.faint,
-                    padding: "14px 0",
-                    fontStyle: "italic",
-                  }}
-                >
+                <EmptyHint>
                   No instruments yet — add one to calibrate.
-                </div>
+                </EmptyHint>
               )}
 
               {adding ? (

@@ -16,7 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { useTheme } from "../../theme/ThemeContext";
+import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Button, Checkbox, Toggle } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { WizardFooter, WizTitle } from "./WizardShell";
@@ -129,6 +129,7 @@ export function SetupBody({
   onRebalanceChange,
 }: SetupBodyProps) {
   const { t } = useTheme();
+  const s = useStyles();
   // Inline backup acknowledgment — gates the primary button (mirrors the Copy save
   // bar). Required only on a fresh run; re-level already acknowledged. Default off.
   const requireBackup = !isRelevel;
@@ -311,15 +312,7 @@ export function SetupBody({
             marginBottom: 9,
           }}
         >
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: 9.5,
-              letterSpacing: "0.12em",
-              textTransform: "uppercase",
-              color: somePicked ? t.accentDeep : t.faint,
-            }}
-          >
+          <span style={s.kickerWide(somePicked ? t.accentDeep : t.faint)}>
             Apply to {scopeLabel}
           </span>
           {somePicked && (
@@ -517,16 +510,7 @@ export function SetupBody({
           borderTop: `0.5px solid ${t.hairline}`,
         }}
       >
-        <div
-          style={{
-            fontFamily: t.mono,
-            fontSize: 9.5,
-            letterSpacing: "0.12em",
-            textTransform: "uppercase",
-            color: t.faint,
-            marginBottom: 9,
-          }}
-        >
+        <div style={{ ...s.kickerWide(t.faint), marginBottom: 9 }}>
           Run option
         </div>
         <div

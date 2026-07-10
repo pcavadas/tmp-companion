@@ -11,7 +11,7 @@
 
 import { useMemo, useRef, useState } from "react";
 
-import { useTheme } from "../../theme/ThemeContext";
+import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Button, Checkbox } from "../../ui/primitives";
 import { StepRail, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DialogCardCtx } from "../overlays/wizardContext";
@@ -62,6 +62,7 @@ export function DoctorSetup({
   onRun,
 }: DoctorSetupProps) {
   const { t } = useTheme();
+  const s = useStyles();
   const pageRef = useRef<HTMLDivElement>(null);
 
   const groups = useMemo(() => {
@@ -223,15 +224,7 @@ export function DoctorSetup({
               marginBottom: 9,
             }}
           >
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsMicro,
-                letterSpacing: t.lsWide,
-                textTransform: "uppercase",
-                color: somePicked ? t.accentDeep : t.faint,
-              }}
-            >
+            <span style={s.kickerWide(somePicked ? t.accentDeep : t.faint)}>
               Instrument for {scopeLabel}
             </span>
             {somePicked && (

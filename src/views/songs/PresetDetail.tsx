@@ -8,6 +8,7 @@ import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { PaneEmpty } from "../../ui/PaneEmpty";
 import { slotLabel } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
 import { songBpm } from "./songUtil";
@@ -100,49 +101,11 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
       </div>
 
       {n === 0 ? (
-        <div
-          style={{
-            flex: 1,
-            minHeight: 0,
-            borderTop: `0.5px solid ${t.hairline}`,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 13,
-            padding: "0 44px",
-            textAlign: "center",
-          }}
-        >
-          <span
-            style={{
-              width: 46,
-              height: 46,
-              borderRadius: 12,
-              border: `0.5px solid ${t.hairlineStrong}`,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Icon name="wave" size={20} stroke={t.faint} />
-          </span>
-          <div style={{ fontFamily: t.serif, fontSize: 18, color: t.ink2 }}>
-            No songs use this preset
-          </div>
-          <div
-            style={{
-              fontFamily: t.sans,
-              fontSize: 12.5,
-              color: t.mutedInk,
-              maxWidth: 340,
-              lineHeight: 1.55,
-            }}
-          >
-            Which songs reach for a preset is set on the unit in Pro Control.
-            This view stays in sync with the device.
-          </div>
-        </div>
+        <PaneEmpty
+          icon="wave"
+          title="No songs use this preset"
+          body="Which songs reach for a preset is set on the unit in Pro Control. This view stays in sync with the device."
+        />
       ) : (
         <>
           <div
