@@ -159,7 +159,7 @@ export function Modal({
           {headline}
         </h2>
         {body && (
-          <p
+          <div
             style={{
               fontFamily: t.serif,
               fontSize: t.fsName,
@@ -169,7 +169,7 @@ export function Modal({
             }}
           >
             {body}
-          </p>
+          </div>
         )}
         {code != null && (
           <div
@@ -281,7 +281,7 @@ function toneFor(t: ThemeTokens, status: ResolvedStatus): ToastTone {
       return {
         edge: t.good,
         chipBg: t.goodSoft,
-        label: "SUCCESS",
+        label: "READY",
         icon: "check",
       };
     case "error":

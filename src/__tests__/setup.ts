@@ -75,9 +75,15 @@ function emptyResultFor(command: string): unknown {
 
     // profiles / store
     case "get_store":
-      return { profiles: [], profile_by_slot: {}, targets: [] };
+      return {
+        profiles: [],
+        profile_by_slot: {},
+        targets: [],
+        auto_install_updates: true,
+      };
     case "save_profiles":
     case "save_targets":
+    case "set_auto_install_updates":
       return null;
     case "calibrate_profile":
       return -20;

@@ -56,7 +56,7 @@ export function PlaybackLevelSection({
   const info = INFO[value];
 
   return (
-    <div style={{ marginTop: 26 }}>
+    <div>
       <div style={s.kicker(t.accentDeep)}>Playback level</div>
       <div
         style={{

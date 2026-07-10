@@ -2,7 +2,7 @@
 //
 // 24×24 viewBox, Lucide-aligned. Implemented ONCE here; import everywhere.
 // Light-only app — no sun/moon (the dark toggle was removed). Adds the prototype
-// page icons: gauge · cable · music · spinner · warn-tri · refresh · grip ·
+// page icons: gauge · cable · music · spinner · warn-tri · info · refresh · grip ·
 // trash · lock.
 
 import type { IconName } from "./iconNames";
@@ -217,24 +217,15 @@ export function Icon({
     case "cable":
       return (
         <svg {...props}>
-          <g transform="scale(0.0896861) translate(-67.3 -98.6) rotate(-135 197.5 236)">
-            <path vectorEffect="non-scaling-stroke" d="M197.5 64 L197.5 148" />
-            <path vectorEffect="non-scaling-stroke" d="M187 150 L208 150" />
-            <path
-              vectorEffect="non-scaling-stroke"
-              d="M161 200 Q161 152 197.5 152 Q234 152 234 200 L234 286 Q234 304 217 304 L178 304 Q161 304 161 286 Z"
-            />
-            <line
-              vectorEffect="non-scaling-stroke"
-              x1="181"
-              y1="350"
-              x2="214"
-              y2="350"
-            />
-            <path
-              vectorEffect="non-scaling-stroke"
-              d="M181 304 L181 394 Q181 404 189 409 L197.5 414 L206 409 Q214 404 214 394 L214 304"
-            />
+          <g
+            transform="scale(0.0896861) translate(-67.3 -98.6) rotate(-135 197.5 236)"
+            strokeWidth={strokeWidth / 0.0896861}
+          >
+            <path d="M197.5 64 L197.5 148" />
+            <path d="M187 150 L208 150" />
+            <path d="M161 200 Q161 152 197.5 152 Q234 152 234 200 L234 286 Q234 304 217 304 L178 304 Q161 304 161 286 Z" />
+            <line x1="181" y1="350" x2="214" y2="350" />
+            <path d="M181 304 L181 394 Q181 404 189 409 L197.5 414 L206 409 Q214 404 214 394 L214 304" />
           </g>
         </svg>
       );
@@ -264,6 +255,14 @@ export function Icon({
         <svg {...props}>
           <path d="M10.3 4l-7 12a2 2 0 0 0 1.7 3h14a2 2 0 0 0 1.7-3l-7-12a2 2 0 0 0-3.4 0z" />
           <path d="M12 9v4M12 16v.5" />
+        </svg>
+      );
+    case "info":
+      return (
+        <svg {...props}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11.5v4.5" />
+          <path d="M12 8v.4" />
         </svg>
       );
     case "refresh":

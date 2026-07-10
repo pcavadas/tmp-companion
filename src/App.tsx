@@ -36,6 +36,8 @@ import { SettingsView } from "./views/settings";
 import { FirmwareGate } from "./views/FirmwareGate";
 import { firmwareGateActive, firmwareSupported } from "./lib/firmware";
 import { connectDevice, currentGraph, isTauri } from "./lib/invoke";
+import { useUpdater } from "./lib/useUpdater";
+import { UpdateOverlay } from "./ui/UpdateOverlay";
 import { ensureLibraryScan, resetLibraryScan } from "./views/level/libraryScan";
 import { startScanAfterGraph } from "./lib/scheduleLibraryScan";
 import type { ActiveGraph } from "./lib/types";
@@ -69,6 +71,7 @@ export default function App() {
 
 function AppShell() {
   const { t } = useTheme();
+  const updater = useUpdater();
 
   const [disclaimerOk, setDisclaimerOk] = useState(
     () =>
@@ -303,11 +306,16 @@ function AppShell() {
                 <SongsView connected={connected} onScan={retry} />
               )}
               {tab === "catalog" && <CatalogView />}
-              {tab === "settings" && <SettingsView connected={connected} />}
+              {tab === "settings" && (
+                <SettingsView connected={connected} updater={updater} />
+              )}
             </>
           )}
         </ErrorBoundary>
       </div>
+
+      {/* Auto-update surface — the phase-driven toast/modal, above everything. */}
+      <UpdateOverlay u={updater} />
     </div>
   );
 }

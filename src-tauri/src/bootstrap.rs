@@ -27,6 +27,10 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        // In-app auto-update (checks the GitHub latest.json endpoint) + the process
+        // plugin it relaunches through to apply a downloaded update.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             app_info,
             connect_device,
@@ -37,6 +41,7 @@ pub fn run() {
             save_profiles,
             save_targets,
             set_playback_level,
+            set_auto_install_updates,
             calibrate_profile,
             level_preset,
             level_setlist,

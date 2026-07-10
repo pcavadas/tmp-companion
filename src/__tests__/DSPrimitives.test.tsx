@@ -74,8 +74,9 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("play"); // Doctor tab (WP0)
     expect(ICONS).toContain("pause");
     expect(ICONS).toContain("download"); // Toast update-available status
+    expect(ICONS).toContain("info");
     expect(ICONS).toContain("link"); // Doctor chain prescription + shared-block caption
-    expect(ICONS.length).toBe(40);
+    expect(ICONS.length).toBe(41);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
@@ -122,7 +123,7 @@ describe("Toast — update-lifecycle statuses", () => {
     expect(screen.getByText("UPDATE AVAILABLE")).toBeTruthy();
 
     under(<Toast status="success" title="Done" />);
-    expect(screen.getByText("SUCCESS")).toBeTruthy();
+    expect(screen.getByText("READY")).toBeTruthy();
 
     under(<Toast status="error" title="Failed" />);
     expect(screen.getByText("FAILED")).toBeTruthy();

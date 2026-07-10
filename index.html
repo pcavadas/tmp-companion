@@ -104,6 +104,24 @@
       .tmp-spin {
         animation: tmp-spin 0.9s linear infinite;
       }
+      /* Settings detail-pane thin scrollbar (src/views/settings/SettingsView.tsx). */
+      .tmp-pane-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(15, 17, 21, 0.22) transparent;
+      }
+      .tmp-pane-scroll::-webkit-scrollbar {
+        width: 7px;
+      }
+      .tmp-pane-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .tmp-pane-scroll::-webkit-scrollbar-thumb {
+        background: rgba(15, 17, 21, 0.16);
+        border-radius: 999px;
+      }
+      .tmp-pane-scroll:hover::-webkit-scrollbar-thumb {
+        background: rgba(15, 17, 21, 0.28);
+      }
       /* Device-status dot while reading the firmware (src/ui/DeviceStatus.tsx). */
       @keyframes tmp-fwpulse {
         0%,
