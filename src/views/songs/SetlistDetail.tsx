@@ -7,13 +7,13 @@ import { Icon } from "../../ui/Icon";
 import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 import { PaneEmpty } from "../../ui/PaneEmpty";
-import { DASH, pad2 } from "../../lib/format";
 import type { SetlistRecord, SongRecord } from "../../lib/types";
 import { LIST_COLS, IconBtn } from "./shared";
-import { songBpm } from "./songUtil";
 import { plainInput } from "../../theme/tokens";
 import type { SongDraft } from "./shared";
 import { AddSongs } from "./AddSongs";
+import { SongRow } from "./SongRow";
+import { ListHeader } from "./ListHeader";
 
 interface SetlistRowProps {
   song: SongRecord;
@@ -35,90 +35,46 @@ function SetlistRow({
   onDropOn,
 }: SetlistRowProps) {
   const { t } = useTheme();
-  const bpm = songBpm(song);
   return (
-    <div
-      draggable={!busy}
-      onDragStart={busy ? undefined : onGrab}
-      onDragOver={(e) => {
-        e.preventDefault();
+    <SongRow
+      song={song}
+      idx={idx}
+      gridCols={LIST_COLS}
+      bpmAlign="right"
+      bpmSuffix
+      rootProps={{
+        draggable: !busy,
+        onDragStart: busy ? undefined : onGrab,
+        onDragOver: (e) => {
+          e.preventDefault();
+        },
+        onDrop: busy ? undefined : onDropOn,
       }}
-      onDrop={busy ? undefined : onDropOn}
-      style={{
-        display: "grid",
-        gridTemplateColumns: LIST_COLS,
-        alignItems: "center",
-        height: 48,
-        padding: "0 16px 0 12px",
-        borderBottom: `0.5px solid ${t.hairline}`,
-        background: t.bg,
-      }}
-    >
-      <span
-        title="Drag to reorder"
-        style={{ cursor: busy ? "default" : "grab", display: "flex" }}
-      >
-        <Icon name="grip" size={14} stroke={t.faint} />
-      </span>
-      <span
-        style={{ fontFamily: t.mono, fontSize: t.fsData, color: t.mutedInk }}
-      >
-        {pad2(idx + 1)}
-      </span>
-      <div style={{ minWidth: 0, paddingRight: 12 }}>
-        <div
-          style={{
-            fontFamily: t.serif,
-            fontSize: t.fsName,
-            color: t.ink,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
+      leading={
+        <span
+          title="Drag to reorder"
+          style={{ cursor: busy ? "default" : "grab", display: "flex" }}
         >
-          {song.name}
-        </div>
-        {song.notes && (
-          <div
+          <Icon name="grip" size={14} stroke={t.faint} />
+        </span>
+      }
+      trailing={
+        <span style={{ display: "flex", justifyContent: "flex-end" }}>
+          <span
+            onClick={busy ? undefined : onRemove}
+            title="Remove from setlist"
             style={{
-              fontFamily: t.sans,
-              fontSize: t.fsLabel,
-              color: t.mutedInk,
-              marginTop: 1,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              cursor: busy ? "default" : "pointer",
+              display: "flex",
+              padding: 4,
+              borderRadius: t.rSm,
             }}
           >
-            {song.notes}
-          </div>
-        )}
-      </div>
-      <span
-        style={{
-          fontFamily: t.mono,
-          fontSize: t.fsLabel,
-          color: bpm != null ? t.ink2 : t.faint,
-          textAlign: "right",
-        }}
-      >
-        {bpm != null ? `${String(bpm)} bpm` : DASH}
-      </span>
-      <span style={{ display: "flex", justifyContent: "flex-end" }}>
-        <span
-          onClick={busy ? undefined : onRemove}
-          title="Remove from setlist"
-          style={{
-            cursor: busy ? "default" : "pointer",
-            display: "flex",
-            padding: 4,
-            borderRadius: t.rSm,
-          }}
-        >
-          <Icon name="x" size={14} stroke={t.faint} />
+            <Icon name="x" size={14} stroke={t.faint} />
+          </span>
         </span>
-      </span>
-    </div>
+      }
+    />
   );
 }
 
@@ -352,28 +308,16 @@ export function SetlistDetail({
         />
       ) : (
         <>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: LIST_COLS,
-              alignItems: "center",
-              height: 28,
-              padding: "0 16px 0 12px",
-              borderBottom: `0.5px solid ${t.hairline}`,
-              borderTop: `0.5px solid ${t.hairline}`,
-              fontFamily: t.mono,
-              fontSize: t.fsMicro,
-              letterSpacing: t.lsLabel,
-              color: t.faint,
-              textTransform: "uppercase",
-            }}
-          >
-            <span />
-            <span>№</span>
-            <span>song</span>
-            <span style={{ textAlign: "right" }}>bpm</span>
-            <span />
-          </div>
+          <ListHeader
+            cols={LIST_COLS}
+            cells={[
+              { label: "" },
+              { label: "№" },
+              { label: "song" },
+              { label: "bpm", align: "right" },
+              { label: "" },
+            ]}
+          />
           <div
             style={{
               flex: 1,

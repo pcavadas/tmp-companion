@@ -11,13 +11,16 @@
 
 import { useMemo, useRef, useState } from "react";
 
-import { useTheme, useStyles } from "../../theme/ThemeContext";
-import { Button, Checkbox } from "../../ui/primitives";
+import { useTheme } from "../../theme/ThemeContext";
+import { Button } from "../../ui/primitives";
+import { SetupGroupHeader } from "../../ui/SetupGroupHeader";
+import { PresetOptionRow } from "../../ui/PresetOptionRow";
+import { ApplyToBar } from "../../ui/ApplyToBar";
+import { usePickedRows } from "../../lib/usePickedRows";
 import { StepRail, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DialogCardCtx } from "../overlays/wizardContext";
 import { Pick, type PickOption } from "../overlays/Pick";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
-import { slotLabel } from "../../lib/format";
 import type { SetupOption } from "../level/leveling";
 import type { Store } from "../../lib/types";
 
@@ -62,7 +65,6 @@ export function DoctorSetup({
   onRun,
 }: DoctorSetupProps) {
   const { t } = useTheme();
-  const s = useStyles();
   const pageRef = useRef<HTMLDivElement>(null);
 
   const groups = useMemo(() => {
@@ -98,20 +100,14 @@ export function DoctorSetup({
   };
 
   // Bulk-edit tick selection (which rows the "Apply to" bar writes to). Empty = all.
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const togglePick = (k: string) => {
-    setPicked((p) => {
-      const n = new Set(p);
-      if (n.has(k)) n.delete(k);
-      else n.add(k);
-      return n;
-    });
-  };
-  const somePicked = picked.size > 0;
-  const targetsForBulk = (): string[] =>
-    (somePicked ? options.filter((o) => picked.has(o.key)) : options).map(
-      (o) => o.key,
-    );
+  const {
+    picked,
+    togglePick,
+    clearPicked,
+    somePicked,
+    targetsForBulk,
+    scopeLabel,
+  } = usePickedRows(options);
 
   const [bulkInst, setBulkInst] = useState("none");
   const applyBulkInst = (v: string) => {
@@ -125,9 +121,6 @@ export function DoctorSetup({
   };
 
   const total = options.length;
-  const scopeLabel = somePicked
-    ? `the ${String(picked.size)} ticked`
-    : `all ${String(total)} sound${total === 1 ? "" : "s"}`;
   const anyNone = options.some((o) => (rowInst[o.key] ?? "none") === "none");
 
   const run = () => {
@@ -208,44 +201,11 @@ export function DoctorSetup({
         </div>
 
         {/* apply-to bar — writes to all rows, or to the ticked rows */}
-        <div
-          style={{
-            flexShrink: 0,
-            padding: "12px 24px 14px",
-            background: t.bgAlt,
-            borderBottom: `0.5px solid ${t.hairline}`,
-          }}
+        <ApplyToBar
+          label={`Instrument for ${scopeLabel}`}
+          somePicked={somePicked}
+          onClear={clearPicked}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 9,
-            }}
-          >
-            <span style={s.kickerWide(somePicked ? t.accentDeep : t.faint)}>
-              Instrument for {scopeLabel}
-            </span>
-            {somePicked && (
-              <span
-                onClick={() => {
-                  setPicked(new Set());
-                }}
-                style={{
-                  fontFamily: t.sans,
-                  fontSize: t.fsLabel,
-                  color: t.accentDeep,
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                  flexShrink: 0,
-                  paddingLeft: 12,
-                }}
-              >
-                Clear ticks
-              </span>
-            )}
-          </div>
           <div style={{ maxWidth: 260 }}>
             <Pick
               grow
@@ -254,7 +214,7 @@ export function DoctorSetup({
               onChange={applyBulkInst}
             />
           </div>
-        </div>
+        </ApplyToBar>
 
         {/* every sound that will be checked — set any row directly, or tick for bulk */}
         <div
@@ -262,107 +222,23 @@ export function DoctorSetup({
         >
           {groups.map((g) => (
             <div key={g.slot} style={{ padding: "10px 24px 12px" }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "baseline",
-                  gap: 9,
-                  marginBottom: 6,
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: 11,
-                    color: t.mutedInk,
-                  }}
-                >
-                  {slotLabel(g.slot)}
-                </span>
-                <span
-                  style={{ fontFamily: t.serif, fontSize: 15, color: t.ink }}
-                >
-                  {g.name}
-                </span>
-              </div>
+              <SetupGroupHeader slot={g.slot} name={g.name} />
               {g.opts.map((o) => {
-                const isPicked = picked.has(o.key);
                 const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
                 const nameLabel = o.isBase ? "Whole preset" : o.sceneName;
                 return (
-                  <div
+                  <PresetOptionRow
                     key={o.key}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "26px 1fr 200px",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "7px 0 7px 6px",
-                      borderTop: `0.5px solid ${t.hairline}`,
-                      background: isPicked ? t.rowSel : "transparent",
+                    name={nameLabel}
+                    tag={tag ?? undefined}
+                    isBase={o.isBase}
+                    isPicked={picked.has(o.key)}
+                    onTogglePick={() => {
+                      togglePick(o.key);
                     }}
+                    title="Tick to bulk-set this row with the bar above"
+                    columns="200px"
                   >
-                    <div
-                      onClick={() => {
-                        togglePick(o.key);
-                      }}
-                      title="Tick to bulk-set this row with the bar above"
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <Checkbox checked={isPicked} />
-                    </div>
-                    <div
-                      onClick={() => {
-                        togglePick(o.key);
-                      }}
-                      style={{
-                        minWidth: 0,
-                        paddingRight: 8,
-                        cursor: "pointer",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 8,
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontFamily: t.serif,
-                            fontSize: 14,
-                            color: t.ink,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {nameLabel}
-                        </span>
-                        {tag && (
-                          <span
-                            style={{
-                              fontFamily: t.mono,
-                              fontSize: 8.5,
-                              letterSpacing: t.lsTag,
-                              color: o.isBase ? t.mutedInk : t.accentDeep,
-                              border: `0.5px solid ${o.isBase ? t.hairlineStrong : t.accentBorder}`,
-                              background: o.isBase
-                                ? "transparent"
-                                : t.accentSoft,
-                              borderRadius: 3,
-                              padding: "0 5px",
-                              flexShrink: 0,
-                            }}
-                          >
-                            {tag}
-                          </span>
-                        )}
-                      </div>
-                    </div>
                     <Pick
                       grow
                       tid={`inst:${o.key}`}
@@ -372,7 +248,7 @@ export function DoctorSetup({
                         setOneInst(o.key, v);
                       }}
                     />
-                  </div>
+                  </PresetOptionRow>
                 );
               })}
             </div>

@@ -17,8 +17,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
-import { Button, Checkbox, Toggle } from "../../ui/primitives";
+import { Button, Toggle } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
+import { SetupGroupHeader } from "../../ui/SetupGroupHeader";
+import { PresetOptionRow } from "../../ui/PresetOptionRow";
+import { ApplyToBar } from "../../ui/ApplyToBar";
+import { usePickedRows } from "../../lib/usePickedRows";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { Pick, type PickOption } from "./Pick";
@@ -29,7 +33,6 @@ import {
   targetFromCandidate,
 } from "../level/leveling";
 import type { SetupOption, SetupChoice } from "../level/leveling";
-import { slotLabel } from "../../lib/format";
 
 export type { SetupChoice };
 
@@ -202,20 +205,14 @@ export function SetupBody({
   };
 
   // Bulk-edit selection (which rows the "Apply to" bar writes to). Empty = all.
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const togglePick = (k: string) => {
-    setPicked((p) => {
-      const n = new Set(p);
-      if (n.has(k)) n.delete(k);
-      else n.add(k);
-      return n;
-    });
-  };
-  const somePicked = picked.size > 0;
-  const targetsForBulk = (): string[] =>
-    (somePicked ? options.filter((o) => picked.has(o.key)) : options).map(
-      (o) => o.key,
-    );
+  const {
+    picked,
+    togglePick,
+    clearPicked,
+    somePicked,
+    targetsForBulk,
+    scopeLabel,
+  } = usePickedRows(options);
 
   // The "Apply to" bar's current value (also the brush applied on change).
   const [bulkInst, setBulkInst] = useState(defaultInst);
@@ -238,9 +235,6 @@ export function SetupBody({
   };
 
   const total = options.length;
-  const scopeLabel = somePicked
-    ? `the ${String(picked.size)} ticked`
-    : `all ${String(total)} sound${total === 1 ? "" : "s"}`;
 
   const start = () => {
     const choices: SetupChoice[] = options.map((o) => {
@@ -296,44 +290,11 @@ export function SetupBody({
       </div>
 
       {/* apply-to bar — writes to all rows, or to the ticked rows */}
-      <div
-        style={{
-          flexShrink: 0,
-          padding: "12px 24px 14px",
-          background: t.bgAlt,
-          borderBottom: `0.5px solid ${t.hairline}`,
-        }}
+      <ApplyToBar
+        label={`Apply to ${scopeLabel}`}
+        somePicked={somePicked}
+        onClear={clearPicked}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: 9,
-          }}
-        >
-          <span style={s.kickerWide(somePicked ? t.accentDeep : t.faint)}>
-            Apply to {scopeLabel}
-          </span>
-          {somePicked && (
-            <span
-              onClick={() => {
-                setPicked(new Set());
-              }}
-              style={{
-                fontFamily: t.sans,
-                fontSize: 11.5,
-                color: t.accentDeep,
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-                paddingLeft: 12,
-              }}
-            >
-              Clear ticks
-            </span>
-          )}
-        </div>
         <div
           style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}
         >
@@ -351,7 +312,7 @@ export function SetupBody({
           />
         </div>
         <InstrumentNudge state={instCalState(bulkInst, instrumentOptions)} />
-      </div>
+      </ApplyToBar>
 
       {/* every sound that will be leveled — set any row directly, or tick for bulk */}
       <div
@@ -359,25 +320,8 @@ export function SetupBody({
       >
         {groups.map((g) => (
           <div key={g.slot} style={{ padding: "10px 24px 12px" }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                gap: 9,
-                marginBottom: 6,
-              }}
-            >
-              <span
-                style={{ fontFamily: t.mono, fontSize: 11, color: t.mutedInk }}
-              >
-                {slotLabel(g.slot)}
-              </span>
-              <span style={{ fontFamily: t.serif, fontSize: 15, color: t.ink }}>
-                {g.name}
-              </span>
-            </div>
+            <SetupGroupHeader slot={g.slot} name={g.name} />
             {g.opts.map((o) => {
-              const isPicked = picked.has(o.key);
               const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
               const nameLabel = o.isBase ? "Whole preset" : o.sceneName;
               const sub = o.isBase
@@ -386,79 +330,19 @@ export function SetupBody({
                   ? "evens this footswitch out to your target"
                   : "levels this scene against the preset’s base";
               return (
-                <div
+                <PresetOptionRow
                   key={o.key}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "26px 1fr 132px 108px 108px",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "7px 0 7px 6px",
-                    borderTop: `0.5px solid ${t.hairline}`,
-                    background: isPicked ? t.rowSel : "transparent",
+                  name={nameLabel}
+                  tag={tag ?? undefined}
+                  isBase={o.isBase}
+                  sub={sub}
+                  isPicked={picked.has(o.key)}
+                  onTogglePick={() => {
+                    togglePick(o.key);
                   }}
+                  title="Tick to bulk-edit this row with the bar above"
+                  columns="132px 108px 108px"
                 >
-                  <div
-                    onClick={() => {
-                      togglePick(o.key);
-                    }}
-                    title="Tick to bulk-edit this row with the bar above"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <Checkbox checked={isPicked} />
-                  </div>
-                  <div
-                    onClick={() => {
-                      togglePick(o.key);
-                    }}
-                    style={{ minWidth: 0, paddingRight: 8, cursor: "pointer" }}
-                  >
-                    <div
-                      style={{ display: "flex", alignItems: "center", gap: 8 }}
-                    >
-                      <span
-                        style={{
-                          fontFamily: t.serif,
-                          fontSize: 14,
-                          color: t.ink,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {nameLabel}
-                      </span>
-                      {tag && (
-                        <span
-                          style={{
-                            fontFamily: t.mono,
-                            fontSize: 8.5,
-                            letterSpacing: "0.06em",
-                            color: o.isBase ? t.mutedInk : t.accentDeep,
-                            border: `0.5px solid ${o.isBase ? t.hairlineStrong : t.accentBorder}`,
-                            background: o.isBase ? "transparent" : t.accentSoft,
-                            borderRadius: 3,
-                            padding: "0 5px",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {tag}
-                        </span>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: t.sans,
-                        fontSize: 10.5,
-                        color: t.faint,
-                        marginTop: 2,
-                      }}
-                    >
-                      {sub}
-                    </div>
-                  </div>
                   {/* Footswitch rows: choose which block parameter to level. Base +
                       scene rows keep the column empty so the pickers stay aligned. */}
                   {o.footswitch != null &&
@@ -491,7 +375,7 @@ export function SetupBody({
                       setOneTarget(o.key, v);
                     }}
                   />
-                </div>
+                </PresetOptionRow>
               );
             })}
           </div>

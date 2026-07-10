@@ -11,20 +11,17 @@ import { Icon } from "../../ui/Icon";
 import { PaneEmpty } from "../../ui/PaneEmpty";
 import { slotLabel } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
-import { songBpm } from "./songUtil";
+import { SongRow } from "./SongRow";
+import { ListHeader } from "./ListHeader";
+
+// The Presets-axis song table shares SongList's grid columns for the read-only rows.
+const PRESET_COLS = "34px 1fr 78px";
 
 // Single-line ellipsis — shared by the title, song name, and notes.
 const truncate: CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
-};
-// Shared grid for the column header + each song row (height/borders differ).
-const rowGrid: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "34px 1fr 78px",
-  alignItems: "center",
-  padding: "0 18px",
 };
 
 /** "on unit" lock badge — presets (and their song assignments) live on the device. */
@@ -108,82 +105,25 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
         />
       ) : (
         <>
-          <div
-            style={{
-              ...rowGrid,
-              height: 28,
-              borderTop: `0.5px solid ${t.hairline}`,
-              borderBottom: `0.5px solid ${t.hairline}`,
-              fontFamily: t.mono,
-              fontSize: t.fsMicro,
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              color: t.faint,
-            }}
-          >
-            <span>№</span>
-            <span>song</span>
-            <span style={{ textAlign: "right" }}>bpm</span>
-          </div>
+          <ListHeader
+            cols={PRESET_COLS}
+            cells={[
+              { label: "№" },
+              { label: "song" },
+              { label: "bpm", align: "right" },
+            ]}
+          />
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            {members.map((s, i) => {
-              const bpm = songBpm(s);
-              return (
-                <div
-                  key={s.slot}
-                  style={{
-                    ...rowGrid,
-                    height: 48,
-                    borderBottom: `0.5px solid ${t.hairline}`,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: 11,
-                      color: t.mutedInk,
-                    }}
-                  >
-                    {String(i + 1).padStart(2, "0")}
-                  </span>
-                  <div style={{ minWidth: 0, paddingRight: 12 }}>
-                    <div
-                      style={{
-                        fontFamily: t.serif,
-                        fontSize: 14.5,
-                        color: t.ink,
-                        ...truncate,
-                      }}
-                    >
-                      {s.name}
-                    </div>
-                    {s.notes && (
-                      <div
-                        style={{
-                          marginTop: 1,
-                          fontFamily: t.sans,
-                          fontSize: 11.5,
-                          color: t.mutedInk,
-                          ...truncate,
-                        }}
-                      >
-                        {s.notes}
-                      </div>
-                    )}
-                  </div>
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: 11.5,
-                      textAlign: "right",
-                      color: bpm != null ? t.ink2 : t.faint,
-                    }}
-                  >
-                    {bpm != null ? `${String(bpm)} bpm` : "—"}
-                  </span>
-                </div>
-              );
-            })}
+            {members.map((s, i) => (
+              <SongRow
+                key={s.slot}
+                song={s}
+                idx={i}
+                gridCols={PRESET_COLS}
+                bpmAlign="right"
+                bpmSuffix
+              />
+            ))}
           </div>
           <div
             style={{
