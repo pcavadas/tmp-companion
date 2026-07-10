@@ -1,16 +1,32 @@
-// src/ui/LiveVU.tsx — a decorative live "VU" bar field for live-measuring surfaces.
-// PURE DECORATION: the bars animate on a fixed CSS cadence and carry NO data — they only
-// signal "a measurement is happening". Reduced motion freezes them flat (see the `.tmp-vu`
-// rule in index.html). `aria-hidden` — there is nothing here for a screen reader to read.
+// src/ui/LiveVU.tsx — a live "VU" bar field for leveling-capture surfaces.
+// Data-driven: each bar's height is the corresponding hop's momentary level (dB) from the
+// live-LUFS event trace, newest slot right-aligned. Still `aria-hidden` — the readout beside
+// it carries the number for a screen reader; these bars are a visual level indicator only.
 
 import { useTheme } from "../theme/ThemeContext";
 
-/** Fixed bar count / field height — bump here if a caller ever needs a denser field. */
+/** Fixed slot count / field height — the trace is padded/trimmed to this width. */
 const BAR_COUNT = 24;
 const FIELD_HEIGHT = 22;
 
-export function LiveVU() {
+export interface LiveVUProps {
+  /** Momentary levels in dB, newest last. Fewer than BAR_COUNT pads silent slots on the left. */
+  values: number[];
+}
+
+/** Map a dB value to a 0..1 height fraction of the field. */
+function heightFrac(db: number): number {
+  const f = (db + 60) / 50;
+  return Math.min(Math.max(f, 0.06), 1);
+}
+
+export function LiveVU({ values }: LiveVUProps) {
   const { t } = useTheme();
+  // Right-align: trim to the newest BAR_COUNT hops, pad the left with silent slots.
+  const slots = [
+    ...Array<number>(Math.max(0, BAR_COUNT - values.length)).fill(-Infinity),
+    ...values.slice(-BAR_COUNT),
+  ];
   return (
     <div
       aria-hidden
@@ -22,20 +38,16 @@ export function LiveVU() {
         gap: 2,
       }}
     >
-      {Array.from({ length: BAR_COUNT }, (_, i) => (
+      {slots.map((db, i) => (
         <span
           key={i}
-          className="tmp-vu"
           style={{
             flex: 1,
             minWidth: 2,
-            height: "100%",
+            height: `${String(heightFrac(db) * 100)}%`,
             borderRadius: 1,
-            transformOrigin: "bottom",
             background: `linear-gradient(to top, ${t.accentDeep}, ${t.accent})`,
             opacity: 0.55 + (i % 5) * 0.09,
-            animationDuration: `${String(0.4 + (i % 6) * 0.045)}s`,
-            animationDelay: `${String(-(i % 6) * 0.08)}s`,
           }}
         />
       ))}

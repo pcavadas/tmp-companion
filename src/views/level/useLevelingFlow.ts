@@ -197,12 +197,15 @@ export function useLevelingFlow({
   // transition and would clobber these async event updates. The backend only emits during a
   // capture, so this stays null outside a run; reset to null on each item resolve + run end.
   const [liveLufs, setLiveLufs] = useState<number | null>(null);
+  // Rolling per-hop momentary levels (dB) for the decorative live VU bars — last 24 hops.
+  const [liveTrace, setLiveTrace] = useState<number[]>([]);
 
   // Subscribe once for the hook's lifetime (inert off-Tauri). The backend streams
   // `tmp://leveling-lufs` only while a leveling capture runs, so no extra gating is needed.
   useEffect(() => {
     const unlisten = onLevelingLufs((e) => {
       setLiveLufs(e.lufs);
+      setLiveTrace((prev) => [...prev, e.momentary].slice(-24));
     });
     return () => {
       void unlisten.then((u) => {
@@ -417,6 +420,7 @@ export function useLevelingFlow({
         // Drop the live readout the instant the row resolves; the result row's value is the
         // confirm. The next active item re-populates it on its first capture event.
         setLiveLufs(null);
+        setLiveTrace([]);
         publish(i + 1, false, false);
       }
 
@@ -498,6 +502,7 @@ export function useLevelingFlow({
     isRelevel,
     run,
     liveLufs,
+    liveTrace,
     openFlow,
     onCancel,
     onSetupStart,

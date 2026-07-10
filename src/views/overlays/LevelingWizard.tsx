@@ -37,6 +37,8 @@ export interface LevelingWizardProps {
   runStopping: boolean;
   /** Advisory live measured loudness for the active run row (null = nothing measuring). */
   liveLufs: number | null;
+  /** Rolling per-hop momentary levels (dB) for the decorative live VU bars. */
+  liveTrace: number[];
   // callbacks
   onCancel: () => void;
   onStart: (choices: SetupChoice[]) => void;
@@ -64,6 +66,7 @@ export function LevelingWizard({
   runStopped,
   runStopping,
   liveLufs,
+  liveTrace,
   onCancel,
   onStart,
   onRunCancel,
@@ -107,6 +110,7 @@ export function LevelingWizard({
           stopped={runStopped}
           stopping={runStopping}
           liveLufs={liveLufs}
+          liveTrace={liveTrace}
           instrumentName={instrumentName}
           onCancel={onRunCancel}
           onComplete={onRunComplete}

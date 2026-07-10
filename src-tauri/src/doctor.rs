@@ -168,6 +168,37 @@ impl SoundProfile {
     }
 }
 
+/// Curated Doctor `SoundProfile`s for the marketing-screenshot showcase
+/// (`TMP_E2E_SHOWCASE=1`). The offline fake re-amp returns the raw stimulus for
+/// every preset, so every sound would measure identically and the Results page
+/// would read "All clear". Instead `doctor_check` injects these per showcase list
+/// index (`commands/doctor.rs`), so the REAL `diagnose` engine renders genuine
+/// cards.
+///
+/// The three mapped presets together cover all six guitar diagnoses (each carries
+/// two) under the ABSOLUTE-fallback path: the tour selects exactly these three
+/// PLAIN presets (3 sounds < [`MIN_COHORT`], so `diagnose` gets `cohort = None`).
+/// Band values are dB offsets (re-centered by [`balance`]); `fizzy` (Air − Highs)
+/// and `washed` (tail) ride independently of the band-shape rules. Verified by the
+/// `showcase_profile_diagnoses` test — keep those presets PLAIN and scene-less.
+#[cfg(any(test, feature = "e2e"))]
+pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
+    // (band dB `[Lo, LoM, Mid, HiM, Hi, Air]`, tail_ratio_db). Scooped Verse (index 4)
+    // carries ONLY `lost` among the band-shape rules, so its `lost` diagnosis sorts
+    // first in the row — the tour expands it to feature the add-a-compressor fix.
+    let (db, tail): ([f64; 6], f64) = match list_index {
+        4 => ([0.0, 1.0, -5.0, 1.0, -1.0, -16.0], -8.0), // Scooped Verse → lost + washed
+        11 => ([16.0, 10.0, -6.0, -14.0, -8.0, -24.0], -80.0), // Tweed Warm → muddy + boomy
+        167 => ([0.0, 1.0, 3.0, 10.0, 4.0, 2.0], -80.0), // Direct Acoustic → harsh + fizzy
+        _ => ([0.0, 1.0, 1.0, 0.0, -2.0, -14.0], -80.0), // any other preset → all clear
+    };
+    SoundProfile {
+        bands: db.map(|d| 10f64.powf(d / 10.0)),
+        integrated_lufs: -18.0,
+        tail_ratio_db: tail,
+    }
+}
+
 fn to_db(p: f64) -> f64 {
     10.0 * p.max(1e-12).log10()
 }
@@ -1833,5 +1864,28 @@ mod tests {
         assert!(!rx.is_empty());
         let rx = generate_rx("lost", &nodes, Instrument::Guitar);
         assert!(rx.iter().any(|r| r.kind == RxKind::Chain));
+    }
+
+    #[test]
+    fn showcase_profile_diagnoses() {
+        // The marketing-screenshot presets, judged on the ABSOLUTE-fallback path
+        // (cohort = None, as the 3-sound showcase run uses). Each mapped preset must
+        // produce exactly its intended diagnosis pair; every other slot must be clear.
+        // Guards docs/assets/doctor.png from silently reverting to "All clear" on a
+        // threshold retune. (Together the three cover all six guitar diagnoses.)
+        let diag_set = |idx: u32| {
+            let mut got = keys(&diagnose(
+                &showcase_profile(idx),
+                None,
+                Instrument::Guitar,
+                None,
+            ));
+            got.sort_unstable();
+            got
+        };
+        assert_eq!(diag_set(4), vec!["lost", "washed"]); // Scooped Verse
+        assert_eq!(diag_set(11), vec!["boomy", "muddy"]); // Tweed Warm
+        assert_eq!(diag_set(167), vec!["fizzy", "harsh"]); // Direct Acoustic
+        assert!(diag_set(0).is_empty()); // any other preset → all clear
     }
 }

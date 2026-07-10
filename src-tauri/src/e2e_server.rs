@@ -17,6 +17,16 @@ pub(crate) fn e2e_online() -> bool {
     std::env::var("TMP_E2E_ONLINE").is_ok()
 }
 
+/// SHOWCASE mode (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): serves the curated
+/// `e2e/fixtures/showcase/` library AND lets `doctor_check` inject curated `SoundProfile`s
+/// (`doctor::showcase_profile`) so the Doctor Results page renders real diagnoses instead of
+/// the offline "All clear" — the offline fake capture is a stimulus passthrough, so every
+/// sound would otherwise measure identically. Read only in the offline tier.
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_showcase() -> bool {
+    std::env::var("TMP_E2E_SHOWCASE").is_ok()
+}
+
 #[cfg(feature = "e2e")]
 pub fn run_e2e_server() {
     use std::net::TcpListener;
