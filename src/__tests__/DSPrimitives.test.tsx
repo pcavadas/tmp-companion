@@ -11,8 +11,9 @@ import { light, microLabel } from "../theme/tokens";
 import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
-import { Checkbox, Toggle, MenuItem, Toast } from "../ui/primitives";
+import { Checkbox, Toggle, MenuItem, Toast, Button } from "../ui/primitives";
 import { Tag } from "../ui/Tag";
+import { PaneEmpty } from "../ui/PaneEmpty";
 import { Spinner } from "../ui/Spinner";
 import { Dot } from "../ui/Dot";
 import type { ReactNode } from "react";
@@ -245,6 +246,32 @@ describe("Spinner", () => {
   it("renders a custom icon name", () => {
     const { container } = under(<Spinner name="refresh" />);
     expect(container.querySelector("span.tmp-spin svg")).not.toBeNull();
+  });
+});
+
+describe("PaneEmpty", () => {
+  it("renders the icon medallion, title, and body", () => {
+    const { container } = under(
+      <PaneEmpty icon="music" title="Nothing here" body="Add some things." />,
+    );
+    expect(screen.getByText("Nothing here")).not.toBeNull();
+    expect(screen.getByText("Add some things.")).not.toBeNull();
+    expect(container.querySelector("svg")).not.toBeNull();
+  });
+
+  it("renders a CTA when passed, and none otherwise", () => {
+    under(
+      <PaneEmpty
+        icon="music"
+        title="t"
+        body="b"
+        cta={<Button>Add songs</Button>}
+      />,
+    );
+    expect(screen.getByText("Add songs")).not.toBeNull();
+
+    const { container } = under(<PaneEmpty icon="wave" title="t2" body="b2" />);
+    expect(container.querySelector("button")).toBeNull();
   });
 });
 

@@ -23,6 +23,11 @@ export function buildStyles(t: ThemeTokens) {
       return { ...microLabel(t), color };
     },
 
+    /** kicker variant with the tighter 0.12em tracking (rail/setup section labels). */
+    kickerWide(color: string): CSSProperties {
+      return { ...microLabel(t), letterSpacing: t.lsWide, color };
+    },
+
     /** Search / filter input frame (the icon + input live inside). Add
      *  `flex: 1` at the call site where it should grow. */
     searchBox: {
