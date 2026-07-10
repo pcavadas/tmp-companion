@@ -45,6 +45,7 @@ export const ICONS = [
   "play",
   "pause",
   "download",
+  "link",
 ] as const;
 
 export type IconName = (typeof ICONS)[number];

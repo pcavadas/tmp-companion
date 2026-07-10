@@ -135,6 +135,24 @@
       .tmp-fwpulse {
         animation: tmp-fwpulse 1s ease-in-out infinite;
       }
+      /* Slim, low-contrast scrollbar for the signal-chain strip (SignalChainView). */
+      .tmp-block-strip {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(15, 17, 21, 0.22) transparent;
+      }
+      .tmp-block-strip::-webkit-scrollbar {
+        height: 5px;
+      }
+      .tmp-block-strip::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .tmp-block-strip::-webkit-scrollbar-thumb {
+        background: rgba(15, 17, 21, 0.18);
+        border-radius: 999px;
+      }
+      .tmp-block-strip:hover::-webkit-scrollbar-thumb {
+        background: rgba(15, 17, 21, 0.3);
+      }
       @media (prefers-reduced-motion: reduce) {
         .tmp-skel {
           animation: tmp-skelpulse 1.8s ease-in-out infinite;

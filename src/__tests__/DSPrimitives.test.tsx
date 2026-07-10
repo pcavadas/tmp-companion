@@ -75,7 +75,8 @@ describe("icons — fuller catalogs", () => {
     expect(ICONS).toContain("pause");
     expect(ICONS).toContain("download"); // Toast update-available status
     expect(ICONS).toContain("info");
-    expect(ICONS.length).toBe(40);
+    expect(ICONS).toContain("link"); // Doctor chain prescription + shared-block caption
+    expect(ICONS.length).toBe(41);
     const { container } = render(<Icon name="search" />);
     expect(container.querySelector("svg")).not.toBeNull();
   });
