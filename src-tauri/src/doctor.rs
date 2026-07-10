@@ -33,19 +33,42 @@ use serde_json::Value;
 
 use crate::blockcaps;
 
-/// The six player-named analysis bands (Hz). Doctor-specific — the legacy
-/// 4-band `spectrum::default_bands` stays untouched for the older commands.
-/// 12 kHz top matches the practical capture ceiling `spectrum` already uses.
-pub fn doctor_bands() -> [(f32, f32); 6] {
-    [
-        (60.0, 120.0),     // Lows
-        (120.0, 400.0),    // Low-mids
-        (400.0, 1000.0),   // Mids
-        (1000.0, 3000.0),  // High-mids
-        (3000.0, 6000.0),  // Highs
-        (6000.0, 12000.0), // Air
-    ]
-}
+/// The six player-named analysis bands (Hz) — the Guitar/Bass layout. Doctor-
+/// specific; the legacy 4-band `spectrum::default_bands` stays untouched for the
+/// older commands. 12 kHz top matches the practical capture ceiling `spectrum`
+/// already uses.
+const BANDS_6: [(f32, f32); 6] = [
+    (60.0, 120.0),     // Lows
+    (120.0, 400.0),    // Low-mids
+    (400.0, 1000.0),   // Mids
+    (1000.0, 3000.0),  // High-mids
+    (3000.0, 6000.0),  // Highs
+    (6000.0, 12000.0), // Air
+];
+const LABELS_6: [&str; 6] = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
+
+/// The Bass VI layout: a (30,60) "Sub" band under the standard six. Bass VI
+/// fundamentals are E1 ≈ 41 Hz — invisible in the 60 Hz-floored 6-band layout —
+/// so its lowest octave gets its own measured band. No rule keys on Sub yet
+/// (PR-7 calibration decides); it is MEASURED and DISPLAYED only.
+const BANDS_7: [(f32, f32); 7] = [
+    (30.0, 60.0),      // Sub
+    (60.0, 120.0),     // Lows
+    (120.0, 400.0),    // Low-mids
+    (400.0, 1000.0),   // Mids
+    (1000.0, 3000.0),  // High-mids
+    (3000.0, 6000.0),  // Highs
+    (6000.0, 12000.0), // Air
+];
+const LABELS_7: [&str; 7] = [
+    "Sub",
+    "Lows",
+    "Low-mids",
+    "Mids",
+    "High-mids",
+    "Highs",
+    "Air",
+];
 
 /// Rule constants — ALL of them, one place. dB values are deviations in
 /// "balance space" (a band's dB offset from the sound's own spectral mean,
@@ -115,26 +138,86 @@ pub const BASS: Thresholds = Thresholds {
     scene_delta_db: 3.0,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Instrument {
+/// PROVISIONAL — a straight copy of `BASS`, pending the attended Bass VI
+/// calibration sweep (PR-7). Bass VI shares bass's low-fundamental character, so
+/// bass thresholds are the honest starting point until `probe --doctor` on a
+/// real Bass VI library re-derives them.
+pub const BASS_VI: Thresholds = BASS;
+
+/// The instrument family a sound is judged as. Drives both the threshold table
+/// and the analysis-band LAYOUT: Guitar/Bass share the 6-band [`BANDS_6`], Bass
+/// VI adds a 7th "Sub" band ([`BANDS_7`]) for its sub-60 Hz fundamentals. The
+/// semantic band accessors (`idx_lows` … `idx_air`) hide the layout shift so the
+/// rules read the same band by MEANING regardless of family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Family {
     Guitar,
     Bass,
+    BassVi,
 }
 
-impl Instrument {
+/// Migration alias — the old name for [`Family`] before the Bass VI split.
+pub type Instrument = Family;
+
+impl Family {
     pub fn thresholds(self) -> &'static Thresholds {
         match self {
-            Instrument::Guitar => &GUITAR,
-            Instrument::Bass => &BASS,
+            Family::Guitar => &GUITAR,
+            Family::Bass => &BASS,
+            Family::BassVi => &BASS_VI,
         }
     }
-    /// Map a topology's `instrument` field ("guitar" | "bass").
-    pub fn from_topology(instrument: &str) -> Instrument {
-        if instrument.eq_ignore_ascii_case("bass") {
-            Instrument::Bass
+    /// Map a topology's `instrument` field ("guitar" | "bass" | "bass-vi").
+    /// Anything unrecognized falls back to Guitar (the neutral 6-band layout).
+    pub fn from_topology(instrument: &str) -> Family {
+        if instrument.eq_ignore_ascii_case("bass-vi") {
+            Family::BassVi
+        } else if instrument.eq_ignore_ascii_case("bass") {
+            Family::Bass
         } else {
-            Instrument::Guitar
+            Family::Guitar
         }
+    }
+    /// The Hz band layout for this family (6 bands guitar/bass, 7 for Bass VI).
+    pub fn bands(self) -> &'static [(f32, f32)] {
+        match self {
+            Family::BassVi => &BANDS_7,
+            _ => &BANDS_6,
+        }
+    }
+    /// The player-facing display labels, in lockstep with [`Family::bands`].
+    pub fn labels(self) -> &'static [&'static str] {
+        match self {
+            Family::BassVi => &LABELS_7,
+            _ => &LABELS_6,
+        }
+    }
+    /// Index of the first band of the shared 6-band block (0 for guitar/bass; 1
+    /// for Bass VI, whose Sub band sits at index 0). The `idx_*` accessors offset
+    /// from here so every rule addresses a band by MEANING, not raw index.
+    fn base(self) -> usize {
+        match self {
+            Family::BassVi => 1,
+            _ => 0,
+        }
+    }
+    pub fn idx_lows(self) -> usize {
+        self.base()
+    }
+    pub fn idx_low_mids(self) -> usize {
+        self.base() + 1
+    }
+    pub fn idx_mids(self) -> usize {
+        self.base() + 2
+    }
+    pub fn idx_high_mids(self) -> usize {
+        self.base() + 3
+    }
+    pub fn idx_highs(self) -> usize {
+        self.base() + 4
+    }
+    pub fn idx_air(self) -> usize {
+        self.base() + 5
     }
 }
 
@@ -142,8 +225,9 @@ impl Instrument {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SoundProfile {
-    /// Mean Goertzel band power per [`doctor_bands`] band (raw power, not dB).
-    pub bands: [f64; 6],
+    /// Mean Goertzel band power per [`Family::bands`] band (raw power, not dB).
+    /// Length follows the family's layout (6 guitar/bass, 7 Bass VI).
+    pub bands: Vec<f64>,
     pub integrated_lufs: f64,
     /// Short-term-max − integrated LUFS (see `lufs::Loudness::spread_lu`):
     /// gain-invariant dynamics spread of the capture.
@@ -165,10 +249,9 @@ impl SoundProfile {
         rate: u32,
         stimulus_samples: usize,
         onset: usize,
+        family: Family,
     ) -> Result<SoundProfile, String> {
-        let bands: [f64; 6] = crate::spectrum::band_energies(samples, rate as f32, &doctor_bands())
-            .try_into()
-            .map_err(|_| "band count".to_string())?;
+        let bands = crate::spectrum::band_energies(samples, rate as f32, family.bands());
         let loudness = crate::lufs::measure_mono(samples, rate)?;
         let integrated_lufs = loudness.integrated_lufs;
         // A silent capture measures −inf — route the sound to the errors lane
@@ -211,7 +294,7 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
         _ => ([0.0, 1.0, 1.0, 0.0, -2.0, -14.0], -80.0), // any other preset → all clear
     };
     SoundProfile {
-        bands: db.map(|d| 10f64.powf(d / 10.0)),
+        bands: db.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
         integrated_lufs: -18.0,
         // Steady by construction — the showcase never features the spiky card.
         spread_lu: 0.0,
@@ -226,30 +309,29 @@ fn to_db(p: f64) -> f64 {
 /// A sound's spectral "balance": each band's dB offset from the sound's own
 /// mean band level. Level-invariant, so cohort comparison is about tone shape,
 /// not loudness.
-pub fn balance(bands: &[f64; 6]) -> [f64; 6] {
+pub fn balance(bands: &[f64]) -> Vec<f64> {
     let db: Vec<f64> = bands.iter().copied().map(to_db).collect();
-    let mean = db.iter().sum::<f64>() / 6.0;
-    let mut out = [0.0; 6];
-    for (o, d) in out.iter_mut().zip(db) {
-        *o = d - mean;
-    }
-    out
+    let n = db.len().max(1);
+    let mean = db.iter().sum::<f64>() / n as f64;
+    db.iter().map(|d| d - mean).collect()
 }
 
 /// Per-band median of the cohort's balances — the "what this player's library
-/// sounds like" reference `diagnose` judges deviations against.
-pub fn cohort_median(profiles: &[&SoundProfile]) -> [f64; 6] {
-    let mut med = [0.0; 6];
-    if profiles.is_empty() {
-        return med;
-    }
-    let balances: Vec<[f64; 6]> = profiles.iter().map(|p| balance(&p.bands)).collect();
-    for (i, m) in med.iter_mut().enumerate() {
-        let mut v: Vec<f64> = balances.iter().map(|b| b[i]).collect();
-        v.sort_by(f64::total_cmp);
-        *m = v[v.len() / 2];
-    }
-    med
+/// sounds like" reference `diagnose` judges deviations against. All profiles in
+/// a cohort share ONE layout (cohorts are per-family), so the output length
+/// matches their band count.
+pub fn cohort_median(profiles: &[&SoundProfile]) -> Vec<f64> {
+    let Some(first) = profiles.first() else {
+        return Vec::new();
+    };
+    let balances: Vec<Vec<f64>> = profiles.iter().map(|p| balance(&p.bands)).collect();
+    (0..balance(&first.bands).len())
+        .map(|i| {
+            let mut v: Vec<f64> = balances.iter().map(|b| b[i]).collect();
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        })
+        .collect()
 }
 
 /// Minimum cohort size for relative judging; below this `diagnose` falls back
@@ -258,23 +340,31 @@ pub fn cohort_median(profiles: &[&SoundProfile]) -> [f64; 6] {
 // single-sound runs prove unreliable in calibration.
 pub const MIN_COHORT: usize = 4;
 
-/// Per-instrument cohort medians `(guitar, bass)`: each instrument's sounds are
-/// judged against their OWN library median — a bass preset judged against a
-/// guitar cohort reads falsely boomy. `None` for an instrument whose group is
-/// under [`MIN_COHORT`] (that group's sounds diagnose with the absolute
-/// fallback).
+/// Per-family cohort medians: each family's sounds are judged against their OWN
+/// library median — a bass preset judged against a guitar cohort reads falsely
+/// boomy, and families don't even share a band LAYOUT (Bass VI has 7), so a
+/// median can never mix them. `None` for a family whose group is under
+/// [`MIN_COHORT`] (that group's sounds diagnose with the absolute fallback);
+/// only families actually present in `profiles` appear as keys.
 pub fn cohorts_by_instrument(
-    profiles: &[(Instrument, &SoundProfile)],
-) -> (Option<[f64; 6]>, Option<[f64; 6]>) {
-    let median_of = |inst: Instrument| {
+    profiles: &[(Family, &SoundProfile)],
+) -> HashMap<Family, Option<Vec<f64>>> {
+    let mut out: HashMap<Family, Option<Vec<f64>>> = HashMap::new();
+    for fam in [Family::Guitar, Family::Bass, Family::BassVi] {
         let refs: Vec<&SoundProfile> = profiles
             .iter()
-            .filter(|(i, _)| *i == inst)
+            .filter(|(f, _)| *f == fam)
             .map(|(_, p)| *p)
             .collect();
-        (refs.len() >= MIN_COHORT).then(|| cohort_median(&refs))
-    };
-    (median_of(Instrument::Guitar), median_of(Instrument::Bass))
+        if refs.is_empty() {
+            continue;
+        }
+        out.insert(
+            fam,
+            (refs.len() >= MIN_COHORT).then(|| cohort_median(&refs)),
+        );
+    }
+    out
 }
 
 /// Post-stimulus tail energy vs stimulus-body energy, in dB (≤ 0 in practice;
@@ -325,8 +415,8 @@ pub struct Diag {
     pub key: &'static str,
     pub label: &'static str,
     pub sev: Sev,
-    /// Indices into [`doctor_bands`] that light up in the UI; empty = a
-    /// time-domain finding (washed / buried).
+    /// Indices into the sound's family band layout ([`Family::bands`]) that
+    /// light up in the UI; empty = a time-domain finding (washed / buried).
     pub bands: Vec<usize>,
     /// The Hz/dB one-liner (progressive disclosure under the plain sentence).
     pub detail: String,
@@ -1121,11 +1211,12 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
 pub fn diagnose(
     profile: &SoundProfile,
     nodes: Option<&[DoctorNode]>,
-    instrument: Instrument,
-    cohort: Option<&[f64; 6]>,
+    instrument: Family,
+    cohort: Option<&[f64]>,
 ) -> Vec<Diag> {
     let t = instrument.thresholds();
     let bal = balance(&profile.bands);
+    let n = bal.len();
     // Deviation per band: vs cohort median, or vs the sound's own neighbour
     // expectation (the band's dB above the mean of its two spectral
     // neighbours) when the cohort is too small to trust.
@@ -1134,11 +1225,19 @@ pub fn diagnose(
             Some(med) => bal[i] - med[i],
             None => {
                 let lo = if i == 0 { bal[1] } else { bal[i - 1] };
-                let hi = if i == 5 { bal[4] } else { bal[i + 1] };
+                let hi = if i == n - 1 { bal[n - 2] } else { bal[i + 1] };
                 bal[i] - (lo + hi) / 2.0
             }
         }
     };
+    let (lows, low_mids, mids, high_mids, highs, air) = (
+        instrument.idx_lows(),
+        instrument.idx_low_mids(),
+        instrument.idx_mids(),
+        instrument.idx_high_mids(),
+        instrument.idx_highs(),
+        instrument.idx_air(),
+    );
     let facts = nodes.map(graph_facts);
     let mut out = Vec::new();
     let mut push = |key: &'static str,
@@ -1161,58 +1260,58 @@ pub fn diagnose(
         });
     };
 
-    if dev(1) > t.muddy_db {
+    if dev(low_mids) > t.muddy_db {
         push(
             "muddy",
             "Muddy",
             Sev::High,
-            vec![1],
-            format!("buildup around 250–350 Hz ({:+.1} dB)", dev(1)),
+            vec![low_mids],
+            format!("buildup around 250–350 Hz ({:+.1} dB)", dev(low_mids)),
             "There's a buildup in the low-mids that stacks up with the bass player.",
         );
     }
-    if dev(0) > t.boomy_db {
+    if dev(lows) > t.boomy_db {
         push(
             "boomy",
             "Boomy",
             Sev::Med,
-            vec![0],
-            format!("excess energy below 100 Hz ({:+.1} dB)", dev(0)),
+            vec![lows],
+            format!("excess energy below 100 Hz ({:+.1} dB)", dev(lows)),
             "Too much deep low end — it booms and loses focus once you turn up.",
         );
     }
-    if dev(3) > t.harsh_db {
+    if dev(high_mids) > t.harsh_db {
         push(
             "harsh",
             "Harsh",
             Sev::High,
-            vec![3],
-            format!("spike around 1–3 kHz ({:+.1} dB)", dev(3)),
+            vec![high_mids],
+            format!("spike around 1–3 kHz ({:+.1} dB)", dev(high_mids)),
             "A sharp peak in the high-mids makes it harsh and tiring to listen to.",
         );
     }
     // Fizz is judged against the sound's own presence band, not the cohort —
     // see `Thresholds::fizzy_db` for the calibration rationale.
-    if bal[5] - bal[4] > t.fizzy_db {
+    if bal[air] - bal[highs] > t.fizzy_db {
         push(
             "fizzy",
             "Fizzy",
             Sev::Med,
-            vec![5],
+            vec![air],
             format!(
                 "content above 6 kHz only {:.1} dB under the presence band",
-                bal[4] - bal[5]
+                bal[highs] - bal[air]
             ),
             "Fizzy, buzzy top end — the kind that sounds like radio static on the note tails.",
         );
     }
-    if -dev(2) > t.lost_db {
+    if -dev(mids) > t.lost_db {
         push(
             "lost",
             "Gets lost in the mix",
             Sev::High,
-            vec![2],
-            format!("mids scooped {:.1} dB around 800 Hz", -dev(2)),
+            vec![mids],
+            format!("mids scooped {:.1} dB around 800 Hz", -dev(mids)),
             "The mids are scooped, so it sounds big alone but disappears with a full band.",
         );
     }
@@ -1243,9 +1342,9 @@ pub fn diagnose(
             "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
         );
     }
-    if instrument == Instrument::Bass
+    if matches!(instrument, Family::Bass | Family::BassVi)
         && facts.as_ref().map(|f| f.has_drive) == Some(true)
-        && -dev(0) > t.buried_lows_db
+        && -dev(lows) > t.buried_lows_db
     {
         push(
             "buried",
@@ -1435,7 +1534,7 @@ mod tests {
     /// rule (which fires on MISSING rolloff) never muddies the other rules'
     /// assertions.
     fn profile_with(band: usize, db: f64) -> SoundProfile {
-        let mut bands = [1.0; 6];
+        let mut bands = vec![1.0; 6];
         bands[5] = 10f64.powf(-20.0 / 10.0);
         bands[band] = 10f64.powf(db / 10.0);
         SoundProfile {
@@ -1449,7 +1548,7 @@ mod tests {
     /// Cohort median = the healthy baseline's own balance (what a library of
     /// healthy cab'd sounds medians out to), so `dev` isolates the offset a
     /// test injects.
-    fn flat_cohort() -> [f64; 6] {
+    fn flat_cohort() -> Vec<f64> {
         balance(&profile_with(0, 0.0).bands)
     }
 
@@ -2192,9 +2291,13 @@ mod tests {
         let mut all: Vec<(Instrument, &SoundProfile)> =
             guitars.iter().map(|p| (Instrument::Guitar, p)).collect();
         all.extend(basses.iter().map(|p| (Instrument::Bass, p)));
-        let (guitar, bass) = cohorts_by_instrument(&all);
+        let cohorts = cohorts_by_instrument(&all);
+        let guitar = cohorts.get(&Family::Guitar).cloned().flatten();
         assert!(guitar.is_some(), "guitar group reaches MIN_COHORT");
-        assert!(bass.is_none(), "under-minimum bass group stays absolute");
+        // Under-minimum bass group stays absolute (present as key, but None).
+        assert_eq!(cohorts.get(&Family::Bass), Some(&None));
+        // BassVi absent from the run → no key at all.
+        assert!(!cohorts.contains_key(&Family::BassVi));
         // The guitar median must not be dragged toward the hot bass lows.
         assert!((guitar.unwrap()[0] - flat_cohort()[0]).abs() < 1e-9);
     }
@@ -2204,9 +2307,96 @@ mod tests {
     #[test]
     fn silent_capture_errors_instead_of_minus_inf() {
         let silence = vec![0.0f32; 96_000];
-        let err = SoundProfile::from_capture(&silence, 48_000, 48_000, 0)
+        let err = SoundProfile::from_capture(&silence, 48_000, 48_000, 0, Family::Guitar)
             .expect_err("silence must not produce a profile");
         assert!(err.contains("silent"), "{err}");
+    }
+
+    // ── instrument families + Bass VI band layout ──
+
+    #[test]
+    fn family_from_topology_maps_bass_vi_and_defaults_to_guitar() {
+        assert_eq!(Family::from_topology("guitar"), Family::Guitar);
+        assert_eq!(Family::from_topology("bass"), Family::Bass);
+        assert_eq!(Family::from_topology("bass-vi"), Family::BassVi);
+        assert_eq!(Family::from_topology("Bass-VI"), Family::BassVi); // case-insensitive
+                                                                      // Anything unrecognized falls back to the neutral 6-band guitar layout.
+        assert_eq!(Family::from_topology("sitar"), Family::Guitar);
+        assert_eq!(Family::from_topology(""), Family::Guitar);
+    }
+
+    #[test]
+    fn band_layouts_and_labels_stay_in_lockstep() {
+        // Every family: one display label per Hz band.
+        for fam in [Family::Guitar, Family::Bass, Family::BassVi] {
+            assert_eq!(
+                fam.bands().len(),
+                fam.labels().len(),
+                "{fam:?} labels must match its band count"
+            );
+        }
+        // Guitar/Bass: the historical 6 bands, indices 0..=5.
+        for fam in [Family::Guitar, Family::Bass] {
+            assert_eq!(fam.bands().len(), 6);
+            assert_eq!(fam.idx_lows(), 0);
+            assert_eq!(fam.idx_air(), 5);
+        }
+        // Bass VI: a 7th "Sub" band at index 0; the six semantic bands shift +1.
+        assert_eq!(Family::BassVi.bands().len(), 7);
+        assert_eq!(Family::BassVi.bands()[0], (30.0, 60.0));
+        assert_eq!(Family::BassVi.labels()[0], "Sub");
+        assert_eq!(Family::BassVi.idx_lows(), 1);
+        assert_eq!(Family::BassVi.idx_low_mids(), 2);
+        assert_eq!(Family::BassVi.idx_mids(), 3);
+        assert_eq!(Family::BassVi.idx_high_mids(), 4);
+        assert_eq!(Family::BassVi.idx_highs(), 5);
+        assert_eq!(Family::BassVi.idx_air(), 6);
+        // The shared six bands are byte-identical to the guitar/bass layout.
+        assert_eq!(&Family::BassVi.bands()[1..], Family::Guitar.bands());
+    }
+
+    #[test]
+    fn bass_vi_hot_sub_keys_no_diagnosis() {
+        // A Bass VI sound with a hot Sub band (index 0) and an otherwise healthy
+        // spectrum: nothing rules on Sub yet, so no diagnosis may highlight it.
+        let mut bands = vec![1.0; 7];
+        bands[6] = 10f64.powf(-20.0 / 10.0); // air rolled off (no fizz)
+        bands[0] = 10f64.powf(20.0 / 10.0); // hot sub
+        let p = SoundProfile {
+            bands,
+            integrated_lufs: -20.0,
+            spread_lu: 0.0,
+            tail_ratio_db: -40.0,
+        };
+        let diags = diagnose(&p, None, Family::BassVi, None);
+        assert!(
+            diags.iter().all(|d| !d.bands.contains(&0)),
+            "no diagnosis may key on the Sub band (index 0): {:?}",
+            keys(&diags)
+        );
+    }
+
+    #[test]
+    fn cohorts_never_mix_families() {
+        // A full guitar cohort + a full bass-vi cohort pool SEPARATELY (they don't
+        // even share a band count), each judged against its own median.
+        let guitars: Vec<SoundProfile> = (0..MIN_COHORT).map(|_| profile_with(0, 0.0)).collect();
+        let bassvis: Vec<SoundProfile> = (0..MIN_COHORT)
+            .map(|_| SoundProfile {
+                bands: vec![1.0; 7],
+                integrated_lufs: -20.0,
+                spread_lu: 0.0,
+                tail_ratio_db: -40.0,
+            })
+            .collect();
+        let mut all: Vec<(Family, &SoundProfile)> =
+            guitars.iter().map(|p| (Family::Guitar, p)).collect();
+        all.extend(bassvis.iter().map(|p| (Family::BassVi, p)));
+        let cohorts = cohorts_by_instrument(&all);
+        let g = cohorts.get(&Family::Guitar).cloned().flatten().unwrap();
+        let bvi = cohorts.get(&Family::BassVi).cloned().flatten().unwrap();
+        assert_eq!(g.len(), 6, "guitar median keeps the 6-band layout");
+        assert_eq!(bvi.len(), 7, "bass-vi median keeps its 7-band layout");
     }
 
     // ── serde wire shapes ──

@@ -131,6 +131,22 @@ pub const TOPOLOGIES: &[Topology] = &[
         body_mix: 0.60,
         attack_ms: 4.0,
     },
+    // ── Bass VI ──────────────────────────────────────────────────────────────
+    // A baritone six-string (E1..E4) with bright Jaguar-style single coils.
+    // PROVISIONAL synth recipe — a calibrated profile overrides it; the doctor
+    // side gives it its own 7-band layout (a Sub band) for the sub-60 Hz octave.
+    Topology {
+        id: "bass-vi",
+        label: "Bass VI",
+        instrument: "bass-vi",
+        seed: 0x8888_0002_0000_0002,
+        freq: 3200.0,
+        q: 2.0,
+        peak: 0.55,
+        bp_mix: 0.80,
+        body_mix: 0.45,
+        attack_ms: 4.0,
+    },
 ];
 
 /// Fallback topology when a leveling job carries no instrument selection (and no

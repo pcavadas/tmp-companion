@@ -82,6 +82,10 @@ pub struct DoctorSoundResult {
     pub integrated_lufs: f64,
     pub tail_ratio_db: f64,
     pub balance_db: Vec<f64>,
+    /// The display labels of THIS sound's family band layout, in lockstep with
+    /// `balance_db` and the `Diag.bands` indices (6 for guitar/bass, 7 for
+    /// Bass VI's Sub-first layout). The frontend renders bars/labels from this.
+    pub band_labels: Vec<String>,
     /// Set when this sound's capture failed (no diags then); the run continues.
     pub error: Option<String>,
 }
@@ -233,7 +237,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                                 item.key
                             );
                         }
-                        doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset)
+                        doctor::SoundProfile::from_capture(
+                            &samples,
+                            rate,
+                            stim.len(),
+                            onset,
+                            instrument_of(item),
+                        )
                     },
                 )
             });
@@ -265,17 +275,16 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             .iter()
             .map(|(i, p)| (instrument_of(&resolved[*i].0), p))
             .collect();
-        let (guitar_cohort, bass_cohort) = doctor::cohorts_by_instrument(&by_inst);
+        let cohorts = doctor::cohorts_by_instrument(&by_inst);
 
         // Group results per preset, in first-seen item order.
         let mut presets: Vec<DoctorPresetResult> = Vec::new();
         let sound_of = |i: usize, profile: Option<&doctor::SoundProfile>, err: Option<&String>| {
             let (item, _) = &resolved[i];
             let instrument = instrument_of(item);
-            let cohort = match instrument {
-                doctor::Instrument::Guitar => guitar_cohort.as_ref(),
-                doctor::Instrument::Bass => bass_cohort.as_ref(),
-            };
+            let cohort = cohorts.get(&instrument).and_then(|o| o.as_deref());
+            let band_labels: Vec<String> =
+                instrument.labels().iter().map(|s| (*s).to_string()).collect();
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
                     doctor::diagnose(
@@ -286,7 +295,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     ),
                     p.integrated_lufs,
                     p.tail_ratio_db,
-                    doctor::balance(&p.bands).to_vec(),
+                    doctor::balance(&p.bands),
                 ),
                 None => (Vec::new(), 0.0, 0.0, Vec::new()),
             };
@@ -301,6 +310,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 integrated_lufs: lufs_v,
                 tail_ratio_db: tail,
                 balance_db: bal,
+                band_labels,
                 error: err.cloned(),
             }
         };
@@ -369,7 +379,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         Ok(DoctorCheckResult {
             presets,
             stopped,
-            cohort: if guitar_cohort.is_some() || bass_cohort.is_some() {
+            cohort: if cohorts.values().any(Option::is_some) {
                 "median".to_string()
             } else {
                 "absolute".to_string()

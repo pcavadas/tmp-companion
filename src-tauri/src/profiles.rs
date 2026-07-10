@@ -66,7 +66,9 @@ pub enum PlaybackLevel {
 /// perception at low SPL. Values are deliberately coarse (the contours vary by
 /// listener and rig); `Stage` is always 0 so the default changes nothing.
 pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
-    if instrument != "bass" {
+    // Bass VI shares bass's low-fundamental Fletcher–Munson character (its E1 is
+    // even lower), so it takes the same compensation.
+    if instrument != "bass" && instrument != "bass-vi" {
         return 0.0;
     }
     match level {
@@ -487,5 +489,9 @@ mod tests {
         assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass"), 0.0);
         assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass"), 0.5);
         assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass"), 1.5);
+        // Bass VI takes the same compensation as bass.
+        assert_eq!(playback_offset_lu(PlaybackLevel::Stage, "bass-vi"), 0.0);
+        assert_eq!(playback_offset_lu(PlaybackLevel::Rehearsal, "bass-vi"), 0.5);
+        assert_eq!(playback_offset_lu(PlaybackLevel::Quiet, "bass-vi"), 1.5);
     }
 }

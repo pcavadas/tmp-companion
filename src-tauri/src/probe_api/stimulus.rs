@@ -193,7 +193,7 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// every capture path ends re-amp OFF.
 pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
-    let instrument = doctor::Instrument::from_topology(
+    let instrument = doctor::Family::from_topology(
         topologies::by_id(topology_id)
             .map(|t| t.instrument)
             .unwrap_or("guitar"),
@@ -236,8 +236,13 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
                         "[probe] slot {slot}: onset not confidently found — un-aligned split"
                     );
                 }
-                let profile =
-                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset)?;
+                let profile = doctor::SoundProfile::from_capture(
+                    &samples,
+                    rate,
+                    stim.len(),
+                    onset,
+                    instrument,
+                )?;
                 sounds.push((slot, profile, nodes));
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
@@ -253,12 +258,13 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
     });
 
     let mut out = format!(
-        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB (Lo Lm Mid Hm Hi Air) | diagnoses\n",
+        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
         sounds.len(),
-        if cohort.is_some() { "median" } else { "absolute" }
+        if cohort.is_some() { "median" } else { "absolute" },
+        instrument.labels().join(" ")
     );
     for (slot, profile, nodes) in &sounds {
-        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_ref());
+        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_deref());
         let bal = doctor::balance(&profile.bands);
         out += &format!(
             "  {slot:>4} | {:>8.2} | {:>8.1} | {} | {}\n",
@@ -278,7 +284,7 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
         let json = serde_json::json!({
             "slot": slot,
             "profile": profile,
-            "balanceDb": bal.to_vec(),
+            "balanceDb": bal.clone(),
             "diagnoses": diags,
         });
         println!("{json}");

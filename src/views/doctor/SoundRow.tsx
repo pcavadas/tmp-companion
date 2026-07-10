@@ -213,6 +213,7 @@ export function SoundRow({
           <>
             <BandSpark
               balanceDb={sound.balanceDb}
+              bandCount={sound.bandLabels.length}
               hotBands={hotBands}
               color={tone.fg}
               muted={!hasDiags}
@@ -352,6 +353,7 @@ export function SoundRow({
                 {diag.bands.length > 0 && (
                   <BandMeter
                     balanceDb={sound.balanceDb}
+                    bandLabels={sound.bandLabels}
                     bands={diag.bands}
                     sev={diag.sev}
                   />

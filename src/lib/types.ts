@@ -764,8 +764,9 @@ export interface DoctorRx {
   chain?: DoctorChainPreview;
 }
 
-/** One diagnosis (`doctor::Diag`). `bands` indexes the six player bands
- * (Lows · Low-mids · Mids · High-mids · Highs · Air); empty = time-domain. */
+/** One diagnosis (`doctor::Diag`). `bands` indexes the sound's band layout
+ * (`DoctorSoundResult.bandLabels` — 6 player bands, or 7 with "Sub" first for
+ * bass-vi); empty = time-domain. */
 export interface DoctorDiag {
   key: string;
   label: string;
@@ -789,6 +790,10 @@ export interface DoctorSoundResult {
   integratedLufs: number;
   tailRatioDb: number;
   balanceDb: number[];
+  /** Display labels for this sound's band layout — 6 for guitar/bass ("Lows" …
+   *  "Air") or 7 for bass-vi ("Sub" + the same six). `balanceDb.length` and
+   *  `DoctorDiag.bands` indices both index this same layout. */
+  bandLabels: string[];
   /** Set when this sound's capture failed (no diags then); the run continued. */
   error: string | null;
 }

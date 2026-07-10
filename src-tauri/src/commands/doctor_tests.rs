@@ -83,6 +83,7 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
         integrated_lufs: 0.0,
         tail_ratio_db: 0.0,
         balance_db: Vec::new(),
+        band_labels: Vec::new(),
         error: None,
     };
     let v = serde_json::to_value(&row).unwrap();
