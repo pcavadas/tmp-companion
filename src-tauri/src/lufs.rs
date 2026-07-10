@@ -16,6 +16,9 @@ pub struct Loudness {
     pub integrated_lufs: f64,
     /// Maximum short-term (3 s window) loudness over the clip.
     pub short_term_max_lufs: f64,
+    /// Maximum true peak (dBTP, oversampled) over the clip — 20·log10 of the linear
+    /// peak `ebur128` reports. A zero/silent peak floors to −120.0 rather than −inf.
+    pub true_peak_dbtp: f64,
 }
 
 impl Loudness {
@@ -36,7 +39,7 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
     if samples.is_empty() {
         return Err("empty audio buffer".into());
     }
-    let mut meter = EbuR128::new(1, sample_rate, Mode::I | Mode::S)
+    let mut meter = EbuR128::new(1, sample_rate, Mode::I | Mode::S | Mode::TRUE_PEAK)
         .map_err(|e| format!("ebur128 init: {e:?}"))?;
 
     let hop = (sample_rate as usize / 10).max(1); // 100 ms
@@ -55,6 +58,14 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
     let integrated = meter
         .loudness_global()
         .map_err(|e| format!("ebur128 loudness_global: {e:?}"))?;
+    let true_peak_linear = meter
+        .true_peak(0)
+        .map_err(|e| format!("ebur128 true_peak: {e:?}"))?;
+    let true_peak_dbtp = if true_peak_linear > 0.0 {
+        20.0 * true_peak_linear.log10()
+    } else {
+        -120.0
+    };
 
     Ok(Loudness {
         integrated_lufs: integrated,
@@ -63,6 +74,7 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
         } else {
             integrated
         },
+        true_peak_dbtp,
     })
 }
 
@@ -140,6 +152,20 @@ mod tests {
     #[test]
     fn empty_buffer_errors() {
         assert!(measure_mono(&[], 48_000).is_err());
+    }
+
+    #[test]
+    fn true_peak_tracks_amplitude() {
+        let rate = 48_000;
+        for amp in [0.9_f32, 0.5, 0.1] {
+            let l = measure_mono(&sine(1000.0, 3.5, rate, amp), rate).unwrap();
+            let expected = 20.0 * f64::from(amp).log10();
+            assert!(
+                (l.true_peak_dbtp - expected).abs() < 0.3,
+                "amp={amp}: expected ~{expected:.2} dBTP, got {:.2}",
+                l.true_peak_dbtp
+            );
+        }
     }
 
     #[test]

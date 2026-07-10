@@ -547,6 +547,19 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                 </div>
               )}
 
+              <div
+                style={{
+                  fontFamily: t.sans,
+                  fontSize: t.fsMeta,
+                  color: t.mutedInk,
+                  lineHeight: 1.45,
+                  marginBottom: 12,
+                }}
+              >
+                Play the way you gig — mix chords and lead, pick and fingers,
+                include EBow if you use one, all in one take.
+              </div>
+
               {profiles.map((p) =>
                 editingId === p.id ? (
                   <InstrumentForm

@@ -294,9 +294,9 @@ pub(crate) async fn restore_preset_level(
     })
     .await
 }
-/// What one Tier-2 calibration measured, plus its two quality caveats.
+/// What one Tier-2 calibration measured, plus its quality caveats.
 /// Mirrored in `src/lib/types.ts` (`CalibrateResult`).
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct CalibrateResult {
     /// Measured K-weighted loudness of the dry capture (stored on the profile).
     lufs: f32,
@@ -308,6 +308,61 @@ pub(crate) struct CalibrateResult {
     /// drive the amp this many LU softer than the real instrument. `None` = reachable
     /// OR a capture was stored (the capture IS the stimulus, so a shortfall can't arise).
     stimulus_shortfall_lu: Option<f32>,
+    /// Short-term-max − integrated (LU) of the dry capture — how dynamic the take
+    /// was (a wide spread means quiet passages the gated integrated metric discards).
+    spread_lu: f64,
+    /// Per-band excitation of the capture (same family band layout as the Doctor
+    /// engine, `doctor::Family::bands`): `true` when the band was actually played.
+    band_coverage: Vec<bool>,
+    /// Player-facing labels for `band_coverage`, in lockstep index-for-index.
+    band_labels: Vec<String>,
+}
+
+/// A band counts as "covered" (actually played) when its energy is within this
+/// many dB of the loudest band in the capture — anything quieter reads as
+/// unexcited (never played, or fully masked).
+const BAND_COVERAGE_DB: f64 = 30.0;
+
+/// Per-band coverage rule for a calibration capture: `bands` are linear energies
+/// (as returned by `spectrum::band_energies`); a band is "covered" when within
+/// [`BAND_COVERAGE_DB`] of the loudest band. Pure — no I/O, unit-tested below.
+fn coverage(bands: &[f64]) -> Vec<bool> {
+    let loudest = bands.iter().copied().fold(0.0f64, f64::max).max(1e-12);
+    let loudest_db = 10.0 * loudest.log10();
+    bands
+        .iter()
+        .map(|&b| loudest_db - 10.0 * b.max(1e-12).log10() <= BAND_COVERAGE_DB)
+        .collect()
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::coverage;
+
+    #[test]
+    fn flat_bands_are_all_covered() {
+        assert_eq!(coverage(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), vec![true; 6]);
+    }
+
+    #[test]
+    fn sparse_take_covers_only_the_played_bands() {
+        // 2 loud bands, 4 essentially dead (well below the 30 dB floor).
+        let bands = [1.0, 1e-9, 1e-9, 1e-9, 1e-9, 1.0];
+        assert_eq!(
+            coverage(&bands),
+            vec![true, false, false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn thirty_db_boundary() {
+        // Loudest = 0 dB (power 1.0). Exactly −30 dB (power 1e-3) still counts;
+        // just past it (−30.5 dB) does not.
+        let at_boundary = 10f64.powf(-30.0 / 10.0);
+        let past_boundary = 10f64.powf(-30.5 / 10.0);
+        assert_eq!(coverage(&[1.0, at_boundary]), vec![true, true]);
+        assert_eq!(coverage(&[1.0, past_boundary]), vec![true, false]);
+    }
 }
 
 /// Fraction of 500 ms windows whose RMS is within 30 dB of the loudest window's —
@@ -394,11 +449,12 @@ pub(crate) async fn calibrate_profile(
             );
         }
         // K-weighted loudness (perceptual), not flat RMS — see read_stimulus_calibrated.
-        let lufs = lufs::measure_mono(&mono, 48_000)?.integrated_lufs;
-        if !lufs.is_finite() {
+        let loudness = lufs::measure_mono(&mono, 48_000)?;
+        if !loudness.integrated_lufs.is_finite() {
             return Err("captured signal too quiet to measure — play louder/longer".to_string());
         }
-        let lufs = lufs as f32;
+        let lufs = loudness.integrated_lufs as f32;
+        let spread_lu = loudness.spread_lu();
         let clipped = peak >= 0.99;
 
         // Store the capture (or clear a stale one on a clipped run) BEFORE persisting the
@@ -421,6 +477,17 @@ pub(crate) async fn calibrate_profile(
         let topology_id = p.topology_id.clone();
         profiles::save(&app2, &store)?;
 
+        // Per-band excitation of the capture, in the profile's family band layout
+        // (same bands the Doctor engine diagnoses with) — surfaces whether the
+        // player actually covered the instrument's range, not just "played enough".
+        let family = doctor::Family::from_topology(
+            topologies::by_id(&topology_id)
+                .map(|t| t.instrument)
+                .unwrap_or("guitar"),
+        );
+        let band_coverage = coverage(&spectrum::band_energies(&mono, 48_000.0, family.bands()));
+        let band_labels: Vec<String> = family.labels().iter().map(|s| s.to_string()).collect();
+
         // With a stored capture the stimulus IS the capture (gain 1) — a synthetic
         // shortfall is impossible, so skip the computation (the old warning would be
         // false). Otherwise report the best-effort synthetic-scaling shortfall.
@@ -436,6 +503,9 @@ pub(crate) async fn calibrate_profile(
             lufs,
             clipped,
             stimulus_shortfall_lu,
+            spread_lu,
+            band_coverage,
+            band_labels,
         })
     })
     .await

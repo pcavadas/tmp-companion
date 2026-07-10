@@ -99,6 +99,11 @@ pub struct LevelResult {
     /// command (from its base-isolation preset read); `None` when the read failed
     /// or the path doesn't write `presetLevel` (block-knob / scene paths).
     pub previous_level: Option<f32>,
+    /// PREDICTED true peak (dBTP) at `final_level`, extrapolated from the reference
+    /// capture's measured true peak (see `predicted_true_peak_dbtp`) — an ESTIMATE,
+    /// never a re-measurement. Only the one-shot `presetLevel` path (`level_preset`)
+    /// sets this; `None` for scene/block/footswitch paths this cycle.
+    pub true_peak_dbtp: Option<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -304,6 +309,9 @@ pub struct MeasuredC {
     pub c: f64,
     /// Short-term-max − integrated of the same capture (LU).
     pub dynamic_spread_lu: f64,
+    /// True peak (dBTP) of the reference capture — the basis for the one-shot
+    /// path's PREDICTED true peak at the solved level (see `predicted_true_peak_dbtp`).
+    pub true_peak_dbtp: f64,
 }
 
 /// Conn 1+2 seam: load `slot` (own connection, since set-after-load is overridden
@@ -358,7 +366,17 @@ pub fn measure_c(
         measured_lufs: loudness.integrated_lufs,
         c,
         dynamic_spread_lu: loudness.spread_lu(),
+        true_peak_dbtp: loudness.true_peak_dbtp,
     })
+}
+
+/// PREDICTED true peak (dBTP) at `final_level`, extrapolated from the reference
+/// capture's measured true peak: `presetLevel` is a linear post-chain amplitude
+/// control (see the module doc), so true peak moves by the same 20·log10(ratio) as
+/// the solved loudness. An ESTIMATE, never a re-measurement — used only by the
+/// one-shot `presetLevel` path (`level_preset`).
+pub(crate) fn predicted_true_peak_dbtp(ref_tp_dbtp: f64, ref_level: f32, final_level: f32) -> f64 {
+    ref_tp_dbtp + 20.0 * (final_level.max(1e-6) as f64 / ref_level.max(1e-6) as f64).log10()
 }
 
 /// Shared MEASURE seam behind `capture_full` and `doctor_capture`: load `slot` in
@@ -674,6 +692,7 @@ pub fn level_preset(
                     clamp_reason: Some("no signal on USB 1/2".into()),
                     verify_by_ear: false,
                     previous_level: None,
+                    true_peak_dbtp: None,
                 });
             }
             Err(e) => return Err(e),
@@ -719,6 +738,11 @@ pub fn level_preset(
             clamp_reason: None,
             verify_by_ear: false,
             previous_level: None,
+            true_peak_dbtp: Some(predicted_true_peak_dbtp(
+                m.true_peak_dbtp,
+                ref_level,
+                final_level,
+            )),
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -814,6 +838,7 @@ pub fn level_setlist(
             clamp_reason: None,
             verify_by_ear: false,
             previous_level: None,
+            true_peak_dbtp: None,
         });
     }
 
@@ -2680,6 +2705,7 @@ pub fn level_preset_block(
             clamp_reason: None,
             verify_by_ear: false,
             previous_level: None,
+            true_peak_dbtp: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -2693,6 +2719,7 @@ mod floor_guard_tests {
         lufs::Loudness {
             integrated_lufs: integrated,
             short_term_max_lufs: integrated + spread,
+            true_peak_dbtp: integrated + 12.0,
         }
     }
 
@@ -2725,6 +2752,18 @@ mod floor_guard_tests {
         assert!((confirm_ref_level(0.5) - 0.25).abs() < 1e-6);
         assert!((confirm_ref_level(1.0) - 0.5).abs() < 1e-6);
         assert!((confirm_ref_level(0.08) - 0.16).abs() < 1e-6);
+    }
+
+    // Predicted true peak scales with the same 20·log10(ratio) as presetLevel itself
+    // (linear post-chain gain) — halving the level should drop the predicted peak
+    // ~6.02 dB, matching a level unchanged from ref keeps the ref peak verbatim.
+    #[test]
+    fn predicted_true_peak_scales_with_level_ratio() {
+        assert!((predicted_true_peak_dbtp(-3.0, 0.5, 0.5) - -3.0).abs() < 1e-6);
+        let halved = predicted_true_peak_dbtp(-3.0, 0.5, 0.25);
+        assert!((halved - -9.02).abs() < 0.01, "got {halved}");
+        let doubled = predicted_true_peak_dbtp(-9.0, 0.25, 0.5);
+        assert!((doubled - -2.98).abs() < 0.01, "got {doubled}");
     }
 
     // The guarded wrapper: one same-settings retry heals a transient inject failure;

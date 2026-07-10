@@ -395,6 +395,9 @@ fn outcome_to_level_result(
         verify_by_ear: o.verify_by_ear,
         // Scene rows write amp outputLevel, not presetLevel — nothing to revert here.
         previous_level: None,
+        // Scene path: no predicted true peak this cycle (only the one-shot presetLevel
+        // path in `level_preset` estimates it).
+        true_peak_dbtp: None,
     }
 }
 

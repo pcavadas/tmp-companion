@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
+import { Icon } from "../../ui/Icon";
 import { Button, Toggle } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { SetupGroupHeader } from "../../ui/SetupGroupHeader";
@@ -96,6 +97,61 @@ function InstrumentNudge({ state }: { state: "none" | "uncal" | "cal" }) {
           results.
         </span>
       )}
+    </div>
+  );
+}
+
+/** Onboarding nudge toward Tier-2 calibration (capture-as-stimulus) — a small
+ *  dismissable banner shown once per wizard open, only while the chosen instrument
+ *  is a real, uncalibrated profile (an unset/"None" instrument or an already-
+ *  calibrated one shows nothing). Local `dismissed` state, so re-entering the Set
+ *  up step (a fresh SetupBody mount) shows it again — cheap enough not to thread
+ *  through the flow. No navigation coupling: plain text points at Settings. */
+function CalibrationOnboardingBanner({ show }: { show: boolean }) {
+  const { t } = useTheme();
+  const [dismissed, setDismissed] = useState(false);
+  if (!show || dismissed) return null;
+  return (
+    <div
+      role="status"
+      style={{
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 9,
+        margin: "12px 24px 0",
+        padding: "9px 11px",
+        borderRadius: t.rCard,
+        border: `0.5px solid ${t.hairlineStrong}`,
+        background: t.bgAlt,
+      }}
+    >
+      <span style={{ display: "flex", flexShrink: 0, marginTop: 1 }}>
+        <Icon name="info" size={14} stroke={t.accentDeep} strokeWidth={1.5} />
+      </span>
+      <span
+        style={{
+          flex: 1,
+          fontFamily: t.sans,
+          fontSize: 12,
+          lineHeight: 1.45,
+          color: t.ink2,
+        }}
+      >
+        Level with your own guitar — a 2-minute calibration makes leveling match
+        your instrument. Settings → Instruments → Calibrate.
+      </span>
+      <span
+        role="button"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={() => {
+          setDismissed(true);
+        }}
+        style={{ cursor: "pointer", display: "flex", flexShrink: 0 }}
+      >
+        <Icon name="x" size={12} stroke={t.mutedInk} />
+      </span>
     </div>
   );
 }
@@ -288,6 +344,10 @@ export function SetupBody({
           {presetCount === 1 ? "" : "s"}
         </div>
       </div>
+
+      <CalibrationOnboardingBanner
+        show={instCalState(bulkInst, instrumentOptions) === "uncal"}
+      />
 
       {/* apply-to bar — writes to all rows, or to the ticked rows */}
       <ApplyToBar

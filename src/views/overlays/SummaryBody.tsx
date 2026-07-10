@@ -16,11 +16,24 @@ import { Fragment, useState } from "react";
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
 import { Icon, type IconName } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { fmtLufs } from "../../lib/format";
 import { restorePresetLevel } from "../../lib/invoke";
 import type { RunItem } from "../level/leveling";
+
+/** True-peak clip threshold (dBTP): a Base row's PREDICTED true peak above this
+ *  earns the "may clip" caveat (estimate, from `leveller::predicted_true_peak_dbtp`,
+ *  never a re-measurement). */
+const TRUE_PEAK_WARN_DBTP = -1;
+
+/** Base rows only (the only path that estimates true peak); done/clamped only. */
+const truePeakWarn = (it: RunItem): boolean =>
+  it.isBase &&
+  (it.outcome === "done" || it.outcome === "clamped") &&
+  it.truePeakDbtp != null &&
+  it.truePeakDbtp > TRUE_PEAK_WARN_DBTP;
 
 /** Per-row restore progress, keyed by RunItem.key (local — the run data itself
  *  never mutates; a restore is a follow-up device write, not a run result). */
@@ -220,6 +233,13 @@ function ResultRow({
           </span>
         )}
         {byEarOf(it) && <ByEarChip />}
+        {truePeakWarn(it) && (
+          <span
+            title={`predicted ${fmtLufs(it.truePeakDbtp)} dBTP at the leveled setting`}
+          >
+            <Tag tone="warn">may clip</Tag>
+          </span>
+        )}
       </span>
       <span
         style={{
@@ -502,6 +522,31 @@ export function SummaryBody({
               }}
             >
               worth a quick listen — {byEarReasons.join("; ")}.
+            </span>
+          </div>
+        )}
+        {items.some(truePeakWarn) && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              padding: "10px 10px 4px",
+            }}
+          >
+            <span style={{ paddingTop: 1 }}>
+              <Tag tone="warn">may clip</Tag>
+            </span>
+            <span
+              style={{
+                fontFamily: t.sans,
+                fontSize: 11.5,
+                lineHeight: 1.5,
+                color: t.mutedInk,
+              }}
+            >
+              flagged rows are estimated to peak above −1 dBTP at the leveled
+              setting — if your interface or FRFR clips, pick a lower target.
             </span>
           </div>
         )}

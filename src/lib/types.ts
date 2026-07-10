@@ -129,6 +129,10 @@ export interface LevelResult {
    * for "Restore original". Null when the pre-run read failed or the path doesn't
    * write `presetLevel` (block-knob / scene rows). */
   previous_level: number | null;
+  /** PREDICTED true peak (dBTP) at final_level, extrapolated from the reference
+   * capture's measured true peak — an ESTIMATE, never a re-measurement. Only the
+   * one-shot presetLevel path (level_preset) sets this; null otherwise. */
+  true_peak_dbtp: number | null;
 }
 
 /** Result of leveling one block-acting footswitch's engaged state
@@ -190,6 +194,13 @@ export interface CalibrateResult {
   /** LU the topology stimulus falls short of reproducing `lufs` (peak-capped);
    * null when reachable — always null when the capture was stored as the stimulus. */
   stimulus_shortfall_lu: number | null;
+  /** Short-term-max − integrated (LU) of the dry capture — how dynamic the take was. */
+  spread_lu: number;
+  /** Per-band excitation of the capture (same family band layout as the Doctor
+   * engine); true = the band was actually played. Index-aligned with `band_labels`. */
+  band_coverage: boolean[];
+  /** Player-facing labels for `band_coverage`, index-aligned. */
+  band_labels: string[];
 }
 
 /** A named loudness target the user can apply per preset (mirrors profiles::Target). */

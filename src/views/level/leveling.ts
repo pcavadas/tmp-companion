@@ -311,6 +311,10 @@ export interface RunItem {
   /** The preset's saved `presetLevel` before this run wrote it — enables the Summary
    *  "Restore original" (Base rows only; scene/footswitch writes aren't revertable). */
   previousLevel?: number | null;
+  /** PREDICTED true peak (dBTP) at the leveled setting — an estimate, never a
+   *  re-measurement. Only Base rows carry a value (undefined/null elsewhere); drives
+   *  the Summary "may clip" chip when > −1 dBTP. */
+  truePeakDbtp?: number | null;
   /** Cause of the "verify by ear" marker (undefined = no flag): `envelope` = the preset
    *  contains an envelope-follower effect, which tracks the synthetic stimulus differently
    *  than real playing (the measurement itself is suspect); `dynamic` = peaks ride
