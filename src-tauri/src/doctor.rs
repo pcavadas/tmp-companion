@@ -482,6 +482,41 @@ const COMP_IDS: [&str; 5] = [
     "ACD_Sustain",
 ];
 
+/// Delays (`algoCategory == "delay"`) — `src/models/blockArtCatalog/delay.ts`
+/// is the reference list. Raw catalog FenderIds, exact-match like `DIST_IDS`.
+const DELAY_IDS: [&str; 30] = [
+    "ACD_AutoSwellDelay",
+    "ACD_BoilerPlateMono",
+    "ACD_BoilerPlateStereo",
+    "ACD_DM2",
+    "ACD_DeepFreeze",
+    "ACD_Doubler",
+    "ACD_DynamicDelay",
+    "ACD_EchoMachine",
+    "ACD_EchoplexEP3",
+    "ACD_EchoplexEP3Stereo",
+    "ACD_Freeze",
+    "ACD_Glooper",
+    "ACD_HaloDelay",
+    "ACD_HaloDelayStereo",
+    "ACD_HoldDelay",
+    "ACD_HoldDelayStereo",
+    "ACD_MemoryMan",
+    "ACD_MemoryManStereo",
+    "ACD_ModDelay",
+    "ACD_MultiplyDelay",
+    "ACD_MultiplyDelayMono",
+    "ACD_Polyhedron",
+    "ACD_RackDelay",
+    "ACD_RackDelayStereo",
+    "ACD_SpaceEcho",
+    "ACD_SpaceEchoStereo",
+    "ACD_TMDelayFilter",
+    "ACD_TMDelayFilterStereo",
+    "ACD_TMPingPong",
+    "ACD_TMReverse",
+];
+
 const CAB_STANDALONE: &str = "ACD_CabSimTMS";
 const EQ10_STEREO: &str = "ACD_TenBandEQStereo"; // never the Mono variant (absent from the product profile)
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
@@ -561,6 +596,13 @@ struct GraphFacts {
     comp: Option<bool>,
     /// First node of the first guitar group (the "front of chain" insert anchor).
     front: Option<(String, String)>,
+}
+
+/// A reverb (any `REVERB_MIX` row, dwell-only ones included) or a delay —
+/// the two time-based effect families whose wet tail a downstream compressor
+/// would pump.
+fn is_time_effect(model: &str) -> bool {
+    REVERB_MIX.iter().any(|(id, _)| *id == model) || DELAY_IDS.contains(&model)
 }
 
 fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
@@ -855,17 +897,25 @@ fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
     let idx = nodes
         .iter()
         .position(|n| &n.group_id == cab_group && &n.node_id == cab_node)?;
+    // A reverb/delay earlier in the cab's own group would then also sit before
+    // the inserted comp — compressing its wet tail pumps, so bail to the
+    // advisory-only path (the caller's None branch) instead of anchoring a
+    // placement that contradicts the prescription's own detail text.
+    let time_effect_before_cab = nodes[..idx]
+        .iter()
+        .any(|n| n.group_id == *cab_group && !n.bypassed && is_time_effect(&n.model));
+    if time_effect_before_cab {
+        return None;
+    }
     // Anchor = the NEXT node in the SAME group: the wire's beforeFenderId is a
     // same-group anchor and a cross-group one is silently dropped (proto.rs
     // field 2), so a cab that ends its group appends (None) — same position.
     // Bypassed neighbours still anchor: position is chain order, not
     // audibility — skipping one would drift the comp when it's re-enabled.
-    // ponytail: model-anchored insert — a duplicate model earlier in the group
-    // would mis-anchor; needs a node-id-anchored wire op that doesn't exist.
     let before = nodes
         .get(idx + 1)
         .filter(|n| &n.group_id == cab_group)
-        .map(|n| n.model.clone());
+        .map(|n| n.node_id.clone());
     let cpu_note = insert_cpu_note(nodes, COMPRESSOR_STUDIO)?;
     Some(Rx {
         kind: RxKind::Chain,
@@ -1803,6 +1853,62 @@ mod tests {
             params: HashMap::new(),
         });
         assert_appends_in_g1(&p);
+    }
+
+    #[test]
+    fn spiky_comp_anchors_on_node_id_not_model() {
+        // Two same-model reverb nodes after the cab: only the node_id
+        // distinguishes which one the anchor must reference.
+        let p = vec![
+            DoctorNode {
+                group_id: "G1".into(),
+                node_id: "amp1".into(),
+                model: "ACD_TweedDeluxe".into(),
+                bypassed: false,
+                cab_sim_id: Some("SomeCab".to_string()),
+                cab_sim2_enabled: None,
+                params: HashMap::new(),
+            },
+            DoctorNode {
+                group_id: "G1".into(),
+                node_id: "reverb-a".into(),
+                model: "ACD_TMSmallHall".into(),
+                bypassed: false,
+                cab_sim_id: None,
+                cab_sim2_enabled: None,
+                params: HashMap::new(),
+            },
+        ];
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let chain_rx = rx
+            .iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .expect("chain rx");
+        match &chain_rx.ops[0] {
+            DoctorOp::InsertNode {
+                before_fender_id, ..
+            } => {
+                assert_eq!(before_fender_id.as_deref(), Some("reverb-a"));
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spiky_comp_skips_insert_when_time_effect_precedes_cab() {
+        // [delay, cab]: compressing after the cab would still sit after the
+        // delay's wet tail — bail to advisory-only rather than pump it.
+        let p = chain(&["ACD_SpaceEcho", "ACD_CabSimTMS"], &[]);
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
+        assert!(rx.iter().all(|r| r.kind == RxKind::Advisory));
+
+        // A BYPASSED time effect before the cab doesn't process signal, so the
+        // insert still fires normally.
+        let mut p = chain(&["ACD_SpaceEcho", "ACD_CabSimTMS"], &[]);
+        p[0].bypassed = true;
+        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        assert!(rx.iter().any(|r| r.kind == RxKind::Chain));
     }
 
     #[test]
