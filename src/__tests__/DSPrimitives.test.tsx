@@ -12,6 +12,9 @@ import { Icon } from "../ui/Icon";
 import { ICONS } from "../ui/iconNames";
 import { BlockArt } from "../ui/BlockArt";
 import { Checkbox, Toggle, MenuItem, Toast } from "../ui/primitives";
+import { Tag } from "../ui/Tag";
+import { Spinner } from "../ui/Spinner";
+import { Dot } from "../ui/Dot";
 import type { ReactNode } from "react";
 
 function under(node: ReactNode) {
@@ -176,5 +179,86 @@ describe("Toast — update-lifecycle statuses", () => {
       />,
     );
     expect(screen.queryByLabelText("Dismiss")).toBeNull();
+  });
+});
+
+describe("Tag — the DS chip", () => {
+  it("renders its children text verbatim", () => {
+    under(<Tag>FS1</Tag>);
+    expect(screen.getByText("FS1")).toBeTruthy();
+  });
+
+  it("tone='accent' paints the accentSoft fill + accentDeep text", () => {
+    under(<Tag tone="accent">Rhythm</Tag>);
+    const el = screen.getByText("Rhythm");
+    // #a7461f → rgb(167, 70, 31); rgba(217,119,87,0.10) → contains 217, 119, 87.
+    expect(el.style.color).toBe("rgb(167, 70, 31)");
+    expect(el.style.background).toContain("217, 119, 87");
+  });
+
+  it("size='md' bumps the fontSize off the sm default", () => {
+    under(
+      <>
+        <Tag size="sm">a</Tag>
+        <Tag size="md">b</Tag>
+      </>,
+    );
+    expect(screen.getByText("a").style.fontSize).toBe(
+      `${String(light.fsTag)}px`,
+    );
+    expect(screen.getByText("b").style.fontSize).toBe(
+      `${String(light.fsMeta)}px`,
+    );
+  });
+
+  it("uppercase sets textTransform in STYLE while textContent keeps its casing", () => {
+    under(<Tag uppercase>Rhythm</Tag>);
+    const el = screen.getByText("Rhythm");
+    expect(el.style.textTransform).toBe("uppercase");
+    // load-bearing: the child string is never edited.
+    expect(el.textContent).toBe("Rhythm");
+  });
+
+  it("fg overrides tone — custom color + matching translucent border", () => {
+    under(
+      <Tag tone="accent" fg="#123456">
+        x
+      </Tag>,
+    );
+    const el = screen.getByText("x");
+    // #123456 → rgb(18, 52, 86); border alpha 0x66 → rgba(18, 52, 86, 0.4).
+    expect(el.style.color).toBe("rgb(18, 52, 86)");
+    expect(el.style.border).toContain("18, 52, 86");
+    // tone lost: no accentSoft fill.
+    expect(el.style.background).toBe("transparent");
+  });
+});
+
+describe("Spinner", () => {
+  it("wraps a spinner Icon in the .tmp-spin sweep", () => {
+    const { container } = under(<Spinner />);
+    const span = container.querySelector("span.tmp-spin");
+    expect(span).not.toBeNull();
+    expect(span?.querySelector("svg")).not.toBeNull();
+  });
+
+  it("renders a custom icon name", () => {
+    const { container } = under(<Spinner name="refresh" />);
+    expect(container.querySelector("span.tmp-spin svg")).not.toBeNull();
+  });
+});
+
+describe("Dot", () => {
+  it("renders a 7px pip by default with the given color", () => {
+    const { container } = under(<Dot color="#3f7d4e" />);
+    const el = container.querySelector("span");
+    expect(el?.style.width).toBe("7px");
+    expect(el?.style.height).toBe("7px");
+    expect(el?.style.background).toBe("rgb(63, 125, 78)");
+  });
+
+  it("honors a size override", () => {
+    const { container } = under(<Dot color="#000" size={12} />);
+    expect(container.querySelector("span")?.style.width).toBe("12px");
   });
 });

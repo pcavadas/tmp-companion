@@ -5,7 +5,7 @@
 // selection footer (Level) and the Copy step (Place the blocks).
 
 import { useTheme } from "../theme/ThemeContext";
-import { Icon } from "./Icon";
+import { Spinner } from "./Spinner";
 
 export interface ReadingPillProps {
   /** The pill text (the Copy step appends the determinate "… N%"). */
@@ -35,9 +35,7 @@ export function ReadingPill({ label = "Reading presets…" }: ReadingPillProps) 
         cursor: "default",
       }}
     >
-      <span className="tmp-spin" style={{ display: "inline-flex" }}>
-        <Icon name="spinner" size={13} stroke={t.faint} />
-      </span>
+      <Spinner size={13} stroke={t.faint} />
       {label}
     </span>
   );

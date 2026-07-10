@@ -15,6 +15,8 @@
 import { useTheme } from "../../theme/ThemeContext";
 import { Checkbox } from "../../ui/primitives";
 import { Icon } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
+import { Spinner } from "../../ui/Spinner";
 import { slotLabel } from "../../lib/format";
 import {
   baseKey,
@@ -111,9 +113,7 @@ export function PresetRow({
           flexShrink: 0,
         }}
       >
-        <span className="tmp-spin" style={{ display: "inline-flex" }}>
-          <Icon name="spinner" size={10} stroke={t.faint} />
-        </span>
+        <Spinner size={10} stroke={t.faint} />
         loading…
       </span>
     );
@@ -243,24 +243,7 @@ export function PresetRow({
           >
             {empty ? "—— empty ——" : row.name}
           </span>
-          {active && (
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsTag,
-                letterSpacing: t.lsWide,
-                color: t.good,
-                border: `0.5px solid ${t.goodBorder}`,
-                background: t.goodSoft,
-                borderRadius: t.rSm,
-                padding: "0 5px",
-                flexShrink: 0,
-                whiteSpace: "nowrap",
-              }}
-            >
-              ACTIVE
-            </span>
-          )}
+          {active && <Tag tone="good">ACTIVE</Tag>}
           <span style={{ flex: 1 }} />
           {meta}
           {/* Real per-preset CPU bar — base rows only, once the backup graph is ready.

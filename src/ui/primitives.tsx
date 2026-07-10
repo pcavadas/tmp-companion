@@ -7,6 +7,7 @@ import { useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Dialog, DialogBody, DialogFooter } from "./Dialog";
 import { Icon, type IconName } from "./Icon";
+import { Spinner } from "./Spinner";
 import { ProgressBar } from "./ProgressBar";
 import { useTheme, useStyles } from "../theme/ThemeContext";
 import { plainInput, type ThemeTokens } from "../theme/tokens";
@@ -87,10 +88,6 @@ export function Button({
     </button>
   );
 }
-
-// ===========================================================================
-// Slider — labeled range + mono numeric readout (Level rail target/headroom).
-// ===========================================================================
 
 // ===========================================================================
 // Modal — destructive-confirm shell: warn kicker + serif headline + mono code
@@ -359,9 +356,7 @@ export function Toast({
         }}
       >
         {tone.spin ? (
-          <span className="tmp-spin" style={{ display: "inline-flex" }}>
-            <Icon name={tone.icon} size={15} strokeWidth={2.4} />
-          </span>
+          <Spinner name={tone.icon} size={15} strokeWidth={2.4} />
         ) : (
           <Icon name={tone.icon} size={15} strokeWidth={2} />
         )}

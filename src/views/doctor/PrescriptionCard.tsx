@@ -8,6 +8,8 @@ import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon, type IconName } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
+import { Spinner } from "../../ui/Spinner";
 import { Button } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { doctorApply, doctorDiscard, doctorSave } from "../../lib/invoke";
@@ -316,21 +318,9 @@ export function PrescriptionCard({
             >
               {rx.title}
             </span>
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsTag,
-                letterSpacing: t.lsTag,
-                textTransform: "uppercase",
-                padding: "2px 6px",
-                borderRadius: t.rSm,
-                color: rx.kind === "advisory" ? t.mutedInk : t.accentDeep,
-                background: rx.kind === "advisory" ? t.bgAlt : t.accentSoft,
-                whiteSpace: "nowrap",
-              }}
-            >
+            <Tag tone={rx.kind === "advisory" ? "neutral" : "accent"} uppercase>
               {KIND_BADGE[rx.kind]}
-            </span>
+            </Tag>
           </div>
           <div
             style={{
@@ -384,17 +374,7 @@ export function PrescriptionCard({
                       gap: 6,
                     }}
                   >
-                    <span
-                      className="tmp-spin"
-                      style={{ display: "inline-flex" }}
-                    >
-                      <Icon
-                        name="spinner"
-                        size={13}
-                        stroke={t.onInk}
-                        strokeWidth={1.8}
-                      />
-                    </span>
+                    <Spinner size={13} stroke={t.onInk} strokeWidth={1.8} />
                     Applying…
                   </span>
                 ) : (

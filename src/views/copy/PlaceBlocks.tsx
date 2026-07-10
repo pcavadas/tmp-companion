@@ -13,6 +13,7 @@ import { Button } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { Icon } from "../../ui/Icon";
 import { ActionBar } from "../../ui/ActionBar";
+import { Tag } from "../../ui/Tag";
 import { slotLabel } from "../../lib/format";
 import { CopyPath } from "./CopyPath";
 import { TargetEditCard } from "./TargetEditCard";
@@ -109,19 +110,9 @@ export function PlaceBlocks({
             marginBottom: 2,
           }}
         >
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsMeta,
-              color: t.accentDeep,
-              border: `0.5px solid ${t.accentBorder}`,
-              background: t.bg,
-              borderRadius: t.rMenuItem,
-              padding: "2px 8px",
-            }}
-          >
+          <Tag size="md" tone="accent">
             {slotLabel(from.slot)}
-          </span>
+          </Tag>
           <span
             style={{ fontFamily: t.serif, fontSize: t.fsCard, color: t.ink }}
           >

@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { DASH } from "../../lib/format";
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Spinner } from "../../ui/Spinner";
 import { Button, Toggle } from "../../ui/primitives";
 import type { UpdaterApi } from "../../lib/useUpdater";
 
@@ -80,14 +81,12 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
               color: t.sevWarn,
             }}
           >
-            <span className="tmp-spin" style={{ display: "inline-flex" }}>
-              <Icon
-                name="refresh"
-                size={12}
-                stroke={t.sevWarn}
-                strokeWidth={2}
-              />
-            </span>
+            <Spinner
+              name="refresh"
+              size={12}
+              stroke={t.sevWarn}
+              strokeWidth={2}
+            />
             checking…
           </div>
         )}

@@ -24,6 +24,7 @@ export function Rail({ children, style }: RailProps) {
     <div
       style={{
         width: 210,
+        boxSizing: "border-box",
         flexShrink: 0,
         minHeight: 0,
         borderRight: `0.5px solid ${t.hairline}`,

@@ -17,6 +17,7 @@ import { useContext, useLayoutEffect, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
 import { BlockArt } from "../../ui/BlockArt";
 import { blockArtTile } from "../../models/blockArt";
 import { defaultParamIndex, isLoudnessParam } from "../level/leveling";
@@ -202,21 +203,9 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
               </div>
               <div style={{ marginTop: 3 }}>
                 {rec ? (
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: 8.5,
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                      color: t.good,
-                      border: `0.5px solid ${t.goodBorder}`,
-                      background: t.goodSoft,
-                      borderRadius: 3,
-                      padding: "1px 6px",
-                    }}
-                  >
+                  <Tag tone="good" uppercase>
                     Recommended · loudness only
-                  </span>
+                  </Tag>
                 ) : loud ? (
                   <span
                     style={{

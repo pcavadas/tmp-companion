@@ -7,6 +7,7 @@
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
 import { BandMeter } from "./BandMeter";
 import { BandSpark } from "./BandSpark";
 import { DiagnosisChip } from "./DiagnosisChip";
@@ -160,21 +161,7 @@ export function SoundRow({
             {sound.label}
           </span>
           {sound.tag != null && sound.tag !== "" && (
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: 8,
-                letterSpacing: "0.04em",
-                color: isTagged ? t.accentDeep : t.faint,
-                border: `0.5px solid ${isTagged ? t.accentBorder : t.hairlineStrong}`,
-                background: isTagged ? t.accentSoft : "transparent",
-                borderRadius: 3,
-                padding: "0 4px",
-                flexShrink: 0,
-              }}
-            >
-              {sound.tag}
-            </span>
+            <Tag tone={isTagged ? "accent" : "neutral"}>{sound.tag}</Tag>
           )}
         </span>
         {/* middle: clear state, error, or diagnosis chips */}
