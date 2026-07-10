@@ -29,6 +29,7 @@ import {
 import type { CSSProperties } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Rail, RailItem, RailLabel } from "../../ui/Rail";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { Button, Modal, SegmentedControl, Toast } from "../../ui/primitives";
 import type { ToastKind } from "../../ui/primitives";
@@ -62,64 +63,6 @@ import {
   invalidateLibrarySongs,
 } from "../level/libraryScan";
 import { SongsLoadingSkeleton } from "./skeletons";
-
-// ---------------------------------------------------------------------------
-// left-rail item
-// ---------------------------------------------------------------------------
-interface SetlistRailItemProps {
-  label: string;
-  count: number | null;
-  active: boolean;
-  onClick: () => void;
-}
-
-function SetlistRailItem({
-  label,
-  count,
-  active,
-  onClick,
-}: SetlistRailItemProps) {
-  const { t } = useTheme();
-  return (
-    <div
-      onClick={onClick}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "8px 10px",
-        borderRadius: t.rMd,
-        cursor: "pointer",
-        background: active ? t.accentSoft : "transparent",
-        borderLeft: active ? `2px solid ${t.accent}` : "2px solid transparent",
-      }}
-    >
-      <span
-        style={{
-          fontFamily: t.serif,
-          fontSize: t.fsName2,
-          color: active ? t.ink : t.ink2,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{
-          fontFamily: t.mono,
-          fontSize: t.fsData2,
-          color: t.faint,
-          flexShrink: 0,
-          marginLeft: 8,
-        }}
-      >
-        {count ?? DASH}
-      </span>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // root
@@ -498,15 +441,8 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     );
   }
 
-  // Shared rail styles (the setlists + presets sections share their section label,
-  // scroll container, and empty-hint markup).
-  const railLabel: CSSProperties = {
-    fontFamily: t.mono,
-    fontSize: t.fsMicro,
-    letterSpacing: t.lsWide,
-    color: t.faint,
-    textTransform: "uppercase",
-  };
+  // Shared rail styles (the setlists + presets sections share their scroll
+  // container and empty-hint markup; the section label is the DS RailLabel).
   const railScroll: CSSProperties = {
     flex: 1,
     minHeight: 0,
@@ -543,18 +479,8 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           gridTemplateColumns: "210px 1fr",
         }}
       >
-        {/* rail */}
-        <div
-          style={{
-            borderRight: `0.5px solid ${t.hairline}`,
-            background: t.bgAlt,
-            padding: "12px 10px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            minHeight: 0,
-          }}
-        >
+        {/* rail — the DS Rail (shared with the Settings category sidebar) */}
+        <Rail style={{ gap: 2 }}>
           <div style={{ padding: "2px 2px 10px" }}>
             <SegmentedControl
               variant="light"
@@ -570,9 +496,9 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
               ]}
             />
           </div>
-          <SetlistRailItem
+          <RailItem
             label="All songs"
-            count={songs.length}
+            meta={songs.length}
             active={view.mode === "all"}
             onClick={() => {
               setView({ mode: "all" });
@@ -580,15 +506,15 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           />
           {railAxis === "setlists" ? (
             <>
-              <div style={{ ...railLabel, padding: "16px 8px 8px" }}>
+              <RailLabel style={{ padding: "16px 8px 8px" }}>
                 Setlists
-              </div>
+              </RailLabel>
               <div style={railScroll}>
                 {setlists.map((l) => (
-                  <SetlistRailItem
+                  <RailItem
                     key={l.slot}
                     label={l.name}
-                    count={membership.get(l.slot)?.length ?? null}
+                    meta={membership.get(l.slot)?.length ?? DASH}
                     active={view.mode === "setlist" && view.slot === l.slot}
                     onClick={() => {
                       selectSetlist(l.slot);
@@ -678,7 +604,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                   padding: "16px 8px 8px",
                 }}
               >
-                <span style={railLabel}>Presets</span>
+                <RailLabel>Presets</RailLabel>
                 <UnitBadge />
               </div>
               <div style={railScroll}>
@@ -690,10 +616,10 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                   </div>
                 ) : (
                   lib.presets.map((p) => (
-                    <SetlistRailItem
+                    <RailItem
                       key={p.slot}
                       label={p.name}
-                      count={presetMembers.get(p.slot)?.length ?? 0}
+                      meta={presetMembers.get(p.slot)?.length ?? 0}
                       active={view.mode === "preset" && view.slot === p.slot}
                       onClick={() => {
                         setView({ mode: "preset", slot: p.slot });
@@ -704,7 +630,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
               </div>
             </>
           )}
-        </div>
+        </Rail>
 
         {/* detail */}
         {view.mode === "preset" && currentPreset ? (

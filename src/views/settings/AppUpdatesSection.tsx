@@ -1,4 +1,4 @@
-// src/views/settings/AppUpdatesSection.tsx — Settings tab "App updates" section:
+// src/views/settings/AppUpdatesSection.tsx — Settings tab "Software update" section:
 // version readout + manual check (checking… → up to date, self-clears) + the
 // auto-install toggle. The "found" result surfaces via the app-level update
 // toast, not here.
@@ -45,7 +45,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
 
   return (
     <div>
-      <div style={s.kicker(t.accentDeep)}>App updates</div>
+      <div style={s.kicker(t.accentDeep)}>Software update</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div
           style={{

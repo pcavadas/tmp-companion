@@ -10,23 +10,30 @@
 //     getStore() so the persisted calibration_lufs refreshes the row.
 //
 // The App shell (App.tsx) renders the nav ABOVE this body, so this component
-// renders only the two-column grid + the spanning footer (no AppNav/TabBar here).
+// renders only the category rail + detail pane (no AppNav/TabBar here). Layout
+// per design_handoff_settings_rework (direction 1a, macOS System Settings
+// style): a 210px rail of four categories — Loudness targets · Instruments ·
+// Playback level · About & updates — and a right pane showing one category at
+// a time that scrolls on its own, so a growing list can never push the other
+// sections off-screen.
 //
 // Style rules honored: light-only; no grey-filled inputs (border-only/transparent
 // inline-edit fields, terracotta focus border, no OS ring); 0.5px hairlines;
 // shadows only on the floating ⋯ popover; Icons only (never symbol chars).
 //
-// Left column (handoff design_handoff_settings_targets): user-owned loudness
+// Targets (handoff design_handoff_settings_targets): user-owned loudness
 // targets — create / rename / reorder (drag) / delete + draggable slider, with
-// NO upper ceiling/clamp — then the Playback level (Fletcher–Munson) section.
+// NO upper ceiling/clamp.
 //
 // Split into ./TargetRow, ./PlaybackLevelSection, ./InstrumentRow,
 // ./InstrumentForm; NeedsDevicePill stays co-located (shared by body + row).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useTheme, useStyles } from "../../theme/ThemeContext";
+import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import type { IconName } from "../../ui/Icon";
+import { Rail, RailItem, RailLabel } from "../../ui/Rail";
 import { Button } from "../../ui/primitives";
 import {
   getStore,
@@ -90,6 +97,48 @@ export function NeedsDevicePill() {
 }
 
 // ===========================================================================
+// Category rail — macOS System Settings-style sidebar. One category shows in
+// the detail pane at a time; the rail selection is local UI state (not
+// persisted, defaults to "targets").
+// ===========================================================================
+
+type CategoryId = "targets" | "instruments" | "playback" | "about";
+
+interface Category {
+  id: CategoryId;
+  label: string;
+  icon: IconName;
+  desc: string;
+}
+
+const CATEGORIES: Category[] = [
+  {
+    id: "targets",
+    label: "Loudness targets",
+    icon: "sliders",
+    desc: "The leveling target stack — set each level, rename to match how you play, reorder to taste.",
+  },
+  {
+    id: "instruments",
+    label: "Instruments",
+    icon: "cable",
+    desc: "Calibrate each guitar once so presets can be leveled for any of them, chosen per preset at level time.",
+  },
+  {
+    id: "playback",
+    label: "Playback level",
+    icon: "wave",
+    desc: "The volume you’ll play at — targets are compensated for how the ear hears bass.",
+  },
+  {
+    id: "about",
+    label: "About & updates",
+    icon: "info",
+    desc: "App version, updates, and where your data is kept.",
+  },
+];
+
+// ===========================================================================
 // SettingsView — the page body (rendered under the App's nav).
 // ===========================================================================
 
@@ -100,7 +149,6 @@ interface SettingsViewProps {
 
 export function SettingsView({ connected, updater }: SettingsViewProps) {
   const { t } = useTheme();
-  const s = useStyles();
 
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [targets, setTargets] = useState<UiTarget[]>([]);
@@ -108,6 +156,8 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
   const [topologies, setTopologies] = useState<TopologyInfo[]>([]);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Which category the detail pane shows — local UI state, not persisted.
+  const [cat, setCat] = useState<CategoryId>("targets");
   // uid of a freshly added target → opens it directly in rename mode.
   const [justAdded, setJustAdded] = useState<string | null>(null);
   // Monotonic counter for transient target uids + drag source.
@@ -275,6 +325,8 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
     }
   }
 
+  const active = CATEGORIES.find((c) => c.id === cat) ?? CATEGORIES[0];
+
   return (
     <div
       style={{
@@ -286,239 +338,338 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
       }}
     >
       <style>{`@keyframes tmp-pulse{0%,100%{opacity:1}50%{opacity:.25}}.tmp-pulse{animation:tmp-pulse 1s ease-in-out infinite}`}</style>
-      <div
-        style={{
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          padding: "20px 26px",
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 30,
-          alignContent: "start",
-        }}
-      >
-        {/* ── LEFT — Loudness targets ── */}
-        <div>
-          <div style={s.kicker(t.accentDeep)}>Loudness targets · LUFS</div>
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        {/* ── RAIL — category sidebar (the DS Rail, shared with Songs) ── */}
+        <Rail>
+          <RailLabel style={{ padding: "4px 10px 8px" }}>Settings</RailLabel>
+          <div
+            role="tablist"
+            aria-label="Settings categories"
+            style={{ display: "flex", flexDirection: "column", gap: 2 }}
+          >
+            {CATEGORIES.map((c) => (
+              <RailItem
+                key={c.id}
+                label={c.label}
+                icon={c.icon}
+                active={c.id === cat}
+                onClick={() => {
+                  setCat(c.id);
+                }}
+              />
+            ))}
+          </div>
           <div
             style={{
-              fontFamily: t.sans,
-              fontSize: t.fsControl,
-              color: t.mutedInk,
-              margin: "6px 0 6px",
-              lineHeight: 1.5,
+              marginTop: "auto",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 10px 2px",
             }}
           >
-            The leveling target stack — drag a slider to set its level, rename
-            to match how you play, or reorder to taste.
+            <Icon name="lock" size={12} stroke={t.faint} />
+            <span
+              style={{
+                fontFamily: t.mono,
+                fontSize: 9,
+                color: t.faint,
+                letterSpacing: "0.02em",
+                lineHeight: 1.4,
+              }}
+            >
+              Data stays on this Mac
+            </span>
           </div>
+        </Rail>
 
-          {targets.map((row) => (
-            <TargetRow
-              key={row.uid}
-              name={row.name}
-              lufs={row.lufs}
-              defaultEditing={row.uid === justAdded}
-              onRename={(name) => {
-                renameTarget(row.uid, name);
+        {/* ── PANE — one category at a time, scrolls on its own ── */}
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div
+            style={{
+              flexShrink: 0,
+              padding: "18px 26px 14px",
+              borderBottom: `0.5px solid ${t.hairline}`,
+            }}
+          >
+            <div
+              style={{
+                fontFamily: t.serif,
+                fontSize: 21,
+                color: t.ink,
+                letterSpacing: "-0.01em",
               }}
-              onChange={(v) => {
-                setTargetLevelLocal(row.uid, v);
-              }}
-              onCommit={(v) => {
-                commitTargetLevel(row.uid, v);
-              }}
-              onDelete={() => {
-                deleteTarget(row.uid);
-              }}
-              onGrab={() => {
-                dragUid.current = row.uid;
-              }}
-              onDropOn={() => {
-                reorderTargets(dragUid.current, row.uid);
-              }}
-            />
-          ))}
-
-          {targets.length === 0 && (
+            >
+              {active.label}
+            </div>
             <div
               style={{
                 fontFamily: t.sans,
-                fontSize: t.fsUi,
-                color: t.faint,
-                padding: "14px 0",
-                fontStyle: "italic",
+                fontSize: 12.5,
+                color: t.mutedInk,
+                lineHeight: 1.5,
+                marginTop: 5,
+                maxWidth: 520,
+                textWrap: "pretty",
               }}
             >
-              No targets yet — add one to start leveling.
+              {active.desc}
             </div>
-          )}
-
-          <Button
-            variant="ghost"
-            small
-            icon="plus"
-            onClick={addTarget}
-            style={{ marginTop: 12 }}
-          >
-            Add target
-          </Button>
-
-          {/* Playback level — Fletcher–Munson compensation for the targets above. */}
-          <PlaybackLevelSection
-            value={playback}
-            onChange={(level) => {
-              void persistPlayback(level);
-            }}
-          />
-        </div>
-
-        {/* ── RIGHT — Calibrated instruments ── */}
-        <div style={{ minWidth: 0 }}>
-          <div style={s.kicker(t.accentDeep)}>Calibrated instruments</div>
-          <div
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsControl,
-              color: t.mutedInk,
-              margin: "6px 0 12px",
-              lineHeight: 1.5,
-            }}
-          >
-            Calibrate each guitar once — a short get-ready countdown, then ~8s
-            of steady playing. Stored offsets let you{" "}
-            <strong style={{ color: t.ink2 }}>
-              level presets for any of them
-            </strong>
-            , chosen per preset at level time.
           </div>
 
-          {!connected && (
+          <div
+            className="tmp-pane-scroll"
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              padding: "18px 26px 24px",
+            }}
+          >
+            {cat === "targets" && (
+              <div style={{ maxWidth: 560 }}>
+                {targets.map((row) => (
+                  <TargetRow
+                    key={row.uid}
+                    name={row.name}
+                    lufs={row.lufs}
+                    defaultEditing={row.uid === justAdded}
+                    onRename={(name) => {
+                      renameTarget(row.uid, name);
+                    }}
+                    onChange={(v) => {
+                      setTargetLevelLocal(row.uid, v);
+                    }}
+                    onCommit={(v) => {
+                      commitTargetLevel(row.uid, v);
+                    }}
+                    onDelete={() => {
+                      deleteTarget(row.uid);
+                    }}
+                    onGrab={() => {
+                      dragUid.current = row.uid;
+                    }}
+                    onDropOn={() => {
+                      reorderTargets(dragUid.current, row.uid);
+                    }}
+                  />
+                ))}
+
+                {targets.length === 0 && (
+                  <div
+                    style={{
+                      fontFamily: t.sans,
+                      fontSize: t.fsUi,
+                      color: t.faint,
+                      padding: "14px 0",
+                      fontStyle: "italic",
+                    }}
+                  >
+                    No targets yet — add one to start leveling.
+                  </div>
+                )}
+
+                <Button
+                  variant="ghost"
+                  small
+                  icon="plus"
+                  onClick={addTarget}
+                  style={{ marginTop: 12 }}
+                >
+                  Add target
+                </Button>
+              </div>
+            )}
+
+            {/* Kept MOUNTED (display-toggled) so a rail switch mid-calibration
+                doesn't unmount InstrumentRow and discard an in-flight ~8 s
+                device capture. */}
             <div
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 9,
-                padding: "9px 11px",
-                marginBottom: 12,
-                borderRadius: t.rCard,
-                border: `0.5px solid ${t.hairlineStrong}`,
-                background: t.bgAlt,
+                maxWidth: 620,
+                display: cat === "instruments" ? "block" : "none",
               }}
             >
-              <Icon
-                name="cable"
-                size={15}
-                stroke={t.sevWarn}
-                strokeWidth={1.5}
-              />
-              <span
-                style={{
-                  fontFamily: t.sans,
-                  fontSize: t.fsUi,
-                  color: t.ink2,
-                  lineHeight: 1.45,
-                }}
-              >
-                Your instruments and offsets are stored here, but{" "}
-                <strong style={{ color: t.ink }}>
-                  calibrating needs the unit connected
-                </strong>{" "}
-                — it listens through the device input.
-              </span>
+              {!connected && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 9,
+                    padding: "9px 11px",
+                    marginBottom: 12,
+                    borderRadius: t.rCard,
+                    border: `0.5px solid ${t.hairlineStrong}`,
+                    background: t.bgAlt,
+                  }}
+                >
+                  <Icon
+                    name="cable"
+                    size={15}
+                    stroke={t.sevWarn}
+                    strokeWidth={1.5}
+                  />
+                  <span
+                    style={{
+                      fontFamily: t.sans,
+                      fontSize: t.fsUi,
+                      color: t.ink2,
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    Your instruments and offsets are stored here, but{" "}
+                    <strong style={{ color: t.ink }}>
+                      calibrating needs the unit connected
+                    </strong>{" "}
+                    — it listens through the device input.
+                  </span>
+                </div>
+              )}
+
+              {profiles.map((p) =>
+                editingId === p.id ? (
+                  <InstrumentForm
+                    key={p.id}
+                    initial={p}
+                    types={types}
+                    topologies={topologies}
+                    onSave={(d) => {
+                      saveEdit(p.id, d);
+                    }}
+                    onCancel={() => {
+                      setEditingId(null);
+                    }}
+                  />
+                ) : (
+                  <InstrumentRow
+                    key={p.id}
+                    profile={p}
+                    topology={topoById.get(p.topology_id) ?? null}
+                    connected={connected}
+                    onCalibrated={() => {
+                      void refreshFromStore();
+                    }}
+                    onEdit={() => {
+                      setEditingId(p.id);
+                    }}
+                    onDelete={() => {
+                      deleteProfile(p.id);
+                    }}
+                    onMove={(dir) => {
+                      moveProfile(p.id, dir);
+                    }}
+                  />
+                ),
+              )}
+
+              {profiles.length === 0 && (
+                <div
+                  style={{
+                    fontFamily: t.sans,
+                    fontSize: 12,
+                    color: t.faint,
+                    padding: "14px 0",
+                    fontStyle: "italic",
+                  }}
+                >
+                  No instruments yet — add one to calibrate.
+                </div>
+              )}
+
+              {adding ? (
+                <InstrumentForm
+                  types={types}
+                  topologies={topologies}
+                  onSave={addInstrument}
+                  onCancel={() => {
+                    setAdding(false);
+                  }}
+                />
+              ) : (
+                <Button
+                  variant="ghost"
+                  small
+                  icon="plus"
+                  onClick={() => {
+                    setAdding(true);
+                  }}
+                  disabled={topologies.length === 0}
+                  style={{ marginTop: 2 }}
+                >
+                  Add instrument
+                </Button>
+              )}
             </div>
-          )}
 
-          {profiles.map((p) =>
-            editingId === p.id ? (
-              <InstrumentForm
-                key={p.id}
-                initial={p}
-                types={types}
-                topologies={topologies}
-                onSave={(d) => {
-                  saveEdit(p.id, d);
-                }}
-                onCancel={() => {
-                  setEditingId(null);
-                }}
-              />
-            ) : (
-              <InstrumentRow
-                key={p.id}
-                profile={p}
-                topology={topoById.get(p.topology_id) ?? null}
-                connected={connected}
-                onCalibrated={() => {
-                  void refreshFromStore();
-                }}
-                onEdit={() => {
-                  setEditingId(p.id);
-                }}
-                onDelete={() => {
-                  deleteProfile(p.id);
-                }}
-                onMove={(dir) => {
-                  moveProfile(p.id, dir);
-                }}
-              />
-            ),
-          )}
+            {cat === "playback" && (
+              <div style={{ maxWidth: 520 }}>
+                <PlaybackLevelSection
+                  value={playback}
+                  onChange={(level) => {
+                    void persistPlayback(level);
+                  }}
+                />
+                <div
+                  style={{
+                    marginTop: 18,
+                    fontFamily: t.sans,
+                    fontSize: 11.5,
+                    color: t.faint,
+                    lineHeight: 1.5,
+                    fontStyle: "italic",
+                    maxWidth: 480,
+                    textWrap: "pretty",
+                  }}
+                >
+                  Based on the equal-loudness curves: at lower SPL the ear’s
+                  sensitivity to low frequencies falls off fastest, so bass
+                  needs a touch more level to stay perceptually even with the
+                  mids.
+                </div>
+              </div>
+            )}
 
-          {adding ? (
-            <InstrumentForm
-              types={types}
-              topologies={topologies}
-              onSave={addInstrument}
-              onCancel={() => {
-                setAdding(false);
-              }}
-            />
-          ) : (
-            <Button
-              variant="ghost"
-              small
-              icon="plus"
-              onClick={() => {
-                setAdding(true);
-              }}
-              disabled={topologies.length === 0}
-              style={{ marginTop: 2 }}
-            >
-              Add instrument
-            </Button>
-          )}
-
-          <div style={{ marginTop: 24 }}>
-            <AppUpdatesSection updater={updater} />
+            {cat === "about" && (
+              <div style={{ maxWidth: 560 }}>
+                <AppUpdatesSection updater={updater} />
+                <div
+                  style={{
+                    marginTop: 18,
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 9,
+                  }}
+                >
+                  <span style={{ flexShrink: 0, marginTop: 1 }}>
+                    <Icon name="lock" size={13} stroke={t.mutedInk} />
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: t.sans,
+                      fontSize: 12,
+                      color: t.mutedInk,
+                      lineHeight: 1.5,
+                      textWrap: "pretty",
+                    }}
+                  >
+                    Instruments and loudness targets are the{" "}
+                    <strong style={{ color: t.ink2 }}>
+                      only data this app keeps on your Mac
+                    </strong>
+                    . Everything else — presets, scenes, songs — lives on the
+                    device.
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-
-        {/* ── FOOTER — spans both columns ── */}
-        <div
-          style={{
-            gridColumn: "1 / 3",
-            marginTop: "auto",
-            paddingTop: 14,
-            borderTop: `0.5px solid ${t.hairline}`,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-          }}
-        >
-          <Icon name="lock" size={13} stroke={t.mutedInk} />
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: t.fsMeta,
-              color: t.mutedInk,
-              letterSpacing: "0.03em",
-            }}
-          >
-            The ONLY data this app stores locally. Everything else lives on the
-            device.
-          </span>
         </div>
       </div>
     </div>

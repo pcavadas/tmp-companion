@@ -34,6 +34,7 @@ export const ICONS = [
   "music",
   "spinner",
   "warn-tri",
+  "info",
   "refresh",
   "undo",
   "redo",

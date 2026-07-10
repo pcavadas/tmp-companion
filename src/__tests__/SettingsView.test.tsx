@@ -74,6 +74,16 @@ function renderView() {
   );
 }
 
+// The rail shows one category pane at a time (default "targets"). Click a rail
+// tab to swap panes — role-based, so the pane header's duplicate of the active
+// label can never make the query ambiguous.
+async function openCategory(
+  user: ReturnType<typeof userEvent.setup>,
+  label: string,
+) {
+  await user.click(screen.getByRole("tab", { name: label }));
+}
+
 const lastArgs = (command: string) => {
   const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === command);
   return calls.length ? calls[calls.length - 1][1] : undefined;
@@ -136,6 +146,7 @@ describe("SettingsView — playback level", () => {
     const user = userEvent.setup();
     renderView();
     await screen.findByText("Rhythm");
+    await openCategory(user, "Playback level");
 
     const group = screen.getByRole("radiogroup", { name: /playback level/i });
     await user.click(within(group).getByRole("radio", { name: "Rehearsal" }));
@@ -146,8 +157,11 @@ describe("SettingsView — playback level", () => {
   });
 
   it("reflects the stored level + its compensation caption", async () => {
+    const user = userEvent.setup();
     mockStore(SEED_TARGETS, "quiet");
     renderView();
+    await screen.findByText("Rhythm");
+    await openCategory(user, "Playback level");
 
     const group = await screen.findByRole("radiogroup", {
       name: /playback level/i,
@@ -168,7 +182,11 @@ describe("SettingsView — app updates", () => {
   });
 
   it("renders the version readout, check button, and auto-install label", async () => {
+    const user = userEvent.setup();
     renderView();
+    await screen.findByText("Rhythm");
+    await openCategory(user, "About & updates");
+
     expect(await screen.findByText("Version 1.2.3")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /check for updates/i }),
@@ -181,6 +199,8 @@ describe("SettingsView — app updates", () => {
   it("checks for updates and shows up to date", async () => {
     const user = userEvent.setup();
     renderView();
+    await screen.findByText("Rhythm");
+    await openCategory(user, "About & updates");
     await screen.findByText("Version 1.2.3");
 
     await user.click(
@@ -194,10 +214,54 @@ describe("SettingsView — app updates", () => {
   it("toggles auto-install", async () => {
     const user = userEvent.setup();
     renderView();
+    await screen.findByText("Rhythm");
+    await openCategory(user, "About & updates");
     await screen.findByText("Version 1.2.3");
 
     await user.click(screen.getByRole("switch"));
 
     expect(setAutoInstallFn).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("SettingsView — category rail", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+    mockStore();
+  });
+
+  it("renders all four category tabs after load", async () => {
+    renderView();
+    await screen.findByText("Rhythm");
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((el) => el.textContent)).toEqual([
+      "Loudness targets",
+      "Instruments",
+      "Playback level",
+      "About & updates",
+    ]);
+    expect(
+      screen.getByRole("tab", { name: "Loudness targets" }),
+    ).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("swaps the pane when a category is clicked", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Rhythm");
+    expect(
+      screen.getByRole("button", { name: /add target/i }),
+    ).toBeInTheDocument();
+
+    await openCategory(user, "Instruments");
+
+    expect(screen.queryByRole("button", { name: /add target/i })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /add instrument/i }),
+    ).toBeInTheDocument();
+    // connected={false} → the disconnected calibration note shows.
+    expect(
+      screen.getByText(/calibrating needs the unit connected/i),
+    ).toBeInTheDocument();
   });
 });
