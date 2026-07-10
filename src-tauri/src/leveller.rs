@@ -94,6 +94,11 @@ pub struct LevelResult {
     /// Best-effort rebalance "verify by ear" flag (lane-mute bleed may have skewed the
     /// equal-solo balance). Distinct from `dynamic_spread_lu`; the UI ORs both.
     pub verify_by_ear: bool,
+    /// The preset's saved `presetLevel` BEFORE this run wrote it — the revert
+    /// anchor for the Summary's "Restore original". Stamped by the `level_preset`
+    /// command (from its base-isolation preset read); `None` when the read failed
+    /// or the path doesn't write `presetLevel` (block-knob / scene paths).
+    pub previous_level: Option<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -612,6 +617,19 @@ pub fn apply_levels(
     Ok((opts.save, verify_lufs))
 }
 
+/// Restore a preset's `presetLevel` to a pre-leveling snapshot value and SAVE —
+/// the Summary "Restore original" write. A pure write (no verify capture), so the
+/// stimulus is irrelevant; reuses the validated `apply_level` seam (reload → set →
+/// save) with an empty stimulus.
+pub fn restore_preset_level(slot: u32, level: f32) -> Result<(), String> {
+    let opts = LevelOptions {
+        save: true,
+        verify: false,
+        ..Default::default()
+    };
+    apply_level(slot, &[], &LevelKnob::PresetLevel, level, opts, true).map(|_| ())
+}
+
 /// Level one preset to `target_lufs`. Self-contained: opens its own fresh
 /// connections (load → measure → set), so the caller must NOT hold a competing
 /// device seize while this runs. Composes the `measure_c` → `solve_level` →
@@ -655,6 +673,7 @@ pub fn level_preset(
                     dynamic_spread_lu: None,
                     clamp_reason: Some("no signal on USB 1/2".into()),
                     verify_by_ear: false,
+                    previous_level: None,
                 });
             }
             Err(e) => return Err(e),
@@ -699,6 +718,7 @@ pub fn level_preset(
             dynamic_spread_lu: Some(m.dynamic_spread_lu),
             clamp_reason: None,
             verify_by_ear: false,
+            previous_level: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -793,6 +813,7 @@ pub fn level_setlist(
             dynamic_spread_lu: Some(m.dynamic_spread_lu),
             clamp_reason: None,
             verify_by_ear: false,
+            previous_level: None,
         });
     }
 
@@ -2658,6 +2679,7 @@ pub fn level_preset_block(
             dynamic_spread_lu: Some(dynamic_spread_lu),
             clamp_reason: None,
             verify_by_ear: false,
+            previous_level: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)

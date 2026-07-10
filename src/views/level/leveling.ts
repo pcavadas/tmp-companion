@@ -308,6 +308,9 @@ export interface RunItem {
   value?: number | null;
   /** Dynamics spread of the measure capture (LU); drives the "dynamic" by-ear cause. */
   spreadLu?: number | null;
+  /** The preset's saved `presetLevel` before this run wrote it — enables the Summary
+   *  "Restore original" (Base rows only; scene/footswitch writes aren't revertable). */
+  previousLevel?: number | null;
   /** Cause of the "verify by ear" marker (undefined = no flag): `envelope` = the preset
    *  contains an envelope-follower effect, which tracks the synthetic stimulus differently
    *  than real playing (the measurement itself is suspect); `dynamic` = peaks ride

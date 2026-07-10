@@ -125,6 +125,10 @@ export interface LevelResult {
   /** Rebalance "verify by ear": the lane-mute floor was too shallow to trust the
    * equal-solo balance (the overall target still landed). ORed with the spread flag. */
   verify_by_ear: boolean;
+  /** The preset's saved `presetLevel` BEFORE this run wrote it — the revert anchor
+   * for "Restore original". Null when the pre-run read failed or the path doesn't
+   * write `presetLevel` (block-knob / scene rows). */
+  previous_level: number | null;
 }
 
 /** Result of leveling one block-acting footswitch's engaged state

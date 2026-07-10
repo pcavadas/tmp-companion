@@ -15,6 +15,15 @@ use serde_json::{Map, Value};
 /// The two node graphs a preset carries.
 const GRAPHS: [&str; 2] = ["guitarNodes", "micNodes"];
 
+/// The preset's master `presetLevel` (`audioGraph.presetLevel`, linear amplitude).
+/// Shared by search indexing and the leveling revert snapshot.
+pub(crate) fn preset_level(preset: &Value) -> Option<f64> {
+    preset
+        .get("audioGraph")
+        .and_then(|a| a.get("presetLevel"))
+        .and_then(Value::as_f64)
+}
+
 /// A node's id (`nodeId`, falling back to `FenderId`).
 pub fn node_id(node: &Value) -> Option<&str> {
     node.get("nodeId")
@@ -277,6 +286,22 @@ impl crate::bulkrun::Operation for BulkBypassOp {
             return Ok(None); // not a target
         }
         Ok(Some(serde_json::to_string(&v).map_err(|e| e.to_string())?))
+    }
+}
+
+#[cfg(test)]
+mod preset_level_tests {
+    use super::*;
+
+    #[test]
+    fn reads_audiograph_preset_level_and_tolerates_absence() {
+        let with = serde_json::json!({"audioGraph": {"presetLevel": 0.8}});
+        assert_eq!(preset_level(&with), Some(0.8));
+        assert_eq!(preset_level(&serde_json::json!({"audioGraph": {}})), None);
+        assert_eq!(preset_level(&serde_json::json!({})), None);
+        // Non-numeric value is absence, not a panic.
+        let bad = serde_json::json!({"audioGraph": {"presetLevel": "loud"}});
+        assert_eq!(preset_level(&bad), None);
     }
 }
 

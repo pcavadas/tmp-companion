@@ -199,6 +199,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
         let cancelled = || PRESET_LEVEL_CANCEL.load(SeqCst);
+        let mut previous_level: Option<f32> = None;
         let result = match block {
             Some((group_id, node_id, parameter_id)) => {
                 let (lo, hi) = knob_bounds(block_value.unwrap_or(0.5));
@@ -222,6 +223,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
                 {
                     Ok((preset, _, _)) => {
+                        // The same read carries the pre-run presetLevel — the revert anchor.
+                        previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
                         footswitch::all_onoff_blocks(
                             preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
                         )
@@ -243,6 +246,12 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
             }
         };
+        // The revert anchor rides the result (Summary "Restore original"). In-memory
+        // only: a restart-surviving restore is a follow-up that ships WITH its reader UI.
+        let result = result.map(|mut r| {
+            r.previous_level = previous_level;
+            r
+        });
         match &result {
             Ok(r) => log::info!(
                 "level_preset slot={} save={} measured={:.2} LUFS target={:.2} LUFS final_level={:.4} verify={:?}",
@@ -267,6 +276,23 @@ static PRESET_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 pub(crate) fn cancel_preset_leveling() {
     PRESET_LEVEL_CANCEL.store(true, SeqCst);
+}
+
+/// Restore a preset's `presetLevel` to its pre-leveling snapshot value (the
+/// Summary "Restore original" action). A device WRITE (set + save), serialized
+/// and seize-released like every leveling write. `presetLevel` only — scene and
+/// footswitch `outputLevel` writes are not revertable from here (UI copy says so).
+#[tauri::command]
+pub(crate) async fn restore_preset_level(
+    state: State<'_, AppState>,
+    slot: u32,
+    level: f32,
+) -> Result<(), String> {
+    with_released_seize(state.session.clone(), move || {
+        log::info!("restore_preset_level slot={slot} level={level:.4}");
+        leveller::restore_preset_level(slot, level)
+    })
+    .await
 }
 /// What one Tier-2 calibration measured, plus its two quality caveats.
 /// Mirrored in `src/lib/types.ts` (`CalibrateResult`).

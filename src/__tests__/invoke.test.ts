@@ -26,6 +26,7 @@ import {
   connectDevice,
   listPresets,
   levelPreset,
+  restorePresetLevel,
   levelScenesApplyBatched,
   cancelSceneLeveling,
   cancelPresetLeveling,
@@ -298,6 +299,10 @@ describe("single-struct / nested-payload args (snake_case inside the payload)", 
     await levelPreset(job);
     expectCall("level_preset", { job });
   });
+  it("restore_preset_level uses slot/level (the Summary revert write)", async () => {
+    await restorePresetLevel(3, 0.62);
+    expectCall("restore_preset_level", { slot: 3, level: 0.62 });
+  });
 });
 
 describe("device-backed song/setlist CRUD (Songs page)", () => {
@@ -336,9 +341,9 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 31 contract commands", () => {
+  it("cmd exposes exactly the 32 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(31);
+    expect(Object.keys(cmd).length).toBe(32);
   });
 });

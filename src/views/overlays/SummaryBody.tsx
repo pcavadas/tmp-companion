@@ -11,7 +11,7 @@
 // A stopped run can leave items un-leveled (no outcome) → the "Not leveled" group.
 // Guidance lives in always-visible callouts (click-only app — no hover tooltip).
 
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
@@ -19,7 +19,20 @@ import { Icon, type IconName } from "../../ui/Icon";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { fmtLufs } from "../../lib/format";
+import { restorePresetLevel } from "../../lib/invoke";
 import type { RunItem } from "../level/leveling";
+
+/** Per-row restore progress, keyed by RunItem.key (local — the run data itself
+ *  never mutates; a restore is a follow-up device write, not a run result). */
+type RestoreState = "busy" | "done" | "failed";
+
+/** A row can offer "Restore original" when the run WROTE the preset (done or
+ *  clamped both save) and the pre-run `presetLevel` was captured. Base rows only —
+ *  scene/footswitch rows write amp `outputLevel`, which has no revert yet. */
+const restorable = (it: RunItem): boolean =>
+  it.isBase &&
+  it.previousLevel != null &&
+  (it.outcome === "done" || it.outcome === "clamped");
 
 const AMBER_SOFT = "rgba(176,125,28,0.10)";
 
@@ -118,7 +131,14 @@ function SectionLabel({
 }
 
 /** One result row. Icon SHAPE + group + status word (not color alone) separate the states. */
-function ResultRow({ it }: { it: RunItem }) {
+function ResultRow({
+  it,
+  restore,
+}: {
+  it: RunItem;
+  /** Present when the row can offer "Restore original". */
+  restore?: { state?: RestoreState; busyAny: boolean; onClick: () => void };
+}) {
   const { t } = useTheme();
   const dim = it.outcome === "skipped" || it.outcome == null;
   let icon: React.ReactNode;
@@ -213,6 +233,33 @@ function ResultRow({ it }: { it: RunItem }) {
       >
         {status}
       </span>
+      {restore &&
+        (restore.state === "done" ? (
+          <span
+            style={{
+              fontFamily: t.mono,
+              fontSize: 10,
+              color: t.good,
+              flexShrink: 0,
+            }}
+          >
+            restored
+          </span>
+        ) : (
+          <Button
+            variant="ghost"
+            small
+            disabled={restore.busyAny}
+            onClick={restore.onClick}
+            style={{ height: 24, padding: "0 9px", flexShrink: 0 }}
+          >
+            {restore.state === "busy"
+              ? "Restoring…"
+              : restore.state === "failed"
+                ? "Retry restore"
+                : "Restore"}
+          </Button>
+        ))}
     </div>
   );
 }
@@ -231,6 +278,36 @@ export function SummaryBody({
   onRelevel,
 }: SummaryBodyProps) {
   const { t } = useTheme();
+  // "Restore original" progress per row. Restores run one at a time (every
+  // device write is serialized backend-side anyway; the UI just mirrors that).
+  const [restoreState, setRestoreState] = useState<
+    Record<string, RestoreState>
+  >({});
+  const busyAny = Object.values(restoreState).includes("busy");
+  const runRestore = (it: RunItem) => {
+    if (it.previousLevel == null) return;
+    const level = it.previousLevel;
+    setRestoreState((s) => ({ ...s, [it.key]: "busy" }));
+    restorePresetLevel(it.slot, level)
+      .then(() => {
+        setRestoreState((s) => ({ ...s, [it.key]: "done" }));
+      })
+      .catch((e: unknown) => {
+        console.warn("restore_preset_level failed", e);
+        setRestoreState((s) => ({ ...s, [it.key]: "failed" }));
+      });
+  };
+  const restoreFor = (it: RunItem) =>
+    restorable(it)
+      ? {
+          state: restoreState[it.key],
+          busyAny,
+          onClick: () => {
+            runRestore(it);
+          },
+        }
+      : undefined;
+  const anyRestorable = items.some(restorable);
   const offbr = items.filter((it) => it.outcome === "offbranch");
   const clamped = items.filter((it) => it.outcome === "clamped"); // HEADROOM clamps only
   const leveled = items.filter((it) => it.outcome === "done");
@@ -385,10 +462,24 @@ export function SummaryBody({
                 {label}
               </SectionLabel>
               {rows.map((it) => (
-                <ResultRow key={it.key} it={it} />
+                <ResultRow key={it.key} it={it} restore={restoreFor(it)} />
               ))}
             </Fragment>
           ) : null,
+        )}
+        {anyRestorable && (
+          <div
+            style={{
+              fontFamily: t.sans,
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              color: t.mutedInk,
+              padding: "10px 10px 0",
+            }}
+          >
+            Restore rewrites a preset’s previous saved level — scene and
+            footswitch changes stay.
+          </div>
         )}
         {byEarReasons.length > 0 && (
           <div

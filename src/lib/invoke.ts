@@ -81,6 +81,14 @@ export const levelPreset = (job: LevelJob): Promise<LevelResult> =>
 export const cancelPresetLeveling = (): Promise<void> =>
   invoke("cancel_preset_leveling");
 
+/** Restore a preset's `presetLevel` to its pre-leveling value (Summary "Restore
+ * original"). DEVICE WRITE (set + save). `presetLevel` only — scene/footswitch
+ * `outputLevel` writes are not reverted. */
+export const restorePresetLevel = (
+  slot: number,
+  level: number,
+): Promise<void> => invoke("restore_preset_level", { slot, level });
+
 /** A candidate leveling knob for `levelScenesApply` — pass EVERY amp-level candidate;
  * the backend picks per scene the one whose block is ON in that scene (scenes can
  * swap which amp is live, and a bypassed amp's knob measures flat). */
@@ -379,6 +387,7 @@ export const cmd = {
   // Leveling
   listLevelBlocks,
   levelPreset,
+  restorePresetLevel,
   // Profiles + store
   getStore,
   saveProfiles,

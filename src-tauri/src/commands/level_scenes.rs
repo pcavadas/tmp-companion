@@ -393,6 +393,8 @@ fn outcome_to_level_result(
         dynamic_spread_lu: o.dynamic_spread_lu,
         clamp_reason: o.clamp_reason.clone(),
         verify_by_ear: o.verify_by_ear,
+        // Scene rows write amp outputLevel, not presetLevel — nothing to revert here.
+        previous_level: None,
     }
 }
 
