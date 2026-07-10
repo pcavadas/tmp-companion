@@ -12,6 +12,12 @@ name: Arm auto-merge
 # Intentionally no `actions/checkout` and no third-party actions: this never runs PR-controlled
 # code, so the write-scoped GITHUB_TOKEN on pull_request_target is safe here (same discipline as
 # dependabot-auto-approve.yml).
+#
+# MAIN-ONLY: arming is gated to PRs whose base is `main`. The ruleset only protects main, so
+# auto-merge on any other base has nothing to wait for and merges the INSTANT the PR leaves
+# draft — that's how a stacked-series PR (#50) merged with zero review the moment it was marked
+# ready, into an already-merged parent. Stack/side-branch PRs merge only by deliberate manual
+# action; the review gate lives once, at main.
 
 on:
   pull_request_target:
@@ -31,7 +37,7 @@ permissions:
 jobs:
   arm:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false && github.event.pull_request.base.ref == 'main'
     # Scoped to this job (least privilege). Enabling GitHub's native auto-merge
     # via the GITHUB_TOKEN needs contents:write (auto-merge is a merge/contents
     # op) in addition to pull-requests:write — with pull-requests:write alone the
