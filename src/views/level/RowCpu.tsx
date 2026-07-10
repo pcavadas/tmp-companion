@@ -6,6 +6,7 @@
 // Turns warn-coloured once a preset crosses the cap. Echoes the hero strip's CPU meter.
 
 import { useTheme } from "../../theme/ThemeContext";
+import { Meter } from "../../ui/Meter";
 import { CPU_BUDGET, cpuStr } from "../../models/cpu";
 
 export interface RowCpuProps {
@@ -26,28 +27,13 @@ export function RowCpu({ value }: RowCpuProps) {
         flexShrink: 0,
       }}
     >
-      <span
-        style={{
-          position: "relative",
-          width: 34,
-          height: 4,
-          borderRadius: 999,
-          background: t.hairline,
-          overflow: "hidden",
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: `${String(pct)}%`,
-            borderRadius: 999,
-            background: over ? t.warn : t.accent,
-          }}
-        />
-      </span>
+      <Meter
+        pct={pct}
+        width={34}
+        height={4}
+        trackColor={t.hairline}
+        fillColor={over ? t.warn : t.accent}
+      />
       <span
         style={{
           fontFamily: t.mono,

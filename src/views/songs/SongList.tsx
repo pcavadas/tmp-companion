@@ -6,12 +6,13 @@ import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
-import { pad2 } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
 import { SONG_COLS } from "./shared";
-import { songBpm, bpmStr } from "./songUtil";
+import { songBpm } from "./songUtil";
 import type { SongDraft } from "./shared";
 import { SongForm } from "./SongForm";
+import { SongRow } from "./SongRow";
+import { ListHeader } from "./ListHeader";
 
 interface LibraryRowProps {
   song: SongRecord;
@@ -24,118 +25,70 @@ interface LibraryRowProps {
 function LibraryRow({ song, idx, busy, onEdit, onDelete }: LibraryRowProps) {
   const { t } = useTheme();
   const [open, setOpen] = useState(false);
-  const bpm = songBpm(song);
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: SONG_COLS,
-        alignItems: "center",
-        height: 48,
-        padding: "0 16px 0 18px",
-        borderBottom: `0.5px solid ${t.hairline}`,
-      }}
-    >
-      <span
-        style={{ fontFamily: t.mono, fontSize: t.fsData, color: t.mutedInk }}
-      >
-        {pad2(idx + 1)}
-      </span>
-      <div style={{ minWidth: 0, paddingRight: 12 }}>
+    <SongRow
+      song={song}
+      idx={idx}
+      gridCols={SONG_COLS}
+      trailing={
         <div
           style={{
-            fontFamily: t.serif,
-            fontSize: t.fsName,
-            color: t.ink,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+            gap: 7,
           }}
         >
-          {song.name}
-        </div>
-        {song.notes && (
-          <div
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsLabel,
-              color: t.mutedInk,
-              marginTop: 1,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {song.notes}
-          </div>
-        )}
-      </div>
-      <span
-        style={{
-          fontFamily: t.mono,
-          fontSize: t.fsLabel,
-          color: bpm != null ? t.ink2 : t.faint,
-        }}
-      >
-        {bpmStr(bpm)}
-      </span>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          alignItems: "center",
-          gap: 7,
-        }}
-      >
-        <div style={{ position: "relative", display: "flex" }}>
-          <span
-            onClick={
-              busy
-                ? undefined
-                : () => {
-                    setOpen((o) => !o);
-                  }
-            }
-            title="More"
-            style={{
-              cursor: busy ? "default" : "pointer",
-              display: "flex",
-              padding: 2,
-              borderRadius: t.rSm,
-              opacity: busy ? 0.4 : 1,
-            }}
-          >
-            <Icon name="more" size={16} stroke={t.faint} />
-          </span>
-          {open && (
-            <Menu
-              onClose={() => {
-                setOpen(false);
+          <div style={{ position: "relative", display: "flex" }}>
+            <span
+              onClick={
+                busy
+                  ? undefined
+                  : () => {
+                      setOpen((o) => !o);
+                    }
+              }
+              title="More"
+              style={{
+                cursor: busy ? "default" : "pointer",
+                display: "flex",
+                padding: 2,
+                borderRadius: t.rSm,
+                opacity: busy ? 0.4 : 1,
               }}
-              minWidth={138}
             >
-              <MenuItem
-                label="Edit song…"
-                onClick={() => {
+              <Icon name="more" size={16} stroke={t.faint} />
+            </span>
+            {open && (
+              <Menu
+                onClose={() => {
                   setOpen(false);
-                  onEdit();
                 }}
-              />
-              <MenuDivider />
-              <MenuItem
-                label="Delete song"
-                danger
-                onClick={() => {
-                  setOpen(false);
-                  onDelete();
-                }}
-              />
-            </Menu>
-          )}
+                minWidth={138}
+              >
+                <MenuItem
+                  label="Edit song…"
+                  onClick={() => {
+                    setOpen(false);
+                    onEdit();
+                  }}
+                />
+                <MenuDivider />
+                <MenuItem
+                  label="Delete song"
+                  danger
+                  onClick={() => {
+                    setOpen(false);
+                    onDelete();
+                  }}
+                />
+              </Menu>
+            )}
+          </div>
         </div>
-      </div>
-    </div>
+      }
+    />
   );
 }
 
@@ -208,27 +161,15 @@ export function SongList({
           </Button>
         )}
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: SONG_COLS,
-          alignItems: "center",
-          height: 28,
-          padding: "0 16px 0 18px",
-          borderBottom: `0.5px solid ${t.hairline}`,
-          borderTop: `0.5px solid ${t.hairline}`,
-          fontFamily: t.mono,
-          fontSize: t.fsMicro,
-          letterSpacing: t.lsLabel,
-          color: t.faint,
-          textTransform: "uppercase",
-        }}
-      >
-        <span>№</span>
-        <span>song</span>
-        <span>bpm</span>
-        <span />
-      </div>
+      <ListHeader
+        cols={SONG_COLS}
+        cells={[
+          { label: "№" },
+          { label: "song" },
+          { label: "bpm" },
+          { label: "" },
+        ]}
+      />
       <div
         style={{ flex: 1, minHeight: 0, overflow: "hidden", overflowY: "auto" }}
       >

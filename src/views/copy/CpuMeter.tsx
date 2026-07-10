@@ -6,6 +6,8 @@
 // chip. The budget + per-block costs are the device's REAL figures (`models/cpu`).
 
 import { useTheme } from "../../theme/ThemeContext";
+import { Meter } from "../../ui/Meter";
+import { Tag } from "../../ui/Tag";
 import { CPU_BUDGET } from "../../models/cpu";
 
 export interface CpuMeterProps {
@@ -25,38 +27,14 @@ export function CpuMeter({ value }: CpuMeterProps) {
         flexShrink: 0,
       }}
     >
-      <div
-        style={{
-          position: "relative",
-          width: 96,
-          height: 6,
-          borderRadius: t.rPill,
-          background: t.track,
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: `${String(pct)}%`,
-            background: over ? t.sevWarn : t.accent,
-            borderRadius: t.rPill,
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: `${String(CPU_BUDGET)}%`,
-            top: -1,
-            bottom: -1,
-            width: 1.5,
-            background: over ? t.warn : t.faint,
-          }}
-        />
-      </div>
+      <Meter
+        pct={pct}
+        width={96}
+        height={6}
+        fillColor={over ? t.sevWarn : t.accent}
+        marker={CPU_BUDGET}
+        markerColor={over ? t.warn : t.faint}
+      />
       <span
         style={{
           fontFamily: t.mono,
@@ -74,21 +52,9 @@ export function CpuMeter({ value }: CpuMeterProps) {
         </span>
       </span>
       {over && (
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsTag,
-            letterSpacing: t.lsCaption,
-            textTransform: "uppercase",
-            color: t.onInk,
-            background: t.sevWarn,
-            borderRadius: t.rSm,
-            padding: "2px 6px",
-            whiteSpace: "nowrap",
-          }}
-        >
+        <Tag tone="warn" uppercase>
           over budget
-        </span>
+        </Tag>
       )}
     </div>
   );

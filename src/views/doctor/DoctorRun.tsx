@@ -7,7 +7,7 @@
 // finish it auto-advances to Results; a manual Stop is confirm-gated and keeps every
 // already-checked sound's result.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
@@ -15,13 +15,14 @@ import { Icon } from "../../ui/Icon";
 import { Spinner } from "../../ui/Spinner";
 import { Dot } from "../../ui/Dot";
 import { ProgressBar } from "../../ui/ProgressBar";
+import { ConfirmBar } from "../../ui/ConfirmBar";
+import { RunRow } from "../../ui/RunRow";
 import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DOCTOR_STEPS, type DoctorRunStatus } from "./useDoctorFlow";
 import { estimateSecsLeft, avgSoundMs } from "./estimateSecsLeft";
+import { useAutoAdvance } from "../../lib/useAutoAdvance";
 import type { DoctorInputArg } from "../../lib/types";
 
-/** Auto-advance delay from a natural completion to the Results page. */
-const AUTO_ADVANCE_MS = 650;
 /** Rough per-sound check duration (s) — the shrinkage prior before any sound
  *  completes, and still what the header prose quotes ("about 15 seconds
  *  each"). HW-measured: one capture iteration is ~8.5 s capture window +
@@ -57,22 +58,8 @@ export function DoctorRun({
   const { t } = useTheme();
   const [confirm, setConfirm] = useState(false);
 
-  // Natural completion auto-advances; a stopped run waits for Continue. Read
-  // `onComplete` through a ref so a new callback identity doesn't reset the timer.
-  const onCompleteRef = useRef(onComplete);
-  useEffect(() => {
-    onCompleteRef.current = onComplete;
-  });
-  useEffect(() => {
-    if (done && !stopped) {
-      const id = window.setTimeout(() => {
-        onCompleteRef.current();
-      }, AUTO_ADVANCE_MS);
-      return () => {
-        window.clearTimeout(id);
-      };
-    }
-  }, [done, stopped]);
+  // Natural completion auto-advances; a stopped run waits for Continue.
+  useAutoAdvance(done, stopped, onComplete);
 
   // Live "about Ns left": a 1 Hz tick plus a completion-timestamp history, so
   // the estimate counts down between sound completions instead of only
@@ -196,24 +183,16 @@ export function DoctorRun({
           const inst = instName(it.key);
           const word = stateWord(status);
           return (
-            <div
+            <RunRow
               key={it.key}
-              style={{
-                padding: "9px 10px",
-                borderRadius: 8,
-                background: active ? t.accentSoft : "transparent",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <span
-                  style={{
-                    width: 18,
-                    flexShrink: 0,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
+              active={active}
+              dim={status === "queued"}
+              statusWidth={96}
+              name={it.label}
+              tag={it.tag ?? undefined}
+              instrument={inst ?? undefined}
+              icon={
+                <>
                   {active && (
                     <Spinner size={14} stroke={t.sevWarn} strokeWidth={1.8} />
                   )}
@@ -234,116 +213,25 @@ export function DoctorRun({
                       strokeWidth={1.8}
                     />
                   )}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: 8,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: t.serif,
-                      fontSize: 14.5,
-                      color: status === "queued" ? t.mutedInk : t.ink,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {it.label}
-                  </span>
-                  {it.tag && (
-                    <span
-                      style={{
-                        fontFamily: t.mono,
-                        fontSize: 8.5,
-                        letterSpacing: "0.04em",
-                        color: t.accentDeep,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {it.tag}
-                    </span>
-                  )}
-                </span>
-                {inst && (
-                  <span
-                    style={{
-                      fontFamily: t.mono,
-                      fontSize: 10.5,
-                      color: t.mutedInk,
-                      border: `0.5px solid ${t.hairlineStrong}`,
-                      borderRadius: 5,
-                      padding: "2px 7px",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {inst}
-                  </span>
-                )}
-                <span
-                  style={{
-                    fontFamily: t.mono,
-                    fontSize: 11,
-                    flexShrink: 0,
-                    width: 96,
-                    whiteSpace: "nowrap",
-                    textAlign: "right",
-                    color: word.color,
-                  }}
-                >
-                  {word.text}
-                </span>
-              </div>
-            </div>
+                </>
+              }
+              status={<span style={{ color: word.color }}>{word.text}</span>}
+            />
           );
         })}
       </div>
 
       {confirm ? (
-        <div
-          style={{
-            flexShrink: 0,
-            borderTop: `0.5px solid ${t.hairline}`,
-            padding: "13px 22px",
-            background: t.bgAlt,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 14,
+        <ConfirmBar
+          message="Stop the check? Checked sounds keep their results."
+          onCancel={() => {
+            setConfirm(false);
           }}
-        >
-          <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
-            Stop the check? Checked sounds keep their results.
-          </span>
-          <div style={{ display: "flex", gap: 9 }}>
-            <Button
-              variant="ghost"
-              small
-              onClick={() => {
-                setConfirm(false);
-              }}
-              style={{ height: 30, padding: "0 13px" }}
-            >
-              Continue
-            </Button>
-            <Button
-              variant="warn"
-              small
-              onClick={() => {
-                setConfirm(false);
-                onStop();
-              }}
-              style={{ height: 30, padding: "0 14px" }}
-            >
-              Stop
-            </Button>
-          </div>
-        </div>
+          onConfirm={() => {
+            setConfirm(false);
+            onStop();
+          }}
+        />
       ) : (
         <WizardFooter
           left={<span />}

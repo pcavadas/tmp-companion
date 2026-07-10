@@ -9,6 +9,7 @@ import { useRef, useState } from "react";
 import type React from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { plainInput } from "../../theme/tokens";
 import { Icon } from "../../ui/Icon";
 import { MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
@@ -156,18 +157,15 @@ export function TargetRow({
               if (e.key === "Enter") commit();
               if (e.key === "Escape") cancelEdit();
             }}
-            style={{
+            style={plainInput(t, {
               width: "100%",
               boxSizing: "border-box",
               border: `0.5px solid ${t.accent}`,
               borderRadius: t.rBtn,
-              outline: "none",
-              background: "transparent",
               padding: "3px 6px",
               fontFamily: t.serif,
               fontSize: 15,
-              color: t.ink,
-            }}
+            })}
           />
         ) : (
           <span

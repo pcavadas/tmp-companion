@@ -8,7 +8,7 @@ import { useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
-import { slotLabel } from "../../lib/format";
+import { SlotLabel } from "../../ui/SlotLabel";
 import { SevDot, SoundRow } from "./SoundRow";
 import { SceneConsistency } from "./SceneConsistency";
 import {
@@ -110,16 +110,7 @@ export function PresetResultCard({
           background: tinted ? tone.soft : t.bgAlt,
         }}
       >
-        <span
-          style={{
-            fontFamily: t.mono,
-            fontSize: t.fsData,
-            color: t.mutedInk,
-            flexShrink: 0,
-          }}
-        >
-          {slotLabel(preset.listIndex)}
-        </span>
+        <SlotLabel index={preset.listIndex} style={{ flexShrink: 0 }} />
         <span
           style={{
             flex: 1,
