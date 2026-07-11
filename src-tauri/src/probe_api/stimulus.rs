@@ -193,7 +193,7 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// every capture path ends re-amp OFF.
 pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
-    let instrument = doctor::Instrument::from_topology(
+    let instrument = doctor::Family::from_topology(
         topologies::by_id(topology_id)
             .map(|t| t.instrument)
             .unwrap_or("guitar"),
@@ -230,7 +230,19 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5)) {
             Ok((samples, rate)) => {
-                let profile = doctor::SoundProfile::from_capture(&samples, rate, stim.len())?;
+                let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
+                if !confident {
+                    eprintln!(
+                        "[probe] slot {slot}: onset not confidently found — un-aligned split"
+                    );
+                }
+                let profile = doctor::SoundProfile::from_capture(
+                    &samples,
+                    rate,
+                    stim.len(),
+                    onset,
+                    instrument,
+                )?;
                 sounds.push((slot, profile, nodes));
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
@@ -246,12 +258,13 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
     });
 
     let mut out = format!(
-        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB (Lo Lm Mid Hm Hi Air) | diagnoses\n",
+        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
         sounds.len(),
-        if cohort.is_some() { "median" } else { "absolute" }
+        if cohort.is_some() { "median" } else { "absolute" },
+        instrument.labels().join(" ")
     );
     for (slot, profile, nodes) in &sounds {
-        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_ref());
+        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_deref());
         let bal = doctor::balance(&profile.bands);
         out += &format!(
             "  {slot:>4} | {:>8.2} | {:>8.1} | {} | {}\n",
@@ -271,7 +284,7 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
         let json = serde_json::json!({
             "slot": slot,
             "profile": profile,
-            "balanceDb": bal.to_vec(),
+            "balanceDb": bal.clone(),
             "diagnoses": diags,
         });
         println!("{json}");
@@ -296,45 +309,26 @@ pub fn probe_stim_ab(
 ) -> Result<String, String> {
     let stim_a = read_stimulus_48k(wav_a)?;
     let stim_b = read_stimulus_48k(wav_b)?;
-    // A plucked stimulus through ANY chain has a dynamics spread ≫ 0 — a near-zero
-    // spread means the capture was the device's stationary output floor (silent
-    // inject / failed engage), which solves to a plausible-looking but bogus C.
-    // Observed live: a 20-engage sweep read the floor on 19/20 measurements with
-    // spread 0.01 while real measurements ran 1+ LU.
-    const FLOOR_SPREAD_LU: f64 = 0.15;
-    let measure = |slot: u32, stim: &[f32]| -> Result<(leveller::MeasuredC, bool), String> {
-        let first = leveller::measure_c(slot, stim, ref_level, &[])?;
-        if first.dynamic_spread_lu > FLOOR_SPREAD_LU {
-            return Ok((first, false));
-        }
-        // Suspected floor read — quiet gap, then one retry (fresh connections +
-        // fresh audio streams come free with measure_c).
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        let second = leveller::measure_c(slot, stim, ref_level, &[])?;
-        let still_floor = second.dynamic_spread_lu <= FLOOR_SPREAD_LU;
-        Ok((second, still_floor))
-    };
+    // Floor reads are handled INSIDE measure_c now (the production floor guard:
+    // stimulus-aware spread trip → same-ref retry → level-shift confirm) — a
+    // persistent floor read surfaces as leveller::FLOOR_READ_ERR in the row.
     let mut out = format!(
         "stimulus A/B @ ref {ref_level:.2}\n  A = {wav_a}\n  B = {wav_b}\n\
          \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"
     );
     for &slot in slots {
         // measure_c owns its own connection/gap pacing (the level_setlist precedent).
-        let row = measure(slot, &stim_a).and_then(|a| measure(slot, &stim_b).map(|b| (a, b)));
+        let row = leveller::measure_c(slot, &stim_a, ref_level, &[])
+            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level, &[]).map(|b| (a, b)));
         match row {
-            Ok(((a, a_floor), (b, b_floor))) => {
+            Ok((a, b)) => {
                 out += &format!(
-                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}{}\n",
+                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}\n",
                     a.c,
                     b.c,
                     b.c - a.c,
                     a.dynamic_spread_lu,
                     b.dynamic_spread_lu,
-                    if a_floor || b_floor {
-                        "  ⚠ FLOOR? (near-zero spread after retry — inject not reaching the DSP)"
-                    } else {
-                        ""
-                    }
                 );
             }
             Err(e) => out += &format!("  {slot:>4} | FAILED: {e}\n"),

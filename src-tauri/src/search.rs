@@ -54,9 +54,7 @@ pub fn index_preset(preset: &Value, categories: &CategoryMap) -> Facets {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let preset_level = ag
-        .and_then(|a| a.get("presetLevel"))
-        .and_then(Value::as_f64);
+    let preset_level = crate::audiograph::preset_level(preset);
 
     let mut blocks = BTreeSet::new();
     let mut irs = BTreeSet::new();

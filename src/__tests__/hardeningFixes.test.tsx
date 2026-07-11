@@ -123,6 +123,9 @@ describe("InstrumentRow — calibration abort on unmount (BUG-6)", () => {
               lufs: -20,
               clipped: false,
               stimulus_shortfall_lu: null,
+              spread_lu: 0,
+              band_coverage: [],
+              band_labels: [],
             }))
           : Promise.resolve(null),
       );
@@ -168,6 +171,9 @@ describe("InstrumentRow — calibration abort on unmount (BUG-6)", () => {
               lufs: -12.4,
               clipped: true,
               stimulus_shortfall_lu: 2.3,
+              spread_lu: 3.5,
+              band_coverage: [true, true, true, true, true, true],
+              band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
             })
           : Promise.resolve(null),
       );

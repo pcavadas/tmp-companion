@@ -11,7 +11,7 @@ import { Button, MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 import { calibrateProfile } from "../../lib/invoke";
 import { errMsg } from "../../lib/format";
-import type { Profile, TopologyInfo } from "../../lib/types";
+import type { CalibrateResult, Profile, TopologyInfo } from "../../lib/types";
 import { NeedsDevicePill } from "./SettingsView";
 
 // Tier-2 capture length passed to calibrate_profile (backend clamps 2..30).
@@ -51,6 +51,10 @@ export function InstrumentRow({
   const [calibErr, setCalibErr] = useState<string | null>(null);
   // Non-fatal quality caveats from the last calibration (clip / stimulus ceiling).
   const [calibWarn, setCalibWarn] = useState<string | null>(null);
+  // Full result of the last SUCCESSFUL calibration this session — drives the
+  // "what was captured" readout (spread + per-band coverage). Session-only: not
+  // persisted, so a page reload shows the plain calibrated LUFS line only.
+  const [calibResult, setCalibResult] = useState<CalibrateResult | null>(null);
 
   // Live timers. `abortedRef` gates the in-flight calibrate_profile promise's resolve so a
   // cancelled / unmounted row never applies its result (setState after unmount, or a
@@ -90,6 +94,7 @@ export function InstrumentRow({
     abortedRef.current = false;
     clearTimers();
     setCalibWarn(null);
+    setCalibResult(null);
     setPhase("countdown");
     let n = 3;
     setCount(n);
@@ -120,6 +125,7 @@ export function InstrumentRow({
       .then((res) => {
         if (abortedRef.current) return;
         clearTimers();
+        setCalibResult(res);
         const warns: string[] = [];
         if (res.clipped)
           warns.push(
@@ -275,6 +281,67 @@ export function InstrumentRow({
           >
             {sub}
           </div>
+          {/* What-was-captured readout — SESSION-ONLY (calibResult isn't persisted),
+              so it's visible right after a calibration and clears on the next attempt. */}
+          {phase === "idle" && calibResult && (
+            <div
+              style={{
+                marginTop: 4,
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 7,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: t.mono,
+                  fontSize: t.fsMicro,
+                  color: t.faint,
+                }}
+              >
+                spread {calibResult.spread_lu.toFixed(1)} LU
+              </span>
+              {calibResult.band_labels.map((label, i) => {
+                const covered = calibResult.band_coverage[i];
+                return (
+                  <span
+                    // Index-qualified: band labels are backend-provided, not
+                    // guaranteed unique.
+                    key={`${String(i)}:${label}`}
+                    title={`${label} — ${covered ? "played" : "not played"}`}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 3,
+                      fontFamily: t.mono,
+                      fontSize: t.fsMicro,
+                      color: covered ? t.ink2 : t.faint,
+                      opacity: covered ? 1 : 0.45,
+                    }}
+                  >
+                    ● {label}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {phase === "idle" &&
+            calibResult &&
+            calibResult.band_coverage.some((c) => !c) && (
+              <div
+                style={{
+                  marginTop: 3,
+                  fontFamily: t.sans,
+                  fontSize: t.fsMicro,
+                  color: t.mutedInk,
+                  lineHeight: 1.4,
+                }}
+              >
+                some bands weren&rsquo;t played — a sparse take (e.g. only EBow
+                drones) limits tone analysis
+              </div>
+            )}
         </div>
       </div>
 

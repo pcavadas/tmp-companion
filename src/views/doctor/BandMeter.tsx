@@ -1,12 +1,11 @@
-// src/views/doctor/BandMeter.tsx — the opt-in "frequency picture": six player-named
-// bands drawn as div bars from a sound's real per-band balance, with the problem
-// band(s) filled in the severity color. Genuinely new visual — flagged as a DS
-// sign-off candidate (kept local for now).
+// src/views/doctor/BandMeter.tsx — the opt-in "frequency picture": player-named
+// bands (6 for guitar/bass, 7 with "Sub" for bass-vi) drawn as div bars from a
+// sound's real per-band balance, with the problem band(s) filled in the severity
+// color. Genuinely new visual — flagged as a DS sign-off candidate (kept local for
+// now).
 
 import { useTheme } from "../../theme/ThemeContext";
 import { sevTone, type Sev } from "./severity";
-
-const BAND_LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
 
 // Map a per-band balance (dB) to a bar-height %. The capture's balanceDb spans
 // roughly −30…+15 dB; project that onto 8…100% so a silent band still shows a stub
@@ -18,14 +17,23 @@ function barHeightPct(db: number): number {
 }
 
 export interface BandMeterProps {
-  /** The sound's real six-band balance (dB), one entry per band. */
+  /** The sound's real per-band balance (dB), one entry per band. */
   balanceDb: number[];
+  /** Display labels for the sound's band layout (`DoctorSoundResult.bandLabels`) —
+   *  6 for guitar/bass, 7 ("Sub" first) for bass-vi. Drives both the bar count and
+   *  the axis labels below them. */
+  bandLabels: string[];
   /** Problem band indices from the diagnosis — filled + ringed in the sev color. */
   bands: number[];
   sev: Sev;
 }
 
-export function BandMeter({ balanceDb, bands, sev }: BandMeterProps) {
+export function BandMeter({
+  balanceDb,
+  bandLabels,
+  bands,
+  sev,
+}: BandMeterProps) {
   const { t } = useTheme();
   const tone = sevTone(t, sev);
   const problem = new Set(bands);
@@ -36,7 +44,7 @@ export function BandMeter({ balanceDb, bands, sev }: BandMeterProps) {
       <div
         style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 40 }}
       >
-        {BAND_LABELS.map((label, i) => {
+        {bandLabels.map((label, i) => {
           const hot = problem.has(i);
           const db = i < balanceDb.length ? balanceDb[i] : -30;
           return (
@@ -57,7 +65,7 @@ export function BandMeter({ balanceDb, bands, sev }: BandMeterProps) {
         })}
       </div>
       <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
-        {BAND_LABELS.map((label, i) => (
+        {bandLabels.map((label, i) => (
           <span
             key={label}
             style={{

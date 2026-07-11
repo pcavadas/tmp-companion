@@ -330,6 +330,8 @@ export function useLevelingFlow({
             it.outcome = outcomeOf(res);
             it.value = valueOf(res);
             it.spreadLu = res.dynamic_spread_lu;
+            it.previousLevel = res.previous_level;
+            it.truePeakDbtp = res.true_peak_dbtp;
             it.verifyByEar = causeOf(res);
           } else if (it.footswitch != null) {
             // A block-acting FOOTSWITCH — level its engaged state so stomping it lands

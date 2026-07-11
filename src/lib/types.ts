@@ -125,6 +125,14 @@ export interface LevelResult {
   /** Rebalance "verify by ear": the lane-mute floor was too shallow to trust the
    * equal-solo balance (the overall target still landed). ORed with the spread flag. */
   verify_by_ear: boolean;
+  /** The preset's saved `presetLevel` BEFORE this run wrote it — the revert anchor
+   * for "Restore original". Null when the pre-run read failed or the path doesn't
+   * write `presetLevel` (block-knob / scene rows). */
+  previous_level: number | null;
+  /** PREDICTED true peak (dBTP) at final_level, extrapolated from the reference
+   * capture's measured true peak — an ESTIMATE, never a re-measurement. Only the
+   * one-shot presetLevel path (level_preset) sets this; null otherwise. */
+  true_peak_dbtp: number | null;
 }
 
 /** Result of leveling one block-acting footswitch's engaged state
@@ -186,6 +194,13 @@ export interface CalibrateResult {
   /** LU the topology stimulus falls short of reproducing `lufs` (peak-capped);
    * null when reachable — always null when the capture was stored as the stimulus. */
   stimulus_shortfall_lu: number | null;
+  /** Short-term-max − integrated (LU) of the dry capture — how dynamic the take was. */
+  spread_lu: number;
+  /** Per-band excitation of the capture (same family band layout as the Doctor
+   * engine); true = the band was actually played. Index-aligned with `band_labels`. */
+  band_coverage: boolean[];
+  /** Player-facing labels for `band_coverage`, index-aligned. */
+  band_labels: string[];
 }
 
 /** A named loudness target the user can apply per preset (mirrors profiles::Target). */
@@ -711,6 +726,10 @@ export interface DoctorInputArg {
   tag: string | null;
   topologyId: string | null;
   calibrationLufs: number | null;
+  /** Instrument profile id (null when "none"): when it has a stored Tier-2 DI
+   *  capture, the Doctor reads that WAV verbatim and diagnoses in CAPTURE
+   *  threshold/cohort space; else the synthetic topology sample. */
+  profileId: string | null;
   nodes: GraphNode[];
 }
 
@@ -760,8 +779,9 @@ export interface DoctorRx {
   chain?: DoctorChainPreview;
 }
 
-/** One diagnosis (`doctor::Diag`). `bands` indexes the six player bands
- * (Lows · Low-mids · Mids · High-mids · Highs · Air); empty = time-domain. */
+/** One diagnosis (`doctor::Diag`). `bands` indexes the sound's band layout
+ * (`DoctorSoundResult.bandLabels` — 6 player bands, or 7 with "Sub" first for
+ * bass-vi); empty = time-domain. */
 export interface DoctorDiag {
   key: string;
   label: string;
@@ -785,6 +805,10 @@ export interface DoctorSoundResult {
   integratedLufs: number;
   tailRatioDb: number;
   balanceDb: number[];
+  /** Display labels for this sound's band layout — 6 for guitar/bass ("Lows" …
+   *  "Air") or 7 for bass-vi ("Sub" + the same six). `balanceDb.length` and
+   *  `DoctorDiag.bands` indices both index this same layout. */
+  bandLabels: string[];
   /** Set when this sound's capture failed (no diags then); the run continued. */
   error: string | null;
 }

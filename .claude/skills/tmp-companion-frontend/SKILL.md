@@ -61,6 +61,8 @@ Styling is **inline `style={{}}` objects**, read straight off `t`. This is the d
 
 Every value shown must trace to a real backend command. A field with no backing data renders an explicit empty / `—` / disabled state — never an invented number. Slow-to-arrive regions use the `.tmp-skel` shimmer skeletons (`ui/Skeleton.tsx`) driven by real fetch status, not timers.
 
+Corollary — **size repeated UI off real data, never a literal count**: any component that renders one element per enum/family variant must take its count/labels from a data field (e.g. `DoctorSoundResult.bandLabels`), not a hardcoded number. BandMeter/BandSpark once hardcoded 6 bars and silently mis-rendered when the 7-band Bass VI family arrived — no test catches a wrong literal count structurally.
+
 ## Wiring a Tauri command into the UI
 
 Frontend never calls `invoke()` inline; it calls a typed wrapper in `src/lib/invoke.ts`:

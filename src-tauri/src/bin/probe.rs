@@ -36,6 +36,12 @@
 //!                                  index's BASE sound (Doctor tail), print band profiles +
 //!                                  metrics + fired diagnoses (JSON per sound + table).
 //!                                  READ-ONLY: loads + captures, never saves
+//!   probe --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi> [--labels <rules.json>] --out <report.json>
+//!                                  CAPTURE-space Doctor recal: sweep each BASE sound through a
+//!                                  REAL DI stimulus, measure profile + pre-onset noise floor +
+//!                                  band coverage, and (with --labels {"rule":[slots]}) DERIVE
+//!                                  proposed *_CAPTURE thresholds → a DETERMINISTIC JSON report.
+//!                                  READ-ONLY: loads + captures, never saves
 //!   probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]
 //!                                  DEVICE A/B: measure_c per preset with two stimuli →
 //!                                  C/spread/ΔC table (playing-style sensitivity; capture
@@ -1482,6 +1488,54 @@ fn main() {
             slots.len()
         );
         match tmp_companion_lib::probe_doctor(&slots, &topology) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-calib") {
+        // --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi>
+        //                [--labels <rules.json>] --out <report.json>  (read-only sweep)
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|j| args.get(j + 1))
+                .cloned()
+        };
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let stim = flag("--stim").unwrap_or_default();
+        let family = flag("--family").unwrap_or_default();
+        let out = flag("--out").unwrap_or_default();
+        let labels = flag("--labels");
+        let slots: Vec<u32> = match slots_csv
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) if !s.is_empty() && !stim.is_empty() && !family.is_empty() && !out.is_empty() => {
+                s
+            }
+            _ => {
+                eprintln!(
+                    "usage: probe --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi> [--labels <rules.json>] --out <report.json>"
+                );
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "[probe] doctor-calib sweep over {} slot(s), family={family}, stim={stim}…",
+            slots.len()
+        );
+        match tmp_companion_lib::probe_doctor_calib(&slots, &stim, &family, labels.as_deref(), &out)
+        {
             Ok(r) => {
                 print!("{r}");
                 return;

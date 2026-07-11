@@ -13,7 +13,10 @@ absolute-fallback mode, cohort < 4).
   Shoegaze (tail −0.3 dB under the note), Reverse Delay (−6.9), a synth pad
   (−2.7) — while every dry preset sat at −17…−25 dB. The 2.5 s
   `DOCTOR_TAIL_MS` window is what makes this measurable; the leveling 0.8 s
-  tail truncates decay.
+  tail truncates decay. The body/tail split is now **onset-aligned**
+  (`audio::estimate_onset`); a 2026-07-11 exemplar re-sweep confirmed −13
+  holds under it (tails moved ≤ ±0.4 dB — latency is negligible on the
+  reference rig, the alignment is defensive hardening).
 - **muddy / boomy** (4.5 / 5.0 dB over cohort): fired together on the one
   genuinely dark preset (+14.6 dB lows, +10.6 dB low-mids vs library median),
   silent elsewhere. On bass, +12 dB lows did NOT flag boomy (absolute dev vs
@@ -66,3 +69,23 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
   there is unreliable — sanity-check any firing preset's drive blocks against
   the real graph (Pro Control / the backup scan) before drawing threshold
   conclusions.
+
+## Capture-stimulus recalibration (pending the attended sweep)
+
+The Doctor now diagnoses a calibrated profile's DI capture in its own space:
+`StimulusKind::Capture` selects the `*_CAPTURE` threshold tables (currently
+byte-identical copies of the synthetic ones — PROVISIONAL) and cohorts are
+keyed `(Family, StimulusKind)` so synthetic and capture sounds never pool
+(the measured band-balance shift between stimuli — +8…12 dB lows / −8…10 dB
+highs — would otherwise reproduce false verdict flips). Band-confidence
+gating skips any band-keyed rule whose primary band the stimulus never
+excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
+EBow-heavy) from verdicts in bands they never probed.
+
+The attended sweep derives the real capture thresholds:
+`probe --doctor-calib <slots_csv> --stim <capture.wav> --family <fam>
+[--labels labels.json] --out report.json` — deterministic JSON + markdown
+(clean-population stats, labeled positives, midpoint/p95+margin proposals,
+separation margins, pre-onset noise floor, stimulus band coverage). Replace
+the `*_CAPTURE` consts in `doctor.rs` from that report; the pinned
+`thresholds_for(Synthetic)` test guards the synthetic tables against drift.

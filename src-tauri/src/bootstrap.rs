@@ -79,6 +79,7 @@ pub fn run() {
             doctor_save,
             doctor_discard,
             cancel_preset_leveling,
+            restore_preset_level,
             level_footswitches_apply,
             cancel_footswitch_leveling,
             read_active_preset,

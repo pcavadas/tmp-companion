@@ -20,6 +20,12 @@ pub struct DoctorInput {
     pub tag: Option<String>,
     pub topology_id: Option<String>,
     pub calibration_lufs: Option<f32>,
+    /// Instrument profile id: when it has a stored Tier-2 DI capture, that WAV is
+    /// the stimulus (read VERBATIM, calibration scaling off) and the sound is
+    /// diagnosed in CAPTURE threshold/cohort space. `None`/capture-less → the
+    /// synthetic topology sample + synthetic space (the pinned default).
+    #[serde(default)]
+    pub profile_id: Option<String>,
     #[serde(default)]
     pub nodes: Vec<doctor::DoctorNode>,
 }
@@ -82,6 +88,10 @@ pub struct DoctorSoundResult {
     pub integrated_lufs: f64,
     pub tail_ratio_db: f64,
     pub balance_db: Vec<f64>,
+    /// The display labels of THIS sound's family band layout, in lockstep with
+    /// `balance_db` and the `Diag.bands` indices (6 for guitar/bass, 7 for
+    /// Bass VI's Sub-first layout). The frontend renders bars/labels from this.
+    pub band_labels: Vec<String>,
     /// Set when this sound's capture failed (no diags then); the run continues.
     pub error: Option<String>,
 }
@@ -135,12 +145,25 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
     }
     DOCTOR_CANCEL.store(false, SeqCst);
     // Resolve stimulus paths up front (needs the app handle; the closure below
-    // runs on the blocking pool).
-    let resolved: Vec<(DoctorInput, String)> = items
+    // runs on the blocking pool). The `from_capture` bool → the sound's
+    // `StimulusKind`: a real Tier-2 DI capture is diagnosed in CAPTURE space
+    // (its own thresholds + cohort key), a synthetic/topology WAV in the pinned
+    // synthetic space.
+    let resolved: Vec<(DoctorInput, String, doctor::StimulusKind)> = items
         .into_iter()
         .map(|it| {
-            let path = resolve_stimulus(&app, None, it.topology_id.clone())?;
-            Ok((it, path))
+            let (path, from_capture) = resolve_stimulus_with_capture(
+                &app,
+                None,
+                it.topology_id.clone(),
+                it.profile_id.as_deref(),
+            )?;
+            let kind = if from_capture {
+                doctor::StimulusKind::Capture
+            } else {
+                doctor::StimulusKind::Synthetic
+            };
+            Ok((it, path, kind))
         })
         .collect::<Result<_, String>>()?;
     with_released_seize(state.session.clone(), move || {
@@ -148,6 +171,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         let mut stims: std::collections::HashMap<(String, Option<u32>), Vec<f32>> =
             std::collections::HashMap::new();
         let mut measured: Vec<(usize, doctor::SoundProfile)> = Vec::new();
+        // Per-measured-item band coverage of its stimulus (family layout) — the
+        // Doctor skips a rule whose primary band the stimulus never excited.
+        let mut coverage_by_item: std::collections::HashMap<usize, Vec<bool>> =
+            std::collections::HashMap::new();
         let mut errors: Vec<(usize, String)> = Vec::new();
         // One field-8 preset read per list index, reused across that preset's base
         // + footswitch sounds — the source for each sound's force-bypass isolation.
@@ -155,7 +182,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             std::collections::HashMap::new();
         let mut stopped = false;
         let mut last_scanned: Option<u32> = None;
-        for (i, (item, path)) in resolved.iter().enumerate() {
+        for (i, (item, path, kind)) in resolved.iter().enumerate() {
             if DOCTOR_CANCEL.load(SeqCst) {
                 stopped = true;
                 break;
@@ -180,11 +207,18 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 status: "active".to_string(),
                 message: None,
             });
-            let stim_key = (path.clone(), item.calibration_lufs.map(f32::to_bits));
+            // A CAPTURE stimulus (real DI) is injected VERBATIM — calibration
+            // scaling is None-by-definition (mirrors the leveling seam), so its
+            // amplitude drives the chain as recorded. Synthetic keeps its scalar.
+            let cal = match kind {
+                doctor::StimulusKind::Capture => None,
+                doctor::StimulusKind::Synthetic => item.calibration_lufs,
+            };
+            let stim_key = (path.clone(), cal.map(f32::to_bits));
             let stim = match stims.entry(stim_key) {
                 std::collections::hash_map::Entry::Occupied(e) => Ok(&*e.into_mut()),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    read_stimulus_calibrated(path, item.calibration_lufs).map(|s| &*e.insert(s))
+                    read_stimulus_calibrated(path, cal).map(|s| &*e.insert(s))
                 }
             };
             // Force-bypass isolation for this sound. A scene sound contributes
@@ -221,16 +255,33 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     item.footswitch,
                 )
             };
+            let family = instrument_of(item);
             let result = stim.and_then(|stim| {
                 leveller::doctor_capture(item.list_index, item.scene, &fb, stim, Some(0.5)).and_then(
                     |(samples, rate)| {
-                        doctor::SoundProfile::from_capture(&samples, rate, stim.len())
+                        // Align the body/tail split to where the stimulus actually starts
+                        // (I/O latency); low confidence keeps the legacy un-aligned split.
+                        let (onset, confident) = audio::estimate_onset(stim, &samples, rate);
+                        if !confident {
+                            log::warn!(
+                                "doctor: onset not confidently found for {} — un-aligned tail split",
+                                item.key
+                            );
+                        }
+                        let profile = doctor::SoundProfile::from_capture(
+                            &samples, rate, stim.len(), onset, family,
+                        )?;
+                        // The STIMULUS's own band coverage (family layout) — a sparse
+                        // capture must not fire rules in bands it never excited.
+                        let cov = doctor::band_coverage(stim, family);
+                        Ok((profile, cov))
                     },
                 )
             });
             match result {
-                Ok(profile) => {
+                Ok((profile, cov)) => {
                     measured.push((i, profile));
+                    coverage_by_item.insert(i, cov);
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
                         status: "done".to_string(),
@@ -249,35 +300,37 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         }
 
-        // Cohorts are PER INSTRUMENT — a bass preset judged against a guitar
-        // median reads falsely boomy. An under-minimum group gets None
-        // (absolute fallback), independently of the other group.
-        let by_inst: Vec<(doctor::Instrument, &doctor::SoundProfile)> = measured
+        // Cohorts are PER (INSTRUMENT, STIMULUS KIND) — a bass preset judged
+        // against a guitar median reads falsely boomy, AND a real-DI capture
+        // judged against a synthetic median reproduces false verdict flips (the
+        // measured band-balance shift). An under-minimum group gets None
+        // (absolute fallback), independently of the others.
+        let by_group: Vec<(doctor::Family, doctor::StimulusKind, &doctor::SoundProfile)> = measured
             .iter()
-            .map(|(i, p)| (instrument_of(&resolved[*i].0), p))
+            .map(|(i, p)| (instrument_of(&resolved[*i].0), resolved[*i].2, p))
             .collect();
-        let (guitar_cohort, bass_cohort) = doctor::cohorts_by_instrument(&by_inst);
+        let cohorts = doctor::cohorts_by_family_kind(&by_group);
 
         // Group results per preset, in first-seen item order.
         let mut presets: Vec<DoctorPresetResult> = Vec::new();
         let sound_of = |i: usize, profile: Option<&doctor::SoundProfile>, err: Option<&String>| {
-            let (item, _) = &resolved[i];
+            let (item, _, kind) = &resolved[i];
             let instrument = instrument_of(item);
-            let cohort = match instrument {
-                doctor::Instrument::Guitar => guitar_cohort.as_ref(),
-                doctor::Instrument::Bass => bass_cohort.as_ref(),
-            };
+            let cohort = cohorts.get(&(instrument, *kind)).and_then(|o| o.as_deref());
+            let band_labels = instrument.labels_owned();
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
-                    doctor::diagnose(
+                    doctor::diagnose_kind(
                         p,
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
                         instrument,
                         cohort,
+                        *kind,
+                        coverage_by_item.get(&i).map(Vec::as_slice),
                     ),
                     p.integrated_lufs,
                     p.tail_ratio_db,
-                    doctor::balance(&p.bands).to_vec(),
+                    doctor::balance(&p.bands),
                 ),
                 None => (Vec::new(), 0.0, 0.0, Vec::new()),
             };
@@ -292,6 +345,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 integrated_lufs: lufs_v,
                 tail_ratio_db: tail,
                 balance_db: bal,
+                band_labels,
                 error: err.cloned(),
             }
         };
@@ -331,8 +385,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             if let Some(base) = base {
                 let instrument = resolved
                     .iter()
-                    .find(|(it, _)| it.key == base.key)
-                    .map(|(it, _)| instrument_of(it))
+                    .find(|(it, _, _)| it.key == base.key)
+                    .map(|(it, _, _)| instrument_of(it))
                     .unwrap_or(doctor::Instrument::Guitar);
                 p.scene_consistency = doctor::scene_consistency(
                     &base.label,
@@ -360,7 +414,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         Ok(DoctorCheckResult {
             presets,
             stopped,
-            cohort: if guitar_cohort.is_some() || bass_cohort.is_some() {
+            cohort: if cohorts.values().any(Option::is_some) {
                 "median".to_string()
             } else {
                 "absolute".to_string()

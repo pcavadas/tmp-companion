@@ -55,8 +55,7 @@ pub(crate) async fn list_level_blocks(
     Ok(blocks)
 }
 /// Resolve the stimulus WAV for the profile-UNAWARE callers (audition/spectrum/
-/// migration/doctor — the Doctor deliberately keeps the synthetic stimulus until
-/// its thresholds are recalibrated against captures). Precedence:
+/// migration). Precedence:
 /// `TMP_E2E_STIMULUS` (e2e) → explicit path → selected topology WAV →
 /// `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample.
 pub(crate) fn resolve_stimulus<R: tauri::Runtime>(
@@ -64,7 +63,7 @@ pub(crate) fn resolve_stimulus<R: tauri::Runtime>(
     explicit: Option<String>,
     topology_id: Option<String>,
 ) -> Result<String, String> {
-    resolve_stimulus_impl(app, explicit, topology_id, None).map(|(p, _)| p)
+    resolve_stimulus_with_capture(app, explicit, topology_id, None).map(|(p, _)| p)
 }
 
 /// The leveling variant: also consults the profile's stored Tier-2 DI capture and
@@ -78,14 +77,18 @@ pub(crate) fn resolve_stimulus_for_leveling<R: tauri::Runtime>(
     profile_id: Option<&str>,
     calibration_lufs: Option<f32>,
 ) -> Result<(String, Option<f32>), String> {
-    let (path, from_capture) = resolve_stimulus_impl(app, explicit, topology_id, profile_id)?;
+    let (path, from_capture) =
+        resolve_stimulus_with_capture(app, explicit, topology_id, profile_id)?;
     Ok((path, if from_capture { None } else { calibration_lufs }))
 }
 
 /// Shared precedence chain (ORDER IS LOAD-BEARING): `TMP_E2E_STIMULUS` (e2e) →
 /// explicit path → the profile's stored Tier-2 DI capture → selected topology WAV
-/// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample.
-fn resolve_stimulus_impl<R: tauri::Runtime>(
+/// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample. The bool
+/// reports whether the profile's Tier-2 DI capture won (`true`) — the Doctor uses
+/// it to pick its threshold table + cohort key (a real DI shifts the measured
+/// band balance systematically).
+pub(crate) fn resolve_stimulus_with_capture<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     explicit: Option<String>,
     topology_id: Option<String>,
@@ -199,6 +202,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
         let cancelled = || PRESET_LEVEL_CANCEL.load(SeqCst);
+        let mut previous_level: Option<f32> = None;
         let result = match block {
             Some((group_id, node_id, parameter_id)) => {
                 let (lo, hi) = knob_bounds(block_value.unwrap_or(0.5));
@@ -222,6 +226,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
                 {
                     Ok((preset, _, _)) => {
+                        // The same read carries the pre-run presetLevel — the revert anchor.
+                        previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
                         footswitch::all_onoff_blocks(
                             preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
                         )
@@ -243,6 +249,12 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
             }
         };
+        // The revert anchor rides the result (Summary "Restore original"). In-memory
+        // only: a restart-surviving restore is a follow-up that ships WITH its reader UI.
+        let result = result.map(|mut r| {
+            r.previous_level = previous_level;
+            r
+        });
         match &result {
             Ok(r) => log::info!(
                 "level_preset slot={} save={} measured={:.2} LUFS target={:.2} LUFS final_level={:.4} verify={:?}",
@@ -268,9 +280,31 @@ static PRESET_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 pub(crate) fn cancel_preset_leveling() {
     PRESET_LEVEL_CANCEL.store(true, SeqCst);
 }
-/// What one Tier-2 calibration measured, plus its two quality caveats.
+
+/// Restore a preset's `presetLevel` to its pre-leveling snapshot value (the
+/// Summary "Restore original" action). A device WRITE (set + save), serialized
+/// and seize-released like every leveling write. `presetLevel` only — scene and
+/// footswitch `outputLevel` writes are not revertable from here (UI copy says so).
+/// `expected_name` is the display name the run recorded for the slot; the write
+/// is refused if the preset list drifted and the slot now holds a different preset.
+#[tauri::command]
+pub(crate) async fn restore_preset_level(
+    state: State<'_, AppState>,
+    slot: u32,
+    level: f32,
+    expected_name: String,
+) -> Result<(), String> {
+    with_released_seize(state.session.clone(), move || {
+        log::info!(
+            "restore_preset_level slot={slot} level={level:.4} expected=\"{expected_name}\""
+        );
+        leveller::restore_preset_level(slot, level, &expected_name)
+    })
+    .await
+}
+/// What one Tier-2 calibration measured, plus its quality caveats.
 /// Mirrored in `src/lib/types.ts` (`CalibrateResult`).
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct CalibrateResult {
     /// Measured K-weighted loudness of the dry capture (stored on the profile).
     lufs: f32,
@@ -282,6 +316,14 @@ pub(crate) struct CalibrateResult {
     /// drive the amp this many LU softer than the real instrument. `None` = reachable
     /// OR a capture was stored (the capture IS the stimulus, so a shortfall can't arise).
     stimulus_shortfall_lu: Option<f32>,
+    /// Short-term-max − integrated (LU) of the dry capture — how dynamic the take
+    /// was (a wide spread means quiet passages the gated integrated metric discards).
+    spread_lu: f64,
+    /// Per-band excitation of the capture (same family band layout as the Doctor
+    /// engine, `doctor::Family::bands`): `true` when the band was actually played.
+    band_coverage: Vec<bool>,
+    /// Player-facing labels for `band_coverage`, in lockstep index-for-index.
+    band_labels: Vec<String>,
 }
 
 /// Fraction of 500 ms windows whose RMS is within 30 dB of the loudest window's —
@@ -368,11 +410,12 @@ pub(crate) async fn calibrate_profile(
             );
         }
         // K-weighted loudness (perceptual), not flat RMS — see read_stimulus_calibrated.
-        let lufs = lufs::measure_mono(&mono, 48_000)?.integrated_lufs;
-        if !lufs.is_finite() {
+        let loudness = lufs::measure_mono(&mono, 48_000)?;
+        if !loudness.integrated_lufs.is_finite() {
             return Err("captured signal too quiet to measure — play louder/longer".to_string());
         }
-        let lufs = lufs as f32;
+        let lufs = loudness.integrated_lufs as f32;
+        let spread_lu = loudness.spread_lu();
         let clipped = peak >= 0.99;
 
         // Store the capture (or clear a stale one on a clipped run) BEFORE persisting the
@@ -395,6 +438,17 @@ pub(crate) async fn calibrate_profile(
         let topology_id = p.topology_id.clone();
         profiles::save(&app2, &store)?;
 
+        // Per-band excitation of the capture, in the profile's family band layout
+        // (same bands the Doctor engine diagnoses with) — surfaces whether the
+        // player actually covered the instrument's range, not just "played enough".
+        let family = doctor::Family::from_topology(
+            topologies::by_id(&topology_id)
+                .map(|t| t.instrument)
+                .unwrap_or("guitar"),
+        );
+        let band_coverage = doctor::band_coverage(&mono, family);
+        let band_labels = family.labels_owned();
+
         // With a stored capture the stimulus IS the capture (gain 1) — a synthetic
         // shortfall is impossible, so skip the computation (the old warning would be
         // false). Otherwise report the best-effort synthetic-scaling shortfall.
@@ -410,6 +464,9 @@ pub(crate) async fn calibrate_profile(
             lufs,
             clipped,
             stimulus_shortfall_lu,
+            spread_lu,
+            band_coverage,
+            band_labels,
         })
     })
     .await
