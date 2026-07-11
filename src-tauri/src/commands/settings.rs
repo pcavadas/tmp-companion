@@ -25,13 +25,16 @@ pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
             label: t.label.to_string(),
             instrument: t.instrument.to_string(),
         })
-        .chain(topologies::ALIASES.iter().filter_map(|a| {
-            let parent = topologies::by_id(a.topology_id)?;
-            Some(TopologyInfo {
+        .chain(topologies::ALIASES.iter().map(|a| {
+            // Guarded by topologies::tests::aliases_resolve — fail loudly over
+            // silently dropping a picker row on a typo'd parent id.
+            let parent =
+                topologies::by_id(a.topology_id).expect("alias points at a shipped topology");
+            TopologyInfo {
                 id: a.id.to_string(),
                 label: a.label.to_string(),
                 instrument: parent.instrument.to_string(),
-            })
+            }
         }))
         .collect()
 }
