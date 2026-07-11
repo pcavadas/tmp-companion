@@ -55,8 +55,7 @@ pub(crate) async fn list_level_blocks(
     Ok(blocks)
 }
 /// Resolve the stimulus WAV for the profile-UNAWARE callers (audition/spectrum/
-/// migration/doctor — the Doctor deliberately keeps the synthetic stimulus until
-/// its thresholds are recalibrated against captures). Precedence:
+/// migration). Precedence:
 /// `TMP_E2E_STIMULUS` (e2e) → explicit path → selected topology WAV →
 /// `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample.
 pub(crate) fn resolve_stimulus<R: tauri::Runtime>(
@@ -64,7 +63,7 @@ pub(crate) fn resolve_stimulus<R: tauri::Runtime>(
     explicit: Option<String>,
     topology_id: Option<String>,
 ) -> Result<String, String> {
-    resolve_stimulus_impl(app, explicit, topology_id, None).map(|(p, _)| p)
+    resolve_stimulus_with_capture(app, explicit, topology_id, None).map(|(p, _)| p)
 }
 
 /// The leveling variant: also consults the profile's stored Tier-2 DI capture and
@@ -78,28 +77,18 @@ pub(crate) fn resolve_stimulus_for_leveling<R: tauri::Runtime>(
     profile_id: Option<&str>,
     calibration_lufs: Option<f32>,
 ) -> Result<(String, Option<f32>), String> {
-    let (path, from_capture) = resolve_stimulus_impl(app, explicit, topology_id, profile_id)?;
+    let (path, from_capture) =
+        resolve_stimulus_with_capture(app, explicit, topology_id, profile_id)?;
     Ok((path, if from_capture { None } else { calibration_lufs }))
-}
-
-/// The Doctor variant: resolve the stimulus AND report whether it came from a
-/// profile's Tier-2 DI capture (`true`) or a synthetic/topology WAV (`false`) —
-/// the Doctor uses the bool to pick its threshold table + cohort key (a real DI
-/// shifts the measured band balance systematically). A thin shim over
-/// `resolve_stimulus_impl` — precedence is NOT reordered.
-pub(crate) fn resolve_stimulus_with_capture<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    explicit: Option<String>,
-    topology_id: Option<String>,
-    profile_id: Option<&str>,
-) -> Result<(String, bool), String> {
-    resolve_stimulus_impl(app, explicit, topology_id, profile_id)
 }
 
 /// Shared precedence chain (ORDER IS LOAD-BEARING): `TMP_E2E_STIMULUS` (e2e) →
 /// explicit path → the profile's stored Tier-2 DI capture → selected topology WAV
-/// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample.
-fn resolve_stimulus_impl<R: tauri::Runtime>(
+/// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample. The bool
+/// reports whether the profile's Tier-2 DI capture won (`true`) — the Doctor uses
+/// it to pick its threshold table + cohort key (a real DI shifts the measured
+/// band balance systematically).
+pub(crate) fn resolve_stimulus_with_capture<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     explicit: Option<String>,
     topology_id: Option<String>,
@@ -452,9 +441,8 @@ pub(crate) async fn calibrate_profile(
                 .map(|t| t.instrument)
                 .unwrap_or("guitar"),
         );
-        let band_coverage =
-            doctor::coverage(&spectrum::band_energies(&mono, 48_000.0, family.bands()));
-        let band_labels: Vec<String> = family.labels().iter().map(|s| s.to_string()).collect();
+        let band_coverage = doctor::band_coverage(&mono, family);
+        let band_labels = family.labels_owned();
 
         // With a stored capture the stimulus IS the capture (gain 1) — a synthetic
         // shortfall is impossible, so skip the computation (the old warning would be

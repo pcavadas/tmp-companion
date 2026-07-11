@@ -43,7 +43,7 @@ export function BandSpark({
         flexShrink: 0,
       }}
     >
-      {Array.from({ length: bandCount }, (_, i) => i).map((i) => {
+      {Array.from({ length: bandCount }, (_, i) => {
         const db = i < balanceDb.length ? balanceDb[i] : -30;
         const frac = Math.max(0.08, Math.min(1, (db + 30) / 45));
         const on = !muted && hot.has(i);

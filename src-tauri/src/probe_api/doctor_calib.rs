@@ -26,7 +26,6 @@ use crate::leveller;
 use crate::lufs;
 use crate::read_slot_preset_parsed;
 use crate::session;
-use crate::spectrum;
 
 use super::stimulus::read_stimulus_48k;
 
@@ -114,14 +113,8 @@ fn noise_floor_db(
         return None;
     }
     let body_end = onset.saturating_add(stimulus_samples).min(samples.len());
-    let rms = |s: &[f32]| -> f64 {
-        if s.is_empty() {
-            return 0.0;
-        }
-        (s.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>() / s.len() as f64).sqrt()
-    };
-    let pre = rms(&samples[..onset]);
-    let body = rms(&samples[onset..body_end]);
+    let pre = doctor::rms_f64(&samples[..onset]);
+    let body = doctor::rms_f64(&samples[onset..body_end]);
     if body <= 0.0 {
         return None;
     }
@@ -151,25 +144,8 @@ fn rule_metrics(
     cohort: Option<&[f64]>,
 ) -> Vec<(&'static str, f64)> {
     let bal = doctor::balance(&profile.bands);
-    let n = bal.len();
-    let dev = |i: usize| -> f64 {
-        match cohort {
-            Some(med) => bal[i] - med[i],
-            None => {
-                let lo = if i == 0 { bal[1] } else { bal[i - 1] };
-                let hi = if i == n - 1 { bal[n - 2] } else { bal[i + 1] };
-                bal[i] - (lo + hi) / 2.0
-            }
-        }
-    };
-    let (lows, low_mids, mids, high_mids, highs, air) = (
-        family.idx_lows(),
-        family.idx_low_mids(),
-        family.idx_mids(),
-        family.idx_high_mids(),
-        family.idx_highs(),
-        family.idx_air(),
-    );
+    let dev = |i: usize| doctor::band_dev(&bal, cohort, i);
+    let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
     vec![
         ("muddy", dev(low_mids)),
         ("boomy", dev(lows)),
@@ -223,8 +199,7 @@ pub fn probe_doctor_calib(
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 let profile =
                     doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
-                let coverage =
-                    doctor::coverage(&spectrum::band_energies(&stim, 48_000.0, family.bands()));
+                let coverage = doctor::band_coverage(&stim, family);
                 let noise_floor_db = noise_floor_db(&samples, rate, onset, confident, stim.len());
                 rows.push(Row {
                     slot,

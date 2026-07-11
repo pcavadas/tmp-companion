@@ -273,11 +273,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         )?;
                         // The STIMULUS's own band coverage (family layout) — a sparse
                         // capture must not fire rules in bands it never excited.
-                        let cov = doctor::coverage(&spectrum::band_energies(
-                            stim,
-                            48_000.0,
-                            family.bands(),
-                        ));
+                        let cov = doctor::band_coverage(stim, family);
                         Ok((profile, cov))
                     },
                 )
@@ -321,8 +317,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let (item, _, kind) = &resolved[i];
             let instrument = instrument_of(item);
             let cohort = cohorts.get(&(instrument, *kind)).and_then(|o| o.as_deref());
-            let band_labels: Vec<String> =
-                instrument.labels().iter().map(|s| (*s).to_string()).collect();
+            let band_labels = instrument.labels_owned();
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
                     doctor::diagnose_kind(

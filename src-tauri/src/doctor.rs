@@ -169,8 +169,8 @@ pub const BASS_VI_CAPTURE: Thresholds = BASS_VI;
 /// The instrument family a sound is judged as. Drives both the threshold table
 /// and the analysis-band LAYOUT: Guitar/Bass share the 6-band [`BANDS_6`], Bass
 /// VI adds a 7th "Sub" band ([`BANDS_7`]) for its sub-60 Hz fundamentals. The
-/// semantic band accessors (`idx_lows` … `idx_air`) hide the layout shift so the
-/// rules read the same band by MEANING regardless of family.
+/// semantic band indices ([`Family::semantic_bands`]) hide the layout shift so
+/// the rules read the same band by MEANING regardless of family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     Guitar,
@@ -226,32 +226,19 @@ impl Family {
             _ => &LABELS_6,
         }
     }
-    /// Index of the first band of the shared 6-band block (0 for guitar/bass; 1
-    /// for Bass VI, whose Sub band sits at index 0). The `idx_*` accessors offset
-    /// from here so every rule addresses a band by MEANING, not raw index.
-    fn base(self) -> usize {
-        match self {
+    /// The six semantic band indices `(lows, low_mids, mids, high_mids, highs,
+    /// air)`. Guitar/Bass start at 0; Bass VI's Sub band shifts the block +1 —
+    /// rules address a band by MEANING, not raw index, regardless of layout.
+    pub fn semantic_bands(self) -> (usize, usize, usize, usize, usize, usize) {
+        let b = match self {
             Family::BassVi => 1,
             _ => 0,
-        }
+        };
+        (b, b + 1, b + 2, b + 3, b + 4, b + 5)
     }
-    pub fn idx_lows(self) -> usize {
-        self.base()
-    }
-    pub fn idx_low_mids(self) -> usize {
-        self.base() + 1
-    }
-    pub fn idx_mids(self) -> usize {
-        self.base() + 2
-    }
-    pub fn idx_high_mids(self) -> usize {
-        self.base() + 3
-    }
-    pub fn idx_highs(self) -> usize {
-        self.base() + 4
-    }
-    pub fn idx_air(self) -> usize {
-        self.base() + 5
+    /// Owned display labels (the wire/serialization shape of [`Family::labels`]).
+    pub fn labels_owned(self) -> Vec<String> {
+        self.labels().iter().map(|s| (*s).to_string()).collect()
     }
 }
 
@@ -376,11 +363,11 @@ pub fn balance(bands: &[f64]) -> Vec<f64> {
 /// a cohort share ONE layout (cohorts are per-family), so the output length
 /// matches their band count.
 pub fn cohort_median(profiles: &[&SoundProfile]) -> Vec<f64> {
-    let Some(first) = profiles.first() else {
+    if profiles.is_empty() {
         return Vec::new();
-    };
+    }
     let balances: Vec<Vec<f64>> = profiles.iter().map(|p| balance(&p.bands)).collect();
-    (0..balance(&first.bands).len())
+    (0..balances[0].len())
         .map(|i| {
             let mut v: Vec<f64> = balances.iter().map(|b| b[i]).collect();
             v.sort_by(f64::total_cmp);
@@ -426,6 +413,50 @@ pub fn cohorts_by_family_kind(
     out
 }
 
+/// RMS of a sample window, in f64 (0.0 for an empty window). The ONE copy of the
+/// formula shared by [`tail_energy_ratio`] and the `--doctor-calib` noise-floor
+/// metric — a precision/edge-case fix must not drift between them.
+pub(crate) fn rms_f64(samples: &[f32]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples
+        .iter()
+        .map(|x| f64::from(*x) * f64::from(*x))
+        .sum::<f64>()
+        / samples.len() as f64)
+        .sqrt()
+}
+
+/// Deviation of band `i` in a sound's balance: vs the cohort median, or vs the
+/// sound's own neighbour expectation (dB above the mean of its two spectral
+/// neighbours) when the cohort is too small to trust. The ONE copy shared by
+/// [`diagnose_kind`] and the `--doctor-calib` sweep, so calibration derives
+/// thresholds in EXACTLY the metric production compares against.
+pub(crate) fn band_dev(bal: &[f64], cohort: Option<&[f64]>, i: usize) -> f64 {
+    match cohort {
+        Some(med) => bal[i] - med[i],
+        None => {
+            let n = bal.len();
+            let lo = if i == 0 { bal[1] } else { bal[i - 1] };
+            let hi = if i == n - 1 { bal[n - 2] } else { bal[i + 1] };
+            bal[i] - (lo + hi) / 2.0
+        }
+    }
+}
+
+/// A signal's own band coverage in a family's layout — [`coverage`] over its
+/// band energies at the device's 48 kHz clock. The one home for the
+/// (rate, layout) pairing shared by the Doctor's gating, the calibration
+/// readout, and the `--doctor-calib` sweep.
+pub fn band_coverage(samples: &[f32], family: Family) -> Vec<bool> {
+    coverage(&crate::spectrum::band_energies(
+        samples,
+        48_000.0,
+        family.bands(),
+    ))
+}
+
 /// Post-stimulus tail energy vs stimulus-body energy, in dB (≤ 0 in practice;
 /// a dry sound decays fast → strongly negative; a drowning reverb/delay tail
 /// keeps ringing → closer to 0). Returns −80 (a "silent tail" floor) when the
@@ -447,14 +478,8 @@ pub fn tail_energy_ratio(
     if samples.len() <= body_end || stimulus_samples == 0 {
         return -80.0;
     }
-    let rms = |s: &[f32]| -> f64 {
-        if s.is_empty() {
-            return 0.0;
-        }
-        (s.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>() / s.len() as f64).sqrt()
-    };
-    let body = rms(&samples[onset..body_end]);
-    let tail = rms(&samples[body_end..]);
+    let body = rms_f64(&samples[onset..body_end]);
+    let tail = rms_f64(&samples[body_end..]);
     if body <= 0.0 {
         return -80.0;
     }
@@ -1302,28 +1327,11 @@ pub fn diagnose_kind(
     // A rule keyed on band `i` fires only when the stimulus actually excited it.
     let covered = |i: usize| coverage.is_none_or(|c| c.get(i).copied().unwrap_or(true));
     let bal = balance(&profile.bands);
-    let n = bal.len();
-    // Deviation per band: vs cohort median, or vs the sound's own neighbour
-    // expectation (the band's dB above the mean of its two spectral
-    // neighbours) when the cohort is too small to trust.
-    let dev = |i: usize| -> f64 {
-        match cohort {
-            Some(med) => bal[i] - med[i],
-            None => {
-                let lo = if i == 0 { bal[1] } else { bal[i - 1] };
-                let hi = if i == n - 1 { bal[n - 2] } else { bal[i + 1] };
-                bal[i] - (lo + hi) / 2.0
-            }
-        }
-    };
-    let (lows, low_mids, mids, high_mids, highs, air) = (
-        instrument.idx_lows(),
-        instrument.idx_low_mids(),
-        instrument.idx_mids(),
-        instrument.idx_high_mids(),
-        instrument.idx_highs(),
-        instrument.idx_air(),
-    );
+    // Deviation per band vs the cohort median (or the neighbour-expectation
+    // fallback) — the shared `band_dev`, the same metric `--doctor-calib`
+    // derives thresholds in.
+    let dev = |i: usize| band_dev(&bal, cohort, i);
+    let (lows, low_mids, mids, high_mids, highs, air) = instrument.semantic_bands();
     let facts = nodes.map(graph_facts);
     let mut out = Vec::new();
     let mut push = |key: &'static str,
@@ -2465,19 +2473,13 @@ mod tests {
         // Guitar/Bass: the historical 6 bands, indices 0..=5.
         for fam in [Family::Guitar, Family::Bass] {
             assert_eq!(fam.bands().len(), 6);
-            assert_eq!(fam.idx_lows(), 0);
-            assert_eq!(fam.idx_air(), 5);
+            assert_eq!(fam.semantic_bands(), (0, 1, 2, 3, 4, 5));
         }
         // Bass VI: a 7th "Sub" band at index 0; the six semantic bands shift +1.
         assert_eq!(Family::BassVi.bands().len(), 7);
         assert_eq!(Family::BassVi.bands()[0], (30.0, 60.0));
         assert_eq!(Family::BassVi.labels()[0], "Sub");
-        assert_eq!(Family::BassVi.idx_lows(), 1);
-        assert_eq!(Family::BassVi.idx_low_mids(), 2);
-        assert_eq!(Family::BassVi.idx_mids(), 3);
-        assert_eq!(Family::BassVi.idx_high_mids(), 4);
-        assert_eq!(Family::BassVi.idx_highs(), 5);
-        assert_eq!(Family::BassVi.idx_air(), 6);
+        assert_eq!(Family::BassVi.semantic_bands(), (1, 2, 3, 4, 5, 6));
         // The shared six bands are byte-identical to the guitar/bass layout.
         assert_eq!(&Family::BassVi.bands()[1..], Family::Guitar.bands());
     }
