@@ -143,15 +143,14 @@ function SectionLabel({
   );
 }
 
-/** One result row. Icon SHAPE + group + status word (not color alone) separate the states. */
-function ResultRow({
-  it,
-  restore,
-}: {
+interface ResultRowProps {
   it: RunItem;
   /** Present when the row can offer "Restore original". */
   restore?: { state?: RestoreState; busyAny: boolean; onClick: () => void };
-}) {
+}
+
+/** One result row. Icon SHAPE + group + status word (not color alone) separate the states. */
+function ResultRow({ it, restore }: ResultRowProps) {
   const { t } = useTheme();
   const dim = it.outcome === "skipped" || it.outcome == null;
   let icon: React.ReactNode;
@@ -308,7 +307,7 @@ export function SummaryBody({
     if (it.previousLevel == null) return;
     const level = it.previousLevel;
     setRestoreState((s) => ({ ...s, [it.key]: "busy" }));
-    restorePresetLevel(it.slot, level)
+    restorePresetLevel(it.slot, level, it.presetName)
       .then(() => {
         setRestoreState((s) => ({ ...s, [it.key]: "done" }));
       })

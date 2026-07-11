@@ -55,6 +55,8 @@ describe("Summary restore-original", () => {
       expect(vi.mocked(invoke)).toHaveBeenCalledWith("restore_preset_level", {
         slot: 3,
         level: 0.62,
+        // The recorded display name rides along as the backend slot-drift guard.
+        expectedName: "Guitar",
       });
     });
     // The row reflects the restore (and can't double-fire).

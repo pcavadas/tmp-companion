@@ -83,11 +83,15 @@ export const cancelPresetLeveling = (): Promise<void> =>
 
 /** Restore a preset's `presetLevel` to its pre-leveling value (Summary "Restore
  * original"). DEVICE WRITE (set + save). `presetLevel` only — scene/footswitch
- * `outputLevel` writes are not reverted. */
+ * `outputLevel` writes are not reverted. `expectedName` is the display name the
+ * run recorded for the slot — the backend re-reads the preset list and refuses
+ * the write if the slot no longer holds that preset (slot-drift guard). */
 export const restorePresetLevel = (
   slot: number,
   level: number,
-): Promise<void> => invoke("restore_preset_level", { slot, level });
+  expectedName: string,
+): Promise<void> =>
+  invoke("restore_preset_level", { slot, level, expectedName });
 
 /** A candidate leveling knob for `levelScenesApply` — pass EVERY amp-level candidate;
  * the backend picks per scene the one whose block is ON in that scene (scenes can

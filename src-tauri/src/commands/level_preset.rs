@@ -285,15 +285,20 @@ pub(crate) fn cancel_preset_leveling() {
 /// Summary "Restore original" action). A device WRITE (set + save), serialized
 /// and seize-released like every leveling write. `presetLevel` only — scene and
 /// footswitch `outputLevel` writes are not revertable from here (UI copy says so).
+/// `expected_name` is the display name the run recorded for the slot; the write
+/// is refused if the preset list drifted and the slot now holds a different preset.
 #[tauri::command]
 pub(crate) async fn restore_preset_level(
     state: State<'_, AppState>,
     slot: u32,
     level: f32,
+    expected_name: String,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
-        log::info!("restore_preset_level slot={slot} level={level:.4}");
-        leveller::restore_preset_level(slot, level)
+        log::info!(
+            "restore_preset_level slot={slot} level={level:.4} expected=\"{expected_name}\""
+        );
+        leveller::restore_preset_level(slot, level, &expected_name)
     })
     .await
 }

@@ -635,11 +635,43 @@ pub fn apply_levels(
     Ok((opts.save, verify_lufs))
 }
 
+/// Identity check for the Restore write: the preset-list row at `slot` must still
+/// carry the display name recorded when the run leveled it. A slot is a position,
+/// not an identity — if the list drifted (a move/clear/save-over between the run
+/// and the Restore click), writing by slot alone would save the old level onto a
+/// DIFFERENT preset. Pure (unit-tested); the caller supplies a fresh list read.
+fn verify_slot_name(
+    list: &[crate::session::PresetEntry],
+    slot: u32,
+    expected_name: &str,
+) -> Result<(), String> {
+    let now = list
+        .iter()
+        .find(|p| p.slot == slot)
+        .map(|p| p.name.as_str())
+        .ok_or_else(|| format!("slot {slot} is no longer in the preset list — not restoring"))?;
+    if now != expected_name {
+        return Err(format!(
+            "preset at slot {slot} is now \"{now}\" (expected \"{expected_name}\") — not restoring"
+        ));
+    }
+    Ok(())
+}
+
 /// Restore a preset's `presetLevel` to a pre-leveling snapshot value and SAVE —
 /// the Summary "Restore original" write. A pure write (no verify capture), so the
 /// stimulus is irrelevant; reuses the validated `apply_level` seam (reload → set →
-/// save) with an empty stimulus.
-pub fn restore_preset_level(slot: u32, level: f32) -> Result<(), String> {
+/// save) with an empty stimulus. Slot-keyed destructive write ⇒ the mapping is
+/// confirmed with a non-destructive read first ([`verify_slot_name`], the
+/// write-safety lesson) so a drifted preset list fails loudly instead of saving
+/// the old level onto a different preset.
+pub fn restore_preset_level(slot: u32, level: f32, expected_name: &str) -> Result<(), String> {
+    {
+        let mut s = Session::connect()?;
+        let list = s.list_my_presets()?;
+        verify_slot_name(&list, slot, expected_name)?;
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let opts = LevelOptions {
         save: true,
         verify: false,
@@ -2852,6 +2884,22 @@ mod tests {
             level_preset_block(0, &stim, &knob, 0.05, 1.0, -30.0, opts, || true).unwrap_err(),
             CANCELLED
         );
+    }
+
+    // Restore identity guard: passes on the recorded name, fails loudly on a
+    // renamed/moved slot or a slot that left the list (slot ≠ identity).
+    #[test]
+    fn restore_verify_slot_name_guards_drift() {
+        let entry = |slot: u32, name: &str| crate::session::PresetEntry {
+            slot,
+            name: name.to_string(),
+        };
+        let list = [entry(0, "Clean Twin"), entry(1, "Cello")];
+        assert!(verify_slot_name(&list, 1, "Cello").is_ok());
+        let e = verify_slot_name(&list, 1, "Synth").unwrap_err();
+        assert!(e.contains("not restoring") && e.contains("Cello"), "{e}");
+        let e = verify_slot_name(&list, 7, "Cello").unwrap_err();
+        assert!(e.contains("no longer in the preset list"), "{e}");
     }
 
     // Footswitch generic param-space secant: hits a linear response, gives up on a flat one.

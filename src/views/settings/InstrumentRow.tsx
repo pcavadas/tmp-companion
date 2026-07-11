@@ -306,7 +306,9 @@ export function InstrumentRow({
                 const covered = calibResult.band_coverage[i];
                 return (
                   <span
-                    key={label}
+                    // Index-qualified: band labels are backend-provided, not
+                    // guaranteed unique.
+                    key={`${String(i)}:${label}`}
                     title={`${label} — ${covered ? "played" : "not played"}`}
                     style={{
                       display: "inline-flex",

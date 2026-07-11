@@ -300,9 +300,13 @@ describe("single-struct / nested-payload args (snake_case inside the payload)", 
     await levelPreset(job);
     expectCall("level_preset", { job });
   });
-  it("restore_preset_level uses slot/level (the Summary revert write)", async () => {
-    await restorePresetLevel(3, 0.62);
-    expectCall("restore_preset_level", { slot: 3, level: 0.62 });
+  it("restore_preset_level uses slot/level/expectedName (the Summary revert write)", async () => {
+    await restorePresetLevel(3, 0.62, "Guitar");
+    expectCall("restore_preset_level", {
+      slot: 3,
+      level: 0.62,
+      expectedName: "Guitar",
+    });
   });
 });
 

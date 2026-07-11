@@ -78,7 +78,10 @@ fn percentile_sorted(sorted: &[f64], p: f64) -> f64 {
 /// separates them. With NO positives, fall back to `p95(clean) + margin`.
 /// Returns `(proposed_threshold, separation_margin)` where the margin is
 /// `best_positive − worst_clean` (positive = a clean gap; ≤ 0 = the classes
-/// overlap and the rule can't perfectly separate). `None` margin = no positives.
+/// overlap and the rule can't perfectly separate). `None` margin = one class is
+/// empty, so no separation is measurable (the report's `positiveValues` tells the
+/// two apart: empty = no positives labelled, non-empty = no clean samples). Never
+/// a non-finite value — serde_json writes those as `null`, aliasing `None`.
 fn propose_threshold(clean: &[f64], positive: &[f64]) -> (f64, Option<f64>) {
     if positive.is_empty() {
         let mut c = clean.to_vec();
@@ -88,7 +91,7 @@ fn propose_threshold(clean: &[f64], positive: &[f64]) -> (f64, Option<f64>) {
     let best_positive = positive.iter().copied().fold(f64::INFINITY, f64::min);
     // No clean samples: anchor just below the marginal positive so it still fires.
     if clean.is_empty() {
-        return (best_positive - NO_POSITIVE_MARGIN, Some(f64::INFINITY));
+        return (best_positive - NO_POSITIVE_MARGIN, None);
     }
     let worst_clean = clean.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     (
@@ -173,6 +176,17 @@ pub fn probe_doctor_calib(
     labels_path: Option<&str>,
     out_path: &str,
 ) -> Result<String, String> {
+    // `from_topology` silently defaults unrecognized strings to Guitar — fine for
+    // `--doctor` (topology ids), but a typo'd `--family` here would sweep + derive
+    // `*_CAPTURE` thresholds under the wrong band layout. Fail loudly first.
+    if !matches!(
+        family_id.to_ascii_lowercase().as_str(),
+        "guitar" | "bass" | "bass-vi"
+    ) {
+        return Err(format!(
+            "unrecognized --family '{family_id}' (expected guitar|bass|bass-vi)"
+        ));
+    }
     let family = doctor::Family::from_topology(family_id);
     let stim = read_stimulus_48k(stim_path)?;
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
@@ -372,6 +386,15 @@ mod tests {
         let (thr, sep) = propose_threshold(&[0.0, 7.0], &[5.0, 9.0]);
         assert!((thr - 6.0).abs() < 1e-9); // (7 + 5)/2
         assert!(sep.unwrap() < 0.0);
+    }
+
+    #[test]
+    fn propose_no_clean_anchors_below_best_positive_with_finite_margin() {
+        // No clean samples → threshold just under the marginal positive, and the
+        // margin is None (not Infinity — serde_json would alias that to null).
+        let (thr, sep) = propose_threshold(&[], &[6.0, 8.0]);
+        assert!((thr - (6.0 - NO_POSITIVE_MARGIN)).abs() < 1e-9, "{thr}");
+        assert!(sep.is_none());
     }
 
     #[test]

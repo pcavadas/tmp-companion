@@ -141,17 +141,24 @@ function CalibrationOnboardingBanner({ show }: { show: boolean }) {
         Level with your own guitar — a 2-minute calibration makes leveling match
         your instrument. Settings → Instruments → Calibrate.
       </span>
-      <span
-        role="button"
+      <button
+        type="button"
         aria-label="Dismiss"
         title="Dismiss"
         onClick={() => {
           setDismissed(true);
         }}
-        style={{ cursor: "pointer", display: "flex", flexShrink: 0 }}
+        style={{
+          cursor: "pointer",
+          display: "flex",
+          flexShrink: 0,
+          background: "transparent",
+          border: 0,
+          padding: 0,
+        }}
       >
         <Icon name="x" size={12} stroke={t.mutedInk} />
-      </span>
+      </button>
     </div>
   );
 }
