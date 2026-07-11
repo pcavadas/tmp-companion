@@ -275,15 +275,19 @@ pub(crate) fn unlink_captures<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ids:
 /// Profile capture ids to unlink after a profile-list edit: ids REMOVED from the
 /// store, plus RETAINED ids whose `topology_id` changed (re-picking the pickup must
 /// not keep leveling with the old instrument's captured DI). A rename-only edit
-/// keeps the same id + topology, so its capture survives.
+/// keeps the same id + topology, so its capture survives — as does an alias↔parent
+/// relabel (same stimulus, e.g. Humbucker→P90), hence the CANONICAL-id compare.
 pub(crate) fn captures_to_unlink(old: &Store, new: &Store) -> Vec<String> {
     let new_by_id: HashMap<&str, &Profile> =
         new.profiles.iter().map(|p| (p.id.as_str(), p)).collect();
     old.profiles
         .iter()
         .filter(|op| match new_by_id.get(op.id.as_str()) {
-            None => true,                                 // removed
-            Some(np) => np.topology_id != op.topology_id, // pickup re-picked
+            None => true, // removed
+            Some(np) => {
+                crate::topologies::canonical_id(&np.topology_id)
+                    != crate::topologies::canonical_id(&op.topology_id)
+            }
         })
         .map(|op| op.id.clone())
         .collect()
@@ -455,6 +459,7 @@ mod tests {
                 prof("removed", "guitar-humbucker"),
                 prof("retopo", "guitar-singlecoil"),
                 prof("rename", "bass-singlecoil"),
+                prof("aliaskeep", "guitar-humbucker"),
             ],
             ..Store::default()
         };
@@ -462,6 +467,7 @@ mod tests {
             profiles: vec![
                 prof("keep", "guitar-singlecoil"),
                 prof("retopo", "guitar-active"), // pickup re-picked
+                prof("aliaskeep", "guitar-p90"), // alias↔parent relabel, same stimulus
                 Profile {
                     name: "renamed".into(),
                     ..prof("rename", "bass-singlecoil")
