@@ -9,14 +9,18 @@
 //! drive is what lets the leveler match loudness across (preset, instrument)
 //! pairs. Output level is therefore `peak`, NOT a post-hoc gain.
 //!
-//! `id` doubles as the WAV file stem (`resources/samples/<id>.wav`) and as the
-//! stable key a saved instrument profile references — keep them in lockstep
-//! (the `every_topology_has_a_wav` test guards drift).
+//! A `Topology::id` doubles as the WAV file stem (`resources/samples/<id>.wav`)
+//! and as the stable key a saved instrument profile references — keep them in
+//! lockstep (the `every_topology_has_a_wav` test guards drift). Profiles may
+//! instead reference an `ALIASES` id (a familiar pickup name mapped to a parent
+//! topology) — alias ids are NOT WAV stems; `canonical_id` resolves them first.
 
 /// One pickup topology: display metadata + the deterministic synth recipe.
 #[derive(Debug, Clone, Copy)]
 pub struct Topology {
-    /// Stable id == WAV file stem == profile reference key.
+    /// Stable id == WAV file stem == profile reference key, for CANONICAL
+    /// topologies only. A profile may instead hold an `ALIASES` id — not a WAV
+    /// stem — which must be resolved via `canonical_id` before any WAV lookup.
     pub id: &'static str,
     /// UI display label.
     pub label: &'static str,
@@ -24,7 +28,11 @@ pub struct Topology {
     pub instrument: &'static str,
     /// Deterministic PRNG seed → reproducible committed WAV.
     pub seed: u64,
-    /// Resonant-peak frequency (Hz) of the pickup.
+    /// Spectral-peak frequency (Hz) of the stimulus template. For the guitar rows
+    /// this approximates the pickup's loaded electrical resonance; the bass rows
+    /// sit ~2 octaves below any real bass-pickup resonance (~2–3.5 kHz loaded) —
+    /// there it is a low-mid energy centroid shaping bass program material, not
+    /// pickup physics.
     pub freq: f32,
     /// Resonance Q — high = peaky (passive), low = flat/broad (active/acoustic).
     pub q: f32,
@@ -154,9 +162,57 @@ pub const TOPOLOGIES: &[Topology] = &[
 /// `default_topology_exists` so a catalog rename can't silently break the default.
 pub const DEFAULT_TOPOLOGY_ID: &str = "guitar-humbucker";
 
-/// Look up a topology by its stable id (== WAV stem). Used to resolve a saved
-/// profile's `topology_id` to its synth/WAV entry.
+/// A pickup *alias*: a familiar pickup name musicians look for in the picker,
+/// mapped to the shipped topology whose stimulus it uses. Aliases are
+/// first-class picker rows (a profile may store an alias id as its
+/// `topology_id`), but carry NO synth params or WAV of their own —
+/// `canonical_id` resolves them to the parent before any stimulus lookup.
+pub struct Alias {
+    /// Stable picker/profile id (never a WAV stem — see `canonical_id`).
+    pub id: &'static str,
+    pub label: &'static str,
+    /// The `TOPOLOGIES` entry whose stimulus this alias uses.
+    pub topology_id: &'static str,
+}
+
+pub const ALIASES: &[Alias] = &[
+    // Low-wind, bright Gretsch humbucker — resonance sits at the single-coil template.
+    Alias {
+        id: "guitar-filtertron",
+        label: "Filter'Tron",
+        topology_id: "guitar-singlecoil",
+    },
+    Alias {
+        id: "guitar-dynasonic",
+        label: "DynaSonic",
+        topology_id: "guitar-singlecoil",
+    },
+    // Fat, hot single-coil — inductance/drive land on the humbucker template.
+    Alias {
+        id: "guitar-p90",
+        label: "P90",
+        topology_id: "guitar-humbucker",
+    },
+    Alias {
+        id: "guitar-goldfoil",
+        label: "Gold foil",
+        topology_id: "guitar-singlecoil",
+    },
+];
+
+/// Resolve an alias id to its parent topology id; a non-alias id passes through.
+/// Every id→WAV/params seam must go through this (an alias id is not a WAV stem).
+pub fn canonical_id(id: &str) -> &str {
+    ALIASES
+        .iter()
+        .find(|a| a.id == id)
+        .map_or(id, |a| a.topology_id)
+}
+
+/// Look up a topology by its stable id (== WAV stem) or an alias id. Used to
+/// resolve a saved profile's `topology_id` to its synth/WAV entry.
 pub fn by_id(id: &str) -> Option<&'static Topology> {
+    let id = canonical_id(id);
     TOPOLOGIES.iter().find(|t| t.id == id)
 }
 
@@ -174,11 +230,29 @@ mod tests {
 
     #[test]
     fn ids_are_unique() {
-        let mut ids: Vec<&str> = TOPOLOGIES.iter().map(|t| t.id).collect();
+        let mut ids: Vec<&str> = TOPOLOGIES
+            .iter()
+            .map(|t| t.id)
+            .chain(ALIASES.iter().map(|a| a.id))
+            .collect();
         ids.sort_unstable();
         let n = ids.len();
         ids.dedup();
-        assert_eq!(ids.len(), n, "duplicate topology id");
+        assert_eq!(ids.len(), n, "duplicate topology/alias id");
+    }
+
+    /// Every alias must point at a real topology, and resolve through `by_id`.
+    #[test]
+    fn aliases_resolve() {
+        for a in ALIASES {
+            let topo = by_id(a.id).unwrap_or_else(|| {
+                panic!("alias '{}' → unknown topology '{}'", a.id, a.topology_id)
+            });
+            assert_eq!(topo.id, a.topology_id);
+            assert_eq!(canonical_id(a.id), a.topology_id);
+        }
+        // A non-alias id passes through canonical_id untouched.
+        assert_eq!(canonical_id(DEFAULT_TOPOLOGY_ID), DEFAULT_TOPOLOGY_ID);
     }
 
     /// Each catalog id must have a committed WAV (run `cargo run --bin gen_samples`

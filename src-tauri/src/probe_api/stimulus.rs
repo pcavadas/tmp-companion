@@ -398,6 +398,8 @@ pub(crate) fn read_stimulus_calibrated(
 }
 
 pub(crate) fn probe_stimulus_path(topology_id: &str) -> Result<String, String> {
+    // An alias id is not a WAV stem — resolve to the parent topology's id first.
+    let topology_id = crate::topologies::canonical_id(topology_id);
     let cwd = std::env::current_dir().map_err(|e| format!("current dir: {e}"))?;
     let candidates = [
         cwd.join("resources")

@@ -138,7 +138,9 @@ fn pick_scene_level_knob(
 /// Level ONE scene the capture-per-connection way (`level_preset_block`): pick
 /// the scene's knob from its live graph, then closed-loop with fresh re-amp
 /// captures. The legacy `level_scenes_apply` path; the shipped batched flow is
-/// `level_scenes_apply_batched` → `leveller::level_scenes_live_batched`.
+/// `level_scenes_apply_batched` → `leveller::level_scenes_oneshot` (or
+/// `level_scenes_rebalance` for the parallel-amp option) — NOT the retired
+/// bench-only `level_scenes_live_batched` (see notes/leveling.md).
 fn level_one_scene_legacy(
     slot: u32,
     scene: u32,

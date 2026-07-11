@@ -9,9 +9,14 @@ name: Arm auto-merge
 #   - External author → arm ONLY after @pcavadas approves; disarm on any new external push.
 #     CodeRabbit-alone can never AUTO-merge an external PR.
 #
-# Intentionally no `actions/checkout` and no third-party actions: this never runs PR-controlled
-# code, so the write-scoped GITHUB_TOKEN on pull_request_target is safe here (same discipline as
-# dependabot-auto-approve.yml).
+# Auto-merge is armed with a GitHub App token, NOT the GITHUB_TOKEN. GitHub does not re-trigger
+# workflows for pushes made by GITHUB_TOKEN, so a GITHUB_TOKEN-armed merge lands on main WITHOUT
+# firing release.yml (or ci.yml) — that's how the release backlog silently built up (see #59).
+# The eventual merge push is attributed to whatever identity ENABLED auto-merge, so arming as the
+# App makes that push trigger the release/CI push workflows. Safety discipline is unchanged: still
+# no `actions/checkout`, so PR-controlled code never runs; the App private key comes from repo
+# secrets and is never exposed to the PR. The one third-party action (actions/create-github-app-
+# token, GitHub-authored) is pinned to a full commit SHA.
 #
 # MAIN-ONLY: arming is gated to PRs whose base is `main`. The ruleset only protects main, so
 # auto-merge on any other base has nothing to wait for and merges the INSTANT the PR leaves
@@ -38,18 +43,24 @@ jobs:
   arm:
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false && github.event.pull_request.base.ref == 'main'
-    # Scoped to this job (least privilege). Enabling GitHub's native auto-merge
-    # via the GITHUB_TOKEN needs contents:write (auto-merge is a merge/contents
-    # op) in addition to pull-requests:write — with pull-requests:write alone the
-    # enablePullRequestAutoMerge mutation returns "Resource not accessible by
-    # integration". The workflow-level default stays contents:read.
-    permissions:
-      contents: write
-      pull-requests: write
+    # The merge is enabled with the GitHub App token minted below, so the job's own
+    # GITHUB_TOKEN needs no write scope — it inherits the workflow default contents:read.
+    # The App INSTALLATION must carry Contents: write (auto-merge is a merge/contents op)
+    # plus Pull requests: write — with pull-requests alone enablePullRequestAutoMerge
+    # returns "Resource not accessible by integration".
     steps:
+      - name: Mint a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUTOMERGE_APP_ID }}
+          private-key: ${{ secrets.AUTOMERGE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Arm or re-gate auto-merge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ github.event.pull_request.html_url }}
           ASSOC: ${{ github.event.pull_request.author_association }}
           AUTHOR: ${{ github.event.pull_request.user.login }}

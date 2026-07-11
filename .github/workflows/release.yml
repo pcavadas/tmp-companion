@@ -3,6 +3,18 @@ name: release
 on:
   push:
     branches: [main]
+  # Manual fallback: token-armed auto-merge pushes to main run as GITHUB_TOKEN,
+  # which GitHub does NOT re-trigger workflows for, so the push trigger above
+  # silently skips auto-merged releases. Run this from the Actions tab to cut
+  # the pending release. (Proper fix: arm auto-merge with a PAT/App token.)
+  workflow_dispatch:
+
+# Serialize releases: a manual dispatch could overlap a push-triggered run (or
+# another dispatch), racing semantic-release on release creation. Queue instead
+# of cancel so an in-flight signing/notarization is never aborted mid-run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -13,6 +25,9 @@ jobs:
   release:
     runs-on: macos-14 # Apple Silicon — the Rust crate is macOS-only
     environment: release # gates the Apple signing/notarization secrets to this env
+    # Backstop a hung `notarytool --wait`: without this the job inherits the 360-min
+    # default and can burn ~6h on the 10×-cost macOS runner. A normal run is ~7 min.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
