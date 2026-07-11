@@ -181,6 +181,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         tag: null,
         topologyId: "guitar-humbucker",
         calibrationLufs: null,
+        profileId: null,
         nodes: [],
       },
     ];

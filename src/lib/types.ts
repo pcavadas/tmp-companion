@@ -726,6 +726,10 @@ export interface DoctorInputArg {
   tag: string | null;
   topologyId: string | null;
   calibrationLufs: number | null;
+  /** Instrument profile id (null when "none"): when it has a stored Tier-2 DI
+   *  capture, the Doctor reads that WAV verbatim and diagnoses in CAPTURE
+   *  threshold/cohort space; else the synthetic topology sample. */
+  profileId: string | null;
   nodes: GraphNode[];
 }
 

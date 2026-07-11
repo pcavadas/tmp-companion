@@ -144,6 +144,28 @@ pub const BASS: Thresholds = Thresholds {
 /// real Bass VI library re-derives them.
 pub const BASS_VI: Thresholds = BASS;
 
+/// Whether a sound was captured through the SYNTHETIC shaped-noise stimulus (the
+/// Doctor default, whose thresholds are HW-calibrated) or a real Tier-2 DI
+/// CAPTURE. A real DI shifts the measured band balance systematically (HW: +8..12
+/// dB Lows / −8..10 dB Highs, fizzy ~−8 dB) and cohorts of the two must never
+/// pool — a mixed median reproduces false verdict flips. Drives the threshold
+/// table ([`Family::thresholds_for`]) and the cohort key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StimulusKind {
+    Synthetic,
+    Capture,
+}
+
+// ─── capture-stimulus thresholds (PROVISIONAL) ──────────────────────────────
+// Copies of the synthetic tables, doc-marked provisional: they are REPLACED by
+// the attended `probe --doctor-calib` sweep report (the recal tooling below).
+// Until then a capture-driven diagnosis reads IDENTICALLY to a synthetic one —
+// the split exists so the sweep can retune capture space without touching the
+// HW-calibrated synthetic values (backward compat for uncalibrated users).
+pub const GUITAR_CAPTURE: Thresholds = GUITAR;
+pub const BASS_CAPTURE: Thresholds = BASS;
+pub const BASS_VI_CAPTURE: Thresholds = BASS_VI;
+
 /// The instrument family a sound is judged as. Drives both the threshold table
 /// and the analysis-band LAYOUT: Guitar/Bass share the 6-band [`BANDS_6`], Bass
 /// VI adds a 7th "Sub" band ([`BANDS_7`]) for its sub-60 Hz fundamentals. The
@@ -160,11 +182,23 @@ pub enum Family {
 pub type Instrument = Family;
 
 impl Family {
+    /// The synthetic-stimulus thresholds (the HW-calibrated default). Kept for
+    /// callers that don't distinguish stimulus kind (scene consistency, whose
+    /// `scene_delta_db` is identical in both tables).
     pub fn thresholds(self) -> &'static Thresholds {
-        match self {
-            Family::Guitar => &GUITAR,
-            Family::Bass => &BASS,
-            Family::BassVi => &BASS_VI,
+        self.thresholds_for(StimulusKind::Synthetic)
+    }
+    /// The threshold table for a stimulus kind: `Synthetic` is today's
+    /// HW-calibrated values UNCHANGED; `Capture` is the provisional `*_CAPTURE`
+    /// table the recal sweep replaces.
+    pub fn thresholds_for(self, kind: StimulusKind) -> &'static Thresholds {
+        match (self, kind) {
+            (Family::Guitar, StimulusKind::Synthetic) => &GUITAR,
+            (Family::Bass, StimulusKind::Synthetic) => &BASS,
+            (Family::BassVi, StimulusKind::Synthetic) => &BASS_VI,
+            (Family::Guitar, StimulusKind::Capture) => &GUITAR_CAPTURE,
+            (Family::Bass, StimulusKind::Capture) => &BASS_CAPTURE,
+            (Family::BassVi, StimulusKind::Capture) => &BASS_VI_CAPTURE,
         }
     }
     /// Map a topology's `instrument` field ("guitar" | "bass" | "bass-vi").
@@ -306,6 +340,27 @@ fn to_db(p: f64) -> f64 {
     10.0 * p.max(1e-12).log10()
 }
 
+/// A band counts as "covered" (actually excited) when its energy is within this
+/// many dB of the loudest band in the capture — anything quieter reads as
+/// unplayed or fully masked.
+pub const BAND_COVERAGE_DB: f64 = 30.0;
+
+/// Per-band coverage of a spectrum: `bands` are linear energies (as returned by
+/// `spectrum::band_energies`); a band is "covered" when within [`BAND_COVERAGE_DB`]
+/// of the loudest band. A sparse stimulus (an EBow drone, a couple of notes)
+/// leaves bands uncovered, and the Doctor skips any rule keyed on a band the
+/// stimulus never excited. Synthetic stimuli cover every band by construction, so
+/// gating no-ops there. Shared by the Tier-2 calibration readout and the Doctor
+/// band-confidence gate. Pure — no I/O, unit-tested.
+pub fn coverage(bands: &[f64]) -> Vec<bool> {
+    let loudest = bands.iter().copied().fold(0.0f64, f64::max).max(1e-12);
+    let loudest_db = 10.0 * loudest.log10();
+    bands
+        .iter()
+        .map(|&b| loudest_db - 10.0 * b.max(1e-12).log10() <= BAND_COVERAGE_DB)
+        .collect()
+}
+
 /// A sound's spectral "balance": each band's dB offset from the sound's own
 /// mean band level. Level-invariant, so cohort comparison is about tone shape,
 /// not loudness.
@@ -340,29 +395,33 @@ pub fn cohort_median(profiles: &[&SoundProfile]) -> Vec<f64> {
 // single-sound runs prove unreliable in calibration.
 pub const MIN_COHORT: usize = 4;
 
-/// Per-family cohort medians: each family's sounds are judged against their OWN
-/// library median — a bass preset judged against a guitar cohort reads falsely
-/// boomy, and families don't even share a band LAYOUT (Bass VI has 7), so a
-/// median can never mix them. `None` for a family whose group is under
-/// [`MIN_COHORT`] (that group's sounds diagnose with the absolute fallback);
-/// only families actually present in `profiles` appear as keys.
-pub fn cohorts_by_instrument(
-    profiles: &[(Family, &SoundProfile)],
-) -> HashMap<Family, Option<Vec<f64>>> {
-    let mut out: HashMap<Family, Option<Vec<f64>>> = HashMap::new();
+/// Per-`(family, stimulus kind)` cohort medians: each group's sounds are judged
+/// against their OWN median. A bass preset judged against a guitar cohort reads
+/// falsely boomy (and Bass VI's 7-band layout can't even share a median with the
+/// 6-band families), AND a real-DI capture judged against a synthetic-stimulus
+/// median reproduces false verdict flips (the HW-measured +8..12 dB Lows shift) —
+/// so BOTH axes partition. `None` for a group under [`MIN_COHORT`] (that group's
+/// sounds diagnose with the absolute fallback, independently of the others); only
+/// groups actually present in `profiles` appear as keys.
+pub fn cohorts_by_family_kind(
+    profiles: &[(Family, StimulusKind, &SoundProfile)],
+) -> HashMap<(Family, StimulusKind), Option<Vec<f64>>> {
+    let mut out: HashMap<(Family, StimulusKind), Option<Vec<f64>>> = HashMap::new();
     for fam in [Family::Guitar, Family::Bass, Family::BassVi] {
-        let refs: Vec<&SoundProfile> = profiles
-            .iter()
-            .filter(|(f, _)| *f == fam)
-            .map(|(_, p)| *p)
-            .collect();
-        if refs.is_empty() {
-            continue;
+        for kind in [StimulusKind::Synthetic, StimulusKind::Capture] {
+            let refs: Vec<&SoundProfile> = profiles
+                .iter()
+                .filter(|(f, k, _)| *f == fam && *k == kind)
+                .map(|(_, _, p)| *p)
+                .collect();
+            if refs.is_empty() {
+                continue;
+            }
+            out.insert(
+                (fam, kind),
+                (refs.len() >= MIN_COHORT).then(|| cohort_median(&refs)),
+            );
         }
-        out.insert(
-            fam,
-            (refs.len() >= MIN_COHORT).then(|| cohort_median(&refs)),
-        );
     }
     out
 }
@@ -1214,7 +1273,34 @@ pub fn diagnose(
     instrument: Family,
     cohort: Option<&[f64]>,
 ) -> Vec<Diag> {
-    let t = instrument.thresholds();
+    // Back-compat shim: the synthetic table + no band gating == the pinned
+    // pre-capture behavior (synthetic stimuli cover every band by construction).
+    diagnose_kind(
+        profile,
+        nodes,
+        instrument,
+        cohort,
+        StimulusKind::Synthetic,
+        None,
+    )
+}
+
+/// Diagnose one sound with an explicit stimulus `kind` (picks the threshold
+/// table) and optional band `coverage` (the STIMULUS's own per-band excitation,
+/// [`coverage`]): a band-keyed rule whose primary band is UNCOVERED is skipped —
+/// a sparse capture must not produce verdicts in bands it never excited.
+/// `coverage = None` disables gating (all bands treated as covered).
+pub fn diagnose_kind(
+    profile: &SoundProfile,
+    nodes: Option<&[DoctorNode]>,
+    instrument: Family,
+    cohort: Option<&[f64]>,
+    kind: StimulusKind,
+    coverage: Option<&[bool]>,
+) -> Vec<Diag> {
+    let t = instrument.thresholds_for(kind);
+    // A rule keyed on band `i` fires only when the stimulus actually excited it.
+    let covered = |i: usize| coverage.is_none_or(|c| c.get(i).copied().unwrap_or(true));
     let bal = balance(&profile.bands);
     let n = bal.len();
     // Deviation per band: vs cohort median, or vs the sound's own neighbour
@@ -1260,7 +1346,7 @@ pub fn diagnose(
         });
     };
 
-    if dev(low_mids) > t.muddy_db {
+    if covered(low_mids) && dev(low_mids) > t.muddy_db {
         push(
             "muddy",
             "Muddy",
@@ -1270,7 +1356,7 @@ pub fn diagnose(
             "There's a buildup in the low-mids that stacks up with the bass player.",
         );
     }
-    if dev(lows) > t.boomy_db {
+    if covered(lows) && dev(lows) > t.boomy_db {
         push(
             "boomy",
             "Boomy",
@@ -1280,7 +1366,7 @@ pub fn diagnose(
             "Too much deep low end — it booms and loses focus once you turn up.",
         );
     }
-    if dev(high_mids) > t.harsh_db {
+    if covered(high_mids) && dev(high_mids) > t.harsh_db {
         push(
             "harsh",
             "Harsh",
@@ -1291,8 +1377,9 @@ pub fn diagnose(
         );
     }
     // Fizz is judged against the sound's own presence band, not the cohort —
-    // see `Thresholds::fizzy_db` for the calibration rationale.
-    if bal[air] - bal[highs] > t.fizzy_db {
+    // see `Thresholds::fizzy_db` for the calibration rationale. Own-spectrum, so
+    // it needs BOTH the Air and Highs bands actually excited.
+    if covered(air) && covered(highs) && bal[air] - bal[highs] > t.fizzy_db {
         push(
             "fizzy",
             "Fizzy",
@@ -1305,7 +1392,7 @@ pub fn diagnose(
             "Fizzy, buzzy top end — the kind that sounds like radio static on the note tails.",
         );
     }
-    if -dev(mids) > t.lost_db {
+    if covered(mids) && -dev(mids) > t.lost_db {
         push(
             "lost",
             "Gets lost in the mix",
@@ -1344,6 +1431,7 @@ pub fn diagnose(
     }
     if matches!(instrument, Family::Bass | Family::BassVi)
         && facts.as_ref().map(|f| f.has_drive) == Some(true)
+        && covered(lows)
         && -dev(lows) > t.buried_lows_db
     {
         push(
@@ -2286,20 +2374,59 @@ mod tests {
 
     #[test]
     fn cohorts_partition_by_instrument() {
+        use StimulusKind::Synthetic as Syn;
         let guitars: Vec<SoundProfile> = (0..MIN_COHORT).map(|_| profile_with(0, 0.0)).collect();
         let basses: Vec<SoundProfile> = (0..2).map(|_| profile_with(0, 6.0)).collect();
-        let mut all: Vec<(Instrument, &SoundProfile)> =
-            guitars.iter().map(|p| (Instrument::Guitar, p)).collect();
-        all.extend(basses.iter().map(|p| (Instrument::Bass, p)));
-        let cohorts = cohorts_by_instrument(&all);
-        let guitar = cohorts.get(&Family::Guitar).cloned().flatten();
+        let mut all: Vec<(Instrument, StimulusKind, &SoundProfile)> = guitars
+            .iter()
+            .map(|p| (Instrument::Guitar, Syn, p))
+            .collect();
+        all.extend(basses.iter().map(|p| (Instrument::Bass, Syn, p)));
+        let cohorts = cohorts_by_family_kind(&all);
+        let guitar = cohorts.get(&(Family::Guitar, Syn)).cloned().flatten();
         assert!(guitar.is_some(), "guitar group reaches MIN_COHORT");
         // Under-minimum bass group stays absolute (present as key, but None).
-        assert_eq!(cohorts.get(&Family::Bass), Some(&None));
+        assert_eq!(cohorts.get(&(Family::Bass, Syn)), Some(&None));
         // BassVi absent from the run → no key at all.
-        assert!(!cohorts.contains_key(&Family::BassVi));
+        assert!(!cohorts.contains_key(&(Family::BassVi, Syn)));
         // The guitar median must not be dragged toward the hot bass lows.
         assert!((guitar.unwrap()[0] - flat_cohort()[0]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cohorts_partition_by_stimulus_kind() {
+        use StimulusKind::{Capture, Synthetic};
+        // Same family, both kinds, each at MIN_COHORT: they must pool SEPARATELY
+        // (mixing a synthetic + capture median reproduces the false verdict flips).
+        let synth: Vec<SoundProfile> = (0..MIN_COHORT).map(|_| profile_with(0, 0.0)).collect();
+        let cap: Vec<SoundProfile> = (0..MIN_COHORT).map(|_| profile_with(0, 8.0)).collect();
+        let mut all: Vec<(Instrument, StimulusKind, &SoundProfile)> = synth
+            .iter()
+            .map(|p| (Instrument::Guitar, Synthetic, p))
+            .collect();
+        all.extend(cap.iter().map(|p| (Instrument::Guitar, Capture, p)));
+        let cohorts = cohorts_by_family_kind(&all);
+        assert!(cohorts.contains_key(&(Family::Guitar, Synthetic)));
+        assert!(cohorts.contains_key(&(Family::Guitar, Capture)));
+        // Distinct medians — the capture group's hot lows must not bleed into synthetic.
+        let syn_med = cohorts
+            .get(&(Family::Guitar, Synthetic))
+            .cloned()
+            .flatten()
+            .unwrap();
+        let cap_med = cohorts
+            .get(&(Family::Guitar, Capture))
+            .cloned()
+            .flatten()
+            .unwrap();
+        assert!(
+            (syn_med[0] - flat_cohort()[0]).abs() < 1e-9,
+            "synthetic median stays flat, uncontaminated by the capture cohort"
+        );
+        assert!(
+            cap_med[0] > syn_med[0],
+            "the capture cohort keeps its own hot-lows median"
+        );
     }
 
     // ── silent capture (#6) ──
@@ -2389,14 +2516,142 @@ mod tests {
                 tail_ratio_db: -40.0,
             })
             .collect();
-        let mut all: Vec<(Family, &SoundProfile)> =
-            guitars.iter().map(|p| (Family::Guitar, p)).collect();
-        all.extend(bassvis.iter().map(|p| (Family::BassVi, p)));
-        let cohorts = cohorts_by_instrument(&all);
-        let g = cohorts.get(&Family::Guitar).cloned().flatten().unwrap();
-        let bvi = cohorts.get(&Family::BassVi).cloned().flatten().unwrap();
+        use StimulusKind::Synthetic as Syn;
+        let mut all: Vec<(Family, StimulusKind, &SoundProfile)> =
+            guitars.iter().map(|p| (Family::Guitar, Syn, p)).collect();
+        all.extend(bassvis.iter().map(|p| (Family::BassVi, Syn, p)));
+        let cohorts = cohorts_by_family_kind(&all);
+        let g = cohorts
+            .get(&(Family::Guitar, Syn))
+            .cloned()
+            .flatten()
+            .unwrap();
+        let bvi = cohorts
+            .get(&(Family::BassVi, Syn))
+            .cloned()
+            .flatten()
+            .unwrap();
         assert_eq!(g.len(), 6, "guitar median keeps the 6-band layout");
         assert_eq!(bvi.len(), 7, "bass-vi median keeps its 7-band layout");
+    }
+
+    // ── stimulus-kind thresholds + band-confidence gating ──
+
+    fn assert_same_thresholds(a: &Thresholds, b: &Thresholds) {
+        assert_eq!(a.muddy_db, b.muddy_db);
+        assert_eq!(a.boomy_db, b.boomy_db);
+        assert_eq!(a.harsh_db, b.harsh_db);
+        assert_eq!(a.fizzy_db, b.fizzy_db);
+        assert_eq!(a.lost_db, b.lost_db);
+        assert_eq!(a.wash_tail_db, b.wash_tail_db);
+        assert_eq!(a.buried_lows_db, b.buried_lows_db);
+        assert_eq!(a.spiky_spread_lu, b.spiky_spread_lu);
+        assert_eq!(a.scene_delta_db, b.scene_delta_db);
+    }
+
+    #[test]
+    fn thresholds_for_synthetic_matches_pinned_consts() {
+        // BACKWARD COMPAT: the synthetic table must stay byte-identical to the
+        // pinned HW-calibrated consts (uncalibrated users' verdicts never move).
+        assert_same_thresholds(
+            Family::Guitar.thresholds_for(StimulusKind::Synthetic),
+            &GUITAR,
+        );
+        assert_same_thresholds(Family::Bass.thresholds_for(StimulusKind::Synthetic), &BASS);
+        assert_same_thresholds(
+            Family::BassVi.thresholds_for(StimulusKind::Synthetic),
+            &BASS_VI,
+        );
+        // thresholds() is the synthetic alias.
+        for fam in [Family::Guitar, Family::Bass, Family::BassVi] {
+            assert_same_thresholds(
+                fam.thresholds(),
+                fam.thresholds_for(StimulusKind::Synthetic),
+            );
+        }
+        // Capture starts as a copy (provisional) — same values until the sweep retunes.
+        assert_same_thresholds(
+            Family::Guitar.thresholds_for(StimulusKind::Capture),
+            &GUITAR,
+        );
+    }
+
+    #[test]
+    fn band_gate_suppresses_rule_when_primary_band_uncovered() {
+        let cohort = flat_cohort();
+        // A hot Lows band → boomy fires when every band is covered...
+        let hot = profile_with(0, GUITAR.boomy_db + 3.0);
+        let all_covered = vec![true; 6];
+        assert!(keys(&diagnose_kind(
+            &hot,
+            None,
+            Family::Guitar,
+            Some(&cohort),
+            StimulusKind::Synthetic,
+            Some(&all_covered),
+        ))
+        .contains(&"boomy"));
+        // ...but is SKIPPED when the Lows band was never excited by the stimulus.
+        let mut lows_uncovered = vec![true; 6];
+        lows_uncovered[0] = false;
+        assert!(!keys(&diagnose_kind(
+            &hot,
+            None,
+            Family::Guitar,
+            Some(&cohort),
+            StimulusKind::Synthetic,
+            Some(&lows_uncovered),
+        ))
+        .contains(&"boomy"));
+    }
+
+    #[test]
+    fn coverage_flat_bands_are_all_covered() {
+        assert_eq!(coverage(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), vec![true; 6]);
+    }
+
+    #[test]
+    fn coverage_sparse_take_covers_only_played_bands() {
+        // 2 loud bands, 4 essentially dead (well below the 30 dB floor).
+        let bands = [1.0, 1e-9, 1e-9, 1e-9, 1e-9, 1.0];
+        assert_eq!(
+            coverage(&bands),
+            vec![true, false, false, false, false, true]
+        );
+    }
+
+    #[test]
+    fn coverage_thirty_db_boundary() {
+        // Loudest = 0 dB (power 1.0). Exactly −30 dB (power 1e-3) still counts;
+        // just past it (−30.5 dB) does not.
+        let at_boundary = 10f64.powf(-30.0 / 10.0);
+        let past_boundary = 10f64.powf(-30.5 / 10.0);
+        assert_eq!(coverage(&[1.0, at_boundary]), vec![true, true]);
+        assert_eq!(coverage(&[1.0, past_boundary]), vec![true, false]);
+    }
+
+    #[test]
+    fn synthetic_full_coverage_gate_is_a_noop() {
+        // A synthetic stimulus excites every band by construction, so its coverage
+        // is all-true and gated diagnosis == ungated (the pinned behavior).
+        let cov = coverage(&[1.0f64; 6]);
+        assert_eq!(
+            cov,
+            vec![true; 6],
+            "flat synthetic spectrum covers all bands"
+        );
+        let cohort = flat_cohort();
+        let hot = profile_with(0, GUITAR.boomy_db + 3.0);
+        let gated = keys(&diagnose_kind(
+            &hot,
+            None,
+            Family::Guitar,
+            Some(&cohort),
+            StimulusKind::Synthetic,
+            Some(&cov),
+        ));
+        let ungated = keys(&diagnose(&hot, None, Family::Guitar, Some(&cohort)));
+        assert_eq!(gated, ungated);
     }
 
     // ── serde wire shapes ──
