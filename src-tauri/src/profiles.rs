@@ -457,6 +457,7 @@ mod tests {
                 prof("removed", "guitar-humbucker"),
                 prof("retopo", "guitar-singlecoil"),
                 prof("rename", "bass-singlecoil"),
+                prof("aliaskeep", "guitar-humbucker"),
             ],
             ..Store::default()
         };
@@ -464,6 +465,7 @@ mod tests {
             profiles: vec![
                 prof("keep", "guitar-singlecoil"),
                 prof("retopo", "guitar-active"), // pickup re-picked
+                prof("aliaskeep", "guitar-p90"), // alias↔parent relabel, same stimulus
                 Profile {
                     name: "renamed".into(),
                     ..prof("rename", "bass-singlecoil")
