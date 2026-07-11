@@ -24,7 +24,11 @@ pub struct Topology {
     pub instrument: &'static str,
     /// Deterministic PRNG seed → reproducible committed WAV.
     pub seed: u64,
-    /// Resonant-peak frequency (Hz) of the pickup.
+    /// Spectral-peak frequency (Hz) of the stimulus template. For the guitar rows
+    /// this approximates the pickup's loaded electrical resonance; the bass rows
+    /// sit ~2 octaves below any real bass-pickup resonance (~2–3.5 kHz loaded) —
+    /// there it is a low-mid energy centroid shaping bass program material, not
+    /// pickup physics.
     pub freq: f32,
     /// Resonance Q — high = peaky (passive), low = flat/broad (active/acoustic).
     pub q: f32,
