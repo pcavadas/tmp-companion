@@ -74,7 +74,8 @@ export interface LevelJob {
   target_lufs: number;
   /** Opt-in persist (SaveCurrentPreset). No window.confirm guard. */
   save: boolean;
-  /** Pickup topology id → its bundled stimulus WAV. */
+  /** Pickup topology (or alias) id → its bundled stimulus WAV (an alias
+   * resolves to its parent topology's WAV). */
   topology_id: string | null;
   /** Tier-2 measured dry-instrument loudness (K-weighted LUFS). */
   calibration_lufs: number | null;
@@ -227,7 +228,8 @@ export interface Store {
   auto_install_updates: boolean;
 }
 
-/** A shipped pickup topology (mirrors lib::TopologyInfo). */
+/** A shipped pickup topology or alias row (mirrors commands/settings.rs
+ * TopologyInfo). */
 export interface TopologyInfo {
   id: string;
   label: string;

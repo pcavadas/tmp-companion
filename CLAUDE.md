@@ -108,18 +108,21 @@ src-tauri/src/
   leveller.rs     Leveling seams: measure_c / solve_level / apply_level (composed by level_preset)
                   + level_setlist (common-target). Self-contained: opens its own connections.
   doctor.rs       The Doctor diagnosis engine — PURE rules (no device I/O): capture measurements
-                  (SoundProfile) → muddy/boomy/harsh/fizzy/washed/lost/buried diagnoses + graph-
+                  (SoundProfile) → muddy/boomy/harsh/fizzy/washed/lost/buried/spiky diagnoses + graph-
                   derived Rx prescriptions + the scene-loudness consistency check. Device work
                   lives in leveller::doctor_capture + commands/doctor.rs (doctor_check/apply/
                   save/discard/cancel); families Guitar/Bass/BassVi (7-band Bass VI layout);
                   thresholds are DUAL per StimulusKind — synthetic HW-calibrated
                   (notes/doctor-calibration.md) + provisional capture tables pending the
-                  attended `probe --doctor-calib` sweep.
+                  attended `probe --doctor-calib` sweep. Feature doc: notes/doctor.md.
   blockcaps.rs    Firmware-faithful pre-flight guard for the 5 block-count caps — the SOLE
                   enforcement (the device engine does NOT reject over-cap edits with a
                   presetError; the cap code is client-side only), gating the live apply paths.
   topologies.rs   Shared pickup-topology catalog (id/label/instrument + synth params, incl. `peak`
-                  = output level as amp-input drive). Used by gen_samples (synth) + lib (list/resolve).
+                  = output level as amp-input drive) + ALIASES (familiar pickup names — P90,
+                  Filter'Tron… — resolving to a parent topology via canonical_id; assignment
+                  methodology in notes/pickup-topologies.md). Used by gen_samples (synth, TOPOLOGIES
+                  only — aliases have no WAV) + lib (list/resolve).
   profiles.rs     Instrument profiles {name, topology_id, calibration_lufs} + per-slot assignment,
                   persisted as JSON in the app config dir (load/save; pure *_from_path helpers tested).
   lib.rs          Slim crate hub: the mod tree, re-export seams, AppState, MONITOR_* statics, lock_ok.
@@ -276,7 +279,7 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                                 re-amp OFF on a fresh connection (a dropped OFF strands the unit input-muted;
                                 recovery: probe --reamp-off). The backup scene-load source is the
                                 `read_library_via_backup` command (verify with `probe --device-backup`).
-                      doctor/   Tone diagnosis (DoctorView + useDoctorFlow: Setup → Select → Run →
+                      doctor/   Tone diagnosis (DoctorView + useDoctorFlow: Select → Setup → Run →
                                 Results). Re-amps each selected sound (Base/scene/footswitch, the
                                 same isolation rules as leveling), renders spectral DiagnosisChips +
                                 BandMeter/BandSpark, and offers one-click PrescriptionCard fixes
@@ -407,7 +410,7 @@ resources/samples/  7 committed per-topology shaped-noise WAVs — one per picku
 
 The full model — the preset/scene/footswitch recipes, parallel-amp rebalance, and the outcome taxonomy — lives in **`notes/leveling.md`**. The contract in brief: `presetLevel` is a **linear amplitude** control (`captured_LUFS = 20·log10(presetLevel) + C`), so `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply, forced by the re-amp gotchas below). Per-scene leveling is the same one-shot on the active amp's `outputLevel` (`level_scenes_oneshot`, bounded secant correction + off-branch clamp — see the BatchedLive gotcha for why the closed-loop shared-stream approach mis-measures). `C` is each preset's **max reachable** loudness; a louder target clamps (surfaced in the UI), and the ceiling is preset/model-specific, not a hard `−20 LUFS` rule (maxed 65 Twin / 65 Deluxe NBC reached `−14 LUFS` comfortably, clamping only ~`−8.6`) — for relative leveling pick a target below the quietest preset's measured max.
 
-**Fletcher–Munson playback compensation (software-green):** equal-LUFS is equal-loudness only near the SPL K-weighting approximates (~stage volume); below that the equal-loudness contours steepen and K-weighting under-credits bass presets' low-frequency energy. The store carries `playback_level` (Quiet/Rehearsal/Stage, Settings → PlaybackLevelSection, `set_playback_level`); `commands/level_preset.rs::playback_offset_for` adds `profiles::playback_offset_lu(level, instrument)` (bass: +1.5/+0.5/0 LU; guitar always 0) to the target inside `level_preset` / `level_scenes_apply{,_batched}` / `level_setlist` (per-entry: common target solved in offset-adjusted ceiling space, `min(C − offset) − headroom`). Stage (the serde default) is 0; `probe` paths bypass the offset (explicit targets, keeps HW benchmarks raw). The result's `target_lufs` echoes the EFFECTIVE (offset) target.
+**Fletcher–Munson playback compensation (software-green):** equal-LUFS is equal-loudness only near the SPL K-weighting approximates (~stage volume); below that the equal-loudness contours steepen and K-weighting under-credits bass presets' low-frequency energy. The store carries `playback_level` (Quiet/Rehearsal/Stage, Settings → PlaybackLevelSection, `set_playback_level`); `commands/level_preset.rs::playback_offset_for` adds `profiles::playback_offset_lu(level, instrument)` (bass & bass-vi: +1.5/+0.5/0 LU; guitar always 0) to the target inside `level_preset` / `level_scenes_apply{,_batched}` / `level_setlist` (per-entry: common target solved in offset-adjusted ceiling space, `min(C − offset) − headroom`). Stage (the serde default) is 0; `probe` paths bypass the offset (explicit targets, keeps HW benchmarks raw). The result's `target_lufs` echoes the EFFECTIVE (offset) target.
 
 **Dynamics-spread flag:** every full-capture measure also reports `dynamic_spread_lu` = short-term-max − integrated (gain-invariant, threaded `lufs::Loudness` → `MeasuredC` → `LevelResult`/`BatchedSceneOutcome`; `None` on the live-window runner). The flow stores it on `RunItem.spreadLu`; SummaryDialog marks rows ≥ `DYNAMIC_SPREAD_LU` (6 LU, `leveling.ts`) "dynamic" with a verify-by-ear explainer — it surfaces the relative-gate bias (a dynamic clean tone at equal integrated LUFS carries hotter peaks than a compressed one) instead of silently absorbing it. The leveler still SOLVES on integrated only.
 
