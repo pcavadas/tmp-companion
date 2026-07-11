@@ -6,7 +6,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "node -e \"const f='src-tauri/tauri.conf.json',c=require('fs');const j=JSON.parse(c.readFileSync(f));j.version='${nextRelease.version}';c.writeFileSync(f,JSON.stringify(j,null,2)+'\\n')\" && bun run tauri build --target aarch64-apple-darwin && DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg) && xcrun notarytool submit \"$DMG\" --apple-id \"$APPLE_ID\" --password \"$APPLE_PASSWORD\" --team-id \"$APPLE_TEAM_ID\" --wait && xcrun stapler staple \"$DMG\" && node scripts/latest-json.mjs \"${nextRelease.version}\" \"${Buffer.from(nextRelease.notes || '').toString('base64')}\""
+        "prepareCmd": "bash scripts/release-build.sh \"${nextRelease.version}\" \"${Buffer.from(nextRelease.notes || '').toString('base64')}\""
       }
     ],
     [
