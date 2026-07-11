@@ -271,6 +271,11 @@ function AppShell() {
           minHeight: 0,
           display: "flex",
           flexDirection: "column",
+          // Positioning context for a tab's full-page `absolute; inset:0` body
+          // swaps (Doctor Setup/Results) so they fill the workspace and never
+          // cover the tab bar — Level/Copy already scope their own; this backstops
+          // any tab (like Doctor) that doesn't. // ponytail: shell-level guard.
+          position: "relative",
         }}
       >
         <ErrorBoundary key={tab}>
