@@ -1,7 +1,7 @@
 //! The Doctor diagnosis engine — PURE (no device I/O, no Tauri).
 //!
 //! Turns a re-amp capture's measurements (`SoundProfile`) into named tone
-//! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried) with
+//! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried / spiky) with
 //! concrete, graph-derived prescriptions (`Rx` → `DoctorOp`s), plus the
 //! scene-loudness consistency check. The device work (capture, apply) lives in
 //! `leveller::doctor_capture` and the `doctor_*` commands; this module is the
@@ -74,8 +74,10 @@ const LABELS_7: [&str; 7] = [
 /// "balance space" (a band's dB offset from the sound's own spectral mean,
 /// compared against the cohort median or the absolute neighbour expectation).
 ///
-/// PROVISIONAL pending hardware calibration (probe --doctor sweeps); the
-/// calibration pass edits values here and nowhere else.
+/// The SYNTHETIC-space tables are HW-calibrated via probe --doctor sweeps (see
+/// the `GUITAR` const doc + notes/doctor-calibration.md); the `*_CAPTURE`
+/// tables are PROVISIONAL copies pending the attended `probe --doctor-calib`
+/// sweep. Any recalibration pass edits values here and nowhere else.
 pub struct Thresholds {
     /// Low-mid excess ⇒ muddy.
     pub muddy_db: f64,
@@ -99,10 +101,10 @@ pub struct Thresholds {
     /// Lows deficit on a driven bass ⇒ buried clean tone (bass rule).
     pub buried_lows_db: f64,
     /// Dynamics spread (short-term-max − integrated LU) on a clean chain ⇒
-    /// spiky. PROVISIONAL: ordinary presets read 0.12–0.8 LU under the 0.8 s
-    /// LEVELING capture (see notes/doctor-calibration.md) — the Doctor capture
-    /// appends a 2.5 s tail that can inflate spread on wet presets, so this
-    /// value needs a fresh probe --doctor baseline before it is trusted.
+    /// spiky. Baselined 2026-07-09 under the DOCTOR capture (2.5 s tail):
+    /// 0.12–0.81 LU across all 16 library sounds — the feared wet-preset tail
+    /// inflation did not materialize, and `spiky` fires on zero library
+    /// presets by design (see notes/doctor-calibration.md).
     pub spiky_spread_lu: f64,
     /// Scene-to-base loudness jump ⇒ scene-consistency flag.
     pub scene_delta_db: f64,

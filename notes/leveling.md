@@ -22,7 +22,7 @@ Per-scene rules:
 - Amp candidate choice has TWO filters: classify amps by stable `FenderId` / `model_id`, then allow ONLY the amp `outputLevel` parameter (verified against the fw 1.7.75 + 1.8.45 embedded amp schemas). `output` is not an amp control; `level` on `ACD_TMRumbleV3` is an amp knob but NOT the output leveling control — it must not be changed. Preamp/master/volume params (`brightvolume`, `mastervolume`, `normalvolume`, `volume`) are forbidden — they alter the preset's sound. HW-load-bearing: preset 001 Klon's Hiwatt hit `-9.610 LUFS` only once its actual `outputLevel` was at 100%; a first-active-param pick chases earlier volume params and falsely clamps.
 - Scene Edit mode (`SetNodeSceneEdit` true) gives FULL per-scene isolation — a scene's `outputLevel` write does not touch the base/global value, and enabling scene mode is harmless in itself (it IS the isolation). The leak is only about ORDER: a value write landing BEFORE scene mode is enabled+confirmed hits the BASE scene (which un-scene-moded slots inherit) — a settle/race on a congested line (`SETTLE_AFTER_SCENE_EDIT_MS`=600; a 2nd convergence pass also clears it). So enable+confirm scene mode, THEN write.
 - The BASE scene's blocks have no scene mode; only CHANGE a scene's `outputLevel` when it actually needs it (pure cleanliness, not safety) — `level_scenes_oneshot` measures each scene AS-IS (`measure_scene_asis`, no write) and skips scenes already at the solved level.
-- `level_scenes_oneshot`/`jointk_one_scene` run a BOUNDED secant correction (`correct_iter`, cap `SCENE_CORRECT_MAX`=3, ±`BATCH_TRUST_DB` trust region) that always lands+saves the BEST point, so `apply_levels` never persists a worse number than reported. A ≥6 dB `outputLevel` change that doesn't move the USB 1/2 capture (`no_authority`) is an honest clamp with a distinct `clamp_reason` ("off-branch / off-USB"), restoring the amp to base.
+- `level_scenes_oneshot`/`jointk_one_scene` run a BOUNDED secant correction (`correct_iter`, cap `MEASURE_CORRECT_MAX`=3, ±`BATCH_TRUST_DB` trust region) that always lands+saves the BEST point, so `apply_levels` never persists a worse number than reported. A ≥6 dB `outputLevel` change that doesn't move the USB 1/2 capture (`no_authority`) is an honest clamp with a distinct `clamp_reason` ("off-branch / off-USB"), restoring the amp to base.
 - The device pushes NO field-3 while re-amp is engaged, so knob picks + per-scene knob values resolve in an un-engaged PRE-PASS (`prepass_scene_docs` + `build_scene_jobs`: one rich session loads the preset and harvests each scene's field-3 doc via loadScene → push).
 
 ### Retired: the BatchedLive closed-loop harness
@@ -42,6 +42,20 @@ Each footswitch levels in **isolation**: every other block-acting footswitch's o
 ## Parallel-amp rebalance — equalize lanes, then joint-level
 
 Opt-in ("Even out parallel amps"), only on a path MERGE (two amps in parallel that re-merge). For each such scene (`level_scenes_rebalance`): mute one lane (`outputLevel = 0`) and measure the other to get each lane's solo ceiling `C`, set the two `outputLevel`s for **equal solo loudness** (quieter lane pinned at max, louder attenuated), then scale BOTH lanes' `outputLevel` by one joint factor `k` to hit the combined target. If a muted lane bleeds into the solo (small solo-above-floor margin, `probe --mute-floor`), the scene is flagged **verify by ear** — the combined target is still hit, only the lane balance is approximate. Non-mergeable scenes skip the isolation step and use the plain joint-k.
+
+## Verify-by-ear causes & the dynamic-spread flag
+
+The Summary marks a row **verify by ear** for any of THREE causes (`RunItem.verifyByEar`, `"envelope" | "dynamic" | "rebalance"` in `leveling.ts`; the closing footnote spells out only the causes present):
+
+- **dynamic** — `dynamic_spread_lu` (short-term-max − integrated, gain-invariant, reported by every full-capture measure) ≥ `DYNAMIC_SPREAD_LU` = 6 LU: loud/quiet swings make the integrated number an average, so equal-LUFS presets can still feel uneven (the relative-gate bias; the solver still uses integrated only).
+- **envelope** — the preset contains an envelope-follower effect (`effect_type: "Envelope Filter"`; expression-driven wahs excluded): its response tracks the stimulus's attack/decay envelope, so the synthetic clip can park it in a different regime than real playing — flagged regardless of how clean the numbers look (`ENVELOPE_BIDS` in `useLevelingFlow.ts`).
+- **rebalance** — parallel amps balanced by approximate isolation (mute-lane bleed; see the rebalance section).
+
+Separate from by-ear: a Base row whose PREDICTED true peak (`LevelResult.true_peak_dbtp`, extrapolated from the reference capture — an estimate, never a re-measurement) exceeds the clip threshold earns a "may clip" caveat in the Summary.
+
+## Stop / cancellation
+
+Stop in the Run stage fires all three cancel lanes (`cancel_{preset,scene,footswitch}_leveling` — per-lane `AtomicBool`s read via a `cancelled` closure threaded into the leveller). A tripped flag returns the `leveller::CANCELLED` sentinel, which the runner treats as a **skip**; the in-flight ~6 s capture still finishes. Contract: levels already written before the stop STAY saved (each item saves as it completes — there is no automatic run-level rollback; the Summary's per-row **Restore original** is the manual revert, writing back `LevelResult.previous_level`, the pre-run `presetLevel` anchor); the cancelled item itself persists nothing — `restore_after_unsaved_error` reloads the stored preset to discard the dirty measurement edits (a cancel restores even on the `save=true` path, since it bails before `apply_level`). The UI flips a `stopping` flag for immediate feedback and lands on the Summary via the manual-stop path (Continue button, no auto-advance).
 
 ## Common-target leveling
 

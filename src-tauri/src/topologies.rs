@@ -9,14 +9,18 @@
 //! drive is what lets the leveler match loudness across (preset, instrument)
 //! pairs. Output level is therefore `peak`, NOT a post-hoc gain.
 //!
-//! `id` doubles as the WAV file stem (`resources/samples/<id>.wav`) and as the
-//! stable key a saved instrument profile references — keep them in lockstep
-//! (the `every_topology_has_a_wav` test guards drift).
+//! A `Topology::id` doubles as the WAV file stem (`resources/samples/<id>.wav`)
+//! and as the stable key a saved instrument profile references — keep them in
+//! lockstep (the `every_topology_has_a_wav` test guards drift). Profiles may
+//! instead reference an `ALIASES` id (a familiar pickup name mapped to a parent
+//! topology) — alias ids are NOT WAV stems; `canonical_id` resolves them first.
 
 /// One pickup topology: display metadata + the deterministic synth recipe.
 #[derive(Debug, Clone, Copy)]
 pub struct Topology {
-    /// Stable id == WAV file stem == profile reference key.
+    /// Stable id == WAV file stem == profile reference key, for CANONICAL
+    /// topologies only. A profile may instead hold an `ALIASES` id — not a WAV
+    /// stem — which must be resolved via `canonical_id` before any WAV lookup.
     pub id: &'static str,
     /// UI display label.
     pub label: &'static str,

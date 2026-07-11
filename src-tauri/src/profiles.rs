@@ -23,7 +23,9 @@ pub struct Profile {
     pub id: String,
     /// Free-text instrument name ("Telecaster").
     pub name: String,
-    /// References `topologies::Topology::id`.
+    /// References `topologies::Topology::id` — or an alias id
+    /// (`topologies::ALIASES`); every stimulus/params lookup resolves it via
+    /// `topologies::canonical_id`.
     pub topology_id: String,
     /// Tier-2 measured real output loudness (K-weighted LUFS of the dry signal);
     /// `None` until calibrated. K-weighted, not flat RMS, so it tracks how hard
