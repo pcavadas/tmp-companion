@@ -12,7 +12,9 @@ pub(crate) struct TopologyInfo {
     instrument: String,
 }
 
-/// List the shipped pickup topologies (the catalog backing instrument profiles).
+/// List the shipped pickup topologies (the catalog backing instrument profiles)
+/// plus the pickup ALIASES (familiar names — P90, Filter'Tron… — as selectable
+/// rows resolving to a parent topology's stimulus; see `topologies::ALIASES`).
 /// Supersedes `list_samples` for the UI — profiles reference a topology by `id`.
 #[tauri::command]
 pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
@@ -23,6 +25,14 @@ pub(crate) fn list_pickup_topologies() -> Vec<TopologyInfo> {
             label: t.label.to_string(),
             instrument: t.instrument.to_string(),
         })
+        .chain(topologies::ALIASES.iter().filter_map(|a| {
+            let parent = topologies::by_id(a.topology_id)?;
+            Some(TopologyInfo {
+                id: a.id.to_string(),
+                label: a.label.to_string(),
+                instrument: parent.instrument.to_string(),
+            })
+        }))
         .collect()
 }
 
@@ -92,19 +102,20 @@ pub(crate) fn set_auto_install_updates<R: tauri::Runtime>(
     self::profiles::save(&app, &store)
 }
 
-/// Resolve a topology id to its bundled stimulus WAV path in the resource dir.
-/// Returns an error for an unknown id or unbundled WAV.
+/// Resolve a topology (or alias) id to its bundled stimulus WAV path in the
+/// resource dir. Returns an error for an unknown id or unbundled WAV.
 pub(crate) fn topology_wav_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     topology_id: &str,
 ) -> Result<String, String> {
     use tauri::Manager;
-    topologies::by_id(topology_id)
+    // Aliases carry no WAV of their own — the parent topology's id is the stem.
+    let topo = topologies::by_id(topology_id)
         .ok_or_else(|| format!("unknown pickup topology '{topology_id}'"))?;
     let res = app
         .path()
         .resolve(
-            format!("resources/samples/{topology_id}.wav"),
+            format!("resources/samples/{}.wav", topo.id),
             tauri::path::BaseDirectory::Resource,
         )
         .map_err(|e| format!("resolve topology wav: {e}"))?;
