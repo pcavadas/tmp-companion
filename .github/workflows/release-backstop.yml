@@ -1,0 +1,74 @@
+name: release-backstop
+
+# Guarantees a release is cut for EVERY releasable commit on main, decoupled from the
+# merge-push identity — the one thing release.yml's `on: push` can't do.
+#
+# release.yml fires on `push: [main]`, but GitHub SUPPRESSES all push/PR/CI workflow
+# triggers for anything done by the default GITHUB_TOKEN (github-actions[bot]) — its
+# anti-recursion rule. Native auto-merge runs the merge as whoever ARMED it; when that's
+# github-actions[bot] the merge lands on main and release.yml never runs (that's the
+# whole #59/#62 saga — releases silently piled up and had to be cut by hand).
+#
+# The App-token arming in arm-auto-merge.yml (#62) fixes the FAST path, but it keeps the
+# guarantee coupled to the merge identity — one CI edit / secret expiry / GitHub change
+# and it breaks again, silently. This job is the GUARANTEE: a scheduled trigger can't be
+# suppressed by any token, so it always runs. It asks semantic-release (dry-run, cheap,
+# on ubuntu — NO tauri build) whether a release is pending and, if so, presses the same
+# workflow_dispatch button #59 added. Independent of who merged, forever.
+#
+# ponytail: detection is a log-string grep of the SR dry-run output. If semantic-release
+# changes its "next release version is" wording, update the grep. Failure is observable
+# (releases stop) and safe: release.yml's `concurrency: release-<ref>` serializes a
+# backstop dispatch behind any in-flight push run, and SR no-ops once the tag exists, so
+# it can never double-release.
+
+on:
+  schedule:
+    # Every 30 min. GitHub may delay scheduled runs under load — that affects release
+    # LATENCY in the (rare) miss case, never correctness. The fast path (#62) still cuts
+    # most releases immediately on merge; this only catches what that path drops.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # to dispatch release.yml via `gh workflow run`
+
+concurrency:
+  group: release-backstop
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # semantic-release needs full history + tags
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Is a release pending?
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # --dry-run runs only analyze/notes (no prepare/publish → no tauri build).
+          bunx semantic-release --dry-run 2>&1 | tee sr.log || true
+          if grep -q "next release version is" sr.log; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch release.yml
+        if: steps.check.outputs.pending == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Pending release detected — dispatching release.yml."
+          gh workflow run release.yml --ref main
