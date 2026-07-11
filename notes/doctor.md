@@ -44,7 +44,13 @@ stimulus never excited is skipped (per-sound band-coverage check).
 Same isolation rules as leveling (`doctor_force_bypass`: Base = all block-acting
 footswitches off; a scene/footswitch sound gets its engaged state), but with a
 **2.5 s tail** (`DOCTOR_TAIL_MS`) instead of leveling's 0.8 s — the wash rule
-needs the decay. The stimulus is profile-aware (`resolve_stimulus_with_capture`):
+needs the decay. The body/tail split is onset-aligned, not a fixed boundary:
+`audio::estimate_onset` locates where the stimulus actually starts in the
+capture (the buffer begins at stream start, before the audio propagates
+through cpal/USB/DSP), and `tail_energy_ratio` splits body-vs-tail from that
+onset — splitting at the raw stimulus length alone would leak latency-delayed
+body signal into the tail and skew `washed` measurements (and any calibration
+derived from them) toward the wash threshold. The stimulus is profile-aware (`resolve_stimulus_with_capture`):
 a calibrated profile's Tier-2 DI capture is injected and the sound is diagnosed
 in **Capture space** (`StimulusKind::Capture` — its own threshold table and
 cohort key; capture and synthetic cohorts NEVER pool, a real DI shifts band

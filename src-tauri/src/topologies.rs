@@ -18,7 +18,9 @@
 /// One pickup topology: display metadata + the deterministic synth recipe.
 #[derive(Debug, Clone, Copy)]
 pub struct Topology {
-    /// Stable id == WAV file stem == profile reference key.
+    /// Stable id == WAV file stem == profile reference key, for CANONICAL
+    /// topologies only. A profile may instead hold an `ALIASES` id — not a WAV
+    /// stem — which must be resolved via `canonical_id` before any WAV lookup.
     pub id: &'static str,
     /// UI display label.
     pub label: &'static str,
