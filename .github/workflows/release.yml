@@ -3,6 +3,18 @@ name: release
 on:
   push:
     branches: [main]
+  # Manual fallback: token-armed auto-merge pushes to main run as GITHUB_TOKEN,
+  # which GitHub does NOT re-trigger workflows for, so the push trigger above
+  # silently skips auto-merged releases. Run this from the Actions tab to cut
+  # the pending release. (Proper fix: arm auto-merge with a PAT/App token.)
+  workflow_dispatch:
+
+# Serialize releases: a manual dispatch could overlap a push-triggered run (or
+# another dispatch), racing semantic-release on release creation. Queue instead
+# of cancel so an in-flight signing/notarization is never aborted mid-run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
