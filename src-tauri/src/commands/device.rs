@@ -14,7 +14,7 @@ pub(crate) struct AppInfo {
 /// `Cargo.toml`'s version stays at the `0.0.0-development` placeholder even in a
 /// real release build. `package_info().version` is the field that gets bumped.
 #[tauri::command]
-pub(crate) fn app_info(app: tauri::AppHandle) -> AppInfo {
+pub(crate) fn app_info<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> AppInfo {
     AppInfo {
         name: "TMP Companion".to_string(),
         version: app.package_info().version.to_string(),
