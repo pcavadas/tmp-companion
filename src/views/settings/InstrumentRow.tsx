@@ -326,9 +326,15 @@ export function InstrumentRow({
               })}
             </div>
           )}
+          {/* The "sparse take" caveat ignores the Air band (6–12 kHz): a passive
+              pickup's DI has no energy up there no matter how the take is played,
+              so an uncovered Air is physics, not a playing gap. The chip row above
+              still shows it dimmed (honest data); only the warning is gated. */}
           {phase === "idle" &&
             calibResult &&
-            calibResult.band_coverage.some((c) => !c) && (
+            calibResult.band_coverage.some(
+              (c, i) => !c && calibResult.band_labels[i] !== "Air",
+            ) && (
               <div
                 style={{
                   marginTop: 3,

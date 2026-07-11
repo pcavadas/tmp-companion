@@ -91,4 +91,39 @@ describe("InstrumentRow — capture quality readout", () => {
     await screen.findByText(/spread 2\.1 LU/i, undefined, { timeout: 8000 });
     expect(screen.queryByText(/some bands weren.t played/i)).toBeNull();
   });
+
+  it("no sparse-take hint when ONLY Air is uncovered (a passive DI never covers 6–12 kHz)", async () => {
+    vi.mocked(invoke).mockImplementation((command: string) =>
+      command === "calibrate_profile"
+        ? Promise.resolve({
+            lufs: -21.4,
+            clipped: false,
+            stimulus_shortfall_lu: null,
+            spread_lu: 5.2,
+            band_coverage: [true, true, true, true, true, false],
+            band_labels: ["Lo", "LoM", "Mid", "HiM", "Hi", "Air"],
+          })
+        : Promise.resolve(null),
+    );
+    render(
+      <ThemeProvider>
+        <InstrumentRow
+          profile={profile}
+          topology={null}
+          connected={true}
+          onCalibrated={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onMove={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /calibrate/i }));
+    await screen.findByText(/spread 5\.2 LU/i, undefined, { timeout: 8000 });
+    // The Air dot still renders (dimmed, honest data) …
+    expect(screen.getByText("● Air")).toBeInTheDocument();
+    // … but the sparse-take warning does NOT fire for Air alone.
+    expect(screen.queryByText(/some bands weren.t played/i)).toBeNull();
+  });
 });

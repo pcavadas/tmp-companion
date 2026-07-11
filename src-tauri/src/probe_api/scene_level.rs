@@ -414,3 +414,201 @@ pub fn probe_mute_floor(
     let b = &job.knobs[1];
     leveller::mute_floor_report(list_index, &a.knob, a.current, &b.knob, b.current, &stim)
 }
+
+/// Bisection probe (`probe --bisect-scene`): run the PROVEN-POTENT isolated
+/// write-measure shape at an exact value, optionally prefixed by a jointk-style
+/// as-is capture (`asis`) and/or suffixed by a same-connection save (`save`) —
+/// the two elements the inert jointk path adds. Prints the measured LUFS per
+/// stage so the poisoning element is identified directly on hardware.
+#[allow(clippy::too_many_arguments)] // a HW-bisection CLI arm; a struct would only add ceremony
+pub fn probe_bisect_scene(
+    list_index: u32,
+    scene_slot: u32,
+    group_id: String,
+    node_id: String,
+    value: f32,
+    with_asis: bool,
+    with_save: bool,
+    topology_id: String,
+) -> Result<String, String> {
+    use std::time::Duration;
+    let stim_path = probe_stimulus_path(&topology_id)?;
+    let stim = read_stimulus_calibrated(&stim_path, None)?;
+    let mut out = format!(
+        "=== bisect-scene idx {list_index} scene {scene_slot} {group_id}/{node_id} value {value} asis={with_asis} save={with_save} ===\n"
+    );
+
+    if with_asis {
+        // jointk's leading shape: own load connection, then a write-LESS engage.
+        {
+            let mut s = Session::connect()?;
+            s.load_preset(list_index)?;
+            std::thread::sleep(Duration::from_millis(1200));
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        let asis = {
+            let mut s = Session::connect()?;
+            s.load_scene(scene_slot)?;
+            std::thread::sleep(Duration::from_millis(300));
+            leveller::engage_measure_disengage(&mut s, &stim)?.integrated_lufs
+        };
+        out += &format!("as-is capture: {asis:.2} LUFS\n");
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    // The potent isolated write-measure — inline so a same-connection save can follow.
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(list_index)?;
+        std::thread::sleep(Duration::from_millis(1200));
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    // TMP_BISECT_EDIT_SETTLE overrides the scene-edit→write settle (default 600 =
+    // set_knobs' SETTLE_AFTER_SCENE_EDIT_MS; the potent isolated fn uses 300).
+    let edit_settle: u64 = std::env::var("TMP_BISECT_EDIT_SETTLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    // TMP_BISECT_SCENE_SETTLE: load_scene→scene_edit gap (default 300) — anchor test.
+    let scene_settle: u64 = std::env::var("TMP_BISECT_SCENE_SETTLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let mut s = Session::connect()?;
+    s.load_scene(scene_slot)?;
+    std::thread::sleep(Duration::from_millis(scene_settle));
+    s.set_node_scene_edit(&group_id, &node_id, true)?;
+    std::thread::sleep(Duration::from_millis(edit_settle));
+    s.change_parameter(&group_id, &node_id, "outputLevel", value)?;
+    std::thread::sleep(Duration::from_millis(300));
+    let written = leveller::engage_measure_disengage(&mut s, &stim)?.integrated_lufs;
+    out += &format!("write({value}) settle={edit_settle}ms capture: {written:.2} LUFS\n");
+    if with_save {
+        // TMP_BISECT_SAVE_MODE: same (post-engage same connection, the old apply shape)
+        // | fresh (drop + save on a NEW connection) | rewrite (re-write post-engage on
+        // the same connection, then save — the re-assert shape minus load_scene).
+        let mode = std::env::var("TMP_BISECT_SAVE_MODE").unwrap_or_else(|_| "same".into());
+        match mode.as_str() {
+            "fresh" => {
+                drop(s);
+                std::thread::sleep(Duration::from_millis(400));
+                let mut s2 = Session::connect()?;
+                s2.save_current_preset(list_index)?;
+            }
+            "rewrite" => {
+                s.change_parameter(&group_id, &node_id, "outputLevel", value)?;
+                std::thread::sleep(Duration::from_millis(300));
+                s.save_current_preset(list_index)?;
+            }
+            _ => {
+                s.save_current_preset(list_index)?;
+            }
+        }
+        out += &format!("saved (mode={mode})\n");
+    }
+    Ok(out)
+}
+
+/// FAITHFUL UI-path repro (`probe --jointk-scenes`): drive the REAL
+/// `level_scenes_oneshot` (jointk → `apply_levels` → `correct_iter`, incl. save)
+/// exactly as the app's `level_scenes_apply_batched` does when the wizard levels
+/// scene rows — ONE command call per scene (per-scene prepass), per-name target
+/// overrides. Unlike `probe_level_preset_scenes` (its own simplified one-shot),
+/// this exercises the production scene-leveling code path verbatim, and prints
+/// each scene's job (knob picks + `current`) plus the full outcome — the
+/// diagnostics the UI run doesn't log. Point it at a SCRATCH preset when
+/// save=1: it persists like the real run.
+pub fn probe_jointk_scenes(
+    list_index: u32,
+    default_target: f64,
+    topology_id: String,
+    save: bool,
+    overrides: Vec<(String, f64)>,
+) -> Result<String, String> {
+    if !default_target.is_finite() {
+        return Err("default target LUFS must be finite".to_string());
+    }
+    let stim_path = probe_stimulus_path(&topology_id)?;
+    let cal = std::env::var("TMP_LEVELLER_CAL_LUFS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok());
+    let stim = read_stimulus_calibrated(&stim_path, cal)?;
+    let resolve = |name: &str| -> f64 {
+        overrides
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, t)| *t)
+            .unwrap_or(default_target)
+    };
+
+    let scenes = read_preset_scenes_fresh(list_index)?;
+    let candidates = load_and_filter_amp_candidates(list_index)?;
+    let mut out = format!(
+        "=== jointk-scenes repro · preset idx {list_index} · default {default_target} · save={save} ===\n\
+         scenes ({}): {:?}\namp candidates: {}\n",
+        scenes.scenes.len(),
+        scenes.scenes,
+        candidates.len(),
+    );
+
+    // TMP_JOINTK_ONLY=<sceneSlot>: restrict to one scene (fast bisection runs).
+    let only: Option<u32> = std::env::var("TMP_JOINTK_ONLY")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    for (i, name) in scenes.scenes.iter().enumerate() {
+        let slot = i as u32;
+        if only.is_some_and(|o| o != slot) {
+            continue;
+        }
+        let target = resolve(name);
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        // Per-scene prepass + job build + runner — the app's one-call-per-scene shape.
+        let docs = prepass_scene_docs(list_index, &[slot])?;
+        let doc_bytes = docs
+            .first()
+            .and_then(|(_, d)| d.as_ref())
+            .map(|d| d.to_string().len())
+            .unwrap_or(0);
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        let jobs = match build_scene_jobs(&[slot], &candidates, &docs) {
+            Ok(j) => j,
+            Err(e) => {
+                out += &format!("FS[{slot}] {name:<16} doc={doc_bytes}B  [BUILD FAIL: {e}]\n");
+                continue;
+            }
+        };
+        let job_desc: Vec<String> = jobs
+            .iter()
+            .map(|j| match &j.skip {
+                Some(r) => format!("SKIP: {r}"),
+                None => j
+                    .knobs
+                    .iter()
+                    .map(|k| format!("{:?} current={:.3}", k.knob, k.current))
+                    .collect::<Vec<_>>()
+                    .join(" + "),
+            })
+            .collect();
+        out += &format!(
+            "FS[{slot}] {name:<16} target {target:.1}  doc={doc_bytes}B  job=[{}]\n",
+            job_desc.join("; ")
+        );
+        match leveller::level_scenes_oneshot(
+            list_index,
+            &jobs,
+            &stim,
+            target,
+            save,
+            |_, _| {},
+            || false,
+        ) {
+            Ok(outcomes) => {
+                for o in &outcomes {
+                    out += &format!("   → {o:?}\n");
+                }
+            }
+            Err(e) => out += &format!("   → RUN FAIL: {e}\n"),
+        }
+    }
+    Ok(out)
+}

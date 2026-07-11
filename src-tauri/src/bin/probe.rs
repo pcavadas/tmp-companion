@@ -1826,6 +1826,105 @@ fn main() {
         }
     }
 
+    // --bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]
+    // HW bisection: potent isolated write-measure, plus optional jointk elements.
+    if let Some(i) = args.iter().position(|a| a == "--bisect-scene") {
+        let list_index: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let scene_slot: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let node = args.get(i + 4).cloned().unwrap_or_default();
+        let value: f32 = args
+            .get(i + 5)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f32::NAN);
+        if list_index == u32::MAX
+            || scene_slot == u32::MAX
+            || group.is_empty()
+            || node.is_empty()
+            || value.is_nan()
+        {
+            eprintln!("usage: probe --bisect-scene <listIndex> <sceneSlot> <groupId> <nodeId> <value> [asis] [save]");
+            std::process::exit(2);
+        }
+        let with_asis = args.iter().any(|a| a == "asis");
+        let with_save = args.iter().any(|a| a == "save");
+        match tmp_companion_lib::probe_bisect_scene(
+            list_index,
+            scene_slot,
+            group,
+            node,
+            value,
+            with_asis,
+            with_save,
+            "guitar-singlecoil".to_string(),
+        ) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]
+    // Faithful UI-path repro: the REAL level_scenes_oneshot per scene (one call per
+    // scene, like the wizard), with per-name target overrides. save=1 persists —
+    // point it at a scratch preset.
+    if let Some(i) = args.iter().position(|a| a == "--jointk-scenes") {
+        let list_index: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let default_target: f64 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        let topology = args.get(i + 3).cloned().unwrap_or_default();
+        let save = matches!(
+            args.get(i + 4).map(|s| s.as_str()),
+            Some("1" | "true" | "save" | "yes")
+        );
+        if list_index == u32::MAX || default_target.is_nan() || topology.is_empty() {
+            eprintln!("usage: probe --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
+            std::process::exit(2);
+        }
+        let overrides: Vec<(String, f64)> = args[i + 5..]
+            .iter()
+            .filter_map(|a| {
+                let (n, t) = a.split_once('=')?;
+                Some((n.to_string(), t.parse::<f64>().ok()?))
+            })
+            .collect();
+        eprintln!(
+            "[probe] jointk-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
+        );
+        match tmp_companion_lib::probe_jointk_scenes(
+            list_index,
+            default_target,
+            topology,
+            save,
+            overrides,
+        ) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // --scene-knob-authority <listIndex> <sceneSlot> <topology> : measure whether the
     // active amp outputLevel moves the scene's loudness (global vs scene-edit). No save.
     if let Some(i) = args.iter().position(|a| a == "--scene-knob-authority") {
