@@ -8,11 +8,16 @@ pub(crate) struct AppInfo {
 }
 
 /// Frontend handshake on mount — confirms the backend is reachable.
+///
+/// Version comes from the Tauri config (`tauri.conf.json`), NOT
+/// `CARGO_PKG_VERSION`: semantic-release only bumps `tauri.conf.json`, so
+/// `Cargo.toml`'s version stays at the `0.0.0-development` placeholder even in a
+/// real release build. `package_info().version` is the field that gets bumped.
 #[tauri::command]
-pub(crate) fn app_info() -> AppInfo {
+pub(crate) fn app_info(app: tauri::AppHandle) -> AppInfo {
     AppInfo {
         name: "TMP Companion".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: app.package_info().version.to_string(),
     }
 }
 
