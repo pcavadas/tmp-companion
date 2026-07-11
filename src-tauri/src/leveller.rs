@@ -47,12 +47,17 @@ const CAPTURE_TAIL_MS: u64 = 800;
 /// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change. 2.5 s
 /// covers typical reverb/delay decay without doubling the leveling run time.
 pub const DOCTOR_TAIL_MS: u32 = 2500;
-// Scene mode (`SetNodeSceneEdit`) MUST be enabled AND confirmed before the value
-// write, or the write hits the BASE/global value and leaks across scenes
-// (HW). It is a fire-and-forget setter (no ack), so give it a generous
-// settle to land before `change_parameter` — a 300 ms window intermittently raced
-// under HID congestion, leaking the last scene's level into the un-scene-moded base.
-const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 600;
+// Scene mode (`SetNodeSceneEdit`) MUST be enabled before the value write, or the
+// write hits the BASE/global value and leaks across scenes (HW). But the settle must
+// stay SHORT: the device accepts the scene write only within ~700–750 ms of the
+// `loadScene` recall (HW-bisected, `probe --bisect-scene` on fw 1.8.45 —
+// load_scene→300→edit→400→write lands; …→450→write is SILENTLY DROPPED, no
+// presetError, nothing persists). The old "generous" 600 ms put every production
+// scene write past that cliff — 100% dropped — which surfaced as false "clamped at
+// (as-is)" rows and zero persistence while every 300 ms probe path worked. The rare
+// leak-to-base race a longer settle targeted is covered by the verify + correction
+// pass instead. Keep load_scene→edit→write gaps ≤300 ms.
+const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 300;
 const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
 const LEVEL_MAX: f32 = 1.0;
@@ -575,7 +580,10 @@ pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
 /// single-preset and block paths leave it `false` (the preset is still current
 /// from the prior load — exactly the validated 3-connection sequence); the setlist
 /// path sets it `true` because measuring other presets has since changed which
-/// preset is current.
+/// preset is current. The scene runners (`jointk_one_scene`/rebalance) also leave
+/// it `false` — their runner loads the preset once up front and nothing between
+/// applies changes it; a reload per apply was pure churn the user SAW (the unit
+/// flashing back to the preset between every scene write).
 pub fn apply_level(
     slot: u32,
     stimulus: &[f32],
@@ -621,13 +629,35 @@ pub fn apply_levels(
         verify_lufs = engage_measure_disengage(&mut s, stimulus)
             .ok()
             .map(|l| l.integrated_lufs);
-        // Re-assert every level after the re-amp toggle, before saving.
-        let _ = set_knobs(&mut s, targets);
-        std::thread::sleep(Duration::from_millis(150));
+        // Re-assert after the re-amp toggle ONLY for PresetLevel targets (the
+        // historical motivation). For scene knobs the re-assert is actively harmful:
+        // its `load_scene` REVERTS the just-verified unsaved write, and the re-write
+        // runs on a post-re-amp session that observably answers nothing (HW,
+        // `probe --jointk-scenes` forensics: zero echoed fields) — a dropped re-write
+        // would SAVE the reverted value. The verify capture already measured the
+        // written state; save persists exactly that.
+        if targets
+            .iter()
+            .all(|(k, _)| matches!(k, LevelKnob::PresetLevel))
+        {
+            let _ = set_knobs(&mut s, targets);
+            std::thread::sleep(Duration::from_millis(150));
+        }
     }
 
     if opts.save {
-        s.save_current_preset(slot)?;
+        if opts.verify {
+            // A session that has toggled re-amp silently DROPS the save (HW: after the
+            // verify engage/disengage, `saveCurrentPreset` on the same session persists
+            // nothing — `probe --bisect-scene … save` with TMP_BISECT_SAVE_MODE=same vs
+            // fresh). The written values survive in the device's working copy across
+            // reconnects, so save on a FRESH connection.
+            drop(s);
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            Session::connect()?.save_current_preset(slot)?;
+        } else {
+            s.save_current_preset(slot)?;
+        }
     } else {
         drop(s);
         restore_saved_preset(slot)?;
@@ -981,12 +1011,13 @@ fn set_knob(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<(), String>
             if let Some(scene) = scene_slot {
                 // Per-scene leveling: activate the scene, then enable scene mode on this
                 // block so its params become scene-specific. Scene mode MUST be enabled
-                // AND CONFIRMED before the value write — otherwise the write hits the
-                // BASE/global value and leaks across scenes (HW). It's
-                // re-asserted on EVERY connection (scene + scene-edit don't survive the
-                // leveller's reconnects), and given a generous settle (a 300 ms window
-                // intermittently raced under HID congestion, leaking the last scene's
-                // level into the un-scene-moded base — fixed by a 2nd convergence pass).
+                // before the value write — otherwise the write hits the BASE/global
+                // value and leaks across scenes (HW). It's re-asserted on EVERY
+                // connection (scene + scene-edit don't survive the leveller's
+                // reconnects). The settles must stay SHORT: the device silently drops
+                // the write past ~700 ms after `loadScene` (see
+                // `SETTLE_AFTER_SCENE_EDIT_MS`); the rare too-fast leak-to-base race
+                // is covered by the verify + correction pass.
                 s.load_scene(*scene)?;
                 std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
                 s.set_node_scene_edit(group_id, node_id, true)?;
@@ -2061,7 +2092,7 @@ fn jointk_one_scene(
             .zip(&levels)
             .map(|(k, &v)| (k, v))
             .collect();
-        apply_levels(slot, stimulus, &targets, opts, true)?.1
+        apply_levels(slot, stimulus, &targets, opts, false)?.1
     };
     let (best_lufs, best_levels, clamp_reason, writes) = match v0 {
         Some(v0) if verify => {
@@ -2150,7 +2181,7 @@ fn correct_iter(
             .zip(levels)
             .map(|(k, &v)| (k, v))
             .collect();
-        Ok(apply_levels(slot, stimulus, &targets, opts, true)?.1)
+        Ok(apply_levels(slot, stimulus, &targets, opts, false)?.1)
     };
 
     let k0 = levels0[0] as f64 / (base[0].max(1e-3)) as f64; // shared factor (uniform across lanes)
@@ -2521,7 +2552,7 @@ fn rebalance_one_scene(
             .zip(&levels)
             .map(|(k, &v)| (k, v))
             .collect();
-        apply_levels(slot, stimulus, &targets, opts, true)?.1
+        apply_levels(slot, stimulus, &targets, opts, false)?.1
     };
     let (best_lufs, best_levels, clamp_reason, corr_writes) = match v0 {
         Some(v0) if verify => {
