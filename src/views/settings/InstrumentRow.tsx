@@ -111,9 +111,9 @@ export function InstrumentRow({
     setPhase("recording");
     setRec(0);
     const stepMs = 100;
-    const stepLu = (CALIBRATE_SECS * stepMs) / 1000; // seconds advanced per step
+    const stepSecs = stepMs / 1000; // seconds advanced per step
     recIntervalRef.current = window.setInterval(() => {
-      setRec((r) => Math.min(CALIBRATE_SECS, +(r + stepLu).toFixed(1)));
+      setRec((r) => Math.min(CALIBRATE_SECS, +(r + stepSecs).toFixed(1)));
     }, stepMs);
 
     calibrateProfile(profile.id, CALIBRATE_SECS)
