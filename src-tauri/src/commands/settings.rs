@@ -40,7 +40,8 @@ pub(crate) fn save_profiles(
     app: tauri::AppHandle,
     profiles: Vec<profiles::Profile>,
 ) -> Result<(), String> {
-    let mut store = self::profiles::load(&app)?;
+    let old = self::profiles::load(&app)?;
+    let mut store = old.clone();
     store.profiles = profiles;
     // Drop assignments that now point at a deleted profile.
     let live: std::collections::HashSet<&str> =
@@ -48,7 +49,12 @@ pub(crate) fn save_profiles(
     store
         .profile_by_slot
         .retain(|_, id| live.contains(id.as_str()));
-    self::profiles::save(&app, &store)
+    // Unlink calibration captures whose profile was removed or re-topologized (a
+    // re-picked pickup must not keep leveling with the old instrument's DI).
+    let stale = self::profiles::captures_to_unlink(&old, &store);
+    self::profiles::save(&app, &store)?;
+    self::profiles::unlink_captures(&app, &stale);
+    Ok(())
 }
 
 /// Replace the user's loudness targets (the named live levels edited in Settings).

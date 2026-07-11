@@ -112,6 +112,7 @@ export const levelScenesApplyBatched = (
     rebalance: boolean;
     topologyId: string | null;
     calibrationLufs: number | null;
+    profileId: string | null;
   },
   onResult: (item: SceneLevelProgressItem) => void,
 ): Promise<LevelResult[]> => {
@@ -148,6 +149,7 @@ export const levelFootswitchesApply = (
     save: boolean;
     topologyId: string | null;
     calibrationLufs: number | null;
+    profileId: string | null;
   },
   onResult: (item: FootswitchLevelProgressItem) => void,
 ): Promise<FootswitchLevelResult[]> => {

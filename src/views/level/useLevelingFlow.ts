@@ -353,6 +353,7 @@ export function useLevelingFlow({
                 save: true,
                 topologyId: profile?.topology_id ?? null,
                 calibrationLufs: profile?.calibration_lufs ?? null,
+                profileId: profile?.id ?? null,
               },
               () => {
                 /* single-job call — the returned result is enough */
@@ -392,6 +393,7 @@ export function useLevelingFlow({
                   rebalance: rebalanceRef.current,
                   topologyId: profile?.topology_id ?? null,
                   calibrationLufs: profile?.calibration_lufs ?? null,
+                  profileId: profile?.id ?? null,
                 },
                 () => {
                   /* no per-scene progress callback */

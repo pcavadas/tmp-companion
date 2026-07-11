@@ -149,9 +149,16 @@ pub(crate) async fn level_footswitches_apply(
     save: bool,
     topology_id: Option<String>,
     calibration_lufs: Option<f32>,
+    profile_id: Option<String>,
     on_result: tauri::ipc::Channel<FootswitchLevelProgressItem>,
 ) -> Result<Vec<leveller::FootswitchLevelResult>, String> {
-    let stim_path = resolve_stimulus(&app, None, topology_id.clone())?;
+    let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
+        &app,
+        None,
+        topology_id.clone(),
+        profile_id.as_deref(),
+        calibration_lufs,
+    )?;
     let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
     let offset = playback_offset_for(&app, topology_id.as_deref());
     FOOTSWITCH_LEVEL_CANCEL.store(false, SeqCst);

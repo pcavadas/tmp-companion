@@ -381,6 +381,7 @@ export function buildLevelJob(
     save,
     topology_id: profile?.topology_id ?? null,
     calibration_lufs: profile?.calibration_lufs ?? null,
+    profile_id: profile?.id ?? null,
     block_group_id: null,
     block_node_id: null,
     block_parameter_id: null,

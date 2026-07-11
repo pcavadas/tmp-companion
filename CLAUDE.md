@@ -367,16 +367,25 @@ resources/samples/  7 committed per-topology shaped-noise WAVs — one per picku
 ```
 
 > **Instrument-aware leveling:** a profile (e.g. "Telecaster") links a real instrument to a shipped
-> pickup topology; the topology's stimulus (whose `peak` is a single per-character uncalibrated
-> default drive, overridden by a calibrated profile's measured loudness) is re-amped when leveling a
-> preset the profile is assigned to. "Level all to common target" measures
+> pickup topology; the re-amped stimulus is the profile's Tier-2 DI CAPTURE when present (see the
+> Tier-2 block below), else the topology's synthetic WAV (whose `peak` is a per-character
+> uncalibrated default drive, scaled to a calibrated profile's measured loudness). "Level all to common target" measures
 > every preset's ceiling `C` and levels them all to `min(C) − headroom` so switching presets/instruments
 > on stage causes no loudness jump.
 >
 > **Tier-2 real-guitar calibration** (`calibrate_profile`): captures the dry instrument (USB-Out 3 =
 > input ch `audio::DRY_INSTRUMENT_IN_CH`) while you play, stores its **K-weighted loudness (LUFS)** on
-> `Profile.calibration_lufs`, and `read_stimulus_calibrated` scales the topology WAV to that loudness
-> (capping peak ≤ 0.99) so the amp is driven like the real instrument. K-weighted, not flat RMS/peak:
+> `Profile.calibration_lufs`, **and stores the capture itself** at `<app_config>/captures/<profile_id>.wav` —
+> **the capture IS the leveling stimulus** when present (`resolve_stimulus` precedence: e2e env → explicit →
+> profile capture → topology WAV → env → default), injected **VERBATIM** (`calibration_lufs` nulled when
+> `from_capture` — no scaling, killing the scalar/WAV-mismatch bug class). HW-justified: a `probe --stim-ab`
+> A/B (Tele DI vs the LUFS-matched synthetic) measured preset-dependent errors of −5.4…+2.2 LU that no
+> constant offset absorbs. Consistency rules: unlink-first + temp+rename in `store_capture`; a CLIPPED
+> capture stores nothing (scalar-only, old behavior); `save_profiles` unlinks captures for removed ids AND
+> topology-changed profiles; an activity-ratio gate rejects mostly-silent takes. The **Doctor keeps the
+> synthetic stimulus** (its thresholds were calibrated against it — switching needs a recal sweep, an open
+> follow-up). For legacy/capture-less calibrated profiles `read_stimulus_calibrated` still scales the topology
+> WAV to the stored loudness (capping peak ≤ 0.99) so the amp is driven like the real instrument. K-weighted, not flat RMS/peak:
 > peak is pick-transient-dominated and barely tracks output; flat RMS under-counts bright pickups (a
 > bright guitar that drives the preamp hard reads low in broadband RMS) — K-weighting matches perceived
 > drive and unifies the metric with the leveler's output target (loudness in → loudness out). **Validated on hardware** (both gates passed): the dry instrument is capturable
@@ -414,6 +423,7 @@ The full model — the preset/scene/footswitch recipes, parallel-amp rebalance, 
 - **`audio::LiveReamp` is ring-buffered (`LIVE_RING_SECS`)** — its capture buffer once grew unboundedly (multi-channel 48 kHz × minutes × dozens of rows) and OOM'd the whole Mac. Never re-introduce unbounded capture accumulation; reuse ONE stream pair per preset rather than rebuilding per scene (coreaudiod churn).
 - **`outputLevel`=0 is DEEP DIGITAL SILENCE on the real TMP, and `leveller::loudest_loudness` ERRORS ("no signal captured") on a silent capture** — a finite LUFS isn't recoverable from silence. So a both-lanes-muted rebalance floor (`probe --mute-floor`) reads as silence (the IDEAL mute, no bleed → trustworthy equal-solo balance), and any code that measures a deliberately-muted state must treat the "no signal captured" error as a sentinel deep floor (`leveller::MUTE_FLOOR_SILENT_LUFS`), NOT propagate it — else it aborts the scene. Corollary for off-branch detection: a `gtrSplit` amp can sit in the PRE-SPLIT TRUNK (e.g. preset 028's G1), so it always reaches USB 1/2 and never trips the no-authority clamp — the off-branch positive case is unit-tested, not HW-reproducible on 028.
 - **Re-amp engages reliably only ONCE per connection.** Fresh-connect per engage. Its `ReAmpModeChanged` echo is flaky and is NOT proof of engagement — a finite captured loudness is. (BatchedLive honors this: one lean engage-connection per scene; only the preset load and the audio streams are shared across scenes.) **DO NOT re-engage on a held connection** (disengage → settle → re-engage): a `probe --held-reengage` test produced 2 valid distinct readings then WEDGED the device's re-amp AND triggered a USB crash that REBOOTED the Mac. Pro Control holds ONE session only because it never re-amps; so only the measurement PREPASS must reconnect (one engage/scene) — the leveling APPLY (set presetLevel + per-scene `outputLevel` + save, all pure SENDS) runs on ONE persistent session, no reconnect.
+- **A silent/failed re-amp inject reads as the device's STATIONARY OUTPUT FLOOR, and `measure_c` accepts it as a valid `C` — the production leveling path has NO guard.** In a rapid 20-engage `probe --stim-ab` sweep, 19/20 captures measured the post-DSP floor, not the stimulus. The tell: `dynamic_spread_lu ≈ 0.01` (a plucked stimulus through ANY chain shows spread ≫ 0) + a preset-INDEPENDENT `C` (identical −24.16 across 9 very different presets at ref 0.5 — the floor is post-DSP, so `presetLevel` scales it and the `20·log10` C-model still "holds"). A full `--levelpreset` solve+verify landed 0.00 LU error while measuring ONLY the floor — **solve/verify self-consistency does NOT prove inject health**. Seen only under the rapid multi-cycle sweep (the congestion/stream-churn fragility above); isolated 1–2-engage runs injected fine; root cause not pinned. `probe --stim-ab` guards it (spread ≤ 0.15 → quiet-gap retry + ⚠ FLOOR? flag); adding the same guard to the production leveller is an open follow-up.
 - **Amp-id matching must be CHECK-FIRST then strip (CabIR/ConvRvb).** A discovered amp block can carry merged cab/IR/convolution suffixes the catalog's bare bid lacks (e.g. `ACD_HiwattDR103CanModCabIR` → strip `CabIR` → `ACD_HiwattDR103CanMod`), so an amp+cab combo silently SKIPS FS scenes (HW, preset 006). BUT reverb amps are catalogued WITH the suffix (`ACD_PrincetonReverb68CabIRConvRvb` IS a catalog bid) — so match CHECK-FIRST (try the id, then strip one canonical suffix at a time, re-check), NEVER greedy-strip (that breaks the catalogued-with-suffix amps). `is_amp_model_id` (Rust) + `resolveDeviceId` (TS, shares `blockArt.ts` `SUFFIX`) both do this; the suffix set is `ConvRvb|CabIR|NoCab|Cab|IR` (NoFx is part of base ids, not stripped — but after a failed strip the resolver APPENDS `NoFx` once and re-checks: a device wet-amp id e.g. `ACD_DeluxeReverb65BlondeVibratoCabIRConvRvb` strips to a bare `…BlondeVibrato` the catalog only carries as `…BlondeVibratoNoFx`. Both TS resolvers (`resolveBlockArt`/`resolveDeviceId`) go through a shared `resolveCatalogId` helper in `blockArt.ts`; keep it in lockstep with Rust `is_amp_model_id`. This also covers the ~6 catalogued-`NoFx` reverb amps for per-scene-leveling amp detection).
 - **`load_preset` + `set_preset_level` in the SAME connection → the set is overridden** by the load's own level-apply. Load in its own connection; a no-load set on the already-current preset (which persists across USB reconnects) sticks.
 - **Exclusive HID seize blocks Pro Control** — `IOHIDDeviceOpen` fails if Pro Control is running; the app surfaces a "close Pro Control" error.

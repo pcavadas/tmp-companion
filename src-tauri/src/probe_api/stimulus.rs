@@ -40,8 +40,9 @@ pub fn measure_wav_file(path: &str) -> Result<lufs::Loudness, String> {
     lufs::measure_mono(&mono, rate)
 }
 
-/// Write a mono f32 buffer to a WAV (the offline reference-clip corpus format).
-fn write_wav_mono(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
+/// Write a mono f32 buffer to a WAV (the offline reference-clip corpus format +
+/// the Tier-2 calibration capture store via `profiles::store_capture`).
+pub(crate) fn write_wav_mono(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate,
@@ -295,23 +296,45 @@ pub fn probe_stim_ab(
 ) -> Result<String, String> {
     let stim_a = read_stimulus_48k(wav_a)?;
     let stim_b = read_stimulus_48k(wav_b)?;
+    // A plucked stimulus through ANY chain has a dynamics spread ≫ 0 — a near-zero
+    // spread means the capture was the device's stationary output floor (silent
+    // inject / failed engage), which solves to a plausible-looking but bogus C.
+    // Observed live: a 20-engage sweep read the floor on 19/20 measurements with
+    // spread 0.01 while real measurements ran 1+ LU.
+    const FLOOR_SPREAD_LU: f64 = 0.15;
+    let measure = |slot: u32, stim: &[f32]| -> Result<(leveller::MeasuredC, bool), String> {
+        let first = leveller::measure_c(slot, stim, ref_level, &[])?;
+        if first.dynamic_spread_lu > FLOOR_SPREAD_LU {
+            return Ok((first, false));
+        }
+        // Suspected floor read — quiet gap, then one retry (fresh connections +
+        // fresh audio streams come free with measure_c).
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let second = leveller::measure_c(slot, stim, ref_level, &[])?;
+        let still_floor = second.dynamic_spread_lu <= FLOOR_SPREAD_LU;
+        Ok((second, still_floor))
+    };
     let mut out = format!(
         "stimulus A/B @ ref {ref_level:.2}\n  A = {wav_a}\n  B = {wav_b}\n\
          \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"
     );
     for &slot in slots {
         // measure_c owns its own connection/gap pacing (the level_setlist precedent).
-        let row = leveller::measure_c(slot, &stim_a, ref_level, &[])
-            .and_then(|a| leveller::measure_c(slot, &stim_b, ref_level, &[]).map(|b| (a, b)));
+        let row = measure(slot, &stim_a).and_then(|a| measure(slot, &stim_b).map(|b| (a, b)));
         match row {
-            Ok((a, b)) => {
+            Ok(((a, a_floor), (b, b_floor))) => {
                 out += &format!(
-                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}\n",
+                    "  {slot:>4} | {:>8.3} | {:>8.3} | {:>+7.3} | {:>8.2} | {:>8.2}{}\n",
                     a.c,
                     b.c,
                     b.c - a.c,
                     a.dynamic_spread_lu,
-                    b.dynamic_spread_lu
+                    b.dynamic_spread_lu,
+                    if a_floor || b_floor {
+                        "  ⚠ FLOOR? (near-zero spread after retry — inject not reaching the DSP)"
+                    } else {
+                        ""
+                    }
                 );
             }
             Err(e) => out += &format!("  {slot:>4} | FAILED: {e}\n"),
@@ -398,6 +421,62 @@ pub(crate) fn probe_stimulus_path(topology_id: &str) -> Result<String, String> {
         .find(|p| p.is_file())
         .map(|p| p.to_string_lossy().to_string())
         .ok_or_else(|| format!("no bundled stimulus found for topology {topology_id:?}"))
+}
+
+/// Capture the dry instrument (USB-Out 3) for `secs` (normal mode forced, re-amp
+/// OFF) and return `(mono samples, peak)`. The ONE dry-DI capture recipe — shared
+/// by `calibrate_profile` (Tier-2) and `probe --capture-wav` so their peak/silence
+/// guards can't drift apart.
+pub(crate) fn capture_dry_di(secs: f32) -> Result<(Vec<f32>, f32), String> {
+    // Ensure normal mode (re-amp OFF) so the front instrument input flows.
+    if let Ok(mut s) = session::Session::connect() {
+        let _ = s.set_reamp_mode(false);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let cap = audio::capture_input(secs.clamp(2.0, 30.0), 48_000)?;
+    let mono = cap.channel(audio::DRY_INSTRUMENT_IN_CH);
+    let peak = cap.channel_peak(audio::DRY_INSTRUMENT_IN_CH);
+    if peak < 1e-4 {
+        return Err("no instrument signal captured — play continuously during \
+                    the capture (guitar in the front INSTRUMENT input, volume up)"
+            .to_string());
+    }
+    Ok((mono, peak))
+}
+
+/// Capture the dry instrument (USB-Out 3) for `secs` while the user plays and
+/// save it as a 48 kHz mono f32 WAV — the real-DI side of `--stim-ab`. Reports
+/// peak (clip check — the dry tap has no limiter) and integrated LUFS.
+pub fn probe_capture_wav(path: &str, secs: f32) -> Result<String, String> {
+    let (mono, peak) = capture_dry_di(secs)?;
+    let lufs = lufs::measure_mono(&mono, 48_000)?.integrated_lufs;
+    write_wav_mono(path, &mono, 48_000)?;
+    Ok(format!(
+        "wrote {path}: {:.1}s  peak {:+.1} dBFS{}  integrated {lufs:.2} LUFS\n",
+        mono.len() as f32 / 48_000.0,
+        20.0 * peak.log10(),
+        if peak >= 0.99 {
+            "  ⚠ CLIPPED — recapture softer"
+        } else {
+            ""
+        },
+    ))
+}
+
+/// Scale a 48 kHz WAV to a target integrated LUFS via the production Tier-2
+/// calibration transform (`read_stimulus_calibrated_with_shortfall`, 0.99 peak
+/// cap included) and write the result — the matched-synthetic side of `--stim-ab`.
+pub fn probe_scale_wav(src: &str, dst: &str, target_lufs: f32) -> Result<String, String> {
+    let (stim, shortfall) = read_stimulus_calibrated_with_shortfall(src, Some(target_lufs))?;
+    let got = lufs::measure_mono(&stim, 48_000)?.integrated_lufs;
+    write_wav_mono(dst, &stim, 48_000)?;
+    Ok(format!(
+        "wrote {dst}: {got:.2} LUFS (target {target_lufs:.2}{})\n",
+        match shortfall {
+            Some(lu) => format!(", peak-capped {lu:.1} LU short"),
+            None => String::new(),
+        },
+    ))
 }
 
 #[cfg(test)]
