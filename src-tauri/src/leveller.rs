@@ -28,6 +28,13 @@ use crate::lufs;
 use crate::session::Session;
 
 pub(crate) const SETTLE_AFTER_LOAD_MS: u64 = 1200;
+// ponytail: throwaway probe instrumentation — env override for HW A/B bisects only.
+pub(crate) fn settle_after_load_ms() -> u64 {
+    std::env::var("TMP_SETTLE_AFTER_LOAD_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SETTLE_AFTER_LOAD_MS)
+}
 // Settle after a reload when the next step is a PURE WRITE (no verify capture): the
 // preset only needs to be loaded enough to accept + persist a param, not for the DSP
 // audio to settle. Conservative pending an on-HW read-back floor (write → confirm the
@@ -170,7 +177,7 @@ pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     s.load_preset(slot)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     log::info!("restored stored preset slot={slot} after unsaved measurement");
     Ok(())
 }
@@ -349,7 +356,7 @@ pub fn measure_c(
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let gap = Duration::from_millis(FLOOR_RETRY_GAP_MS);
@@ -424,7 +431,7 @@ fn capture_full_at(
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
@@ -549,7 +556,7 @@ pub fn capture_scene_ceilings(
         {
             let mut s = Session::connect()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
             s.load_scene(scene)?;
             std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
         }
@@ -628,7 +635,7 @@ pub fn apply_levels(
         s.load_preset(slot)?;
         // A verify capture needs the DSP audio fully settled; a pure write does not.
         let settle = if opts.verify {
-            SETTLE_AFTER_LOAD_MS
+            settle_after_load_ms()
         } else {
             SETTLE_BEFORE_WRITE_MS
         };
@@ -1424,7 +1431,7 @@ pub fn level_footswitch(
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
 
@@ -1807,7 +1814,7 @@ pub fn level_scenes_live_batched(
         {
             let mut s = Session::connect()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
         }
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
 
@@ -2548,7 +2555,7 @@ pub fn mute_floor_report(
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
     let combined = measure_knobs_at(stimulus, &[(a, cur_a), (b, cur_b)])?;
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
@@ -2842,7 +2849,7 @@ pub fn level_preset_block(
         {
             let mut s = Session::connect()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
         }
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
 

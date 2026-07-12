@@ -901,15 +901,23 @@ impl Session {
         // Pro Control groups the post-connect requests under batch=2, with the
         // current-preset data/json requests at 3/4. Mirroring that grouping is
         // what makes the device stream the full handshake (incl. the preset JSON).
-        self.send_and_collect(&proto::connection_request(), 200)?;
-        self.send_and_collect(&proto::preset_list_request(1, 1), 20)?; // My Presets
-        self.send_and_collect(&proto::favorite_list_request(2), 20)?;
-        self.send_and_collect(&proto::preset_list_request(4, 2), 20)?; // Factory
-        self.send_and_collect(&proto::preset_list_request(3, 2), 20)?; // Cloud
-        self.send_and_collect(&proto::product_profile_request(2), 20)?;
-        self.send_and_collect(&proto::current_preset_info_request(2), 20)?;
-        self.send_and_collect(&proto::settings_field66(2), 20)?;
-        self.send_and_collect(&proto::userir_field2(2), 20)?;
+        // ponytail: hs() is throwaway probe instrumentation (TMP_HANDSHAKE_SCALE) for HW A/B only.
+        fn hs(ms: u64) -> u64 {
+            std::env::var("TMP_HANDSHAKE_SCALE")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|s| ((ms as f64) * s).round() as u64)
+                .unwrap_or(ms)
+        }
+        self.send_and_collect(&proto::connection_request(), hs(200))?;
+        self.send_and_collect(&proto::preset_list_request(1, 1), hs(20))?; // My Presets
+        self.send_and_collect(&proto::favorite_list_request(2), hs(20))?;
+        self.send_and_collect(&proto::preset_list_request(4, 2), hs(20))?; // Factory
+        self.send_and_collect(&proto::preset_list_request(3, 2), hs(20))?; // Cloud
+        self.send_and_collect(&proto::product_profile_request(2), hs(20))?;
+        self.send_and_collect(&proto::current_preset_info_request(2), hs(20))?;
+        self.send_and_collect(&proto::settings_field66(2), hs(20))?;
+        self.send_and_collect(&proto::userir_field2(2), hs(20))?;
         // Firmware read rides the batch-2 group (no batchStatus), BEFORE the
         // batch-3 current_preset_data_request — sending it after that makes the
         // device drop the `currentFwResponse` reply (HW-confirmed).
@@ -917,7 +925,7 @@ impl Session {
         if request_firmware {
             self.send_and_collect(&proto::current_fw_request(), 200)?;
         }
-        self.send_and_collect(&proto::current_preset_data_request(3), 300)?;
+        self.send_and_collect(&proto::current_preset_data_request(3), hs(300))?;
         // The field-78 json request right after field-2 is what makes the device
         // emit the current preset's `currentPresetDataChanged` (field 3) JSON —
         // but it streams a multi-packet blob (~2 s), so only fetch it when the
