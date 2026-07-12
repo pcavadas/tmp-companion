@@ -34,6 +34,7 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import type { IconName } from "../../ui/Icon";
 import { Rail, RailItem, RailLabel } from "../../ui/Rail";
+import { ActionBar } from "../../ui/ActionBar";
 import { Button } from "../../ui/primitives";
 import {
   getStore,
@@ -381,28 +382,6 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
               />
             ))}
           </div>
-          <div
-            style={{
-              marginTop: "auto",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 10px 2px",
-            }}
-          >
-            <Icon name="lock" size={12} stroke={t.faint} />
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsMicro2,
-                color: t.faint,
-                letterSpacing: "0.02em",
-                lineHeight: 1.4,
-              }}
-            >
-              Data stays on this Mac
-            </span>
-          </div>
         </Rail>
 
         {/* ── PANE — one category at a time, scrolls on its own ── */}
@@ -658,39 +637,33 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
             {cat === "about" && (
               <div style={{ maxWidth: 560 }}>
                 <AppUpdatesSection updater={updater} />
-                <div
-                  style={{
-                    marginTop: 18,
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 9,
-                  }}
-                >
-                  <span style={{ flexShrink: 0, marginTop: 1 }}>
-                    <Icon name="lock" size={13} stroke={t.mutedInk} />
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: t.sans,
-                      fontSize: t.fsUi,
-                      color: t.mutedInk,
-                      lineHeight: 1.5,
-                      textWrap: "pretty",
-                    }}
-                  >
-                    Instruments and loudness targets are the{" "}
-                    <strong style={{ color: t.ink2 }}>
-                      only data this app keeps on your Mac
-                    </strong>
-                    . Everything else — presets, scenes, songs — lives on the
-                    device.
-                  </span>
-                </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* ── shared bottom bar — full window width, every category (DS ActionBar) ── */}
+      <ActionBar
+        left={
+          <span
+            style={{
+              fontFamily: t.mono,
+              fontSize: t.fsMeta,
+              color: t.faint,
+              display: "inline-flex",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <Icon name="lock" size={13} stroke={t.faint} />
+            Instruments and loudness targets are the only data this app keeps on
+            your Mac. Everything else — presets, scenes, songs — lives on the
+            device.
+          </span>
+        }
+        right={null}
+      />
     </div>
   );
 }
