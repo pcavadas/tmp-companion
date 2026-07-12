@@ -365,7 +365,11 @@ fn reamp_capture_real(
     sample_rate: u32,
     tail_ms: u64,
 ) -> Result<Capture, String> {
+    // ponytail: TMP_AUDIO_TIMING is throwaway probe instrumentation (stream cost breakdown).
+    let timing = std::env::var("TMP_AUDIO_TIMING").is_ok();
+    let t0 = Instant::now();
     let streams = resolve_reamp_streams(sample_rate)?;
+    let t_resolve = t0.elapsed();
     let in_ch = streams.in_cfg.channels() as usize;
 
     let stim = Arc::new(stimulus_mono.to_vec());
@@ -379,6 +383,7 @@ fn reamp_capture_real(
 
     in_stream.play().map_err(|e| format!("play input: {e}"))?;
     out_stream.play().map_err(|e| format!("play output: {e}"))?;
+    let t_ready = t0.elapsed();
 
     let play_ms = stimulus_mono.len() as u64 * 1000 / sample_rate as u64;
     let total_ms = play_ms + tail_ms;
@@ -466,8 +471,17 @@ fn reamp_capture_real(
         std::thread::sleep(Duration::from_millis(total_ms));
     }
 
+    let t_sleep_done = t0.elapsed();
     drop(out_stream);
     drop(in_stream);
+    if timing {
+        eprintln!(
+            "[audio-timing] resolve={}ms build+play={}ms teardown={}ms (window={total_ms}ms)",
+            t_resolve.as_millis(),
+            (t_ready - t_resolve).as_millis(),
+            (t0.elapsed() - t_sleep_done).as_millis()
+        );
+    }
 
     let interleaved = captured
         .lock()

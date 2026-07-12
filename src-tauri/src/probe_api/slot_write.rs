@@ -403,3 +403,33 @@ pub fn probe_bulk_apply(
     }
     Ok(out)
 }
+
+/// ponytail: throwaway HW experiment (`--save-load-test`): can ONE connection chain
+/// item N's `saveCurrentPreset` with item N+1's `loadPreset`? Conn 1 makes `slot_a`
+/// current; conn 2 sets a distinctive presetLevel, saves, then loads `slot_b` on the
+/// SAME connection. Verification is the caller's (field-8 read of `slot_a` + an
+/// active-graph check). DESTRUCTIVE: overwrites `slot_a`'s stored presetLevel.
+pub fn probe_save_load_test(slot_a: u32, slot_b: u32, level: f32) -> Result<String, String> {
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot_a)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            crate::leveller::settle_after_load_ms(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::leveller::RECONNECT_GAP_MS,
+    ));
+    let mut s = Session::connect()?;
+    s.set_preset_level(level)?;
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::leveller::SETTLE_AFTER_SET_MS,
+    ));
+    s.save_current_preset(slot_a)?;
+    s.load_preset(slot_b)?;
+    Ok(format!(
+        "set level {level} on slot {} · saved · loaded slot {} — all on ONE connection",
+        slot_a + 1,
+        slot_b + 1
+    ))
+}
