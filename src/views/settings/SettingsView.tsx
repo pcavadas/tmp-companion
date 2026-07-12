@@ -34,6 +34,7 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import type { IconName } from "../../ui/Icon";
 import { Rail, RailItem, RailLabel } from "../../ui/Rail";
+import { ActionBar } from "../../ui/ActionBar";
 import { Button } from "../../ui/primitives";
 import {
   getStore,
@@ -639,37 +640,30 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
               </div>
             )}
           </div>
-
-          {/* ── shared footer — same on every category ── */}
-          <div
-            style={{
-              flexShrink: 0,
-              display: "flex",
-              alignItems: "center",
-              gap: 9,
-              padding: "10px 26px",
-              borderTop: `0.5px solid ${t.hairline}`,
-            }}
-          >
-            <span style={{ flexShrink: 0 }}>
-              <Icon name="lock" size={12} stroke={t.faint} />
-            </span>
-            <span
-              style={{
-                fontFamily: t.sans,
-                fontSize: t.fsMicro2,
-                color: t.faint,
-                lineHeight: 1.4,
-                textWrap: "pretty",
-              }}
-            >
-              Instruments and loudness targets are the only data this app keeps
-              on your Mac. Everything else — presets, scenes, songs — lives on
-              the device.
-            </span>
-          </div>
         </div>
       </div>
+
+      {/* ── shared bottom bar — full window width, every category (DS ActionBar) ── */}
+      <ActionBar
+        left={
+          <span
+            style={{
+              fontFamily: t.mono,
+              fontSize: t.fsMeta,
+              color: t.faint,
+              display: "inline-flex",
+              gap: 8,
+              alignItems: "center",
+            }}
+          >
+            <Icon name="lock" size={13} stroke={t.faint} />
+            Instruments and loudness targets are the only data this app keeps on
+            your Mac. Everything else — presets, scenes, songs — lives on the
+            device.
+          </span>
+        }
+        right={null}
+      />
     </div>
   );
 }
