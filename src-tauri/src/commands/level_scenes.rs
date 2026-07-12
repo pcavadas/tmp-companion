@@ -278,7 +278,10 @@ pub(crate) async fn level_scenes_apply_batched(
             // amp `outputLevel` is linear in dB, so each scene is measured once at a
             // reference level (ISOLATED fresh re-amp capture) and solved exactly — the
             // BatchedLive shared-stream loop mis-measured scenes (HW).
-            let docs = prepass_scene_docs(slot, &scene_slots)?;
+            // `restore_scene` = the preset's original active scene: the batch-end
+            // single save recalls it first so the preset persists in the same
+            // base/scene/footswitch state it was loaded in.
+            let (docs, restore_scene) = prepass_scene_docs(slot, &scene_slots)?;
             // Inter-session HID gap: the prepass session has just closed; the one-shot
             // runner opens a fresh one. Reuse the leveller's HW-proven open-after-close
             // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
@@ -322,6 +325,7 @@ pub(crate) async fn level_scenes_apply_batched(
                     &stim,
                     target_lufs,
                     save_run,
+                    restore_scene,
                     on_scene,
                     cancelled,
                 )
@@ -332,6 +336,7 @@ pub(crate) async fn level_scenes_apply_batched(
                     &stim,
                     target_lufs,
                     save_run,
+                    restore_scene,
                     on_scene,
                     cancelled,
                 )

@@ -36,7 +36,7 @@ pub fn probe_level_scenes_oneshot(
         .and_then(|v| v.parse::<f32>().ok());
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
     let candidates = load_and_filter_amp_candidates(list_index)?;
-    let docs = prepass_scene_docs(list_index, &scene_slots)?;
+    let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let jobs = build_scene_jobs(&scene_slots, &candidates, &docs)?;
     // NO SAVE — restores the stored preset after measuring.
@@ -47,6 +47,7 @@ pub fn probe_level_scenes_oneshot(
             &stim,
             target_lufs,
             false,
+            None,
             |_, _| {},
             || false,
         )
@@ -57,6 +58,7 @@ pub fn probe_level_scenes_oneshot(
             &stim,
             target_lufs,
             false,
+            None,
             |_, _| {},
             || false,
         )
@@ -97,7 +99,7 @@ pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<S
         scene_slots
     };
     let candidates = load_and_filter_amp_candidates(list_index)?;
-    let docs = prepass_scene_docs(list_index, &scene_slots)?;
+    let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
     let template = structure_graph(&docs)
         .and_then(|g| g.template)
         .unwrap_or_else(|| "<unknown>".to_string());

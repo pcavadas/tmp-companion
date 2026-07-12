@@ -342,7 +342,7 @@ export function useLevelingFlow({
         const targetLufs = targetLufsByName(it.targetName);
         const causeOf = causeFor(it.slot);
 
-        if (!isSceneItem(it)) {
+        if (it.isBase || (it.footswitch == null && it.sceneSlot == null)) {
           it.status = "active";
           publish(i, false, false);
           try {
@@ -356,43 +356,6 @@ export function useLevelingFlow({
               it.previousLevel = res.previous_level;
               it.truePeakDbtp = res.true_peak_dbtp;
               it.verifyByEar = causeOf(res);
-            } else if (it.footswitch != null) {
-              // A block-acting FOOTSWITCH — level its engaged state so stomping it lands
-              // on target. One job per call (one footswitch at a time, like a scene); the
-              // backend classifies bake vs assign and decides whether to overwrite the
-              // block or write a footswitch param-change. `method` is intentionally not
-              // surfaced — the user only ever sees "leveled".
-              const fsw = it.footswitch;
-              const results = await levelFootswitchesApply(
-                {
-                  slot: it.slot,
-                  jobs: [
-                    {
-                      switch: fsw.switchIndex,
-                      levGroupId: fsw.levGroupId,
-                      levNodeId: fsw.levNodeId,
-                      levParameterId: fsw.levParameterId,
-                      targetLufs,
-                    },
-                  ],
-                  save: true,
-                  topologyId: profile?.topology_id ?? null,
-                  calibrationLufs: profile?.calibration_lufs ?? null,
-                  profileId: profile?.id ?? null,
-                },
-                () => {
-                  /* single-job call — the returned result is enough */
-                },
-              );
-              if (results.length === 0) {
-                it.outcome = "skipped";
-              } else {
-                const r = results[0];
-                it.outcome = outcomeOf(r);
-                it.value = valueOf(r);
-                it.spreadLu = r.dynamic_spread_lu;
-                it.verifyByEar = causeOf(r);
-              }
             } else {
               // A scene item with no wire slot — nothing to level.
               it.outcome = "skipped";
@@ -403,6 +366,85 @@ export function useLevelingFlow({
           }
           finishItem(it, i);
           i += 1;
+          continue;
+        }
+
+        if (it.footswitch != null) {
+          // ── Block-acting FOOTSWITCHES — level each engaged state so stomping it
+          // lands on target. ADJACENT rows of the same preset sharing an instrument
+          // go in ONE call (per-job targets ride the jobs array): the backend
+          // measures every switch, then writes them all on ONE session and saves the
+          // preset ONCE — per-switch calls re-loaded + saved per switch. Bake vs
+          // assign stays internal; the user only ever sees "leveled".
+          let end = i + 1;
+          while (
+            end < total &&
+            work[end].footswitch != null &&
+            work[end].slot === it.slot &&
+            work[end].instId === it.instId
+          ) {
+            end += 1;
+          }
+          const group = work.slice(i, end);
+          const bySwitch = new Map(
+            group.flatMap((g, k) =>
+              g.footswitch != null
+                ? [[g.footswitch.switchIndex, { item: g, idx: i + k }] as const]
+                : [],
+            ),
+          );
+          try {
+            await levelFootswitchesApply(
+              {
+                slot: it.slot,
+                jobs: group.flatMap((g) =>
+                  g.footswitch != null
+                    ? [
+                        {
+                          switch: g.footswitch.switchIndex,
+                          levGroupId: g.footswitch.levGroupId,
+                          levNodeId: g.footswitch.levNodeId,
+                          levParameterId: g.footswitch.levParameterId,
+                          targetLufs: targetLufsByName(g.targetName),
+                        },
+                      ]
+                    : [],
+                ),
+                save: true,
+                topologyId: profile?.topology_id ?? null,
+                calibrationLufs: profile?.calibration_lufs ?? null,
+                profileId: profile?.id ?? null,
+              },
+              (item) => {
+                const entry = bySwitch.get(item.switch);
+                if (!entry) return;
+                if (item.status === "active") {
+                  entry.item.status = "active";
+                  publish(entry.idx, false, false);
+                } else if (item.status === "done" && item.result) {
+                  entry.item.outcome = outcomeOf(item.result);
+                  entry.item.value = valueOf(item.result);
+                  entry.item.spreadLu = item.result.dynamic_spread_lu;
+                  entry.item.verifyByEar = causeOf(item.result);
+                  finishItem(entry.item, entry.idx);
+                } else if (item.status === "error") {
+                  entry.item.outcome = "skipped";
+                  finishItem(entry.item, entry.idx);
+                }
+              },
+            );
+          } catch {
+            /* whole-group failure — the sweep below flags unresolved rows skipped */
+          }
+          if (!isCancelled()) {
+            for (const entry of bySwitch.values()) {
+              if (entry.item.status !== "result") {
+                entry.item.outcome = "skipped";
+                finishItem(entry.item, entry.idx);
+              }
+            }
+          }
+          i = end;
           continue;
         }
 

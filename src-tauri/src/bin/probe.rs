@@ -1877,6 +1877,66 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--fs-batch") {
+        // --fs-batch <listIndex> [v1 v2 …]  — batched footswitch WRITE validation:
+        // plan bake/assign per block-acting switch, write ALL on one session, ONE save.
+        let list_index: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        if list_index == u32::MAX {
+            eprintln!("usage: probe --fs-batch <listIndex> [v1 v2 …]");
+            std::process::exit(2);
+        }
+        let values: Vec<f32> = args[i + 2..].iter().map_while(|s| s.parse().ok()).collect();
+        match tmp_companion_lib::probe_fs_batch(list_index, values) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--defer-scenes") {
+        // --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>
+        // TMP_DEFER_FINAL=asis|return|base picks the final-save shape.
+        let list_index: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 2).cloned().unwrap_or_default();
+        let node = args.get(i + 3).cloned().unwrap_or_default();
+        let writes: Vec<(u32, f32)> = args
+            .get(i + 4)
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|pair| {
+                        let (sc, v) = pair.split_once(':')?;
+                        Some((sc.parse().ok()?, v.parse().ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if list_index == u32::MAX || group.is_empty() || node.is_empty() || writes.is_empty() {
+            eprintln!("usage: probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_defer_scenes(list_index, group, node, writes) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]
     // Faithful UI-path repro: the REAL level_scenes_oneshot per scene (one call per
     // scene, like the wizard), with per-name target overrides. save=1 persists —

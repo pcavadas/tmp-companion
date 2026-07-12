@@ -394,10 +394,12 @@ pub(crate) fn build_scene_jobs(
 /// post-load doc IS that scene's doc (the load materialized its state), so
 /// serve the already-active scene from the last harvested doc instead of
 /// sending a doomed no-change recall.
-pub(crate) fn prepass_scene_docs(
-    slot: u32,
-    scene_slots: &[u32],
-) -> Result<Vec<(u32, Option<serde_json::Value>)>, String> {
+/// The prepass result: per-scene docs plus the preset's ORIGINAL active scene (its
+/// saved `lastLoadedScene`, materialized by the prepass `load_preset`) — the scene the
+/// batch-end save must restore so the preset persists in the state it was loaded in.
+pub(crate) type SceneDocs = (Vec<(u32, Option<serde_json::Value>)>, Option<u32>);
+
+pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<SceneDocs, String> {
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
@@ -419,6 +421,9 @@ pub(crate) fn prepass_scene_docs(
         .map(|v| v as u32);
     // The doc reflecting the CURRENTLY-active scene's materialized state.
     let mut active_doc = base_doc.clone();
+    // The preset's ORIGINAL active scene, before any recall below — returned so the
+    // batch-end save can restore it.
+    let original_active = active;
     let mut docs = Vec::with_capacity(scene_slots.len());
     for &scene in scene_slots {
         if scene >= session::BASE_SCENE_SLOT {
@@ -444,7 +449,7 @@ pub(crate) fn prepass_scene_docs(
             docs.push((scene, doc));
         }
     }
-    Ok(docs)
+    Ok((docs, original_active))
 }
 
 #[cfg(test)]

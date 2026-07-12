@@ -128,6 +128,12 @@ pub struct LevelOptions {
     pub verify: bool,
     /// Reference level to measure at (the model is solved from this point).
     pub ref_level: f32,
+    /// Leave the written values UNSAVED in the device working copy: no save AND no
+    /// restore-reload. The scene runners' accumulate-then-single-save mode — unsaved
+    /// scene-edit writes survive scene recalls and reconnects, and ONE final
+    /// `saveCurrentPreset` persists every accumulated overlay (HW,
+    /// `probe --defer-scenes`). Meaningless with `save: true`.
+    pub defer: bool,
 }
 
 impl Default for LevelOptions {
@@ -136,6 +142,7 @@ impl Default for LevelOptions {
             save: false,
             verify: false,
             ref_level: 0.5,
+            defer: false,
         }
     }
 }
@@ -667,6 +674,11 @@ pub fn apply_levels(
         } else {
             s.save_current_preset(slot)?;
         }
+    } else if opts.defer {
+        // Deferred mode: leave the write UNSAVED in the working copy — the scene
+        // runner persists every accumulated overlay with ONE save at batch end
+        // (`save_deferred_scene_writes`). No restore: a reload would discard it.
+        drop(s);
     } else {
         drop(s);
         restore_saved_preset(slot)?;
@@ -880,6 +892,7 @@ pub fn level_setlist(
         save,
         verify: false,
         ref_level,
+        ..Default::default()
     };
     let mut results = Vec::with_capacity(entries.len());
     for (e, m) in entries.iter().zip(measured.iter()) {
@@ -1251,44 +1264,39 @@ fn param_fn_present(ftsw: &serde_json::Value, switch: u32, index: u32, param: &s
         .unwrap_or(false)
 }
 
-/// Level a footswitch's engaged state by solving a parameter-change assignment.
-/// `lev` = the `(group, node, param)` solved; `value_b` = the switch-OFF value written. On
-/// `save`, writes the `param` function (gated on the field-54 echo / read-back, never on
-/// `presetError`) and persists; otherwise reverts the working copy. The measurement param
-/// sweep is NEVER saved — the write path reloads the preset first.
-#[allow(clippy::too_many_arguments)]
-pub fn level_footswitch(
-    slot: u32,
+/// One fresh-connection engaged-state measurement point for a footswitch job: force the
+/// engaged bypass list, set the swept param, engage re-amp once, measure. The forced
+/// state lives only on this throwaway connection's working-copy edits; the batch write
+/// session's reload discards ALL accumulated sweep pollution at once.
+pub(crate) fn measure_fs_at(
+    lev: (&str, &str, &str),
+    engaged_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    v: f32,
+) -> Result<lufs::Loudness, String> {
+    let mut s = Session::connect()?;
+    for (g, n, byp) in engaged_bypass {
+        s.change_parameter_bool(g, n, "bypass", *byp)?;
+    }
+    s.change_parameter(lev.0, lev.1, lev.2, v)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    engage_measure_disengage(&mut s, stimulus)
+}
+
+/// Measurement/solve phase of ONE footswitch job — no write, no save, no reload.
+/// CALLER CONTRACT: the preset is already current (load it once per batch), and the
+/// caller discards the sweep pollution afterwards (the batch write session's reload,
+/// or a plain reload on the dry/no-signal paths). Returns the un-persisted result
+/// (`saved:false`, `verify_lufs:None`); `final_value` is the solved value.
+pub fn measure_footswitch(
     switch: u32,
     lev: (&str, &str, &str),
     engaged_bypass: &[(String, String, bool)],
-    write: &FsWrite,
     stimulus: &[f32],
     target_lufs: f64,
-    save: bool,
-    verify: bool,
+    method: &str,
 ) -> Result<FootswitchLevelResult, String> {
-    // Load the preset in its own connection (re-amp latch workaround), then measure on
-    // fresh connections (the preset stays current across reconnects).
-    {
-        let mut s = Session::connect()?;
-        s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
-    }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-
-    // Replicate the footswitch's engaged state (force each on-off block's bypass) before the
-    // param sweep — empty for a block that's ON in base (today's base-state measurement). The
-    // forced bypass lives only on these throwaway measurement connections; the write reloads.
-    let measure_at = |v: f32| -> Result<lufs::Loudness, String> {
-        let mut s = Session::connect()?;
-        for (g, n, byp) in engaged_bypass {
-            s.change_parameter_bool(g, n, "bypass", *byp)?;
-        }
-        s.change_parameter(lev.0, lev.1, lev.2, v)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
-        engage_measure_disengage(&mut s, stimulus)
-    };
+    let measure_at = |v: f32| measure_fs_at(lev, engaged_bypass, stimulus, v);
 
     // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
     // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
@@ -1309,12 +1317,6 @@ pub fn level_footswitch(
         Ok(l) => l,
         Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
             reamp_off();
-            // Discard the forced-bypass/swept-param pollution `measure_at` left on the live
-            // device — mirrors the reload every other exit from this function does.
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-            if let Ok(mut s) = Session::connect() {
-                let _ = s.load_preset(slot);
-            }
             return Ok(FootswitchLevelResult {
                 switch,
                 measured_lufs: MUTE_FLOOR_SILENT_LUFS,
@@ -1327,10 +1329,7 @@ pub fn level_footswitch(
                 verify_lufs: None,
                 iterations: 1,
                 dynamic_spread_lu: None,
-                method: match write {
-                    FsWrite::Bake { .. } => "baked".into(),
-                    FsWrite::Assign { .. } => "assigned".into(),
-                },
+                method: method.into(),
             });
         }
         Err(e) => return Err(e),
@@ -1373,36 +1372,137 @@ pub fn level_footswitch(
     // Signal is present past the seed probe, so a miss is a headroom/authority clamp, never a
     // routing error → `clamp_reason` stays None (the UI shows "clamped at X LUFS").
     let clamped = err(best_lufs) > KNOB_TOL_LU;
+    Ok(FootswitchLevelResult {
+        switch,
+        measured_lufs: l_lo.integrated_lufs,
+        final_value: best_v,
+        target_lufs,
+        predicted_lufs: best_lufs,
+        clamped,
+        clamp_reason: None,
+        saved: false,
+        verify_lufs: None,
+        iterations,
+        dynamic_spread_lu: Some(best_spread),
+        method: method.into(),
+    })
+}
 
-    // ── Write (save only): reload to DISCARD the measurement pollution (incl. the forced
-    //    bypass), then write per the mode and persist ──
-    let mut saved = false;
-    let mut verify_lufs = None;
-    if save {
-        reamp_off();
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-        // Establish a LIVE CONTROLLER (begin_live_edit warmup) → load (discards the
-        // measurement pollution) → then KEEP THE SESSION LIVE with a heartbeat burst right up
-        // to any chunked `ftsw` edit. Chunked edits are silently DROPPED (empty reply) if the
-        // session has lapsed — and a PASSIVE SLEEP lets it lapse. HW-proven
-        // (`probe --repro-chunked`): passive sleep before the set → dropped; heartbeat-pumped →
-        // lands, even across prior re-amp captures.
+/// One footswitch's solved write, pending the batch's single write+save session.
+pub struct FsPendingWrite {
+    pub switch: u32,
+    /// The leveled `(group, node, param)`.
+    pub lev: (String, String, String),
+    pub write: FsWrite,
+    /// The solved value (`valueA` for Assign; the baked block value for Bake).
+    pub value: f32,
+}
+
+/// Level a footswitch's engaged state by solving a parameter-change assignment.
+/// `lev` = the `(group, node, param)` solved; `value_b` = the switch-OFF value written. On
+/// `save`, writes the `param` function (gated on the field-54 echo / read-back, never on
+/// `presetError`) and persists; otherwise reverts the working copy. The measurement param
+/// sweep is NEVER saved — the write path reloads the preset first.
+#[allow(clippy::too_many_arguments)]
+pub fn level_footswitch(
+    slot: u32,
+    switch: u32,
+    lev: (&str, &str, &str),
+    engaged_bypass: &[(String, String, bool)],
+    write: &FsWrite,
+    stimulus: &[f32],
+    target_lufs: f64,
+    save: bool,
+    verify: bool,
+) -> Result<FootswitchLevelResult, String> {
+    // Load the preset in its own connection (re-amp latch workaround), then measure on
+    // fresh connections (the preset stays current across reconnects).
+    {
         let mut s = Session::connect()?;
-        s.begin_live_edit()?;
         s.load_preset(slot)?;
-        let name = s.active_preset_name().unwrap_or_default();
-        if !name.is_empty() && !s.await_active_preset(&name, 20) {
-            return Err("after reload, active preset changed — aborting before write".into());
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+
+    let method = match write {
+        FsWrite::Bake { .. } => "baked",
+        FsWrite::Assign { .. } => "assigned",
+    };
+    let result = measure_footswitch(switch, lev, engaged_bypass, stimulus, target_lufs, method)?;
+    if result.clamp_reason.is_some() {
+        // No-signal routing clamp: nothing to write — discard the sweep pollution.
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        if let Ok(mut s) = Session::connect() {
+            let _ = s.load_preset(slot);
         }
-        for _ in 0..8 {
-            let _ = s.heartbeat();
-            let _ = s.pump_collect(150);
+        return Ok(result);
+    }
+    let best_v = result.final_value;
+    let mut result = result;
+
+    // ── Write (save only): the batch writer reloads (discarding the sweep pollution),
+    //    writes, and persists with ONE save; the dry path just reloads ──
+    if save {
+        let pending = [FsPendingWrite {
+            switch,
+            lev: (lev.0.into(), lev.1.into(), lev.2.into()),
+            write: write.clone(),
+            value: best_v,
+        }];
+        write_footswitch_values(slot, &pending)?;
+        result.saved = true;
+        if verify {
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            result.verify_lufs = measure_fs_at(lev, engaged_bypass, stimulus, best_v)
+                .ok()
+                .map(|l| l.integrated_lufs);
+            let mut s = Session::connect()?; // discard the verify pollution
+            let _ = s.load_preset(slot);
         }
-        match write {
+    } else {
+        let mut s = Session::connect()?; // dry: discard the measurement pollution
+        let _ = s.load_preset(slot);
+    }
+    // Final guarantee (verify re-amps; never leave the unit input-muted).
+    let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+    Ok(result)
+}
+
+/// Write every pending footswitch value on ONE live-edit session and persist with ONE
+/// `saveCurrentPreset` — the per-preset single save (a batch of switches used to reload
+/// and save once EACH: N base flashes + N saves of user-visible churn). Session shape
+/// per the chunked-edit rules: establish a LIVE CONTROLLER (`begin_live_edit` warmup),
+/// then load (discarding ALL the measurement pollution the batch's sweeps accumulated),
+/// then keep the session live with heartbeat bursts right up to each chunked `ftsw`
+/// edit (chunked edits are silently DROPPED if the session lapses — a passive sleep
+/// lets it lapse; HW `probe --repro-chunked`). Each write keeps its confirm gate
+/// (field-54 echo / read-back, retry-once, never save on `presetError`); ANY
+/// unconfirmed write aborts BEFORE the save, so nothing half-applied persists.
+pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<(), String> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    // Guaranteed re-amp OFF first — the measurement's last disengage can be dropped.
+    let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let mut s = Session::connect()?;
+    s.begin_live_edit()?;
+    s.load_preset(slot)?;
+    let name = s.active_preset_name().unwrap_or_default();
+    if !name.is_empty() && !s.await_active_preset(&name, 20) {
+        return Err("after reload, active preset changed — aborting before write".into());
+    }
+    for _ in 0..8 {
+        let _ = s.heartbeat();
+        let _ = s.pump_collect(150);
+    }
+    for p in pending {
+        let (group, node, param) = (&p.lev.0, &p.lev.1, &p.lev.2);
+        match &p.write {
             FsWrite::Assign { value_b, spec } => {
                 let json = serde_json::json!({
-                    "func": "param", "groupId": lev.0, "nodeId": lev.1, "parameterId": lev.2,
-                    "valueA": best_v, "valueB": value_b, "valueType": 2,
+                    "func": "param", "groupId": group, "nodeId": node, "parameterId": param,
+                    "valueA": p.value, "valueB": value_b, "valueType": 2,
                     "colorA": spec.color_a, "colorB": spec.color_b,
                     "customLabel": spec.custom_label, "switchType": 0,
                     "isActive": spec.is_active, "linkGroup": spec.link_group
@@ -1415,7 +1515,7 @@ pub fn level_footswitch(
                 let mut confirmed = false;
                 let mut last_seen = Vec::new();
                 for _ in 0..2 {
-                    s.set_footswitch_assignment(switch, spec.function_index, &json, false, None)?;
+                    s.set_footswitch_assignment(p.switch, spec.function_index, &json, false, None)?;
                     if s.saw_preset_error() {
                         return Err(
                             "device rejected the footswitch assignment (presetError) — not saved"
@@ -1429,7 +1529,7 @@ pub fn level_footswitch(
                     }
                     for _ in 0..3 {
                         if s.live_ftsw().is_some_and(|f| {
-                            param_fn_present(&f, switch, spec.function_index, lev.2)
+                            param_fn_present(&f, p.switch, spec.function_index, param)
                         }) {
                             confirmed = true;
                             break;
@@ -1454,7 +1554,7 @@ pub fn level_footswitch(
                 // baked value when engaged). Then bake the value onto the block. Abort before
                 // save if the clear can't be confirmed (nothing is persisted on the reload).
                 if let Some(idx) = clear_stale {
-                    s.clear_footswitch_assignment(switch, *idx)?;
+                    s.clear_footswitch_assignment(p.switch, *idx)?;
                     if s.saw_preset_error() {
                         return Err(
                             "device rejected the footswitch clear (presetError) — not saved".into(),
@@ -1463,7 +1563,7 @@ pub fn level_footswitch(
                     let mut cleared = false;
                     for _ in 0..4 {
                         if s.live_ftsw().is_some_and(|f| {
-                            crate::footswitch::existing_param_fn_index(&f, switch, lev.1, lev.2)
+                            crate::footswitch::existing_param_fn_index(&f, p.switch, node, param)
                                 .is_none()
                         }) {
                             cleared = true;
@@ -1479,41 +1579,15 @@ pub fn level_footswitch(
                         );
                     }
                 }
-                s.change_parameter(lev.0, lev.1, lev.2, best_v)?;
+                s.change_parameter(group, node, param, p.value)?;
             }
         }
-        s.save_current_preset(slot)?;
-        saved = true;
-        drop(s);
-        if verify {
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-            verify_lufs = measure_at(best_v).ok().map(|l| l.integrated_lufs);
-            let mut s = Session::connect()?; // discard the verify pollution
-            let _ = s.load_preset(slot);
-        }
-    } else {
-        let mut s = Session::connect()?; // dry: discard the measurement pollution
-        let _ = s.load_preset(slot);
+        // Keep the live controller warm between chunked writes.
+        let _ = s.heartbeat();
+        let _ = s.pump_collect(150);
     }
-    reamp_off(); // final guarantee (verify re-amps; never leave the unit input-muted)
-
-    Ok(FootswitchLevelResult {
-        switch,
-        measured_lufs: l_lo.integrated_lufs,
-        final_value: best_v,
-        target_lufs,
-        predicted_lufs: best_lufs,
-        clamped,
-        clamp_reason: None,
-        saved,
-        verify_lufs,
-        iterations,
-        dynamic_spread_lu: Some(best_spread),
-        method: match write {
-            FsWrite::Bake { .. } => "baked".into(),
-            FsWrite::Assign { .. } => "assigned".into(),
-        },
-    })
+    s.save_current_preset(slot)?;
+    Ok(())
 }
 
 /// Pure secant step for the closed loop: given two measured points
@@ -1886,15 +1960,20 @@ pub fn level_scenes_live_batched(
 /// measurement (`measure_knob_at`) reads correctly. Same signature + outcome shape as
 /// `level_scenes_live_batched` so the command path is a drop-in swap. Per-scene
 /// isolation rides `set_knob`'s Scene Edit; `presetLevel` (the Base) must be leveled
-/// FIRST (it is a global multiplier over every scene). `save` persists each scene
-/// (via `apply_level`) as it lands; a per-scene failure becomes a failed outcome,
-/// never aborting the run.
+/// FIRST (it is a global multiplier over every scene). With `save`, every scene's
+/// write accumulates UNSAVED in the working copy and ONE `saveCurrentPreset` at
+/// batch end persists them all (`save_deferred_scene_writes` — also fired on
+/// cancel, so already-reported scenes are never silently lost); `restore_scene`
+/// is recalled first so the save stamps the preset's original active scene. A
+/// per-scene failure becomes a failed outcome, never aborting the run.
+#[allow(clippy::too_many_arguments)]
 pub fn level_scenes_oneshot(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
     target_lufs: f64,
     save: bool,
+    restore_scene: Option<u32>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
@@ -1904,11 +1983,15 @@ pub fn level_scenes_oneshot(
     // between the prepass and the first scene measure, once per dispatched scene.
 
     let mut outcomes = Vec::with_capacity(jobs.len());
+    let mut attempted = false;
     // Every writing scene verifies + self-corrects (see `jointk_one_scene`): a downstream
     // compressor undershoots the open-loop solve per scene, so the canary-only model isn't
     // enough. Cost is one verify capture per off-target scene (none when already at target).
     for job in jobs {
         if cancelled() {
+            if save && attempted {
+                let _ = save_deferred_scene_writes(slot, restore_scene);
+            }
             return Err(CANCELLED.to_string());
         }
         on_scene(job.scene_slot, None);
@@ -1928,12 +2011,18 @@ pub fn level_scenes_oneshot(
         // run its bounded secant correction, so a preset with a downstream compressor
         // converges per scene (not just the first). On a linear chain the first verify is
         // within tol and no correction runs, so the cost is one verify capture per off-target scene.
+        attempted = true;
         let result = jointk_one_scene(slot, job, stimulus, target_lufs, save, true);
 
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let outcome = match result {
             Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
-            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) if e == CANCELLED => {
+                if save && attempted {
+                    let _ = save_deferred_scene_writes(slot, restore_scene);
+                }
+                return Err(e);
+            }
             Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
         };
         on_scene(job.scene_slot, Some(&outcome));
@@ -1942,7 +2031,37 @@ pub fn level_scenes_oneshot(
     // Guaranteed fresh re-amp OFF (each `measure_knob_at`/`apply_level` already
     // disengages, but an interrupted capture can strand it).
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    // The batch's ONE persist — after the re-amp OFF, on its own clean connection.
+    if save && attempted {
+        save_deferred_scene_writes(slot, restore_scene)?;
+    }
     Ok(outcomes)
+}
+
+/// The scene batch's ONE persist: recall the preset's original active scene (so the
+/// save stamps the same base/scene/footswitch state the preset had before the run —
+/// a save stamps `lastLoadedScene` + switch states from the working state), then ONE
+/// `saveCurrentPreset` persisting every accumulated unsaved scene overlay. HW
+/// (`probe --defer-scenes`, fw 1.8.45): unsaved scene-edit writes survive scene
+/// recalls and reconnects; re-recalling a written scene does NOT revert it; base
+/// recall = wire slot 8; the single save persists ALL accumulated overlays. One
+/// retry on a fresh connection (the realistic failure is the HID open lockout, not
+/// the save itself). The connection never toggles re-amp, so the post-re-amp
+/// save-drop cannot bite.
+fn save_deferred_scene_writes(slot: u32, restore_scene: Option<u32>) -> Result<(), String> {
+    let attempt = || -> Result<(), String> {
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        let mut s = Session::connect()?;
+        if let Some(scene) = restore_scene {
+            s.load_scene(scene)?;
+            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        }
+        s.save_current_preset(slot)
+    };
+    attempt().or_else(|e| {
+        log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
+        attempt()
+    })
 }
 
 /// Result of the joint-k solve for a scene's amp-knob set.
@@ -2054,7 +2173,7 @@ fn jointk_one_scene(
     job: &SceneJob,
     stimulus: &[f32],
     target_lufs: f64,
-    save: bool,
+    defer: bool,
     verify: bool,
 ) -> Result<SceneSolve, String> {
     // Hard-error on a persistent flat read (after the retry). Trade-off, made
@@ -2084,9 +2203,12 @@ fn jointk_one_scene(
             verify_by_ear: false,
         });
     }
+    // Scene writes are NEVER saved per apply: `defer` accumulates them unsaved in the
+    // working copy (the runner saves ONCE at batch end); `!defer` is the dry-run shape
+    // (each apply restores). See `save_deferred_scene_writes`.
     let opts = LevelOptions {
-        save,
         verify,
+        defer,
         ..Default::default()
     };
     let base: Vec<f32> = job.knobs.iter().map(|kt| kt.current).collect();
@@ -2112,7 +2234,7 @@ fn jointk_one_scene(
                 measured,
                 v0,
                 target_lufs,
-                save,
+                defer,
             )?;
             (
                 c.lufs,
@@ -2194,9 +2316,10 @@ struct Correction {
 /// The open-loop `20·log10(k)` solve undershoots through a downstream compressor; this
 /// iterates a trust-region-clamped (±`BATCH_TRUST_DB`) secant from the real points until
 /// within `KNOB_TOL_LU`, capped at `MEASURE_CORRECT_MAX`, and ALWAYS lands the device on the
-/// best point seen — re-applying it if the last write wasn't the best. (Critical: `apply_levels`
-/// SAVES whatever it last wrote, so a worse final step would otherwise persist while a better
-/// number is reported.) When a large applied gain produced ~no response, it reports
+/// best point seen — re-applying it if the last write wasn't the best. (Critical: the device
+/// working copy holds whatever was LAST written and the batch-end save persists exactly that,
+/// so a worse final step would otherwise persist while a better number is reported.) When a
+/// large applied gain produced ~no response, it reports
 /// NO-AUTHORITY (off-branch / off-USB) and restores `base` rather than leaving the amp slammed.
 /// `levels0`/`v0` = the levels the caller already applied (the device holds them) and their
 /// verified loudness; `measured0` = loudness at `base`.
@@ -2210,7 +2333,7 @@ fn correct_iter(
     measured0: f64,
     v0: f64,
     target: f64,
-    save: bool,
+    defer: bool,
 ) -> Result<Correction, String> {
     let max_base = base
         .iter()
@@ -2225,8 +2348,8 @@ fn correct_iter(
     };
     let apply = |levels: &[f32], verify: bool| -> Result<Option<f64>, String> {
         let opts = LevelOptions {
-            save,
             verify,
+            defer,
             ..Default::default()
         };
         let targets: Vec<(&LevelKnob, f32)> = knobs
@@ -2461,19 +2584,25 @@ fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
 /// that the write lands on the per-scene overlay (not the base). Validate `probe --rebalance`
 /// before trusting the equal-solo balance; the final combined joint-k still hits the target
 /// either way. Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
+#[allow(clippy::too_many_arguments)]
 pub fn level_scenes_rebalance(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
     target_lufs: f64,
     save: bool,
+    restore_scene: Option<u32>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
     // CALLER CONTRACT: preset already current (see `level_scenes_oneshot`).
     let mut outcomes = Vec::with_capacity(jobs.len());
+    let mut attempted = false;
     for job in jobs {
         if cancelled() {
+            if save && attempted {
+                let _ = save_deferred_scene_writes(slot, restore_scene);
+            }
             return Err(CANCELLED.to_string());
         }
         on_scene(job.scene_slot, None);
@@ -2488,6 +2617,7 @@ pub fn level_scenes_rebalance(
         }
 
         // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
+        attempted = true;
         let result = if !job.rebalanceable || job.knobs.len() < 2 {
             jointk_one_scene(slot, job, stimulus, target_lufs, save, true)
         } else {
@@ -2497,7 +2627,12 @@ pub fn level_scenes_rebalance(
         };
         let outcome = match result {
             Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
-            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) if e == CANCELLED => {
+                if save && attempted {
+                    let _ = save_deferred_scene_writes(slot, restore_scene);
+                }
+                return Err(e);
+            }
             Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
         };
         on_scene(job.scene_slot, Some(&outcome));
@@ -2505,6 +2640,9 @@ pub fn level_scenes_rebalance(
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     }
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    if save && attempted {
+        save_deferred_scene_writes(slot, restore_scene)?;
+    }
     restore_after_unsaved_error(slot, save, Ok(outcomes))
 }
 
@@ -2516,7 +2654,7 @@ fn rebalance_one_scene(
     job: &SceneJob,
     stimulus: &[f32],
     target_lufs: f64,
-    save: bool,
+    defer: bool,
     verify: bool,
 ) -> Result<SceneSolve, String> {
     let a = &job.knobs[0];
@@ -2589,8 +2727,8 @@ fn rebalance_one_scene(
     // bounded secant correction — the balanced pair feeds the same downstream chain (e.g. a
     // post-merge compressor), so the open-loop solve undershoots there exactly like joint-k.
     let opts = LevelOptions {
-        save,
         verify,
+        defer,
         ..Default::default()
     };
     let knob_refs = [&a.knob, &b.knob];
@@ -2616,7 +2754,7 @@ fn rebalance_one_scene(
                 combined.integrated_lufs,
                 v0,
                 target_lufs,
-                save,
+                defer,
             )?;
             (c.lufs, c.levels, c.clamp_reason, c.writes)
         }
