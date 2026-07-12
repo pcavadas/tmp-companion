@@ -159,6 +159,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
     state: State<'_, AppState>,
     job: LevelJob,
 ) -> Result<leveller::LevelResult, String> {
+    // A save changes the stored preset -- the Doctor's cached BEFORE clip goes stale.
+    crate::commands::doctor::clear_doctor_before_cache();
     let LevelJob {
         slot,
         target_lufs,

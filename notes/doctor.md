@@ -60,6 +60,13 @@ and since the capture tables currently equal the synthetic ones, their verdicts
 read byte-identically until the `probe --doctor-calib` sweep retunes capture
 space.
 
+Capture choreography (2026-07, `notes/perf.md`): consecutive **scene** sounds of the
+same preset skip the per-sound preset reload (`doctor_skip_load` — only when the
+previous sound wrote nothing and succeeded; base/footswitch sounds always reload),
+and the capture connections use the lean handshake (`Session::connect_lean`). A
+single capture can occasionally misread (~1-in-7 outliers observed: a 3 dB band
+shift, a −80 dB empty-tail sentinel) — repeated runs are the arbiter.
+
 ## Prescriptions & apply
 
 `Rx` derivation is graph-aware (`graph_facts`): fixes prefer an existing
@@ -69,7 +76,11 @@ wire can't express are skipped. Apply (`doctor_apply`) edits the device edit
 buffer on a held session — nothing persists until `doctor_save`;
 `doctor_discard` reloads the stored preset. The frontend serializes applies
 (`applyLock.ts`) and allows ONE unsaved prescription at a time; A/B audition
-re-captures before/after clips for comparison. `severity.ts` ranks findings per
+captures before/after clips for comparison. The BEFORE clip is cached across
+consecutive applies on the same sound (`BEFORE_CACHE`, single entry, keyed on
+list index + name + stimulus; a cache hit still reloads the slot — the load feeds
+`confirm_active` and discards stale edit buffers; cleared by `doctor_save`, the
+leveling/copy save commands, and device detach — see `notes/perf.md`). `severity.ts` ranks findings per
 sound and rolls up the preset's worst severity (scene-jump bumps rank).
 
 ## Scene consistency

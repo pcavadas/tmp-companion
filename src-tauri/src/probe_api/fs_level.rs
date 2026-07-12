@@ -278,7 +278,7 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
         std::thread::sleep(std::time::Duration::from_millis(
-            leveller::SETTLE_AFTER_LOAD_MS,
+            leveller::settle_after_load_ms(),
         ));
     }
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));

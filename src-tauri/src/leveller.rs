@@ -27,19 +27,23 @@ use crate::audio;
 use crate::lufs;
 use crate::session::Session;
 
-pub(crate) const SETTLE_AFTER_LOAD_MS: u64 = 1200;
-// ponytail: throwaway probe instrumentation — env override for HW A/B bisects only.
+// Post-load DSP settle before a capture. Was a conservative 1200; HW-bisected to 400
+// on fw 1.8.45 (dry slot 11 + wet delay slot 5): measured C, presetLevel, and verify
+// error are byte-identical to 1200, and the verify captures confirm writes also land
+// at 400 (`notes/perf.md`). TMP_SETTLE_AFTER_LOAD_MS is the diagnostic env override
+// for future bisects.
+pub(crate) const SETTLE_AFTER_LOAD_MS: u64 = 400;
 pub(crate) fn settle_after_load_ms() -> u64 {
     std::env::var("TMP_SETTLE_AFTER_LOAD_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SETTLE_AFTER_LOAD_MS)
 }
-// Settle after a reload when the next step is a PURE WRITE (no verify capture): the
-// preset only needs to be loaded enough to accept + persist a param, not for the DSP
-// audio to settle. Conservative pending an on-HW read-back floor (write → confirm the
-// value stuck); it can drop toward ~400 ms once measured. Full SETTLE_AFTER_LOAD_MS is
-// still used when a verify capture follows the reload.
+// Settle after a reload when the next step is a PURE WRITE (no verify capture).
+// DELIBERATELY kept above SETTLE_AFTER_LOAD_MS: on this branch a settle-caused
+// dropped write is maximally silent (no verify capture follows; the save persists
+// the old value while the result reports success), so the 200 ms it could save
+// isn't worth the risk class — see the scene-write-cliff history.
 const SETTLE_BEFORE_WRITE_MS: u64 = 600;
 pub(crate) const SETTLE_AFTER_SET_MS: u64 = 300;
 const SETTLE_AFTER_REAMP_MS: u64 = 500;
@@ -175,7 +179,7 @@ pub const CANCELLED: &str = "cancelled";
 /// edit buffer may be mutated during capture, but it must not remain dirty.
 pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
     std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     log::info!("restored stored preset slot={slot} after unsaved measurement");
@@ -354,7 +358,7 @@ pub fn measure_c(
 ) -> Result<MeasuredC, String> {
     let ref_level = ref_level.clamp(0.05, 1.0);
     {
-        let mut s = Session::connect()?;
+        let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
         std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
@@ -420,6 +424,11 @@ pub(crate) fn predicted_true_peak_dbtp(ref_tp_dbtp: f64, ref_level: f32, final_l
 /// whatever scene the unit was already on, so every scene read the same signal.
 /// `scene` is `None` and `tail_ms` is `CAPTURE_TAIL_MS` for every existing
 /// `capture_full` call, so that path is byte-identical to before this extraction.
+/// `skip_load`: omit the load connection entirely — ONLY when the caller knows the
+/// preset is already current AND unpolluted (same preset, previous capture made no
+/// working-copy writes; the Doctor's consecutive-scene chain). The preset working
+/// copy survives reconnects (HW-proven); the scene recall below re-materializes the
+/// scene state on the capture connection either way.
 fn capture_full_at(
     slot: u32,
     scene: Option<u32>,
@@ -427,14 +436,16 @@ fn capture_full_at(
     stimulus: &[f32],
     ref_level: Option<f32>,
     tail_ms: u64,
+    skip_load: bool,
 ) -> Result<audio::Capture, String> {
-    {
-        let mut s = Session::connect()?;
+    if !skip_load {
+        let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
         std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+        drop(s);
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     // Re-assert the scene on THIS (capture) connection before setting the level —
     // load_scene recalls the scene's own state, so it must precede the reference-
     // level write, not follow it.
@@ -466,7 +477,15 @@ fn capture_full_at(
 /// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
 /// and the per-channel N1 diagnostic (`probe --channels`) share this.
 pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
-    capture_full_at(slot, None, &[], stimulus, Some(ref_level), CAPTURE_TAIL_MS)
+    capture_full_at(
+        slot,
+        None,
+        &[],
+        stimulus,
+        Some(ref_level),
+        CAPTURE_TAIL_MS,
+        false,
+    )
 }
 
 /// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the
@@ -490,12 +509,15 @@ pub fn capture_samples(
 /// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None` for
 /// the apply A/B (capture at the preset's own level — never writes presetLevel,
 /// so a later `doctor_save` can't persist a reference level).
+/// `skip_load`: see `capture_full_at` — the Doctor's consecutive-scene chain skips
+/// the redundant per-sound preset reload (same preset, previous sound clean + Ok).
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     ref_level: Option<f32>,
+    skip_load: bool,
 ) -> Result<(Vec<f32>, u32), String> {
     let cap = capture_full_at(
         slot,
@@ -504,6 +526,7 @@ pub fn doctor_capture(
         stimulus,
         ref_level,
         u64::from(DOCTOR_TAIL_MS),
+        skip_load,
     )?;
     let (ch, _) = cap.loudest_channel();
     Ok((cap.channel(ch), cap.sample_rate))
@@ -521,7 +544,7 @@ pub fn doctor_capture_current(
     ref_level: Option<f32>,
 ) -> Result<(Vec<f32>, u32), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     if let Some(ref_level) = ref_level {
         set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
@@ -554,14 +577,14 @@ pub fn capture_scene_ceilings(
     // for 0 (the device ignores an empty LoadScene{} — HW-found).
     for scene in 0..scene_count {
         {
-            let mut s = Session::connect()?;
+            let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
             std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
             s.load_scene(scene)?;
             std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
         }
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-        let mut s = Session::connect()?;
+        let mut s = Session::connect_lean()?;
         set_knob(&mut s, &LevelKnob::PresetLevel, 1.0)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
         cs.push(engage_measure_disengage(&mut s, stimulus)?.integrated_lufs);
@@ -1163,7 +1186,7 @@ pub(crate) fn engage_measure_disengage(
 }
 
 fn measure_scene_asis(scene_slot: u32, stimulus: &[f32]) -> Result<lufs::Loudness, String> {
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     engage_measure_disengage(&mut s, stimulus)
@@ -1177,7 +1200,7 @@ fn measure_knob_at(
     value: f32,
     force_bypass: &[(String, String, bool)],
 ) -> Result<lufs::Loudness, String> {
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     // Force footswitch-block bypasses BEFORE the knob set + single re-amp engage so they latch —
     // the same connect → bypasses → set → engage ordering the footswitch `measure_at` proves.
     for (g, n, byp) in force_bypass {
@@ -1281,7 +1304,7 @@ pub(crate) fn measure_fs_at(
     stimulus: &[f32],
     v: f32,
 ) -> Result<lufs::Loudness, String> {
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     for (g, n, byp) in engaged_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
@@ -1303,13 +1326,16 @@ pub fn measure_footswitch(
     target_lufs: f64,
     method: &str,
 ) -> Result<FootswitchLevelResult, String> {
-    // ponytail: TMP_FS_ISOLATION_ONCE is throwaway probe instrumentation — send the forced
-    // bypass list only on the first capture (working-copy edits persist across reconnects;
-    // no reload happens inside this function's scope). HW A/B only.
-    let isolation_once = std::env::var("TMP_FS_ISOLATION_ONCE").is_ok();
+    // Send the forced engaged-bypass list only on the FIRST successful capture:
+    // working-copy edits persist across HID disconnect/reconnect (HW-proven, fw
+    // 1.8.45 — a fresh zero-write connection measured the forced state exactly),
+    // and no reload happens inside this function's scope (caller contract above).
+    // `forced` is set only on Ok, so an errored capture re-sends the full list.
+    // TMP_FS_ISOLATION_EVERY restores the old per-capture re-send (kill-switch).
+    let isolation_every = std::env::var("TMP_FS_ISOLATION_EVERY").is_ok();
     let forced = std::cell::Cell::new(false);
     let measure_at = |v: f32| {
-        let bypass: &[(String, String, bool)] = if isolation_once && forced.get() {
+        let bypass: &[(String, String, bool)] = if !isolation_every && forced.get() {
             &[]
         } else {
             engaged_bypass
@@ -1324,7 +1350,7 @@ pub fn measure_footswitch(
     // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
     // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
     let reamp_off = || {
-        let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+        let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
     };
 
     // Seed two real points and run a bounded generic secant.
@@ -1445,7 +1471,7 @@ pub fn level_footswitch(
     // Load the preset in its own connection (re-amp latch workaround), then measure on
     // fresh connections (the preset stays current across reconnects).
     {
-        let mut s = Session::connect()?;
+        let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
         std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
@@ -1459,7 +1485,7 @@ pub fn level_footswitch(
     if result.clamp_reason.is_some() {
         // No-signal routing clamp: nothing to write — discard the sweep pollution.
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-        if let Ok(mut s) = Session::connect() {
+        if let Ok(mut s) = Session::connect_lean() {
             let _ = s.load_preset(slot);
         }
         return Ok(result);
@@ -1482,15 +1508,15 @@ pub fn level_footswitch(
             result.verify_lufs = measure_fs_at(lev, engaged_bypass, stimulus, result.final_value)
                 .ok()
                 .map(|l| l.integrated_lufs);
-            let mut s = Session::connect()?; // discard the verify pollution
+            let mut s = Session::connect_lean()?; // discard the verify pollution
             let _ = s.load_preset(slot);
         }
     } else {
-        let mut s = Session::connect()?; // dry: discard the measurement pollution
+        let mut s = Session::connect_lean()?; // dry: discard the measurement pollution
         let _ = s.load_preset(slot);
     }
     // Final guarantee (verify re-amps; never leave the unit input-muted).
-    let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+    let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
     Ok(result)
 }
 
@@ -1509,7 +1535,7 @@ pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<
         return Ok(());
     }
     // Guaranteed re-amp OFF first — the measurement's last disengage can be dropped.
-    let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
+    let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
@@ -1828,7 +1854,7 @@ pub fn level_scenes_live_batched(
     let result = (|| {
         // Load in its own connection (set-after-load override + engage latch).
         {
-            let mut s = Session::connect()?;
+            let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
             std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
         }
@@ -1971,7 +1997,7 @@ pub fn level_scenes_live_batched(
     })();
     // Guaranteed fresh OFF — interrupted live streams can strand re-amp even if
     // the in-session OFF was sent.
-    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
     restore_after_unsaved_error(slot, save, result)
 }
 
@@ -2074,7 +2100,7 @@ fn run_scene_jobs(
     }
     // Guaranteed fresh re-amp OFF (each `measure_knob_at`/`apply_level` already
     // disengages, but an interrupted capture can strand it).
-    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
     // The batch's ONE persist — after the re-amp OFF, on its own clean connection.
     // Fired on the stopped path too, so already-reported scenes are never lost.
     if save && attempted {
@@ -2536,7 +2562,7 @@ fn measure_knobs_at(
     stimulus: &[f32],
     targets: &[(&LevelKnob, f32)],
 ) -> Result<lufs::Loudness, String> {
-    let mut s = Session::connect()?;
+    let mut s = Session::connect_lean()?;
     set_knobs(&mut s, targets)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     engage_measure_disengage(&mut s, stimulus)
@@ -2569,7 +2595,7 @@ pub fn mute_floor_report(
     stimulus: &[f32],
 ) -> Result<String, String> {
     {
-        let mut s = Session::connect()?;
+        let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
         std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
     }
@@ -2580,7 +2606,7 @@ pub fn mute_floor_report(
     let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)])?;
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let b_solo = measure_knobs_at(stimulus, &[(a, 0.0), (b, cur_b)])?;
-    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
 
     let silent = floor_lufs <= MUTE_FLOOR_SILENT_LUFS + 1e-6;
     let margin_a = a_solo.integrated_lufs - floor_lufs;
@@ -2863,7 +2889,7 @@ pub fn level_preset_block(
         // Load the preset in its own connection (the set-after-load-in-same-conn
         // override applies to any setter, so isolate the load).
         {
-            let mut s = Session::connect()?;
+            let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
             std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
         }

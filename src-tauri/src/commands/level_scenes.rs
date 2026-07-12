@@ -225,7 +225,7 @@ pub(crate) async fn level_scenes_apply(
         // leveller's in-connection `set_reamp_mode(false)` is fire-and-forget and
         // demonstrably gets dropped under the run's connection churn — HW-observed (TWICE): the unit came out of a scene-leveling run stuck in
         // re-amp (guitar input muted, "no sound") until a power-cycle.
-        match Session::connect().and_then(|mut s| s.set_reamp_mode(false)) {
+        match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
             Ok(_) => log::info!("level_scenes_apply: final re-amp OFF sent"),
             Err(e) => log::warn!("level_scenes_apply: final re-amp OFF failed ({e})"),
         }
@@ -250,6 +250,8 @@ pub(crate) async fn level_scenes_apply_batched(
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
 ) -> Result<Vec<leveller::LevelResult>, String> {
+    // Saves change stored presets -- the Doctor's cached BEFORE clip goes stale.
+    crate::commands::doctor::clear_doctor_before_cache();
     if !candidates
         .iter()
         .any(|c| is_amp_output_level_param(&c.parameter_id))
@@ -366,7 +368,7 @@ pub(crate) async fn level_scenes_apply_batched(
             }
             Err(e) => Err(e),
         };
-        match Session::connect().and_then(|mut s| s.set_reamp_mode(false)) {
+        match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
             Ok(_) => log::info!("level_scenes_apply_batched: final re-amp OFF sent"),
             Err(e) => log::warn!("level_scenes_apply_batched: final re-amp OFF failed ({e})"),
         }

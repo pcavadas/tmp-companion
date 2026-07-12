@@ -55,6 +55,30 @@ fn doctor_force_bypass(
     }
 }
 
+/// The previous sound's run outcome, for the consecutive-scene load skip.
+struct PrevSound {
+    list_index: u32,
+    /// It sent force-bypass writes (its `fb` was non-empty) — the working copy is
+    /// polluted and only a reload clears it (a scene recall re-asserts ONLY the
+    /// scene's own overrides, not the forced bypasses).
+    wrote: bool,
+    /// Its capture succeeded — on error the unit may be on ANY preset.
+    ok: bool,
+}
+
+/// Whether the current sound can skip the per-sound preset load connection: the
+/// previous sound already loaded the SAME preset, made no working-copy writes, and
+/// succeeded — and the current sound is a SCENE (its capture connection recalls the
+/// scene anyway, the production scene-leveling mechanism; HW-validated 0.001 LU
+/// identical to a fresh reload). Base and footswitch sounds always reload (base
+/// needs the base-scene state; footswitch sounds write isolation either way).
+fn doctor_skip_load(prev: Option<&PrevSound>, list_index: u32, is_scene: bool) -> bool {
+    is_scene
+        && prev
+            .map(|p| p.list_index == list_index && !p.wrote && p.ok)
+            .unwrap_or(false)
+}
+
 /// The instrument a sound is judged as — from its topology, guitar by default.
 fn instrument_of(item: &DoctorInput) -> doctor::Instrument {
     doctor::Instrument::from_topology(
@@ -184,6 +208,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             std::collections::HashMap::new();
         let mut stopped = false;
         let mut last_scanned: Option<u32> = None;
+        // The previous sound's outcome — drives the consecutive-scene load skip
+        // (`doctor_skip_load`).
+        let mut prev: Option<PrevSound> = None;
         for (i, (item, path, kind)) in resolved.iter().enumerate() {
             if DOCTOR_CANCEL.load(SeqCst) {
                 stopped = true;
@@ -201,6 +228,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     status: "done".to_string(),
                     message: None,
                 });
+                // No device load happened — the skip decision must not chain off this.
+                prev = None;
                 continue;
             }
             last_scanned = Some(item.list_index);
@@ -258,8 +287,17 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 )
             };
             let family = instrument_of(item);
+            let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
             let result = stim.and_then(|stim| {
-                leveller::doctor_capture(item.list_index, item.scene, &fb, stim, Some(0.5)).and_then(
+                leveller::doctor_capture(
+                    item.list_index,
+                    item.scene,
+                    &fb,
+                    stim,
+                    Some(0.5),
+                    skip_load,
+                )
+                .and_then(
                     |(samples, rate)| {
                         // Align the body/tail split to where the stimulus actually starts
                         // (I/O latency); low confidence keeps the legacy un-aligned split.
@@ -284,6 +322,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 Ok((profile, cov)) => {
                     measured.push((i, profile));
                     coverage_by_item.insert(i, cov);
+                    prev = Some(PrevSound {
+                        list_index: item.list_index,
+                        wrote: !fb.is_empty(),
+                        ok: true,
+                    });
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
                         status: "done".to_string(),
@@ -292,6 +335,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 }
                 Err(e) => {
                     errors.push((i, e.clone()));
+                    // A failed sound may have left the unit on ANY preset (e.g. its
+                    // load connection never opened) — the next sound must reload.
+                    prev = Some(PrevSound {
+                        list_index: item.list_index,
+                        wrote: !fb.is_empty(),
+                        ok: false,
+                    });
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
                         status: "error".to_string(),
@@ -402,7 +452,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // it back on the pre-run active preset (fallback: the last-scanned
         // slot) — the reload also clears the 0.5 reference presetLevel from
         // the edit buffer.
-        if let Err(e) = Session::connect().and_then(|mut s| {
+        if let Err(e) = Session::connect_lean().and_then(|mut s| {
             if let Err(re) = s.set_reamp_mode(false) {
                 log::warn!("doctor_check: failed to disable re-amp mode after run: {re}");
             }
@@ -450,6 +500,36 @@ pub struct DoctorApplyResult {
     pub after_clip: String,
 }
 
+/// Identity of a cached BEFORE clip: sound + stimulus. `name` catches rename/move,
+/// the stimulus path + calibration catch an instrument-profile switch between applies.
+type BeforeKey = (u32, String, String, Option<u32>);
+
+/// Single-entry cache of `doctor_apply`'s BEFORE clip (the stored preset captured at
+/// its own level — ~11 s to produce). The before-state is stable across consecutive
+/// applies on the same sound: the frontend allows ONE unsaved prescription at a time
+/// and `doctor_discard` reloads the stored preset. Anything that SAVES a preset
+/// invalidates it: `doctor_save` and the leveling/copy save commands call
+/// [`clear_doctor_before_cache`], as does device detach (`watcher.rs`) since an
+/// offline unit can be edited elsewhere. Single-entry bounds memory (one WAV).
+static BEFORE_CACHE: std::sync::Mutex<Option<(BeforeKey, String)>> = std::sync::Mutex::new(None);
+
+/// Drop the cached `doctor_apply` BEFORE clip — call after anything that changes a
+/// stored preset (a save-bearing command) or on device detach.
+pub(crate) fn clear_doctor_before_cache() {
+    *crate::lock_ok(&BEFORE_CACHE) = None;
+}
+
+fn before_cache_get(key: &BeforeKey) -> Option<String> {
+    crate::lock_ok(&BEFORE_CACHE)
+        .as_ref()
+        .filter(|(k, _)| k == key)
+        .map(|(_, clip)| clip.clone())
+}
+
+fn before_cache_put(key: BeforeKey, clip: String) {
+    *crate::lock_ok(&BEFORE_CACHE) = Some((key, clip));
+}
+
 /// Reject the ops `doctor_apply` can't route live. Only `SceneTrim` is rejected
 /// (scene trims go through the scene-leveling command). Pure + device-free so the
 /// rejection is unit-testable.
@@ -487,11 +567,33 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         //     the slot, so (b) below confirms the already-current preset — no reload.
         //     ref_level None: capture at the preset's OWN level — never write a
         //     reference presetLevel a later doctor_save would PERSIST (#1).
-        let (before, rate) = leveller::doctor_capture(job.list_index, None, &[], &stim, None)?;
-        let before_clip = format!(
-            "data:audio/wav;base64,{}",
-            base64_encode(&wav_bytes(&before, rate)?)
+        //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
+        //     a cache hit MUST still load the slot — the load is what (b) relies on
+        //     AND what discards a stale unsaved edit buffer (a failed earlier apply
+        //     whose restore also failed would otherwise stack Rx on Rx).
+        let key: BeforeKey = (
+            job.list_index,
+            job.name.clone(),
+            stim_path.clone(),
+            job.calibration_lufs.map(f32::to_bits),
         );
+        let before_clip = match before_cache_get(&key) {
+            Some(clip) => {
+                leveller::restore_saved_preset(job.list_index)?;
+                std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                clip
+            }
+            None => {
+                let (before, rate) =
+                    leveller::doctor_capture(job.list_index, None, &[], &stim, None, false)?;
+                let clip = format!(
+                    "data:audio/wav;base64,{}",
+                    base64_encode(&wav_bytes(&before, rate)?)
+                );
+                before_cache_put(key, clip.clone());
+                clip
+            }
+        };
 
         // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
         //     stored preset is reloaded (the partial edit is discarded).
@@ -581,6 +683,8 @@ pub(crate) async fn doctor_save(
         let mut s = Session::connect()?;
         s.confirm_active(list_index, Some(&expect_name))?;
         s.save_current_preset(list_index)?;
+        // The stored preset just changed — the cached BEFORE clip is stale.
+        clear_doctor_before_cache();
         Ok(())
     })
     .await

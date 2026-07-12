@@ -376,14 +376,27 @@ impl Session {
     /// Open the device (seizing it) and run the lean first-connect handshake
     /// (no preset-data JSON fetch — fast, for leveling's many connections).
     pub fn connect() -> Result<Session, String> {
-        Self::connect_inner(false, None, false)
+        Self::connect_inner(false, None, false, false)
+    }
+
+    /// `connect` with the handshake pump windows trimmed ×0.25 (~660 → ~165 ms).
+    /// ONLY for pure measure/capture sessions: connections that (a) never read
+    /// handshake- or push-accumulated data (`list_my_presets` / `active_preset_name` /
+    /// `confirm_active` / slot reads) and (b) never write-then-save. The trimmed
+    /// windows are HW-validated capture-byte-identical on those paths (fw 1.8.45,
+    /// ~10 sessions incl. ×0.1); write/save sessions keep the full windows because
+    /// their device-side timing cliffs (the ~700 ms scene-write window, chunked
+    /// ftsw edits) were NOT part of that A/B — do not widen the lean set without a
+    /// dedicated write-lands HW bisect.
+    pub fn connect_lean() -> Result<Session, String> {
+        Self::connect_inner(false, None, false, true)
     }
 
     /// Like `connect`, but the handshake also issues the field-78 request so the
     /// device emits the current preset's `currentPresetDataChanged` JSON (adds
     /// ~2 s). Use for block enumeration (`current_preset_blocks`), not leveling.
     pub fn connect_for_discovery() -> Result<Session, String> {
-        Self::connect_inner(true, None, false)
+        Self::connect_inner(true, None, false, false)
     }
 
     /// AC1 spike: run the handshake with an extra slot-addressed read
@@ -392,7 +405,7 @@ impl Session {
     /// field-78). The reply (presetDataChanged 9 or exportPresetResponse 116) is
     /// then harvested from the accumulated streams by the caller.
     pub fn connect_with_burst_request(extra: &[u8]) -> Result<Session, String> {
-        Self::connect_inner(false, Some(extra.to_vec()), false)
+        Self::connect_inner(false, Some(extra.to_vec()), false, false)
     }
 
     /// Trigger and capture the device's bulk backup archive (`BackupMessage`).
@@ -813,7 +826,7 @@ impl Session {
     /// reply (HW-confirmed), so it can't reuse the generic
     /// `extra_burst` slot (which fires last).
     pub fn connect_with_firmware() -> Result<Session, String> {
-        let mut s = Self::connect_inner(false, None, true)?;
+        let mut s = Self::connect_inner(false, None, true, false)?;
         s.fw_version = s
             .streams()
             .iter()
@@ -841,6 +854,7 @@ impl Session {
         fetch_preset_json: bool,
         extra_burst: Option<Vec<u8>>,
         request_firmware: bool,
+        lean: bool,
     ) -> Result<Session, String> {
         let hid = open_transport()?;
         let mut s = Session {
@@ -849,7 +863,7 @@ impl Session {
             raw: Vec::new(),
             fw_version: None,
         };
-        s.handshake(fetch_preset_json, extra_burst, request_firmware)?;
+        s.handshake(fetch_preset_json, extra_burst, request_firmware, lean)?;
         Ok(s)
     }
 
@@ -893,6 +907,7 @@ impl Session {
         fetch_preset_json: bool,
         extra_burst: Option<Vec<u8>>,
         request_firmware: bool,
+        lean: bool,
     ) -> Result<(), String> {
         // Replicate Pro Control's first-connect sequence, INCLUDING its exact
         // batchStatus values. The device stops answering partway through if the
@@ -901,23 +916,28 @@ impl Session {
         // Pro Control groups the post-connect requests under batch=2, with the
         // current-preset data/json requests at 3/4. Mirroring that grouping is
         // what makes the device stream the full handshake (incl. the preset JSON).
-        // ponytail: hs() is throwaway probe instrumentation (TMP_HANDSHAKE_SCALE) for HW A/B only.
-        fn hs(ms: u64) -> u64 {
+        //
+        // The request SEQUENCE is identical in both window sets — `lean` only trims
+        // how long the host pumps for replies it will never read (see
+        // `connect_lean`). TMP_HANDSHAKE_SCALE is a diagnostic env override for
+        // probe bisects on top of either set.
+        let base: [u64; 3] = if lean { [50, 5, 75] } else { [200, 20, 300] };
+        let hs = |ms: u64| -> u64 {
             std::env::var("TMP_HANDSHAKE_SCALE")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok())
                 .map(|s| ((ms as f64) * s).round() as u64)
                 .unwrap_or(ms)
-        }
-        self.send_and_collect(&proto::connection_request(), hs(200))?;
-        self.send_and_collect(&proto::preset_list_request(1, 1), hs(20))?; // My Presets
-        self.send_and_collect(&proto::favorite_list_request(2), hs(20))?;
-        self.send_and_collect(&proto::preset_list_request(4, 2), hs(20))?; // Factory
-        self.send_and_collect(&proto::preset_list_request(3, 2), hs(20))?; // Cloud
-        self.send_and_collect(&proto::product_profile_request(2), hs(20))?;
-        self.send_and_collect(&proto::current_preset_info_request(2), hs(20))?;
-        self.send_and_collect(&proto::settings_field66(2), hs(20))?;
-        self.send_and_collect(&proto::userir_field2(2), hs(20))?;
+        };
+        self.send_and_collect(&proto::connection_request(), hs(base[0]))?;
+        self.send_and_collect(&proto::preset_list_request(1, 1), hs(base[1]))?; // My Presets
+        self.send_and_collect(&proto::favorite_list_request(2), hs(base[1]))?;
+        self.send_and_collect(&proto::preset_list_request(4, 2), hs(base[1]))?; // Factory
+        self.send_and_collect(&proto::preset_list_request(3, 2), hs(base[1]))?; // Cloud
+        self.send_and_collect(&proto::product_profile_request(2), hs(base[1]))?;
+        self.send_and_collect(&proto::current_preset_info_request(2), hs(base[1]))?;
+        self.send_and_collect(&proto::settings_field66(2), hs(base[1]))?;
+        self.send_and_collect(&proto::userir_field2(2), hs(base[1]))?;
         // Firmware read rides the batch-2 group (no batchStatus), BEFORE the
         // batch-3 current_preset_data_request — sending it after that makes the
         // device drop the `currentFwResponse` reply (HW-confirmed).
@@ -925,7 +945,7 @@ impl Session {
         if request_firmware {
             self.send_and_collect(&proto::current_fw_request(), 200)?;
         }
-        self.send_and_collect(&proto::current_preset_data_request(3), hs(300))?;
+        self.send_and_collect(&proto::current_preset_data_request(3), hs(base[2]))?;
         // The field-78 json request right after field-2 is what makes the device
         // emit the current preset's `currentPresetDataChanged` (field 3) JSON —
         // but it streams a multi-packet blob (~2 s), so only fetch it when the
@@ -3250,6 +3270,51 @@ fn push_split(stages: &mut Vec<Stage>, a: Vec<GraphNode>, b: Vec<GraphNode>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records every body the handshake sends; replies are empty (the handshake
+    /// never parses them inline — it only accumulates).
+    struct RecordingTransport(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+    impl crate::hid::HidTransport for RecordingTransport {
+        fn send(&self, body: &[u8]) -> Result<(), String> {
+            self.0.lock().unwrap().push(body.to_vec());
+            Ok(())
+        }
+        fn transact(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.0.lock().unwrap().push(body.to_vec());
+            Ok(Vec::new())
+        }
+        fn transact_chunked(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.0.lock().unwrap().push(body.to_vec());
+            Ok(Vec::new())
+        }
+        fn pump(&self, _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn transact_eager(&self, body: &[u8], max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.transact(body, max_ms)
+        }
+    }
+
+    fn handshake_sends(lean: bool) -> Vec<Vec<u8>> {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut s = Session {
+            hid: Box::new(RecordingTransport(sent.clone())),
+            batch: 0,
+            raw: Vec::new(),
+            fw_version: None,
+        };
+        s.handshake(false, None, false, lean).unwrap();
+        let out = sent.lock().unwrap().clone();
+        out
+    }
+
+    /// The lean handshake trims only the PUMP WINDOWS — the request byte sequence
+    /// must stay identical to the full handshake (the device only answers after
+    /// seeing the exact captured Pro Control sequence).
+    #[test]
+    fn lean_handshake_sends_the_identical_request_sequence() {
+        assert_eq!(handshake_sends(false), handshake_sends(true));
+    }
 
     #[test]
     fn name_fallback_only_confirms_a_uniquely_mapped_slot() {

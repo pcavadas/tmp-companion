@@ -146,6 +146,9 @@ mod imp {
         // extern "C" boundary = abort.
         *crate::lock_ok(&ctx.session) = None;
         crate::monitor::reset_startup_state();
+        // An offline unit can be edited elsewhere (Pro Control, the unit itself) --
+        // the Doctor's cached BEFORE clip can no longer be trusted.
+        crate::commands::doctor::clear_doctor_before_cache();
         log::info!("hotplug: TMP detached — session released");
         let _ = ctx.app.emit(EVT_DETACHED, ());
     }

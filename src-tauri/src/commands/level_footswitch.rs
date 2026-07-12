@@ -152,6 +152,8 @@ pub(crate) async fn level_footswitches_apply(
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<FootswitchLevelProgressItem>,
 ) -> Result<Vec<leveller::FootswitchLevelResult>, String> {
+    // Saves change stored presets -- the Doctor's cached BEFORE clip goes stale.
+    crate::commands::doctor::clear_doctor_before_cache();
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
         &app,
         None,
@@ -194,10 +196,10 @@ pub(crate) async fn level_footswitches_apply(
         // block's bypass, and swept params live on blocks the next job forces off);
         // the ONE write session's reload discards it all at the end.
         {
-            let mut s = Session::connect()?;
+            let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
             std::thread::sleep(std::time::Duration::from_millis(
-                leveller::SETTLE_AFTER_LOAD_MS,
+                leveller::settle_after_load_ms(),
             ));
         }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
@@ -345,11 +347,11 @@ pub(crate) async fn level_footswitches_apply(
             })
         } else {
             // Dry run / nothing solved: discard the sweep pollution.
-            let _ = Session::connect().map(|mut s| s.load_preset(slot));
+            let _ = Session::connect_lean().map(|mut s| s.load_preset(slot));
             Ok(())
         };
         // Guarantee re-amp OFF on a fresh connection.
-        if let Ok(mut s) = Session::connect() {
+        if let Ok(mut s) = Session::connect_lean() {
             let _ = s.set_reamp_mode(false);
         }
         write_result?;
