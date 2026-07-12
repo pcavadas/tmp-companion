@@ -325,9 +325,21 @@ pub(crate) async fn level_footswitches_apply(
             let (idxs, writes): (Vec<usize>, Vec<leveller::FsPendingWrite>) =
                 pending.into_iter().unzip();
             leveller::write_footswitch_values(slot, &writes).map(|()| {
-                for idx in idxs {
+                let written: std::collections::HashSet<usize> = idxs.iter().copied().collect();
+                for &idx in &idxs {
                     if let Some(r) = &mut results[idx] {
                         r.saved = true;
+                    }
+                }
+                // Propagate the persisted state to BakeShared siblings that reused a
+                // now-saved representative's result (they share the same written write).
+                for (idx, plan) in plans.iter().enumerate() {
+                    if let footswitch::FsLevelPlan::BakeShared { rep } = plan {
+                        if written.contains(rep) {
+                            if let Some(r) = &mut results[idx] {
+                                r.saved = true;
+                            }
+                        }
                     }
                 }
             })

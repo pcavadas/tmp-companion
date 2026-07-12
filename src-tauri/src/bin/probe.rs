@@ -1910,17 +1910,25 @@ fn main() {
             .unwrap_or(u32::MAX);
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
-        let writes: Vec<(u32, f32)> = args
-            .get(i + 4)
-            .map(|s| {
-                s.split(',')
-                    .filter_map(|pair| {
-                        let (sc, v) = pair.split_once(':')?;
-                        Some((sc.parse().ok()?, v.parse().ok()?))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Reject a malformed scene:value pair instead of silently dropping it (which
+        // would produce a valid-looking deferred-scene run for a different scene set).
+        let writes: Vec<(u32, f32)> = match args.get(i + 4) {
+            Some(spec) => match spec
+                .split(',')
+                .map(|pair| {
+                    let (sc, v) = pair.split_once(':').ok_or(())?;
+                    Ok((sc.parse().map_err(|_| ())?, v.parse().map_err(|_| ())?))
+                })
+                .collect::<Result<Vec<(u32, f32)>, ()>>()
+            {
+                Ok(w) => w,
+                Err(()) => {
+                    eprintln!("[probe] --defer-scenes: invalid scene:value in '{spec}'");
+                    std::process::exit(2);
+                }
+            },
+            None => Vec::new(),
+        };
         if list_index == u32::MAX || group.is_empty() || node.is_empty() || writes.is_empty() {
             eprintln!("usage: probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>");
             std::process::exit(2);

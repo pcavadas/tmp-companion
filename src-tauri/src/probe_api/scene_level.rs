@@ -567,9 +567,9 @@ pub fn probe_jointk_scenes(
             continue;
         }
         let target = resolve(name);
-        match groups.iter_mut().find(|(t, _)| *t == target) {
-            Some((_, slots)) => slots.push(slot),
-            None => groups.push((target, vec![slot])),
+        match groups.last_mut() {
+            Some((t, slots)) if *t == target => slots.push(slot),
+            _ => groups.push((target, vec![slot])),
         }
     }
     for (target, slots) in groups {
