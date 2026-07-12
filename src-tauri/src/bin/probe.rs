@@ -1108,8 +1108,12 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--save-load-test") {
-        // --save-load-test <slotA> <slotB> <level>  (HW experiment: save + next-load on ONE
-        // connection; DESTRUCTIVE — overwrites slotA's stored presetLevel)
+        // --save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>
+        // (HW experiment: save + next-load on ONE connection; DESTRUCTIVE — overwrites
+        // slotA's stored presetLevel). slotA/slotB are 0-based list indices (same
+        // space as `list_my_presets`). --commit's expected name is checked against a
+        // non-destructive read of slotA BEFORE the mutation — required, not optional,
+        // since this command has no non-destructive form.
         let a: u32 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())
@@ -1122,11 +1126,17 @@ fn main() {
             .get(i + 3)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
-        if a == u32::MAX || b == u32::MAX || level.is_nan() {
-            eprintln!("usage: probe --save-load-test <slotA> <slotB> <level>");
+        let commit_i = args.iter().position(|arg| arg == "--commit");
+        let expected_name = commit_i.and_then(|ci| args.get(ci + 1)).cloned();
+        let Some(expected_name) =
+            expected_name.filter(|_| a != u32::MAX && b != u32::MAX && level.is_finite())
+        else {
+            eprintln!(
+                "usage: probe --save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>  (slotA/slotB are 0-based list indices; DESTRUCTIVE)"
+            );
             std::process::exit(2);
-        }
-        match tmp_companion_lib::probe_save_load_test(a, b, level) {
+        };
+        match tmp_companion_lib::probe_save_load_test(a, b, level, &expected_name) {
             Ok(r) => {
                 println!("{r}");
                 return;

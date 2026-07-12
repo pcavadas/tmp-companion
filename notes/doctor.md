@@ -78,7 +78,7 @@ buffer on a held session — nothing persists until `doctor_save`;
 (`applyLock.ts`) and allows ONE unsaved prescription at a time; A/B audition
 captures before/after clips for comparison. The BEFORE clip is cached across
 consecutive applies on the same sound (`BEFORE_CACHE`, single entry, keyed on
-list index + name + stimulus; a cache hit still reloads the slot — the load feeds
+list index + name + stimulus path + calibration; a cache hit still reloads the slot — the load feeds
 `confirm_active` and discards stale edit buffers; invalidated at the `Session`
 stored-preset mutation choke points + device detach — see `notes/perf.md`). `severity.ts` ranks findings per
 sound and rolls up the preset's worst severity (scene-jump bumps rank).

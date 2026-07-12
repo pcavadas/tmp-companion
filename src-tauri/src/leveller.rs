@@ -562,9 +562,10 @@ pub fn doctor_capture_current(
 /// `0..scene_count` activate it (`loadScene`) and capture its ceiling loudness at
 /// `presetLevel = 1.0`. Returns per-scene loudness (LUFS) — feed to
 /// `scenes::normalize_scene_targets` for the per-scene gain offsets. The scene is
-/// activated in the load connection (alongside `load_preset`); whether the active
-/// scene survives the reconnect to the capture connection is the one HW detail to
-/// confirm (if not, move the `load_scene` into the capture connection).
+/// re-asserted on the CAPTURE connection immediately before `set_knob` (same
+/// connect→load_scene→set→engage ordering as `measure_scene_asis`) — a scene
+/// loaded on the earlier preset-load connection does not reliably survive the
+/// reconnect.
 pub fn capture_scene_ceilings(
     slot: u32,
     scene_count: u32,
@@ -580,11 +581,11 @@ pub fn capture_scene_ceilings(
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
             std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
-            s.load_scene(scene)?;
-            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
         }
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect_lean()?;
+        s.load_scene(scene)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
         set_knob(&mut s, &LevelKnob::PresetLevel, 1.0)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
         cs.push(engage_measure_disengage(&mut s, stimulus)?.integrated_lufs);

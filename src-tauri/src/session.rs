@@ -373,8 +373,9 @@ const REAMP_SETTING: u32 = 30; // SettingsMessage.reampModeActive (echo of the s
 const USB_SETTINGS_RESPONSE: u32 = 56; // SettingsMessage.usbSettingsResponse (UsbSettings)
 
 impl Session {
-    /// Open the device (seizing it) and run the lean first-connect handshake
-    /// (no preset-data JSON fetch — fast, for leveling's many connections).
+    /// Open the device (seizing it) and run the full first-connect handshake
+    /// with the default pump windows (no preset-data JSON fetch). For
+    /// measure/capture-only connections, prefer `connect_lean()` below.
     pub fn connect() -> Result<Session, String> {
         Self::connect_inner(false, None, false, false)
     }
