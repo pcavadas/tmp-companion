@@ -76,6 +76,17 @@ Equal-LUFS is equal-loudness only near one SPL. The store carries a playback lev
 
 The capture window (≈6 s stimulus + 0.8 s tail) is load-bearing: TMP presets are not stationary under gated-integrated LUFS (delay/reverb buildup + tail), so trimming the window shifts the measured value. The leveling default uses the full capture.
 
+## Performance
+
+The per-item timing budget, the adopted 2026-07 speedups (post-load settle 400 ms,
+the lean measure-connect handshake `Session::connect_lean`, the Doctor scene-chain
+load skip + before-clip cache, FS isolation-once), the refuted candidates (stream
+reuse, save+load connection merge, adaptive-as-default), and the re-validation
+oracles live in `notes/perf.md`. One protocol fact worth repeating here: **a
+`saveCurrentPreset` chained before a `loadPreset` on the same connection is SILENTLY
+DROPPED** (the load lands, the save doesn't, no `presetError`) — a save must end its
+connection.
+
 ## Re-amp protocol facts
 
 - Re-amp toggle = `SettingsMessage → reampModeActive`.

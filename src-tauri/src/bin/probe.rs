@@ -1107,6 +1107,47 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--save-load-test") {
+        // --save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>
+        // (HW experiment: save + next-load on ONE connection; DESTRUCTIVE — overwrites
+        // slotA's stored presetLevel). slotA/slotB are 0-based list indices (same
+        // space as `list_my_presets`). --commit's expected name is checked against a
+        // non-destructive read of slotA BEFORE the mutation — required, not optional,
+        // since this command has no non-destructive form.
+        let a: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let b: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let level: f32 = args
+            .get(i + 3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f32::NAN);
+        let commit_i = args.iter().position(|arg| arg == "--commit");
+        let expected_name = commit_i.and_then(|ci| args.get(ci + 1)).cloned();
+        let Some(expected_name) =
+            expected_name.filter(|_| a != u32::MAX && b != u32::MAX && level.is_finite())
+        else {
+            eprintln!(
+                "usage: probe --save-load-test <slotA> <slotB> <level> --commit <expectedNameOfSlotA>  (slotA/slotB are 0-based list indices; DESTRUCTIVE)"
+            );
+            std::process::exit(2);
+        };
+        match tmp_companion_lib::probe_save_load_test(a, b, level, &expected_name) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--clear") {
         // --clear <listIndex> <expect-name>  — clears only if the slot reads
         // expect-name. 0-BASED list index (what `--import`'s diff prints), NOT the

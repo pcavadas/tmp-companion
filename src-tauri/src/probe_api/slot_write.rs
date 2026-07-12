@@ -403,3 +403,61 @@ pub fn probe_bulk_apply(
     }
     Ok(out)
 }
+
+/// ponytail: throwaway HW experiment (`--save-load-test`): can ONE connection chain
+/// item N's `saveCurrentPreset` with item N+1's `loadPreset`? Conn 1 makes `slot_a`
+/// current; conn 2 sets a distinctive presetLevel, saves, then loads `slot_b` on the
+/// SAME connection. Verification is the caller's (field-8 read of `slot_a` + an
+/// active-graph check). DESTRUCTIVE: overwrites `slot_a`'s stored presetLevel — guarded
+/// by a non-destructive read of `slot_a`'s current name against `expected_name_a`
+/// (same 0-based list-index space as the mutation) before anything is touched.
+pub fn probe_save_load_test(
+    slot_a: u32,
+    slot_b: u32,
+    level: f32,
+    expected_name_a: &str,
+) -> Result<String, String> {
+    let actual_name = Session::connect()?
+        .list_my_presets()?
+        .into_iter()
+        .find(|p| p.slot == slot_a)
+        .map(|p| p.name)
+        .ok_or_else(|| format!("no preset at list index {slot_a}"))?;
+    if actual_name != expected_name_a {
+        return Err(format!(
+            "guard mismatch: slot {slot_a} is \"{actual_name}\", expected \"{expected_name_a}\" — refusing to overwrite"
+        ));
+    }
+
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot_a)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            crate::leveller::settle_after_load_ms(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::leveller::RECONNECT_GAP_MS,
+    ));
+    let mut s = Session::connect()?;
+    let ack = s.set_preset_level(level)?;
+    if ack.is_none() {
+        return Err(format!(
+            "slot {slot_a}: no presetLevel acknowledgement from the device — refusing to save an unconfirmed level"
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::leveller::SETTLE_AFTER_SET_MS,
+    ));
+    s.save_current_preset(slot_a)?;
+    s.load_preset(slot_b)?;
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::leveller::settle_after_load_ms(),
+    ));
+    Ok(format!(
+        "set level {level} on slot {} (ack) · save sent · loaded slot {} — save+load on ONE connection (initial slot-{}-current load used a separate connection; persistence not read back)",
+        slot_a + 1,
+        slot_b + 1,
+        slot_a + 1
+    ))
+}

@@ -193,3 +193,50 @@ fn doctor_force_bypass_null_ftsw_degrades_to_empty() {
     assert!(doctor_force_bypass(&null, &p, None).is_empty());
     assert!(doctor_force_bypass(&null, &p, Some(0)).is_empty());
 }
+
+// --- consecutive-scene load skip (doctor_skip_load) ---
+
+fn prev(list_index: u32, wrote: bool) -> PrevSound {
+    PrevSound { list_index, wrote }
+}
+
+#[test]
+fn skip_load_only_for_a_clean_ok_same_preset_scene_chain() {
+    // The one allowed case: same preset, previous sound clean, current is a scene.
+    assert!(doctor_skip_load(Some(&prev(3, false)), 3, true));
+    // First sound of the run — and any sound after an ERRORED one (the loop resets
+    // prev to None on error) — never skips.
+    assert!(!doctor_skip_load(None, 3, true));
+    // Different preset → reload.
+    assert!(!doctor_skip_load(Some(&prev(2, false)), 3, true));
+    // Previous sound wrote force-bypasses (base/footswitch) → reload.
+    assert!(!doctor_skip_load(Some(&prev(3, true)), 3, true));
+    // Base/footswitch sounds always reload, even after a clean scene.
+    assert!(!doctor_skip_load(Some(&prev(3, false)), 3, false));
+}
+
+// --- doctor_apply BEFORE-clip cache ---
+
+#[test]
+fn before_cache_hits_only_the_exact_sound_and_stimulus() {
+    clear_doctor_before_cache();
+    let key: BeforeKey = (7, "Lead".into(), "/stim/tele.wav".into(), Some(0xC196_0000));
+    before_cache_put(key.clone(), "clip-a".into());
+    assert_eq!(before_cache_get(&key), Some("clip-a".into()));
+    // Any identity change misses: renamed preset, different stimulus, different cal.
+    assert_eq!(
+        before_cache_get(&(7, "Lead 2".into(), "/stim/tele.wav".into(), key.3)),
+        None
+    );
+    assert_eq!(
+        before_cache_get(&(7, "Lead".into(), "/stim/strat.wav".into(), key.3)),
+        None
+    );
+    assert_eq!(
+        before_cache_get(&(7, "Lead".into(), "/stim/tele.wav".into(), None)),
+        None
+    );
+    // A save invalidates (clear_doctor_before_cache is what doctor_save calls).
+    clear_doctor_before_cache();
+    assert_eq!(before_cache_get(&key), None);
+}
