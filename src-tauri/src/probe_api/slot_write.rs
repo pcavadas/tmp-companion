@@ -206,6 +206,10 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
 /// Used to undo a `--import` test and to exercise the setter on hardware. Guarded:
 /// only clears a slot that currently reads `expect_name` (pass the imported name,
 /// e.g. "Guitar") so a mistyped slot can't nuke an unrelated preset.
+/// `slot` is the 0-BASED list index — the same space as `PresetEntry.slot` (the
+/// guard's read) and `clear_user_preset`'s argument (the mutation), so guard and
+/// mutation act in ONE address space (the write-safety lesson). NB: `--export`
+/// takes the 1-BASED device slot instead — this probe's list index + 1.
 pub fn probe_clear_preset(slot: u32, expect_name: &str) -> Result<String, String> {
     let before = Session::connect()?.list_my_presets()?;
     let cur = before

@@ -247,9 +247,14 @@ pub fn onoff_switches_for(ftsw: &Value, node_id: &str) -> Vec<u32> {
 }
 
 /// The force-list replicating `switch`'s engaged state for measurement: every block its on-off
-/// functions reference, with `bypass` flipped from its base value (a latching toggle). Empty
-/// when the switch has no on-off — then measurement uses the base state. (`isActive` is the
-/// current engaged state, not enable/disable, so every on-off is replicated — see above.)
+/// functions reference, in the state the block holds WHILE THE SWITCH IS ACTIVE. An on-off is
+/// a latching toggle, so the saved base bypass is the engaged state only when the preset was
+/// saved WITH the switch active — that's exactly what the assignment's `isActive` records
+/// (HW: preset "TR+BD2+BMP" saved with its BD2 switch engaged stores BD2 ON + `isActive:true`).
+/// So per assignment: engaged bypass = saved bypass when `isActive`, else the flip. The old
+/// unconditional flip inverted saved-engaged switches — the Doctor forced BD2 OFF during its
+/// own switch's capture and diagnosed the base sound instead. Empty when the switch has no
+/// on-off — then measurement uses the base state.
 pub fn engaged_bypass_for_switch(
     ftsw: &Value,
     preset: &Value,
@@ -267,6 +272,9 @@ pub fn engaged_bypass_for_switch(
         if a.get("func").and_then(Value::as_str) != Some("on-off") {
             continue;
         }
+        // Saved-while-active ⇒ the saved state IS the engaged state; otherwise the
+        // engaged state is one toggle away from saved.
+        let is_active = a.get("isActive").and_then(Value::as_bool).unwrap_or(false);
         for n in a
             .get("nodes")
             .and_then(Value::as_array)
@@ -278,8 +286,8 @@ pub fn engaged_bypass_for_switch(
             if nid.is_empty() {
                 continue;
             }
-            // engaged = the latching flip of the base bypass.
-            out.push((g.into(), nid.into(), !block_bypassed_in_base(preset, nid)));
+            let saved = block_bypassed_in_base(preset, nid);
+            out.push((g.into(), nid.into(), if is_active { saved } else { !saved }));
         }
     }
     out
@@ -324,8 +332,8 @@ pub fn all_onoff_blocks(ftsw: &Value) -> Vec<(String, String)> {
 
 /// `all_onoff_blocks` minus `switch`'s OWN on-off targets, each forced to `bypass=true` (off) —
 /// "every OTHER footswitch's block off", the isolation force-list for leveling one switch. The
-/// excluded nodes are `switch`'s own (the caller owns them: `engaged_bypass_for_switch` flips
-/// them, or an on-in-base block keeps its saved state), so this list is disjoint from that flip.
+/// excluded nodes are `switch`'s own (the caller owns them: `engaged_bypass_for_switch` forces
+/// them ON, or an on-in-base block keeps its saved state), so this list is disjoint from it.
 pub fn siblings_off_excluding(ftsw: &Value, switch: u32) -> Vec<(String, String, bool)> {
     let own: std::collections::HashSet<String> = ftsw
         .as_array()
@@ -684,12 +692,14 @@ mod tests {
 
     #[test]
     fn plan_bakes_single_owner_off_in_base() {
-        // N off in base, switch 0 has an active on-off for N, no other owner, no scenes → Bake.
+        // N off in base, switch 0 has an on-off for N, no other owner, no scenes → Bake.
         // A SIBLING switch owns M → M forced off (isolation) alongside N's own flip.
+        // isActive:false matches the HW correlation (a base-off block's switch reads
+        // inactive) — engaged is the flip of saved.
         let p = preset_with(
             true,
             None,
-            serde_json::json!([[onoff(&["N"], true)], [onoff(&["M"], true)]]),
+            serde_json::json!([[onoff(&["N"], false)], [onoff(&["M"], true)]]),
         );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
@@ -745,12 +755,13 @@ mod tests {
 
     #[test]
     fn plan_assigns_when_second_footswitch_also_enables_n() {
-        // Switch 0 levels N, but switch 1 ALSO has an active on-off for N → not sole owner →
-        // engaged-measured Assign (baking would change N for switch 1 too).
+        // Switch 0 levels N, but switch 1 ALSO has an on-off for N → not sole owner →
+        // engaged-measured Assign (baking would change N for switch 1 too). N off in
+        // base ⇒ both switches saved inactive (the HW correlation).
         let p = preset_with(
             true,
             None,
-            serde_json::json!([[onoff(&["N"], true)], [onoff(&["N"], true)]]),
+            serde_json::json!([[onoff(&["N"], false)], [onoff(&["N"], false)]]),
         );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {
@@ -826,10 +837,13 @@ mod tests {
     fn plan_engaged_list_flips_a_multi_block_switch() {
         // Switch enables N (off→on) AND M (on→off): engaged replicates BOTH flips so the target
         // is measured with the switch's full engaged state. A SIBLING switch owns P → P forced off.
+        // Saved DISENGAGED (`isActive:false`) — engaged is one toggle away from saved; a preset
+        // saved WITH the switch active (`isActive:true`) keeps its saved states instead (the
+        // preset-024 BD2 regression, covered in `commands/doctor_tests.rs`).
         let p = preset_with(
             true,
             Some(false),
-            serde_json::json!([[onoff(&["N", "M"], true)], [onoff(&["P"], true)]]),
+            serde_json::json!([[onoff(&["N", "M"], false)], [onoff(&["P"], true)]]),
         );
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
         match &plans[0] {

@@ -188,7 +188,24 @@ pub(crate) async fn level_footswitches_apply(
             .collect();
         let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys, has_fs_scenes);
 
+        // Load the preset ONCE for the whole batch — `measure_footswitch`'s caller
+        // contract. Every job's sweep runs against this load (its pollution is
+        // self-correcting: each job's force list explicitly sets every sibling
+        // block's bypass, and swept params live on blocks the next job forces off);
+        // the ONE write session's reload discards it all at the end.
+        {
+            let mut s = Session::connect()?;
+            s.load_preset(slot)?;
+            std::thread::sleep(std::time::Duration::from_millis(
+                leveller::SETTLE_AFTER_LOAD_MS,
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+
         let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
+        // The solved writes pending the batch's single write+save session, each
+        // carrying its job index (one vec — no hand-aligned parallel arrays).
+        let mut pending: Vec<(usize, leveller::FsPendingWrite)> = Vec::new();
         for (idx, job) in jobs.iter().enumerate() {
             if FOOTSWITCH_LEVEL_CANCEL.load(SeqCst) {
                 let _ = on_result.send(FootswitchLevelProgressItem {
@@ -210,6 +227,13 @@ pub(crate) async fn level_footswitches_apply(
                 job.lev_node_id.as_str(),
                 job.lev_parameter_id.as_str(),
             );
+            let lev_owned = || {
+                (
+                    job.lev_group_id.clone(),
+                    job.lev_node_id.clone(),
+                    job.lev_parameter_id.clone(),
+                )
+            };
             let outcome: Result<leveller::FootswitchLevelResult, String> = match &plans[idx] {
                 footswitch::FsLevelPlan::Clamp(msg) => Err(msg.clone()),
                 // A sibling switch already baked this (node, param, target) — reuse its result.
@@ -223,33 +247,53 @@ pub(crate) async fn level_footswitches_apply(
                 footswitch::FsLevelPlan::Bake {
                     engaged,
                     clear_stale,
-                } => leveller::level_footswitch(
-                    slot,
+                } => leveller::measure_footswitch(
                     job.switch,
                     lev,
                     engaged,
-                    &leveller::FsWrite::Bake {
-                        clear_stale: *clear_stale,
-                    },
                     &stim,
                     job.target_lufs + offset,
-                    save,
-                    true,
-                ),
+                    "baked",
+                )
+                .inspect(|r| {
+                    if save && r.clamp_reason.is_none() {
+                        pending.push((
+                            idx,
+                            leveller::FsPendingWrite {
+                                switch: job.switch,
+                                lev: lev_owned(),
+                                write: leveller::FsWrite::Bake {
+                                    clear_stale: *clear_stale,
+                                },
+                                value: r.final_value,
+                            },
+                        ));
+                    }
+                }),
                 footswitch::FsLevelPlan::Assign { engaged } => {
                     match resolve_footswitch_job(&ftsw, &preset, job) {
                         Err(e) => Err(e),
-                        Ok((value_b, spec)) => leveller::level_footswitch(
-                            slot,
+                        Ok((value_b, spec)) => leveller::measure_footswitch(
                             job.switch,
                             lev,
                             engaged,
-                            &leveller::FsWrite::Assign { value_b, spec },
                             &stim,
                             job.target_lufs + offset,
-                            save,
-                            true,
-                        ),
+                            "assigned",
+                        )
+                        .inspect(|r| {
+                            if save && r.clamp_reason.is_none() {
+                                pending.push((
+                                    idx,
+                                    leveller::FsPendingWrite {
+                                        switch: job.switch,
+                                        lev: lev_owned(),
+                                        write: leveller::FsWrite::Assign { value_b, spec },
+                                        value: r.final_value,
+                                    },
+                                ));
+                            }
+                        }),
                     }
                 }
             };
@@ -272,10 +316,43 @@ pub(crate) async fn level_footswitches_apply(
             };
             let _ = on_result.send(item);
         }
+        // ── ONE write session + ONE save for every solved switch (also fired after a
+        // cancel, so already-reported switches persist), then a reload to leave the
+        // working copy clean. No post-save verify capture: `predicted_lufs` is already
+        // a REAL measurement at `final_value` (the sweep's best point), not a model
+        // prediction — re-measuring it bought nothing but ~10 s per switch.
+        let write_result = if save && !pending.is_empty() {
+            let (idxs, writes): (Vec<usize>, Vec<leveller::FsPendingWrite>) =
+                pending.into_iter().unzip();
+            leveller::write_footswitch_values(slot, &writes).map(|()| {
+                let written: std::collections::HashSet<usize> = idxs.iter().copied().collect();
+                for &idx in &idxs {
+                    if let Some(r) = &mut results[idx] {
+                        r.saved = true;
+                    }
+                }
+                // Propagate the persisted state to BakeShared siblings that reused a
+                // now-saved representative's result (they share the same written write).
+                for (idx, plan) in plans.iter().enumerate() {
+                    if let footswitch::FsLevelPlan::BakeShared { rep } = plan {
+                        if written.contains(rep) {
+                            if let Some(r) = &mut results[idx] {
+                                r.saved = true;
+                            }
+                        }
+                    }
+                }
+            })
+        } else {
+            // Dry run / nothing solved: discard the sweep pollution.
+            let _ = Session::connect().map(|mut s| s.load_preset(slot));
+            Ok(())
+        };
         // Guarantee re-amp OFF on a fresh connection.
         if let Ok(mut s) = Session::connect() {
             let _ = s.set_reamp_mode(false);
         }
+        write_result?;
         Ok(results.into_iter().flatten().collect())
     })
     .await

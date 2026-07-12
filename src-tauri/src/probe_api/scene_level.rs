@@ -182,7 +182,7 @@ pub fn probe_level_preset_scenes(
 
     // 3b) ONE un-engaged pre-pass over every FS scene → pick each scene's active amp.
     let all_slots: Vec<u32> = (0..scenes.scenes.len() as u32).collect();
-    let docs = prepass_scene_docs(list_index, &all_slots)?;
+    let (docs, _) = prepass_scene_docs(list_index, &all_slots)?;
 
     // 3c) ONE-SHOT open-loop per scene on the active amp `outputLevel`. HW-verified:
     //     captured_LUFS = 20*log10(outputLevel) + C is LINEAR with ~25 LU authority, so
@@ -272,7 +272,7 @@ pub fn probe_scene_amp_diag(list_index: u32) -> Result<String, String> {
     let amp_cands = load_and_filter_amp_candidates(list_index)?;
     let mut all_slots: Vec<u32> = (0..scenes.scenes.len() as u32).collect();
     all_slots.push(session::BASE_SCENE_SLOT);
-    let docs = prepass_scene_docs(list_index, &all_slots)?;
+    let (docs, _) = prepass_scene_docs(list_index, &all_slots)?;
 
     let mut out = format!(
         "preset {:03} · scenes {:?}\namp candidates: {:?}\n",
@@ -337,7 +337,7 @@ pub fn probe_scene_knob_authority(
 
     // Pick the active amp for this scene (same logic as build_scene_jobs).
     let candidates = load_and_filter_amp_candidates(list_index)?;
-    let docs = prepass_scene_docs(list_index, &[scene_slot])?;
+    let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
     let job = build_scene_jobs(&[scene_slot], &candidates, &docs)?;
     let knob = job
         .into_iter()
@@ -399,7 +399,7 @@ pub fn probe_mute_floor(
 
     // Build the scene job the same way the leveler does, then take its first two amp lanes.
     let candidates = load_and_filter_amp_candidates(list_index)?;
-    let docs = prepass_scene_docs(list_index, &[scene_slot])?;
+    let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
     let job = build_scene_jobs(&[scene_slot], &candidates, &docs)?
         .into_iter()
         .next()
@@ -510,10 +510,11 @@ pub fn probe_bisect_scene(
 }
 
 /// FAITHFUL UI-path repro (`probe --jointk-scenes`): drive the REAL
-/// `level_scenes_oneshot` (jointk → `apply_levels` → `correct_iter`, incl. save)
-/// exactly as the app's `level_scenes_apply_batched` does when the wizard levels
-/// scene rows — ONE command call per scene (per-scene prepass), per-name target
-/// overrides. Unlike `probe_level_preset_scenes` (its own simplified one-shot),
+/// `level_scenes_oneshot` (jointk → `apply_levels` → `correct_iter`, incl. the
+/// batch-end single save) exactly as the app's `level_scenes_apply_batched` does
+/// when the wizard levels scene rows — scenes sharing a target batched into ONE
+/// call, per-name target overrides. Unlike `probe_level_preset_scenes` (its own
+/// simplified one-shot),
 /// this exercises the production scene-leveling code path verbatim, and prints
 /// each scene's job (knob picks + `current`) plus the full outcome — the
 /// diagnostics the UI run doesn't log. Point it at a SCRATCH preset when
@@ -555,42 +556,47 @@ pub fn probe_jointk_scenes(
     let only: Option<u32> = std::env::var("TMP_JOINTK_ONLY")
         .ok()
         .and_then(|v| v.parse().ok());
+    // The app's BATCHED shape: scenes sharing a resolved target go in ONE
+    // prepass + runner call (one preset load, one batch-end save) — the wizard
+    // groups adjacent same-target scene rows the same way. Group order follows
+    // first appearance, so the device walks scenes in preset order per group.
+    let mut groups: Vec<(f64, Vec<u32>)> = Vec::new();
     for (i, name) in scenes.scenes.iter().enumerate() {
         let slot = i as u32;
         if only.is_some_and(|o| o != slot) {
             continue;
         }
         let target = resolve(name);
+        match groups.last_mut() {
+            Some((t, slots)) if *t == target => slots.push(slot),
+            _ => groups.push((target, vec![slot])),
+        }
+    }
+    for (target, slots) in groups {
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        // Per-scene prepass + job build + runner — the app's one-call-per-scene shape.
-        let docs = prepass_scene_docs(list_index, &[slot])?;
-        let doc_bytes = docs
-            .first()
-            .and_then(|(_, d)| d.as_ref())
-            .map(|d| d.to_string().len())
-            .unwrap_or(0);
+        let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let jobs = match build_scene_jobs(&[slot], &candidates, &docs) {
+        let jobs = match build_scene_jobs(&slots, &candidates, &docs) {
             Ok(j) => j,
             Err(e) => {
-                out += &format!("FS[{slot}] {name:<16} doc={doc_bytes}B  [BUILD FAIL: {e}]\n");
+                out += &format!("group target {target:.1} slots {slots:?} [BUILD FAIL: {e}]\n");
                 continue;
             }
         };
         let job_desc: Vec<String> = jobs
             .iter()
             .map(|j| match &j.skip {
-                Some(r) => format!("SKIP: {r}"),
+                Some(r) => format!("FS[{}] SKIP: {r}", j.scene_slot),
                 None => j
                     .knobs
                     .iter()
-                    .map(|k| format!("{:?} current={:.3}", k.knob, k.current))
+                    .map(|k| format!("FS[{}] {:?} current={:.3}", j.scene_slot, k.knob, k.current))
                     .collect::<Vec<_>>()
                     .join(" + "),
             })
             .collect();
         out += &format!(
-            "FS[{slot}] {name:<16} target {target:.1}  doc={doc_bytes}B  job=[{}]\n",
+            "group target {target:.1} slots {slots:?} restore_scene={restore_scene:?}\n  jobs=[{}]\n",
             job_desc.join("; ")
         );
         match leveller::level_scenes_oneshot(
@@ -599,6 +605,7 @@ pub fn probe_jointk_scenes(
             &stim,
             target,
             save,
+            restore_scene,
             |_, _| {},
             || false,
         ) {
@@ -610,5 +617,71 @@ pub fn probe_jointk_scenes(
             Err(e) => out += &format!("   → RUN FAIL: {e}\n"),
         }
     }
+    Ok(out)
+}
+
+/// HW semantics probe for the deferred single-save scene flow
+/// (`probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>`):
+/// write several scenes' `outputLevel` UNSAVED (each on its own fresh connection,
+/// mirroring the runner's write shape incl. a re-amp capture per write), then ONE
+/// final save. The caller exports the slot afterwards and checks which writes
+/// persisted. `TMP_DEFER_FINAL` picks the final-save shape:
+///   `asis`   — save with the last-written scene active (does one save persist ALL
+///              accumulated unsaved scene overlays?)
+///   `return` — `loadScene(first written scene)` again, then save (does re-recalling
+///              a scene REVERT its own unsaved write?)
+///   `base`   — `loadScene(8)`, then save (the restore-original-state shape).
+pub fn probe_defer_scenes(
+    list_index: u32,
+    group_id: String,
+    node_id: String,
+    writes: Vec<(u32, f32)>,
+) -> Result<String, String> {
+    use std::time::Duration;
+    let stim_path = probe_stimulus_path("guitar-singlecoil")?;
+    let stim = read_stimulus_calibrated(&stim_path, None)?;
+    let final_mode = std::env::var("TMP_DEFER_FINAL").unwrap_or_else(|_| "asis".into());
+    let mut out = format!(
+        "=== defer-scenes idx {list_index} {group_id}/{node_id} writes={writes:?} final={final_mode} ===\n"
+    );
+
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(list_index)?;
+        std::thread::sleep(Duration::from_millis(1200));
+    }
+    std::thread::sleep(Duration::from_millis(400));
+
+    for (scene, value) in &writes {
+        let mut s = Session::connect()?;
+        s.load_scene(*scene)?;
+        std::thread::sleep(Duration::from_millis(150));
+        s.set_node_scene_edit(&group_id, &node_id, true)?;
+        std::thread::sleep(Duration::from_millis(300));
+        s.change_parameter(&group_id, &node_id, "outputLevel", *value)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let lufs = leveller::engage_measure_disengage(&mut s, &stim)?.integrated_lufs;
+        out += &format!("scene {scene} write({value}) capture: {lufs:.2} LUFS (unsaved)\n");
+        drop(s);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    let mut s = Session::connect()?;
+    match final_mode.as_str() {
+        "return" => {
+            let first = writes.first().map(|(sc, _)| *sc).unwrap_or(0);
+            s.load_scene(first)?;
+            std::thread::sleep(Duration::from_millis(300));
+            out += &format!("final: re-recalled scene {first}, saving…\n");
+        }
+        "base" => {
+            s.load_scene(session::BASE_SCENE_SLOT)?;
+            std::thread::sleep(Duration::from_millis(300));
+            out += "final: recalled base (8), saving…\n";
+        }
+        _ => out += "final: saving as-is (last scene active)…\n",
+    }
+    s.save_current_preset(list_index)?;
+    out += "saved\n";
     Ok(out)
 }

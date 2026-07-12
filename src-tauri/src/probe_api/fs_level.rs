@@ -453,3 +453,105 @@ pub fn probe_level_footswitch(
     }
     Ok(out)
 }
+
+/// HW validation for the batched footswitch WRITE phase (`probe --fs-batch
+/// <listIndex> <v1> <v2> …`): enumerate the preset's block-acting switches, plan
+/// bake-vs-assign exactly like `level_footswitches_apply`, pair each with the given
+/// FIXED value (no measurement captures — the sweep phase is unchanged, shipped
+/// code), then commit every write on ONE live-edit session with ONE save
+/// (`write_footswitch_values`). Verify persistence with `--export` afterwards.
+/// Point it at a SCRATCH preset: it persists.
+pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, String> {
+    let (preset, has_fs_scenes, _) = read_slot_preset_parsed(list_index)?;
+    let ftsw = preset
+        .get("ftsw")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let infos = footswitch::enumerate_block_footswitches(&ftsw, &preset);
+    if infos.is_empty() {
+        return Err("preset has no block-acting footswitches".to_string());
+    }
+    let mut out = format!(
+        "[probe --fs-batch] idx {list_index} · {} block-acting switch(es) · values {values:?}\n",
+        infos.len()
+    );
+
+    // One job per switch: its first level-param candidate, target irrelevant (fixed values).
+    let jobs: Vec<FootswitchLevelJob> = infos
+        .iter()
+        .filter_map(|info| {
+            let p = info.level_params.first()?;
+            Some(FootswitchLevelJob {
+                switch: info.switch,
+                lev_group_id: p.group_id.clone(),
+                lev_node_id: p.node_id.clone(),
+                lev_parameter_id: p.parameter_id.clone(),
+                target_lufs: -24.0,
+            })
+        })
+        .collect();
+    let keys: Vec<footswitch::FsJobKey> = jobs
+        .iter()
+        .map(|j| footswitch::FsJobKey {
+            switch: j.switch,
+            lev_node: &j.lev_node_id,
+            lev_param: &j.lev_parameter_id,
+            target_bits: j.target_lufs.to_bits(),
+        })
+        .collect();
+    let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys, has_fs_scenes);
+
+    let mut pends: Vec<leveller::FsPendingWrite> = Vec::new();
+    for (idx, (job, plan)) in jobs.iter().zip(&plans).enumerate() {
+        let value = values.get(idx).copied().unwrap_or(0.5);
+        let lev = (
+            job.lev_group_id.clone(),
+            job.lev_node_id.clone(),
+            job.lev_parameter_id.clone(),
+        );
+        match plan {
+            footswitch::FsLevelPlan::Bake { clear_stale, .. } => {
+                out += &format!(
+                    "  FS{} {}/{}.{} → BAKE value {value}\n",
+                    job.switch, lev.0, lev.1, lev.2
+                );
+                pends.push(leveller::FsPendingWrite {
+                    switch: job.switch,
+                    lev,
+                    write: leveller::FsWrite::Bake {
+                        clear_stale: *clear_stale,
+                    },
+                    value,
+                });
+            }
+            footswitch::FsLevelPlan::Assign { .. } => {
+                let (value_b, spec) = resolve_footswitch_job(&ftsw, &preset, job)?;
+                out += &format!(
+                    "  FS{} {}/{}.{} → ASSIGN fn#{} valueA {value} valueB {value_b}\n",
+                    job.switch, lev.0, lev.1, lev.2, spec.function_index
+                );
+                pends.push(leveller::FsPendingWrite {
+                    switch: job.switch,
+                    lev,
+                    write: leveller::FsWrite::Assign { value_b, spec },
+                    value,
+                });
+            }
+            footswitch::FsLevelPlan::BakeShared { rep } => {
+                out += &format!(
+                    "  FS{} → shares FS-job #{rep}'s bake (no write)\n",
+                    job.switch
+                );
+            }
+            footswitch::FsLevelPlan::Clamp(msg) => {
+                out += &format!("  FS{} → CLAMP: {msg}\n", job.switch);
+            }
+        }
+    }
+    leveller::write_footswitch_values(list_index, &pends)?;
+    out += &format!(
+        "wrote {} switch(es) on ONE session + ONE save — export the slot to verify\n",
+        pends.len()
+    );
+    Ok(out)
+}

@@ -119,21 +119,24 @@ fn doctor_apply_result_serializes_camel_case() {
 
 // ── doctor_force_bypass: isolation force-list per sound (base / footswitch) ──
 
-/// A preset with two block-acting switches (switch 0 → DRIVE on/off, switch 1 →
-/// MOD on/off — both OFF in base) plus a shared CAB block no switch touches. The
-/// exact JSON shape is what `all_onoff_blocks` / `siblings_off_excluding` /
-/// `engaged_bypass_for_switch` parse (`ftsw`=array-of-switches, on-off assign =
-/// `{func,nodes:[{groupId,nodeId}]}`; base bypass = `dspUnitParameters.bypass`).
+/// A preset with three block-acting switches (switch 0 → DRIVE, switch 1 → MOD —
+/// both OFF in base; switch 2 → BD2, saved ON in base with `isActive:true` — the
+/// preset-024 "saved with the switch engaged" shape) plus a shared CAB block no
+/// switch touches. The exact JSON shape is what `all_onoff_blocks` /
+/// `siblings_off_excluding` / `engaged_bypass_for_switch` parse
+/// (`ftsw`=array-of-switches, on-off assign = `{func,nodes:[{groupId,nodeId}]}`).
 fn force_bypass_fixture() -> serde_json::Value {
     serde_json::json!({
         "audioGraph": { "guitarNodes": { "G1": [
             { "nodeId": "DRV", "FenderId": "DRV", "dspUnitParameters": { "bypass": true } },
             { "nodeId": "MOD", "FenderId": "MOD", "dspUnitParameters": { "bypass": true } },
+            { "nodeId": "BD2", "FenderId": "BD2", "dspUnitParameters": { "bypass": false } },
             { "nodeId": "CAB", "FenderId": "CAB", "dspUnitParameters": { "bypass": false } }
         ]}, "micNodes": {} },
         "ftsw": [
-            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "DRV" }], "isActive": true }],
-            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "MOD" }], "isActive": true }],
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "DRV" }], "isActive": false }],
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "MOD" }], "isActive": false }],
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "BD2" }], "isActive": true }],
         ]
     })
 }
@@ -142,22 +145,44 @@ fn force_bypass_fixture() -> serde_json::Value {
 fn doctor_force_bypass_base_forces_all_onoff_blocks_off() {
     let p = force_bypass_fixture();
     let out = doctor_force_bypass(&p["ftsw"], &p, None);
-    // Both switches' on/off blocks, forced off (bypass=true); shared CAB absent.
+    // Every switch's on/off block forced off (bypass=true) — including one the
+    // preset was SAVED with engaged; shared CAB absent.
     assert!(out.contains(&("G1".into(), "DRV".into(), true)));
     assert!(out.contains(&("G1".into(), "MOD".into(), true)));
+    assert!(out.contains(&("G1".into(), "BD2".into(), true)));
     assert!(!out.iter().any(|(_, n, _)| n == "CAB"));
-    assert_eq!(out.len(), 2);
+    assert_eq!(out.len(), 3);
 }
 
 #[test]
-fn doctor_force_bypass_footswitch_flips_own_engaged_others_off() {
+fn doctor_force_bypass_footswitch_forces_own_on_others_off() {
     let p = force_bypass_fixture();
     let out = doctor_force_bypass(&p["ftsw"], &p, Some(0));
-    // Switch 0's own DRV flipped ENGAGED (base off → bypass=false), switch 1's MOD forced off.
+    // Switch 0's own DRV forced ON (saved off + isActive:false → engaged is the
+    // flip), the other switches' blocks off.
     assert!(out.contains(&("G1".into(), "DRV".into(), false)));
     assert!(out.contains(&("G1".into(), "MOD".into(), true)));
+    assert!(out.contains(&("G1".into(), "BD2".into(), true)));
     assert!(!out.iter().any(|(_, n, _)| n == "CAB"));
-    assert_eq!(out.len(), 2, "no duplicates");
+    assert_eq!(out.len(), 3, "no duplicates");
+}
+
+#[test]
+fn doctor_force_bypass_saved_engaged_block_still_forced_on_for_its_switch() {
+    // REGRESSION (HW, preset 024 "TR+BD2+BMP"): BD2 saved ON in base with its on-off
+    // `isActive:true` (the preset was saved with the switch engaged). The old
+    // unconditional "flip of saved bypass" forced it OFF during its own switch's
+    // capture — the Doctor diagnosed the base sound instead. isActive:true ⇒ the
+    // saved state IS the engaged state.
+    let p = force_bypass_fixture();
+    let out = doctor_force_bypass(&p["ftsw"], &p, Some(2));
+    assert!(
+        out.contains(&("G1".into(), "BD2".into(), false)),
+        "own block forced ON"
+    );
+    assert!(out.contains(&("G1".into(), "DRV".into(), true)));
+    assert!(out.contains(&("G1".into(), "MOD".into(), true)));
+    assert_eq!(out.len(), 3);
 }
 
 #[test]

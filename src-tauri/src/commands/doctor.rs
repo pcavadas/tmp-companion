@@ -32,9 +32,11 @@ pub struct DoctorInput {
 
 /// The force-bypass isolation list for capturing one sound cleanly (mirrors the
 /// leveller's base/footswitch isolation, `footswitch.rs`): Base forces EVERY
-/// footswitch on/off block OFF; a footswitch flips its OWN blocks engaged while
-/// forcing every other switch's block off; a scene contributes NOTHING (its own
-/// bypass overrides define it). `(group_id, node_id, bypass_to_write)`.
+/// footswitch on/off block OFF; a footswitch forces its OWN blocks into their
+/// switch-active state (isActive-aware — a plain flip of the saved bypass inverts
+/// on a preset saved with the switch engaged, HW preset 024's BD2) while forcing
+/// every other switch's block off; a scene contributes NOTHING (its own bypass
+/// overrides define it). `(group_id, node_id, bypass_to_write)`.
 fn doctor_force_bypass(
     ftsw: &serde_json::Value,
     preset: &serde_json::Value,

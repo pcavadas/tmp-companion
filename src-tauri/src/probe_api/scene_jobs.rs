@@ -381,13 +381,27 @@ pub(crate) fn build_scene_jobs(
 
 /// Un-engaged pre-pass for the app's batched scene leveling: ONE rich session
 /// loads the preset and harvests each requested scene's live field-3 doc (the
-/// knob-pick input). Base (wire 8) is captured from the post-load push BEFORE
-/// any scene recall. Must run before any re-amp engage — the device pushes no
-/// field-3 while engaged.
-pub(crate) fn prepass_scene_docs(
-    slot: u32,
-    scene_slots: &[u32],
-) -> Result<Vec<(u32, Option<serde_json::Value>)>, String> {
+/// knob-pick input). Base (`session::BASE_SCENE_SLOT`) is served from the
+/// post-load push ONLY when that push's `lastLoadedScene` already names base;
+/// otherwise the pre-pass recalls base explicitly (the post-load doc reflects
+/// whatever scene was last active, which is not necessarily base). Must run
+/// before any re-amp engage — the device pushes no field-3 while engaged.
+///
+/// ACTIVE-SCENE GAP (HW, the Arpeges `doc=0B` build fail): the device pushes
+/// field-3 only on a CHANGE, so recalling the scene that is ALREADY active —
+/// the preset's saved `lastLoadedScene`, materialized by the `load_preset`
+/// above — yields NO push and the harvest comes back empty. Which scene that
+/// is depends on the preset's last save, so the failure moves between runs
+/// (it presents as a random per-scene "can't classify routing" skip). The
+/// post-load doc IS that scene's doc (the load materialized its state), so
+/// serve the already-active scene from the last harvested doc instead of
+/// sending a doomed no-change recall.
+/// The prepass result: per-scene docs plus the preset's ORIGINAL active scene (its
+/// saved `lastLoadedScene`, materialized by the prepass `load_preset`) — the scene the
+/// batch-end save must restore so the preset persists in the state it was loaded in.
+pub(crate) type SceneDocs = (Vec<(u32, Option<serde_json::Value>)>, Option<u32>);
+
+pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<SceneDocs, String> {
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
@@ -399,11 +413,51 @@ pub(crate) fn prepass_scene_docs(
         s.heartbeat()?;
         s.pump_collect(200)?;
     }
-    let base_doc = s.current_preset_value().ok();
+    let post_load_doc = s.current_preset_value().ok();
+    // The wire scene the device currently has materialized (0-based scenes[] index;
+    // BASE_SCENE_SLOT = base). Tracked across the loop so only a genuinely-inactive
+    // scene is recalled.
+    let mut active: Option<u32> = post_load_doc
+        .as_ref()
+        .and_then(|d| d.get("lastLoadedScene"))
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as u32);
+    // The doc reflecting the CURRENTLY-active scene's materialized state — this is
+    // whatever scene `lastLoadedScene` names, NOT necessarily the base scene.
+    let mut active_doc = post_load_doc.clone();
+    // The preset's ORIGINAL active scene, before any recall below — returned so the
+    // batch-end save can restore it.
+    let original_active = active;
+    // A genuine base-scene document, fetched lazily and kept distinct from
+    // `active_doc`: the post-load doc reflects `lastLoadedScene`, which may name a
+    // non-base scene, so it must not be reused for base-scene classification.
+    let mut base_doc: Option<serde_json::Value> = None;
     let mut docs = Vec::with_capacity(scene_slots.len());
     for &scene in scene_slots {
         if scene >= session::BASE_SCENE_SLOT {
+            if base_doc.is_none() {
+                if active == Some(session::BASE_SCENE_SLOT) {
+                    base_doc = active_doc.clone();
+                } else {
+                    s.raw.clear();
+                    s.send_and_collect(&proto::load_scene(session::BASE_SCENE_SLOT as u64), 300)?;
+                    let mut doc = None;
+                    for _ in 0..4 {
+                        s.heartbeat()?;
+                        s.pump_collect(150)?;
+                        if let Ok(v) = s.current_preset_value() {
+                            doc = Some(v);
+                            break;
+                        }
+                    }
+                    active = Some(session::BASE_SCENE_SLOT);
+                    active_doc = doc.clone();
+                    base_doc = doc;
+                }
+            }
             docs.push((scene, base_doc.clone()));
+        } else if active == Some(scene) {
+            docs.push((scene, active_doc.clone()));
         } else {
             s.raw.clear();
             s.send_and_collect(&proto::load_scene(scene as u64), 300)?;
@@ -416,10 +470,12 @@ pub(crate) fn prepass_scene_docs(
                     break;
                 }
             }
+            active = Some(scene);
+            active_doc = doc.clone();
             docs.push((scene, doc));
         }
     }
-    Ok(docs)
+    Ok((docs, original_active))
 }
 
 #[cfg(test)]
