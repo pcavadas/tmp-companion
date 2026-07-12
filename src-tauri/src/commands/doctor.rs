@@ -56,14 +56,14 @@ fn doctor_force_bypass(
 }
 
 /// The previous sound's run outcome, for the consecutive-scene load skip.
+/// Only a SUCCESSFUL sound is recorded — after an error the unit may be on any
+/// preset, so the loop resets this to `None` (same effect as the run's start).
 struct PrevSound {
     list_index: u32,
     /// It sent force-bypass writes (its `fb` was non-empty) — the working copy is
     /// polluted and only a reload clears it (a scene recall re-asserts ONLY the
     /// scene's own overrides, not the forced bypasses).
     wrote: bool,
-    /// Its capture succeeded — on error the unit may be on ANY preset.
-    ok: bool,
 }
 
 /// Whether the current sound can skip the per-sound preset load connection: the
@@ -75,7 +75,7 @@ struct PrevSound {
 fn doctor_skip_load(prev: Option<&PrevSound>, list_index: u32, is_scene: bool) -> bool {
     is_scene
         && prev
-            .map(|p| p.list_index == list_index && !p.wrote && p.ok)
+            .map(|p| p.list_index == list_index && !p.wrote)
             .unwrap_or(false)
 }
 
@@ -325,7 +325,6 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     prev = Some(PrevSound {
                         list_index: item.list_index,
                         wrote: !fb.is_empty(),
-                        ok: true,
                     });
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
@@ -337,11 +336,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     errors.push((i, e.clone()));
                     // A failed sound may have left the unit on ANY preset (e.g. its
                     // load connection never opened) — the next sound must reload.
-                    prev = Some(PrevSound {
-                        list_index: item.list_index,
-                        wrote: !fb.is_empty(),
-                        ok: false,
-                    });
+                    prev = None;
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
                         status: "error".to_string(),
@@ -507,10 +502,12 @@ type BeforeKey = (u32, String, String, Option<u32>);
 /// Single-entry cache of `doctor_apply`'s BEFORE clip (the stored preset captured at
 /// its own level — ~11 s to produce). The before-state is stable across consecutive
 /// applies on the same sound: the frontend allows ONE unsaved prescription at a time
-/// and `doctor_discard` reloads the stored preset. Anything that SAVES a preset
-/// invalidates it: `doctor_save` and the leveling/copy save commands call
-/// [`clear_doctor_before_cache`], as does device detach (`watcher.rs`) since an
-/// offline unit can be edited elsewhere. Single-entry bounds memory (one WAV).
+/// and `doctor_discard` reloads the stored preset. Invalidation is
+/// correct-by-construction: `Session::{save_current_preset, clear_user_preset,
+/// move_user_preset, import_preset}` — the choke points every stored-preset
+/// mutation routes through — call [`clear_doctor_before_cache`], as does device
+/// detach (`watcher.rs`, an offline unit can be edited elsewhere). Single-entry
+/// bounds memory (one WAV).
 static BEFORE_CACHE: std::sync::Mutex<Option<(BeforeKey, String)>> = std::sync::Mutex::new(None);
 
 /// Drop the cached `doctor_apply` BEFORE clip — call after anything that changes a
@@ -683,8 +680,6 @@ pub(crate) async fn doctor_save(
         let mut s = Session::connect()?;
         s.confirm_active(list_index, Some(&expect_name))?;
         s.save_current_preset(list_index)?;
-        // The stored preset just changed — the cached BEFORE clip is stale.
-        clear_doctor_before_cache();
         Ok(())
     })
     .await

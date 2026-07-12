@@ -32,7 +32,7 @@ use crate::session::Session;
 // error are byte-identical to 1200, and the verify captures confirm writes also land
 // at 400 (`notes/perf.md`). TMP_SETTLE_AFTER_LOAD_MS is the diagnostic env override
 // for future bisects.
-pub(crate) const SETTLE_AFTER_LOAD_MS: u64 = 400;
+const SETTLE_AFTER_LOAD_MS: u64 = 400;
 pub(crate) fn settle_after_load_ms() -> u64 {
     std::env::var("TMP_SETTLE_AFTER_LOAD_MS")
         .ok()

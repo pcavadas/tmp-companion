@@ -250,8 +250,6 @@ pub(crate) async fn level_scenes_apply_batched(
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
 ) -> Result<Vec<leveller::LevelResult>, String> {
-    // Saves change stored presets -- the Doctor's cached BEFORE clip goes stale.
-    crate::commands::doctor::clear_doctor_before_cache();
     if !candidates
         .iter()
         .any(|c| is_amp_output_level_param(&c.parameter_id))

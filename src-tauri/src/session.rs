@@ -2021,6 +2021,12 @@ impl Session {
     pub fn save_current_preset(&mut self, list_index: u32) -> Result<(), String> {
         self.hid
             .transact(&proto::save_current_preset((list_index + 1) as u64), 300)?;
+        // Stored-preset mutation choke point: EVERY save routes through here, so this
+        // one call keeps the Doctor's cached BEFORE clip correct-by-construction
+        // (per-command clears were forgotten on ~7 mutating paths). Over-clearing is
+        // harmless (the cache is a pure optimization). Same-crate call up into
+        // commands/ — accepted for a static reset with no real coupling.
+        crate::commands::doctor::clear_doctor_before_cache();
         Ok(())
     }
 
@@ -2030,6 +2036,8 @@ impl Session {
     pub fn clear_user_preset(&mut self, list_index: u32) -> Result<(), String> {
         self.hid
             .transact(&proto::clear_user_preset((list_index + 1) as u64), 300)?;
+        // Stored-preset mutation — see save_current_preset's choke-point note.
+        crate::commands::doctor::clear_doctor_before_cache();
         Ok(())
     }
 
@@ -2121,6 +2129,8 @@ impl Session {
         // ingest, and any importPresetResponse echo trails the whole burst.
         let reports = self.hid.transact_chunked(&body, 1500)?;
         self.raw.extend(reports);
+        // Stored-preset mutation — see save_current_preset's choke-point note.
+        crate::commands::doctor::clear_doctor_before_cache();
         // importPresetResponse: ImportPresetResponse{ presetJson=1, listEnum=2, presetSlot=3 }
         Ok(self.streams().iter().find_map(|s| {
             let fields = dig(&s.body, TMS_PRESET, 118)?;
@@ -2138,6 +2148,8 @@ impl Session {
             &proto::move_user_preset((old + 1) as u64, (new + 1) as u64),
             300,
         )?;
+        // Stored-preset mutation — see save_current_preset's choke-point note.
+        crate::commands::doctor::clear_doctor_before_cache();
         Ok(())
     }
 
@@ -3304,8 +3316,10 @@ mod tests {
             fw_version: None,
         };
         s.handshake(false, None, false, lean).unwrap();
-        let out = sent.lock().unwrap().clone();
-        out
+        // A binding, not a tail expression: the guard temporary must drop before `s`
+        // (E0597 otherwise).
+        let sends = sent.lock().unwrap().clone();
+        sends
     }
 
     /// The lean handshake trims only the PUMP WINDOWS — the request byte sequence

@@ -41,8 +41,10 @@ below trims the waits _around_ it.
    the stored preset's own-level BEFORE clip across consecutive applies on the same
    sound (key = list index + name + stimulus path + calibration). A cache hit still
    RELOADS the slot (the load both feeds `confirm_active` and discards a stale dirty
-   edit buffer — never skip it). Cleared by `doctor_save`, the leveling/copy save
-   commands, and device detach. Saves ~11 s per 2nd+ apply on a sound.
+   edit buffer — never skip it). Invalidated correct-by-construction at the
+   `Session` stored-preset mutation choke points (`save_current_preset` /
+   `clear_user_preset` / `move_user_preset` / `import_preset`) + device detach.
+   Saves ~11 s per 2nd+ apply on a sound.
 5. **FS isolation-once**: `measure_footswitch` sends the forced engaged-bypass list
    only on the first successful capture; the working copy persists across reconnects.
    `TMP_FS_ISOLATION_EVERY` restores the per-capture re-send.

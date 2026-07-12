@@ -127,8 +127,6 @@ pub(crate) async fn copy_apply(
     on_result: tauri::ipc::Channel<CopyApplyItem>,
 ) -> Result<Vec<CopyApplyItem>, String> {
     COPY_APPLY_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
-    // Saves change stored presets -- the Doctor's cached BEFORE clip goes stale.
-    crate::commands::doctor::clear_doctor_before_cache();
     with_released_seize(state.session.clone(), move || {
         // ONE held session for the whole run (the E1 architecture): connect once, warm
         // the live-controller heartbeat once (`begin_live_edit`), then `copy_apply_one`

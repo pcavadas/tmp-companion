@@ -152,8 +152,6 @@ pub(crate) async fn level_footswitches_apply(
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<FootswitchLevelProgressItem>,
 ) -> Result<Vec<leveller::FootswitchLevelResult>, String> {
-    // Saves change stored presets -- the Doctor's cached BEFORE clip goes stale.
-    crate::commands::doctor::clear_doctor_before_cache();
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
         &app,
         None,

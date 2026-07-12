@@ -196,28 +196,23 @@ fn doctor_force_bypass_null_ftsw_degrades_to_empty() {
 
 // --- consecutive-scene load skip (doctor_skip_load) ---
 
-fn prev(list_index: u32, wrote: bool, ok: bool) -> PrevSound {
-    PrevSound {
-        list_index,
-        wrote,
-        ok,
-    }
+fn prev(list_index: u32, wrote: bool) -> PrevSound {
+    PrevSound { list_index, wrote }
 }
 
 #[test]
 fn skip_load_only_for_a_clean_ok_same_preset_scene_chain() {
-    // The one allowed case: same preset, previous sound clean + Ok, current is a scene.
-    assert!(doctor_skip_load(Some(&prev(3, false, true)), 3, true));
-    // First sound of the run never skips.
+    // The one allowed case: same preset, previous sound clean, current is a scene.
+    assert!(doctor_skip_load(Some(&prev(3, false)), 3, true));
+    // First sound of the run — and any sound after an ERRORED one (the loop resets
+    // prev to None on error) — never skips.
     assert!(!doctor_skip_load(None, 3, true));
     // Different preset → reload.
-    assert!(!doctor_skip_load(Some(&prev(2, false, true)), 3, true));
+    assert!(!doctor_skip_load(Some(&prev(2, false)), 3, true));
     // Previous sound wrote force-bypasses (base/footswitch) → reload.
-    assert!(!doctor_skip_load(Some(&prev(3, true, true)), 3, true));
-    // Previous sound errored (unit may be on ANY preset) → reload.
-    assert!(!doctor_skip_load(Some(&prev(3, false, false)), 3, true));
+    assert!(!doctor_skip_load(Some(&prev(3, true)), 3, true));
     // Base/footswitch sounds always reload, even after a clean scene.
-    assert!(!doctor_skip_load(Some(&prev(3, false, true)), 3, false));
+    assert!(!doctor_skip_load(Some(&prev(3, false)), 3, false));
 }
 
 // --- doctor_apply BEFORE-clip cache ---
