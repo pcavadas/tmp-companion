@@ -381,28 +381,6 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
               />
             ))}
           </div>
-          <div
-            style={{
-              marginTop: "auto",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 10px 2px",
-            }}
-          >
-            <Icon name="lock" size={12} stroke={t.faint} />
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsMicro2,
-                color: t.faint,
-                letterSpacing: "0.02em",
-                lineHeight: 1.4,
-              }}
-            >
-              Data stays on this Mac
-            </span>
-          </div>
         </Rail>
 
         {/* ── PANE — one category at a time, scrolls on its own ── */}
@@ -658,36 +636,37 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
             {cat === "about" && (
               <div style={{ maxWidth: 560 }}>
                 <AppUpdatesSection updater={updater} />
-                <div
-                  style={{
-                    marginTop: 18,
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 9,
-                  }}
-                >
-                  <span style={{ flexShrink: 0, marginTop: 1 }}>
-                    <Icon name="lock" size={13} stroke={t.mutedInk} />
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: t.sans,
-                      fontSize: t.fsUi,
-                      color: t.mutedInk,
-                      lineHeight: 1.5,
-                      textWrap: "pretty",
-                    }}
-                  >
-                    Instruments and loudness targets are the{" "}
-                    <strong style={{ color: t.ink2 }}>
-                      only data this app keeps on your Mac
-                    </strong>
-                    . Everything else — presets, scenes, songs — lives on the
-                    device.
-                  </span>
-                </div>
               </div>
             )}
+          </div>
+
+          {/* ── shared footer — same on every category ── */}
+          <div
+            style={{
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              padding: "10px 26px",
+              borderTop: `0.5px solid ${t.hairline}`,
+            }}
+          >
+            <span style={{ flexShrink: 0 }}>
+              <Icon name="lock" size={12} stroke={t.faint} />
+            </span>
+            <span
+              style={{
+                fontFamily: t.sans,
+                fontSize: t.fsMicro2,
+                color: t.faint,
+                lineHeight: 1.4,
+                textWrap: "pretty",
+              }}
+            >
+              Instruments and loudness targets are the only data this app keeps
+              on your Mac. Everything else — presets, scenes, songs — lives on
+              the device.
+            </span>
           </div>
         </div>
       </div>
