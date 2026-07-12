@@ -24,7 +24,6 @@ import {
   cancelSceneLeveling,
   levelFootswitchesApply,
   cancelFootswitchLeveling,
-  type SceneLevelProgressItem,
 } from "../../lib/invoke";
 import { onLevelingLufs } from "../../lib/liveEvents";
 import { MODELS } from "../../models/catalog";
@@ -334,6 +333,48 @@ export function useLevelingFlow({
         setLiveTrace([]);
         publish(globalIdx + 1, false, false);
       };
+      // ONE per-row contract for a batched backend call, shared by the scene and
+      // footswitch groups (only the map key differs): resolve a channel progress
+      // item to its RunItem (active → spinner; done → outcome via the result
+      // mappers; error → skipped; anything else — e.g. the backend's cancelled
+      // sentinel — ignored), and after the call sweep rows the channel never
+      // resolved — a stopped run leaves them queued (still selected for a
+      // follow-up run); otherwise they're skipped (whole-call failure).
+      interface BatchEntry {
+        item: RunItem;
+        idx: number;
+      }
+      const batchResolve =
+        <K>(
+          entries: Map<K, BatchEntry>,
+          causeOf: (r: LevelOutcomeFields) => RunItem["verifyByEar"],
+        ) =>
+        (key: K, status: string, result: LevelOutcomeFields | null) => {
+          const entry = entries.get(key);
+          if (!entry) return;
+          if (status === "active") {
+            entry.item.status = "active";
+            publish(entry.idx, false, false);
+          } else if (status === "done" && result) {
+            entry.item.outcome = outcomeOf(result);
+            entry.item.value = valueOf(result);
+            entry.item.spreadLu = result.dynamic_spread_lu;
+            entry.item.verifyByEar = causeOf(result);
+            finishItem(entry.item, entry.idx);
+          } else if (status === "error") {
+            entry.item.outcome = "skipped";
+            finishItem(entry.item, entry.idx);
+          }
+        };
+      const sweepUnresolved = <K>(entries: Map<K, BatchEntry>) => {
+        if (isCancelled()) return;
+        for (const entry of entries.values()) {
+          if (entry.item.status !== "result") {
+            entry.item.outcome = "skipped";
+            finishItem(entry.item, entry.idx);
+          }
+        }
+      };
 
       for (let i = 0; i < total;) {
         if (isCancelled()) break;
@@ -393,6 +434,7 @@ export function useLevelingFlow({
                 : [],
             ),
           );
+          const resolveFs = batchResolve(bySwitch, causeOf);
           try {
             await levelFootswitchesApply(
               {
@@ -416,34 +458,13 @@ export function useLevelingFlow({
                 profileId: profile?.id ?? null,
               },
               (item) => {
-                const entry = bySwitch.get(item.switch);
-                if (!entry) return;
-                if (item.status === "active") {
-                  entry.item.status = "active";
-                  publish(entry.idx, false, false);
-                } else if (item.status === "done" && item.result) {
-                  entry.item.outcome = outcomeOf(item.result);
-                  entry.item.value = valueOf(item.result);
-                  entry.item.spreadLu = item.result.dynamic_spread_lu;
-                  entry.item.verifyByEar = causeOf(item.result);
-                  finishItem(entry.item, entry.idx);
-                } else if (item.status === "error") {
-                  entry.item.outcome = "skipped";
-                  finishItem(entry.item, entry.idx);
-                }
+                resolveFs(item.switch, item.status, item.result);
               },
             );
           } catch {
-            /* whole-group failure — the sweep below flags unresolved rows skipped */
+            /* whole-group failure — the sweep flags unresolved rows skipped */
           }
-          if (!isCancelled()) {
-            for (const entry of bySwitch.values()) {
-              if (entry.item.status !== "result") {
-                entry.item.outcome = "skipped";
-                finishItem(entry.item, entry.idx);
-              }
-            }
-          }
+          sweepUnresolved(bySwitch);
           i = end;
           continue;
         }
@@ -486,23 +507,7 @@ export function useLevelingFlow({
         const byScene = new Map(
           group.map((g, k) => [g.sceneSlot, { item: g, idx: i + k }]),
         );
-        const resolve = (item: SceneLevelProgressItem) => {
-          const entry = byScene.get(item.sceneSlot);
-          if (!entry) return; // e.g. the backend's cancelled sentinel row
-          if (item.status === "active") {
-            entry.item.status = "active";
-            publish(entry.idx, false, false);
-          } else if (item.status === "done" && item.result) {
-            entry.item.outcome = outcomeOf(item.result);
-            entry.item.value = valueOf(item.result);
-            entry.item.spreadLu = item.result.dynamic_spread_lu;
-            entry.item.verifyByEar = causeOf(item.result);
-            finishItem(entry.item, entry.idx);
-          } else if (item.status === "error") {
-            entry.item.outcome = "skipped";
-            finishItem(entry.item, entry.idx);
-          }
-        };
+        const resolveScene = batchResolve(byScene, causeOf);
         try {
           await levelScenesApplyBatched(
             {
@@ -516,21 +521,14 @@ export function useLevelingFlow({
               calibrationLufs: profile?.calibration_lufs ?? null,
               profileId: profile?.id ?? null,
             },
-            resolve,
+            (item) => {
+              resolveScene(item.sceneSlot, item.status, item.result);
+            },
           );
         } catch {
-          /* whole-group failure — the sweep below flags unresolved rows skipped */
+          /* whole-group failure — the sweep flags unresolved rows skipped */
         }
-        // Rows the channel never resolved: a stopped run leaves them queued (still
-        // selected for a follow-up run); otherwise they're skipped (whole-call failure).
-        if (!isCancelled()) {
-          for (const entry of byScene.values()) {
-            if (entry.item.status !== "result") {
-              entry.item.outcome = "skipped";
-              finishItem(entry.item, entry.idx);
-            }
-          }
-        }
+        sweepUnresolved(byScene);
         i = end;
       }
 

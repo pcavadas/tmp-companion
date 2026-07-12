@@ -1403,6 +1403,10 @@ pub struct FsPendingWrite {
 /// `save`, writes the `param` function (gated on the field-54 echo / read-back, never on
 /// `presetError`) and persists; otherwise reverts the working copy. The measurement param
 /// sweep is NEVER saved — the write path reloads the preset first.
+///
+/// SINGLE-SWITCH seam, used by the `probe` HW-verify arms: composes the same
+/// `measure_footswitch` + `write_footswitch_values` the app's batched command
+/// (`level_footswitches_apply`) assembles itself — keep the three in lockstep.
 #[allow(clippy::too_many_arguments)]
 pub fn level_footswitch(
     slot: u32,
@@ -1437,7 +1441,6 @@ pub fn level_footswitch(
         }
         return Ok(result);
     }
-    let best_v = result.final_value;
     let mut result = result;
 
     // ── Write (save only): the batch writer reloads (discarding the sweep pollution),
@@ -1447,13 +1450,13 @@ pub fn level_footswitch(
             switch,
             lev: (lev.0.into(), lev.1.into(), lev.2.into()),
             write: write.clone(),
-            value: best_v,
+            value: result.final_value,
         }];
         write_footswitch_values(slot, &pending)?;
         result.saved = true;
         if verify {
             std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-            result.verify_lufs = measure_fs_at(lev, engaged_bypass, stimulus, best_v)
+            result.verify_lufs = measure_fs_at(lev, engaged_bypass, stimulus, result.final_value)
                 .ok()
                 .map(|l| l.integrated_lufs);
             let mut s = Session::connect()?; // discard the verify pollution
@@ -1974,25 +1977,49 @@ pub fn level_scenes_oneshot(
     target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
+    on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    cancelled: impl FnMut() -> bool,
+) -> Result<Vec<BatchedSceneOutcome>, String> {
+    run_scene_jobs(
+        slot,
+        jobs,
+        save,
+        restore_scene,
+        on_scene,
+        cancelled,
+        |job| jointk_one_scene(slot, job, stimulus, target_lufs, save, true),
+    )
+}
+
+/// The ONE scene-batch scaffold shared by [`level_scenes_oneshot`] and
+/// [`level_scenes_rebalance`] — only the per-job `solve` differs. Owning the loop in
+/// one place matters beyond dedup: the loop has a SINGLE EXIT so the deferred-save
+/// guard (persist accumulated unsaved writes on EVERY exit, incl. cancel — the
+/// silent-data-loss class this design exists to prevent) exists exactly once.
+///
+/// CALLER CONTRACT: the preset must already be current — every caller runs
+/// `prepass_scene_docs` (which loads it) right before this. Re-loading here was
+/// pure churn the user SAW: the unit flashing back to the preset (base scene)
+/// between the prepass and the first scene measure, once per dispatched scene.
+fn run_scene_jobs(
+    slot: u32,
+    jobs: &[SceneJob],
+    save: bool,
+    restore_scene: Option<u32>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
+    mut solve: impl FnMut(&SceneJob) -> Result<SceneSolve, String>,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    // CALLER CONTRACT: the preset must already be current — every caller runs
-    // `prepass_scene_docs` (which loads it) right before this. Re-loading here was
-    // pure churn the user SAW: the unit flashing back to the preset (base scene)
-    // between the prepass and the first scene measure, once per dispatched scene.
-
     let mut outcomes = Vec::with_capacity(jobs.len());
     let mut attempted = false;
+    let mut stopped = false;
     // Every writing scene verifies + self-corrects (see `jointk_one_scene`): a downstream
     // compressor undershoots the open-loop solve per scene, so the canary-only model isn't
     // enough. Cost is one verify capture per off-target scene (none when already at target).
     for job in jobs {
         if cancelled() {
-            if save && attempted {
-                let _ = save_deferred_scene_writes(slot, restore_scene);
-            }
-            return Err(CANCELLED.to_string());
+            stopped = true;
+            break;
         }
         on_scene(job.scene_slot, None);
         let t0 = std::time::Instant::now();
@@ -2007,21 +2034,15 @@ pub fn level_scenes_oneshot(
             continue;
         }
 
-        // Verify EVERY scene that writes — `jointk_one_scene` uses the verify capture to
-        // run its bounded secant correction, so a preset with a downstream compressor
-        // converges per scene (not just the first). On a linear chain the first verify is
-        // within tol and no correction runs, so the cost is one verify capture per off-target scene.
         attempted = true;
-        let result = jointk_one_scene(slot, job, stimulus, target_lufs, save, true);
+        let result = solve(job);
 
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let outcome = match result {
             Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
             Err(e) if e == CANCELLED => {
-                if save && attempted {
-                    let _ = save_deferred_scene_writes(slot, restore_scene);
-                }
-                return Err(e);
+                stopped = true;
+                break;
             }
             Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
         };
@@ -2032,8 +2053,16 @@ pub fn level_scenes_oneshot(
     // disengages, but an interrupted capture can strand it).
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
     // The batch's ONE persist — after the re-amp OFF, on its own clean connection.
+    // Fired on the stopped path too, so already-reported scenes are never lost.
     if save && attempted {
-        save_deferred_scene_writes(slot, restore_scene)?;
+        if stopped {
+            let _ = save_deferred_scene_writes(slot, restore_scene);
+        } else {
+            save_deferred_scene_writes(slot, restore_scene)?;
+        }
+    }
+    if stopped {
+        return Err(CANCELLED.to_string());
     }
     Ok(outcomes)
 }
@@ -2592,58 +2621,28 @@ pub fn level_scenes_rebalance(
     target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
-    mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
-    mut cancelled: impl FnMut() -> bool,
+    on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    // CALLER CONTRACT: preset already current (see `level_scenes_oneshot`).
-    let mut outcomes = Vec::with_capacity(jobs.len());
-    let mut attempted = false;
-    for job in jobs {
-        if cancelled() {
-            if save && attempted {
-                let _ = save_deferred_scene_writes(slot, restore_scene);
+    let result = run_scene_jobs(
+        slot,
+        jobs,
+        save,
+        restore_scene,
+        on_scene,
+        cancelled,
+        |job| {
+            // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
+            if !job.rebalanceable || job.knobs.len() < 2 {
+                jointk_one_scene(slot, job, stimulus, target_lufs, save, true)
+            } else {
+                // Rebalanceable: 2-lane equalize → joint-k. (Only the first two knobs are the
+                // rebalance pair; the classifier never produces >2 for a single split.)
+                rebalance_one_scene(slot, job, stimulus, target_lufs, save, true)
             }
-            return Err(CANCELLED.to_string());
-        }
-        on_scene(job.scene_slot, None);
-        let t0 = std::time::Instant::now();
-
-        if let Some(reason) = &job.skip {
-            let outcome =
-                failed_scene_outcome(job.scene_slot, reason.clone(), t0.elapsed().as_millis());
-            on_scene(job.scene_slot, Some(&outcome));
-            outcomes.push(outcome);
-            continue;
-        }
-
-        // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
-        attempted = true;
-        let result = if !job.rebalanceable || job.knobs.len() < 2 {
-            jointk_one_scene(slot, job, stimulus, target_lufs, save, true)
-        } else {
-            // Rebalanceable: 2-lane equalize → joint-k. (Only the first two knobs are the
-            // rebalance pair; the classifier never produces >2 for a single split.)
-            rebalance_one_scene(slot, job, stimulus, target_lufs, save, true)
-        };
-        let outcome = match result {
-            Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
-            Err(e) if e == CANCELLED => {
-                if save && attempted {
-                    let _ = save_deferred_scene_writes(slot, restore_scene);
-                }
-                return Err(e);
-            }
-            Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
-        };
-        on_scene(job.scene_slot, Some(&outcome));
-        outcomes.push(outcome);
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    }
-    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
-    if save && attempted {
-        save_deferred_scene_writes(slot, restore_scene)?;
-    }
-    restore_after_unsaved_error(slot, save, Ok(outcomes))
+        },
+    );
+    restore_after_unsaved_error(slot, save, result)
 }
 
 /// The rebalance flow for ONE mergeable scene: equalize the two lanes' solo loudness, then

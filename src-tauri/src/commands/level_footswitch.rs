@@ -203,9 +203,9 @@ pub(crate) async fn level_footswitches_apply(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
-        // The solved writes, pending the batch's single write+save session.
-        let mut pends: Vec<leveller::FsPendingWrite> = Vec::new();
-        let mut pend_idx: Vec<usize> = Vec::new();
+        // The solved writes pending the batch's single write+save session, each
+        // carrying its job index (one vec — no hand-aligned parallel arrays).
+        let mut pending: Vec<(usize, leveller::FsPendingWrite)> = Vec::new();
         for (idx, job) in jobs.iter().enumerate() {
             if FOOTSWITCH_LEVEL_CANCEL.load(SeqCst) {
                 let _ = on_result.send(FootswitchLevelProgressItem {
@@ -257,15 +257,17 @@ pub(crate) async fn level_footswitches_apply(
                 )
                 .inspect(|r| {
                     if save && r.clamp_reason.is_none() {
-                        pends.push(leveller::FsPendingWrite {
-                            switch: job.switch,
-                            lev: lev_owned(),
-                            write: leveller::FsWrite::Bake {
-                                clear_stale: *clear_stale,
+                        pending.push((
+                            idx,
+                            leveller::FsPendingWrite {
+                                switch: job.switch,
+                                lev: lev_owned(),
+                                write: leveller::FsWrite::Bake {
+                                    clear_stale: *clear_stale,
+                                },
+                                value: r.final_value,
                             },
-                            value: r.final_value,
-                        });
-                        pend_idx.push(idx);
+                        ));
                     }
                 }),
                 footswitch::FsLevelPlan::Assign { engaged } => {
@@ -281,13 +283,15 @@ pub(crate) async fn level_footswitches_apply(
                         )
                         .inspect(|r| {
                             if save && r.clamp_reason.is_none() {
-                                pends.push(leveller::FsPendingWrite {
-                                    switch: job.switch,
-                                    lev: lev_owned(),
-                                    write: leveller::FsWrite::Assign { value_b, spec },
-                                    value: r.final_value,
-                                });
-                                pend_idx.push(idx);
+                                pending.push((
+                                    idx,
+                                    leveller::FsPendingWrite {
+                                        switch: job.switch,
+                                        lev: lev_owned(),
+                                        write: leveller::FsWrite::Assign { value_b, spec },
+                                        value: r.final_value,
+                                    },
+                                ));
                             }
                         }),
                     }
@@ -317,9 +321,11 @@ pub(crate) async fn level_footswitches_apply(
         // working copy clean. No post-save verify capture: `predicted_lufs` is already
         // a REAL measurement at `final_value` (the sweep's best point), not a model
         // prediction — re-measuring it bought nothing but ~10 s per switch.
-        let write_result = if save && !pends.is_empty() {
-            leveller::write_footswitch_values(slot, &pends).map(|()| {
-                for &idx in &pend_idx {
+        let write_result = if save && !pending.is_empty() {
+            let (idxs, writes): (Vec<usize>, Vec<leveller::FsPendingWrite>) =
+                pending.into_iter().unzip();
+            leveller::write_footswitch_values(slot, &writes).map(|()| {
+                for idx in idxs {
                     if let Some(r) = &mut results[idx] {
                         r.saved = true;
                     }
