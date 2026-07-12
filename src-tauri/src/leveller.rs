@@ -1303,7 +1303,23 @@ pub fn measure_footswitch(
     target_lufs: f64,
     method: &str,
 ) -> Result<FootswitchLevelResult, String> {
-    let measure_at = |v: f32| measure_fs_at(lev, engaged_bypass, stimulus, v);
+    // ponytail: TMP_FS_ISOLATION_ONCE is throwaway probe instrumentation — send the forced
+    // bypass list only on the first capture (working-copy edits persist across reconnects;
+    // no reload happens inside this function's scope). HW A/B only.
+    let isolation_once = std::env::var("TMP_FS_ISOLATION_ONCE").is_ok();
+    let forced = std::cell::Cell::new(false);
+    let measure_at = |v: f32| {
+        let bypass: &[(String, String, bool)] = if isolation_once && forced.get() {
+            &[]
+        } else {
+            engaged_bypass
+        };
+        let r = measure_fs_at(lev, bypass, stimulus, v);
+        if r.is_ok() {
+            forced.set(true);
+        }
+        r
+    };
 
     // Guaranteed re-amp OFF on a fresh connection — the measurement's last disengage can be
     // dropped, stranding the unit input-muted. (Not the write-confirm fix; just hygiene.)
