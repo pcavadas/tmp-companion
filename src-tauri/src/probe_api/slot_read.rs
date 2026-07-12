@@ -84,6 +84,12 @@ pub fn probe_export_preset(list_enum: u32, slot: u32) -> Result<String, String> 
         "PARTIAL — no 'scenes' (truncated early; OFFLINE needed for full)"
     };
 
+    // TMP_EXPORT_RAW=<path>: dump the full decoded JSON for offline diffing (the
+    // bisect readback classifies scene-overlay vs base-leak vs dropped writes).
+    if let Ok(path) = std::env::var("TMP_EXPORT_RAW") {
+        std::fs::write(&path, text.as_bytes()).map_err(|e| format!("TMP_EXPORT_RAW: {e}"))?;
+    }
+
     let preview: String = text.chars().take(200).collect();
     let tail: String = text
         .chars()

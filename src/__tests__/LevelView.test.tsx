@@ -513,6 +513,16 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_preset")).toBe(true); // Base
     expect(fired("list_level_blocks")).toBe(true); // FS amp discovery
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scene level
+    // Adjacent same-preset scene rows sharing instrument + target BATCH into ONE
+    // backend call (one prepass, one runner) — per-scene calls re-loaded the preset
+    // each time, flashing the unit back to base twice per scene (user-visible churn).
+    const sceneCalls = vi
+      .mocked(invoke)
+      .mock.calls.filter(([cmd]) => cmd === "level_scenes_apply_batched");
+    expect(sceneCalls).toHaveLength(1);
+    expect((sceneCalls[0][1] as { sceneSlots: number[] }).sceneSlots).toEqual([
+      0, 1,
+    ]);
   });
 
   it("re-leveling the same preset re-issues device commands (no stale cross-run cache)", async () => {

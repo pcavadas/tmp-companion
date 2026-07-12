@@ -58,6 +58,15 @@ pub const DOCTOR_TAIL_MS: u32 = 2500;
 // leak-to-base race a longer settle targeted is covered by the verify + correction
 // pass instead. Keep load_scene→edit→write gaps ≤300 ms.
 const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 300;
+// Gap between the `loadScene` recall and `SetNodeSceneEdit` in a scene write. 150 (not
+// the general 300 `SETTLE_AFTER_SET_MS`) CENTERS the value write ~450 ms after
+// `loadScene` — the old 300+300 put it at ~600–650 ms nominal, riding the ~700–750 ms
+// silent-drop cliff above, so command-latency jitter occasionally pushed a production
+// write over it (the user-reported non-deterministic false clamp; the write itself is
+// fire-and-forget, so nothing surfaced). HW-bisected lower edge (`probe
+// --bisect-scene`, fw 1.8.45): scene_settle 150, 100, and even 50 all land ON the
+// scene overlay (never leak to base) and persist — 150 keeps ~2× margin on both sides.
+const SETTLE_AFTER_SCENE_RECALL_MS: u64 = 150;
 const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
 const LEVEL_MAX: f32 = 1.0;
@@ -1019,7 +1028,7 @@ fn set_knob(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<(), String>
                 // `SETTLE_AFTER_SCENE_EDIT_MS`); the rare too-fast leak-to-base race
                 // is covered by the verify + correction pass.
                 s.load_scene(*scene)?;
-                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
                 s.set_node_scene_edit(group_id, node_id, true)?;
                 std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
             }
@@ -1066,7 +1075,7 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
     });
     if let Some(scene) = scene {
         s.load_scene(scene)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         for (k, _) in targets {
             if let LevelKnob::Block {
                 group_id,
@@ -1889,13 +1898,10 @@ pub fn level_scenes_oneshot(
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    // Load the preset once (own connection) so the first scene's measure operates on
-    // the current preset; each `apply_level(reload=true)` re-establishes it thereafter.
-    {
-        let mut s = Session::connect()?;
-        s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
-    }
+    // CALLER CONTRACT: the preset must already be current — every caller runs
+    // `prepass_scene_docs` (which loads it) right before this. Re-loading here was
+    // pure churn the user SAW: the unit flashing back to the preset (base scene)
+    // between the prepass and the first scene measure, once per dispatched scene.
 
     let mut outcomes = Vec::with_capacity(jobs.len());
     // Every writing scene verifies + self-corrects (see `jointk_one_scene`): a downstream
@@ -2085,15 +2091,16 @@ fn jointk_one_scene(
     };
     let base: Vec<f32> = job.knobs.iter().map(|kt| kt.current).collect();
     let knob_refs: Vec<&LevelKnob> = job.knobs.iter().map(|kt| &kt.knob).collect();
-    let v0 = {
-        let targets: Vec<(&LevelKnob, f32)> = knob_refs
-            .iter()
-            .copied()
-            .zip(&levels)
-            .map(|(k, &v)| (k, v))
-            .collect();
-        apply_levels(slot, stimulus, &targets, opts, false)?.1
-    };
+    let expected_db = 20.0 * k_eff.max(1e-9).log10();
+    let (v0, retry_writes) = apply_first_verified(
+        slot,
+        stimulus,
+        &knob_refs,
+        &levels,
+        opts,
+        expected_db,
+        measured,
+    )?;
     let (best_lufs, best_levels, clamp_reason, writes) = match v0 {
         Some(v0) if verify => {
             let c = correct_iter(
@@ -2107,9 +2114,14 @@ fn jointk_one_scene(
                 target_lufs,
                 save,
             )?;
-            (c.lufs, c.levels, c.clamp_reason, 1 + c.writes)
+            (
+                c.lufs,
+                c.levels,
+                c.clamp_reason,
+                1 + retry_writes + c.writes,
+            )
         }
-        _ => (v0.unwrap_or(achieved), levels, None, 1),
+        _ => (v0.unwrap_or(achieved), levels, None, 1 + retry_writes),
     };
     // Report clamped if a specific reason fired, the open-loop solve clamped, or the verified
     // best still can't reach target (knob out of headroom / chain limits below target).
@@ -2124,6 +2136,48 @@ fn jointk_one_scene(
         clamp_reason,
         verify_by_ear: false,
     })
+}
+
+/// A ≥ this intended `outputLevel` move (dB) that reads back ~unchanged (< `KNOB_TOL_LU`)
+/// is a suspected DROPPED WRITE, not compression: even 6:1 compression passes ~0.33 LU of a
+/// 2 dB move. Below it a flat response is ambiguous with noise, so no retry fires.
+const SUSPECT_DROP_MIN_DB: f64 = 2.0;
+
+/// First verified apply with a ONE-SHOT dropped-write retry (scene paths). The device can
+/// silently drop a scene write (the ~700 ms post-`loadScene` acceptance window, HW
+/// `probe --bisect-scene`); without the retry a single drop reads as a flat response →
+/// `correct_iter` sees no slope → a false, non-deterministic "clamped at <as-is>" (HW: the
+/// user's first-run Arpeges clamp that succeeded on re-run). One re-apply — a fresh scene
+/// recall + write + verify — disambiguates: a drop lands on the retry; a genuine
+/// no-authority amp stays flat and takes the honest clamp downstream. Returns
+/// `(verify_lufs, retry_writes)`.
+fn apply_first_verified(
+    slot: u32,
+    stimulus: &[f32],
+    knobs: &[&LevelKnob],
+    levels: &[f32],
+    opts: LevelOptions,
+    expected_db: f64,
+    baseline_lufs: f64,
+) -> Result<(Option<f64>, u32), String> {
+    let targets: Vec<(&LevelKnob, f32)> = knobs
+        .iter()
+        .copied()
+        .zip(levels)
+        .map(|(k, &v)| (k, v))
+        .collect();
+    let v0 = apply_levels(slot, stimulus, &targets, opts, false)?.1;
+    match v0 {
+        Some(v)
+            if opts.verify
+                && expected_db.abs() >= SUSPECT_DROP_MIN_DB
+                && (v - baseline_lufs).abs() < KNOB_TOL_LU =>
+        {
+            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            Ok((apply_levels(slot, stimulus, &targets, opts, false)?.1, 1))
+        }
+        other => Ok((other, 0)),
+    }
 }
 
 /// Result of the bounded correction loop.
@@ -2416,11 +2470,7 @@ pub fn level_scenes_rebalance(
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    {
-        let mut s = Session::connect()?;
-        s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_LOAD_MS));
-    }
+    // CALLER CONTRACT: preset already current (see `level_scenes_oneshot`).
     let mut outcomes = Vec::with_capacity(jobs.len());
     for job in jobs {
         if cancelled() {
@@ -2532,7 +2582,7 @@ fn rebalance_one_scene(
         levels,
         clamped,
         achieved,
-        ..
+        k_eff,
     } = solve_joint_k_at(&balanced_knobs, target_lufs, combined.integrated_lufs)?;
 
     // 6. Apply the final balanced+scaled levels (reload discards the temporary mutes), then the
@@ -2545,15 +2595,16 @@ fn rebalance_one_scene(
     };
     let knob_refs = [&a.knob, &b.knob];
     let base = [la_bal, lb_bal];
-    let v0 = {
-        let targets: Vec<(&LevelKnob, f32)> = knob_refs
-            .iter()
-            .copied()
-            .zip(&levels)
-            .map(|(k, &v)| (k, v))
-            .collect();
-        apply_levels(slot, stimulus, &targets, opts, false)?.1
-    };
+    let expected_db = 20.0 * k_eff.max(1e-9).log10();
+    let (v0, retry_writes) = apply_first_verified(
+        slot,
+        stimulus,
+        &knob_refs,
+        &levels,
+        opts,
+        expected_db,
+        combined.integrated_lufs,
+    )?;
     let (best_lufs, best_levels, clamp_reason, corr_writes) = match v0 {
         Some(v0) if verify => {
             let c = correct_iter(
@@ -2578,7 +2629,7 @@ fn rebalance_one_scene(
         levels: best_levels,
         clamped,
         spread,
-        writes: 1 + corr_writes,
+        writes: 1 + retry_writes + corr_writes,
         clamp_reason,
         verify_by_ear,
     })

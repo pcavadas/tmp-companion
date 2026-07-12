@@ -4,8 +4,11 @@
 // frame) and DRIVES the run by composing shipped commands per chosen scene:
 //   • BASE scene (or a scene-less "Whole preset") → level_preset (preset `presetLevel`,
 //     preset-to-preset loudness).
-//   • FS scene → list_level_blocks (amp candidates, once per preset, cached) then
-//     level_scenes_apply_batched for that one scene (amp `outputLevel`, scene-to-scene).
+//   • FS scenes → list_level_blocks (amp candidates, once per preset, cached) then
+//     level_scenes_apply_batched with ADJACENT same-preset scenes sharing instrument +
+//     target batched into ONE call (amp `outputLevel`, scene-to-scene; per-scene
+//     progress rides the channel) — per-scene calls re-loaded the preset each time,
+//     flashing the unit back to base twice per scene.
 // The SCENES are chosen in the list (the scene tree); setup only configures them. The
 // backup acknowledgment is an inline checkbox in the Set-up footer (no separate step)
 // that gates the commit. Leveling always WRITES (save:true). Each step is isolated: a
@@ -21,6 +24,7 @@ import {
   cancelSceneLeveling,
   levelFootswitchesApply,
   cancelFootswitchLeveling,
+  type SceneLevelProgressItem,
 } from "../../lib/invoke";
 import { onLevelingLufs } from "../../lib/liveEvents";
 import { MODELS } from "../../models/catalog";
@@ -307,98 +311,77 @@ export function useLevelingFlow({
       setStage("run");
       publish(0, false, false);
 
-      for (let i = 0; i < total; i++) {
-        if (isCancelled()) break;
-        const it = work[i];
-        it.status = "active";
-        publish(i, false, false);
-        const profile = profileById(it.instId);
-        const targetLufs = targetLufsByName(it.targetName);
-        // Envelope-follower presets get the "envelope" cause over any result-derived
-        // one: the effect tracks the stimulus envelope, so the measurement itself is
-        // suspect no matter how clean the numbers look.
-        const envelope = (blocksByIndex.get(it.slot) ?? []).some((id) =>
+      // A scene row (not Base, not a footswitch) — batchable into one backend call.
+      const isSceneItem = (x: RunItem) =>
+        !x.isBase && x.footswitch == null && x.sceneSlot != null;
+      // Envelope-follower presets get the "envelope" cause over any result-derived
+      // one: the effect tracks the stimulus envelope, so the measurement itself is
+      // suspect no matter how clean the numbers look.
+      const causeFor = (slot: number) => {
+        const envelope = (blocksByIndex.get(slot) ?? []).some((id) =>
           ENVELOPE_BIDS.has(id),
         );
-        const causeOf = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
+        return (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
           envelope ? "envelope" : byEarCause(r);
-        try {
-          if (it.isBase) {
-            const res = await levelPreset(
-              buildLevelJob(it.slot, targetLufs, profile, true),
-            );
-            it.outcome = outcomeOf(res);
-            it.value = valueOf(res);
-            it.spreadLu = res.dynamic_spread_lu;
-            it.previousLevel = res.previous_level;
-            it.truePeakDbtp = res.true_peak_dbtp;
-            it.verifyByEar = causeOf(res);
-          } else if (it.footswitch != null) {
-            // A block-acting FOOTSWITCH — level its engaged state so stomping it lands
-            // on target. One job per call (one footswitch at a time, like a scene); the
-            // backend classifies bake vs assign and decides whether to overwrite the
-            // block or write a footswitch param-change. `method` is intentionally not
-            // surfaced — the user only ever sees "leveled".
-            const fsw = it.footswitch;
-            const results = await levelFootswitchesApply(
-              {
-                slot: it.slot,
-                jobs: [
-                  {
-                    switch: fsw.switchIndex,
-                    levGroupId: fsw.levGroupId,
-                    levNodeId: fsw.levNodeId,
-                    levParameterId: fsw.levParameterId,
-                    targetLufs,
-                  },
-                ],
-                save: true,
-                topologyId: profile?.topology_id ?? null,
-                calibrationLufs: profile?.calibration_lufs ?? null,
-                profileId: profile?.id ?? null,
-              },
-              () => {
-                /* single-job call — the returned result is enough */
-              },
-            );
-            if (results.length === 0) {
-              it.outcome = "skipped";
-            } else {
-              const r = results[0];
-              it.outcome = outcomeOf(r);
-              it.value = valueOf(r);
-              it.spreadLu = r.dynamic_spread_lu;
-              it.verifyByEar = causeOf(r);
-            }
-          } else {
-            let cands = candCache.get(it.slot);
-            if (!cands) {
-              // Amp candidates come from the startup backup (no live discovery
-              // round-trip). Fall back to a live block read only if the backup
-              // missed this preset (rare — keeps a stray preset from silently
-              // skipping its scenes).
-              cands =
-                ampCandidates.get(it.slot) ??
-                ampBlocks(await listLevelBlocks(it.slot));
-              candCache.set(it.slot, cands);
-            }
-            if (cands.length === 0) {
-              it.outcome = "skipped";
-            } else {
-              const results = await levelScenesApplyBatched(
+      };
+      // Shared per-item resolve tail: mark result, remember the key so closing the
+      // wizard deselects it (BUG-4; a stopped run never reaches un-run items, so their
+      // keys stay selected), and drop the live readout — the result row is the confirm.
+      const finishItem = (item: RunItem, globalIdx: number) => {
+        item.status = "result";
+        ranKeysRef.current.add(item.key);
+        setLiveLufs(null);
+        setLiveTrace([]);
+        publish(globalIdx + 1, false, false);
+      };
+
+      for (let i = 0; i < total;) {
+        if (isCancelled()) break;
+        const it = work[i];
+        const profile = profileById(it.instId);
+        const targetLufs = targetLufsByName(it.targetName);
+        const causeOf = causeFor(it.slot);
+
+        if (!isSceneItem(it)) {
+          it.status = "active";
+          publish(i, false, false);
+          try {
+            if (it.isBase) {
+              const res = await levelPreset(
+                buildLevelJob(it.slot, targetLufs, profile, true),
+              );
+              it.outcome = outcomeOf(res);
+              it.value = valueOf(res);
+              it.spreadLu = res.dynamic_spread_lu;
+              it.previousLevel = res.previous_level;
+              it.truePeakDbtp = res.true_peak_dbtp;
+              it.verifyByEar = causeOf(res);
+            } else if (it.footswitch != null) {
+              // A block-acting FOOTSWITCH — level its engaged state so stomping it lands
+              // on target. One job per call (one footswitch at a time, like a scene); the
+              // backend classifies bake vs assign and decides whether to overwrite the
+              // block or write a footswitch param-change. `method` is intentionally not
+              // surfaced — the user only ever sees "leveled".
+              const fsw = it.footswitch;
+              const results = await levelFootswitchesApply(
                 {
                   slot: it.slot,
-                  sceneSlots: it.sceneSlot == null ? [] : [it.sceneSlot],
-                  candidates: cands,
-                  targetLufs,
+                  jobs: [
+                    {
+                      switch: fsw.switchIndex,
+                      levGroupId: fsw.levGroupId,
+                      levNodeId: fsw.levNodeId,
+                      levParameterId: fsw.levParameterId,
+                      targetLufs,
+                    },
+                  ],
                   save: true,
-                  rebalance: rebalanceRef.current,
                   topologyId: profile?.topology_id ?? null,
                   calibrationLufs: profile?.calibration_lufs ?? null,
                   profileId: profile?.id ?? null,
                 },
                 () => {
-                  /* no per-scene progress callback */
+                  /* single-job call — the returned result is enough */
                 },
               );
               if (results.length === 0) {
@@ -410,22 +393,103 @@ export function useLevelingFlow({
                 it.spreadLu = r.dynamic_spread_lu;
                 it.verifyByEar = causeOf(r);
               }
+            } else {
+              // A scene item with no wire slot — nothing to level.
+              it.outcome = "skipped";
+            }
+          } catch {
+            // One sound's failure shouldn't abort the run — flag it skipped.
+            it.outcome = "skipped";
+          }
+          finishItem(it, i);
+          i += 1;
+          continue;
+        }
+
+        // ── Scene rows: ADJACENT rows of the same preset sharing instrument + target
+        // level in ONE backend call (one prepass + one runner) instead of one call per
+        // scene. Each call re-loads the preset, so the old per-scene dispatch flashed
+        // the unit back to the preset's base between every scene — twice per scene of
+        // user-visible churn. Per-scene progress rides the command's channel.
+        let end = i + 1;
+        while (
+          end < total &&
+          isSceneItem(work[end]) &&
+          work[end].slot === it.slot &&
+          work[end].instId === it.instId &&
+          work[end].targetName === it.targetName
+        ) {
+          end += 1;
+        }
+        const group = work.slice(i, end);
+        let cands = candCache.get(it.slot);
+        if (!cands) {
+          // Amp candidates come from the startup backup (no live discovery
+          // round-trip). Fall back to a live block read only if the backup
+          // missed this preset (rare — keeps a stray preset from silently
+          // skipping its scenes).
+          cands =
+            ampCandidates.get(it.slot) ??
+            ampBlocks(await listLevelBlocks(it.slot));
+          candCache.set(it.slot, cands);
+        }
+        if (cands.length === 0) {
+          group.forEach((g, k) => {
+            g.outcome = "skipped";
+            finishItem(g, i + k);
+          });
+          i = end;
+          continue;
+        }
+        const byScene = new Map(
+          group.map((g, k) => [g.sceneSlot, { item: g, idx: i + k }]),
+        );
+        const resolve = (item: SceneLevelProgressItem) => {
+          const entry = byScene.get(item.sceneSlot);
+          if (!entry) return; // e.g. the backend's cancelled sentinel row
+          if (item.status === "active") {
+            entry.item.status = "active";
+            publish(entry.idx, false, false);
+          } else if (item.status === "done" && item.result) {
+            entry.item.outcome = outcomeOf(item.result);
+            entry.item.value = valueOf(item.result);
+            entry.item.spreadLu = item.result.dynamic_spread_lu;
+            entry.item.verifyByEar = causeOf(item.result);
+            finishItem(entry.item, entry.idx);
+          } else if (item.status === "error") {
+            entry.item.outcome = "skipped";
+            finishItem(entry.item, entry.idx);
+          }
+        };
+        try {
+          await levelScenesApplyBatched(
+            {
+              slot: it.slot,
+              sceneSlots: group.map((g) => g.sceneSlot ?? 0),
+              candidates: cands,
+              targetLufs,
+              save: true,
+              rebalance: rebalanceRef.current,
+              topologyId: profile?.topology_id ?? null,
+              calibrationLufs: profile?.calibration_lufs ?? null,
+              profileId: profile?.id ?? null,
+            },
+            resolve,
+          );
+        } catch {
+          /* whole-group failure — the sweep below flags unresolved rows skipped */
+        }
+        // Rows the channel never resolved: a stopped run leaves them queued (still
+        // selected for a follow-up run); otherwise they're skipped (whole-call failure).
+        if (!isCancelled()) {
+          for (const entry of byScene.values()) {
+            if (entry.item.status !== "result") {
+              entry.item.outcome = "skipped";
+              finishItem(entry.item, entry.idx);
             }
           }
-        } catch {
-          // One scene's failure shouldn't abort the run — flag it skipped.
-          it.outcome = "skipped";
         }
-        it.status = "result";
-        // This sound was actually leveled — remember its key so closing the wizard
-        // deselects it (BUG-4). A stopped run never reaches the un-run items, so their
-        // keys stay selected for a follow-up run.
-        ranKeysRef.current.add(it.key);
-        // Drop the live readout the instant the row resolves; the result row's value is the
-        // confirm. The next active item re-populates it on its first capture event.
-        setLiveLufs(null);
-        setLiveTrace([]);
-        publish(i + 1, false, false);
+        i = end;
       }
 
       // A Stop pressed during the LAST item never trips the top-of-loop check (that item

@@ -1108,14 +1108,16 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--clear") {
-        // --clear <slot> <expect-name>  — clears only if the slot reads expect-name.
+        // --clear <listIndex> <expect-name>  — clears only if the slot reads
+        // expect-name. 0-BASED list index (what `--import`'s diff prints), NOT the
+        // 1-based device slot `--export` takes.
         let slot: u32 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
         let expect = args.get(i + 2).cloned().unwrap_or_default();
         if slot == u32::MAX || expect.is_empty() {
-            eprintln!("usage: probe --clear <slot> <expect-name>");
+            eprintln!("usage: probe --clear <listIndex(0-based)> <expect-name>");
             std::process::exit(2);
         }
         eprintln!("[probe] clearing user preset slot {slot} (if it reads {expect:?})…");
