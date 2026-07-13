@@ -70,6 +70,8 @@
 //!                                  measure current live state without changing levels
 //!   probe --measure-scene <slot> <sceneSlot> <topology> [calibrationLUFS]
 //!                                  load preset+scene, then measure without changing levels
+//!                                  (slot = 0-BASED list index, same convention as
+//!                                  --levelpreset — NOT the 1-based device userSlot)
 //!   probe --capture-input [secs]   GATE 1: report USB-Out per-channel levels while
 //!                                  you play (identifies the dry-instrument channel)
 //!   probe --agc-test <slot>        GATE 2: full vs half re-amp inject on a CLEAN
@@ -1016,13 +1018,15 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--measure-scene") {
         // --measure-scene <slot> <sceneSlot> <topology_id> [calibrationLUFS]
-        // Loads the preset in its own connection, then scene+reamp in a fresh one.
+        // slot = 0-based list index (same convention as --levelpreset; NOT the
+        // 1-based device userSlot). Loads the preset in its own connection, then
+        // scene+reamp in a fresh one.
         let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
         let scene_slot = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         if slot.is_none() || scene_slot.is_none() || topology.is_empty() {
             eprintln!(
-                "usage: probe --measure-scene <slot> <sceneSlot> <topology_id> [calibrationLUFS]"
+                "usage: probe --measure-scene <slot(0-based list index)> <sceneSlot> <topology_id> [calibrationLUFS]"
             );
             std::process::exit(2);
         }

@@ -17,6 +17,11 @@ use crate::LevelBlockArg;
 /// Measure the currently selected preset/scene through re-amp without changing
 /// preset level or block parameters. Optional `slot` loads a preset first in its
 /// own connection; optional `scene_slot` recalls a scene before capture. No save.
+///
+/// Floor-guarded (`leveller::require_live`): a failed inject reads as the device's
+/// stationary output floor — finite, but not a real measurement — so a flat-spread
+/// capture is retried once on a FRESH connection (never a disengage→re-engage on a
+/// held one; re-amp only engages reliably once per connection) before erroring.
 pub fn probe_measure_current_lufs(
     topology_id: &str,
     slot: Option<u32>,
@@ -32,25 +37,22 @@ pub fn probe_measure_current_lufs(
         }
         std::thread::sleep(std::time::Duration::from_millis(800));
     }
-    let mut s = Session::connect()?;
-    if let Some(scene) = scene_slot {
-        s.load_scene(scene)?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    s.set_reamp_mode(true)?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let cap = audio::reamp_capture(&stim, 48_000, 800);
-    let _ = s.set_reamp_mode(false);
-    let cap = cap?;
-    let (ch, _) = cap.loudest_channel();
-    let loud = lufs::measure_mono(&cap.channel(ch), cap.sample_rate)?;
-    if !loud.integrated_lufs.is_finite() {
-        return Err("no finite signal captured (re-amp may not have routed)".to_string());
-    }
+    let measure = || -> Result<lufs::Loudness, String> {
+        let mut s = Session::connect()?;
+        if let Some(scene) = scene_slot {
+            s.load_scene(scene)?;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        leveller::engage_measure_disengage(&mut s, &stim)
+    };
+    let loud = leveller::require_live(measure, &stim)?;
     Ok(format!(
-        "slot={} topology={topology_id} scene={} channel={ch} integrated_lufs={:.3} short_term_max_lufs={:.3}",
-        slot.map(|s| s.to_string()).unwrap_or_else(|| "current".to_string()),
-        scene_slot.map(|s| s.to_string()).unwrap_or_else(|| "current".to_string()),
+        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}",
+        slot.map(|s| s.to_string())
+            .unwrap_or_else(|| "current".to_string()),
+        scene_slot
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "current".to_string()),
         loud.integrated_lufs,
         loud.short_term_max_lufs,
     ))
