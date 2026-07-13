@@ -1907,7 +1907,6 @@ pub fn level_scenes_live_batched(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
-    target_lufs: f64,
     save: bool,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
@@ -1964,7 +1963,7 @@ pub fn level_scenes_live_batched(
                     if cancelled() {
                         return Err(CANCELLED.to_string());
                     }
-                    if (best.1 - target_lufs).abs() <= KNOB_TOL_LU {
+                    if (best.1 - job.target_lufs).abs() <= KNOB_TOL_LU {
                         break;
                     }
                     let raw_next = next_live_coord(
@@ -1972,7 +1971,7 @@ pub fn level_scenes_live_batched(
                         iter,
                         (coord, measured),
                         prev,
-                        target_lufs,
+                        job.target_lufs,
                         (c_lo, c_hi),
                     );
                     // Trust region: bound each move (full computed jumps
@@ -1988,7 +1987,7 @@ pub fn level_scenes_live_batched(
                     std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
                     let lufs = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                     *windows += 1;
-                    if (lufs - target_lufs).abs() < (best.1 - target_lufs).abs() {
+                    if (lufs - job.target_lufs).abs() < (best.1 - job.target_lufs).abs() {
                         best = (next, lufs);
                     }
                     prev = Some((coord, measured));
@@ -2009,7 +2008,7 @@ pub fn level_scenes_live_batched(
                 Ok((
                     best.1,
                     best_value,
-                    (best.1 - target_lufs).abs() > KNOB_TOL_LU,
+                    (best.1 - job.target_lufs).abs() > KNOB_TOL_LU,
                 ))
             })(&mut windows, &mut writes);
 

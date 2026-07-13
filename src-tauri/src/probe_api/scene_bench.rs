@@ -281,7 +281,6 @@ pub fn probe_bench_scene_leveling(
             slot,
             &jobs,
             &stim,
-            target_lufs,
             save,
             |_, _| {},
             || SCENE_LEVEL_CANCEL.load(SeqCst),
