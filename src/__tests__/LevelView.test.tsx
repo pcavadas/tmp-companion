@@ -335,13 +335,13 @@ function mockLevelingFixture(
         ]);
       case "level_scenes_apply_batched": {
         const job = args as {
-          sceneSlots: number[];
+          jobs: { sceneSlot: number; targetLufs: number }[];
           onResult?: { onmessage?: (item: unknown) => void };
         };
-        const results = job.sceneSlots.map(() => levelResultStub());
-        job.sceneSlots.forEach((sceneSlot, i) =>
+        const results = job.jobs.map(() => levelResultStub());
+        job.jobs.forEach((j, i) =>
           job.onResult?.onmessage?.({
-            sceneSlot,
+            sceneSlot: j.sceneSlot,
             status: "done",
             result: results[i],
             message: null,
@@ -513,16 +513,20 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(fired("level_preset")).toBe(true); // Base
     expect(fired("list_level_blocks")).toBe(true); // FS amp discovery
     expect(fired("level_scenes_apply_batched")).toBe(true); // FS scene level
-    // Adjacent same-preset scene rows sharing instrument + target BATCH into ONE
-    // backend call (one prepass, one runner) — per-scene calls re-loaded the preset
-    // each time, flashing the unit back to base twice per scene (user-visible churn).
+    // Adjacent same-preset scene rows BATCH into ONE backend call (one prepass, one
+    // runner) REGARDLESS of per-scene target — each job carries its own targetLufs, so
+    // a mixed-target preset no longer splits into several prepasses. Per-scene calls
+    // re-loaded the preset each time, flashing the unit back to base twice per scene.
     const sceneCalls = vi
       .mocked(invoke)
       .mock.calls.filter(([cmd]) => cmd === "level_scenes_apply_batched");
     expect(sceneCalls).toHaveLength(1);
-    expect((sceneCalls[0][1] as { sceneSlots: number[] }).sceneSlots).toEqual([
-      0, 1,
-    ]);
+    const sceneJobs = (
+      sceneCalls[0][1] as { jobs: { sceneSlot: number; targetLufs: number }[] }
+    ).jobs;
+    expect(sceneJobs.map((j) => j.sceneSlot)).toEqual([0, 1]);
+    // Every job carries a resolved per-scene target (the store's single target here).
+    expect(sceneJobs.map((j) => j.targetLufs)).toEqual([-26, -26]);
   });
 
   it("re-leveling the same preset re-issues device commands (no stale cross-run cache)", async () => {
@@ -888,8 +892,8 @@ describe("LevelView — full leveling wizard e2e", () => {
             },
           ]);
         case "level_scenes_apply_batched": {
-          const job = args as { sceneSlots: number[] };
-          return Promise.resolve(job.sceneSlots.map(() => levelResultStub()));
+          const job = args as { jobs: { sceneSlot: number }[] };
+          return Promise.resolve(job.jobs.map(() => levelResultStub()));
         }
         default:
           return Promise.resolve(null);

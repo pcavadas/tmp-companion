@@ -111,13 +111,14 @@ export interface SceneLevelProgressItem {
 }
 
 /** Batched APPLY path. One backend command levels all selected scenes
- * and streams row progress over a Tauri channel. */
+ * and streams row progress over a Tauri channel. Each `job` carries its OWN
+ * per-scene target (camelCase nested keys, like `levelFootswitchesApply`), so a
+ * mixed-target preset still levels in ONE batch. */
 export const levelScenesApplyBatched = (
   args: {
     slot: number;
-    sceneSlots: number[];
+    jobs: { sceneSlot: number; targetLufs: number }[];
     candidates: LevelBlockCandidate[];
-    targetLufs: number;
     save: boolean;
     /** Opt-in: equalize a path-MERGE scene's two lanes before joint-k (no effect on
      * series / single-amp / split-output scenes). */

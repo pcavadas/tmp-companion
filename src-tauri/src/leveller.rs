@@ -1811,6 +1811,11 @@ const BATCH_TRUST_DB: f32 = 6.0;
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchedSceneOutcome {
     pub scene_slot: u32,
+    /// The effective (offset-adjusted) loudness target this scene was leveled to.
+    /// Per-scene because one batch can carry a mix of targets; `outcome_to_level_result`
+    /// reads it here rather than zipping outcomes against jobs by index (the failure
+    /// filter misaligns positional zips).
+    pub target_lufs: f64,
     pub final_lufs: Option<f64>,
     pub final_level: Option<f32>,
     pub clamped: bool,
@@ -1853,6 +1858,11 @@ pub struct KnobTarget {
 #[derive(Debug, Clone)]
 pub struct SceneJob {
     pub scene_slot: u32,
+    /// Per-scene loudness target. `None` = use the runner's scalar `target_lufs`
+    /// (the probe callers, which level a whole batch to one target); the app command
+    /// stamps `Some(offset-adjusted target)` on every job so a mixed-target preset
+    /// levels in ONE batch.
+    pub target_lufs: Option<f64>,
     pub knobs: Vec<KnobTarget>,
     /// When `Some`, this scene can't be safely leveled (mic/split/no-active-amp/etc.);
     /// the runner reports it as a skipped (failed) outcome and moves on, never aborting
@@ -2008,6 +2018,7 @@ pub fn level_scenes_live_batched(
             let outcome = match scene_result {
                 Ok((lufs, level, clamped)) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
+                    target_lufs: job.target_lufs.unwrap_or(target_lufs),
                     final_lufs: Some(lufs),
                     final_level: Some(level),
                     clamped,
@@ -2022,6 +2033,7 @@ pub fn level_scenes_live_batched(
                 Err(e) if e == CANCELLED => return Err(e),
                 Err(e) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
+                    target_lufs: job.target_lufs.unwrap_or(target_lufs),
                     final_lufs: None,
                     final_level: None,
                     clamped: false,
@@ -2084,11 +2096,23 @@ pub fn level_scenes_oneshot(
     run_scene_jobs(
         slot,
         jobs,
+        target_lufs,
         save,
         restore_scene,
         on_scene,
         cancelled,
-        |job| jointk_one_scene(slot, job, stimulus, target_lufs, save, true),
+        // Each job may carry its own target (mixed-target batch); fall back to the
+        // scalar for probe callers whose jobs are `target_lufs: None`.
+        |job| {
+            jointk_one_scene(
+                slot,
+                job,
+                stimulus,
+                job.target_lufs.unwrap_or(target_lufs),
+                save,
+                true,
+            )
+        },
     )
 }
 
@@ -2102,9 +2126,13 @@ pub fn level_scenes_oneshot(
 /// `prepass_scene_docs` (which loads it) right before this. Re-loading here was
 /// pure churn the user SAW: the unit flashing back to the preset (base scene)
 /// between the prepass and the first scene measure, once per dispatched scene.
+#[allow(clippy::too_many_arguments)]
 fn run_scene_jobs(
     slot: u32,
     jobs: &[SceneJob],
+    // Scalar fallback target, stamped onto the outcome for any job carrying
+    // `target_lufs: None`; a job's own `Some` wins (mixed-target batches).
+    target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
@@ -2124,12 +2152,17 @@ fn run_scene_jobs(
         }
         on_scene(job.scene_slot, None);
         let t0 = std::time::Instant::now();
+        let eff_target = job.target_lufs.unwrap_or(target_lufs);
 
         // A skip job (unclassifiable scene: mic/split lane/no active amp/…) is reported
         // as a failed outcome and the run continues — never aborts the whole pass.
         if let Some(reason) = &job.skip {
-            let outcome =
-                failed_scene_outcome(job.scene_slot, reason.clone(), t0.elapsed().as_millis());
+            let outcome = failed_scene_outcome(
+                job.scene_slot,
+                eff_target,
+                reason.clone(),
+                t0.elapsed().as_millis(),
+            );
             on_scene(job.scene_slot, Some(&outcome));
             outcomes.push(outcome);
             continue;
@@ -2140,12 +2173,12 @@ fn run_scene_jobs(
 
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let outcome = match result {
-            Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
+            Ok(s) => solved_scene_outcome(job.scene_slot, eff_target, s, t0.elapsed().as_millis()),
             Err(e) if e == CANCELLED => {
                 stopped = true;
                 break;
             }
-            Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
+            Err(e) => failed_scene_outcome(job.scene_slot, eff_target, e, t0.elapsed().as_millis()),
         };
         on_scene(job.scene_slot, Some(&outcome));
         outcomes.push(outcome);
@@ -2739,18 +2772,21 @@ pub fn level_scenes_rebalance(
     let result = run_scene_jobs(
         slot,
         jobs,
+        target_lufs,
         save,
         restore_scene,
         on_scene,
         cancelled,
         |job| {
+            // Each job may carry its own target (mixed-target batch); scalar fallback for probes.
+            let eff_target = job.target_lufs.unwrap_or(target_lufs);
             // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
             if !job.rebalanceable || job.knobs.len() < 2 {
-                jointk_one_scene(slot, job, stimulus, target_lufs, save, true)
+                jointk_one_scene(slot, job, stimulus, eff_target, save, true)
             } else {
                 // Rebalanceable: 2-lane equalize → joint-k. (Only the first two knobs are the
                 // rebalance pair; the classifier never produces >2 for a single split.)
-                rebalance_one_scene(slot, job, stimulus, target_lufs, save, true)
+                rebalance_one_scene(slot, job, stimulus, eff_target, save, true)
             }
         },
     );
@@ -2885,9 +2921,15 @@ fn rebalance_one_scene(
 }
 
 /// Build a successful per-scene outcome from a [`SceneSolve`] (joint-k / rebalance share this).
-fn solved_scene_outcome(scene_slot: u32, s: SceneSolve, elapsed_ms: u128) -> BatchedSceneOutcome {
+fn solved_scene_outcome(
+    scene_slot: u32,
+    target_lufs: f64,
+    s: SceneSolve,
+    elapsed_ms: u128,
+) -> BatchedSceneOutcome {
     BatchedSceneOutcome {
         scene_slot,
+        target_lufs,
         final_lufs: Some(s.lufs),
         // The loudest lane amp's solved value (representative for the single-knob case; the
         // meaningful number for a multi-knob scene is `final_lufs`). All lanes share `k_eff`.
@@ -2908,9 +2950,15 @@ fn solved_scene_outcome(scene_slot: u32, s: SceneSolve, elapsed_ms: u128) -> Bat
 }
 
 /// Build a failed/skipped per-scene outcome.
-fn failed_scene_outcome(scene_slot: u32, failure: String, elapsed_ms: u128) -> BatchedSceneOutcome {
+fn failed_scene_outcome(
+    scene_slot: u32,
+    target_lufs: f64,
+    failure: String,
+    elapsed_ms: u128,
+) -> BatchedSceneOutcome {
     BatchedSceneOutcome {
         scene_slot,
+        target_lufs,
         final_lufs: None,
         final_level: None,
         clamped: false,

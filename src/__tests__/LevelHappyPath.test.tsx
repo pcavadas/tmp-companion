@@ -121,13 +121,13 @@ function mockHappyPath() {
         ]);
       case "level_scenes_apply_batched": {
         const a = args as {
-          sceneSlots: number[];
+          jobs: { sceneSlot: number; targetLufs: number }[];
           onResult?: { onmessage?: (item: unknown) => void };
         };
-        const results = a.sceneSlots.map(() => levelResultStub());
-        a.sceneSlots.forEach((sceneSlot, i) =>
+        const results = a.jobs.map(() => levelResultStub());
+        a.jobs.forEach((j, i) =>
           a.onResult?.onmessage?.({
-            sceneSlot,
+            sceneSlot: j.sceneSlot,
             status: "done",
             result: results[i],
             message: null,

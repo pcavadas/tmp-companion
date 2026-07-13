@@ -122,9 +122,12 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     await levelScenesApplyBatched(
       {
         slot: 5,
-        sceneSlots: [0, 1, 3],
+        jobs: [
+          { sceneSlot: 0, targetLufs: -24 },
+          { sceneSlot: 1, targetLufs: -24 },
+          { sceneSlot: 3, targetLufs: -22 },
+        ],
         candidates,
-        targetLufs: -24,
         save: false,
         rebalance: false,
         topologyId: null,
@@ -139,12 +142,16 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
       throw new Error("expected level_scenes_apply_batched args but got none");
     }
     // Scalar payload keys (camelCase) pass through verbatim. `candidates` is the
-    // same array reference handed to the wrapper.
+    // same array reference handed to the wrapper; each job carries its OWN
+    // per-scene target (camelCase nested keys, like levelFootswitchesApply).
     expect(calledArgs).toMatchObject({
       slot: 5,
-      sceneSlots: [0, 1, 3],
+      jobs: [
+        { sceneSlot: 0, targetLufs: -24 },
+        { sceneSlot: 1, targetLufs: -24 },
+        { sceneSlot: 3, targetLufs: -22 },
+      ],
       candidates,
-      targetLufs: -24,
       save: false,
       rebalance: false,
       topologyId: null,

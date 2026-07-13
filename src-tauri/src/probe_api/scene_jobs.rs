@@ -362,6 +362,9 @@ pub(crate) fn build_scene_jobs(
                     let rebalanceable = kind == ParallelKind::Merged && knobs.len() >= 2;
                     leveller::SceneJob {
                         scene_slot: *scene,
+                        // None → runner's scalar target; the app command stamps a per-scene
+                        // Some(...) after this builder (mixed-target batches).
+                        target_lufs: None,
                         knobs,
                         skip: None,
                         rebalanceable,
@@ -369,6 +372,7 @@ pub(crate) fn build_scene_jobs(
                 }
                 Err(reason) => leveller::SceneJob {
                     scene_slot: *scene,
+                    target_lufs: None,
                     knobs: Vec::new(),
                     skip: Some(reason),
                     rebalanceable: false,

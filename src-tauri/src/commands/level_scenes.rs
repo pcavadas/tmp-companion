@@ -25,6 +25,16 @@ pub(crate) struct SceneLevelProgressItem {
     message: Option<String>,
 }
 
+/// One scene-leveling request from the wizard: a wire scene slot + its OWN loudness
+/// target. Per-job targets (mirroring `FootswitchLevelJob`) let a preset with a mix of
+/// targets level in ONE batch — one prepass, one runner, one deferred save.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SceneLevelJobArg {
+    scene_slot: u32,
+    target_lufs: f64,
+}
+
 /// Wire payload for `tmp://leveling-lufs` — the advisory live measured loudness streamed
 /// while a leveling capture runs, so the UI can show a "measuring…" readout. ADVISORY: this
 /// is the loudness at the reference level, NOT the final preset level (the result row is the
@@ -240,9 +250,8 @@ pub(crate) async fn level_scenes_apply_batched(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     slot: u32,
-    scene_slots: Vec<u32>,
+    jobs: Vec<SceneLevelJobArg>,
     candidates: Vec<LevelBlockArg>,
-    target_lufs: f64,
     save: bool,
     rebalance: bool,
     topology_id: Option<String>,
@@ -256,11 +265,13 @@ pub(crate) async fn level_scenes_apply_batched(
     {
         return Err("per-scene leveling needs at least one amp outputLevel candidate".to_string());
     }
-    if scene_slots.is_empty() {
+    if jobs.is_empty() {
         return Err("no scenes selected".to_string());
     }
     SCENE_LEVEL_CANCEL.store(false, SeqCst);
-    let target_lufs = target_lufs + playback_offset_for(&app, topology_id.as_deref());
+    // Playback compensation is one offset for the whole batch; each job's own target
+    // gets it added below (the per-scene targets differ, the offset does not).
+    let offset = playback_offset_for(&app, topology_id.as_deref());
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
         &app,
         None,
@@ -273,6 +284,11 @@ pub(crate) async fn level_scenes_apply_batched(
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
+        let scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
+        // Scalar handed to the runners — DEAD on this path (every SceneJob is stamped
+        // Some(...) below); it exists only for probe callers whose jobs carry None. `jobs`
+        // is non-empty (guarded above), so `jobs[0]` is safe.
+        let scalar_target = jobs[0].target_lufs + offset;
         let run_batched = |save_run: bool| -> Result<Vec<leveller::BatchedSceneOutcome>, String> {
             // Un-engaged pre-pass (scene docs → jobs), then the ONE-SHOT runner:
             // amp `outputLevel` is linear in dB, so each scene is measured once at a
@@ -287,7 +303,14 @@ pub(crate) async fn level_scenes_apply_batched(
             // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
             // is pure CPU, so this is the only wait here.
             std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-            let jobs = build_scene_jobs(&scene_slots, &candidates, &docs)?;
+            let mut scene_jobs = build_scene_jobs(&scene_slots, &candidates, &docs)?;
+            // Stamp each SceneJob with its OWN offset-adjusted target (match by wire scene
+            // slot) so a mixed-target preset levels in this ONE batch.
+            for sj in scene_jobs.iter_mut() {
+                if let Some(arg) = jobs.iter().find(|j| j.scene_slot == sj.scene_slot) {
+                    sj.target_lufs = Some(arg.target_lufs + offset);
+                }
+            }
             let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| match done {
                 None => {
                     let _ = on_result.send(SceneLevelProgressItem {
@@ -302,7 +325,7 @@ pub(crate) async fn level_scenes_apply_batched(
                         None => SceneLevelProgressItem {
                             scene_slot: scene,
                             status: "done".to_string(),
-                            result: Some(outcome_to_level_result(slot, target_lufs, save_run, o)),
+                            result: Some(outcome_to_level_result(slot, save_run, o)),
                             message: None,
                         },
                         Some(e) => SceneLevelProgressItem {
@@ -321,9 +344,9 @@ pub(crate) async fn level_scenes_apply_batched(
             if rebalance {
                 leveller::level_scenes_rebalance(
                     slot,
-                    &jobs,
+                    &scene_jobs,
                     &stim,
-                    target_lufs,
+                    scalar_target,
                     save_run,
                     restore_scene,
                     on_scene,
@@ -332,9 +355,9 @@ pub(crate) async fn level_scenes_apply_batched(
             } else {
                 leveller::level_scenes_oneshot(
                     slot,
-                    &jobs,
+                    &scene_jobs,
                     &stim,
-                    target_lufs,
+                    scalar_target,
                     save_run,
                     restore_scene,
                     on_scene,
@@ -353,7 +376,7 @@ pub(crate) async fn level_scenes_apply_batched(
             Ok(outcomes) => Ok(outcomes
                 .iter()
                 .filter(|o| o.failure.is_none())
-                .map(|o| outcome_to_level_result(slot, target_lufs, save, o))
+                .map(|o| outcome_to_level_result(slot, save, o))
                 .collect()),
             Err(e) if e == leveller::CANCELLED => {
                 let _ = on_result.send(SceneLevelProgressItem {
@@ -380,7 +403,6 @@ pub(crate) async fn level_scenes_apply_batched(
 /// the final measured window).
 fn outcome_to_level_result(
     slot: u32,
-    target_lufs: f64,
     save: bool,
     o: &leveller::BatchedSceneOutcome,
 ) -> leveller::LevelResult {
@@ -391,7 +413,8 @@ fn outcome_to_level_result(
         measured_lufs: lufs,
         constant_c: f64::NAN,
         final_level: o.final_level.unwrap_or(0.0),
-        target_lufs,
+        // Per-scene target lives on the outcome (a batch can mix targets).
+        target_lufs: o.target_lufs,
         predicted_lufs: lufs,
         clamped: o.clamped,
         saved: save,
