@@ -25,6 +25,8 @@ export interface ContextFooterProps {
   /** Background scene load settled — gates the Level button vs the pill. */
   ready: boolean;
   onLevel: () => void;
+  /** Opens the "How leveling works" sheet. */
+  onHelp: () => void;
 }
 
 export function ContextFooter({
@@ -33,6 +35,7 @@ export function ContextFooter({
   sceneCount,
   ready,
   onLevel,
+  onHelp,
 }: ContextFooterProps) {
   const { t } = useTheme();
   const count = presetCount;
@@ -43,9 +46,16 @@ export function ContextFooter({
       <ActionBar
         left={
           <span
-            style={{ fontFamily: t.mono, fontSize: t.fsMeta, color: t.faint }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 12 }}
           >
-            Select presets to level · click a row to pick it
+            <Button variant="ghost" small onClick={onHelp}>
+              How it works
+            </Button>
+            <span
+              style={{ fontFamily: t.mono, fontSize: t.fsMeta, color: t.faint }}
+            >
+              Select presets to level · click a row to pick it
+            </span>
           </span>
         }
         right={

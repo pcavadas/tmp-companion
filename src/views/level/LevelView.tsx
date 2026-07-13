@@ -28,7 +28,7 @@ import { ActiveSignalChainView, type SceneTag } from "../ActiveSignalChainView";
 import { PresetList } from "../PresetList";
 import { EmptyState, UsbC } from "../EmptyState";
 import { LevelingWizard } from "../overlays";
-import { HowLevelingSheet, LevelingInfoRow } from "./HowLevelingSheet";
+import { HowLevelingSheet } from "./HowLevelingSheet";
 import { instrumentOptions, instrumentName } from "./leveling";
 import type { PickOption } from "../overlays/Pick";
 import type { ActiveGraph } from "../../lib/types";
@@ -306,12 +306,6 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
         }}
       />
 
-      <LevelingInfoRow
-        onOpen={() => {
-          setHelpOpen(true);
-        }}
-      />
-
       <div style={{ flex: 1, minHeight: 0 }}>
         <PresetList
           rows={rows}
@@ -340,6 +334,9 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
         sceneCount={sceneCount}
         ready={ready}
         onLevel={handleLevel}
+        onHelp={() => {
+          setHelpOpen(true);
+        }}
       />
 
       {/* ── leveling flow — one persistent wizard, body swaps per stage ── */}
