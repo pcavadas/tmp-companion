@@ -356,7 +356,7 @@ export function PrescriptionCard({
           {scene && <div style={noteLine}>{SCENE_LINE}</div>}
           {errorBlock}
           {applicable && (
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: 18 }}>
               <Button
                 variant="primary"
                 small
