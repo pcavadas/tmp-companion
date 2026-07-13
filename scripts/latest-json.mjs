@@ -16,7 +16,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [version, notesB64 = "", bundleDir = "src-tauri/target/aarch64-apple-darwin/release/bundle/macos"] =
+const [version, notesB64 = "", bundleDir = "src-tauri/target/universal-apple-darwin/release/bundle/macos"] =
   process.argv.slice(2);
 
 if (!version) {
@@ -35,15 +35,24 @@ if (sigs.length !== 1) {
 const signature = readFileSync(join(bundleDir, sigs[0]), "utf8");
 const notes = notesB64 ? Buffer.from(notesB64, "base64").toString("utf8") : "";
 
+// The DMG/tarball is a universal binary, but the Tauri updater keys latest.json
+// by the RUNNING slice's arch (compile-time `cfg!(target_arch)` per slice): an
+// Apple Silicon install resolves `darwin-aarch64`, an Intel install resolves
+// `darwin-x86_64`. There is no `darwin-universal` key. So both keys must point at
+// the SAME universal tarball — omit `darwin-x86_64` and Intel installs run fine but
+// never auto-update. One `entry` object under both keys so signature/url can't drift.
+const entry = {
+  signature,
+  url: `https://github.com/pcavadas/tmp-companion/releases/download/v${version}/TMP-Companion-macOS.app.tar.gz`,
+};
+
 const manifest = {
   version,
   notes,
   pub_date: new Date().toISOString(),
   platforms: {
-    "darwin-aarch64": {
-      signature,
-      url: `https://github.com/pcavadas/tmp-companion/releases/download/v${version}/TMP-Companion-AppleSilicon.app.tar.gz`,
-    },
+    "darwin-aarch64": entry,
+    "darwin-x86_64": entry,
   },
 };
 

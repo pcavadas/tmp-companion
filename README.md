@@ -5,8 +5,8 @@ over USB, to read, level, copy, and back up **your own** presets. It is an
 independent, unaffiliated project — see [NOTICE](NOTICE) and [INTEROP.md](INTEROP.md).
 
 Built with [Tauri 2](https://tauri.app) (Rust backend + React/TypeScript frontend).
-macOS-only on Apple Silicon (it uses CoreAudio for re-amp measurement and IOKit
-for exclusive USB-HID access).
+macOS-only, universal (Apple Silicon & Intel) — it uses CoreAudio for re-amp
+measurement and IOKit for exclusive USB-HID access.
 
 ## Features
 
@@ -29,7 +29,7 @@ upload, or share presets.
 ## Download
 
 Grab the latest `.dmg` from the [Releases](https://github.com/pcavadas/tmp-companion/releases)
-page. macOS 12+ on **Apple Silicon** only.
+page. macOS 12+ — a universal build for **Apple Silicon & Intel**.
 
 The app is code-signed and notarized, so it opens normally — just copy
 **TMP Companion.app** to `/Applications` and launch it.
