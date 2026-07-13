@@ -217,7 +217,18 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // frontend backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered
                 // to levelable-param switches, while isolation needs ALL on-off blocks).
                 if cancelled() {
-                    return leveller::level_preset(slot, &stim, target_lufs, opts, &[], cancelled);
+                    // `previous_level` is still None here (the isolation read below hasn't
+                    // run yet) — fine, since `level_preset` bails at the pre-measure cancel
+                    // checkpoint and returns Err, never reaching the field that would use it.
+                    return leveller::level_preset(
+                        slot,
+                        &stim,
+                        target_lufs,
+                        opts,
+                        &[],
+                        previous_level,
+                        cancelled,
+                    );
                 }
                 // Best-effort: isolation is a quality improvement, not a precondition for
                 // leveling at all. A read hiccup (or, offline, a preset-read the fake device
@@ -246,13 +257,26 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // gap before level_preset reconnects, else the quick reopen risks the HID
                 // open-lockout (0xe00002c5).
                 std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                leveller::level_preset(slot, &stim, target_lufs, opts, &force_bypass, cancelled)
+                leveller::level_preset(
+                    slot,
+                    &stim,
+                    target_lufs,
+                    opts,
+                    &force_bypass,
+                    previous_level,
+                    cancelled,
+                )
             }
         };
         // The revert anchor rides the result (Summary "Restore original"). In-memory
         // only: a restart-surviving restore is a follow-up that ships WITH its reader UI.
+        // Only staple when this run actually SAVED (and the leveller left it unset) —
+        // the leveller returns `previous_level: None` itself both for its own idempotency
+        // skip AND the no-signal clamp, and neither has anything worth "restoring".
         let result = result.map(|mut r| {
-            r.previous_level = previous_level;
+            if r.saved && r.previous_level.is_none() {
+                r.previous_level = previous_level;
+            }
             r
         });
         match &result {

@@ -176,8 +176,8 @@ fn offline_level_preset_runs_against_the_fake_audio() {
         verify: true,
         ..Default::default()
     };
-    let r =
-        crate::leveller::level_preset(0, &stim, -30.0, opts, &[], || false).expect("level_preset");
+    let r = crate::leveller::level_preset(0, &stim, -30.0, opts, &[], None, || false)
+        .expect("level_preset");
     assert!(
         r.final_level.is_finite() && r.final_level > 0.0,
         "solved a finite level: {r:?}"

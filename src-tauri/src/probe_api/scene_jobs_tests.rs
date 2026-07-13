@@ -63,7 +63,7 @@ fn scene_jobs_prefer_active_amp_output_level_over_preamp_volume() {
         },
     ];
 
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     let leveller::LevelKnob::Block { parameter_id, .. } = &jobs[0].knobs[0].knob else {
         panic!("expected block knob");
     };
@@ -94,7 +94,7 @@ fn scene_jobs_reject_preamp_volume_as_level_control() {
 
     // The Hiwatt is an active amp but its only candidate is a preamp volume, not
     // outputLevel → the scene is skipped with a reason, not leveled on the wrong knob.
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap_err();
     assert!(err.contains("outputLevel"), "got: {err}");
 }
 
@@ -129,7 +129,7 @@ fn scene_jobs_parallel_merged_picks_both_lane_amps() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -168,7 +168,7 @@ fn scene_jobs_post_merge_amp_is_single_master() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert_eq!(jobs[0].knobs.len(), 1);
 }
 
@@ -188,7 +188,7 @@ fn scene_jobs_skip_when_template_unknown() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap_err();
     assert!(err.contains("routing"), "got: {err}");
 }
 
@@ -209,7 +209,7 @@ fn scene_jobs_skip_mic_only_no_guitar_amp() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert!(
         jobs[0].skip.as_deref().unwrap_or("").contains("guitar amp"),
         "got: {:?}",
@@ -248,7 +248,7 @@ fn scene_jobs_split_output_joint_ks_both_output_lanes() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -282,6 +282,7 @@ fn scene_jobs_per_scene_skip_does_not_abort() {
         &[0, 1],
         &candidates,
         &[(0, Some(bypassed)), (1, Some(active))],
+        -23.0,
     )
     .unwrap();
     assert_eq!(jobs.len(), 2);
@@ -289,4 +290,126 @@ fn scene_jobs_per_scene_skip_does_not_abort() {
     assert!(jobs[0].knobs.is_empty());
     assert!(jobs[1].skip.is_none(), "active-amp scene levels normally");
     assert_eq!(jobs[1].knobs.len(), 1);
+}
+
+// --- scene_docs_from_saved: synthetic per-scene docs from a SAVED (field-8) preset ---
+
+// A SAVED preset: one amp ON in the base with a sparse overlay in scene 0 (flips the amp
+// active + bumps outputLevel + tweaks splitMix) and an empty overlay in scene 1.
+fn saved_preset() -> serde_json::Value {
+    serde_json::json!({
+        "lastLoadedScene": 2,
+        "audioGraph": {
+            "template": "gtrSeries",
+            "splitMix": { "balance": 0.5, "level": 0.8 },
+            "guitarNodes": { "G1": [
+                { "nodeId": "ampA", "FenderId": "ACD_TwinReverb",
+                  "dspUnitParameters": { "bypass": true, "outputLevel": 0.4 } }
+            ] },
+            "micNodes": {}
+        },
+        "scenes": [
+            { "guitarNodes": { "G1": {
+                "ACD_TwinReverb": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.9 } }
+              } },
+              "splitMix": { "balance": 0.1 } },
+            { "guitarNodes": { "G1": {} } }
+        ]
+    })
+}
+
+// Base slot: the doc carries the WHOLE audioGraph (template + splitMix + base node params)
+// so extract_active_graph reads the template and the un-overlaid base bypass.
+#[test]
+fn scene_docs_base_passes_template_through() {
+    let (docs, restore) =
+        scene_docs_from_saved(&saved_preset(), &[session::BASE_SCENE_SLOT]).unwrap();
+    assert_eq!(restore, Some(2));
+    let (slot, doc) = &docs[0];
+    assert_eq!(*slot, session::BASE_SCENE_SLOT);
+    let doc = doc.as_ref().unwrap();
+    let ag = session::extract_active_graph(doc, None);
+    assert_eq!(ag.template.as_deref(), Some("gtrSeries"));
+    // Base scene = base node params, no overlay: amp is bypassed.
+    assert_eq!(
+        scenes::block_bypass_in_live_graph(doc, "G1", "ampA"),
+        Some(true)
+    );
+}
+
+// FS scene overlay flips the amp bypassed→active (visible via the production bypass reader).
+#[test]
+fn scene_docs_overlay_flips_bypass() {
+    let (docs, _) = scene_docs_from_saved(&saved_preset(), &[0]).unwrap();
+    let doc = docs[0].1.as_ref().unwrap();
+    assert_eq!(
+        scenes::block_bypass_in_live_graph(doc, "G1", "ampA"),
+        Some(false),
+        "scene 0 overlay activates the amp"
+    );
+}
+
+// FS scene overlay's outputLevel is visible via the production extract_level_blocks.
+#[test]
+fn scene_docs_overlay_output_level_visible() {
+    let (docs, _) = scene_docs_from_saved(&saved_preset(), &[0]).unwrap();
+    let doc = docs[0].1.as_ref().unwrap();
+    let ol = session::extract_level_blocks(doc)
+        .into_iter()
+        .find(|b| b.group_id == "G1" && b.node_id == "ampA" && b.parameter_id == "outputLevel")
+        .map(|b| b.value);
+    assert_eq!(ol, Some(0.9));
+}
+
+// splitMix overlay replaces the overlaid key, base keys survive (shallow merge).
+#[test]
+fn scene_docs_split_mix_overlay_merges() {
+    let (docs, _) = scene_docs_from_saved(&saved_preset(), &[0]).unwrap();
+    let doc = docs[0].1.as_ref().unwrap();
+    let split = doc.pointer("/audioGraph/splitMix").unwrap();
+    assert_eq!(split.get("balance").and_then(|v| v.as_f64()), Some(0.1)); // overlaid
+    assert_eq!(split.get("level").and_then(|v| v.as_f64()), Some(0.8)); // base survives
+}
+
+// A param the overlay lacks falls through to the base node (scene 1 is empty).
+#[test]
+fn scene_docs_empty_overlay_keeps_base() {
+    let (docs, _) = scene_docs_from_saved(&saved_preset(), &[1]).unwrap();
+    let doc = docs[0].1.as_ref().unwrap();
+    assert_eq!(
+        scenes::block_bypass_in_live_graph(doc, "G1", "ampA"),
+        Some(true),
+        "empty overlay → base bypass"
+    );
+}
+
+// A requested FS scene index absent from scenes[] → whole-fn None (fall back to live).
+#[test]
+fn scene_docs_missing_scene_index_is_none() {
+    // Only scenes 0 and 1 exist; requesting scene 5 must bail.
+    assert!(scene_docs_from_saved(&saved_preset(), &[5]).is_none());
+}
+
+// A truncated scene entry (a string where an object was expected) → whole-fn None.
+#[test]
+fn scene_docs_truncated_scene_entry_is_none() {
+    let mut p = saved_preset();
+    p["scenes"][0] = serde_json::json!("truncated");
+    assert!(scene_docs_from_saved(&p, &[0]).is_none());
+}
+
+// audioGraph missing → whole-fn None.
+#[test]
+fn scene_docs_no_audiograph_is_none() {
+    let p = serde_json::json!({ "lastLoadedScene": 0, "scenes": [] });
+    assert!(scene_docs_from_saved(&p, &[session::BASE_SCENE_SLOT]).is_none());
+}
+
+// lastLoadedScene absent → restore scene is None (docs still build).
+#[test]
+fn scene_docs_restore_scene_none_when_absent() {
+    let mut p = saved_preset();
+    p.as_object_mut().unwrap().remove("lastLoadedScene");
+    let (_, restore) = scene_docs_from_saved(&p, &[session::BASE_SCENE_SLOT]).unwrap();
+    assert_eq!(restore, None);
 }

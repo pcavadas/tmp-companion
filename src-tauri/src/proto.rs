@@ -1290,6 +1290,9 @@ pub fn parse_strict(buf: &[u8]) -> Result<Vec<(u32, Val)>, String> {
     Ok(out)
 }
 
+/// A strictly-decoded list response: (the response's own fields, the record field-sets).
+type StrictListDecode = (Vec<(u32, Val)>, Vec<Vec<(u32, Val)>>);
+
 /// Strictly decode a COMPLETE list response into its repeated record field-sets, or
 /// `None` if the reassembled body is truncated / not the expected response. Walks
 /// TMS[`tms_field`] → response[`resp_field`] → repeated record[2], strict-parsing at
@@ -1298,7 +1301,7 @@ fn list_records_strict(
     tms_body: &[u8],
     tms_field: u32,
     resp_field: u32,
-) -> Option<Vec<Vec<(u32, Val)>>> {
+) -> Option<StrictListDecode> {
     let top = parse_strict(tms_body).ok()?;
     let sm = first_bytes(&top, tms_field)?.to_vec();
     let sm_fields = parse_strict(&sm).ok()?;
@@ -1308,24 +1311,40 @@ fn list_records_strict(
     for r in all_bytes(&resp_fields, 2) {
         recs.push(parse_strict(r).ok()?);
     }
-    Some(recs)
+    Some((resp_fields, recs))
 }
 
-/// Strict, completeness-validated `presetListResponse` decode (TMS[2]→resp[5]→rec[2]).
+/// The `PresetListResponse.listEnum` value for My Presets (Factory = 4, Cloud = 3).
+const LIST_ENUM_MY_PRESETS: u64 = 1;
+
+/// Is this parsed `PresetListResponse` the MY PRESETS list? The handshake requests
+/// three lists (My=1, Factory=4, Cloud=3) on one session, so every preset-list
+/// harvest must check the response's `listEnum` (field 1) — else a truncated
+/// My-Presets reply lets a complete Factory reply win longest-complete-wins and the
+/// snapshot serves factory names as the user's presets (observed live: 249 factory
+/// records + firmware=None after a congested post-leveling reconnect). A missing
+/// listEnum is treated as My Presets (lean sessions request only list 1).
+pub fn is_my_presets_list(resp_fields: &[(u32, Val)]) -> bool {
+    first_varint(resp_fields, 1).unwrap_or(LIST_ENUM_MY_PRESETS) == LIST_ENUM_MY_PRESETS
+}
+
+/// Strict, completeness-validated `presetListResponse` decode (TMS[2]→resp[5]→rec[2]),
+/// gated to the My Presets list via [`is_my_presets_list`].
 pub fn preset_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
-    list_records_strict(tms_body, 2, 5)
+    let (resp, recs) = list_records_strict(tms_body, 2, 5)?;
+    is_my_presets_list(&resp).then_some(recs)
 }
 /// Strict, completeness-validated `songListResponse` decode (TMS[11]→resp[3]→rec[2]).
 pub fn song_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
-    list_records_strict(tms_body, 11, 3)
+    list_records_strict(tms_body, 11, 3).map(|(_, recs)| recs)
 }
 /// Strict, completeness-validated `setlistListResponse` decode (TMS[12]→resp[3]→rec[2]).
 pub fn setlist_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
-    list_records_strict(tms_body, 12, 3)
+    list_records_strict(tms_body, 12, 3).map(|(_, recs)| recs)
 }
 /// Strict, completeness-validated `setlistSongListResponse` decode (TMS[12]→resp[13]→rec[2]).
 pub fn setlist_song_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
-    list_records_strict(tms_body, 12, 13)
+    list_records_strict(tms_body, 12, 13).map(|(_, recs)| recs)
 }
 
 // ─── device → host stream reassembly ─────────────────────────────────────────
@@ -2052,6 +2071,34 @@ mod tests {
             preset_list_records_strict(&short_body).map(|r| r.len()),
             Some(2)
         );
+    }
+
+    #[test]
+    fn preset_list_records_strict_rejects_other_list_enums() {
+        // The snapshot handshake requests THREE lists (My Presets=1, Factory=4,
+        // Cloud=3) on one session; the harvest must never serve another list's
+        // records as My Presets (a congestion-truncated My-Presets reply once let
+        // the complete 249-record FACTORY reply win longest-complete-wins).
+        // PresetListResponse.listEnum is field 1 (varint).
+        let rec = |name: &str| len_delimited(2, &len_delimited(1, name.as_bytes()));
+        let recs: Vec<u8> = [rec("'65 Deluxe Reverb"), rec("Unchain Ed")].concat();
+        let with_enum = |e: u8| {
+            let resp: Vec<u8> = [vec![0x08, e], recs.clone()].concat();
+            len_delimited(2, &len_delimited(5, &resp))
+        };
+
+        // Factory (4) and Cloud (3) → rejected.
+        assert!(preset_list_records_strict(&with_enum(4)).is_none());
+        assert!(preset_list_records_strict(&with_enum(3)).is_none());
+        // My Presets (1) → accepted.
+        assert_eq!(
+            preset_list_records_strict(&with_enum(1)).map(|r| r.len()),
+            Some(2)
+        );
+        // Missing listEnum → accepted (backward-safe: a Factory reply demonstrably
+        // carries listEnum=4 on the wire, so absence means a My-Presets-only burst).
+        let bare = len_delimited(2, &len_delimited(5, &recs));
+        assert_eq!(preset_list_records_strict(&bare).map(|r| r.len()), Some(2));
     }
 
     #[test]

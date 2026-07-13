@@ -762,16 +762,31 @@ pub fn restore_preset_level(slot: u32, level: f32, expected_name: &str) -> Resul
     apply_level(slot, &[], &LevelKnob::PresetLevel, level, opts, true).map(|_| ())
 }
 
+/// Is the solved `final_level` the same as the preset's already-saved `previous`
+/// level, within the LU-space `KNOB_TOL_LU` band? Deliberately matches
+/// `KNOB_TOL_LU` rather than a tighter ratio — a band under the ~0.12 LU measured
+/// run-to-run noise would make the skip a coin flip. `previous <= 0.0` (unread or
+/// nonsensical) never counts as unchanged.
+fn level_unchanged(final_level: f32, previous: f32) -> bool {
+    previous > 0.0 && (20.0 * (final_level as f64 / previous as f64).log10()).abs() <= KNOB_TOL_LU
+}
+
 /// Level one preset to `target_lufs`. Self-contained: opens its own fresh
 /// connections (load → measure → set), so the caller must NOT hold a competing
 /// device seize while this runs. Composes the `measure_c` → `solve_level` →
-/// `apply_level` seams.
+/// `apply_level` seams. `previous_level` (the preset's currently-saved
+/// `presetLevel`, when the caller already read it) enables the idempotency skip:
+/// a re-run that solves the SAME level as last time reloads the stored preset and
+/// returns without writing (see the `level_unchanged` check below), so repeat runs
+/// don't re-randomize an already-on-target preset. `None` (the probe/benchmark
+/// call sites, and the setlist common-target pass) keeps the always-write behavior.
 pub fn level_preset(
     slot: u32,
     stimulus: &[f32],
     target_lufs: f64,
     opts: LevelOptions,
     force_bypass: &[(String, String, bool)],
+    previous_level: Option<f32>,
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<LevelResult, String> {
     // Pre-measure cancel: nothing has touched the device yet, so return WITHOUT the
@@ -817,6 +832,42 @@ pub fn level_preset(
             return Err(CANCELLED.to_string());
         }
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
+        // Idempotency skip: the solved level matches what's already saved — reload to
+        // discard the measurement's ref-level edit (same recovery as the NO_SIGNAL
+        // branch above) and return without writing. `previous_level: None` on the
+        // result (not `previous_level`/`Some(p)`) is CRITICAL: the UI's Summary
+        // "Restore original" button gates on it, and there is nothing to restore when
+        // this run touched nothing.
+        if let Some(p) = previous_level {
+            if !clamped && level_unchanged(final_level, p) {
+                log::info!(
+                    "level_preset slot={slot}: solved level within tolerance of saved ({final_level:.4} vs {p:.4}) — skipping write"
+                );
+                restore_saved_preset(slot)?;
+                return Ok(LevelResult {
+                    slot,
+                    ref_level,
+                    measured_lufs: m.measured_lufs,
+                    constant_c: m.c,
+                    final_level: p,
+                    target_lufs,
+                    predicted_lufs: predicted,
+                    clamped: false,
+                    saved: false,
+                    verify_lufs: None,
+                    iterations: 1,
+                    dynamic_spread_lu: Some(m.dynamic_spread_lu),
+                    clamp_reason: None,
+                    verify_by_ear: false,
+                    previous_level: None,
+                    true_peak_dbtp: Some(predicted_true_peak_dbtp(
+                        m.true_peak_dbtp,
+                        ref_level,
+                        final_level,
+                    )),
+                });
+            }
+        }
         // With forced footswitch bypasses, the device edit buffer is dirty (bypasses persist
         // across HID reconnects), so `apply_level` must reload FIRST to reset it before setting
         // only `presetLevel` and saving. And skip verify: its capture runs AFTER that reload, so
@@ -1760,6 +1811,11 @@ const BATCH_TRUST_DB: f32 = 6.0;
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchedSceneOutcome {
     pub scene_slot: u32,
+    /// The effective (offset-adjusted) loudness target this scene was leveled to.
+    /// Per-scene because one batch can carry a mix of targets; `outcome_to_level_result`
+    /// reads it here rather than zipping outcomes against jobs by index (the failure
+    /// filter misaligns positional zips).
+    pub target_lufs: f64,
     pub final_lufs: Option<f64>,
     pub final_level: Option<f32>,
     pub clamped: bool,
@@ -1802,6 +1858,10 @@ pub struct KnobTarget {
 #[derive(Debug, Clone)]
 pub struct SceneJob {
     pub scene_slot: u32,
+    /// This scene's own (offset-adjusted) loudness target — the SINGLE source of truth.
+    /// `build_scene_jobs` stamps it on every job; the app command overrides it per wire
+    /// job so a mixed-target preset levels in ONE batch. The runners read it directly.
+    pub target_lufs: f64,
     pub knobs: Vec<KnobTarget>,
     /// When `Some`, this scene can't be safely leveled (mic/split/no-active-amp/etc.);
     /// the runner reports it as a skipped (failed) outcome and moves on, never aborting
@@ -1847,7 +1907,6 @@ pub fn level_scenes_live_batched(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
-    target_lufs: f64,
     save: bool,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
@@ -1904,7 +1963,7 @@ pub fn level_scenes_live_batched(
                     if cancelled() {
                         return Err(CANCELLED.to_string());
                     }
-                    if (best.1 - target_lufs).abs() <= KNOB_TOL_LU {
+                    if (best.1 - job.target_lufs).abs() <= KNOB_TOL_LU {
                         break;
                     }
                     let raw_next = next_live_coord(
@@ -1912,7 +1971,7 @@ pub fn level_scenes_live_batched(
                         iter,
                         (coord, measured),
                         prev,
-                        target_lufs,
+                        job.target_lufs,
                         (c_lo, c_hi),
                     );
                     // Trust region: bound each move (full computed jumps
@@ -1928,7 +1987,7 @@ pub fn level_scenes_live_batched(
                     std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
                     let lufs = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                     *windows += 1;
-                    if (lufs - target_lufs).abs() < (best.1 - target_lufs).abs() {
+                    if (lufs - job.target_lufs).abs() < (best.1 - job.target_lufs).abs() {
                         best = (next, lufs);
                     }
                     prev = Some((coord, measured));
@@ -1949,7 +2008,7 @@ pub fn level_scenes_live_batched(
                 Ok((
                     best.1,
                     best_value,
-                    (best.1 - target_lufs).abs() > KNOB_TOL_LU,
+                    (best.1 - job.target_lufs).abs() > KNOB_TOL_LU,
                 ))
             })(&mut windows, &mut writes);
 
@@ -1957,6 +2016,7 @@ pub fn level_scenes_live_batched(
             let outcome = match scene_result {
                 Ok((lufs, level, clamped)) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
+                    target_lufs: job.target_lufs,
                     final_lufs: Some(lufs),
                     final_level: Some(level),
                     clamped,
@@ -1971,6 +2031,7 @@ pub fn level_scenes_live_batched(
                 Err(e) if e == CANCELLED => return Err(e),
                 Err(e) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
+                    target_lufs: job.target_lufs,
                     final_lufs: None,
                     final_level: None,
                     clamped: false,
@@ -2019,12 +2080,10 @@ pub fn level_scenes_live_batched(
 /// cancel, so already-reported scenes are never silently lost); `restore_scene`
 /// is recalled first so the save stamps the preset's original active scene. A
 /// per-scene failure becomes a failed outcome, never aborting the run.
-#[allow(clippy::too_many_arguments)]
 pub fn level_scenes_oneshot(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
-    target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
@@ -2037,7 +2096,7 @@ pub fn level_scenes_oneshot(
         restore_scene,
         on_scene,
         cancelled,
-        |job| jointk_one_scene(slot, job, stimulus, target_lufs, save, true),
+        |job| jointk_one_scene(slot, job, stimulus, job.target_lufs, save, true),
     )
 }
 
@@ -2073,12 +2132,17 @@ fn run_scene_jobs(
         }
         on_scene(job.scene_slot, None);
         let t0 = std::time::Instant::now();
+        let eff_target = job.target_lufs;
 
         // A skip job (unclassifiable scene: mic/split lane/no active amp/…) is reported
         // as a failed outcome and the run continues — never aborts the whole pass.
         if let Some(reason) = &job.skip {
-            let outcome =
-                failed_scene_outcome(job.scene_slot, reason.clone(), t0.elapsed().as_millis());
+            let outcome = failed_scene_outcome(
+                job.scene_slot,
+                eff_target,
+                reason.clone(),
+                t0.elapsed().as_millis(),
+            );
             on_scene(job.scene_slot, Some(&outcome));
             outcomes.push(outcome);
             continue;
@@ -2089,12 +2153,12 @@ fn run_scene_jobs(
 
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let outcome = match result {
-            Ok(s) => solved_scene_outcome(job.scene_slot, s, t0.elapsed().as_millis()),
+            Ok(s) => solved_scene_outcome(job.scene_slot, eff_target, s, t0.elapsed().as_millis()),
             Err(e) if e == CANCELLED => {
                 stopped = true;
                 break;
             }
-            Err(e) => failed_scene_outcome(job.scene_slot, e, t0.elapsed().as_millis()),
+            Err(e) => failed_scene_outcome(job.scene_slot, eff_target, e, t0.elapsed().as_millis()),
         };
         on_scene(job.scene_slot, Some(&outcome));
         outcomes.push(outcome);
@@ -2240,6 +2304,17 @@ const REBALANCE_BLEED_MARGIN_DB: f64 = 28.0;
 /// solo-above-floor margin is huge (→ no verify-by-ear flag) instead of failing the scene.
 const MUTE_FLOOR_SILENT_LUFS: f64 = -120.0;
 
+/// Is this scene already at target? Matches the correction loop's `KNOB_TOL_LU`
+/// acceptance band (rather than the tighter ~0.1 dB knob-ratio check this replaces)
+/// so a re-run doesn't rewrite an already-in-tolerance scene and re-randomize it.
+/// Deliberately skips the corrective pass (`correct_iter`) for a within-tolerance
+/// COMPRESSED scene (the UA1176 case below, see `jointk_one_scene`'s doc) — within
+/// tolerance is good enough, and a `clamped` solve must still fall through and
+/// report clamped even when the measured value happens to sit on target.
+fn scene_at_target(measured: f64, target: f64, clamped: bool) -> bool {
+    !clamped && (measured - target).abs() <= KNOB_TOL_LU
+}
+
 /// Per-scene joint-k: measure the scene AS-IS once, solve one factor `k`, apply it to every
 /// lane amp (preserving their mix), VERIFY, then `correct_iter` (bounded secant) to converge
 /// through a downstream compressor. The open-loop `20·log10(k)` model is exact for pure gain
@@ -2268,9 +2343,9 @@ fn jointk_one_scene(
         achieved,
         k_eff,
     } = solve_joint_k_at(&job.knobs, target_lufs, measured)?;
-    // Already at target (uniform relative move within ~1.2% of the knob) and not clamped
-    // → leave every knob untouched (a clamp must still be REPORTED even if nothing moves).
-    if !clamped && ((k_eff - 1.0).abs() as f32) < 0.012 {
+    // Already at target (within the KNOB_TOL_LU acceptance band) and not clamped →
+    // leave every knob untouched (a clamp must still be REPORTED even if nothing moves).
+    if scene_at_target(measured, target_lufs, clamped) {
         let currents = job.knobs.iter().map(|kt| kt.current).collect();
         return Ok(SceneSolve {
             lufs: measured,
@@ -2663,12 +2738,10 @@ fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
 /// that the write lands on the per-scene overlay (not the base). Validate `probe --rebalance`
 /// before trusting the equal-solo balance; the final combined joint-k still hits the target
 /// either way. Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
-#[allow(clippy::too_many_arguments)]
 pub fn level_scenes_rebalance(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
-    target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
@@ -2682,13 +2755,14 @@ pub fn level_scenes_rebalance(
         on_scene,
         cancelled,
         |job| {
+            let eff_target = job.target_lufs;
             // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
             if !job.rebalanceable || job.knobs.len() < 2 {
-                jointk_one_scene(slot, job, stimulus, target_lufs, save, true)
+                jointk_one_scene(slot, job, stimulus, eff_target, save, true)
             } else {
                 // Rebalanceable: 2-lane equalize → joint-k. (Only the first two knobs are the
                 // rebalance pair; the classifier never produces >2 for a single split.)
-                rebalance_one_scene(slot, job, stimulus, target_lufs, save, true)
+                rebalance_one_scene(slot, job, stimulus, eff_target, save, true)
             }
         },
     );
@@ -2823,9 +2897,15 @@ fn rebalance_one_scene(
 }
 
 /// Build a successful per-scene outcome from a [`SceneSolve`] (joint-k / rebalance share this).
-fn solved_scene_outcome(scene_slot: u32, s: SceneSolve, elapsed_ms: u128) -> BatchedSceneOutcome {
+fn solved_scene_outcome(
+    scene_slot: u32,
+    target_lufs: f64,
+    s: SceneSolve,
+    elapsed_ms: u128,
+) -> BatchedSceneOutcome {
     BatchedSceneOutcome {
         scene_slot,
+        target_lufs,
         final_lufs: Some(s.lufs),
         // The loudest lane amp's solved value (representative for the single-knob case; the
         // meaningful number for a multi-knob scene is `final_lufs`). All lanes share `k_eff`.
@@ -2846,9 +2926,15 @@ fn solved_scene_outcome(scene_slot: u32, s: SceneSolve, elapsed_ms: u128) -> Bat
 }
 
 /// Build a failed/skipped per-scene outcome.
-fn failed_scene_outcome(scene_slot: u32, failure: String, elapsed_ms: u128) -> BatchedSceneOutcome {
+fn failed_scene_outcome(
+    scene_slot: u32,
+    target_lufs: f64,
+    failure: String,
+    elapsed_ms: u128,
+) -> BatchedSceneOutcome {
     BatchedSceneOutcome {
         scene_slot,
+        target_lufs,
         final_lufs: None,
         final_level: None,
         clamped: false,
@@ -3145,7 +3231,7 @@ mod tests {
         let stim = [0.0f32; 16];
         let opts = LevelOptions::default();
         assert_eq!(
-            level_preset(0, &stim, -30.0, opts, &[], || true).unwrap_err(),
+            level_preset(0, &stim, -30.0, opts, &[], None, || true).unwrap_err(),
             CANCELLED
         );
         let knob = LevelKnob::PresetLevel;
@@ -3320,7 +3406,9 @@ mod tests {
         assert!(j.achieved > -30.0);
     }
 
-    // At target already → k_eff ≈ 1, not clamped (the caller then skips the write).
+    // At target already → k_eff ≈ 1, not clamped. `jointk_one_scene`'s caller-side
+    // skip no longer keys off k_eff though — it compares `measured` vs `target_lufs`
+    // directly via `scene_at_target` (the KNOB_TOL_LU band), which a unity k_eff implies.
     #[test]
     fn joint_k_at_target_is_unity_unclamped() {
         let j = super::solve_joint_k_at(&[amp_knob(0.5), amp_knob(0.2)], -30.0, -30.0).unwrap();
@@ -3686,5 +3774,57 @@ mod tests {
             assert!((coord - 0.0).abs() < 1e-3, "{strategy:?} coord={coord}");
             assert!((lufs - (-26.0)).abs() < 1e-6, "{strategy:?} lufs={lufs}");
         }
+    }
+
+    // scene_at_target mirrors the correction loop's KNOB_TOL_LU acceptance band —
+    // a re-run must not rewrite an already-in-tolerance scene.
+    #[test]
+    fn scene_at_target_accepts_within_knob_tol() {
+        assert!(
+            super::scene_at_target(-22.0, -22.29, false),
+            "0.29 LU off, unclamped"
+        );
+    }
+
+    #[test]
+    fn scene_at_target_rejects_just_outside_knob_tol() {
+        assert!(!super::scene_at_target(-22.0, -22.31, false), "0.31 LU off");
+    }
+
+    #[test]
+    fn scene_at_target_rejects_when_clamped_even_at_zero_delta() {
+        assert!(
+            !super::scene_at_target(-22.0, -22.0, true),
+            "clamped must still report"
+        );
+    }
+
+    // level_unchanged: LU-space ratio tolerance matching KNOB_TOL_LU, guards the
+    // Base-leveling idempotency skip against re-writing an in-tolerance presetLevel.
+    #[test]
+    fn level_unchanged_true_on_identical_levels() {
+        assert!(super::level_unchanged(0.5160, 0.5160));
+    }
+
+    #[test]
+    fn level_unchanged_true_within_knob_tol() {
+        // 20*log10(0.5160/0.5300) ≈ -0.23 LU
+        assert!(super::level_unchanged(0.5160, 0.5300));
+    }
+
+    #[test]
+    fn level_unchanged_false_beyond_knob_tol() {
+        // 20*log10(0.5160/0.55) ≈ -0.55 LU
+        assert!(!super::level_unchanged(0.5160, 0.55));
+    }
+
+    #[test]
+    fn level_unchanged_false_on_zero_previous() {
+        assert!(!super::level_unchanged(0.5, 0.0));
+    }
+
+    #[test]
+    fn level_unchanged_false_on_negative_previous() {
+        assert!(!super::level_unchanged(0.5, -1.0));
     }
 }

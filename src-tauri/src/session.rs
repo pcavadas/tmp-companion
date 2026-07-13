@@ -2459,6 +2459,11 @@ impl Session {
 /// doesn't carry a PresetListResponse.
 fn extract_preset_list(body: &[u8]) -> Option<Vec<String>> {
     let resp = dig(body, TMS_PRESET, PRESET_LIST_RESPONSE)?;
+    // My Presets only — the handshake also collects the Factory/Cloud responses
+    // on the same session (the wrong-list hazard is documented on the helper).
+    if !proto::is_my_presets_list(&resp) {
+        return None;
+    }
     // PresetListResponse.record (field 2, repeated) → PresetListRecord.displayName (field 1).
     let names: Vec<String> = resp
         .iter()
@@ -3778,6 +3783,64 @@ mod tests {
             names,
             vec!["65 Deluxe".to_string(), "Solo Lead".to_string()]
         );
+    }
+
+    // The tolerant extractor must also reject other lists' responses: after a
+    // congested handshake truncated the My-Presets reply, the complete FACTORY
+    // reply (listEnum=4, 249 records) was served as My Presets — silently, with
+    // factory names in the Level tab.
+    #[test]
+    fn extract_preset_list_rejects_other_list_enums() {
+        fn ld(field: u32, inner: &[u8]) -> Vec<u8> {
+            let mut o = Vec::new();
+            o.push(((field << 3) | 2) as u8);
+            o.push(inner.len() as u8);
+            o.extend_from_slice(inner);
+            o
+        }
+        let body = |list_enum: u8| {
+            let mut resp = vec![0x08, list_enum];
+            resp.extend(ld(2, &ld(1, b"'65 Deluxe Reverb")));
+            ld(TMS_PRESET, &ld(PRESET_LIST_RESPONSE, &resp))
+        };
+        assert!(extract_preset_list(&body(4)).is_none()); // Factory
+        assert!(extract_preset_list(&body(3)).is_none()); // Cloud
+        assert_eq!(
+            extract_preset_list(&body(1)),
+            Some(vec!["'65 Deluxe Reverb".to_string()])
+        );
+    }
+
+    // Longest-wins must never let a LONGER Factory response beat My Presets —
+    // the incident shape (truncated 504-record My-Presets read + complete
+    // 249-record Factory read in the same accumulated reports).
+    #[test]
+    fn best_preset_list_ignores_a_longer_factory_response() {
+        fn ld(field: u32, inner: &[u8]) -> Vec<u8> {
+            let mut o = Vec::new();
+            o.push(((field << 3) | 2) as u8);
+            o.push(inner.len() as u8);
+            o.extend_from_slice(inner);
+            o
+        }
+        fn report(body: &[u8]) -> Vec<u8> {
+            let mut r = vec![0x00, 0x35, 0x00, body.len() as u8];
+            r.extend_from_slice(body);
+            r
+        }
+        let list = |list_enum: u8, names: &[&str]| {
+            let mut resp = vec![0x08, list_enum];
+            for n in names {
+                resp.extend(ld(2, &ld(1, n.as_bytes())));
+            }
+            ld(TMS_PRESET, &ld(PRESET_LIST_RESPONSE, &resp))
+        };
+        let reports = vec![
+            report(&list(4, &["'65 Deluxe", "Unchain Ed", "Cutting"])), // Factory, longer
+            report(&list(1, &["Guitar", "Cello"])),                     // My Presets
+        ];
+        let best = best_preset_list_from_reports(&reports).expect("my presets");
+        assert_eq!(best, vec!["Guitar".to_string(), "Cello".to_string()]);
     }
 
     #[test]

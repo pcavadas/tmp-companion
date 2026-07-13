@@ -8,6 +8,12 @@
 //!   probe --scenes-full         full details (scenes+ftsw+graph) via LoadPreset → field-3 (DESTRUCTIVE)
 //!   probe --scenes-passive      scene names for every preset via field-8 slot reads
 //!                                  (retained validation kit — NO LoadPreset)
+//!   probe --overlay-ab <slot|all> [--contexts N]
+//!                                  EVIDENCE: SAVED per-scene overlay {bypass,outputLevel} vs
+//!                                  the LIVE prepass state, per scene-amp, plus saved-vs-saved
+//!                                  across N read contexts (before/after the prepass). slot is
+//!                                  1-based (as --slot-json); 'all' = every non-empty preset.
+//!                                  NON-DESTRUCTIVE (no writes/saves, no re-amp)
 //!   probe --device-backup       FAST full-library read: BackupRequest streams a
 //!                                  tar.lz4 of /data → extract normalDb.db3 → every
 //!                                  preset + scene count via sqlite3 (one stream, no
@@ -64,6 +70,8 @@
 //!                                  measure current live state without changing levels
 //!   probe --measure-scene <slot> <sceneSlot> <topology> [calibrationLUFS]
 //!                                  load preset+scene, then measure without changing levels
+//!                                  (slot = 0-BASED list index, same convention as
+//!                                  --levelpreset — NOT the 1-based device userSlot)
 //!   probe --capture-input [secs]   GATE 1: report USB-Out per-channel levels while
 //!                                  you play (identifies the dry-instrument channel)
 //!   probe --agc-test <slot>        GATE 2: full vs half re-amp inject on a CLEAN
@@ -595,6 +603,34 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--overlay-ab") {
+        // --overlay-ab <slot|all> [--contexts N]  — SAVED overlay vs LIVE prepass A/B.
+        // NON-DESTRUCTIVE: no writes/saves, no re-amp. slot is 1-based (as --slot-json).
+        let target = args.get(i + 1).cloned().unwrap_or_default();
+        let contexts: u32 = args
+            .iter()
+            .position(|a| a == "--contexts")
+            .and_then(|j| args.get(j + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+        if target.is_empty() || target.starts_with("--") {
+            eprintln!(
+                "usage: probe --overlay-ab <slot|all> [--contexts N]   (slot 1-based, N default 2)"
+            );
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_overlay_ab(&target, contexts) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.iter().any(|a| a == "--scenes-passive") {
         match tmp_companion_lib::probe_scan_scenes_passive() {
             Ok(report) => {
@@ -982,13 +1018,15 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--measure-scene") {
         // --measure-scene <slot> <sceneSlot> <topology_id> [calibrationLUFS]
-        // Loads the preset in its own connection, then scene+reamp in a fresh one.
+        // slot = 0-based list index (same convention as --levelpreset; NOT the
+        // 1-based device userSlot). Loads the preset in its own connection, then
+        // scene+reamp in a fresh one.
         let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
         let scene_slot = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         if slot.is_none() || scene_slot.is_none() || topology.is_empty() {
             eprintln!(
-                "usage: probe --measure-scene <slot> <sceneSlot> <topology_id> [calibrationLUFS]"
+                "usage: probe --measure-scene <slot(0-based list index)> <sceneSlot> <topology_id> [calibrationLUFS]"
             );
             std::process::exit(2);
         }

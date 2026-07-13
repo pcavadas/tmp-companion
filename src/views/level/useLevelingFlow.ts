@@ -5,8 +5,9 @@
 //   • BASE scene (or a scene-less "Whole preset") → level_preset (preset `presetLevel`,
 //     preset-to-preset loudness).
 //   • FS scenes → list_level_blocks (amp candidates, once per preset, cached) then
-//     level_scenes_apply_batched with ADJACENT same-preset scenes sharing instrument +
-//     target batched into ONE call (amp `outputLevel`, scene-to-scene; per-scene
+//     level_scenes_apply_batched with ADJACENT same-preset scenes sharing an instrument
+//     batched into ONE call regardless of per-scene target (each job carries its own
+//     targetLufs, like the footswitch lane) (amp `outputLevel`, scene-to-scene; per-scene
 //     progress rides the channel) — per-scene calls re-loaded the preset each time,
 //     flashing the unit back to base twice per scene.
 // The SCENES are chosen in the list (the scene tree); setup only configures them. The
@@ -469,18 +470,19 @@ export function useLevelingFlow({
           continue;
         }
 
-        // ── Scene rows: ADJACENT rows of the same preset sharing instrument + target
-        // level in ONE backend call (one prepass + one runner) instead of one call per
-        // scene. Each call re-loads the preset, so the old per-scene dispatch flashed
-        // the unit back to the preset's base between every scene — twice per scene of
-        // user-visible churn. Per-scene progress rides the command's channel.
+        // ── Scene rows: ADJACENT rows of the same preset sharing an instrument level
+        // in ONE backend call (one prepass + one runner) REGARDLESS of per-scene target
+        // — each job carries its own targetLufs (like the footswitch lane), so a
+        // mixed-target preset no longer splits into several prepasses/saves. Each call
+        // re-loads the preset, so the old per-scene dispatch flashed the unit back to the
+        // preset's base between every scene — twice per scene of user-visible churn.
+        // Per-scene progress rides the command's channel.
         let end = i + 1;
         while (
           end < total &&
           isSceneItem(work[end]) &&
           work[end].slot === it.slot &&
-          work[end].instId === it.instId &&
-          work[end].targetName === it.targetName
+          work[end].instId === it.instId
         ) {
           end += 1;
         }
@@ -512,9 +514,11 @@ export function useLevelingFlow({
           await levelScenesApplyBatched(
             {
               slot: it.slot,
-              sceneSlots: group.map((g) => g.sceneSlot ?? 0),
+              jobs: group.map((g) => ({
+                sceneSlot: g.sceneSlot ?? 0,
+                targetLufs: targetLufsByName(g.targetName),
+              })),
               candidates: cands,
-              targetLufs,
               save: true,
               rebalance: rebalanceRef.current,
               topologyId: profile?.topology_id ?? null,

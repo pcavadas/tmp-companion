@@ -1,8 +1,8 @@
 //! Probe entry points: per-scene amp-knob leveling measurement + one-shot level + diagnostics.
 
 use super::level::load_and_filter_amp_candidates;
-use super::scene_jobs::build_scene_jobs;
 use super::scene_jobs::prepass_scene_docs;
+use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
@@ -157,7 +157,9 @@ pub fn probe_level_preset_scenes(
         verify: true,
         ..Default::default()
     };
-    let br = leveller::level_preset(list_index, &stim, base_target, opts, &[], || false)?;
+    // probe = raw benchmark behavior; the setlist/scene-bench base pass stays skip-free
+    // this PR (its common target moves with min(C), so "unchanged" is rarer anyway).
+    let br = leveller::level_preset(list_index, &stim, base_target, opts, &[], None, || false)?;
     out += &format!(
         "Base  → target {:.1}  presetLevel={:.4}  verify {:.2} LU (err {:+.2}){}{}\n",
         base_target,
@@ -195,7 +197,7 @@ pub fn probe_level_preset_scenes(
         let name = scenes.scenes[slot as usize].clone();
         let target = resolve(&name);
         // active amp for this scene (first un-bypassed amp outputLevel)
-        let knob = match build_scene_jobs(&[slot], &candidates, &docs)
+        let knob = match build_scene_jobs(&[slot], &candidates, &docs, target)
             .ok()
             .and_then(|j| j.into_iter().next())
             .and_then(|j| j.knobs.into_iter().next())
@@ -335,10 +337,16 @@ pub fn probe_scene_knob_authority(
         .and_then(|v| v.parse::<f32>().ok());
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
-    // Pick the active amp for this scene (same logic as build_scene_jobs).
+    // Pick the active amp for this scene (same logic as build_scene_jobs). Knob-only:
+    // the stamped target is never read here, so any finite value serves.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
-    let job = build_scene_jobs(&[scene_slot], &candidates, &docs)?;
+    let job = build_scene_jobs(
+        &[scene_slot],
+        &candidates,
+        &docs,
+        KNOB_ONLY_PROBE_TARGET_LUFS,
+    )?;
     let knob = job
         .into_iter()
         .next()
@@ -398,12 +406,18 @@ pub fn probe_mute_floor(
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
     // Build the scene job the same way the leveler does, then take its first two amp lanes.
+    // Knob-only: the stamped target is never read here, so any finite value serves.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
-    let job = build_scene_jobs(&[scene_slot], &candidates, &docs)?
-        .into_iter()
-        .next()
-        .ok_or("no scene job built")?;
+    let job = build_scene_jobs(
+        &[scene_slot],
+        &candidates,
+        &docs,
+        KNOB_ONLY_PROBE_TARGET_LUFS,
+    )?
+    .into_iter()
+    .next()
+    .ok_or("no scene job built")?;
     if job.knobs.len() < 2 {
         return Err(format!(
             "scene {scene_slot} has {} amp knob(s) — mute-floor needs a 2-amp merged parallel scene",
@@ -576,7 +590,7 @@ pub fn probe_jointk_scenes(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let jobs = match build_scene_jobs(&slots, &candidates, &docs) {
+        let jobs = match build_scene_jobs(&slots, &candidates, &docs, target) {
             Ok(j) => j,
             Err(e) => {
                 out += &format!("group target {target:.1} slots {slots:?} [BUILD FAIL: {e}]\n");
@@ -603,7 +617,6 @@ pub fn probe_jointk_scenes(
             list_index,
             &jobs,
             &stim,
-            target,
             save,
             restore_scene,
             |_, _| {},
