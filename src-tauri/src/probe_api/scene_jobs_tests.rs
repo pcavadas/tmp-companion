@@ -63,7 +63,7 @@ fn scene_jobs_prefer_active_amp_output_level_over_preamp_volume() {
         },
     ];
 
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     let leveller::LevelKnob::Block { parameter_id, .. } = &jobs[0].knobs[0].knob else {
         panic!("expected block knob");
     };
@@ -94,7 +94,7 @@ fn scene_jobs_reject_preamp_volume_as_level_control() {
 
     // The Hiwatt is an active amp but its only candidate is a preamp volume, not
     // outputLevel → the scene is skipped with a reason, not leveled on the wrong knob.
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap_err();
     assert!(err.contains("outputLevel"), "got: {err}");
 }
 
@@ -129,7 +129,7 @@ fn scene_jobs_parallel_merged_picks_both_lane_amps() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -168,7 +168,7 @@ fn scene_jobs_post_merge_amp_is_single_master() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert_eq!(jobs[0].knobs.len(), 1);
 }
 
@@ -188,7 +188,7 @@ fn scene_jobs_skip_when_template_unknown() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap_err();
     assert!(err.contains("routing"), "got: {err}");
 }
 
@@ -209,7 +209,7 @@ fn scene_jobs_skip_mic_only_no_guitar_amp() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert!(
         jobs[0].skip.as_deref().unwrap_or("").contains("guitar amp"),
         "got: {:?}",
@@ -248,7 +248,7 @@ fn scene_jobs_split_output_joint_ks_both_output_lanes() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))]).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -282,6 +282,7 @@ fn scene_jobs_per_scene_skip_does_not_abort() {
         &[0, 1],
         &candidates,
         &[(0, Some(bypassed)), (1, Some(active))],
+        -23.0,
     )
     .unwrap();
     assert_eq!(jobs.len(), 2);

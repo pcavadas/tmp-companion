@@ -1858,11 +1858,10 @@ pub struct KnobTarget {
 #[derive(Debug, Clone)]
 pub struct SceneJob {
     pub scene_slot: u32,
-    /// Per-scene loudness target. `None` = use the runner's scalar `target_lufs`
-    /// (the probe callers, which level a whole batch to one target); the app command
-    /// stamps `Some(offset-adjusted target)` on every job so a mixed-target preset
-    /// levels in ONE batch.
-    pub target_lufs: Option<f64>,
+    /// This scene's own (offset-adjusted) loudness target — the SINGLE source of truth.
+    /// `build_scene_jobs` stamps it on every job; the app command overrides it per wire
+    /// job so a mixed-target preset levels in ONE batch. The runners read it directly.
+    pub target_lufs: f64,
     pub knobs: Vec<KnobTarget>,
     /// When `Some`, this scene can't be safely leveled (mic/split/no-active-amp/etc.);
     /// the runner reports it as a skipped (failed) outcome and moves on, never aborting
@@ -2018,7 +2017,7 @@ pub fn level_scenes_live_batched(
             let outcome = match scene_result {
                 Ok((lufs, level, clamped)) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
-                    target_lufs: job.target_lufs.unwrap_or(target_lufs),
+                    target_lufs: job.target_lufs,
                     final_lufs: Some(lufs),
                     final_level: Some(level),
                     clamped,
@@ -2033,7 +2032,7 @@ pub fn level_scenes_live_batched(
                 Err(e) if e == CANCELLED => return Err(e),
                 Err(e) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
-                    target_lufs: job.target_lufs.unwrap_or(target_lufs),
+                    target_lufs: job.target_lufs,
                     final_lufs: None,
                     final_level: None,
                     clamped: false,
@@ -2082,12 +2081,10 @@ pub fn level_scenes_live_batched(
 /// cancel, so already-reported scenes are never silently lost); `restore_scene`
 /// is recalled first so the save stamps the preset's original active scene. A
 /// per-scene failure becomes a failed outcome, never aborting the run.
-#[allow(clippy::too_many_arguments)]
 pub fn level_scenes_oneshot(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
-    target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
@@ -2096,23 +2093,11 @@ pub fn level_scenes_oneshot(
     run_scene_jobs(
         slot,
         jobs,
-        target_lufs,
         save,
         restore_scene,
         on_scene,
         cancelled,
-        // Each job may carry its own target (mixed-target batch); fall back to the
-        // scalar for probe callers whose jobs are `target_lufs: None`.
-        |job| {
-            jointk_one_scene(
-                slot,
-                job,
-                stimulus,
-                job.target_lufs.unwrap_or(target_lufs),
-                save,
-                true,
-            )
-        },
+        |job| jointk_one_scene(slot, job, stimulus, job.target_lufs, save, true),
     )
 }
 
@@ -2126,13 +2111,9 @@ pub fn level_scenes_oneshot(
 /// `prepass_scene_docs` (which loads it) right before this. Re-loading here was
 /// pure churn the user SAW: the unit flashing back to the preset (base scene)
 /// between the prepass and the first scene measure, once per dispatched scene.
-#[allow(clippy::too_many_arguments)]
 fn run_scene_jobs(
     slot: u32,
     jobs: &[SceneJob],
-    // Scalar fallback target, stamped onto the outcome for any job carrying
-    // `target_lufs: None`; a job's own `Some` wins (mixed-target batches).
-    target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
@@ -2152,7 +2133,7 @@ fn run_scene_jobs(
         }
         on_scene(job.scene_slot, None);
         let t0 = std::time::Instant::now();
-        let eff_target = job.target_lufs.unwrap_or(target_lufs);
+        let eff_target = job.target_lufs;
 
         // A skip job (unclassifiable scene: mic/split lane/no active amp/…) is reported
         // as a failed outcome and the run continues — never aborts the whole pass.
@@ -2758,12 +2739,10 @@ fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
 /// that the write lands on the per-scene overlay (not the base). Validate `probe --rebalance`
 /// before trusting the equal-solo balance; the final combined joint-k still hits the target
 /// either way. Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
-#[allow(clippy::too_many_arguments)]
 pub fn level_scenes_rebalance(
     slot: u32,
     jobs: &[SceneJob],
     stimulus: &[f32],
-    target_lufs: f64,
     save: bool,
     restore_scene: Option<u32>,
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
@@ -2772,14 +2751,12 @@ pub fn level_scenes_rebalance(
     let result = run_scene_jobs(
         slot,
         jobs,
-        target_lufs,
         save,
         restore_scene,
         on_scene,
         cancelled,
         |job| {
-            // Each job may carry its own target (mixed-target batch); scalar fallback for probes.
-            let eff_target = job.target_lufs.unwrap_or(target_lufs);
+            let eff_target = job.target_lufs;
             // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.
             if !job.rebalanceable || job.knobs.len() < 2 {
                 jointk_one_scene(slot, job, stimulus, eff_target, save, true)

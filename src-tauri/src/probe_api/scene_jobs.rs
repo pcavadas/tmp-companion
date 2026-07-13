@@ -311,6 +311,7 @@ pub(crate) fn build_scene_jobs(
     scene_slots: &[u32],
     candidates: &[LevelBlockArg],
     docs: &[(u32, Option<serde_json::Value>)],
+    target_lufs: f64,
 ) -> Result<Vec<leveller::SceneJob>, String> {
     if !candidates
         .iter()
@@ -362,9 +363,9 @@ pub(crate) fn build_scene_jobs(
                     let rebalanceable = kind == ParallelKind::Merged && knobs.len() >= 2;
                     leveller::SceneJob {
                         scene_slot: *scene,
-                        // None → runner's scalar target; the app command stamps a per-scene
-                        // Some(...) after this builder (mixed-target batches).
-                        target_lufs: None,
+                        // Stamped with the batch target; the app command overrides it per
+                        // wire job for a mixed-target batch.
+                        target_lufs,
                         knobs,
                         skip: None,
                         rebalanceable,
@@ -372,7 +373,7 @@ pub(crate) fn build_scene_jobs(
                 }
                 Err(reason) => leveller::SceneJob {
                     scene_slot: *scene,
-                    target_lufs: None,
+                    target_lufs,
                     knobs: Vec::new(),
                     skip: Some(reason),
                     rebalanceable: false,

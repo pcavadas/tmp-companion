@@ -285,10 +285,6 @@ pub(crate) async fn level_scenes_apply_batched(
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
-        // Scalar handed to the runners — DEAD on this path (every SceneJob is stamped
-        // Some(...) below); it exists only for probe callers whose jobs carry None. `jobs`
-        // is non-empty (guarded above), so `jobs[0]` is safe.
-        let scalar_target = jobs[0].target_lufs + offset;
         let run_batched = |save_run: bool| -> Result<Vec<leveller::BatchedSceneOutcome>, String> {
             // Un-engaged pre-pass (scene docs → jobs), then the ONE-SHOT runner:
             // amp `outputLevel` is linear in dB, so each scene is measured once at a
@@ -306,13 +302,31 @@ pub(crate) async fn level_scenes_apply_batched(
             // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
             // is pure CPU, so this is the only wait here.
             std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-            let mut scene_jobs = build_scene_jobs(&scene_slots, &candidates, &docs)?;
-            // Stamp each SceneJob with its OWN offset-adjusted target (match by wire scene
-            // slot) so a mixed-target preset levels in this ONE batch.
+            // `build_scene_jobs` stamps a base target on every job; override each with its
+            // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
+            // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
+            let base_target = jobs[0].target_lufs + offset;
+            let mut scene_jobs = build_scene_jobs(&scene_slots, &candidates, &docs, base_target)?;
+            // Error on ANY slot mismatch between the built jobs and the wire jobs — a silent
+            // default (especially NaN, which `.min(k_cap)` would collapse to the cap and slam
+            // the amp) must never reach a solve.
             for sj in scene_jobs.iter_mut() {
-                if let Some(arg) = jobs.iter().find(|j| j.scene_slot == sj.scene_slot) {
-                    sj.target_lufs = Some(arg.target_lufs + offset);
-                }
+                let arg = jobs
+                    .iter()
+                    .find(|j| j.scene_slot == sj.scene_slot)
+                    .ok_or_else(|| {
+                        format!("built scene job slot {} has no wire target", sj.scene_slot)
+                    })?;
+                sj.target_lufs = arg.target_lufs + offset;
+            }
+            if let Some(j) = jobs
+                .iter()
+                .find(|j| !scene_jobs.iter().any(|sj| sj.scene_slot == j.scene_slot))
+            {
+                return Err(format!(
+                    "requested scene slot {} produced no scene job",
+                    j.scene_slot
+                ));
             }
             let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| match done {
                 None => {
@@ -349,7 +363,6 @@ pub(crate) async fn level_scenes_apply_batched(
                     slot,
                     &scene_jobs,
                     &stim,
-                    scalar_target,
                     save_run,
                     restore_scene,
                     on_scene,
@@ -360,7 +373,6 @@ pub(crate) async fn level_scenes_apply_batched(
                     slot,
                     &scene_jobs,
                     &stim,
-                    scalar_target,
                     save_run,
                     restore_scene,
                     on_scene,

@@ -250,7 +250,7 @@ pub fn probe_bench_scene_leveling(
             scene_rows.len()
         );
         let wire_slots: Vec<u32> = scene_rows.iter().map(|(s, _)| *s).collect();
-        let jobs = match build_scene_jobs(&wire_slots, &candidates, &docs) {
+        let jobs = match build_scene_jobs(&wire_slots, &candidates, &docs, target_lufs) {
             Ok(jobs) => jobs,
             Err(e) => {
                 for (scene_slot, scene_name) in &scene_rows {

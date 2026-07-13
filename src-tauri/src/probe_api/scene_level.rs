@@ -197,7 +197,7 @@ pub fn probe_level_preset_scenes(
         let name = scenes.scenes[slot as usize].clone();
         let target = resolve(&name);
         // active amp for this scene (first un-bypassed amp outputLevel)
-        let knob = match build_scene_jobs(&[slot], &candidates, &docs)
+        let knob = match build_scene_jobs(&[slot], &candidates, &docs, target)
             .ok()
             .and_then(|j| j.into_iter().next())
             .and_then(|j| j.knobs.into_iter().next())
@@ -337,10 +337,11 @@ pub fn probe_scene_knob_authority(
         .and_then(|v| v.parse::<f32>().ok());
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
-    // Pick the active amp for this scene (same logic as build_scene_jobs).
+    // Pick the active amp for this scene (same logic as build_scene_jobs). Knob-only:
+    // the stamped target is never read here, so any finite value serves.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
-    let job = build_scene_jobs(&[scene_slot], &candidates, &docs)?;
+    let job = build_scene_jobs(&[scene_slot], &candidates, &docs, -23.0)?;
     let knob = job
         .into_iter()
         .next()
@@ -400,9 +401,10 @@ pub fn probe_mute_floor(
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
     // Build the scene job the same way the leveler does, then take its first two amp lanes.
+    // Knob-only: the stamped target is never read here, so any finite value serves.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
-    let job = build_scene_jobs(&[scene_slot], &candidates, &docs)?
+    let job = build_scene_jobs(&[scene_slot], &candidates, &docs, -23.0)?
         .into_iter()
         .next()
         .ok_or("no scene job built")?;
@@ -578,7 +580,7 @@ pub fn probe_jointk_scenes(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let jobs = match build_scene_jobs(&slots, &candidates, &docs) {
+        let jobs = match build_scene_jobs(&slots, &candidates, &docs, target) {
             Ok(j) => j,
             Err(e) => {
                 out += &format!("group target {target:.1} slots {slots:?} [BUILD FAIL: {e}]\n");
@@ -605,7 +607,6 @@ pub fn probe_jointk_scenes(
             list_index,
             &jobs,
             &stim,
-            target,
             save,
             restore_scene,
             |_, _| {},

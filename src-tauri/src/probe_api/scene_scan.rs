@@ -38,30 +38,12 @@ pub fn probe_level_scenes_oneshot(
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs)?;
+    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, target_lufs)?;
     // NO SAVE — restores the stored preset after measuring.
     let outcomes = if rebalance {
-        leveller::level_scenes_rebalance(
-            list_index,
-            &jobs,
-            &stim,
-            target_lufs,
-            false,
-            None,
-            |_, _| {},
-            || false,
-        )
+        leveller::level_scenes_rebalance(list_index, &jobs, &stim, false, None, |_, _| {}, || false)
     } else {
-        leveller::level_scenes_oneshot(
-            list_index,
-            &jobs,
-            &stim,
-            target_lufs,
-            false,
-            None,
-            |_, _| {},
-            || false,
-        )
+        leveller::level_scenes_oneshot(list_index, &jobs, &stim, false, None, |_, _| {}, || false)
     };
     // Guaranteed re-amp OFF regardless of outcome (a stranded re-amp mutes the input).
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
@@ -115,7 +97,8 @@ pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<S
                 .join(", ")
         }
     );
-    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs)?;
+    // Classify-only: the stamped target is never read (no solve), so any finite value serves.
+    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, -23.0)?;
     for j in &jobs {
         if let Some(reason) = &j.skip {
             out += &format!("  scene {} → SKIP: {reason}\n", j.scene_slot);
