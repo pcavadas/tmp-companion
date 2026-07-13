@@ -92,12 +92,14 @@ the `*_CAPTURE` consts in `doctor.rs` from that report; the pinned
 
 ## Playback level (Fletcher–Munson) threshold offsets — PROVISIONAL
 
-`doctor::playback_offsets` shifts the boomy/muddy and fizzy thresholds by the
-user's playback level (`doctor_check` reads it from the profile store). It is
-anchored at **Rehearsal = offset 0**, the ASSUMED monitoring level the synthetic
-`Thresholds` were calibrated at above (a working assumption, not measured — the
-2026-07-03 sweep did not record monitor SPL). Stage tightens (boomy/muddy −2.0
-dB, fizzy −1.0 dB), Quiet relaxes (+2.0 / +1.0); values are coarse and PROVISIONAL.
+`doctor::playback_offsets` shifts the boomy/muddy and fizzy thresholds by
+playback level. `doctor_check` diagnoses every sound at **all three** levels
+(`doctor::diagnose_levels`) and tags each finding with the quietest level it
+fires at — it no longer reads a single level from the store. It is anchored at
+**Rehearsal = offset 0**, the ASSUMED monitoring level the synthetic `Thresholds`
+were calibrated at above (a working assumption, not measured — the 2026-07-03
+sweep did not record monitor SPL). Stage tightens (boomy/muddy −2.0 dB, fizzy
+−1.0 dB), Quiet relaxes (+2.0 / +1.0); values are coarse and PROVISIONAL.
 
 The attended re-sweep should **record the monitor SPL** at capture time and
 re-derive these offsets against measured equal-loudness behaviour (and confirm

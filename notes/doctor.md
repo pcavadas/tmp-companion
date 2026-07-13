@@ -105,22 +105,28 @@ it from the Level tab rather than promising a one-click. `DoctorOp` carries no
 
 ## Playback level (Fletcher–Munson, PROVISIONAL)
 
-The store's playback level (Quiet / Rehearsal / Stage, shared with the leveler)
-shifts three tonal thresholds at comparison time via `doctor::playback_offsets`
-(read backend-side in `doctor_check`, no wire change). Equal-loudness contours
-flatten as SPL rises, so low-frequency (boomy/muddy) and mildly-HF (fizzy) content
-is perceptually hotter at stage volume: **Stage** tightens (boomy/muddy −2.0 dB,
-fizzy −1.0 dB → fire earlier), **Quiet** relaxes (+2.0 / +1.0), **Rehearsal** is
-the anchor (0, and byte-identical to the legacy `diagnose()`). The offsets are
-additive at comparison time — they never mutate the pinned `Thresholds` consts.
-The offset table is **PROVISIONAL**, pending an SPL-anchored recalibration sweep
-(see notes/doctor-calibration.md). The Doctor SETUP page surfaces the setting
-(a SegmentedControl writing through the existing `set_playback_level` command —
-it IS the Settings value, no per-run override; `doctor_check` reads the store at
-run time so the picker is live by construction). Caveats: a fresh install
-defaults to **Stage**, so new users get the tightened thresholds immediately;
-and the marketing showcase runs through `doctor_check`, so its rendered cards
-see the store's offsets too (the curated showcase profiles sit far from every
-threshold, and the pinned `showcase_profile_diagnoses` test uses the offset-free
-`diagnose()` — but a future near-threshold showcase preset could shift under
-Stage).
+Every sound is diagnosed at **all three** playback levels at once, and each
+finding is tagged with the quietest level it fires at — there is **no picker**.
+Equal-loudness contours flatten as SPL rises, so low-frequency (boomy/muddy) and
+mildly-HF (fizzy) content is perceptually hotter at stage volume; a preset can
+genuinely be clean quiet and boomy loud, and the Doctor **shows** that instead of
+hiding it behind a mode toggle.
+
+The capture is level-independent (the offset shifts the comparison THRESHOLD, not
+the measured deviation), so this is free: one ~11 s hardware capture per sound,
+then three microsecond-scale pure passes. `doctor::diagnose_levels` runs the pure
+`diagnose_kind` at each level (`doctor::playback_offsets`: **Stage** tightens
+boomy/muddy −2.0 dB, fizzy −1.0 dB → fire earlier; **Quiet** relaxes +2.0 / +1.0;
+**Rehearsal** is the anchor, 0 and byte-identical to the legacy `diagnose()`) and
+merges by diagnosis key. The offsets are **monotonic in loudness** (louder ⇒
+tighter ⇒ strictly more firings — asserted by `playback_offsets_are_monotonic`),
+so a finding's firing set is always a louder-suffix and one ordinal fully
+describes it: `LeveledDiag.from_level` ∈ {quiet, rehearsal, stage}. The UI renders
+`quiet` untagged ("a problem at any volume"), `rehearsal`/`stage` as "at
+{level} volume and up". The offsets are additive at comparison time — they never
+mutate the pinned `Thresholds` consts — and the table is **PROVISIONAL**, pending
+an SPL-anchored recalibration sweep (see notes/doctor-calibration.md). The
+`set_playback_level` store value is now Settings/leveling-only (it no longer
+gates diagnosis). The marketing showcase's curated profiles sit far from every
+threshold, so they tag `quiet` (untagged) at every level — the pinned
+`showcase_profile_diagnoses` test uses the offset-free `diagnose()`.

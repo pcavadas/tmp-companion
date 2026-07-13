@@ -18,6 +18,21 @@ import type { DoctorDiag, DoctorSoundResult } from "../../lib/types";
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
 
+/** How a finding's `fromLevel` reads to the player. `quiet` fires at every
+ *  volume, so it needs no qualifier; the louder levels only show up as you turn
+ *  up (the offsets are monotonic, so the firing set is always "this level and
+ *  up"). Returns null when there's nothing to say. */
+function levelTag(fromLevel: DoctorDiag["fromLevel"]): string | null {
+  switch (fromLevel) {
+    case "quiet":
+      return null;
+    case "rehearsal":
+      return "at rehearsal volume and up";
+    case "stage":
+      return "at stage volume";
+  }
+}
+
 // ---- severity dot ----------------------------------------------------------
 
 export interface SevDotProps {
@@ -290,6 +305,7 @@ export function SoundRow({
           )}
           {sound.diags.map((diag) => {
             const dTone = sevTone(t, diag.sev);
+            const lvl = levelTag(diag.fromLevel);
             return (
               <div
                 key={diag.key}
@@ -333,6 +349,23 @@ export function SoundRow({
                   >
                     {diag.detail}
                   </span>
+                  {lvl && (
+                    <span
+                      style={{
+                        fontFamily: t.sans,
+                        fontSize: 10,
+                        fontWeight: 500,
+                        color: t.accentDeep,
+                        background: t.accentSoft,
+                        border: `0.5px solid ${t.accentBorder}`,
+                        borderRadius: 4,
+                        padding: "0 5px",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {lvl}
+                    </span>
+                  )}
                 </div>
                 <div
                   style={{

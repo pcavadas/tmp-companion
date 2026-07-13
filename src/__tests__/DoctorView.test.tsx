@@ -259,36 +259,6 @@ describe("DoctorView — select → setup → run → results", () => {
     expect(fired("level_preset")).toBe(false);
   });
 
-  it("surfaces the global playback level in Set up and writes through set_playback_level", async () => {
-    renderView(true);
-    const user = userEvent.setup();
-
-    await screen.findByText("Studio Clean");
-    await user.click(screen.getAllByTitle("Select preset to check")[0]);
-    await user.click(
-      await screen.findByRole("button", { name: /check 1 sound…/i }),
-    );
-    await screen.findByText("What are you playing?");
-
-    // The picker renders the store's CURRENT global value (mocked "rehearsal")…
-    expect(screen.getByRole("radio", { name: "Rehearsal" })).toBeChecked();
-    expect(screen.getByRole("radio", { name: "Stage" })).not.toBeChecked();
-
-    // …and a change writes through the EXISTING command (shared setting, no
-    // per-run override state).
-    await user.click(screen.getByRole("radio", { name: "Stage" }));
-    expect(screen.getByRole("radio", { name: "Stage" })).toBeChecked();
-    expect(
-      vi
-        .mocked(invoke)
-        .mock.calls.some(
-          (c) =>
-            c[0] === "set_playback_level" &&
-            (c[1] as { level: string }).level === "stage",
-        ),
-    ).toBe(true);
-  });
-
   it("includes a block-acting footswitch sound (footswitch set, scene null, FS tag)", async () => {
     mockOnePreset({ footswitch: true });
     renderView(true);

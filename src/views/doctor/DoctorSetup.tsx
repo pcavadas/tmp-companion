@@ -12,29 +12,20 @@
 import { useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Button, SegmentedControl } from "../../ui/primitives";
-import type { SegmentedOption } from "../../ui/primitives";
+import { Button } from "../../ui/primitives";
 import { SetupGroupHeader } from "../../ui/SetupGroupHeader";
 import { PresetOptionRow } from "../../ui/PresetOptionRow";
 import { ApplyToBar } from "../../ui/ApplyToBar";
 import { usePickedRows } from "../../lib/usePickedRows";
-import { setPlaybackLevel } from "../../lib/invoke";
 import { StepRail, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DialogCardCtx } from "../overlays/wizardContext";
 import { Pick, type PickOption } from "../overlays/Pick";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import type { SetupOption } from "../level/leveling";
-import type { PlaybackLevel, Store } from "../../lib/types";
+import type { Store } from "../../lib/types";
 
 /** localStorage key for the app-wide last-used Doctor instrument. */
 const LAST_INST_KEY = "tmp_doctor_last_inst";
-
-/** Same labels/order as Settings' PlaybackLevelSection — it IS the same setting. */
-const PLAYBACK_OPTIONS: SegmentedOption<PlaybackLevel>[] = [
-  { value: "quiet", label: "Quiet" },
-  { value: "rehearsal", label: "Rehearsal" },
-  { value: "stage", label: "Stage" },
-];
 
 /** Per-row instrument default: the slot's saved profile, else the last-used
  *  instrument, else "none" — but only ids that still exist in the options. */
@@ -129,18 +120,6 @@ export function DoctorSetup({
     });
   };
 
-  // The GLOBAL playback level (the same store setting Settings edits) — Doctor's
-  // thresholds are playback-aware, so surface it here. Writes go through the
-  // existing set_playback_level command; doctor_check reads the store at run
-  // time, so the picker is live by construction (no per-run override state).
-  const [playback, setPlayback] = useState<PlaybackLevel>(
-    store?.playback_level ?? "stage",
-  );
-  const pickPlayback = (v: PlaybackLevel) => {
-    setPlayback(v);
-    void setPlaybackLevel(v);
-  };
-
   const total = options.length;
   const anyNone = options.some((o) => (rowInst[o.key] ?? "none") === "none");
 
@@ -219,40 +198,6 @@ export function DoctorSetup({
             {total === 1 ? "" : "s"} · {presetCount} preset
             {presetCount === 1 ? "" : "s"}.
           </div>
-        </div>
-
-        {/* playback level — the global Settings setting, surfaced because the
-            diagnosis thresholds are playback-aware */}
-        <div
-          style={{
-            flexShrink: 0,
-            display: "flex",
-            alignItems: "center",
-            gap: 14,
-            flexWrap: "wrap",
-            padding: "10px 24px",
-            borderBottom: `0.5px solid ${t.hairline}`,
-          }}
-        >
-          <div style={{ width: 248, flexShrink: 0 }}>
-            <SegmentedControl
-              options={PLAYBACK_OPTIONS}
-              value={playback}
-              onChange={pickPlayback}
-              ariaLabel="Playback level"
-            />
-          </div>
-          <span
-            style={{
-              fontFamily: t.sans,
-              fontSize: t.fsLabel,
-              color: t.mutedInk,
-              lineHeight: 1.5,
-            }}
-          >
-            Diagnosis judges lows/highs for this volume — shared with Settings
-            and leveling.
-          </span>
         </div>
 
         {/* apply-to bar — writes to all rows, or to the ticked rows */}

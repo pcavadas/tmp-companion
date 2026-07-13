@@ -1552,6 +1552,72 @@ pub fn diagnose_kind(
     out
 }
 
+/// A diagnosis plus the playback levels at which it fires. `from_level` is the
+/// QUIETEST level in that set (`quiet` < `rehearsal` < `stage`): `quiet` = the
+/// finding is present at every volume (rendered untagged — a problem regardless
+/// of how loud you play), `rehearsal`/`stage` = it only appears at that volume
+/// and louder. The playback offsets are monotonic in loudness (louder ⇒ tighter
+/// thresholds ⇒ strictly more firings, asserted by
+/// `playback_offsets_are_monotonic`), so the firing set is always a louder-suffix
+/// and `from_level` describes it completely.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeveledDiag {
+    #[serde(flatten)]
+    pub diag: Diag,
+    pub from_level: PlaybackLevel,
+}
+
+/// Diagnose one sound at ALL THREE playback levels and return each finding ONCE,
+/// tagged with the quietest level it fires at. The capture is level-independent
+/// (the offset shifts the comparison THRESHOLD, not the measured deviation), so a
+/// finding's content — label, detail, bands, rx — is identical across levels;
+/// this runs the pure [`diagnose_kind`] three times over the one profile and
+/// merges by diagnosis key. Iterating quietest→loudest means the FIRST time a key
+/// appears is at its quietest firing level, so `from_level` is correct on insert
+/// and later (louder) passes only re-confirm. First-seen order is preserved
+/// (quiet-firing findings first, then rehearsal-only, then stage-only). Cheap:
+/// three microsecond-scale pure passes vs the one ~11 s hardware capture upstream.
+pub fn diagnose_levels(
+    profile: &SoundProfile,
+    nodes: Option<&[DoctorNode]>,
+    instrument: Family,
+    cohort: Option<&[f64]>,
+    kind: StimulusKind,
+    coverage: Option<&[bool]>,
+) -> Vec<LeveledDiag> {
+    // Quietest → loudest: louder tightens the offset-keyed thresholds, so each
+    // level is a superset of the quieter one's firings. First-seen wins, which is
+    // the quietest firing level; a linear key check keeps first-seen order (≤ 8
+    // diagnoses per sound, so O(n²) is a non-issue).
+    let levels = [
+        PlaybackLevel::Quiet,
+        PlaybackLevel::Rehearsal,
+        PlaybackLevel::Stage,
+    ];
+    let mut out: Vec<LeveledDiag> = Vec::new();
+    for level in levels {
+        let diags = diagnose_kind(
+            profile,
+            nodes,
+            instrument,
+            cohort,
+            kind,
+            coverage,
+            playback_offsets(level),
+        );
+        for diag in diags {
+            if !out.iter().any(|d| d.diag.key == diag.key) {
+                out.push(LeveledDiag {
+                    diag,
+                    from_level: level,
+                });
+            }
+        }
+    }
+    out
+}
+
 // ─── scene consistency ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -2951,7 +3017,78 @@ mod tests {
         assert_eq!(legacy, rehearsal);
     }
 
+    #[test]
+    fn playback_offsets_are_monotonic() {
+        use crate::profiles::PlaybackLevel::{Quiet, Rehearsal, Stage};
+        // Louder ⇒ tighter (lower) thresholds, so `diagnose_levels`' firing set is
+        // always a louder-suffix and `from_level` fully describes it. Guard the
+        // relation any future offset edit must preserve.
+        let q = playback_offsets(Quiet);
+        let r = playback_offsets(Rehearsal);
+        let s = playback_offsets(Stage);
+        assert!(q.low_end_db > r.low_end_db && r.low_end_db > s.low_end_db);
+        assert!(q.fizzy_db > r.fizzy_db && r.fizzy_db > s.fizzy_db);
+    }
+
+    #[test]
+    fn diagnose_levels_tags_each_finding_with_its_quietest_level() {
+        let cohort = flat_cohort();
+        // A boomy-only profile that fires at Stage (3.0) and Rehearsal (5.0) but
+        // NOT Quiet (7.0): dev(lows) ≈ 6.0 (X = 7.2, dev = 0.833·X).
+        let p = profile_with(0, 7.2);
+        let leveled = diagnose_levels(
+            &p,
+            None,
+            Family::Guitar,
+            Some(&cohort),
+            StimulusKind::Synthetic,
+            None,
+        );
+        let boomy = leveled
+            .iter()
+            .find(|d| d.diag.key == "boomy")
+            .expect("boomy should fire at rehearsal+stage");
+        assert_eq!(boomy.from_level, crate::profiles::PlaybackLevel::Rehearsal);
+        // A level-independent finding (a mid scoop → lost) tags `quiet` (fires
+        // everywhere). Add a scoop hot enough to fire, keep it in one profile.
+        let scooped = profile_with(2, -(GUITAR.lost_db + 3.0));
+        let leveled = diagnose_levels(
+            &scooped,
+            None,
+            Family::Guitar,
+            Some(&cohort),
+            StimulusKind::Synthetic,
+            None,
+        );
+        let lost = leveled
+            .iter()
+            .find(|d| d.diag.key == "lost")
+            .expect("lost fires");
+        assert_eq!(lost.from_level, crate::profiles::PlaybackLevel::Quiet);
+    }
+
     // ── serde wire shapes ──
+
+    #[test]
+    fn leveled_diag_flattens_diag_and_adds_from_level() {
+        // The flatten means the wire object carries the Diag fields at the top
+        // level PLUS `fromLevel` — the src/lib/types.ts DoctorDiag mirror.
+        let cohort = flat_cohort();
+        let p = profile_with(1, GUITAR.muddy_db + 4.0);
+        let leveled = diagnose_levels(
+            &p,
+            None,
+            Family::Guitar,
+            Some(&cohort),
+            StimulusKind::Synthetic,
+            None,
+        );
+        let v = serde_json::to_value(&leveled[0]).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(obj.contains_key("key"), "flattened Diag field present");
+        assert!(obj.contains_key("detail"));
+        assert_eq!(obj["fromLevel"], "quiet");
+    }
 
     #[test]
     fn doctor_op_serializes_camel_case() {

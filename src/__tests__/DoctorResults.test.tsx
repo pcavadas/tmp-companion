@@ -89,6 +89,7 @@ function fixture(): DoctorCheckResult {
                 sev: "high",
                 bands: [1],
                 detail: "+4.2 dB around 250 Hz",
+                fromLevel: "rehearsal",
                 explain:
                   "Low-mids are piling up and swallowing your note definition.",
                 rx: [
@@ -144,6 +145,7 @@ function fixture(): DoctorCheckResult {
                 sev: "med",
                 bands: [],
                 detail: "tail 6 dB over dry",
+                fromLevel: "quiet",
                 explain: "The reverb tail is burying the dry signal.",
                 rx: [
                   {
@@ -361,6 +363,8 @@ describe("DoctorResults — summary + cards", () => {
     await user.click(screen.getByText("Rhythm Crunch"));
     expect(screen.getByText(explain)).toBeInTheDocument();
     expect(screen.getByText("+4.2 dB around 250 Hz")).toBeInTheDocument();
+    // The finding is tagged with the quietest level it fires at (fromLevel).
+    expect(screen.getByText("at rehearsal volume and up")).toBeInTheDocument();
     expect(screen.getByText("Add a low cut at 90 Hz")).toBeInTheDocument();
 
     await user.click(screen.getByText("Rhythm Crunch"));
@@ -428,6 +432,7 @@ describe("DoctorResults — healthy collapse", () => {
       sev: "high",
       bands: [1],
       detail: "+4 dB around 250 Hz",
+      fromLevel: "quiet",
       explain: "Low-mids are piling up.",
       rx: [
         {
@@ -685,6 +690,7 @@ describe("DoctorResults — shared-block caption", () => {
       sev: "high",
       bands: [1],
       detail: "+4 dB around 250 Hz",
+      fromLevel: "quiet",
       explain: "Low-mids are piling up.",
       rx: [
         {
@@ -826,6 +832,7 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                   sev: "med",
                   bands: [],
                   detail: "swings 5.0 LU between peaks and average",
+                  fromLevel: "quiet",
                   explain:
                     "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
                   rx: [

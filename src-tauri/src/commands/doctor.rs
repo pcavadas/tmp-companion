@@ -119,7 +119,11 @@ pub struct DoctorSoundResult {
     pub footswitch: Option<u32>,
     pub label: String,
     pub tag: Option<String>,
-    pub diags: Vec<doctor::Diag>,
+    /// Findings for this sound, each tagged with the quietest playback level it
+    /// fires at (`doctor::diagnose_levels` — one capture, diagnosed at all three
+    /// levels). `fromLevel: "quiet"` = a problem at any volume; `rehearsal`/
+    /// `stage` = only appears at that volume and louder.
+    pub diags: Vec<doctor::LeveledDiag>,
     pub integrated_lufs: f64,
     pub tail_ratio_db: f64,
     pub balance_db: Vec<f64>,
@@ -201,14 +205,6 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             Ok((it, path, kind))
         })
         .collect::<Result<_, String>>()?;
-    // Playback-level (Fletcher–Munson) threshold offsets — read the store's level
-    // the same way `level_preset::playback_offset_for` does (Stage = the serde
-    // default when the store predates the setting). Global to the run.
-    let offsets = doctor::playback_offsets(
-        profiles::load(&app)
-            .map(|s| s.playback_level)
-            .unwrap_or_default(),
-    );
     with_released_seize(state.session.clone(), move || {
         // One stimulus decode per (path, calibration) pair — items share them, along
         // with the decoded stimulus's OWN dynamics spread (arms the floor guard below;
@@ -429,14 +425,16 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let band_labels = instrument.labels_owned();
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
-                    doctor::diagnose_kind(
+                    // Diagnosed at ALL three playback levels (each finding tagged
+                    // with its quietest firing level) — the capture is level-
+                    // independent, so this is three pure passes over one profile.
+                    doctor::diagnose_levels(
                         p,
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
                         instrument,
                         cohort,
                         *kind,
                         coverage_by_item.get(&i).map(Vec::as_slice),
-                        offsets,
                     ),
                     p.integrated_lufs,
                     p.tail_ratio_db,
