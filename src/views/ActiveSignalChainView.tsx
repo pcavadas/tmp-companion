@@ -157,7 +157,7 @@ function HeroCpu({ cpu }: { cpu: number }) {
       style={{
         display: "inline-flex",
         alignItems: "baseline",
-        gap: 4,
+        gap: t.space2,
         whiteSpace: "nowrap",
       }}
     >
@@ -226,7 +226,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
     body = <SignalChainView graph={ghostGraph} size="md" skeleton />;
   } else if (!graph || !mappedGraph) {
     body = (
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: t.space6 }}>
         <span
           style={{
             width: 48,
@@ -236,7 +236,9 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
             flex: "0 0 auto",
           }}
         />
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: t.space1 }}
+        >
           <span
             style={{ fontFamily: t.serif, fontSize: t.fsName2, color: t.ink }}
           >
@@ -268,7 +270,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
       style={{
         background: t.bgAlt,
         borderBottom: `0.5px solid ${t.hairline}`,
-        padding: "14px 18px 16px",
+        padding: `${String(t.space7)}px ${String(t.space8)}px ${String(t.space8)}px`,
         boxSizing: "border-box",
       }}
     >
@@ -277,15 +279,15 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginBottom: 12,
-          gap: 16,
+          marginBottom: t.space6,
+          gap: t.space8,
         }}
       >
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 11,
+            gap: t.space5,
             minWidth: 0,
           }}
         >
@@ -306,7 +308,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
                   border: `0.5px solid ${t.accentBorder}`,
                   background: t.accentSoft,
                   borderRadius: t.rBtn,
-                  padding: "3px 9px",
+                  padding: `${String(t.space2)}px ${String(t.space4)}px`,
                   flex: "0 0 auto",
                 }}
               >
@@ -332,7 +334,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 6,
+                    gap: t.space3,
                     fontFamily: t.mono,
                     fontSize: t.fsData,
                     letterSpacing: t.lsTag,
@@ -401,8 +403,8 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 10,
-                padding: "8px 10px 8px 12px",
+                gap: t.space5,
+                padding: `${String(t.space4)}px ${String(t.space5)}px ${String(t.space4)}px ${String(t.space6)}px`,
                 borderRadius: t.rCard,
                 background: t.bg,
                 border: `0.5px solid ${t.sevWarnBorder}`,

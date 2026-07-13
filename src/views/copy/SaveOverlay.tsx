@@ -53,7 +53,7 @@ export function SaveOverlay({
   return (
     <Dialog size="sm" zIndex={60} label="Saving to the unit">
       <DialogBody>
-        <div style={{ paddingBottom: 14 }}>
+        <div style={{ paddingBottom: t.space7 }}>
           {done ? (
             <div style={{ textAlign: "center" }}>
               <span
@@ -80,7 +80,7 @@ export function SaveOverlay({
                   fontFamily: t.serif,
                   fontSize: t.fsTitle,
                   color: t.ink,
-                  marginTop: 12,
+                  marginTop: t.space6,
                 }}
               >
                 {failed ? "Save failed." : "Saved to the unit."}
@@ -90,7 +90,7 @@ export function SaveOverlay({
                   fontFamily: t.sans,
                   fontSize: t.fsBody2,
                   color: t.mutedInk,
-                  marginTop: 5,
+                  marginTop: t.space3,
                 }}
               >
                 {failed ?? (
@@ -111,15 +111,15 @@ export function SaveOverlay({
                 style={{
                   display: "flex",
                   alignItems: "flex-start",
-                  gap: 10,
-                  marginTop: 16,
-                  padding: "11px 13px",
+                  gap: t.space5,
+                  marginTop: t.space8,
+                  padding: `${String(t.space5)}px ${String(t.space6)}px`,
                   borderRadius: t.rMd,
                   background: t.bgAlt,
                   textAlign: "left",
                 }}
               >
-                <span style={{ flexShrink: 0, marginTop: 1 }}>
+                <span style={{ flexShrink: 0, marginTop: t.space1 }}>
                   <Icon name="refresh" size={15} stroke={t.faint} />
                 </span>
                 <span
@@ -152,7 +152,7 @@ export function SaveOverlay({
                   display: "flex",
                   alignItems: "baseline",
                   justifyContent: "space-between",
-                  margin: "11px 0 8px",
+                  margin: `${String(t.space5)}px 0 ${String(t.space4)}px`,
                 }}
               >
                 <span
@@ -197,8 +197,8 @@ export function SaveOverlay({
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 11,
-                  padding: "7px 8px",
+                  gap: t.space5,
+                  padding: `${String(t.space4)}px ${String(t.space4)}px`,
                 }}
               >
                 <span
@@ -288,7 +288,7 @@ export function SaveOverlay({
               fontFamily: t.sans,
               fontSize: t.fsUi,
               color: t.faint,
-              padding: "8px 4px",
+              padding: `${String(t.space4)}px ${String(t.space2)}px`,
             }}
           >
             Writing to the unit — please keep it connected.

@@ -46,9 +46,9 @@ export function SceneConsistency({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
+          gap: t.space5,
           minHeight: 38,
-          padding: "5px 8px 5px 6px",
+          padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
           cursor: "pointer",
           background: open ? t.rowSel : "transparent",
         }}
@@ -72,7 +72,7 @@ export function SceneConsistency({
             minWidth: 0,
             display: "flex",
             alignItems: "center",
-            gap: 5,
+            gap: t.space3,
             overflow: "hidden",
           }}
         >
@@ -103,7 +103,11 @@ export function SceneConsistency({
       </div>
 
       {open && (
-        <div style={{ padding: "2px 10px 14px 30px" }}>
+        <div
+          style={{
+            padding: `${String(t.space1)}px ${String(t.space5)}px ${String(t.space7)}px ${String(t.space11)}px`,
+          }}
+        >
           <div
             style={{
               fontFamily: t.sans,
@@ -117,7 +121,7 @@ export function SceneConsistency({
             big volume leap when you stomp between sounds. Pros keep it to +1–3
             dB and lean on a mid boost to cut through.
           </div>
-          <div style={{ marginTop: 10 }}>
+          <div style={{ marginTop: t.space5 }}>
             {sc.rows.map((r, i) => {
               const barColor = r.isRef
                 ? t.mutedInk
@@ -134,15 +138,15 @@ export function SceneConsistency({
                     display: "grid",
                     gridTemplateColumns: "108px 1fr 58px",
                     alignItems: "center",
-                    gap: 8,
-                    padding: "3px 0",
+                    gap: t.space4,
+                    padding: `${String(t.space2)}px 0`,
                   }}
                 >
                   <div
                     style={{
                       display: "flex",
                       alignItems: "baseline",
-                      gap: 6,
+                      gap: t.space3,
                       minWidth: 0,
                     }}
                   >
@@ -214,8 +218,8 @@ export function SceneConsistency({
             style={{
               display: "flex",
               flexDirection: "column",
-              gap: 10,
-              marginTop: 10,
+              gap: t.space5,
+              marginTop: t.space5,
             }}
           >
             {sc.rx.map((rx, i) => (

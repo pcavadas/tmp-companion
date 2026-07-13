@@ -84,12 +84,18 @@ export function DoctorSelect(props: DoctorSelectProps) {
           flexShrink: 0,
           display: "flex",
           alignItems: "flex-start",
-          gap: 10,
-          padding: "11px 16px",
+          gap: t.space5,
+          padding: `${String(t.space5)}px ${String(t.space8)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
-        <span style={{ display: "inline-flex", paddingTop: 1, flexShrink: 0 }}>
+        <span
+          style={{
+            display: "inline-flex",
+            paddingTop: t.space1,
+            flexShrink: 0,
+          }}
+        >
           <Icon name="wave" size={15} stroke={t.accentDeep} />
         </span>
         <span
@@ -170,7 +176,7 @@ function DoctorSelectFooter({
               fontSize: t.fsMeta,
               color: t.mutedInk,
               display: "inline-flex",
-              gap: 8,
+              gap: t.space4,
               alignItems: "center",
             }}
           >

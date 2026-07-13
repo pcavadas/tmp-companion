@@ -134,8 +134,8 @@ export function Pick({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "6px 8px",
+          gap: t.space5,
+          padding: `${String(t.space3)}px ${String(t.space4)}px`,
           borderRadius: 5,
           cursor: "pointer",
           background: on ? t.accentSoft : "transparent",
@@ -188,9 +188,9 @@ export function Pick({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 5,
+          gap: t.space3,
           height: 26,
-          padding: "0 6px 0 9px",
+          padding: `0 ${String(t.space3)}px 0 ${String(t.space4)}px`,
           border: `0.5px solid ${open ? t.accent : t.hairlineStrong}`,
           borderRadius: 6,
           background: t.bg,

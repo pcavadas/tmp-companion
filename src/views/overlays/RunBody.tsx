@@ -107,7 +107,7 @@ export function RunBody({
       <div
         style={{
           flexShrink: 0,
-          padding: "16px 24px 14px",
+          padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
@@ -117,7 +117,7 @@ export function RunBody({
             display: "flex",
             alignItems: "baseline",
             justifyContent: "space-between",
-            margin: "11px 0 8px",
+            margin: `${String(t.space5)}px 0 ${String(t.space4)}px`,
           }}
         >
           <span style={{ fontFamily: t.mono, fontSize: 12, color: t.ink2 }}>
@@ -140,7 +140,7 @@ export function RunBody({
           minHeight: 0,
           overflowY: "auto",
           overflowX: "hidden",
-          padding: "8px 14px 6px",
+          padding: `${String(t.space4)}px ${String(t.space7)}px ${String(t.space3)}px`,
         }}
       >
         {items.map((it) => {
@@ -214,10 +214,10 @@ export function RunBody({
                   style={{
                     display: "flex",
                     alignItems: "flex-end",
-                    gap: 14,
-                    marginTop: 10,
-                    paddingLeft: 30,
-                    paddingRight: 2,
+                    gap: t.space7,
+                    marginTop: t.space5,
+                    paddingLeft: t.space11,
+                    paddingRight: t.space1,
                   }}
                 >
                   <LiveVU values={liveTrace} />
@@ -254,7 +254,7 @@ export function RunBody({
                 variant="primary"
                 small
                 onClick={onComplete}
-                style={{ height: 32, padding: "0 18px" }}
+                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
                 Continue
               </Button>
@@ -263,7 +263,7 @@ export function RunBody({
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 7,
+                  gap: t.space4,
                   fontFamily: t.mono,
                   fontSize: 10.5,
                   letterSpacing: "0.04em",
@@ -292,7 +292,7 @@ export function RunBody({
                 onClick={() => {
                   setConfirm(true);
                 }}
-                style={{ height: 32, padding: "0 15px" }}
+                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
                 Cancel
               </Button>

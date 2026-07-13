@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 
 import { SignalChainView, type StripGraph } from "../views/SignalChainView";
+import { ThemeProvider } from "../theme/ThemeProvider";
 
 const b = (name: string) => ({ name });
 const text = (graph: StripGraph) =>
-  render(<SignalChainView graph={graph} />).container.textContent;
+  render(
+    <ThemeProvider>
+      <SignalChainView graph={graph} />
+    </ThemeProvider>,
+  ).container.textContent;
 
 describe("SignalChainView — path-template grammar", () => {
   it.each([

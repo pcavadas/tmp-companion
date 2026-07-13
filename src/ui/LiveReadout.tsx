@@ -43,7 +43,7 @@ export function LiveReadout({
               fontFamily: t.mono,
               fontSize: 9.5,
               color: t.faint,
-              marginLeft: 4,
+              marginLeft: t.space2,
             }}
           >
             {unit}
@@ -51,7 +51,9 @@ export function LiveReadout({
         )}
       </div>
       {caption != null && (
-        <div style={{ ...s.kicker(t.sevWarn), marginTop: 5 }}>{caption}</div>
+        <div style={{ ...s.kicker(t.sevWarn), marginTop: t.space3 }}>
+          {caption}
+        </div>
       )}
     </div>
   );

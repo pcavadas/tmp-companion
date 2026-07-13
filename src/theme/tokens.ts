@@ -19,19 +19,27 @@ export const FONT_SANS = "'Inter', system-ui, sans-serif";
 export const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
 
 // ---------------------------------------------------------------------------
-// Spacing scale (4px ramp). Ordinal, value-hidden names — new spacing reaches
-// for these; existing view-local literals stand. Cross-surface component values
-// that must AGREE get a role-named const instead (see DIALOG_PAD_X), not a
-// primitive. (Superseded the old `density` set, which had rotted to ~0 use.)
+// Spacing scale — the Tailwind ramp (2px steps to 16, 4px to 32, then 48). The
+// DS is FULLY EVEN: all spacing is one of these tokens; odd/off-grid values snap
+// to the nearest step. Ordinal names carry the px in a comment — the `spaceN =
+// 2N` mnemonic holds ONLY through space8; do not guess it past there (space10 is
+// 24, not 20). Cross-surface values that must AGREE get a role-named const
+// instead (see DIALOG_PAD_X), not a primitive.
 // ---------------------------------------------------------------------------
 export const spacing = {
-  space1: 4,
-  space2: 8,
-  space3: 12,
-  space4: 16,
-  space5: 24,
-  space6: 32,
-  space7: 48,
+  space1: 2,
+  space2: 4,
+  space3: 6,
+  space4: 8,
+  space5: 10,
+  space6: 12,
+  space7: 14,
+  space8: 16,
+  space9: 20,
+  space10: 24,
+  space11: 28,
+  space12: 32,
+  space13: 48,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -180,7 +188,7 @@ export interface ThemeTokens {
   fsMicro: number;
   fsMicro2: number;
   fsTag: number;
-  // spacing scale (4px ramp)
+  // spacing scale (Tailwind ramp; px in the `spacing` const comments)
   space1: number;
   space2: number;
   space3: number;
@@ -188,6 +196,12 @@ export interface ThemeTokens {
   space5: number;
   space6: number;
   space7: number;
+  space8: number;
+  space9: number;
+  space10: number;
+  space11: number;
+  space12: number;
+  space13: number;
   // corner radii (px)
   rSm: number;
   rMenuItem: number;

@@ -149,8 +149,8 @@ export function DoctorSetup({
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          gap: 16,
-          padding: "13px 22px",
+          gap: t.space8,
+          padding: `${String(t.space6)}px ${String(t.space10)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
           background: t.bgAlt,
         }}
@@ -178,7 +178,7 @@ export function DoctorSetup({
         <div
           style={{
             flexShrink: 0,
-            padding: "18px 24px 14px",
+            padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
           }}
         >
@@ -189,7 +189,7 @@ export function DoctorSetup({
               fontSize: t.fsBody2,
               lineHeight: 1.5,
               color: t.mutedInk,
-              marginTop: 7,
+              marginTop: t.space4,
               maxWidth: 620,
             }}
           >
@@ -218,10 +218,20 @@ export function DoctorSetup({
 
         {/* every sound that will be checked — set any row directly, or tick for bulk */}
         <div
-          style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 0" }}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            padding: `${String(t.space3)}px 0`,
+          }}
         >
           {groups.map((g) => (
-            <div key={g.slot} style={{ padding: "10px 24px 12px" }}>
+            <div
+              key={g.slot}
+              style={{
+                padding: `${String(t.space5)}px ${String(t.space10)}px ${String(t.space6)}px`,
+              }}
+            >
               <SetupGroupHeader slot={g.slot} name={g.name} />
               {g.opts.map((o) => {
                 const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
@@ -276,7 +286,7 @@ export function DoctorSetup({
               icon="wave"
               disabled={total === 0}
               onClick={run}
-              style={{ height: 32, padding: "0 16px" }}
+              style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
             >
               {`Run check on ${String(total)} sound${total === 1 ? "" : "s"}`}
             </Button>

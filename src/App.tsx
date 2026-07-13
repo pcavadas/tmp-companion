@@ -251,8 +251,8 @@ function AppShell() {
       {connectError && (
         <AlertBanner
           style={{
-            margin: "10px 18px 0",
-            padding: "8px 12px",
+            margin: `${String(t.space5)}px ${String(t.space8)}px 0`,
+            padding: `${String(t.space4)}px ${String(t.space6)}px`,
             fontSize: t.fsUi,
             flexShrink: 0,
           }}
@@ -342,12 +342,12 @@ function TabBar({ tab, onSelect, statusNode }: TabBarProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "0 18px",
+        padding: `0 ${String(t.space8)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
         background: t.titlebar,
       }}
     >
-      <div style={{ display: "flex", gap: 2 }}>
+      <div style={{ display: "flex", gap: t.space1 }}>
         {TABS.map((tb) => {
           const on = tb.id === tab;
           return (
@@ -363,7 +363,7 @@ function TabBar({ tab, onSelect, statusNode }: TabBarProps) {
                 fontSize: t.fsBody,
                 fontWeight: on ? 600 : 450,
                 color: on ? t.ink : t.mutedInk,
-                padding: "6px 12px",
+                padding: `${String(t.space3)}px ${String(t.space6)}px`,
                 borderRadius: t.rBtn,
                 background: on ? t.accentSoft : "transparent",
               }}

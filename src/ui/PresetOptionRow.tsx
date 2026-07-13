@@ -52,8 +52,8 @@ export function PresetOptionRow({
         display: "grid",
         gridTemplateColumns: `26px 1fr ${columns}`,
         alignItems: "center",
-        gap: 10,
-        padding: "7px 0 7px 6px",
+        gap: t.space5,
+        padding: `${String(t.space4)}px 0 ${String(t.space4)}px ${String(t.space3)}px`,
         borderTop: `0.5px solid ${t.hairline}`,
         background: isPicked ? t.rowSel : "transparent",
       }}
@@ -67,9 +67,9 @@ export function PresetOptionRow({
       </div>
       <div
         onClick={onTogglePick}
-        style={{ minWidth: 0, paddingRight: 8, cursor: "pointer" }}
+        style={{ minWidth: 0, paddingRight: t.space4, cursor: "pointer" }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
           <span
             style={{
               fontFamily: t.serif,
@@ -88,7 +88,7 @@ export function PresetOptionRow({
               fontFamily: t.sans,
               fontSize: 10.5,
               color: t.faint,
-              marginTop: 2,
+              marginTop: t.space1,
             }}
           >
             {sub}

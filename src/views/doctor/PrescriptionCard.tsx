@@ -99,7 +99,7 @@ export function PrescriptionCard({
     border: `0.5px solid ${phase === "saved" ? t.good : t.hairlineStrong}`,
     borderRadius: 10,
     background: t.bg,
-    padding: 12,
+    padding: t.space6,
   };
 
   // Shared by the advisory / scene / shared-block caption lines below.
@@ -107,7 +107,7 @@ export function PrescriptionCard({
     fontFamily: t.sans,
     fontSize: t.fsLabel,
     color: t.mutedInk,
-    marginTop: 8,
+    marginTop: t.space4,
     lineHeight: 1.5,
   };
 
@@ -170,7 +170,7 @@ export function PrescriptionCard({
     error != null ? (
       <div
         style={{
-          marginTop: 10,
+          marginTop: t.space5,
           fontFamily: t.sans,
           fontSize: t.fsLabel,
           color: t.warn,
@@ -183,7 +183,7 @@ export function PrescriptionCard({
   if (phase === "saved") {
     return (
       <div style={card}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
           <span
             style={{
               width: 20,
@@ -206,7 +206,7 @@ export function PrescriptionCard({
         </div>
         <div
           style={{
-            marginTop: 6,
+            marginTop: t.space3,
             fontFamily: t.sans,
             fontSize: t.fsLabel,
             color: t.mutedInk,
@@ -232,13 +232,13 @@ export function PrescriptionCard({
             textTransform: "uppercase",
             color: t.accentDeep,
             background: t.accentSoft,
-            padding: "3px 8px",
+            padding: `${String(t.space2)}px ${String(t.space4)}px`,
             borderRadius: t.rPill,
           }}
         >
           Applied to the unit · not saved
         </span>
-        <div style={{ marginTop: 12 }}>
+        <div style={{ marginTop: t.space6 }}>
           <ABAudition
             beforeClip={clips.beforeClip}
             afterClip={clips.afterClip}
@@ -246,18 +246,18 @@ export function PrescriptionCard({
         </div>
         <div
           style={{
-            marginTop: 12,
-            paddingTop: 12,
+            marginTop: t.space6,
+            paddingTop: t.space6,
             borderTop: `0.5px solid ${t.hairline}`,
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            gap: 12,
+            gap: t.space6,
             flexWrap: "wrap",
           }}
         >
           <BackupAckLabel checked={acked} onChange={setAcked} />
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: t.space4, flexShrink: 0 }}>
             <Button
               variant="ghost"
               small
@@ -289,7 +289,7 @@ export function PrescriptionCard({
   // draft — also the terminal state for advisory / scene cards (no apply).
   return (
     <div style={card}>
-      <div style={{ display: "flex", gap: 10 }}>
+      <div style={{ display: "flex", gap: t.space5 }}>
         <div
           style={{
             width: 28,
@@ -309,7 +309,7 @@ export function PrescriptionCard({
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 8,
+              gap: t.space4,
               flexWrap: "wrap",
             }}
           >
@@ -327,7 +327,7 @@ export function PrescriptionCard({
               fontFamily: t.sans,
               fontSize: t.fsBody,
               color: t.ink2,
-              marginTop: 4,
+              marginTop: t.space2,
               lineHeight: 1.5,
             }}
           >
@@ -339,14 +339,14 @@ export function PrescriptionCard({
                 fontFamily: t.mono,
                 fontSize: t.fsData2,
                 color: t.mutedInk,
-                marginTop: 6,
+                marginTop: t.space3,
               }}
             >
               {rx.cpuNote}
             </div>
           )}
           {rx.chain && (
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: t.space5 }}>
               <SignalChainView size="sm" graph={chainGraph(rx.chain)} />
             </div>
           )}
@@ -356,7 +356,7 @@ export function PrescriptionCard({
           {scene && <div style={noteLine}>{SCENE_LINE}</div>}
           {errorBlock}
           {applicable && (
-            <div style={{ marginTop: 18 }}>
+            <div style={{ marginTop: t.space8 }}>
               <Button
                 variant="primary"
                 small
@@ -371,7 +371,7 @@ export function PrescriptionCard({
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 6,
+                      gap: t.space3,
                     }}
                   >
                     <Spinner size={13} stroke={t.onInk} strokeWidth={1.8} />
@@ -384,7 +384,7 @@ export function PrescriptionCard({
               {lockedByOther && (
                 <div
                   style={{
-                    marginTop: 6,
+                    marginTop: t.space3,
                     fontFamily: t.sans,
                     fontSize: t.fsLabel,
                     color: t.mutedInk,

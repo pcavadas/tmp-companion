@@ -105,7 +105,7 @@ export function PresetRow({
         style={{
           display: "inline-flex",
           alignItems: "center",
-          gap: 6,
+          gap: t.space3,
           fontFamily: t.mono,
           fontSize: t.fsMicro,
           color: t.faint,
@@ -188,7 +188,7 @@ export function PresetRow({
           gridTemplateColumns: COLUMNS,
           alignItems: "center",
           height: 44,
-          padding: "0 16px 0 14px",
+          padding: `0 ${String(t.space8)}px 0 ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
           background: allOn || indeterminate ? t.rowSel : "transparent",
           borderLeft: active
@@ -219,7 +219,12 @@ export function PresetRow({
         <SlotLabel index={row.slot} faint={empty} />
 
         <span
-          style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: t.space4,
+            minWidth: 0,
+          }}
         >
           <span
             style={{
@@ -244,7 +249,7 @@ export function PresetRow({
             <span
               style={{
                 display: "inline-flex",
-                marginLeft: meta ? 18 : 0,
+                marginLeft: meta ? t.space8 : 0,
                 flexShrink: 0,
               }}
             >

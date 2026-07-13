@@ -31,7 +31,7 @@ export function Rail({ children, style }: RailProps) {
         background: t.bgAlt,
         display: "flex",
         flexDirection: "column",
-        padding: "12px 10px",
+        padding: `${String(t.space6)}px ${String(t.space5)}px`,
         ...style,
       }}
     >
@@ -92,8 +92,8 @@ export function RailItem({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 9,
-        padding: "8px 10px",
+        gap: t.space4,
+        padding: `${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: t.rMd,
         cursor: "pointer",
         userSelect: "none",

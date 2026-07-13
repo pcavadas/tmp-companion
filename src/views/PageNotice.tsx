@@ -58,7 +58,7 @@ export function PageNotice({
         alignItems: "center",
         justifyContent: "center",
         background: t.bg,
-        padding: "0 48px",
+        padding: `0 ${String(t.space13)}px`,
         textAlign: "center",
         overflow: "hidden",
       }}
@@ -85,7 +85,7 @@ export function PageNotice({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          marginBottom: 24,
+          marginBottom: t.space10,
         }}
       >
         {medallion}
@@ -109,7 +109,7 @@ export function PageNotice({
           fontFamily: t.serif,
           fontSize: t.fsTitle,
           color: t.ink,
-          marginTop: 11,
+          marginTop: t.space5,
           letterSpacing: t.lsTight,
         }}
       >
@@ -122,7 +122,7 @@ export function PageNotice({
           fontSize: t.fsBody2,
           lineHeight: 1.6,
           color: t.mutedInk,
-          marginTop: 12,
+          marginTop: t.space6,
           maxWidth: bodyMaxWidth,
         }}
       >
@@ -134,8 +134,8 @@ export function PageNotice({
           style={{
             position: "relative",
             display: "flex",
-            gap: 10,
-            marginTop: 24,
+            gap: t.space5,
+            marginTop: t.space10,
             alignItems: "center",
           }}
         >
@@ -160,10 +160,10 @@ export function PageNotice({
         <div
           style={{
             position: "relative",
-            marginTop: 28,
+            marginTop: t.space11,
             display: "flex",
             alignItems: "center",
-            gap: 9,
+            gap: t.space4,
             fontFamily: t.mono,
             fontSize: t.fsMeta,
             color: t.faint,

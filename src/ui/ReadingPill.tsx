@@ -20,7 +20,7 @@ export function ReadingPill({ label = "Reading presets…" }: ReadingPillProps) 
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 8,
+        gap: t.space4,
         height: 28,
         boxSizing: "border-box",
         fontFamily: t.sans,
@@ -30,7 +30,7 @@ export function ReadingPill({ label = "Reading presets…" }: ReadingPillProps) 
         background: "transparent",
         border: `0.5px solid ${t.hairline}`,
         borderRadius: t.rMd,
-        padding: "0 13px",
+        padding: `0 ${String(t.space6)}px`,
         whiteSpace: "nowrap",
         cursor: "default",
       }}

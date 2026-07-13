@@ -66,7 +66,7 @@ function SetlistRow({
             style={{
               cursor: busy ? "default" : "pointer",
               display: "flex",
-              padding: 4,
+              padding: t.space2,
               borderRadius: t.rSm,
             }}
           >
@@ -149,11 +149,11 @@ export function SetlistDetail({
     <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div
         style={{
-          padding: "16px 18px 13px",
+          padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "space-between",
-          gap: 12,
+          gap: t.space6,
         }}
       >
         <div style={{ minWidth: 0, flex: 1 }}>
@@ -179,13 +179,13 @@ export function SetlistDetail({
                 }
               }}
               style={plainInput(t, {
-                marginTop: 4,
+                marginTop: t.space2,
                 width: "100%",
                 maxWidth: 360,
                 borderBottom: `1.5px solid ${t.accent}`,
                 fontFamily: t.serif,
                 fontSize: t.fsTitle,
-                padding: "0 0 2px",
+                padding: `0 0 ${String(t.space1)}px`,
               })}
             />
           ) : (
@@ -194,7 +194,7 @@ export function SetlistDetail({
                 setRenaming(true);
               }}
               title="Rename"
-              style={{ marginTop: 4, cursor: "text" }}
+              style={{ marginTop: t.space2, cursor: "text" }}
             >
               <span
                 style={{
@@ -216,7 +216,7 @@ export function SetlistDetail({
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 8,
+            gap: t.space4,
             flexShrink: 0,
             position: "relative",
           }}

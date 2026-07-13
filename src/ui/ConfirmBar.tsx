@@ -33,23 +33,23 @@ export function ConfirmBar({
       style={{
         flexShrink: 0,
         borderTop: `0.5px solid ${t.hairline}`,
-        padding: "13px 22px",
+        padding: `${String(t.space6)}px ${String(t.space10)}px`,
         background: t.bgAlt,
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 14,
+        gap: t.space7,
       }}
     >
       <span style={{ fontFamily: t.sans, fontSize: 12.5, color: t.ink2 }}>
         {message}
       </span>
-      <div style={{ display: "flex", gap: 9 }}>
+      <div style={{ display: "flex", gap: t.space4 }}>
         <Button
           variant="ghost"
           small
           onClick={onCancel}
-          style={{ height: 30, padding: "0 13px" }}
+          style={{ height: 30, padding: `0 ${String(t.space6)}px` }}
         >
           {cancelLabel}
         </Button>
@@ -57,7 +57,7 @@ export function ConfirmBar({
           variant="warn"
           small
           onClick={onConfirm}
-          style={{ height: 30, padding: "0 14px" }}
+          style={{ height: 30, padding: `0 ${String(t.space7)}px` }}
         >
           {confirmLabel}
         </Button>

@@ -87,7 +87,7 @@ function PresetRowsSkeleton({ rows = 10 }: { rows?: number }) {
             gridTemplateColumns: COLUMNS,
             alignItems: "center",
             height: 44,
-            padding: "0 16px 0 14px",
+            padding: `0 ${String(t.space8)}px 0 ${String(t.space7)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
             borderLeft: "2px solid transparent",
           }}
@@ -238,8 +238,8 @@ export function PresetList(props: PresetListProps) {
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "7px 14px",
+          gap: t.space5,
+          padding: `${String(t.space4)}px ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
@@ -270,7 +270,7 @@ export function PresetList(props: PresetListProps) {
         <div
           style={{
             flexShrink: 0,
-            padding: "8px 14px 9px",
+            padding: `${String(t.space4)}px ${String(t.space7)}px ${String(t.space4)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
             background: t.accentSoft,
           }}
@@ -280,14 +280,14 @@ export function PresetList(props: PresetListProps) {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              marginBottom: 6,
+              marginBottom: t.space3,
             }}
           >
             <span
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 7,
+                gap: t.space4,
                 fontFamily: t.mono,
                 fontSize: t.fsMeta,
                 letterSpacing: t.lsMeta,
@@ -314,7 +314,7 @@ export function PresetList(props: PresetListProps) {
               fontFamily: t.sans,
               fontSize: t.fsMeta,
               color: t.mutedInk,
-              marginTop: 6,
+              marginTop: t.space3,
             }}
           >
             Go ahead and tick the presets you want to level — you can start as
@@ -330,7 +330,7 @@ export function PresetList(props: PresetListProps) {
           gridTemplateColumns: COLUMNS,
           alignItems: "center",
           height: 30,
-          padding: "0 16px 0 14px",
+          padding: `0 ${String(t.space8)}px 0 ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
           borderLeft: "2px solid transparent",
           font: `${String(t.fsMicro)}px ${t.mono}`,

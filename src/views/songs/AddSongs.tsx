@@ -54,7 +54,7 @@ export function AddSongs({
       >
         <div
           style={{
-            padding: "12px 13px 10px",
+            padding: `${String(t.space6)}px ${String(t.space6)}px ${String(t.space5)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
           }}
         >
@@ -65,7 +65,7 @@ export function AddSongs({
               letterSpacing: t.lsWide,
               color: t.faint,
               textTransform: "uppercase",
-              marginBottom: 9,
+              marginBottom: t.space4,
             }}
           >
             Add songs from library
@@ -77,7 +77,14 @@ export function AddSongs({
             autoFocus
           />
         </div>
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 5 }}>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            padding: t.space3,
+          }}
+        >
           {filtered.map((rec) => {
             const on = sel.has(rec.slot);
             const bpm = songBpm(rec);
@@ -90,8 +97,8 @@ export function AddSongs({
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 10,
-                  padding: "8px 9px",
+                  gap: t.space5,
+                  padding: `${String(t.space4)}px ${String(t.space4)}px`,
                   borderRadius: t.rMd,
                   cursor: "pointer",
                   background: on ? t.accentSoft : "transparent",
@@ -123,7 +130,7 @@ export function AddSongs({
                         fontFamily: t.sans,
                         fontSize: t.fsData,
                         color: t.mutedInk,
-                        marginTop: 1,
+                        marginTop: t.space1,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
@@ -148,7 +155,7 @@ export function AddSongs({
           {filtered.length === 0 && (
             <div
               style={{
-                padding: "26px 10px",
+                padding: `${String(t.space10)}px ${String(t.space5)}px`,
                 textAlign: "center",
                 fontFamily: t.sans,
                 fontSize: t.fsControl,
@@ -162,7 +169,9 @@ export function AddSongs({
             </div>
           )}
         </div>
-        <div style={{ borderTop: `0.5px solid ${t.hairline}`, padding: 9 }}>
+        <div
+          style={{ borderTop: `0.5px solid ${t.hairline}`, padding: t.space4 }}
+        >
           {creating ? (
             <SongForm
               onSave={(d) => {
@@ -179,7 +188,7 @@ export function AddSongs({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                gap: 8,
+                gap: t.space4,
               }}
             >
               <Button

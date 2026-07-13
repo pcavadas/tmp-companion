@@ -36,17 +36,17 @@ function LibraryRowsSkeleton({ rows = 9 }: { rows?: number }) {
             gridTemplateColumns: SONG_COLS,
             alignItems: "center",
             height: 48,
-            padding: "0 16px 0 18px",
+            padding: `0 ${String(t.space8)}px 0 ${String(t.space8)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
           }}
         >
           <Skel w={16} h={9} />
           <div
             style={{
-              paddingRight: 12,
+              paddingRight: t.space6,
               display: "flex",
               flexDirection: "column",
-              gap: 6,
+              gap: t.space3,
             }}
           >
             <Skel w={sk.name} h={11} />
@@ -64,6 +64,7 @@ function LibraryRowsSkeleton({ rows = 9 }: { rows?: number }) {
 const RAIL_SKEL_W = [118, 92, 134, 78, 106];
 
 function RailRowsSkeleton({ rows = 4 }: { rows?: number }) {
+  const { t } = useTheme();
   return (
     <>
       {RAIL_SKEL_W.slice(0, rows).map((w, i) => (
@@ -73,7 +74,7 @@ function RailRowsSkeleton({ rows = 4 }: { rows?: number }) {
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            padding: "8px 10px",
+            padding: `${String(t.space4)}px ${String(t.space5)}px`,
             borderLeft: "2px solid transparent",
           }}
         >
@@ -121,20 +122,27 @@ export function SongsLoadingSkeleton() {
           style={{
             borderRight: `0.5px solid ${t.hairline}`,
             background: t.bgAlt,
-            padding: "12px 10px",
+            padding: `${String(t.space6)}px ${String(t.space5)}px`,
             display: "flex",
             flexDirection: "column",
-            gap: 2,
+            gap: t.space1,
             minHeight: 0,
           }}
         >
-          <div style={{ ...railLbl, padding: "4px 8px 8px" }}>Library</div>
+          <div
+            style={{
+              ...railLbl,
+              padding: `${String(t.space2)}px ${String(t.space4)}px ${String(t.space4)}px`,
+            }}
+          >
+            Library
+          </div>
           <div
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "8px 10px",
+              padding: `${String(t.space4)}px ${String(t.space5)}px`,
               borderLeft: "2px solid transparent",
             }}
           >
@@ -149,24 +157,35 @@ export function SongsLoadingSkeleton() {
             </span>
             <Skel w={12} h={9} />
           </div>
-          <div style={{ ...railLbl, padding: "16px 8px 8px" }}>Setlists</div>
+          <div
+            style={{
+              ...railLbl,
+              padding: `${String(t.space8)}px ${String(t.space4)}px ${String(t.space4)}px`,
+            }}
+          >
+            Setlists
+          </div>
           <RailRowsSkeleton rows={4} />
         </div>
         {/* detail (library) */}
         <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <div style={{ padding: "16px 18px 13px" }}>
+          <div
+            style={{
+              padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
+            }}
+          >
             <div style={s.kicker(t.accentDeep)}>Library</div>
             <div
               style={{
                 fontFamily: t.serif,
                 fontSize: t.fsTitle,
                 color: t.ink,
-                marginTop: 4,
+                marginTop: t.space2,
               }}
             >
               All songs
             </div>
-            <div style={{ marginTop: 7 }}>
+            <div style={{ marginTop: t.space4 }}>
               <SkelStatus label="Reading songs & setlists…" />
             </div>
           </div>

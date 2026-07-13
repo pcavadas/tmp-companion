@@ -41,13 +41,13 @@ export function Tag({
     size === "md"
       ? {
           fontSize: t.fsMeta,
-          padding: "2px 7px",
+          padding: `${String(t.space1)}px ${String(t.space4)}px`,
           borderRadius: t.rMenuItem,
         }
       : {
           fontSize: t.fsTag,
           letterSpacing: t.lsTag,
-          padding: "1px 5px",
+          padding: `${String(t.space1)}px ${String(t.space3)}px`,
           borderRadius: t.rSm,
         };
 

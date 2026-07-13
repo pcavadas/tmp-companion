@@ -20,8 +20,8 @@ function CalloutRow({
 }) {
   const { t } = useTheme();
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-      <span style={{ flexShrink: 0, marginTop: 2 }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: t.space5 }}>
+      <span style={{ flexShrink: 0, marginTop: t.space1 }}>
         <Icon name={icon} size={15} stroke={iconColor} strokeWidth={1.8} />
       </span>
       <span
@@ -72,7 +72,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
           alignItems: "center",
           textAlign: "center",
           maxWidth: 460,
-          padding: "0 20px",
+          padding: `0 ${String(t.space9)}px`,
         }}
       >
         <div
@@ -85,7 +85,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            marginBottom: 28,
+            marginBottom: t.space11,
           }}
         >
           <Icon
@@ -103,7 +103,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             letterSpacing: "0.18em",
             textTransform: "uppercase",
             color: t.faint,
-            marginBottom: 8,
+            marginBottom: t.space4,
           }}
         >
           BEFORE YOU BEGIN
@@ -128,7 +128,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             fontSize: 13.5,
             lineHeight: 1.65,
             color: t.mutedInk,
-            marginTop: 16,
+            marginTop: t.space8,
             maxWidth: 420,
             textWrap: "pretty",
           }}
@@ -143,16 +143,16 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
 
         <div
           style={{
-            marginTop: 24,
+            marginTop: t.space10,
             borderRadius: 8,
             border: `0.5px solid ${t.hairline}`,
             background: t.bgAlt,
-            padding: "16px 22px",
+            padding: `${String(t.space8)}px ${String(t.space10)}px`,
             maxWidth: 420,
             textAlign: "left",
             display: "flex",
             flexDirection: "column",
-            gap: 10,
+            gap: t.space5,
           }}
         >
           <CalloutRow icon="warn-tri" iconColor={t.accentDeep}>
@@ -168,11 +168,11 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
 
         <div
           style={{
-            marginTop: 28,
+            marginTop: t.space11,
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
-            gap: 16,
+            gap: t.space8,
           }}
         >
           <Button
@@ -190,7 +190,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 8,
+              gap: t.space4,
               cursor: "pointer",
               userSelect: "none",
             }}

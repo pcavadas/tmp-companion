@@ -49,12 +49,12 @@ export function RunRow({
   return (
     <div
       style={{
-        padding: "9px 10px",
+        padding: `${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: 8,
         background: active ? t.accentSoft : "transparent",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: t.space6 }}>
         <span
           style={{
             width: 18,
@@ -72,7 +72,7 @@ export function RunRow({
             minWidth: 0,
             display: "flex",
             alignItems: "baseline",
-            gap: 8,
+            gap: t.space4,
           }}
         >
           <span

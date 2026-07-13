@@ -40,9 +40,14 @@ export function BandMeter({
   const faint = "rgba(15,17,21,0.10)";
 
   return (
-    <div style={{ marginTop: 10 }}>
+    <div style={{ marginTop: t.space5 }}>
       <div
-        style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 40 }}
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          gap: t.space2,
+          height: 40,
+        }}
       >
         {bandLabels.map((label, i) => {
           const hot = problem.has(i);
@@ -64,7 +69,7 @@ export function BandMeter({
           );
         })}
       </div>
-      <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
+      <div style={{ display: "flex", gap: t.space2, marginTop: t.space2 }}>
         {bandLabels.map((label, i) => (
           <span
             key={label}

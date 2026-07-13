@@ -449,15 +449,15 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     overflowY: "auto",
     display: "flex",
     flexDirection: "column",
-    gap: 2,
-    margin: "0 -2px",
-    padding: "0 2px",
+    gap: t.space1,
+    margin: `0 -${String(t.space1)}px`,
+    padding: `0 ${String(t.space1)}px`,
   };
   const railHint: CSSProperties = {
     fontFamily: t.sans,
     fontSize: t.fsLabel,
     color: t.faint,
-    padding: "4px 10px",
+    padding: `${String(t.space2)}px ${String(t.space5)}px`,
     lineHeight: 1.5,
   };
 
@@ -480,8 +480,12 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         }}
       >
         {/* rail — the DS Rail (shared with the Settings category sidebar) */}
-        <Rail style={{ gap: 2 }}>
-          <div style={{ padding: "2px 2px 10px" }}>
+        <Rail style={{ gap: t.space1 }}>
+          <div
+            style={{
+              padding: `${String(t.space1)}px ${String(t.space1)}px ${String(t.space5)}px`,
+            }}
+          >
             <SegmentedControl
               variant="light"
               value={railAxis}
@@ -506,7 +510,11 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           />
           {railAxis === "setlists" ? (
             <>
-              <RailLabel style={{ padding: "16px 8px 8px" }}>
+              <RailLabel
+                style={{
+                  padding: `${String(t.space8)}px ${String(t.space4)}px ${String(t.space4)}px`,
+                }}
+              >
                 Setlists
               </RailLabel>
               <div style={railScroll}>
@@ -525,16 +533,16 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                   <div style={railHint}>No setlists on the unit.</div>
                 )}
               </div>
-              <div style={{ paddingTop: 8 }}>
+              <div style={{ paddingTop: t.space4 }}>
                 {creatingList ? (
                   <div
                     style={{
                       display: "flex",
                       alignItems: "center",
-                      gap: 6,
+                      gap: t.space3,
                       border: `0.5px solid ${t.accent}`,
                       borderRadius: t.rMd,
-                      padding: "4px 5px 4px 9px",
+                      padding: `${String(t.space2)}px ${String(t.space3)}px ${String(t.space2)}px ${String(t.space4)}px`,
                       background: t.bg,
                     }}
                   >
@@ -601,7 +609,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  padding: "16px 8px 8px",
+                  padding: `${String(t.space8)}px ${String(t.space4)}px ${String(t.space4)}px`,
                 }}
               >
                 <RailLabel>Presets</RailLabel>

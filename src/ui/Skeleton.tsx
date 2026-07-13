@@ -58,7 +58,7 @@ export function SkelStatus({ label, style }: SkelStatusProps) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 8,
+        gap: t.space4,
         fontFamily: t.mono,
         fontSize: t.fsMeta,
         letterSpacing: "0.04em",

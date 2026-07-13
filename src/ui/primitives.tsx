@@ -46,12 +46,14 @@ export function Button({
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: t.space3,
     fontFamily: t.sans,
     fontSize: small ? t.fsLabel : t.fsUi,
     fontWeight: 500,
     borderRadius: t.rMd,
-    padding: small ? "7px 12px" : "10px 16px",
+    padding: small
+      ? `${String(t.space4)}px ${String(t.space6)}px`
+      : `${String(t.space5)}px ${String(t.space8)}px`,
     cursor: disabled ? "default" : "pointer",
     opacity: disabled ? 0.45 : 1,
   };
@@ -149,7 +151,7 @@ export function Modal({
             fontFamily: t.serif,
             fontSize: t.fsTitle,
             fontWeight: 400,
-            margin: "6px 0 12px",
+            margin: `${String(t.space3)}px 0 ${String(t.space6)}px`,
             letterSpacing: t.lsTight,
           }}
         >
@@ -171,8 +173,8 @@ export function Modal({
         {code != null && (
           <div
             style={{
-              marginTop: 18,
-              padding: 12,
+              marginTop: t.space8,
+              padding: t.space6,
               background: t.bgAlt,
               borderRadius: t.rSm,
               fontFamily: t.mono,
@@ -334,9 +336,9 @@ export function Toast({
         borderLeft: `2.5px solid ${tone.edge}`,
         borderRadius: t.rLg,
         boxShadow: `0 24px 48px -18px ${t.shadow}`,
-        padding: "13px 14px 14px 14px",
+        padding: `${String(t.space6)}px ${String(t.space7)}px ${String(t.space7)}px ${String(t.space7)}px`,
         display: "flex",
-        gap: 11,
+        gap: t.space5,
         fontFamily: t.sans,
         zIndex: 60,
       }}
@@ -352,7 +354,7 @@ export function Toast({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          marginTop: 1,
+          marginTop: t.space1,
         }}
       >
         {tone.spin ? (
@@ -367,8 +369,8 @@ export function Toast({
           minWidth: 0,
           display: "flex",
           flexDirection: "column",
-          gap: isDownloading ? 8 : 3,
-          paddingRight: 14,
+          gap: isDownloading ? t.space4 : t.space2,
+          paddingRight: t.space7,
         }}
       >
         {tone.label && (
@@ -390,7 +392,7 @@ export function Toast({
             display: "flex",
             alignItems: "baseline",
             justifyContent: "space-between",
-            gap: t.space2,
+            gap: t.space4,
           }}
         >
           <span
@@ -434,8 +436,8 @@ export function Toast({
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 6,
-              marginTop: 9,
+              gap: t.space3,
+              marginTop: t.space4,
             }}
           >
             {actions.map((a) => (
@@ -599,7 +601,7 @@ export function MenuItem({ label, onClick, danger }: MenuItemProps) {
         fontFamily: t.sans,
         fontSize: t.fsControl,
         color: danger ? t.warn : t.ink2,
-        padding: "7px 10px",
+        padding: `${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: t.rMenuItem,
         cursor: "pointer",
         whiteSpace: "nowrap",
@@ -616,7 +618,13 @@ export function MenuItem({ label, onClick, danger }: MenuItemProps) {
 export function MenuDivider() {
   const { t } = useTheme();
   return (
-    <div style={{ height: 1, background: t.hairline, margin: "4px 6px" }} />
+    <div
+      style={{
+        height: 1,
+        background: t.hairline,
+        margin: `${String(t.space2)}px ${String(t.space3)}px`,
+      }}
+    />
   );
 }
 
@@ -704,7 +712,7 @@ export function AlertBanner({ children, style }: AlertBannerProps) {
         color: t.warn,
         fontFamily: t.sans,
         fontSize: t.fsBody,
-        padding: "14px 16px",
+        padding: `${String(t.space7)}px ${String(t.space8)}px`,
         ...style,
       }}
     >
@@ -758,11 +766,11 @@ export function SegmentedControl<T extends string>({
   // `light ? a : b` ternary through every style property.
   const v = light
     ? {
-        trackGap: 3,
+        trackGap: t.space2,
         fontSize: t.fsMicro,
         letterSpacing: "0.07em",
         textTransform: "uppercase" as const,
-        padding: "6px 8px",
+        padding: `${String(t.space3)}px ${String(t.space4)}px`,
         height: undefined as number | undefined,
         onBg: t.bgAlt,
         onFg: t.ink,
@@ -772,11 +780,11 @@ export function SegmentedControl<T extends string>({
         shadow: "0 1px 2px rgba(15,17,21,0.10)",
       }
     : {
-        trackGap: 2,
+        trackGap: t.space1,
         fontSize: t.fsData,
         letterSpacing: "0.03em",
         textTransform: "none" as const,
-        padding: "0 8px",
+        padding: `0 ${String(t.space4)}px`,
         height: 30 as number | undefined,
         onBg: t.accent,
         onFg: t.onInk,
@@ -833,14 +841,14 @@ export function SegmentedControl<T extends string>({
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              gap: 6,
+              gap: t.space3,
               borderRadius: t.rMd,
               fontFamily: t.mono,
               fontSize: sm ? t.fsData2 : v.fontSize,
               letterSpacing: v.letterSpacing,
               textTransform: v.textTransform,
               whiteSpace: "nowrap",
-              padding: sm ? "0 10px" : v.padding,
+              padding: sm ? `0 ${String(t.space5)}px` : v.padding,
               height: sm && !light ? 24 : v.height,
               color: on ? v.onFg : v.offFg,
               backgroundColor: on

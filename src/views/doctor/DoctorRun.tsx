@@ -124,7 +124,7 @@ export function DoctorRun({
       <div
         style={{
           flexShrink: 0,
-          padding: "16px 24px 14px",
+          padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
@@ -135,7 +135,7 @@ export function DoctorRun({
             fontSize: t.fsBody2,
             lineHeight: 1.5,
             color: t.mutedInk,
-            margin: "8px 0 0",
+            margin: `${String(t.space4)}px 0 0`,
             maxWidth: 460,
           }}
         >
@@ -147,7 +147,7 @@ export function DoctorRun({
             display: "flex",
             alignItems: "baseline",
             justifyContent: "space-between",
-            margin: "12px 0 8px",
+            margin: `${String(t.space6)}px 0 ${String(t.space4)}px`,
           }}
         >
           <span style={{ fontFamily: t.mono, fontSize: 12, color: t.ink2 }}>
@@ -174,7 +174,7 @@ export function DoctorRun({
           minHeight: 0,
           overflowY: "auto",
           overflowX: "hidden",
-          padding: "8px 14px 6px",
+          padding: `${String(t.space4)}px ${String(t.space7)}px ${String(t.space3)}px`,
         }}
       >
         {items.map((it) => {
@@ -243,7 +243,7 @@ export function DoctorRun({
                 variant="primary"
                 small
                 onClick={onComplete}
-                style={{ height: 32, padding: "0 18px" }}
+                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
                 See results
               </Button>
@@ -254,7 +254,7 @@ export function DoctorRun({
                 onClick={() => {
                   setConfirm(true);
                 }}
-                style={{ height: 32, padding: "0 15px" }}
+                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
               >
                 Stop
               </Button>

@@ -81,14 +81,14 @@ function Banner({
     <div
       style={{
         display: "flex",
-        gap: 11,
-        padding: "10px 13px",
+        gap: t.space5,
+        padding: `${String(t.space5)}px ${String(t.space6)}px`,
         borderRadius: 9,
         background: bg,
         border: `0.5px solid ${border}`,
       }}
     >
-      <span style={{ flexShrink: 0, paddingTop: 1 }}>
+      <span style={{ flexShrink: 0, paddingTop: t.space1 }}>
         <Icon
           name={icon}
           size={size}
@@ -97,7 +97,9 @@ function Banner({
         />
       </span>
       <div style={{ minWidth: 0 }}>
-        <div style={{ ...s.kickerWide(color), marginBottom: 3 }}>{title}</div>
+        <div style={{ ...s.kickerWide(color), marginBottom: t.space2 }}>
+          {title}
+        </div>
         <div
           style={{
             fontFamily: t.sans,
@@ -131,8 +133,8 @@ function SectionLabel({
       style={{
         display: "flex",
         alignItems: "baseline",
-        gap: 8,
-        padding: "12px 10px 5px",
+        gap: t.space4,
+        padding: `${String(t.space6)}px ${String(t.space5)}px ${String(t.space3)}px`,
       }}
     >
       <span style={s.kickerWide(color)}>{children}</span>
@@ -184,8 +186,8 @@ function ResultRow({ it, restore }: ResultRowProps) {
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        padding: "7px 10px",
+        gap: t.space6,
+        padding: `${String(t.space4)}px ${String(t.space5)}px`,
       }}
     >
       <span
@@ -204,7 +206,7 @@ function ResultRow({ it, restore }: ResultRowProps) {
           minWidth: 0,
           display: "flex",
           alignItems: "baseline",
-          gap: 8,
+          gap: t.space4,
         }}
       >
         <span
@@ -270,7 +272,11 @@ function ResultRow({ it, restore }: ResultRowProps) {
             small
             disabled={restore.busyAny}
             onClick={restore.onClick}
-            style={{ height: 24, padding: "0 9px", flexShrink: 0 }}
+            style={{
+              height: 24,
+              padding: `0 ${String(t.space4)}px`,
+              flexShrink: 0,
+            }}
           >
             {restore.state === "busy"
               ? "Restoring…"
@@ -378,11 +384,11 @@ export function SummaryBody({
       <div
         style={{
           flexShrink: 0,
-          padding: "16px 24px 14px",
+          padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: t.space5 }}>
           <span
             style={{
               width: 30,
@@ -413,7 +419,7 @@ export function SummaryBody({
                   fontFamily: t.mono,
                   fontSize: 11,
                   color: t.mutedInk,
-                  marginTop: 3,
+                  marginTop: t.space2,
                   letterSpacing: "0.02em",
                 }}
               >
@@ -429,10 +435,10 @@ export function SummaryBody({
         <div
           style={{
             flexShrink: 0,
-            padding: "14px 20px 2px",
+            padding: `${String(t.space7)}px ${String(t.space9)}px ${String(t.space1)}px`,
             display: "flex",
             flexDirection: "column",
-            gap: 9,
+            gap: t.space4,
           }}
         >
           {offbr.length > 0 && (
@@ -470,7 +476,7 @@ export function SummaryBody({
         style={{
           flex: 1,
           minHeight: 0,
-          padding: "4px 14px 4px",
+          padding: `${String(t.space2)}px ${String(t.space7)}px ${String(t.space2)}px`,
           overflowY: "auto",
         }}
       >
@@ -493,7 +499,7 @@ export function SummaryBody({
               fontSize: 11.5,
               lineHeight: 1.5,
               color: t.mutedInk,
-              padding: "10px 10px 0",
+              padding: `${String(t.space5)}px ${String(t.space5)}px 0`,
             }}
           >
             Restore rewrites a preset’s previous saved level — scene and
@@ -505,11 +511,11 @@ export function SummaryBody({
             style={{
               display: "flex",
               alignItems: "flex-start",
-              gap: 8,
-              padding: "10px 10px 4px",
+              gap: t.space4,
+              padding: `${String(t.space5)}px ${String(t.space5)}px ${String(t.space2)}px`,
             }}
           >
-            <span style={{ paddingTop: 1 }}>
+            <span style={{ paddingTop: t.space1 }}>
               <ByEarChip />
             </span>
             <span
@@ -529,11 +535,11 @@ export function SummaryBody({
             style={{
               display: "flex",
               alignItems: "flex-start",
-              gap: 8,
-              padding: "10px 10px 4px",
+              gap: t.space4,
+              padding: `${String(t.space5)}px ${String(t.space5)}px ${String(t.space2)}px`,
             }}
           >
-            <span style={{ paddingTop: 1 }}>
+            <span style={{ paddingTop: t.space1 }}>
               <Tag tone="warn">may clip</Tag>
             </span>
             <span
@@ -563,7 +569,7 @@ export function SummaryBody({
                 onClick={() => {
                   onRelevel(clamped);
                 }}
-                style={{ height: 32, padding: "0 14px" }}
+                style={{ height: 32, padding: `0 ${String(t.space7)}px` }}
               >
                 Re-level clamped…
               </Button>
@@ -572,7 +578,7 @@ export function SummaryBody({
               variant="primary"
               small
               onClick={onAccept}
-              style={{ height: 32, padding: "0 18px" }}
+              style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
             >
               {allGood ? "Done" : "Accept"}
             </Button>

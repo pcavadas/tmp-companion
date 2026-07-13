@@ -112,7 +112,7 @@ export function DeviceStatus({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 7,
+        gap: t.space4,
         fontFamily: t.mono,
         fontSize: t.fsMeta,
         letterSpacing: t.lsMeta,

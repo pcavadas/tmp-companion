@@ -129,9 +129,9 @@ export function SoundRow({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
+          gap: t.space5,
           minHeight: 38,
-          padding: "5px 8px 5px 6px",
+          padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
           cursor: hasDiags ? "pointer" : "default",
           background: open ? t.rowSel : "transparent",
         }}
@@ -142,7 +142,7 @@ export function SoundRow({
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 7,
+            gap: t.space4,
             minWidth: 96,
             flexShrink: 0,
           }}
@@ -171,7 +171,7 @@ export function SoundRow({
             minWidth: 0,
             display: "flex",
             alignItems: "center",
-            gap: 5,
+            gap: t.space3,
             overflow: "hidden",
           }}
         >
@@ -197,7 +197,7 @@ export function SoundRow({
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
+                gap: t.space3,
                 fontFamily: t.sans,
                 fontSize: t.fsLabel,
                 color: t.good,
@@ -267,10 +267,10 @@ export function SoundRow({
       {open && hasDiags && (
         <div
           style={{
-            padding: "2px 10px 14px 30px",
+            padding: `${String(t.space1)}px ${String(t.space5)}px ${String(t.space7)}px ${String(t.space11)}px`,
             display: "flex",
             flexDirection: "column",
-            gap: 12,
+            gap: t.space6,
           }}
         >
           {shared && (
@@ -278,7 +278,7 @@ export function SoundRow({
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 7,
+                gap: t.space4,
                 fontFamily: t.sans,
                 fontSize: t.fsLabel,
                 lineHeight: 1.4,
@@ -286,7 +286,7 @@ export function SoundRow({
                 background: t.accentSoft,
                 border: `0.5px solid rgba(217,119,87,0.3)`,
                 borderRadius: 8,
-                padding: "6px 10px",
+                padding: `${String(t.space3)}px ${String(t.space5)}px`,
               }}
             >
               <Icon name="link" size={13} stroke={t.accentDeep} />
@@ -298,13 +298,16 @@ export function SoundRow({
             return (
               <div
                 key={diag.key}
-                style={{ borderLeft: `2px solid ${dTone.fg}`, paddingLeft: 13 }}
+                style={{
+                  borderLeft: `2px solid ${dTone.fg}`,
+                  paddingLeft: t.space6,
+                }}
               >
                 <div
                   style={{
                     display: "flex",
                     alignItems: "baseline",
-                    gap: 8,
+                    gap: t.space4,
                     flexWrap: "wrap",
                   }}
                 >
@@ -345,7 +348,7 @@ export function SoundRow({
                     fontSize: 12.5,
                     lineHeight: 1.5,
                     color: t.ink2,
-                    marginTop: 4,
+                    marginTop: t.space2,
                   }}
                 >
                   {diag.explain}
@@ -362,8 +365,8 @@ export function SoundRow({
                   style={{
                     display: "flex",
                     flexDirection: "column",
-                    gap: 10,
-                    marginTop: 11,
+                    gap: t.space5,
+                    marginTop: t.space5,
                   }}
                 >
                   {diag.rx.map((rx, i) => (

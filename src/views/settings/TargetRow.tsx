@@ -124,8 +124,8 @@ export function TargetRow({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 11,
-        padding: "11px 0",
+        gap: t.space5,
+        padding: `${String(t.space5)}px 0`,
         borderBottom: `0.5px solid ${t.hairline}`,
       }}
     >
@@ -162,7 +162,7 @@ export function TargetRow({
               boxSizing: "border-box",
               border: `0.5px solid ${t.accent}`,
               borderRadius: t.rBtn,
-              padding: "3px 6px",
+              padding: `${String(t.space2)}px ${String(t.space3)}px`,
               fontFamily: t.serif,
               fontSize: 15,
             })}
@@ -253,7 +253,7 @@ export function TargetRow({
             cursor: "pointer",
             display: "flex",
             color: t.faint,
-            padding: 2,
+            padding: t.space1,
             borderRadius: t.rMenuItem,
           }}
         >

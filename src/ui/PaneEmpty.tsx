@@ -32,7 +32,7 @@ export function PaneEmpty({ icon, title, body, cta }: PaneEmptyProps) {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 13,
+        gap: t.space6,
         padding: "0 40px",
         textAlign: "center",
       }}

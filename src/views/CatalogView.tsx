@@ -217,8 +217,8 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 5,
-        padding: "12px 7px 11px",
+        gap: t.space3,
+        padding: `${String(t.space6)}px ${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: t.rLg,
         cursor: "pointer",
         border: `0.5px solid ${selected ? t.accent : "transparent"}`,
@@ -257,7 +257,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          gap: 4,
+          gap: t.space2,
         }}
       >
         <CpuChip cpu={r.cpu} />
@@ -265,7 +265,7 @@ function ModelCard({ r, t, selected, icon, onPick }: ModelCardProps) {
           <div
             style={{
               display: "flex",
-              gap: 4,
+              gap: t.space2,
               flexWrap: "wrap",
               justifyContent: "center",
             }}
@@ -305,7 +305,7 @@ function MetaCell({ t, k, v }: MetaCellProps) {
           fontFamily: t.mono,
           fontSize: t.fsData,
           color: t.ink,
-          marginTop: 3,
+          marginTop: t.space2,
           whiteSpace: "nowrap",
         }}
       >
@@ -381,8 +381,8 @@ function DetailBar({ r, t }: DetailBarProps) {
         background: t.bgAlt,
         display: "flex",
         alignItems: "center",
-        gap: 16,
-        padding: "0 18px",
+        gap: t.space8,
+        padding: `0 ${String(t.space8)}px`,
       }}
     >
       <div
@@ -403,7 +403,7 @@ function DetailBar({ r, t }: DetailBarProps) {
         <ModelTile r={r} size={swatch} />
       </div>
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
           <span
             style={{
               fontFamily: t.mono,
@@ -422,7 +422,7 @@ function DetailBar({ r, t }: DetailBarProps) {
             fontFamily: t.serif,
             fontSize: 18,
             color: t.ink,
-            marginTop: 2,
+            marginTop: t.space1,
             lineHeight: 1.15,
           }}
         >
@@ -433,7 +433,7 @@ function DetailBar({ r, t }: DetailBarProps) {
             fontFamily: t.sans,
             fontSize: t.fsUi,
             color: t.mutedInk,
-            marginTop: 2,
+            marginTop: t.space1,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -447,11 +447,11 @@ function DetailBar({ r, t }: DetailBarProps) {
           display: "flex",
           flexDirection: "column",
           alignItems: "flex-end",
-          gap: 7,
+          gap: t.space4,
           flexShrink: 0,
         }}
       >
-        <div style={{ display: "flex", gap: 22 }}>
+        <div style={{ display: "flex", gap: t.space10 }}>
           {cells.map(([k, v]) => (
             <MetaCell key={k} t={t} k={k} v={v} />
           ))}
@@ -622,8 +622,10 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 8,
-        padding: opts.child ? "5px 9px 5px 36px" : "7px 9px",
+        gap: t.space4,
+        padding: opts.child
+          ? `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px 36px`
+          : `${String(t.space4)}px ${String(t.space4)}px`,
         borderRadius: t.rMd,
         cursor: "pointer",
         background: active ? t.accentSoft : "transparent",
@@ -631,7 +633,12 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
       }}
     >
       <span
-        style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: t.space3,
+          minWidth: 0,
+        }}
       >
         {/* Fixed 12px chevron gutter on EVERY top-level row (chevron inside it
             when present) so all top-level labels align in one column whether or
@@ -698,7 +705,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
         background: on ? t.accent : chipBgFor(t),
         border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
         borderRadius: t.rPill,
-        padding: "3px 10px",
+        padding: `${String(t.space2)}px ${String(t.space5)}px`,
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.5 : 1,
         userSelect: "none",
@@ -724,8 +731,8 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
-          gap: 12,
-          padding: "11px 16px 10px",
+          gap: t.space6,
+          padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
           background: t.bg,
         }}
@@ -737,7 +744,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
           clearable
           style={{ flex: 1, minWidth: 0 }}
         />
-        <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: t.space3, alignItems: "center" }}>
           {facetBtn("Mono", routing === "mono", () => {
             setRouting(routing === "mono" ? "all" : "mono");
           })}
@@ -762,7 +769,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
             flexShrink: 0,
           }}
         />
-        <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: t.space3, alignItems: "center" }}>
           <span
             style={{
               fontFamily: t.mono,
@@ -805,8 +812,8 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
             flexShrink: 0,
             display: "flex",
             flexWrap: "wrap",
-            gap: 5,
-            padding: "8px 16px 9px",
+            gap: t.space3,
+            padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space4)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
             background: t.bgAlt,
           }}
@@ -837,7 +844,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
             borderRight: `0.5px solid ${t.hairline}`,
             background: t.bgAlt,
             overflowY: "auto",
-            padding: "9px 9px 14px",
+            padding: `${String(t.space4)}px ${String(t.space4)}px ${String(t.space7)}px`,
           }}
         >
           <div
@@ -847,7 +854,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
               letterSpacing: t.lsWide,
               color: t.faint,
               textTransform: "uppercase",
-              padding: "4px 9px 7px",
+              padding: `${String(t.space2)}px ${String(t.space4)}px ${String(t.space4)}px`,
             }}
           >
             Category
@@ -908,7 +915,7 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
           {shown.length === 0 ? (
             <div
               style={{
-                padding: "54px 24px",
+                padding: `54px ${String(t.space10)}px`,
                 textAlign: "center",
                 fontFamily: t.sans,
                 fontSize: t.fsBody2,
@@ -927,8 +934,8 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
                     zIndex: 1,
                     display: "flex",
                     alignItems: "baseline",
-                    gap: 10,
-                    padding: "9px 16px 7px",
+                    gap: t.space5,
+                    padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space4)}px`,
                     background: "rgba(255,255,255,0.92)",
                     backdropFilter: "blur(6px)",
                     borderBottom: `0.5px solid ${t.hairline}`,
@@ -957,8 +964,8 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
                   style={{
                     display: "flex",
                     flexWrap: "wrap",
-                    gap: 6,
-                    padding: "12px 13px 16px",
+                    gap: t.space3,
+                    padding: `${String(t.space6)}px ${String(t.space6)}px ${String(t.space8)}px`,
                     alignContent: "flex-start",
                   }}
                 >

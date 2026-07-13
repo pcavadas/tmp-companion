@@ -65,12 +65,12 @@ function Fallback({
         display: "flex",
         flexDirection: "column",
         alignItems: "flex-start",
-        gap: 14,
+        gap: t.space7,
         height: "100%",
         width: "100%",
         boxSizing: "border-box",
         overflow: "auto",
-        padding: 32,
+        padding: t.space12,
         background: t.bg,
         color: t.ink,
         fontFamily: t.sans,
@@ -84,7 +84,7 @@ function Fallback({
       <pre
         style={{
           margin: 0,
-          padding: "10px 12px",
+          padding: `${String(t.space5)}px ${String(t.space6)}px`,
           maxWidth: "100%",
           overflowX: "auto",
           border: `0.5px solid ${t.warn}`,
@@ -98,11 +98,11 @@ function Fallback({
       >
         {message}
       </pre>
-      <div style={{ display: "flex", gap: 10 }}>
+      <div style={{ display: "flex", gap: t.space5 }}>
         <button
           onClick={onReset}
           style={{
-            padding: "8px 16px",
+            padding: `${String(t.space4)}px ${String(t.space8)}px`,
             border: "none",
             borderRadius: t.rMd,
             background: t.ink,
@@ -119,7 +119,7 @@ function Fallback({
             window.location.reload();
           }}
           style={{
-            padding: "8px 16px",
+            padding: `${String(t.space4)}px ${String(t.space8)}px`,
             border: `0.5px solid ${t.hairline}`,
             borderRadius: t.rMd,
             background: t.bgAlt,

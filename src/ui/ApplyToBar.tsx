@@ -34,7 +34,7 @@ export function ApplyToBar({
     <div
       style={{
         flexShrink: 0,
-        padding: "12px 24px 14px",
+        padding: `${String(t.space6)}px ${String(t.space10)}px ${String(t.space7)}px`,
         background: t.bgAlt,
         borderBottom: `0.5px solid ${t.hairline}`,
       }}
@@ -44,7 +44,7 @@ export function ApplyToBar({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: 9,
+          marginBottom: t.space4,
         }}
       >
         <span style={s.kickerWide(somePicked ? t.accentDeep : t.faint)}>
@@ -60,7 +60,7 @@ export function ApplyToBar({
               cursor: "pointer",
               whiteSpace: "nowrap",
               flexShrink: 0,
-              paddingLeft: 12,
+              paddingLeft: t.space6,
             }}
           >
             Clear ticks

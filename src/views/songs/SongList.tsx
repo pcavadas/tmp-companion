@@ -37,7 +37,7 @@ function LibraryRow({ song, idx, busy, onEdit, onDelete }: LibraryRowProps) {
             display: "flex",
             justifyContent: "flex-end",
             alignItems: "center",
-            gap: 7,
+            gap: t.space4,
           }}
         >
           <div style={{ position: "relative", display: "flex" }}>
@@ -53,7 +53,7 @@ function LibraryRow({ song, idx, busy, onEdit, onDelete }: LibraryRowProps) {
               style={{
                 cursor: busy ? "default" : "pointer",
                 display: "flex",
-                padding: 2,
+                padding: t.space1,
                 borderRadius: t.rSm,
                 opacity: busy ? 0.4 : 1,
               }}
@@ -116,11 +116,11 @@ export function SongList({
     <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div
         style={{
-          padding: "16px 18px 13px",
+          padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
           display: "flex",
           alignItems: "flex-end",
           justifyContent: "space-between",
-          gap: 12,
+          gap: t.space6,
         }}
       >
         <div>
@@ -130,7 +130,7 @@ export function SongList({
               fontFamily: t.serif,
               fontSize: t.fsTitle,
               color: t.ink,
-              marginTop: 4,
+              marginTop: t.space2,
             }}
           >
             All songs
@@ -140,7 +140,7 @@ export function SongList({
               fontFamily: t.mono,
               fontSize: t.fsMeta,
               color: t.mutedInk,
-              marginTop: 5,
+              marginTop: t.space3,
             }}
           >
             {songs.length} song{songs.length === 1 ? "" : "s"} on the unit
@@ -176,7 +176,7 @@ export function SongList({
         {creating && (
           <div
             style={{
-              padding: "10px 16px 10px 18px",
+              padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px ${String(t.space8)}px`,
               borderBottom: `0.5px solid ${t.hairline}`,
               background: t.bgAlt,
             }}
@@ -197,7 +197,7 @@ export function SongList({
             <div
               key={rec.slot}
               style={{
-                padding: "10px 16px 10px 18px",
+                padding: `${String(t.space5)}px ${String(t.space8)}px ${String(t.space5)}px ${String(t.space8)}px`,
                 borderBottom: `0.5px solid ${t.hairline}`,
                 background: t.bgAlt,
               }}
@@ -236,7 +236,7 @@ export function SongList({
         {songs.length === 0 && !creating && (
           <div
             style={{
-              padding: "48px 0",
+              padding: `${String(t.space13)}px 0`,
               textAlign: "center",
               color: t.faint,
               fontFamily: t.sans,
