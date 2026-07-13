@@ -79,6 +79,15 @@ fn doctor_skip_load(prev: Option<&PrevSound>, list_index: u32, is_scene: bool) -
             .unwrap_or(false)
 }
 
+/// Should a just-captured sound be treated as a silent-inject floor read (mirrors
+/// the leveller's `leveller::floor_suspect` guard, applied to the Doctor's capture
+/// spread instead of a leveling measurement)? `Some` carries the honest error to
+/// surface; `None` means the capture looks live.
+fn floor_error_for(profile_spread_lu: f64, stimulus_spread_lu: f64) -> Option<&'static str> {
+    leveller::floor_suspect(profile_spread_lu, stimulus_spread_lu)
+        .then_some(leveller::FLOOR_READ_ERR)
+}
+
 /// The instrument a sound is judged as — from its topology, guitar by default.
 fn instrument_of(item: &DoctorInput) -> doctor::Instrument {
     doctor::Instrument::from_topology(
@@ -193,8 +202,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         })
         .collect::<Result<_, String>>()?;
     with_released_seize(state.session.clone(), move || {
-        // One stimulus decode per (path, calibration) pair — items share them.
-        let mut stims: std::collections::HashMap<(String, Option<u32>), Vec<f32>> =
+        // One stimulus decode per (path, calibration) pair — items share them, along
+        // with the decoded stimulus's OWN dynamics spread (arms the floor guard below;
+        // computed once here rather than per capture).
+        let mut stims: std::collections::HashMap<(String, Option<u32>), (Vec<f32>, f64)> =
             std::collections::HashMap::new();
         let mut measured: Vec<(usize, doctor::SoundProfile)> = Vec::new();
         // Per-measured-item band coverage of its stimulus (family layout) — the
@@ -249,7 +260,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let stim = match stims.entry(stim_key) {
                 std::collections::hash_map::Entry::Occupied(e) => Ok(&*e.into_mut()),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    read_stimulus_calibrated(path, cal).map(|s| &*e.insert(s))
+                    read_stimulus_calibrated(path, cal).map(|s| {
+                        let spread = leveller::stimulus_spread_lu(&s);
+                        &*e.insert((s, spread))
+                    })
                 }
             };
             // Force-bypass isolation for this sound. A scene sound contributes
@@ -288,35 +302,62 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             };
             let family = instrument_of(item);
             let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
-            let result = stim.and_then(|stim| {
-                leveller::doctor_capture(
+            // One capture + profile attempt, `skip_load` threaded through (the retry
+            // below forces a fresh preset recall — a floor read means the inject
+            // failed, not that the working copy is stale).
+            let capture_profile = |skip_load: bool,
+                                    stim: &[f32]|
+             -> Result<(doctor::SoundProfile, Vec<bool>), String> {
+                let (samples, rate) = leveller::doctor_capture(
                     item.list_index,
                     item.scene,
                     &fb,
                     stim,
                     Some(0.5),
                     skip_load,
-                )
-                .and_then(
-                    |(samples, rate)| {
-                        // Align the body/tail split to where the stimulus actually starts
-                        // (I/O latency); low confidence keeps the legacy un-aligned split.
-                        let (onset, confident) = audio::estimate_onset(stim, &samples, rate);
-                        if !confident {
+                )?;
+                // Align the body/tail split to where the stimulus actually starts
+                // (I/O latency); low confidence keeps the legacy un-aligned split.
+                let (onset, confident) = audio::estimate_onset(stim, &samples, rate);
+                if !confident {
+                    log::warn!(
+                        "doctor: onset not confidently found for {} — un-aligned tail split",
+                        item.key
+                    );
+                }
+                let profile =
+                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
+                // The STIMULUS's own band coverage (family layout) — a sparse
+                // capture must not fire rules in bands it never excited.
+                let cov = doctor::band_coverage(stim, family);
+                Ok((profile, cov))
+            };
+            let result = stim.and_then(|(stim, stim_spread)| {
+                let stim_spread = *stim_spread;
+                capture_profile(skip_load, stim).and_then(|(profile, cov)| {
+                    match floor_error_for(profile.spread_lu, stim_spread) {
+                        None => Ok((profile, cov)),
+                        Some(err) => {
+                            // A silent-inject floor read (the leveller's guard, applied
+                            // here to the Doctor's capture): the reading is finite but
+                            // stationary. Wait out the quiet gap and force a fresh
+                            // preset recall (skip_load=false) — a floor read means the
+                            // inject failed, not that the cached working copy is dirty.
                             log::warn!(
-                                "doctor: onset not confidently found for {} — un-aligned tail split",
-                                item.key
+                                "doctor_check: floor-suspect capture for {} (spread {:.2} LU ≤ stimulus {:.2} LU) — retrying once",
+                                item.key, profile.spread_lu, stim_spread
                             );
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                leveller::FLOOR_RETRY_GAP_MS,
+                            ));
+                            let (profile, cov) = capture_profile(false, stim)?;
+                            match floor_error_for(profile.spread_lu, stim_spread) {
+                                None => Ok((profile, cov)),
+                                Some(_) => Err(err.to_string()),
+                            }
                         }
-                        let profile = doctor::SoundProfile::from_capture(
-                            &samples, rate, stim.len(), onset, family,
-                        )?;
-                        // The STIMULUS's own band coverage (family layout) — a sparse
-                        // capture must not fire rules in bands it never excited.
-                        let cov = doctor::band_coverage(stim, family);
-                        Ok((profile, cov))
-                    },
-                )
+                    }
+                })
             });
             match result {
                 Ok((profile, cov)) => {

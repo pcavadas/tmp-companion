@@ -215,6 +215,25 @@ fn skip_load_only_for_a_clean_ok_same_preset_scene_chain() {
     assert!(!doctor_skip_load(Some(&prev(3, false)), 3, false));
 }
 
+// --- floor_error_for: silent-inject guard on the Doctor's capture spread ---
+
+#[test]
+fn floor_error_for_flags_a_flat_capture_against_a_lively_stimulus() {
+    assert_eq!(floor_error_for(0.01, 6.0), Some(leveller::FLOOR_READ_ERR));
+}
+
+#[test]
+fn floor_error_for_clears_a_live_capture() {
+    assert_eq!(floor_error_for(4.0, 6.0), None);
+}
+
+#[test]
+fn floor_error_for_disarms_on_a_near_stationary_stimulus() {
+    // stimulus spread ≤ STATIONARY_STIM_LU (0.30) can't discriminate by spread —
+    // the guard must not fire even though the capture itself reads flat.
+    assert_eq!(floor_error_for(0.01, 0.2), None);
+}
+
 // --- doctor_apply BEFORE-clip cache ---
 
 #[test]
