@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14 # Apple Silicon — the Rust crate is macOS-only
+    runs-on: macos-14 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
     environment: release # gates the Apple signing/notarization secrets to this env
     # Backstop a hung `notarytool --wait`: without this the job inherits the 360-min
     # default and can burn ~6h on the 10×-cost macOS runner. A normal run is ~7 min.
@@ -37,7 +37,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:

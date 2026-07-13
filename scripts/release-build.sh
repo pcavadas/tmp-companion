@@ -17,13 +17,13 @@ NOTES_B64="${2:-}"
 echo "release-build: bumping src-tauri/tauri.conf.json to $VERSION"
 VERSION="$VERSION" node -e 'const f="src-tauri/tauri.conf.json",fs=require("fs");const j=JSON.parse(fs.readFileSync(f));j.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")'
 
-echo "release-build: building the aarch64-apple-darwin bundle"
-bun run tauri build --target aarch64-apple-darwin
+echo "release-build: building the universal-apple-darwin bundle"
+bun run tauri build --target universal-apple-darwin
 
 echo "release-build: locating the DMG"
 # Guard the glob: exactly one DMG, or fail loudly (mirrors the .sig count-guard in
 # scripts/latest-json.mjs). Unmatched glob stays literal and the -f check catches it.
-set -- src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+set -- src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
   echo "release-build: expected exactly one DMG, found $#: $*" >&2
   exit 1

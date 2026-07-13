@@ -8,7 +8,7 @@ labels: bug
 
 **Firmware version** (Fender Pro Control → About; e.g. 1.8.45):
 
-**macOS version** (e.g. 14.5 — Apple Silicon only):
+**macOS version and chip** (e.g. 14.5 — Apple Silicon or Intel):
 
 **Was Fender Pro Control closed?** (the app needs exclusive USB access) — yes / no:
 

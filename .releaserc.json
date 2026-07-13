@@ -14,15 +14,15 @@
       {
         "assets": [
           {
-            "path": "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
-            "name": "TMP-Companion-AppleSilicon.dmg"
+            "path": "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg",
+            "name": "TMP-Companion-macOS.dmg"
           },
           {
-            "path": "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz",
-            "name": "TMP-Companion-AppleSilicon.app.tar.gz"
+            "path": "src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz",
+            "name": "TMP-Companion-macOS.app.tar.gz"
           },
           {
-            "path": "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/latest.json"
+            "path": "src-tauri/target/universal-apple-darwin/release/bundle/macos/latest.json"
           }
         ]
       }
