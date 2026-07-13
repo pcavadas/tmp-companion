@@ -1,8 +1,8 @@
 //! Probe entry points: per-scene amp-knob leveling measurement + one-shot level + diagnostics.
 
 use super::level::load_and_filter_amp_candidates;
-use super::scene_jobs::build_scene_jobs;
 use super::scene_jobs::prepass_scene_docs;
+use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
@@ -341,7 +341,12 @@ pub fn probe_scene_knob_authority(
     // the stamped target is never read here, so any finite value serves.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
-    let job = build_scene_jobs(&[scene_slot], &candidates, &docs, -23.0)?;
+    let job = build_scene_jobs(
+        &[scene_slot],
+        &candidates,
+        &docs,
+        KNOB_ONLY_PROBE_TARGET_LUFS,
+    )?;
     let knob = job
         .into_iter()
         .next()
@@ -404,10 +409,15 @@ pub fn probe_mute_floor(
     // Knob-only: the stamped target is never read here, so any finite value serves.
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &[scene_slot])?;
-    let job = build_scene_jobs(&[scene_slot], &candidates, &docs, -23.0)?
-        .into_iter()
-        .next()
-        .ok_or("no scene job built")?;
+    let job = build_scene_jobs(
+        &[scene_slot],
+        &candidates,
+        &docs,
+        KNOB_ONLY_PROBE_TARGET_LUFS,
+    )?
+    .into_iter()
+    .next()
+    .ok_or("no scene job built")?;
     if job.knobs.len() < 2 {
         return Err(format!(
             "scene {scene_slot} has {} amp knob(s) — mute-floor needs a 2-amp merged parallel scene",

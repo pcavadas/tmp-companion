@@ -1,9 +1,9 @@
 //! Probe entry points: scene enumeration (passive / load / full-live) + scene classify + one-shot level.
 
 use super::level::load_and_filter_amp_candidates;
-use super::scene_jobs::build_scene_jobs;
 use super::scene_jobs::prepass_scene_docs;
 use super::scene_jobs::structure_graph;
+use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::slot_write::probe_connect_and_list;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
@@ -98,7 +98,12 @@ pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<S
         }
     );
     // Classify-only: the stamped target is never read (no solve), so any finite value serves.
-    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, -23.0)?;
+    let jobs = build_scene_jobs(
+        &scene_slots,
+        &candidates,
+        &docs,
+        KNOB_ONLY_PROBE_TARGET_LUFS,
+    )?;
     for j in &jobs {
         if let Some(reason) = &j.skip {
             out += &format!("  scene {} → SKIP: {reason}\n", j.scene_slot);

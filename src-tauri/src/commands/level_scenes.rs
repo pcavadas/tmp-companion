@@ -317,6 +317,12 @@ pub(crate) async fn level_scenes_apply_batched(
                     .ok_or_else(|| {
                         format!("built scene job slot {} has no wire target", sj.scene_slot)
                     })?;
+                if !arg.target_lufs.is_finite() {
+                    return Err(format!(
+                        "scene slot {} has a non-finite target ({})",
+                        arg.scene_slot, arg.target_lufs
+                    ));
+                }
                 sj.target_lufs = arg.target_lufs + offset;
             }
             if let Some(j) = jobs

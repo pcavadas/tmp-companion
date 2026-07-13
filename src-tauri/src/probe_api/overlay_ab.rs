@@ -126,6 +126,10 @@ struct Tally {
     agree: u32,
     bypass_mismatch: u32,
     xctx_mismatch: u32,
+    /// Post-prepass context reads that FAILED — surfaced so "0 cross-context
+    /// mismatches" can't overstate confidence when fewer contexts were compared
+    /// than requested.
+    ctx_read_failures: u32,
 }
 
 /// Compare one preset's SAVED overlay vs the LIVE prepass, plus saved-vs-saved across
@@ -160,11 +164,15 @@ fn compare_preset(list_index: u32, contexts: u32, out: &mut String) -> Result<Ta
     let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
 
     // Remaining contexts: field-8 reads AFTER the prepass (each its own session + gap).
+    let mut ctx_read_failures = 0u32;
     for _ in 1..contexts.max(1) {
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match read_slot_preset_parsed(list_index) {
             Ok((p, _, _)) => ctx_presets.push(p),
-            Err(e) => *out += &format!("  [ctx read after prepass FAILED: {e}]\n"),
+            Err(e) => {
+                ctx_read_failures += 1;
+                *out += &format!("  [ctx read after prepass FAILED: {e}]\n");
+            }
         }
     }
 
@@ -181,7 +189,10 @@ fn compare_preset(list_index: u32, contexts: u32, out: &mut String) -> Result<Ta
         })
         .collect();
 
-    let mut t = Tally::default();
+    let mut t = Tally {
+        ctx_read_failures,
+        ..Tally::default()
+    };
     for (scene_slot, live_doc) in &docs {
         let scene_label = if *scene_slot >= session::BASE_SCENE_SLOT {
             "base".to_string()
@@ -275,6 +286,7 @@ pub fn probe_overlay_ab(target: &str, contexts: u32) -> Result<String, String> {
                 total.agree += t.agree;
                 total.bypass_mismatch += t.bypass_mismatch;
                 total.xctx_mismatch += t.xctx_mismatch;
+                total.ctx_read_failures += t.ctx_read_failures;
             }
             Err(e) => out += &format!("\n=== list_index={list_index} FAILED: {e} ===\n"),
         }
@@ -284,8 +296,8 @@ pub fn probe_overlay_ab(target: &str, contexts: u32) -> Result<String, String> {
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
 
     out += &format!(
-        "\n[overlay-ab] {}/{} scene-amp pairs agree; bypass mismatches: {}; cross-context saved mismatches: {}\n",
-        total.agree, total.pairs, total.bypass_mismatch, total.xctx_mismatch,
+        "\n[overlay-ab] {}/{} scene-amp pairs agree; bypass mismatches: {}; cross-context saved mismatches: {} ({} context read(s) FAILED)\n",
+        total.agree, total.pairs, total.bypass_mismatch, total.xctx_mismatch, total.ctx_read_failures,
     );
     Ok(out)
 }

@@ -300,6 +300,11 @@ pub(crate) fn classify_scene_knobs(
     ))
 }
 
+/// Placeholder target for the knob-only probe arms (authority / mute-floor /
+/// classify): those paths never solve, so the stamped target is never read —
+/// any finite value serves.
+pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
+
 /// Build per-scene [`leveller::SceneJob`]s from the pre-pass docs, ROUTING-AWARE:
 /// classify each scene's amp set by position in the route graph (series=last amp;
 /// parallel-merged=one amp per lane → joint-k) via [`classify_scene_knobs`], taking
