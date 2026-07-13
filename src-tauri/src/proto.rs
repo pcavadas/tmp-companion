@@ -1290,13 +1290,13 @@ pub fn parse_strict(buf: &[u8]) -> Result<Vec<(u32, Val)>, String> {
     Ok(out)
 }
 
+/// A strictly-decoded list response: (the response's own fields, the record field-sets).
+type StrictListDecode = (Vec<(u32, Val)>, Vec<Vec<(u32, Val)>>);
+
 /// Strictly decode a COMPLETE list response into its repeated record field-sets, or
 /// `None` if the reassembled body is truncated / not the expected response. Walks
 /// TMS[`tms_field`] → response[`resp_field`] → repeated record[2], strict-parsing at
 /// every level (so a tail-truncated multi-packet read is rejected, not clipped).
-/// A strictly-decoded list response: (the response's own fields, the record field-sets).
-type StrictListDecode = (Vec<(u32, Val)>, Vec<Vec<(u32, Val)>>);
-
 fn list_records_strict(
     tms_body: &[u8],
     tms_field: u32,
@@ -1314,16 +1314,25 @@ fn list_records_strict(
     Some((resp_fields, recs))
 }
 
-/// Strict, completeness-validated `presetListResponse` decode (TMS[2]→resp[5]→rec[2]).
-/// MY PRESETS ONLY: the handshake requests three lists (My=1, Factory=4, Cloud=3) on
-/// one session, so the response's `listEnum` (field 1) is checked — else a truncated
+/// The `PresetListResponse.listEnum` value for My Presets (Factory = 4, Cloud = 3).
+const LIST_ENUM_MY_PRESETS: u64 = 1;
+
+/// Is this parsed `PresetListResponse` the MY PRESETS list? The handshake requests
+/// three lists (My=1, Factory=4, Cloud=3) on one session, so every preset-list
+/// harvest must check the response's `listEnum` (field 1) — else a truncated
 /// My-Presets reply lets a complete Factory reply win longest-complete-wins and the
 /// snapshot serves factory names as the user's presets (observed live: 249 factory
 /// records + firmware=None after a congested post-leveling reconnect). A missing
 /// listEnum is treated as My Presets (lean sessions request only list 1).
+pub fn is_my_presets_list(resp_fields: &[(u32, Val)]) -> bool {
+    first_varint(resp_fields, 1).unwrap_or(LIST_ENUM_MY_PRESETS) == LIST_ENUM_MY_PRESETS
+}
+
+/// Strict, completeness-validated `presetListResponse` decode (TMS[2]→resp[5]→rec[2]),
+/// gated to the My Presets list via [`is_my_presets_list`].
 pub fn preset_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
     let (resp, recs) = list_records_strict(tms_body, 2, 5)?;
-    (first_varint(&resp, 1).unwrap_or(1) == 1).then_some(recs)
+    is_my_presets_list(&resp).then_some(recs)
 }
 /// Strict, completeness-validated `songListResponse` decode (TMS[11]→resp[3]→rec[2]).
 pub fn song_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {

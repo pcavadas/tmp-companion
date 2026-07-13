@@ -2459,11 +2459,9 @@ impl Session {
 /// doesn't carry a PresetListResponse.
 fn extract_preset_list(body: &[u8]) -> Option<Vec<String>> {
     let resp = dig(body, TMS_PRESET, PRESET_LIST_RESPONSE)?;
-    // MY PRESETS ONLY (listEnum field 1; missing = My Presets — lean sessions
-    // request only list 1). The handshake also collects the Factory (4) and
-    // Cloud (3) responses on the same session; without this check a longer
-    // Factory list can win longest-wins and be served as the user's presets.
-    if proto::first_varint(&resp, 1).unwrap_or(1) != 1 {
+    // My Presets only — the handshake also collects the Factory/Cloud responses
+    // on the same session (the wrong-list hazard is documented on the helper).
+    if !proto::is_my_presets_list(&resp) {
         return None;
     }
     // PresetListResponse.record (field 2, repeated) → PresetListRecord.displayName (field 1).
