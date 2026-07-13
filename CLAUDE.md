@@ -160,6 +160,12 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                       (buildStyles(t) composed-style registry, incl. the shared `kickerWide` micro-label) + ThemeContext (useTheme()→{t},
                       useStyles()→composed styles). Dark mode removed; call-site pattern is
                       `const { t } = useTheme(); const s = useStyles();`
+                      SPACING: new spacing reaches for the `t.space1..7` 4px scale (ordinal,
+                      value-hidden — space1=4…space7=48); a value that must AGREE across
+                      surfaces gets a role-named const (the `DIALOG_PAD_X = 22` pattern), NOT a
+                      primitive; existing view-local literals are left as-is (they're recorded
+                      design, not debt — no mass migration). The old `density` tokens were dead
+                      and were removed.
   ui/                 Icon.tsx + iconNames.ts (line icons), BlockArt.tsx (engine dispatch) +
                       blockart/ (per-family split: amps + ampsCombo*/ampsHead* · pedals +
                       pedalsMotif*/pedalsSpecial/pedalKnobs · mics + micBodies* · forms →

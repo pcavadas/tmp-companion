@@ -21,7 +21,7 @@ export function SetupGroupHeader({ slot, name }: SetupGroupHeaderProps) {
         display: "flex",
         alignItems: "baseline",
         gap: 9,
-        marginBottom: t.rowPadY,
+        marginBottom: 6,
       }}
     >
       <SlotLabel index={slot} />

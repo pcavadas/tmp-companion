@@ -6,8 +6,8 @@
 // always returns this set; field names are kept stable so call-sites read
 // `t.bg`, `t.mutedInk`, `t.serif`, etc. unchanged.
 //
-// Density tokens (locked "regular") and font-family constants are carried on the
-// same object so primitives can read `t.row`, `t.serif`, etc.
+// The spacing scale and font-family constants are carried on the same object so
+// primitives can read `t.space2`, `t.serif`, etc.
 
 import type { CSSProperties } from "react";
 
@@ -19,14 +19,19 @@ export const FONT_SANS = "'Inter', system-ui, sans-serif";
 export const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
 
 // ---------------------------------------------------------------------------
-// Density tokens (locked: "regular"). Mirrored onto the token object.
+// Spacing scale (4px ramp). Ordinal, value-hidden names — new spacing reaches
+// for these; existing view-local literals stand. Cross-surface component values
+// that must AGREE get a role-named const instead (see DIALOG_PAD_X), not a
+// primitive. (Superseded the old `density` set, which had rotted to ~0 use.)
 // ---------------------------------------------------------------------------
-export const density = {
-  row: 30, // table-row height (px, content-box)
-  pad: 16, // base pane padding (px)
-  rowPadY: 6, // table-row vertical padding (px)
-  paneY: 20, // section paddingY (px)
-  sectionGap: 16, // gap between sections in a pane (px)
+export const spacing = {
+  space1: 4,
+  space2: 8,
+  space3: 12,
+  space4: 16,
+  space5: 24,
+  space6: 32,
+  space7: 48,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -175,12 +180,14 @@ export interface ThemeTokens {
   fsMicro: number;
   fsMicro2: number;
   fsTag: number;
-  // density
-  row: number;
-  pad: number;
-  rowPadY: number;
-  paneY: number;
-  sectionGap: number;
+  // spacing scale (4px ramp)
+  space1: number;
+  space2: number;
+  space3: number;
+  space4: number;
+  space5: number;
+  space6: number;
+  space7: number;
   // corner radii (px)
   rSm: number;
   rMenuItem: number;
@@ -259,13 +266,7 @@ export const light: ThemeTokens = {
   mono: FONT_MONO,
 
   ...typeScale,
-
-  row: density.row,
-  pad: density.pad,
-  rowPadY: density.rowPadY,
-  paneY: density.paneY,
-  sectionGap: density.sectionGap,
-
+  ...spacing,
   ...radii,
   ...letterSpacing,
 

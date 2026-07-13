@@ -390,7 +390,7 @@ export function Toast({
             display: "flex",
             alignItems: "baseline",
             justifyContent: "space-between",
-            gap: 8,
+            gap: t.space2,
           }}
         >
           <span

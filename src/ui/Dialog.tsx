@@ -141,7 +141,7 @@ export function DialogHeader({ children }: { children: ReactNode }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 12,
+        gap: t.space3,
         padding: `15px ${String(DIALOG_PAD_X)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
       }}
