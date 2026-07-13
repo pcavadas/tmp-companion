@@ -482,6 +482,152 @@ pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<Scene
     Ok((docs, original_active))
 }
 
+/// Shallow-merge a saved scene's sparse overlay onto a cloned base `audioGraph` (mutated in
+/// place). For every node in every group of both `guitarNodes` and `micNodes`, if the scene
+/// carries `<graph>.<group>.<FenderId or nodeId>.dspUnitParameters`, those keys win over the
+/// cloned node's `dspUnitParameters` (base keys the overlay omits survive). A `splitMix`
+/// overlay merges key-level onto the cloned `audioGraph.splitMix`.
+fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
+    for key in ["guitarNodes", "micNodes"] {
+        let overlay_groups = scene.get(key).and_then(|g| g.as_object());
+        let Some(groups) = graph.get_mut(key).and_then(|g| g.as_object_mut()) else {
+            continue;
+        };
+        for (group, nodes) in groups.iter_mut() {
+            let Some(nodes) = nodes.as_array_mut() else {
+                continue;
+            };
+            for node in nodes.iter_mut() {
+                // Overlay keyed by FenderId (nodeId fallback), matching overlay_ab.rs.
+                let fid = node
+                    .get("FenderId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let nid = node
+                    .get("nodeId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let overlay_params = overlay_groups
+                    .and_then(|g| g.get(group))
+                    .and_then(|grp| {
+                        fid.as_deref()
+                            .and_then(|f| grp.get(f))
+                            .or_else(|| nid.as_deref().and_then(|n| grp.get(n)))
+                    })
+                    .and_then(|n| n.get("dspUnitParameters"))
+                    .and_then(|p| p.as_object());
+                let Some(overlay_params) = overlay_params else {
+                    continue;
+                };
+                let Some(obj) = node.as_object_mut() else {
+                    continue;
+                };
+                let Some(dsp) = obj
+                    .entry("dspUnitParameters")
+                    .or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut()
+                else {
+                    continue;
+                };
+                for (k, v) in overlay_params {
+                    dsp.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    if let Some(overlay_split) = scene.get("splitMix").and_then(|s| s.as_object()) {
+        if let Some(base_split) = graph
+            .as_object_mut()
+            .map(|g| g.entry("splitMix").or_insert_with(|| serde_json::json!({})))
+            .and_then(|s| s.as_object_mut())
+        {
+            for (k, v) in overlay_split {
+                base_split.insert(k.clone(), v.clone());
+            }
+        }
+    }
+}
+
+/// SAVED-JSON alternative to the live `prepass_scene_docs`: derive each requested scene's
+/// synthetic field-3 doc from a field-8 read instead of recalling scenes on the unit (no
+/// user-visible scene-hopping). Each doc is `{ "audioGraph": ... }` shaped exactly like the
+/// live push the consumers read (`session::extract_active_graph`/`extract_level_blocks`,
+/// `scenes::block_bypass_in_live_graph`): the whole base graph for a base-scene slot
+/// (`session::BASE_SCENE_SLOT`), or the base graph with `scenes[i]`'s sparse per-node
+/// `dspUnitParameters` (+ `splitMix`) overlaid for an FS scene. The restore scene is the
+/// preset's `lastLoadedScene` (`None` when absent).
+///
+/// Returns `None` (the caller must fall back to the live prepass — NEVER a partial answer)
+/// when `audioGraph` is missing OR any requested FS scene index is absent from `scenes[]` or
+/// isn't an object (a truncated field-8 read).
+///
+/// Overlay agreement validated against the live prepass by `probe --overlay-ab` (76/76
+/// scene-amp pairs, 0 bypass mismatches). Shipped DARK — see `prepass_scene_docs_via`.
+pub(crate) fn scene_docs_from_saved(
+    preset: &serde_json::Value,
+    scene_slots: &[u32],
+) -> Option<SceneDocs> {
+    let base_graph = preset.get("audioGraph")?;
+    let restore = preset
+        .get("lastLoadedScene")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as u32);
+    let scenes = preset.get("scenes").and_then(|s| s.as_array());
+    let mut docs = Vec::with_capacity(scene_slots.len());
+    for &slot in scene_slots {
+        if slot >= session::BASE_SCENE_SLOT {
+            docs.push((slot, Some(serde_json::json!({ "audioGraph": base_graph }))));
+            continue;
+        }
+        // FS scene: the index must exist and be an object, else the read is truncated → bail
+        // (a partial answer would silently mis-classify the missing scenes).
+        let scene = scenes
+            .and_then(|a| a.get(slot as usize))
+            .filter(|s| s.is_object())?;
+        let mut graph = base_graph.clone();
+        overlay_scene_onto_graph(&mut graph, scene);
+        docs.push((slot, Some(serde_json::json!({ "audioGraph": graph }))));
+    }
+    Some((docs, restore))
+}
+
+/// Scene-doc prepass with a switch between the SAVED-JSON path and the live recall path.
+/// `use_overlay` = read the field-8 preset and derive the docs via `scene_docs_from_saved`;
+/// on a `None` (missing graph / truncated scene) or read error it logs the reason and falls
+/// back to the live `prepass_scene_docs`. `!use_overlay` goes straight to the live prepass.
+///
+/// Shipped DARK: the sole production call site passes `use_overlay = false`, so default
+/// behavior is byte-identical to `prepass_scene_docs`. The overlay path was validated by
+/// `probe --overlay-ab` (76/76 scene-amp pairs agree, 0 bypass mismatches).
+///
+/// ADOPTION-TIME TODO (before flipping to `true`): `read_slot_preset_parsed` opens its OWN
+/// session and does NOT recall the preset on the unit, but the batched-apply runner contract
+/// requires the preset to already be current (the apply session sends no LoadPreset — the
+/// live prepass's own `load_preset` is what makes it current today). Enabling the overlay
+/// path must therefore add a `load_preset(slot)` so the apply lands on the right preset.
+pub(crate) fn prepass_scene_docs_via(
+    slot: u32,
+    scene_slots: &[u32],
+    use_overlay: bool,
+) -> Result<SceneDocs, String> {
+    if use_overlay {
+        match crate::read_slot_preset_parsed(slot) {
+            Ok((preset, _, _)) => {
+                if let Some(docs) = scene_docs_from_saved(&preset, scene_slots) {
+                    return Ok(docs);
+                }
+                log::info!(
+                    "scene-doc overlay: slot {slot} field-8 read lacked audioGraph or a requested scene — falling back to live prepass"
+                );
+            }
+            Err(e) => log::info!(
+                "scene-doc overlay: slot {slot} field-8 read failed ({e}) — falling back to live prepass"
+            ),
+        }
+    }
+    prepass_scene_docs(slot, scene_slots)
+}
+
 #[cfg(test)]
 #[path = "scene_jobs_tests.rs"]
 mod scene_jobs_tests;

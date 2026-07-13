@@ -297,7 +297,10 @@ pub(crate) async fn level_scenes_apply_batched(
             // `restore_scene` = the preset's original active scene: the batch-end
             // single save recalls it first so the preset persists in the same
             // base/scene/footswitch state it was loaded in.
-            let (docs, restore_scene) = prepass_scene_docs(slot, &scene_slots)?;
+            // DARK: overlay path validated by `probe --overlay-ab` (76/76 scene-amp pairs,
+            // 0 bypass mismatches) but adoption is a gated follow-up — flip to `true` then
+            // (see prepass_scene_docs_via's adoption-time TODO). `false` = live prepass today.
+            let (docs, restore_scene) = prepass_scene_docs_via(slot, &scene_slots, false)?;
             // Inter-session HID gap: the prepass session has just closed; the one-shot
             // runner opens a fresh one. Reuse the leveller's HW-proven open-after-close
             // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
