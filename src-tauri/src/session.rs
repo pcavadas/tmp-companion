@@ -201,9 +201,10 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cab_sim2_enabled: Option<bool>,
     /// ALLOWLISTED current `dspUnitParameters` values for Doctor's value-aware
-    /// prescriptions: the reverb wet/dry mix names (`mix`, `wetdrymix`) + the
-    /// EQ-10 `gain*hz` band gains. Empty for every other param/node — the full
-    /// param map would bloat every snapshot/backup row for nothing.
+    /// prescriptions: the reverb wet/dry mix names (`mix`, `wetdrymix`), the cab
+    /// low/high cut (`hpf`, `lpf`), and the EQ-10 `gain*hz` band gains. Empty for
+    /// every other param/node — the full param map would bloat every snapshot/
+    /// backup row for nothing.
     pub params: std::collections::HashMap<String, f64>,
 }
 
@@ -3055,10 +3056,15 @@ pub(crate) fn extract_active_graph(
                 let cab_sim2_enabled = dual
                     .and_then(|p| p.get("cabsim2enabled"))
                     .and_then(|b| b.as_bool());
-                // Doctor's allowlist: reverb mix names + EQ-10 band gains (see
-                // the GraphNode.params doc) — numeric values only.
+                // Doctor's allowlist: reverb mix names + cab low/high cut
+                // (hpf/lpf) + EQ-10 band gains (see the GraphNode.params doc) —
+                // numeric values only.
                 let keep = |k: &str| {
-                    k == "mix" || k == "wetdrymix" || (k.starts_with("gain") && k.ends_with("hz"))
+                    k == "mix"
+                        || k == "wetdrymix"
+                        || k == "hpf"
+                        || k == "lpf"
+                        || (k.starts_with("gain") && k.ends_with("hz"))
                 };
                 let node_params: std::collections::HashMap<String, f64> = params
                     .and_then(|p| p.as_object())

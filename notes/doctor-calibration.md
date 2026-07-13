@@ -89,3 +89,46 @@ The attended sweep derives the real capture thresholds:
 separation margins, pre-onset noise floor, stimulus band coverage). Replace
 the `*_CAPTURE` consts in `doctor.rs` from that report; the pinned
 `thresholds_for(Synthetic)` test guards the synthetic tables against drift.
+
+## Playback level (Fletcher–Munson) threshold offsets — PROVISIONAL
+
+`doctor::playback_offsets` shifts the boomy/muddy and fizzy thresholds by the
+user's playback level (`doctor_check` reads it from the profile store). It is
+anchored at **Rehearsal = offset 0**, the ASSUMED monitoring level the synthetic
+`Thresholds` were calibrated at above (a working assumption, not measured — the
+2026-07-03 sweep did not record monitor SPL). Stage tightens (boomy/muddy −2.0
+dB, fizzy −1.0 dB), Quiet relaxes (+2.0 / +1.0); values are coarse and PROVISIONAL.
+
+The attended re-sweep should **record the monitor SPL** at capture time and
+re-derive these offsets against measured equal-loudness behaviour (and confirm
+which playback level the base `Thresholds` actually correspond to — if it is not
+Rehearsal, re-anchor). Offsets are additive at comparison time and never mutate
+the pinned consts, so this is a separate tuning axis from the `*_CAPTURE` sweep.
+
+### Field data point — preset 001 base vs "Dist" scene (2026-07-13)
+
+A player reported preset 001 (list index 0) reading all-clear in the Doctor yet
+sounding **boomy at rehearsal volume**, on both the base and the "Dist" scene.
+Read-only `probe --doctor 0,1,…,16,0:5 guitar-humbucker` (14 library bases +
+preset 001 scene 5 = "Dist"), cohort-median mode:
+
+- **Base (slot 0):** lows balance **+1.0 dB**, `dev(lows) ≈ 0.0` vs the ~+1.0 dB
+  library median → **not boomy at any playback level** (not even Stage's 3.0 dB
+  gate). The base is actually presence/highs-forward (Highs +13.3 dB). So the
+  boom the player hears on the _base_ is **not in this preset's low end** — it
+  supports his own "might be the other guitarist" hypothesis for the base.
+- **"Dist" scene (slot 0 scene 5):** lows balance **+8.1 dB**, `dev(lows) = +7.0
+dB` vs the library median → **boomy FIRES**. Under the provisional playback
+  offsets the boomy gate is 7.0 (Quiet) / 5.0 (Rehearsal) / 3.0 (Stage), so the
+  Dist scene crosses at Rehearsal-and-louder and sits right on the boundary at
+  Quiet — matching the player's "boomy at rehearsal levels" report almost
+  exactly. **His ear is confirmed for the Dist scene.**
+
+Two live validations fell out of this: (1) the per-preset cohort dedupe (a run of
+just preset 001's base + scenes would previously self-normalize — the Dist scene's
+low end judged against the preset's own scenes, masking the boom → "Doctor says
+fine"); (2) the playback-offset model — the Dist boom is exactly a
+rehearsal-and-louder phenomenon, not a bedroom one. Left as an open data point:
+the base reads flat here but was reported boomy by ear; if a future SPL-anchored
+sweep still finds the base flat, the base-boom is environmental (room/other
+guitarist), not a preset defect.

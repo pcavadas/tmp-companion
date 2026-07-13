@@ -24,8 +24,12 @@ via an explicit prescription apply.
 
 muddy / boomy / harsh / fizzy / washed / lost / buried / **spiky** — band
 deviations in "balance space" (a band's dB offset from the sound's own spectral
-mean) judged against the cohort median when ≥ `MIN_COHORT` = 4 sounds ran, else
-absolute neighbour expectations (the result carries `cohort: "median"|"absolute"`).
+mean) judged against the cohort median when ≥ `MIN_COHORT` = 4 **presets** ran,
+else absolute neighbour expectations (the result carries `cohort: "median"|"absolute"`).
+The median populates from ONE representative sound per preset (its base sound
+preferred, else its first measured sound) — a single preset's base + scenes would
+otherwise be a degenerate cohort whose median ≈ the preset itself, self-normalizing
+real problems away; every sound is still DIAGNOSED against that median.
 Exceptions: fizzy is self-relative (Air vs own presence band — the cohort median
 is bimodal across a library); washed is a post-stimulus tail-RMS rule; spiky is a
 dynamics-spread rule (clean chains only).
@@ -72,7 +76,13 @@ shift, a −80 dB empty-tail sentinel) — repeated runs are the arbiter.
 `Rx` derivation is graph-aware (`graph_facts`): fixes prefer an existing
 carrier block over inserting one, inserts are gated by the `blockcaps` limits,
 and comp-aware rules avoid stacking compressors; parallel-split placements the
-wire can't express are skipped. Apply (`doctor_apply`) edits the device edit
+wire can't express are skipped. Param one-clicks are **value-aware** wherever
+the current value rides the graph allowlist (`session::GraphNode.params`: reverb
+`mix`/`wetdrymix`, cab `hpf`/`lpf`, EQ-10 `gain*hz`): a write that would move a
+known value the WRONG way is dropped (washed skips an already-low mix; the
+boomy/fizzy cab cut skips an hpf already ≥ 90 Hz / lpf already ≤ 8 kHz and falls
+back to the advisory), and a blind write on an UNKNOWN value keeps an honest
+"Set …" title instead of a directional "Raise/Lower/Cut" promise. Apply (`doctor_apply`) edits the device edit
 buffer on a held session — nothing persists until `doctor_save`;
 `doctor_discard` reloads the stored preset. The frontend serializes applies
 (`applyLock.ts`) and allows ONE unsaved prescription at a time; A/B audition
@@ -86,5 +96,31 @@ sound and rolls up the preset's worst severity (scene-jump bumps rank).
 ## Scene consistency
 
 Separate from tonal rules: a scene whose loudness jumps ≥ `scene_delta_db` = 3 dB
-from Base is flagged (advisory `SceneConsistency` + one-click `SceneTrim`) —
-pointing at per-scene leveling rather than a tonal fix.
+from Base is flagged as an **advisory-only** `SceneConsistency` — Doctor has no
+in-app scene trim (the wire can't set a scene's loudness relative to Base, and
+Level-tab leveling targets an absolute LUFS), so every branch (louder scene,
+quieter scene, block-acting footswitch, the scene-0 USB anomaly) advises leveling
+it from the Level tab rather than promising a one-click. `DoctorOp` carries no
+`SceneTrim` variant.
+
+## Playback level (Fletcher–Munson, PROVISIONAL)
+
+The store's playback level (Quiet / Rehearsal / Stage, shared with the leveler)
+shifts three tonal thresholds at comparison time via `doctor::playback_offsets`
+(read backend-side in `doctor_check`, no wire change). Equal-loudness contours
+flatten as SPL rises, so low-frequency (boomy/muddy) and mildly-HF (fizzy) content
+is perceptually hotter at stage volume: **Stage** tightens (boomy/muddy −2.0 dB,
+fizzy −1.0 dB → fire earlier), **Quiet** relaxes (+2.0 / +1.0), **Rehearsal** is
+the anchor (0, and byte-identical to the legacy `diagnose()`). The offsets are
+additive at comparison time — they never mutate the pinned `Thresholds` consts.
+The offset table is **PROVISIONAL**, pending an SPL-anchored recalibration sweep
+(see notes/doctor-calibration.md). The Doctor SETUP page surfaces the setting
+(a SegmentedControl writing through the existing `set_playback_level` command —
+it IS the Settings value, no per-run override; `doctor_check` reads the store at
+run time so the picker is live by construction). Caveats: a fresh install
+defaults to **Stage**, so new users get the tightened thresholds immediately;
+and the marketing showcase runs through `doctor_check`, so its rendered cards
+see the store's offsets too (the curated showcase profiles sit far from every
+threshold, and the pinned `showcase_profile_diagnoses` test uses the offset-free
+`diagnose()` — but a future near-threshold showcase preset could shift under
+Stage).

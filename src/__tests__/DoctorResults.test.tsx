@@ -187,11 +187,12 @@ function fixture(): DoctorCheckResult {
           worstDeltaDb: 6,
           rx: [
             {
-              kind: "oneclick",
-              title: "Trim the Crunch scene by 6 dB",
-              detail: "Levels the stomp between sounds.",
-              cpuNote: "0% CPU",
-              ops: [{ kind: "scene_trim", scene: 0, targetDeltaDb: -6 }],
+              kind: "advisory",
+              title: "Crunch is much louder than the base sound",
+              detail:
+                "Crunch jumps +6.0 dB when you switch to it — level it from the Level tab.",
+              cpuNote: "",
+              ops: [],
             },
           ],
         },

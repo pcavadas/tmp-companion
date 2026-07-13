@@ -184,14 +184,15 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
     ))
 }
 
-/// Doctor calibration sweep (`probe --doctor`): for each 0-based list index,
-/// capture the BASE sound with the Doctor tail (`leveller::doctor_capture`),
-/// compute its band profile + time-domain metrics, then diagnose the whole
-/// cohort (median-relative when ≥ `doctor::MIN_COHORT` sounds) and print one
-/// JSON line per sound plus a human table — the headless iteration loop for
-/// tuning `doctor::Thresholds`. Read-only: loads + captures, NEVER saves;
-/// every capture path ends re-amp OFF.
-pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> {
+/// Doctor calibration sweep (`probe --doctor`): for each `(list index, scene)`
+/// entry (scene `None` = the BASE sound; `Some(wire index)` = one scene, the
+/// probe CSV's `slot:scene` form), capture the sound with the Doctor tail
+/// (`leveller::doctor_capture`), compute its band profile + time-domain metrics,
+/// then diagnose the whole cohort (median-relative when ≥ `doctor::MIN_COHORT`
+/// sounds) and print one JSON line per sound plus a human table — the headless
+/// iteration loop for tuning `doctor::Thresholds`. Read-only: loads + captures,
+/// NEVER saves; every capture path ends re-amp OFF.
+pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
     let instrument = doctor::Family::from_topology(
         topologies::by_id(topology_id)
@@ -199,12 +200,20 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
             .unwrap_or("guitar"),
     );
 
-    let mut sounds: Vec<(u32, doctor::SoundProfile, Option<Vec<doctor::DoctorNode>>)> = Vec::new();
-    for &slot in slots {
+    type Sound = (
+        u32,
+        Option<u32>,
+        doctor::SoundProfile,
+        Option<Vec<doctor::DoctorNode>>,
+    );
+    let mut sounds: Vec<Sound> = Vec::new();
+    for &(slot, scene) in slots {
         // One field-8 slot read (quiet line, NO LoadPreset) drives BOTH the graph
         // facts and the base-sound force-bypass isolation (every on/off block off).
         // Truncated JSON still yields the guitarNodes prefix + ftsw; on read error
-        // we degrade to no graph facts + no isolation.
+        // we degrade to no graph facts + no isolation. A SCENE sound gets NO
+        // isolation writes (mirrors `doctor_check`: its own bypass overrides
+        // define it).
         let mut nodes: Option<Vec<doctor::DoctorNode>> = None;
         let mut fb: Vec<(String, String, bool)> = Vec::new();
         match read_slot_preset_parsed(slot) {
@@ -216,19 +225,21 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
                         .map(doctor::DoctorNode::from_graph_node)
                         .collect(),
                 );
-                fb = footswitch::all_onoff_blocks(
-                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
-                )
-                .into_iter()
-                .map(|(g, n)| (g, n, true))
-                .collect();
+                if scene.is_none() {
+                    fb = footswitch::all_onoff_blocks(
+                        preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                    )
+                    .into_iter()
+                    .map(|(g, n)| (g, n, true))
+                    .collect();
+                }
             }
             Err(e) => eprintln!(
                 "[probe] slot {slot}: preset read failed ({e}) — no graph facts, no isolation"
             ),
         }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), false) {
+        match leveller::doctor_capture(slot, scene, &fb, &stim, Some(0.5), false) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 if !confident {
@@ -243,7 +254,7 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
                     onset,
                     instrument,
                 )?;
-                sounds.push((slot, profile, nodes));
+                sounds.push((slot, scene, profile, nodes));
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
         }
@@ -253,7 +264,7 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
     }
 
     let cohort = (sounds.len() >= doctor::MIN_COHORT).then(|| {
-        let refs: Vec<&doctor::SoundProfile> = sounds.iter().map(|(_, p, _)| p).collect();
+        let refs: Vec<&doctor::SoundProfile> = sounds.iter().map(|(_, _, p, _)| p).collect();
         doctor::cohort_median(&refs)
     });
 
@@ -263,11 +274,15 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
         if cohort.is_some() { "median" } else { "absolute" },
         instrument.labels().join(" ")
     );
-    for (slot, profile, nodes) in &sounds {
+    for (slot, scene, profile, nodes) in &sounds {
         let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_deref());
         let bal = doctor::balance(&profile.bands);
+        let label = match scene {
+            Some(s) => format!("{slot}:{s}"),
+            None => slot.to_string(),
+        };
         out += &format!(
-            "  {slot:>4} | {:>8.2} | {:>8.1} | {} | {}\n",
+            "  {label:>4} | {:>8.2} | {:>8.1} | {} | {}\n",
             profile.integrated_lufs,
             profile.tail_ratio_db,
             bal.iter()
@@ -283,6 +298,7 @@ pub fn probe_doctor(slots: &[u32], topology_id: &str) -> Result<String, String> 
         // Machine-readable line per sound (jq-able for calibration notes).
         let json = serde_json::json!({
             "slot": slot,
+            "scene": scene,
             "profile": profile,
             "balanceDb": bal.clone(),
             "diagnoses": diags,

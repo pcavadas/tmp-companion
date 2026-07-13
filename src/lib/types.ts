@@ -761,8 +761,7 @@ export type DoctorOp =
       beforeFenderId: string | null;
       fenderId: string;
       params: [string, number][];
-    }
-  | { kind: "scene_trim"; scene: number; targetDeltaDb: number };
+    };
 
 /** Chain-preview DTO on a `chain`-kind prescription: the resulting block list
  * by model id (the UI resolves art through its existing strip engine). */

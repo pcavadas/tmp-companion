@@ -91,22 +91,6 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
 }
 
 #[test]
-fn doctor_validate_ops_rejects_scene_trim() {
-    let ok = vec![doctor::DoctorOp::Param {
-        group_id: "G1".into(),
-        node_id: "ACD_CabSimTMS".into(),
-        param: "lpf".into(),
-        value: 8000.0,
-    }];
-    assert!(doctor_validate_ops(&ok).is_ok());
-    let bad = vec![doctor::DoctorOp::SceneTrim {
-        scene: 1,
-        target_delta_db: 2.0,
-    }];
-    assert!(doctor_validate_ops(&bad).is_err());
-}
-
-#[test]
 fn doctor_apply_result_serializes_camel_case() {
     let r = DoctorApplyResult {
         before_clip: "data:audio/wav;base64,AAA".into(),

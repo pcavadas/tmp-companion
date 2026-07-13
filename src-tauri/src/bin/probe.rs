@@ -39,8 +39,9 @@
 //!                                  timings on one preset (the RE-BASELINE decision aid)
 //!   probe --doctor <slots_csv> <topology>
 //!                                  Doctor calibration sweep: capture each 0-based list
-//!                                  index's BASE sound (Doctor tail), print band profiles +
-//!                                  metrics + fired diagnoses (JSON per sound + table).
+//!                                  index's BASE sound (Doctor tail) — or one scene via a
+//!                                  `slot:scene` entry (0-based wire index) — print band
+//!                                  profiles + metrics + fired diagnoses (JSON + table).
 //!                                  READ-ONLY: loads + captures, never saves
 //!   probe --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi> [--labels <rules.json>] --out <report.json>
 //!                                  CAPTURE-space Doctor recal: sweep each BASE sound through a
@@ -1549,18 +1550,23 @@ fn main() {
 
     if let Some(i) = args.iter().position(|a| a == "--doctor") {
         // --doctor <slots_csv> <topology>  (Doctor calibration sweep, read-only)
+        // A CSV entry is `N` (the slot's BASE sound) or `N:S` (its 0-based wire
+        // scene S — e.g. `0:1` = list index 0, scene 1).
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
         let topology = args.get(i + 2).cloned().unwrap_or_default();
-        let slots: Vec<u32> = match slots_csv
+        let slots: Vec<(u32, Option<u32>)> = match slots_csv
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
-            .map(|x| x.parse::<u32>())
-            .collect::<Result<Vec<u32>, _>>()
+            .map(|x| match x.split_once(':') {
+                Some((slot, scene)) => Ok((slot.parse::<u32>()?, Some(scene.parse::<u32>()?))),
+                None => x.parse::<u32>().map(|s| (s, None)),
+            })
+            .collect::<Result<Vec<(u32, Option<u32>)>, std::num::ParseIntError>>()
         {
             Ok(s) if !s.is_empty() && !topology.is_empty() => s,
             _ => {
-                eprintln!("usage: probe --doctor <slots_csv> <topology>");
+                eprintln!("usage: probe --doctor <slots_csv[:scene]> <topology>");
                 std::process::exit(2);
             }
         };

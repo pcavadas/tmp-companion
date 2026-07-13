@@ -81,13 +81,8 @@ function affectsSharedBlock(
   return diags.some((d) =>
     d.rx.some((rx) =>
       rx.ops.some((op) => {
-        const n =
-          op.kind === "param"
-            ? op.nodeId
-            : op.kind === "insert_node"
-              ? op.fenderId
-              : null;
-        return n != null && !ownNodeIds.includes(n);
+        const n = op.kind === "param" ? op.nodeId : op.fenderId;
+        return !ownNodeIds.includes(n);
       }),
     ),
   );

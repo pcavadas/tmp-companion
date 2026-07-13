@@ -140,6 +140,18 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
         Flip Before / After while it plays — the change is applied on the unit
         but not yet saved.
       </div>
+      <div
+        style={{
+          fontFamily: t.sans,
+          fontSize: t.fsLabel,
+          color: t.mutedInk,
+          marginTop: 4,
+          lineHeight: 1.5,
+        }}
+      >
+        The fixed version can sound a touch quieter — that&apos;s the cut
+        working, not a worse tone.
+      </div>
     </div>
   );
 }

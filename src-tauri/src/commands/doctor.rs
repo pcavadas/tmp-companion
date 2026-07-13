@@ -201,6 +201,14 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             Ok((it, path, kind))
         })
         .collect::<Result<_, String>>()?;
+    // Playback-level (Fletcher–Munson) threshold offsets — read the store's level
+    // the same way `level_preset::playback_offset_for` does (Stage = the serde
+    // default when the store predates the setting). Global to the run.
+    let offsets = doctor::playback_offsets(
+        profiles::load(&app)
+            .map(|s| s.playback_level)
+            .unwrap_or_default(),
+    );
     with_released_seize(state.session.clone(), move || {
         // One stimulus decode per (path, calibration) pair — items share them, along
         // with the decoded stimulus's OWN dynamics spread (arms the floor guard below;
@@ -393,9 +401,22 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // judged against a synthetic median reproduces false verdict flips (the
         // measured band-balance shift). An under-minimum group gets None
         // (absolute fallback), independently of the others.
-        let by_group: Vec<(doctor::Family, doctor::StimulusKind, &doctor::SoundProfile)> = measured
+        // Median dedupes to one sound per preset (base preferred) — a single
+        // preset's base + scenes would otherwise self-normalize (see
+        // `doctor::cohorts_by_family_kind`), so thread list_index + base-ness.
+        let by_group: Vec<(
+            doctor::Family,
+            doctor::StimulusKind,
+            u32,
+            bool,
+            &doctor::SoundProfile,
+        )> = measured
             .iter()
-            .map(|(i, p)| (instrument_of(&resolved[*i].0), resolved[*i].2, p))
+            .map(|(i, p)| {
+                let item = &resolved[*i].0;
+                let is_base = item.scene.is_none() && item.footswitch.is_none();
+                (instrument_of(item), resolved[*i].2, item.list_index, is_base, p)
+            })
             .collect();
         let cohorts = doctor::cohorts_by_family_kind(&by_group);
 
@@ -415,6 +436,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         cohort,
                         *kind,
                         coverage_by_item.get(&i).map(Vec::as_slice),
+                        offsets,
                     ),
                     p.integrated_lufs,
                     p.tail_ratio_db,
@@ -514,8 +536,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
 
 /// One prescription's apply job (camelCase wire — the frontend echoes the ops it
 /// got from `doctor_check`). `name` is the identity guard (apply refuses if the
-/// loaded slot's name differs). Scene-trim ops are rejected here — they route
-/// through the scene-leveling command frontend-side.
+/// loaded slot's name differs). Every `DoctorOp` variant (`Param` / `InsertNode`)
+/// is applied live; scene-consistency findings are advisory-only and carry no ops.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorApplyJob {
@@ -568,21 +590,6 @@ fn before_cache_put(key: BeforeKey, clip: String) {
     *crate::lock_ok(&BEFORE_CACHE) = Some((key, clip));
 }
 
-/// Reject the ops `doctor_apply` can't route live. Only `SceneTrim` is rejected
-/// (scene trims go through the scene-leveling command). Pure + device-free so the
-/// rejection is unit-testable.
-fn doctor_validate_ops(ops: &[doctor::DoctorOp]) -> Result<(), String> {
-    if ops
-        .iter()
-        .any(|op| matches!(op, doctor::DoctorOp::SceneTrim { .. }))
-    {
-        return Err(
-            "scene-trim prescriptions aren't applied here — use scene leveling instead".to_string(),
-        );
-    }
-    Ok(())
-}
-
 /// Apply a prescription LIVE onto the edit buffer (never saved) and return the
 /// before/after A/B clips. Flow (honoring one-engage-per-connection + set-then-
 /// engage): (a) capture the STORED preset — this also loads it, so (b) can
@@ -596,7 +603,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
     state: State<'_, AppState>,
     job: DoctorApplyJob,
 ) -> Result<DoctorApplyResult, String> {
-    doctor_validate_ops(&job.ops)?;
     let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
     with_released_seize(state.session.clone(), move || {
         let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
@@ -673,8 +679,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                         }
                         other => other,
                     },
-                    // Rejected up front by doctor_validate_ops.
-                    doctor::DoctorOp::SceneTrim { .. } => Ok(true),
                 };
                 let detail = match outcome {
                     Ok(true) => continue,
