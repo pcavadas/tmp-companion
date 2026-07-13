@@ -157,7 +157,9 @@ pub fn probe_level_preset_scenes(
         verify: true,
         ..Default::default()
     };
-    let br = leveller::level_preset(list_index, &stim, base_target, opts, &[], || false)?;
+    // probe = raw benchmark behavior; the setlist/scene-bench base pass stays skip-free
+    // this PR (its common target moves with min(C), so "unchanged" is rarer anyway).
+    let br = leveller::level_preset(list_index, &stim, base_target, opts, &[], None, || false)?;
     out += &format!(
         "Base  → target {:.1}  presetLevel={:.4}  verify {:.2} LU (err {:+.2}){}{}\n",
         base_target,

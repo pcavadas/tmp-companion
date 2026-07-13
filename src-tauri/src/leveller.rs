@@ -762,16 +762,31 @@ pub fn restore_preset_level(slot: u32, level: f32, expected_name: &str) -> Resul
     apply_level(slot, &[], &LevelKnob::PresetLevel, level, opts, true).map(|_| ())
 }
 
+/// Is the solved `final_level` the same as the preset's already-saved `previous`
+/// level, within the LU-space `KNOB_TOL_LU` band? Deliberately matches
+/// `KNOB_TOL_LU` rather than a tighter ratio — a band under the ~0.12 LU measured
+/// run-to-run noise would make the skip a coin flip. `previous <= 0.0` (unread or
+/// nonsensical) never counts as unchanged.
+fn level_unchanged(final_level: f32, previous: f32) -> bool {
+    previous > 0.0 && (20.0 * (final_level as f64 / previous as f64).log10()).abs() <= KNOB_TOL_LU
+}
+
 /// Level one preset to `target_lufs`. Self-contained: opens its own fresh
 /// connections (load → measure → set), so the caller must NOT hold a competing
 /// device seize while this runs. Composes the `measure_c` → `solve_level` →
-/// `apply_level` seams.
+/// `apply_level` seams. `previous_level` (the preset's currently-saved
+/// `presetLevel`, when the caller already read it) enables the idempotency skip:
+/// a re-run that solves the SAME level as last time reloads the stored preset and
+/// returns without writing (see the `level_unchanged` check below), so repeat runs
+/// don't re-randomize an already-on-target preset. `None` (the probe/benchmark
+/// call sites, and the setlist common-target pass) keeps the always-write behavior.
 pub fn level_preset(
     slot: u32,
     stimulus: &[f32],
     target_lufs: f64,
     opts: LevelOptions,
     force_bypass: &[(String, String, bool)],
+    previous_level: Option<f32>,
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<LevelResult, String> {
     // Pre-measure cancel: nothing has touched the device yet, so return WITHOUT the
@@ -817,6 +832,42 @@ pub fn level_preset(
             return Err(CANCELLED.to_string());
         }
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
+        // Idempotency skip: the solved level matches what's already saved — reload to
+        // discard the measurement's ref-level edit (same recovery as the NO_SIGNAL
+        // branch above) and return without writing. `previous_level: None` on the
+        // result (not `previous_level`/`Some(p)`) is CRITICAL: the UI's Summary
+        // "Restore original" button gates on it, and there is nothing to restore when
+        // this run touched nothing.
+        if let Some(p) = previous_level {
+            if !clamped && level_unchanged(final_level, p) {
+                log::info!(
+                    "level_preset slot={slot}: solved level within tolerance of saved ({final_level:.4} vs {p:.4}) — skipping write"
+                );
+                restore_saved_preset(slot)?;
+                return Ok(LevelResult {
+                    slot,
+                    ref_level,
+                    measured_lufs: m.measured_lufs,
+                    constant_c: m.c,
+                    final_level: p,
+                    target_lufs,
+                    predicted_lufs: predicted,
+                    clamped: false,
+                    saved: false,
+                    verify_lufs: None,
+                    iterations: 1,
+                    dynamic_spread_lu: Some(m.dynamic_spread_lu),
+                    clamp_reason: None,
+                    verify_by_ear: false,
+                    previous_level: None,
+                    true_peak_dbtp: Some(predicted_true_peak_dbtp(
+                        m.true_peak_dbtp,
+                        ref_level,
+                        final_level,
+                    )),
+                });
+            }
+        }
         // With forced footswitch bypasses, the device edit buffer is dirty (bypasses persist
         // across HID reconnects), so `apply_level` must reload FIRST to reset it before setting
         // only `presetLevel` and saving. And skip verify: its capture runs AFTER that reload, so
@@ -2240,6 +2291,17 @@ const REBALANCE_BLEED_MARGIN_DB: f64 = 28.0;
 /// solo-above-floor margin is huge (→ no verify-by-ear flag) instead of failing the scene.
 const MUTE_FLOOR_SILENT_LUFS: f64 = -120.0;
 
+/// Is this scene already at target? Matches the correction loop's `KNOB_TOL_LU`
+/// acceptance band (rather than the tighter ~0.1 dB knob-ratio check this replaces)
+/// so a re-run doesn't rewrite an already-in-tolerance scene and re-randomize it.
+/// Deliberately skips the corrective pass (`correct_iter`) for a within-tolerance
+/// COMPRESSED scene (the UA1176 case below, see `jointk_one_scene`'s doc) — within
+/// tolerance is good enough, and a `clamped` solve must still fall through and
+/// report clamped even when the measured value happens to sit on target.
+fn scene_at_target(measured: f64, target: f64, clamped: bool) -> bool {
+    !clamped && (measured - target).abs() <= KNOB_TOL_LU
+}
+
 /// Per-scene joint-k: measure the scene AS-IS once, solve one factor `k`, apply it to every
 /// lane amp (preserving their mix), VERIFY, then `correct_iter` (bounded secant) to converge
 /// through a downstream compressor. The open-loop `20·log10(k)` model is exact for pure gain
@@ -2268,9 +2330,9 @@ fn jointk_one_scene(
         achieved,
         k_eff,
     } = solve_joint_k_at(&job.knobs, target_lufs, measured)?;
-    // Already at target (uniform relative move within ~1.2% of the knob) and not clamped
-    // → leave every knob untouched (a clamp must still be REPORTED even if nothing moves).
-    if !clamped && ((k_eff - 1.0).abs() as f32) < 0.012 {
+    // Already at target (within the KNOB_TOL_LU acceptance band) and not clamped →
+    // leave every knob untouched (a clamp must still be REPORTED even if nothing moves).
+    if scene_at_target(measured, target_lufs, clamped) {
         let currents = job.knobs.iter().map(|kt| kt.current).collect();
         return Ok(SceneSolve {
             lufs: measured,
@@ -3145,7 +3207,7 @@ mod tests {
         let stim = [0.0f32; 16];
         let opts = LevelOptions::default();
         assert_eq!(
-            level_preset(0, &stim, -30.0, opts, &[], || true).unwrap_err(),
+            level_preset(0, &stim, -30.0, opts, &[], None, || true).unwrap_err(),
             CANCELLED
         );
         let knob = LevelKnob::PresetLevel;
@@ -3320,7 +3382,9 @@ mod tests {
         assert!(j.achieved > -30.0);
     }
 
-    // At target already → k_eff ≈ 1, not clamped (the caller then skips the write).
+    // At target already → k_eff ≈ 1, not clamped. `jointk_one_scene`'s caller-side
+    // skip no longer keys off k_eff though — it compares `measured` vs `target_lufs`
+    // directly via `scene_at_target` (the KNOB_TOL_LU band), which a unity k_eff implies.
     #[test]
     fn joint_k_at_target_is_unity_unclamped() {
         let j = super::solve_joint_k_at(&[amp_knob(0.5), amp_knob(0.2)], -30.0, -30.0).unwrap();
@@ -3686,5 +3750,57 @@ mod tests {
             assert!((coord - 0.0).abs() < 1e-3, "{strategy:?} coord={coord}");
             assert!((lufs - (-26.0)).abs() < 1e-6, "{strategy:?} lufs={lufs}");
         }
+    }
+
+    // scene_at_target mirrors the correction loop's KNOB_TOL_LU acceptance band —
+    // a re-run must not rewrite an already-in-tolerance scene.
+    #[test]
+    fn scene_at_target_accepts_within_knob_tol() {
+        assert!(
+            super::scene_at_target(-22.0, -22.29, false),
+            "0.29 LU off, unclamped"
+        );
+    }
+
+    #[test]
+    fn scene_at_target_rejects_just_outside_knob_tol() {
+        assert!(!super::scene_at_target(-22.0, -22.31, false), "0.31 LU off");
+    }
+
+    #[test]
+    fn scene_at_target_rejects_when_clamped_even_at_zero_delta() {
+        assert!(
+            !super::scene_at_target(-22.0, -22.0, true),
+            "clamped must still report"
+        );
+    }
+
+    // level_unchanged: LU-space ratio tolerance matching KNOB_TOL_LU, guards the
+    // Base-leveling idempotency skip against re-writing an in-tolerance presetLevel.
+    #[test]
+    fn level_unchanged_true_on_identical_levels() {
+        assert!(super::level_unchanged(0.5160, 0.5160));
+    }
+
+    #[test]
+    fn level_unchanged_true_within_knob_tol() {
+        // 20*log10(0.5160/0.5300) ≈ -0.23 LU
+        assert!(super::level_unchanged(0.5160, 0.5300));
+    }
+
+    #[test]
+    fn level_unchanged_false_beyond_knob_tol() {
+        // 20*log10(0.5160/0.55) ≈ -0.55 LU
+        assert!(!super::level_unchanged(0.5160, 0.55));
+    }
+
+    #[test]
+    fn level_unchanged_false_on_zero_previous() {
+        assert!(!super::level_unchanged(0.5, 0.0));
+    }
+
+    #[test]
+    fn level_unchanged_false_on_negative_previous() {
+        assert!(!super::level_unchanged(0.5, -1.0));
     }
 }
