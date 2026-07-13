@@ -33,10 +33,10 @@ export function buildStyles(t: ThemeTokens) {
     searchBox: {
       display: "flex",
       alignItems: "center",
-      gap: 8,
+      gap: t.space4,
       border: `0.5px solid ${t.hairlineStrong}`,
       borderRadius: t.rMd,
-      padding: "5px 10px",
+      padding: `${String(t.space3)}px ${String(t.space5)}px`,
       background: "transparent",
     } as CSSProperties,
 
@@ -57,7 +57,7 @@ export function buildStyles(t: ThemeTokens) {
       border: `0.5px solid ${t.hairlineStrong}`,
       borderRadius: t.rCard,
       boxShadow: "0 16px 38px -14px rgba(15,17,21,0.28)",
-      padding: 4,
+      padding: t.space2,
       maxHeight: 280,
       overflowY: "auto",
       overflowX: "hidden",

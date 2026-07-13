@@ -5,6 +5,8 @@
 // reuses the full BandMeter's (db+30)/45 normalization at row scale. Flagged as a
 // DS sign-off candidate (the one genuinely new visual).
 
+import { useTheme } from "../../theme/ThemeContext";
+
 const FAINT = "rgba(15,17,21,0.14)";
 
 export interface BandSparkProps {
@@ -29,6 +31,7 @@ export function BandSpark({
   color,
   muted,
 }: BandSparkProps) {
+  const { t } = useTheme();
   const hot = new Set(hotBands);
   return (
     <span
@@ -37,7 +40,7 @@ export function BandSpark({
       style={{
         display: "inline-flex",
         alignItems: "flex-end",
-        gap: 1.5,
+        gap: t.space1,
         height: 17,
         width: 46,
         flexShrink: 0,

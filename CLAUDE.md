@@ -160,6 +160,14 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                       (buildStyles(t) composed-style registry, incl. the shared `kickerWide` micro-label) + ThemeContext (useTheme()→{t},
                       useStyles()→composed styles). Dark mode removed; call-site pattern is
                       `const { t } = useTheme(); const s = useStyles();`
+                      SPACING: ALL spacing uses the `t.space1..13` Tailwind scale (ordinal,
+                      value-hidden, px in the tokens.ts comments — space1=2 · space4=8 · space8=16
+                      · space13=48; NOTE the `spaceN = 2N` mnemonic only holds through space8).
+                      The DS is FULLY EVEN — no odd/fractional spacing anywhere; new spacing snaps
+                      to the nearest step. A value that must AGREE across surfaces gets a role-named
+                      const (the `DIALOG_PAD_X = 22` pattern), NOT a primitive. Only rare >32 even
+                      structural one-offs (36/40/54/58) stay literal. The old `density` tokens were
+                      dead and were removed.
   ui/                 Icon.tsx + iconNames.ts (line icons), BlockArt.tsx (engine dispatch) +
                       blockart/ (per-family split: amps + ampsCombo*/ampsHead* · pedals +
                       pedalsMotif*/pedalsSpecial/pedalKnobs · mics + micBodies* · forms →

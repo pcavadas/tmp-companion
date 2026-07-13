@@ -204,12 +204,12 @@ export function InstrumentRow({
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 14,
-        padding: "11px 12px 11px 8px",
+        gap: t.space7,
+        padding: `${String(t.space5)}px ${String(t.space6)}px ${String(t.space5)}px ${String(t.space4)}px`,
         borderRadius: t.rCard,
         border: `0.5px solid ${phase === "error" ? "rgba(167,70,31,0.4)" : t.hairline}`,
         background: t.bg,
-        marginBottom: 8,
+        marginBottom: t.space4,
         minHeight: 60,
       }}
     >
@@ -217,7 +217,7 @@ export function InstrumentRow({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: t.space4,
           minWidth: 0,
           flex: 1,
         }}
@@ -260,7 +260,7 @@ export function InstrumentRow({
                   letterSpacing: t.lsMeta,
                   whiteSpace: "nowrap",
                   flexShrink: 0,
-                  marginLeft: 8,
+                  marginLeft: t.space4,
                 }}
               >
                 {caption}
@@ -272,7 +272,7 @@ export function InstrumentRow({
             style={{
               fontFamily: t.mono,
               fontSize: t.fsData2,
-              marginTop: 2,
+              marginTop: t.space1,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -286,11 +286,11 @@ export function InstrumentRow({
           {phase === "idle" && calibResult && (
             <div
               style={{
-                marginTop: 4,
+                marginTop: t.space2,
                 display: "flex",
                 flexWrap: "wrap",
                 alignItems: "center",
-                gap: 7,
+                gap: t.space4,
               }}
             >
               <span
@@ -313,7 +313,7 @@ export function InstrumentRow({
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 3,
+                      gap: t.space2,
                       fontFamily: t.mono,
                       fontSize: t.fsMicro,
                       color: covered ? t.ink2 : t.faint,
@@ -337,7 +337,7 @@ export function InstrumentRow({
             ) && (
               <div
                 style={{
-                  marginTop: 3,
+                  marginTop: t.space2,
                   fontFamily: t.sans,
                   fontSize: t.fsMicro,
                   color: t.mutedInk,
@@ -352,7 +352,12 @@ export function InstrumentRow({
       </div>
 
       <div
-        style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: t.space3,
+          flexShrink: 0,
+        }}
       >
         {phase === "idle" &&
           (connected ? (
@@ -374,7 +379,7 @@ export function InstrumentRow({
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 9,
+              gap: t.space4,
               fontFamily: t.mono,
               fontSize: t.fsData,
               color: t.sevWarn,
@@ -411,14 +416,14 @@ export function InstrumentRow({
               display: "flex",
               flexDirection: "column",
               alignItems: "flex-end",
-              gap: 5,
+              gap: t.space3,
             }}
           >
             <span
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 7,
+                gap: t.space4,
                 fontFamily: t.mono,
                 fontSize: t.fsMeta,
                 color: t.record,
@@ -442,7 +447,7 @@ export function InstrumentRow({
                 style={{
                   cursor: "pointer",
                   display: "inline-flex",
-                  marginLeft: 1,
+                  marginLeft: t.space1,
                 }}
               >
                 <Icon name="x" size={11} stroke={t.mutedInk} />
@@ -495,7 +500,7 @@ export function InstrumentRow({
               cursor: "pointer",
               display: "flex",
               color: t.faint,
-              padding: 2,
+              padding: t.space1,
               borderRadius: t.rMenuItem,
             }}
           >

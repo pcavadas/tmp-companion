@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 
+import { useTheme } from "../../theme/ThemeContext";
 import { nodeTileArt } from "../../models/blockArt";
 import { isComboBid } from "../../models/catalog";
 import {
@@ -29,6 +30,7 @@ export interface CopyPathProps {
 }
 
 export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
+  const { t } = useTheme();
   const stripGraph = useMemo<StripGraph>(() => {
     const mkTile = (b: EditBlock): StripBlock => {
       // `nodeTileArt` branches by node kind: a CabSim is named from its cabinet
@@ -83,7 +85,7 @@ export function CopyPath({ graph, onTap, selectedUid }: CopyPathProps) {
   }, [graph, onTap, selectedUid]);
 
   return (
-    <div style={{ padding: "10px 0 2px" }}>
+    <div style={{ padding: `${String(t.space5)}px 0 ${String(t.space1)}px` }}>
       <SignalChainView graph={stripGraph} size="sm" />
     </div>
   );

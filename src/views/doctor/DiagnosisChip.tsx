@@ -24,7 +24,7 @@ export function DiagnosisChip({ label, sev }: DiagnosisChipProps) {
         background: tone.soft,
         border: `0.5px solid ${tone.border}`,
         borderRadius: 5,
-        padding: "1px 6px",
+        padding: `${String(t.space1)}px ${String(t.space3)}px`,
         whiteSpace: "nowrap",
         flexShrink: 0,
       }}

@@ -38,7 +38,7 @@ export function SceneRow({
         gridTemplateColumns: "34px 1fr",
         alignItems: "center",
         height: 38,
-        padding: "0 16px 0 58px",
+        padding: `0 ${String(t.space8)}px 0 58px`,
         borderBottom: `0.5px solid ${t.hairline}`,
         background: selected ? t.rowSel : t.bgAlt,
         cursor: "pointer",
@@ -48,7 +48,12 @@ export function SceneRow({
         <Checkbox checked={selected} />
       </div>
       <span
-        style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: t.space4,
+          minWidth: 0,
+        }}
       >
         <Tag tone={isBase ? "neutral" : "accent"}>{tag}</Tag>
         <span

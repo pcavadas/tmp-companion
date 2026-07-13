@@ -141,8 +141,8 @@ export function DialogHeader({ children }: { children: ReactNode }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 12,
-        padding: `15px ${String(DIALOG_PAD_X)}px`,
+        gap: t.space6,
+        padding: `${String(t.space8)}px ${String(DIALOG_PAD_X)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
       }}
     >
@@ -152,13 +152,14 @@ export function DialogHeader({ children }: { children: ReactNode }) {
 }
 
 export function DialogBody({ children }: { children: ReactNode }) {
+  const { t } = useTheme();
   return (
     <div
       style={{
         flex: 1,
         minHeight: 0,
         overflowY: "auto",
-        padding: `18px ${String(DIALOG_PAD_X)}px`,
+        padding: `${String(t.space8)}px ${String(DIALOG_PAD_X)}px`,
       }}
     >
       {children}
@@ -181,8 +182,8 @@ export function DialogFooter({ start, children }: DialogFooterProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "flex-end",
-        gap: 9,
-        padding: `12px ${String(DIALOG_PAD_X)}px`,
+        gap: t.space4,
+        padding: `${String(t.space6)}px ${String(DIALOG_PAD_X)}px`,
         borderTop: `0.5px solid ${t.hairline}`,
         background: t.bgAlt,
       }}

@@ -19,7 +19,7 @@ export function ListHeader({ cols, cells }: ListHeaderProps) {
         gridTemplateColumns: cols,
         alignItems: "center",
         height: 28,
-        padding: "0 16px 0 18px",
+        padding: `0 ${String(t.space8)}px 0 ${String(t.space8)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
         borderTop: `0.5px solid ${t.hairline}`,
         fontFamily: t.mono,

@@ -23,7 +23,7 @@ export function RowCpu({ value }: RowCpuProps) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
+        gap: t.space3,
         flexShrink: 0,
       }}
     >

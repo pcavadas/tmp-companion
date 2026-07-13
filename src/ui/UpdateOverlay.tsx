@@ -54,7 +54,7 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
                   fontFamily: t.mono,
                   fontSize: t.fsData,
                   color: t.faint,
-                  marginBottom: 10,
+                  marginBottom: t.space5,
                 }}
               >
                 Updating from {u.currentVersion ?? ""}

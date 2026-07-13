@@ -170,7 +170,7 @@ export function DoctorResults({
         <div
           style={{
             flexShrink: 0,
-            padding: "15px 22px",
+            padding: `${String(t.space8)}px ${String(t.space10)}px`,
             borderBottom: `0.5px solid ${t.hairline}`,
             background: t.bgAlt,
           }}
@@ -182,9 +182,9 @@ export function DoctorResults({
           style={{
             flexShrink: 0,
             display: "flex",
-            gap: 14,
+            gap: t.space7,
             alignItems: "flex-start",
-            padding: "18px 22px 14px",
+            padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
           }}
         >
           <div
@@ -216,7 +216,7 @@ export function DoctorResults({
                 fontFamily: t.sans,
                 fontSize: t.fsLabel,
                 color: t.mutedInk,
-                marginTop: 3,
+                marginTop: t.space2,
                 lineHeight: 1.5,
               }}
             >
@@ -244,10 +244,10 @@ export function DoctorResults({
             flex: 1,
             minHeight: 0,
             overflowY: "auto",
-            padding: "0 22px 16px",
+            padding: `0 ${String(t.space10)}px ${String(t.space8)}px`,
             display: "flex",
             flexDirection: "column",
-            gap: 12,
+            gap: t.space6,
           }}
         >
           {shown.map((preset) => (
@@ -271,8 +271,8 @@ export function DoctorResults({
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 9,
-                padding: "10px 14px",
+                gap: t.space4,
+                padding: `${String(t.space5)}px ${String(t.space7)}px`,
                 borderRadius: 10,
                 border: `0.5px dashed ${t.hairlineStrong}`,
                 background: t.bgAlt,
@@ -311,11 +311,11 @@ export function DoctorResults({
             flexShrink: 0,
             borderTop: `0.5px solid ${t.hairline}`,
             background: t.bgAlt,
-            padding: "12px 22px",
+            padding: `${String(t.space6)}px ${String(t.space10)}px`,
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            gap: 12,
+            gap: t.space6,
           }}
         >
           <span

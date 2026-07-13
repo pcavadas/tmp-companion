@@ -57,7 +57,7 @@ const LEVEL_CASES: readonly { name: string; sub: string; sets: string }[] = [
 function LevelBeatStrip() {
   const { t } = useTheme();
   return (
-    <div style={{ display: "flex", alignItems: "stretch", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "stretch", gap: t.space4 }}>
       {LEVEL_BEATS.map(([icon, title, sub], i) => (
         <Fragment key={title}>
           <div
@@ -65,14 +65,16 @@ function LevelBeatStrip() {
               flex: 1,
               display: "flex",
               flexDirection: "column",
-              gap: 5,
-              padding: "11px 12px",
+              gap: t.space3,
+              padding: `${String(t.space5)}px ${String(t.space6)}px`,
               background: t.bgAlt,
               border: `0.5px solid ${t.hairline}`,
               borderRadius: 9,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <div
+              style={{ display: "flex", alignItems: "center", gap: t.space4 }}
+            >
               <span
                 style={{
                   width: 22,
@@ -147,7 +149,13 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
   return (
     <Dialog size="md" onClose={onClose} label="How leveling works">
       <DialogHeader>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: t.space4,
+          }}
+        >
           <span
             style={{
               width: 24,
@@ -174,7 +182,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
             background: "transparent",
             cursor: "pointer",
             display: "flex",
-            padding: 4,
+            padding: t.space2,
             color: t.faint,
           }}
         >
@@ -189,7 +197,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
             fontSize: 13.5,
             lineHeight: 1.5,
             color: t.ink2,
-            marginBottom: 12,
+            marginBottom: t.space6,
           }}
         >
           Every level run does the same three things:
@@ -201,20 +209,22 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
             fontSize: 13.5,
             lineHeight: 1.5,
             color: t.ink2,
-            margin: "16px 0 10px",
+            margin: `${String(t.space8)}px 0 ${String(t.space5)}px`,
           }}
         >
           The control it sets depends on what you&rsquo;re leveling:
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+        <div
+          style={{ display: "flex", flexDirection: "column", gap: t.space4 }}
+        >
           {LEVEL_CASES.map((c) => (
             <div
               key={c.name}
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 12,
-                padding: "10px 13px",
+                gap: t.space6,
+                padding: `${String(t.space5)}px ${String(t.space6)}px`,
                 background: t.bgAlt,
                 border: `0.5px solid ${t.hairline}`,
                 borderRadius: 10,
@@ -236,7 +246,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
                     fontFamily: t.sans,
                     fontSize: 11.5,
                     color: t.mutedInk,
-                    marginTop: 1,
+                    marginTop: t.space1,
                   }}
                 >
                   {c.sub}
@@ -260,7 +270,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
                     fontSize: 12.5,
                     fontWeight: 600,
                     color: t.accentDeep,
-                    marginTop: 1,
+                    marginTop: t.space1,
                   }}
                 >
                   {c.sets}
@@ -272,13 +282,13 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
         <div
           style={{
             display: "flex",
-            gap: 9,
+            gap: t.space4,
             alignItems: "flex-start",
-            padding: "11px 13px",
+            padding: `${String(t.space5)}px ${String(t.space6)}px`,
             background: t.warnSoft,
             border: "0.5px solid rgba(167,70,31,0.32)",
             borderRadius: 10,
-            marginTop: 12,
+            marginTop: t.space6,
           }}
         >
           <span
@@ -286,7 +296,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
               color: t.warn,
               flexShrink: 0,
               display: "flex",
-              paddingTop: 1,
+              paddingTop: t.space1,
             }}
           >
             <Icon name="warn-tri" size={15} stroke={t.warn} />
@@ -340,8 +350,8 @@ export function LevelingInfoRow({ onOpen }: LevelingInfoRowProps) {
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 11,
-        padding: "8px 14px",
+        gap: t.space5,
+        padding: `${String(t.space4)}px ${String(t.space7)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
         background: t.bgAlt,
       }}

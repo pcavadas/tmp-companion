@@ -32,7 +32,7 @@ export function UnitBadge({ note = "on unit" }: { note?: string }) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 3,
+        gap: t.space2,
         fontFamily: t.mono,
         fontSize: 8.5,
         letterSpacing: "0.08em",
@@ -58,12 +58,16 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
   const n = members.length;
   return (
     <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: "16px 18px 13px" }}>
+      <div
+        style={{
+          padding: `${String(t.space8)}px ${String(t.space8)}px ${String(t.space6)}px`,
+        }}
+      >
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 8,
+            gap: t.space4,
             fontFamily: t.mono,
             fontSize: t.fsMicro,
             letterSpacing: "0.14em",
@@ -76,7 +80,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
         </div>
         <div
           style={{
-            marginTop: 4,
+            marginTop: t.space2,
             fontFamily: t.serif,
             fontSize: 24,
             color: t.ink,
@@ -87,7 +91,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
         </div>
         <div
           style={{
-            marginTop: 5,
+            marginTop: t.space3,
             fontFamily: t.mono,
             fontSize: 10.5,
             color: t.mutedInk,
@@ -131,7 +135,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
               height: 38,
               display: "flex",
               alignItems: "center",
-              padding: "0 18px",
+              padding: `0 ${String(t.space8)}px`,
               borderTop: `0.5px solid ${t.hairline}`,
               background: t.bgAlt,
               fontFamily: t.mono,

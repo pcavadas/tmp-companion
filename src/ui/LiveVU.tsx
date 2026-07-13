@@ -35,7 +35,7 @@ export function LiveVU({ values }: LiveVUProps) {
         height: FIELD_HEIGHT,
         display: "flex",
         alignItems: "flex-end",
-        gap: 2,
+        gap: t.space1,
       }}
     >
       {slots.map((db, i) => (

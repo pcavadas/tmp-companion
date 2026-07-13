@@ -22,7 +22,7 @@ function chipStyle(t: ThemeTokens, on: boolean) {
     background: on ? t.accent : "transparent",
     border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
     borderRadius: t.rPill,
-    padding: "3px 11px",
+    padding: `${String(t.space2)}px ${String(t.space5)}px`,
     cursor: "pointer",
     userSelect: "none" as const,
     whiteSpace: "nowrap" as const,
@@ -102,12 +102,12 @@ export function InstrumentForm({
       style={{
         border: `0.5px solid ${t.accent}`,
         borderRadius: t.rLg,
-        padding: "12px 13px",
-        marginBottom: 8,
+        padding: `${String(t.space6)}px ${String(t.space6)}px`,
+        marginBottom: t.space4,
         background: t.bg,
         display: "flex",
         flexDirection: "column",
-        gap: 11,
+        gap: t.space5,
       }}
     >
       <input
@@ -126,15 +126,15 @@ export function InstrumentForm({
         style={plainInput(t, {
           border: `0.5px solid ${t.hairlineStrong}`,
           borderRadius: t.rMd,
-          padding: "7px 9px",
+          padding: `${String(t.space4)}px ${String(t.space4)}px`,
           fontFamily: t.serif,
           fontSize: t.fsName,
         })}
       />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: t.space3 }}>
         {fieldLab("Type")}
-        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}>
           {types.map((ty) => (
             <span
               key={ty}
@@ -149,9 +149,9 @@ export function InstrumentForm({
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: t.space3 }}>
         {fieldLab("Pickup")}
-        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: t.space3, flexWrap: "wrap" }}>
           {pickups.map((tp) => (
             <span
               key={tp.id}
@@ -166,7 +166,9 @@ export function InstrumentForm({
         </div>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+      <div
+        style={{ display: "flex", justifyContent: "flex-end", gap: t.space4 }}
+      >
         <Button variant="ghost" small onClick={onCancel}>
           Cancel
         </Button>

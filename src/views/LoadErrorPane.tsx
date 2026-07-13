@@ -3,6 +3,7 @@
 // A warn banner + a "Try again" button. Used by LevelView / SongsView / CopyView,
 // which previously each carried a byte-identical copy of this markup.
 
+import { useTheme } from "../theme/ThemeContext";
 import { AlertBanner, Button } from "../ui/primitives";
 
 export interface LoadErrorPaneProps {
@@ -11,9 +12,10 @@ export interface LoadErrorPaneProps {
 }
 
 export function LoadErrorPane({ message, onRetry }: LoadErrorPaneProps) {
+  const { t } = useTheme();
   return (
-    <div style={{ padding: 28 }}>
-      <AlertBanner style={{ marginBottom: 14 }}>{message}</AlertBanner>
+    <div style={{ padding: t.space11 }}>
+      <AlertBanner style={{ marginBottom: t.space7 }}>{message}</AlertBanner>
       <Button variant="primary" onClick={onRetry}>
         Try again
       </Button>

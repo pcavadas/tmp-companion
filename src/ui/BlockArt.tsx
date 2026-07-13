@@ -3,6 +3,7 @@
 // icon to its form-factor renderer (formFor → amps/cabs/mics/forms/pedals).
 // The procedural-SVG bodies + shared helpers live under ./blockart/.
 import React from "react";
+import { useTheme } from "../theme/ThemeContext";
 import { formFor, toneOf } from "./blockart/shared";
 import { AmpBody } from "./blockart/amps";
 import { CabBody, IRBody, BluesbreakerBody } from "./blockart/cabs";
@@ -234,6 +235,7 @@ function BlockArt({
   panelColor,
   form,
 }: BlockArtProps) {
+  const { t } = useTheme();
   const def = resolveBlock({ code, icon, tone, lab });
   const base = toneOf(def.t);
   const c = bodyColor ? { ...base, body: bodyColor } : base;
@@ -248,7 +250,7 @@ function BlockArt({
         display: "inline-flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 4,
+        gap: t.space2,
         width: size,
         opacity: dim ? 0.4 : 1,
       }}

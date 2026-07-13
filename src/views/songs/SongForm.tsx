@@ -38,15 +38,15 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 8,
+        gap: t.space4,
         border: `0.5px solid ${t.accent}`,
         borderRadius: t.rLg,
-        padding: "9px 9px 9px 12px",
+        padding: `${String(t.space4)}px ${String(t.space4)}px ${String(t.space4)}px ${String(t.space6)}px`,
         background: t.bg,
         boxShadow: "0 1px 0 rgba(217,119,87,0.08)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: t.space3 }}>
         <input
           autoFocus
           value={name}
@@ -66,10 +66,10 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 5,
+            gap: t.space3,
             borderLeft: `0.5px solid ${t.hairline}`,
-            paddingLeft: 11,
-            marginLeft: 3,
+            paddingLeft: t.space5,
+            marginLeft: t.space2,
           }}
         >
           <input
@@ -103,7 +103,7 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
           aria-label="Save"
           onClick={save}
           title="Save"
-          style={{ cursor: "pointer", display: "flex", padding: 3 }}
+          style={{ cursor: "pointer", display: "flex", padding: t.space2 }}
         >
           <Icon name="check" size={15} stroke={t.accentDeep} />
         </span>
@@ -112,7 +112,7 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
           aria-label="Cancel"
           onClick={onCancel}
           title="Cancel"
-          style={{ cursor: "pointer", display: "flex", padding: 3 }}
+          style={{ cursor: "pointer", display: "flex", padding: t.space2 }}
         >
           <Icon name="x" size={13} stroke={t.faint} />
         </span>
@@ -126,7 +126,7 @@ export function SongForm({ initial, onSave, onCancel }: SongFormProps) {
         placeholder="Notes (optional) — e.g. capo 2 · lead at 2nd chorus"
         style={plainInput(t, {
           borderTop: `0.5px solid ${t.hairline}`,
-          paddingTop: 8,
+          paddingTop: t.space4,
           fontFamily: t.sans,
           fontSize: t.fsControl,
           color: t.ink2,

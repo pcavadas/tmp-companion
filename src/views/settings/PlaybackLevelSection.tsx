@@ -63,7 +63,7 @@ export function PlaybackLevelSection({
           fontFamily: t.sans,
           fontSize: t.fsControl,
           color: t.mutedInk,
-          margin: "6px 0 4px",
+          margin: `${String(t.space3)}px 0 ${String(t.space2)}px`,
           lineHeight: 1.5,
         }}
       >
@@ -75,7 +75,7 @@ export function PlaybackLevelSection({
           fontFamily: t.sans,
           fontSize: t.fsLabel,
           color: t.faint,
-          margin: "0 0 11px",
+          margin: `0 0 ${String(t.space5)}px`,
           lineHeight: 1.45,
           fontStyle: "italic",
         }}
@@ -91,7 +91,7 @@ export function PlaybackLevelSection({
           fontFamily: t.sans,
           fontSize: t.fsLabel,
           color: t.faint,
-          margin: "0 0 11px",
+          margin: `0 0 ${String(t.space5)}px`,
           lineHeight: 1.45,
         }}
       >
@@ -106,7 +106,7 @@ export function PlaybackLevelSection({
         ariaLabel="Playback level"
       />
 
-      <div style={{ marginTop: 11, minHeight: 34, lineHeight: 1.55 }}>
+      <div style={{ marginTop: t.space5, minHeight: 34, lineHeight: 1.55 }}>
         <span
           style={{
             fontFamily: t.mono,
@@ -124,7 +124,7 @@ export function PlaybackLevelSection({
             fontFamily: t.sans,
             fontSize: t.fsControl,
             color: t.faint,
-            margin: "0 7px",
+            margin: `0 ${String(t.space4)}px`,
           }}
         >
           ·

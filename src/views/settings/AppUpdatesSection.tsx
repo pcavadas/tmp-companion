@@ -47,7 +47,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
   return (
     <div>
       <div style={s.kicker(t.accentDeep)}>Software update</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: t.space4 }}>
         <div
           style={{
             fontFamily: t.serif,
@@ -75,7 +75,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 6,
+              gap: t.space3,
               fontFamily: t.mono,
               fontSize: t.fsData2,
               color: t.sevWarn,
@@ -95,7 +95,7 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 5,
+              gap: t.space3,
               fontFamily: t.mono,
               fontSize: t.fsData2,
               color: t.good,
@@ -111,8 +111,8 @@ export function AppUpdatesSection({ updater }: AppUpdatesSectionProps) {
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            gap: 10,
-            marginTop: 4,
+            gap: t.space5,
+            marginTop: t.space2,
           }}
         >
           <span style={{ fontFamily: t.sans, fontSize: t.fsUi, color: t.ink2 }}>

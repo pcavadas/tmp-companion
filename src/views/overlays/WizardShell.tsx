@@ -38,7 +38,9 @@ export function StepRail({
         const filled = done || active;
         return (
           <Fragment key={s.key}>
-            <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <div
+              style={{ display: "flex", alignItems: "center", gap: t.space4 }}
+            >
               <span
                 style={{
                   width: 22,
@@ -85,7 +87,7 @@ export function StepRail({
                 style={{
                   flex: 1,
                   height: 1,
-                  margin: "0 12px",
+                  margin: `0 ${String(t.space6)}px`,
                   background: i < current ? t.accent : t.hairlineStrong,
                   minWidth: 16,
                 }}
@@ -114,7 +116,7 @@ export function WizardHeader({
     <div
       style={{
         flexShrink: 0,
-        padding: `15px ${String(DIALOG_PAD_X)}px`,
+        padding: `${String(t.space8)}px ${String(DIALOG_PAD_X)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
         background: t.bgAlt,
       }}
@@ -162,15 +164,16 @@ export interface WizardFooterProps {
 export function WizardFooter({ left, right }: WizardFooterProps) {
   // The wizard's two-slot footer is the DS DialogFooter with a left group (pushed
   // left by the `start` slot) and the primary actions on the right.
+  const { t } = useTheme();
   return (
     <DialogFooter
       start={
-        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
           {left}
         </div>
       }
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
         {right}
       </div>
     </DialogFooter>

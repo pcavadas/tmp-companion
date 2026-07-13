@@ -3,6 +3,7 @@
 // the active strip and Models tab stay identical by construction.
 
 import React from "react";
+import { useTheme } from "../theme/ThemeContext";
 
 import { BlockArt, HalfStackArt } from "../ui/BlockArt";
 import type { HalfStackSpec } from "../models/blockArt";
@@ -119,6 +120,7 @@ interface BlockTileProps {
 }
 
 function BlockTile({ b, size, skeleton }: BlockTileProps) {
+  const { t } = useTheme();
   const dims =
     size === "sm" ? { w: 56, art: 46, font: 8 } : { w: 70, art: 58, font: 9 };
   const byp = b.bypassed === true;
@@ -149,7 +151,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "center",
-            paddingTop: 5,
+            paddingTop: t.space3,
           }}
         >
           <Skel w={Math.round(dims.w * 0.52)} h={6} r={3} />
@@ -316,7 +318,7 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "center",
-          paddingTop: 4,
+          paddingTop: t.space2,
         }}
       >
         <span
@@ -419,6 +421,7 @@ function EndpointNode({
   size,
   skeletonLabelWidth,
 }: EndpointNodeProps) {
+  const { t } = useTheme();
   const artH = size === "sm" ? 46 : 58;
   const fs = size === "sm" ? 7 : 8;
   if (skeleton) {
@@ -448,7 +451,7 @@ function EndpointNode({
             display: "flex",
             alignItems: "flex-start",
             justifyContent: "center",
-            paddingTop: 5,
+            paddingTop: t.space3,
           }}
         >
           <Skel w={skeletonLabelWidth} h={6} r={3} />
@@ -500,7 +503,7 @@ function EndpointNode({
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "center",
-          paddingTop: 4,
+          paddingTop: t.space2,
         }}
       >
         <span
@@ -723,6 +726,7 @@ function SplitGroup({
   pfx,
   renderRow,
 }: SplitGroupProps) {
+  const { t } = useTheme();
   const colRef = React.useRef<HTMLDivElement>(null);
   const aRef = React.useRef<HTMLDivElement>(null);
   const bRef = React.useRef<HTMLDivElement>(null);
@@ -813,8 +817,8 @@ function SplitGroup({
           flexDirection: "column",
           gap: laneGap,
           position: "relative",
-          marginLeft: 12,
-          marginRight: 12,
+          marginLeft: t.space6,
+          marginRight: t.space6,
         }}
       >
         {bracket("left")}
@@ -823,13 +827,13 @@ function SplitGroup({
         {b.length === 0 && emptyLine(false)}
         <div
           ref={aRef}
-          style={{ display: "flex", alignItems: "stretch", gap: 10 }}
+          style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
         >
           {renderRow(a, `${pfx}a`)}
         </div>
         <div
           ref={bRef}
-          style={{ display: "flex", alignItems: "stretch", gap: 10 }}
+          style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
         >
           {renderRow(b, `${pfx}b`)}
         </div>
@@ -850,6 +854,7 @@ function SignalChainViewImpl({
   size = "md",
   skeleton,
 }: SignalChainViewProps) {
+  const { t } = useTheme();
   const ink = skeleton ? GHOST_INK : "rgba(15,17,21,0.34)";
   const stripInk = "#5b554a";
   const laneGap = 10;
@@ -896,13 +901,13 @@ function SignalChainViewImpl({
           flexDirection: "column",
           gap: laneGap,
           position: "relative",
-          marginRight: 12,
+          marginRight: t.space6,
         }}
       >
         {[inputs.a, inputs.b].map((lane, li) => (
           <div
             key={li}
-            style={{ display: "flex", alignItems: "stretch", gap: 10 }}
+            style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
           >
             <SourceNode
               type={lane.type}
@@ -942,13 +947,13 @@ function SignalChainViewImpl({
           flexDirection: "column",
           gap: laneGap,
           position: "relative",
-          marginLeft: 12,
+          marginLeft: t.space6,
         }}
       >
         {[outputs.a, outputs.b].map((lane, li) => (
           <div
             key={li}
-            style={{ display: "flex", alignItems: "stretch", gap: 10 }}
+            style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
           >
             <WireBracketCap
               ink={ink}
@@ -992,22 +997,23 @@ function SignalChainViewImpl({
     // (plain `center` clips the left end out of the scroll range: the first tile,
     // e.g. SWELL, became unreachable and the next was cropped).
     justifyContent: "safe center",
-    gap: 10,
-    // Right 10 clears the added-block badge's right:-5 overhang; bottom 8 gives the
-    // slim scrollbar room. Top stays 2 — the stripScroll wrapper adds the badge's +7.
-    padding: "2px 10px 8px",
+    gap: t.space5,
+    // Right clears the added-block badge's right:-5 overhang; bottom gives the slim
+    // scrollbar room. Top stays small — the stripScroll wrapper adds the badge room.
+    padding: `${String(t.space1)}px ${String(t.space5)}px ${String(t.space4)}px`,
   };
 
   // The horizontal scroll lives on this wrapper, not the strip: an overflowX:auto box
   // coerces overflow-y to `auto` (CSS spec), which would clip the badge poking above a
   // slack-less series tile. paddingTop gives the badge room; the matching negative
   // marginTop cancels the shift so neither the Copy nor Level strip moves a pixel.
+  // The two MUST stay equal (both space4) — they cancel to net zero.
   const stripScroll: React.CSSProperties = {
     overflowX: "auto",
     width: "fit-content",
     maxWidth: "100%",
-    margin: "-7px auto 0",
-    paddingTop: 7,
+    margin: `-${String(t.space4)}px auto 0`,
+    paddingTop: t.space4,
   };
   if (graph.lanes && graph.lanes.length > 0) {
     return (
@@ -1023,7 +1029,7 @@ function SignalChainViewImpl({
           {graph.lanes.map((lane, li) => (
             <div
               key={li}
-              style={{ display: "flex", alignItems: "stretch", gap: 10 }}
+              style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
             >
               <SourceNode
                 type={lane.input}

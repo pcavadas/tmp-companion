@@ -142,8 +142,8 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 11,
-              padding: 8,
+              gap: t.space5,
+              padding: t.space4,
               borderRadius: 8,
               cursor: "pointer",
               background: on ? t.accentSoft : "transparent",
@@ -177,7 +177,13 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
               />
             </span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: t.space4,
+                }}
+              >
                 <span
                   style={{
                     fontFamily: t.serif,
@@ -201,7 +207,7 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
                   {paramLabel(c.parameter_id)}
                 </span>
               </div>
-              <div style={{ marginTop: 3 }}>
+              <div style={{ marginTop: t.space2 }}>
                 {rec ? (
                   <Tag tone="good" uppercase>
                     Recommended · loudness only
@@ -221,7 +227,7 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
                     style={{
                       display: "inline-flex",
                       alignItems: "center",
-                      gap: 5,
+                      gap: t.space3,
                       fontFamily: t.sans,
                       fontSize: 10.5,
                       color: t.sevWarn,
@@ -268,9 +274,9 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 6,
+          gap: t.space3,
           height: 26,
-          padding: "0 8px",
+          padding: `0 ${String(t.space4)}px`,
           boxSizing: "border-box",
           border: `0.5px solid ${open ? t.accent : t.hairlineStrong}`,
           borderRadius: 6,
@@ -335,7 +341,7 @@ export function FsParamPick({ params, index, onChange }: FsParamPickProps) {
         >
           <div
             style={{
-              padding: "4px 8px 8px",
+              padding: `${String(t.space2)}px ${String(t.space4)}px ${String(t.space4)}px`,
               fontFamily: t.mono,
               fontSize: 9,
               letterSpacing: "0.12em",

@@ -23,7 +23,7 @@ export function CpuMeter({ value }: CpuMeterProps) {
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 9,
+        gap: t.space4,
         flexShrink: 0,
       }}
     >

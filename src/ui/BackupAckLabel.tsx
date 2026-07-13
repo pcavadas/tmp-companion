@@ -31,7 +31,7 @@ export function BackupAckLabel({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 8,
+        gap: t.space4,
         cursor: "pointer",
         ...style,
       }}

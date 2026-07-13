@@ -6,8 +6,8 @@
 // always returns this set; field names are kept stable so call-sites read
 // `t.bg`, `t.mutedInk`, `t.serif`, etc. unchanged.
 //
-// Density tokens (locked "regular") and font-family constants are carried on the
-// same object so primitives can read `t.row`, `t.serif`, etc.
+// The spacing scale and font-family constants are carried on the same object so
+// primitives can read `t.space2`, `t.serif`, etc.
 
 import type { CSSProperties } from "react";
 
@@ -19,14 +19,27 @@ export const FONT_SANS = "'Inter', system-ui, sans-serif";
 export const FONT_MONO = "'JetBrains Mono', ui-monospace, monospace";
 
 // ---------------------------------------------------------------------------
-// Density tokens (locked: "regular"). Mirrored onto the token object.
+// Spacing scale — the Tailwind ramp (2px steps to 16, 4px to 32, then 48). The
+// DS is FULLY EVEN: all spacing is one of these tokens; odd/off-grid values snap
+// to the nearest step. Ordinal names carry the px in a comment — the `spaceN =
+// 2N` mnemonic holds ONLY through space8; do not guess it past there (space10 is
+// 24, not 20). Cross-surface values that must AGREE get a role-named const
+// instead (see DIALOG_PAD_X), not a primitive.
 // ---------------------------------------------------------------------------
-export const density = {
-  row: 30, // table-row height (px, content-box)
-  pad: 16, // base pane padding (px)
-  rowPadY: 6, // table-row vertical padding (px)
-  paneY: 20, // section paddingY (px)
-  sectionGap: 16, // gap between sections in a pane (px)
+export const spacing = {
+  space1: 2,
+  space2: 4,
+  space3: 6,
+  space4: 8,
+  space5: 10,
+  space6: 12,
+  space7: 14,
+  space8: 16,
+  space9: 20,
+  space10: 24,
+  space11: 28,
+  space12: 32,
+  space13: 48,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -175,12 +188,20 @@ export interface ThemeTokens {
   fsMicro: number;
   fsMicro2: number;
   fsTag: number;
-  // density
-  row: number;
-  pad: number;
-  rowPadY: number;
-  paneY: number;
-  sectionGap: number;
+  // spacing scale (Tailwind ramp; px in the `spacing` const comments)
+  space1: number;
+  space2: number;
+  space3: number;
+  space4: number;
+  space5: number;
+  space6: number;
+  space7: number;
+  space8: number;
+  space9: number;
+  space10: number;
+  space11: number;
+  space12: number;
+  space13: number;
   // corner radii (px)
   rSm: number;
   rMenuItem: number;
@@ -259,13 +280,7 @@ export const light: ThemeTokens = {
   mono: FONT_MONO,
 
   ...typeScale,
-
-  row: density.row,
-  pad: density.pad,
-  rowPadY: density.rowPadY,
-  paneY: density.paneY,
-  sectionGap: density.sectionGap,
-
+  ...spacing,
   ...radii,
   ...letterSpacing,
 

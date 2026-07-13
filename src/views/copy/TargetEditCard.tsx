@@ -66,13 +66,13 @@ export function TargetEditCard({
       // e2e hook: scope block-tile selectors to one target's card (multi-preset edit).
       data-target-card={name}
       style={{
-        padding: "11px 14px",
+        padding: `${String(t.space5)}px ${String(t.space7)}px`,
         borderRadius: t.rPopover,
         border: `0.5px solid ${over ? "rgba(176,125,28,0.5)" : t.hairlineStrong}`,
         background: t.bg,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
         <span
           style={{ fontFamily: t.mono, fontSize: t.fsMeta, color: t.faint }}
         >
@@ -98,7 +98,7 @@ export function TargetEditCard({
             fontFamily: t.sans,
             fontSize: t.fsLabel,
             color: t.faint,
-            padding: "2px 2px 0",
+            padding: `${String(t.space1)}px ${String(t.space1)}px 0`,
           }}
         >
           Tap a block to replace, remove, or add one next to it.

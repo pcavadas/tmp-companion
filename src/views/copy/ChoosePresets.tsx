@@ -87,7 +87,7 @@ export function ChoosePresets({
         fontFamily: t.sans,
         fontSize: t.fsBody2,
         color: t.faint,
-        padding: "12px 4px",
+        padding: `${String(t.space6)}px ${String(t.space2)}px`,
       }}
     >
       No presets match “{q}”.
@@ -122,7 +122,12 @@ export function ChoosePresets({
         flexDirection: "column",
       }}
     >
-      <div style={{ flexShrink: 0, padding: "15px 22px 9px" }}>
+      <div
+        style={{
+          flexShrink: 0,
+          padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space4)}px`,
+        }}
+      >
         <div
           style={{
             fontFamily: t.serif,
@@ -138,7 +143,7 @@ export function ChoosePresets({
             fontFamily: t.sans,
             fontSize: t.fsControl,
             color: t.mutedInk,
-            marginTop: 3,
+            marginTop: t.space2,
           }}
         >
           Pick the preset to copy from, then the presets to copy into. Nothing
@@ -162,15 +167,15 @@ export function ChoosePresets({
             display: "flex",
             flexDirection: "column",
             borderRight: `0.5px solid ${t.hairline}`,
-            padding: "4px 16px 0 22px",
+            padding: `${String(t.space2)}px ${String(t.space8)}px 0 ${String(t.space10)}px`,
           }}
         >
           <div
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 9,
-              margin: "0 0 8px",
+              gap: t.space4,
+              margin: `0 0 ${String(t.space4)}px`,
             }}
           >
             <StepBadge n={1} />
@@ -199,12 +204,12 @@ export function ChoosePresets({
               flex: 1,
               minHeight: 0,
               overflowY: "auto",
-              margin: "7px 0 0",
+              margin: `${String(t.space4)}px 0 0`,
               display: "flex",
               flexDirection: "column",
-              gap: 6,
-              paddingRight: 2,
-              paddingBottom: 12,
+              gap: t.space3,
+              paddingRight: t.space1,
+              paddingBottom: t.space6,
             }}
           >
             {fromList.length > 0
@@ -220,8 +225,8 @@ export function ChoosePresets({
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 12,
-                        padding: "9px 13px",
+                        gap: t.space6,
+                        padding: `${String(t.space4)}px ${String(t.space6)}px`,
                         borderRadius: t.rLg,
                         border: `${String(sel ? 1 : 0.5)}px solid ${sel ? t.accent : t.hairlineStrong}`,
                         background: sel ? t.accentSoft : t.bg,
@@ -268,15 +273,15 @@ export function ChoosePresets({
             minHeight: 0,
             display: "flex",
             flexDirection: "column",
-            padding: "4px 22px 0 16px",
+            padding: `${String(t.space2)}px ${String(t.space10)}px 0 ${String(t.space8)}px`,
           }}
         >
           <div
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 9,
-              margin: "0 0 8px",
+              gap: t.space4,
+              margin: `0 0 ${String(t.space4)}px`,
             }}
           >
             <StepBadge n={2} />
@@ -312,12 +317,12 @@ export function ChoosePresets({
               flex: 1,
               minHeight: 0,
               overflowY: "auto",
-              margin: "7px 0 0",
+              margin: `${String(t.space4)}px 0 0`,
               display: "flex",
               flexDirection: "column",
-              gap: 6,
-              paddingRight: 2,
-              paddingBottom: 12,
+              gap: t.space3,
+              paddingRight: t.space1,
+              paddingBottom: t.space6,
             }}
           >
             {toList.length > 0
@@ -333,8 +338,8 @@ export function ChoosePresets({
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: 12,
-                        padding: "9px 13px",
+                        gap: t.space6,
+                        padding: `${String(t.space4)}px ${String(t.space6)}px`,
                         borderRadius: t.rLg,
                         border: `0.5px solid ${on ? t.accent : t.hairlineStrong}`,
                         background: on ? t.accentSoft : t.bg,

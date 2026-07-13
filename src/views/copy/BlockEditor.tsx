@@ -52,7 +52,7 @@ export function BlockEditor({
   return (
     <div
       style={{
-        marginTop: 8,
+        marginTop: t.space4,
         border: `1px solid ${t.accent}`,
         borderRadius: t.rPopover,
         background: t.bgAlt,
@@ -63,8 +63,8 @@ export function BlockEditor({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "10px 13px",
+          gap: t.space5,
+          padding: `${String(t.space5)}px ${String(t.space6)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
@@ -89,14 +89,14 @@ export function BlockEditor({
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: 6,
+            gap: t.space3,
             fontFamily: t.sans,
             fontSize: t.fsUi,
             color: t.warn,
             border: `0.5px solid ${t.warnBorder}`,
             background: t.warnSoft,
             borderRadius: t.rMd,
-            padding: "6px 11px",
+            padding: `${String(t.space3)}px ${String(t.space5)}px`,
             cursor: "pointer",
           }}
         >
@@ -106,18 +106,22 @@ export function BlockEditor({
         <span
           role="button"
           onClick={onClose}
-          style={{ display: "inline-flex", cursor: "pointer", padding: 3 }}
+          style={{
+            display: "inline-flex",
+            cursor: "pointer",
+            padding: t.space2,
+          }}
         >
           <Icon name="x" size={15} stroke={t.faint} />
         </span>
       </div>
-      <div style={{ padding: "11px 13px" }}>
+      <div style={{ padding: `${String(t.space5)}px ${String(t.space6)}px` }}>
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 9,
-            marginBottom: 10,
+            gap: t.space4,
+            marginBottom: t.space5,
             flexWrap: "wrap",
           }}
         >
@@ -143,7 +147,7 @@ export function BlockEditor({
             ]}
           />
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: t.space4 }}>
           {origin.map((o) => {
             // Mode-aware pre-flight: would placing `o.model` via the CURRENT mode
             // violate a firmware cap? UX only — greys out + explains, doesn't
@@ -169,8 +173,8 @@ export function BlockEditor({
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 8,
-                  padding: "6px 11px 6px 7px",
+                  gap: t.space4,
+                  padding: `${String(t.space3)}px ${String(t.space5)}px ${String(t.space3)}px ${String(t.space4)}px`,
                   borderRadius: t.rPill,
                   border: `0.5px solid ${t.hairlineStrong}`,
                   background: t.bg,

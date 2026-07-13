@@ -20,8 +20,8 @@ export function SetupGroupHeader({ slot, name }: SetupGroupHeaderProps) {
       style={{
         display: "flex",
         alignItems: "baseline",
-        gap: 9,
-        marginBottom: t.rowPadY,
+        gap: t.space4,
+        marginBottom: t.space3,
       }}
     >
       <SlotLabel index={slot} />

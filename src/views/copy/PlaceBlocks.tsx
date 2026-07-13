@@ -97,7 +97,7 @@ export function PlaceBlocks({
       <div
         style={{
           flexShrink: 0,
-          padding: "11px 18px",
+          padding: `${String(t.space5)}px ${String(t.space8)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
           background: t.bgAlt,
         }}
@@ -106,8 +106,8 @@ export function PlaceBlocks({
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 10,
-            marginBottom: 2,
+            gap: t.space5,
+            marginBottom: t.space1,
           }}
         >
           <Tag size="md" tone="accent">
@@ -136,11 +136,11 @@ export function PlaceBlocks({
       <div
         style={{
           flexShrink: 0,
-          padding: "9px 18px 6px",
+          padding: `${String(t.space4)}px ${String(t.space8)}px ${String(t.space3)}px`,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          gap: 10,
+          gap: t.space5,
         }}
       >
         <span
@@ -165,14 +165,14 @@ export function PlaceBlocks({
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 6,
+              gap: t.space3,
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.sevWarn,
               border: "0.5px solid rgba(176,125,28,0.4)",
               background: "rgba(176,125,28,0.10)",
               borderRadius: t.rPill,
-              padding: "3px 10px",
+              padding: `${String(t.space2)}px ${String(t.space5)}px`,
               cursor: "pointer",
               whiteSpace: "nowrap",
             }}
@@ -190,10 +190,10 @@ export function PlaceBlocks({
           flex: 1,
           minHeight: 0,
           overflowY: "auto",
-          padding: "0 16px 14px",
+          padding: `0 ${String(t.space8)}px ${String(t.space7)}px`,
           display: "flex",
           flexDirection: "column",
-          gap: 9,
+          gap: t.space4,
         }}
       >
         {visible.map((slot) => {
@@ -230,7 +230,7 @@ export function PlaceBlocks({
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 11,
+              gap: t.space5,
               minWidth: 0,
             }}
           >
@@ -240,7 +240,7 @@ export function PlaceBlocks({
               style={{
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 5,
+                gap: t.space3,
                 fontFamily: t.sans,
                 fontSize: t.fsControl,
                 color: t.ink2,
@@ -260,7 +260,7 @@ export function PlaceBlocks({
             <span style={{ width: 1, height: 22, background: t.hairline }} />
             <div
               title="Undo / redo your edits — nothing is on the unit yet"
-              style={{ display: "flex", alignItems: "center", gap: 6 }}
+              style={{ display: "flex", alignItems: "center", gap: t.space3 }}
             >
               {(
                 [
@@ -277,7 +277,7 @@ export function PlaceBlocks({
                     alignItems: "center",
                     justifyContent: "center",
                     height: 30,
-                    padding: "0 10px",
+                    padding: `0 ${String(t.space5)}px`,
                     borderRadius: t.rBtn,
                     opacity: b.enabled ? 1 : 0.35,
                     pointerEvents: b.enabled ? "auto" : "none",
@@ -294,7 +294,7 @@ export function PlaceBlocks({
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
-                  gap: 7,
+                  gap: t.space4,
                   fontFamily: t.sans,
                   fontSize: t.fsControl,
                   color: t.sevWarn,
@@ -322,7 +322,7 @@ export function PlaceBlocks({
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 14,
+              gap: t.space7,
               flexShrink: 0,
             }}
           >

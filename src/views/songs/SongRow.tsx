@@ -49,7 +49,7 @@ export function SongRow({
         gridTemplateColumns: gridCols,
         alignItems: "center",
         height: 48,
-        padding: "0 16px 0 18px",
+        padding: `0 ${String(t.space8)}px 0 ${String(t.space8)}px`,
         borderBottom: `0.5px solid ${t.hairline}`,
       }}
     >
@@ -59,7 +59,7 @@ export function SongRow({
       >
         {pad2(idx + 1)}
       </span>
-      <div style={{ minWidth: 0, paddingRight: 12 }}>
+      <div style={{ minWidth: 0, paddingRight: t.space6 }}>
         <div
           style={{
             fontFamily: t.serif,
@@ -78,7 +78,7 @@ export function SongRow({
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.mutedInk,
-              marginTop: 1,
+              marginTop: t.space1,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",

@@ -75,7 +75,7 @@ export function NeedsDevicePill() {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 6,
+        gap: t.space3,
         height: 28,
         boxSizing: "border-box",
         fontFamily: t.sans,
@@ -85,7 +85,7 @@ export function NeedsDevicePill() {
         background: "transparent",
         border: `0.5px solid ${t.hairline}`,
         borderRadius: t.rMd,
-        padding: "0 11px",
+        padding: `0 ${String(t.space5)}px`,
         whiteSpace: "nowrap",
         cursor: "not-allowed",
         opacity: 0.75,
@@ -110,7 +110,7 @@ function EmptyHint({ children }: EmptyHintProps) {
         fontFamily: t.sans,
         fontSize: t.fsUi,
         color: t.faint,
-        padding: "14px 0",
+        padding: `${String(t.space7)}px 0`,
         fontStyle: "italic",
       }}
     >
@@ -364,11 +364,17 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {/* ── RAIL — category sidebar (the DS Rail, shared with Songs) ── */}
         <Rail>
-          <RailLabel style={{ padding: "4px 10px 8px" }}>Settings</RailLabel>
+          <RailLabel
+            style={{
+              padding: `${String(t.space2)}px ${String(t.space5)}px ${String(t.space4)}px`,
+            }}
+          >
+            Settings
+          </RailLabel>
           <div
             role="tablist"
             aria-label="Settings categories"
-            style={{ display: "flex", flexDirection: "column", gap: 2 }}
+            style={{ display: "flex", flexDirection: "column", gap: t.space1 }}
           >
             {CATEGORIES.map((c) => (
               <RailItem
@@ -396,7 +402,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
           <div
             style={{
               flexShrink: 0,
-              padding: "18px 26px 14px",
+              padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space7)}px`,
               borderBottom: `0.5px solid ${t.hairline}`,
             }}
           >
@@ -416,7 +422,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                 fontSize: t.fsControl,
                 color: t.mutedInk,
                 lineHeight: 1.5,
-                marginTop: 5,
+                marginTop: t.space3,
                 maxWidth: 520,
                 textWrap: "pretty",
               }}
@@ -431,7 +437,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
               flex: 1,
               minHeight: 0,
               overflowY: "auto",
-              padding: "18px 26px 24px",
+              padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space10)}px`,
             }}
           >
             {cat === "targets" && (
@@ -474,7 +480,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                   small
                   icon="plus"
                   onClick={addTarget}
-                  style={{ marginTop: 12 }}
+                  style={{ marginTop: t.space6 }}
                 >
                   Add target
                 </Button>
@@ -495,9 +501,9 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 9,
-                    padding: "9px 11px",
-                    marginBottom: 12,
+                    gap: t.space4,
+                    padding: `${String(t.space4)}px ${String(t.space5)}px`,
+                    marginBottom: t.space6,
                     borderRadius: t.rCard,
                     border: `0.5px solid ${t.hairlineStrong}`,
                     background: t.bgAlt,
@@ -532,7 +538,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                   fontSize: t.fsMeta,
                   color: t.mutedInk,
                   lineHeight: 1.45,
-                  marginBottom: 12,
+                  marginBottom: t.space6,
                 }}
               >
                 Play the way you gig — mix chords and lead, pick and fingers,
@@ -599,7 +605,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                     setAdding(true);
                   }}
                   disabled={topologies.length === 0}
-                  style={{ marginTop: 2 }}
+                  style={{ marginTop: t.space1 }}
                 >
                   Add instrument
                 </Button>
@@ -616,7 +622,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
                 />
                 <div
                   style={{
-                    marginTop: 18,
+                    marginTop: t.space8,
                     fontFamily: t.sans,
                     fontSize: t.fsLabel,
                     color: t.faint,
@@ -652,7 +658,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
               fontSize: t.fsMeta,
               color: t.faint,
               display: "inline-flex",
-              gap: 8,
+              gap: t.space4,
               alignItems: "center",
             }}
           >

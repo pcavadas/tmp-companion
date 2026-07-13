@@ -105,8 +105,8 @@ export function PresetResultCard({
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "12px 14px",
+          gap: t.space5,
+          padding: `${String(t.space6)}px ${String(t.space7)}px`,
           background: tinted ? tone.soft : t.bgAlt,
         }}
       >
@@ -130,7 +130,7 @@ export function PresetResultCard({
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 5,
+              gap: t.space3,
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: t.good,
@@ -145,7 +145,7 @@ export function PresetResultCard({
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 5,
+              gap: t.space3,
               fontFamily: t.sans,
               fontSize: t.fsLabel,
               color: tone.fg,
@@ -157,7 +157,7 @@ export function PresetResultCard({
           </span>
         )}
       </div>
-      <div style={{ padding: "0 8px 4px" }}>
+      <div style={{ padding: `0 ${String(t.space4)}px ${String(t.space2)}px` }}>
         {visibleProblemRows.map(row)}
         {preset.sceneConsistency && (
           <SceneConsistency
@@ -181,9 +181,9 @@ export function PresetResultCard({
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 8,
+                gap: t.space4,
                 minHeight: 34,
-                padding: "0 8px 0 6px",
+                padding: `0 ${String(t.space4)}px 0 ${String(t.space3)}px`,
                 borderTop: `0.5px solid ${t.hairline}`,
                 cursor: "pointer",
               }}

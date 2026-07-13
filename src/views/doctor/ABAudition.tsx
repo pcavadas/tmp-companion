@@ -79,8 +79,8 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 12,
-          marginTop: 8,
+          gap: t.space6,
+          marginTop: t.space4,
         }}
       >
         <button
@@ -133,7 +133,7 @@ export function ABAudition({ beforeClip, afterClip }: ABAuditionProps) {
           fontFamily: t.sans,
           fontSize: t.fsLabel,
           color: t.mutedInk,
-          marginTop: 8,
+          marginTop: t.space4,
           lineHeight: 1.5,
         }}
       >

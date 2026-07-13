@@ -55,7 +55,7 @@ export function ContextFooter({
               fontSize: t.fsMeta,
               color: t.mutedInk,
               display: "inline-flex",
-              gap: 8,
+              gap: t.space4,
               alignItems: "center",
             }}
           >

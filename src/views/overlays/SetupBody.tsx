@@ -79,7 +79,7 @@ function InstrumentNudge({ state }: { state: "none" | "uncal" | "cal" }) {
     <div
       aria-live="polite"
       style={{
-        marginTop: 9,
+        marginTop: t.space4,
         fontFamily: t.sans,
         fontSize: 12,
         lineHeight: 1.45,
@@ -118,15 +118,15 @@ function CalibrationOnboardingBanner({ show }: { show: boolean }) {
         flexShrink: 0,
         display: "flex",
         alignItems: "flex-start",
-        gap: 9,
-        margin: "12px 24px 0",
-        padding: "9px 11px",
+        gap: t.space4,
+        margin: `${String(t.space6)}px ${String(t.space10)}px 0`,
+        padding: `${String(t.space4)}px ${String(t.space5)}px`,
         borderRadius: t.rCard,
         border: `0.5px solid ${t.hairlineStrong}`,
         background: t.bgAlt,
       }}
     >
-      <span style={{ display: "flex", flexShrink: 0, marginTop: 1 }}>
+      <span style={{ display: "flex", flexShrink: 0, marginTop: t.space1 }}>
         <Icon name="info" size={14} stroke={t.accentDeep} strokeWidth={1.5} />
       </span>
       <span
@@ -329,7 +329,7 @@ export function SetupBody({
       <div
         style={{
           flexShrink: 0,
-          padding: "16px 24px 13px",
+          padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space6)}px`,
           borderBottom: `0.5px solid ${t.hairline}`,
         }}
       >
@@ -344,7 +344,7 @@ export function SetupBody({
             fontSize: 10.5,
             letterSpacing: "0.04em",
             color: t.mutedInk,
-            marginTop: 7,
+            marginTop: t.space4,
           }}
         >
           {total} sound{total === 1 ? "" : "s"} · {presetCount} preset
@@ -363,7 +363,11 @@ export function SetupBody({
         onClear={clearPicked}
       >
         <div
-          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: t.space8,
+          }}
         >
           <Pick
             grow
@@ -383,10 +387,20 @@ export function SetupBody({
 
       {/* every sound that will be leveled — set any row directly, or tick for bulk */}
       <div
-        style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 0" }}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          padding: `${String(t.space3)}px 0`,
+        }}
       >
         {groups.map((g) => (
-          <div key={g.slot} style={{ padding: "10px 24px 12px" }}>
+          <div
+            key={g.slot}
+            style={{
+              padding: `${String(t.space5)}px ${String(t.space10)}px ${String(t.space6)}px`,
+            }}
+          >
             <SetupGroupHeader slot={g.slot} name={g.name} />
             {g.opts.map((o) => {
               const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
@@ -456,32 +470,36 @@ export function SetupBody({
       <div
         style={{
           flexShrink: 0,
-          padding: "12px 24px 13px",
+          padding: `${String(t.space6)}px ${String(t.space10)}px ${String(t.space6)}px`,
           background: t.bgAlt,
           borderTop: `0.5px solid ${t.hairline}`,
         }}
       >
-        <div style={{ ...s.kickerWide(t.faint), marginBottom: 9 }}>
+        <div style={{ ...s.kickerWide(t.faint), marginBottom: t.space4 }}>
           Run option
         </div>
-        <div
+        <button
+          type="button"
+          role="switch"
+          aria-checked={rebalance}
           onClick={toggleRebalance}
           style={{
             display: "flex",
             alignItems: "flex-start",
-            gap: 12,
+            gap: t.space6,
             cursor: "pointer",
             userSelect: "none",
+            width: "100%",
+            textAlign: "left",
+            background: "none",
+            border: "none",
+            padding: 0,
+            font: "inherit",
+            color: "inherit",
           }}
         >
-          <span style={{ paddingTop: 1, flexShrink: 0 }}>
-            <Toggle
-              on={rebalance}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleRebalance();
-              }}
-            />
+          <span aria-hidden style={{ paddingTop: t.space1, flexShrink: 0 }}>
+            <Toggle on={rebalance} />
           </span>
           <div style={{ minWidth: 0 }}>
             <div
@@ -500,7 +518,7 @@ export function SetupBody({
                 fontSize: 11,
                 lineHeight: 1.5,
                 color: t.mutedInk,
-                marginTop: 2,
+                marginTop: t.space1,
                 textWrap: "pretty",
               }}
             >
@@ -512,8 +530,8 @@ export function SetupBody({
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 7,
-                  marginTop: 7,
+                  gap: t.space4,
+                  marginTop: t.space4,
                 }}
               >
                 <ByEarChip />
@@ -529,7 +547,7 @@ export function SetupBody({
               </div>
             )}
           </div>
-        </div>
+        </button>
       </div>
 
       <WizardFooter
@@ -538,7 +556,7 @@ export function SetupBody({
             variant="ghost"
             small
             onClick={onCancel}
-            style={{ height: 32, padding: "0 15px" }}
+            style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
           >
             Cancel
           </Button>
@@ -549,7 +567,7 @@ export function SetupBody({
               <BackupAckLabel
                 checked={backedUp}
                 onChange={setBackedUp}
-                style={{ userSelect: "none", paddingRight: 4 }}
+                style={{ userSelect: "none", paddingRight: t.space2 }}
               />
             )}
             <Button
@@ -558,7 +576,7 @@ export function SetupBody({
               icon="gauge"
               disabled={total === 0 || (requireBackup && !backedUp)}
               onClick={start}
-              style={{ height: 32, padding: "0 16px" }}
+              style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
             >
               {`Level ${String(total)} sound${total === 1 ? "" : "s"}`}
             </Button>
