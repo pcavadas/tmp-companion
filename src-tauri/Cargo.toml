@@ -52,10 +52,38 @@ core-foundation-sys = "0.8"
 libc = "0.2"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "dev-bins"]
 custom-protocol = ["tauri/custom-protocol"]
 # Offline UI e2e seam: compiles the device-transport factory (`session::e2e_transport`)
 # and the `e2e_server` bin so a Playwright run drives the real backend against an
 # in-memory `SimDevice` instead of USB. Production never enables it (real `Hid` only).
 # `tauri/test` gives the windowless MockRuntime the server invokes commands through.
 e2e = ["tauri/test"]
+# Gates the dev-only helper bins (probe/gen_samples) OUT of the release bundle.
+# It's in `default`, so plain `cargo build/run/clippy` keep building them — but
+# tauri-cli checks a bin's required-features against the EXPLICIT --features flags
+# only (never cargo defaults), and scripts/release-build.sh passes none, so the
+# universal bundler skips them (they're never lipo'd into the universal dir).
+# Ceiling: if a future tauri-cli resolves default features here, the fix recurs as
+# the SAME loud "does not exist" bundling error at release time — never silent.
+dev-bins = []
+
+# The three helper bins are dev/test-only and must NOT ship in the signed release
+# bundle. Auto-discovery would bundle every src/bin/*.rs into the .app; the
+# required-features gate (see `dev-bins`/`e2e` above) makes the release bundler
+# skip them while `name` == file stem keeps each block merged with its inferred
+# target (main `tmp-companion` stays auto-discovered from src/main.rs).
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+required-features = ["dev-bins"]
+
+[[bin]]
+name = "gen_samples"
+path = "src/bin/gen_samples.rs"
+required-features = ["dev-bins"]
+
+[[bin]]
+name = "e2e_server"
+path = "src/bin/e2e_server.rs"
+required-features = ["e2e"]
