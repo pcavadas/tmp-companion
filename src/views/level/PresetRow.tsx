@@ -244,7 +244,7 @@ export function PresetRow({
           <span style={{ flex: 1 }} />
           {meta}
           {/* Real per-preset CPU bar — base rows only, once the backup graph is ready.
-              The 18px gap keeps the scene-summary meta off the bar. */}
+              The space8 (16px) gap keeps the scene-summary meta off the bar. */}
           {!empty && ready && cpu != null && (
             <span
               style={{

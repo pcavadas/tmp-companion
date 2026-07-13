@@ -478,7 +478,10 @@ export function SetupBody({
         <div style={{ ...s.kickerWide(t.faint), marginBottom: t.space4 }}>
           Run option
         </div>
-        <div
+        <button
+          type="button"
+          role="switch"
+          aria-checked={rebalance}
           onClick={toggleRebalance}
           style={{
             display: "flex",
@@ -486,16 +489,17 @@ export function SetupBody({
             gap: t.space6,
             cursor: "pointer",
             userSelect: "none",
+            width: "100%",
+            textAlign: "left",
+            background: "none",
+            border: "none",
+            padding: 0,
+            font: "inherit",
+            color: "inherit",
           }}
         >
-          <span style={{ paddingTop: t.space1, flexShrink: 0 }}>
-            <Toggle
-              on={rebalance}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleRebalance();
-              }}
-            />
+          <span aria-hidden style={{ paddingTop: t.space1, flexShrink: 0 }}>
+            <Toggle on={rebalance} />
           </span>
           <div style={{ minWidth: 0 }}>
             <div
@@ -543,7 +547,7 @@ export function SetupBody({
               </div>
             )}
           </div>
-        </div>
+        </button>
       </div>
 
       <WizardFooter

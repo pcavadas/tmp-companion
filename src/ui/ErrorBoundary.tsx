@@ -100,6 +100,7 @@ function Fallback({
       </pre>
       <div style={{ display: "flex", gap: t.space5 }}>
         <button
+          type="button"
           onClick={onReset}
           style={{
             padding: `${String(t.space4)}px ${String(t.space8)}px`,
@@ -115,6 +116,7 @@ function Fallback({
           Try again
         </button>
         <button
+          type="button"
           onClick={() => {
             window.location.reload();
           }}
