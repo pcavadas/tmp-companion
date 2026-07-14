@@ -456,6 +456,30 @@ pub(crate) fn capture_dry_di(secs: f32) -> Result<(Vec<f32>, f32), String> {
     Ok((mono, peak))
 }
 
+/// True clipping flat-tops the waveform — a RUN of consecutive samples pinned at
+/// full scale. A clean guitar pick attack is a sub-millisecond transient (one or
+/// two samples at the apex) that a device output meter's ballistics smooth away
+/// but a raw sample-peak catches, so a bare `peak >= 0.99` gate over-fires on hot
+/// transients (the DI tap is a bit-exact USB bus — no analog headroom to lose, so
+/// only genuine flat-topping corrupts a take). Flag a capture as clipped only when
+/// `MIN_CLIP_RUN` consecutive samples sit at/above `CLIP_LEVEL`.
+const CLIP_LEVEL: f32 = 0.999;
+const MIN_CLIP_RUN: usize = 4; // ≈83 µs @ 48 kHz — impossible for a clean transient apex
+pub(crate) fn is_clipped_capture(samples: &[f32]) -> bool {
+    let mut run = 0usize;
+    for &x in samples {
+        if x.abs() >= CLIP_LEVEL {
+            run += 1;
+            if run >= MIN_CLIP_RUN {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
 /// Capture the dry instrument (USB-Out 3) for `secs` while the user plays and
 /// save it as a 48 kHz mono f32 WAV — the real-DI side of `--stim-ab`. Reports
 /// peak (clip check — the dry tap has no limiter) and integrated LUFS.
@@ -467,7 +491,7 @@ pub fn probe_capture_wav(path: &str, secs: f32) -> Result<String, String> {
         "wrote {path}: {:.1}s  peak {:+.1} dBFS{}  integrated {lufs:.2} LUFS\n",
         mono.len() as f32 / 48_000.0,
         20.0 * peak.log10(),
-        if peak >= 0.99 {
+        if is_clipped_capture(&mono) {
             "  ⚠ CLIPPED — recapture softer"
         } else {
             ""
@@ -524,5 +548,31 @@ mod stimulus_shortfall_tests {
     fn uncalibrated_has_no_shortfall() {
         let (_, shortfall) = read_stimulus_calibrated_with_shortfall(&wav(), None).unwrap();
         assert_eq!(shortfall, None);
+    }
+}
+
+#[cfg(test)]
+mod clip_gate_tests {
+    use super::is_clipped_capture;
+
+    #[test]
+    fn isolated_transient_apexes_are_not_clipping() {
+        // A clean take: low sustained level with occasional single-sample full-scale
+        // pick-attack apexes — never a sustained flat top. The old `peak >= 0.99`
+        // gate rejected exactly this; the run-length gate must accept it.
+        let mut s = vec![0.2f32; 48_000];
+        for i in (0..s.len()).step_by(4000) {
+            s[i] = 1.0;
+        }
+        assert!(!is_clipped_capture(&s));
+    }
+
+    #[test]
+    fn sustained_flat_top_is_clipping() {
+        let mut s = vec![0.2f32; 48_000];
+        for x in s.iter_mut().skip(100).take(8) {
+            *x = 1.0; // 8 consecutive pinned samples = genuine overload
+        }
+        assert!(is_clipped_capture(&s));
     }
 }
