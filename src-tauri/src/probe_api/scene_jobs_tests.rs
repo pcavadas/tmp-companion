@@ -227,11 +227,12 @@ fn scene_jobs_split_output_joint_ks_both_output_lanes() {
             "dspUnitParameters": { "bypass": false, "outputLevel": 0.5 }
         })
     };
-    // gtrSplit: stages=[Series{G1}], outputs={a: G2-G4, b: G5-G7}.
+    // gtrSplit: stages=[Series{G1}], outputs={a: G2, b: G3} (HW-confirmed: each
+    // output lane is one whole device group, not a bunched multi-group half).
     let doc = serde_json::json!({
         "audioGraph": { "template": "gtrSplit", "guitarNodes": {
-            "G1": [], "G2": [ amp("ACD_TM59Bassman") ], "G3": [], "G4": [],
-            "G5": [ amp("ACD_HiwattDR103CanMod") ], "G6": [], "G7": []
+            "G1": [], "G2": [ amp("ACD_TM59Bassman") ],
+            "G3": [ amp("ACD_HiwattDR103CanMod") ]
         } }
     });
     let candidates = vec![
@@ -242,7 +243,7 @@ fn scene_jobs_split_output_joint_ks_both_output_lanes() {
             value: 0.5,
         },
         LevelBlockArg {
-            group_id: "G5".into(),
+            group_id: "G3".into(),
             node_id: "ACD_HiwattDR103CanMod".into(),
             parameter_id: "outputLevel".into(),
             value: 0.5,

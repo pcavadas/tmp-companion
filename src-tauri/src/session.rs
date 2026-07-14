@@ -3247,11 +3247,11 @@ fn build_route_graph(
             route.outputs = Some(OutputPair {
                 a: OutputLane {
                     kind: "out1".to_string(),
-                    blocks: concat_g(&["G2", "G3", "G4"]),
+                    blocks: g("G2"),
                 },
                 b: OutputLane {
                     kind: "out2".to_string(),
-                    blocks: concat_g(&["G5", "G6", "G7"]),
+                    blocks: g("G3"),
                 },
             });
         }
@@ -3266,7 +3266,7 @@ fn build_route_graph(
                 },
                 b: OutputLane {
                     kind: "out2".to_string(),
-                    blocks: concat_m(&["M3", "M4"]),
+                    blocks: m("M3"),
                 },
             });
         }
@@ -3725,7 +3725,7 @@ mod tests {
                 "guitarNodes":{
                     "G1":[{"FenderId":"ACD_Compressor"}],
                     "G2":[{"FenderId":"ACD_DeluxeReverb"}],
-                    "G5":[{"FenderId":"ACD_SpaceEcho"}]
+                    "G3":[{"FenderId":"ACD_SpaceEcho"}]
                 }
             }}"#,
         )
@@ -3758,6 +3758,40 @@ mod tests {
         let m_outputs = m.outputs.expect("micSplit should expose split outputs");
         assert_eq!(m_outputs.a.kind, "out1");
         assert_eq!(m_outputs.b.kind, "out2");
+    }
+
+    // HW-confirmed (My Presets slot 27 "Split outputs", 65 Deluxe Reverb → SPLIT):
+    // a device group is itself an ordered mini-chain that can hold multiple blocks
+    // (adding a 2nd effect in Pro Control landed inside G2's own array, not G4), so
+    // gtrSplit/micSplit assign ONE WHOLE GROUP per output lane (G2→out1, G3→out2),
+    // not a bunched multi-group half like the old ["G2","G3","G4"]/["G5","G6","G7"].
+    #[test]
+    fn route_graph_gtr_split_lane_is_one_full_group_in_order() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"gtrSplit",
+                "guitarNodes":{
+                    "G1":[{"FenderId":"ACD_DeluxeReverb65NoFx"}],
+                    "G2":[{"FenderId":"ACD_UserIRTMS"},{"FenderId":"ACD_TMSmallHall"}],
+                    "G3":[{"FenderId":"ACD_ExternalCab"}]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        let outputs = g.outputs.expect("gtrSplit should expose split outputs");
+        assert_eq!(outputs.a.kind, "out1");
+        assert_eq!(
+            outputs
+                .a
+                .blocks
+                .iter()
+                .map(|n| n.model.clone())
+                .collect::<Vec<_>>(),
+            vec!["ACD_UserIRTMS", "ACD_TMSmallHall"]
+        );
+        assert_eq!(outputs.b.kind, "out2");
+        assert_eq!(outputs.b.blocks[0].model, "ACD_ExternalCab");
     }
 
     // Build a synthetic PresetListResponse and confirm extraction. This pins the
