@@ -1,7 +1,7 @@
 // src/views/level/HowLevelingSheet.tsx — the "How leveling works" explainer.
 //
-// A calm, read-only one-screen sheet opened from a worded info row under the Level
-// hero. Recreated from the Claude Design handoff (reference/HowLevelingSheet.jsx) with
+// A calm, read-only one-screen sheet opened from the "How it works" button in the Level
+// footer status bar. Recreated from the Claude Design handoff (reference/HowLevelingSheet.jsx) with
 // this codebase's theme tokens + Icon + Button. No inputs, no persistence, no fetch.
 //
 // One deliberate copy change from the handoff: the "Two amps in parallel" case SETS
@@ -336,45 +336,5 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
         </Button>
       </DialogFooter>
     </Dialog>
-  );
-}
-
-interface LevelingInfoRowProps {
-  onOpen: () => void;
-}
-
-export function LevelingInfoRow({ onOpen }: LevelingInfoRowProps) {
-  const { t } = useTheme();
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: t.space5,
-        padding: `${String(t.space4)}px ${String(t.space7)}px`,
-        borderBottom: `0.5px solid ${t.hairline}`,
-        background: t.bgAlt,
-      }}
-    >
-      <span style={{ flexShrink: 0, color: t.mutedInk, display: "flex" }}>
-        <Icon name="gauge" size={14} stroke={t.mutedInk} />
-      </span>
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontFamily: t.sans,
-          fontSize: 12.5,
-          color: t.ink2,
-          lineHeight: 1.35,
-          textWrap: "pretty",
-        }}
-      >
-        Leveling adjusts one control so every preset hits the same loudness.
-      </span>
-      <Button variant="ghost" small onClick={onOpen}>
-        See how it works
-      </Button>
-    </div>
   );
 }
