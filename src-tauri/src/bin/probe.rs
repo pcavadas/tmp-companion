@@ -1124,6 +1124,52 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--factory-list") {
+        // --factory-list — print every Factory preset as `slot<TAB>name`.
+        eprintln!("[probe] listing Factory presets…");
+        match tmp_companion_lib::probe_factory_list() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--load-probe") {
+        // --load-probe <slot> <tabEnum> — raw loadPreset + read-back active
+        // identity. Both values pass through verbatim (experiment with 0-/1-based
+        // slots + unknown Factory tabEnums). Non-destructive (load only, no save).
+        let slot: u64 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u64::MAX);
+        let tab_enum: u64 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u64::MAX);
+        if slot == u64::MAX || tab_enum == u64::MAX {
+            eprintln!(
+                "usage: probe --load-probe <slot> <tabEnum>   (tabEnum 1 = UserPresets; Factory unknown)"
+            );
+            std::process::exit(2);
+        }
+        eprintln!("[probe] loadPreset slot={slot} tabEnum={tab_enum}…");
+        match tmp_companion_lib::probe_load_probe(slot, tab_enum) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--import") {
         // --import <file.preset>  — AC3: re-import a preset over USB (additive).
         let path = match args.get(i + 1) {
@@ -1623,6 +1669,52 @@ fn main() {
         );
         match tmp_companion_lib::probe_doctor_calib(&slots, &stim, &family, labels.as_deref(), &out)
         {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-calib-factory") {
+        // --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <..> --out <report.json>
+        // Loads each FACTORY preset (tabEnum=4) + captures AS-LOADED for reference derivation.
+        let flag = |name: &str| -> Option<String> {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|j| args.get(j + 1))
+                .cloned()
+        };
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let stim = flag("--stim").unwrap_or_default();
+        let family = flag("--family").unwrap_or_default();
+        let out = flag("--out").unwrap_or_default();
+        let slots: Vec<u32> = match slots_csv
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) if !s.is_empty() && !stim.is_empty() && !family.is_empty() && !out.is_empty() => {
+                s
+            }
+            _ => {
+                eprintln!(
+                    "usage: probe --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <guitar|bass|bass-vi> --out <report.json>"
+                );
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "[probe] doctor-calib-factory sweep over {} factory slot(s), family={family}, stim={stim}…",
+            slots.len()
+        );
+        match tmp_companion_lib::probe_doctor_calib_factory(&slots, &stim, &family, &out) {
             Ok(r) => {
                 print!("{r}");
                 return;

@@ -115,6 +115,44 @@ pub fn probe_export_preset(list_enum: u32, slot: u32) -> Result<String, String> 
     ))
 }
 
+/// `probe --factory-list`: connect (the full handshake already requests the
+/// My/Factory/Cloud lists) and print every FACTORY preset as `slot<TAB>name`,
+/// one per line. Empty slots print as their device-supplied label (usually `--`)
+/// — not filtered, so the slot numbering stays 1:1 with the list index.
+/// Read-only: list harvest only, no LoadPreset.
+pub fn probe_factory_list() -> Result<String, String> {
+    let entries = Session::connect()?.list_factory_presets()?;
+    let mut out = String::new();
+    for e in &entries {
+        out.push_str(&format!("{}\t{}\n", e.slot, e.name));
+    }
+    out.push_str(&format!("({} factory presets)\n", entries.len()));
+    Ok(out)
+}
+
+/// `probe --load-probe <slot> <tabEnum>`: send a RAW `loadPreset(presetSlot=slot,
+/// tabEnum=tabEnum)` (both values passed VERBATIM — the human experiments with
+/// 0-/1-based slots and unknown Factory tabEnums), then read back the ACTIVE
+/// preset's identity (name + first block model) from the `currentPresetDataChanged`
+/// (field 3) / `currentPresetInfoChanged` (field 22) pushes.
+///
+/// Non-destructive: only LoadPreset (changes the active preset) — never saves.
+/// The load is fired on a QUIET line (a mid-flood request is dropped device-side)
+/// via `send_and_collect` (NOT the fire-and-forget `Session::load_preset`, which
+/// discards the reports the field-3 push rides on); the field-3 push arrives only
+/// on a CHANGE, coaxed here with a few dense heartbeats (the monitor's cadence).
+pub fn probe_load_probe(slot: u64, tab_enum: u64) -> Result<String, String> {
+    let mut s = Session::connect()?;
+    // Fire-and-forget via the SAME transact_eager path `session::load_preset` uses
+    // (HW-proven to change the active preset); both slot + tabEnum verbatim. The
+    // TMP's own screen is the oracle for which preset went active — the field-3
+    // name readback proved unreliable on a lean one-shot session.
+    s.load_preset_raw(slot, tab_enum)?;
+    Ok(format!(
+        "sent loadPreset slot={slot} tabEnum={tab_enum} — check the TMP screen for the active preset\n"
+    ))
+}
+
 /// Frame/marker forensics over a session's raw accumulated reports: frame
 /// counts by magic, plus plaintext-JSON marker counts in the concatenated
 /// frame bodies — the field-9 `presetJson` is PLAINTEXT (not LZ4), so its

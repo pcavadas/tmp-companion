@@ -366,6 +366,118 @@ pub fn probe_doctor_calib(
     Ok(out)
 }
 
+/// FACTORY-bank variant for REFERENCE-curve derivation. Loads each factory preset
+/// (tabEnum = 4 `FactoryPresets`, 1-based `presetSlot` = list index + 1) on its own
+/// connection, then captures it AS-LOADED — its designed default tone, the intended
+/// "good tone" baseline — re-amped through the DI `stim`. No labels/derivation and
+/// no base force-bypass (unlike `probe_doctor_calib`): the per-slot `balanceDb` rows
+/// feed the offline per-band median → the per-topology reference curve. READ-ONLY:
+/// load + capture, never saves; ends re-amp OFF.
+pub fn probe_doctor_calib_factory(
+    factory_slots: &[u32],
+    stim_path: &str,
+    family_id: &str,
+    out_path: &str,
+) -> Result<String, String> {
+    if !matches!(
+        family_id.to_ascii_lowercase().as_str(),
+        "guitar" | "bass" | "bass-vi"
+    ) {
+        return Err(format!(
+            "unrecognized --family '{family_id}' (expected guitar|bass|bass-vi)"
+        ));
+    }
+    let family = doctor::Family::from_topology(family_id);
+    let stim = read_stimulus_48k(stim_path)?;
+    let stim_loud = lufs::measure_mono(&stim, 48_000)?;
+
+    let mut rows: Vec<Row> = Vec::new();
+    for &slot in factory_slots {
+        // Load on its OWN connection (load + engage in one connection captures
+        // silence — see `doctor_capture_current`); FactoryPresets tab = 4, 1-based.
+        {
+            match session::Session::connect() {
+                Ok(mut s) => {
+                    if let Err(e) = s.load_preset_raw(u64::from(slot) + 1, 4) {
+                        eprintln!("[probe] factory slot {slot}: load failed: {e} (skipping)");
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[probe] factory slot {slot}: connect failed: {e} (skipping)");
+                    continue;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        match leveller::doctor_capture_current(&stim, Some(0.5)) {
+            Ok((samples, rate)) => {
+                let (onset, _confident) = audio::estimate_onset(&stim, &samples, rate);
+                let profile =
+                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
+                let coverage = doctor::band_coverage(&stim, family);
+                rows.push(Row {
+                    slot,
+                    profile,
+                    coverage,
+                    noise_floor_db: None,
+                });
+            }
+            Err(e) => eprintln!("[probe] factory slot {slot}: capture failed: {e} (skipping)"),
+        }
+    }
+    // Belt-and-braces re-amp OFF even on a mid-sweep error.
+    let _ = session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+
+    if rows.is_empty() {
+        return Err("no sound captured".to_string());
+    }
+
+    let report_rows: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "slot": r.slot,
+                "balanceDb": doctor::balance(&r.profile.bands),
+                "tailRatioDb": r.profile.tail_ratio_db,
+                "spreadLu": r.profile.spread_lu,
+                "integratedLufs": r.profile.integrated_lufs,
+                "coverage": r.coverage,
+            })
+        })
+        .collect();
+
+    let report = serde_json::json!({
+        "stimulus": {
+            "path": stim_path,
+            "hash": stim_hash(&stim),
+            "integratedLufs": stim_loud.integrated_lufs,
+            "spreadLu": stim_loud.spread_lu(),
+        },
+        "family": family_id,
+        "bands": family.bands(),
+        "bandLabels": family.labels(),
+        "source": "factory",
+        "rows": report_rows,
+    });
+    let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
+
+    let mut out = format!(
+        "doctor-calib-factory sweep ({family_id}, {} sounds) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | spread\n",
+        rows.len(),
+        stim_loud.integrated_lufs,
+        stim_loud.spread_lu(),
+    );
+    for r in &rows {
+        out += &format!(
+            "  {:>4} | {:>8.2} | {:>8.1} | {:>6.2}\n",
+            r.slot, r.profile.integrated_lufs, r.profile.tail_ratio_db, r.profile.spread_lu,
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

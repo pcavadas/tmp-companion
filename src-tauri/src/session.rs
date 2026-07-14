@@ -1180,6 +1180,27 @@ impl Session {
         Ok(preset_entries(names))
     }
 
+    /// Enumerate the FACTORY list (listEnum = 4). Mirrors [`list_my_presets`]: the
+    /// handshake already issued `preset_list_request(4)` and accumulated its reply,
+    /// so harvest from the shared accumulator first and only re-query if absent.
+    pub fn list_factory_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
+        let mut names = best_factory_list_from_reports(&self.raw);
+        if names.is_none() {
+            let b = self.next_batch();
+            self.send_and_collect(&proto::preset_list_request(4, b), 1000)?;
+            for _ in 0..8 {
+                if let Some(found) = best_factory_list_from_reports(&self.raw) {
+                    names = Some(found);
+                    break;
+                }
+                self.pump_collect(700)?;
+            }
+        }
+        let names = names
+            .ok_or_else(|| "no Factory PresetListResponse received from device".to_string())?;
+        Ok(preset_entries(names))
+    }
+
     /// Completeness-validated My-Presets list for the snapshot path. The tolerant
     /// `list_my_presets` harvest accepts a tail-truncated multi-packet response
     /// (observed: 371 of 504 records when the monitor reconnected right after a
@@ -1571,6 +1592,16 @@ impl Session {
         // soon as the echo burst completes instead of burning the full window.
         self.hid
             .transact_eager(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+        Ok(())
+    }
+
+    /// Raw loadPreset with BOTH `preset_slot` and `tab_enum` passed VERBATIM (no
+    /// +1, no hardcoded tab) — the `probe --load-probe` experiment for the factory
+    /// bank. Same fire-and-forget `transact_eager` path as `load_preset` (which is
+    /// HW-proven to change the active preset).
+    pub fn load_preset_raw(&mut self, preset_slot: u64, tab_enum: u64) -> Result<(), String> {
+        self.hid
+            .transact_eager(&proto::load_preset(preset_slot, tab_enum), 300)?;
         Ok(())
     }
 
@@ -2459,10 +2490,22 @@ impl Session {
 /// and collect the `displayName` of each record. Returns None if this body
 /// doesn't carry a PresetListResponse.
 fn extract_preset_list(body: &[u8]) -> Option<Vec<String>> {
-    let resp = dig(body, TMS_PRESET, PRESET_LIST_RESPONSE)?;
     // My Presets only — the handshake also collects the Factory/Cloud responses
     // on the same session (the wrong-list hazard is documented on the helper).
-    if !proto::is_my_presets_list(&resp) {
+    // A missing listEnum is treated as My Presets (lean sessions request only 1).
+    extract_preset_list_for(body, LIST_ENUM_MY_PRESETS)
+}
+
+/// Preset-list `listEnum` values (My Presets = 1, Factory = 4, Cloud = 3).
+const LIST_ENUM_MY_PRESETS: u64 = 1;
+const LIST_ENUM_FACTORY: u64 = 4;
+
+/// `extract_preset_list`, gated to an explicit `listEnum` (field 1 of the
+/// `PresetListResponse`). A missing listEnum defaults to My Presets, so it only
+/// matches `want_enum == 1` (Factory/Cloud must be present explicitly).
+fn extract_preset_list_for(body: &[u8], want_enum: u64) -> Option<Vec<String>> {
+    let resp = dig(body, TMS_PRESET, PRESET_LIST_RESPONSE)?;
+    if proto::first_varint(&resp, 1).unwrap_or(LIST_ENUM_MY_PRESETS) != want_enum {
         return None;
     }
     // PresetListResponse.record (field 2, repeated) → PresetListRecord.displayName (field 1).
@@ -2498,6 +2541,18 @@ fn best_preset_list_from_reports(reports: &[Vec<u8>]) -> Option<Vec<String>> {
         .into_iter()
         .chain(proto::reassemble_streams_final(reports))
         .filter_map(|s| extract_preset_list(&s.body))
+        .max_by_key(|names| (names.len(), names.last().map_or(0, |s| s.len())))
+}
+
+/// Longest FACTORY (listEnum = 4) preset list from the accumulated reports. Same
+/// dual-stream-rule harvest as `best_preset_list_from_reports`, but gated to the
+/// Factory list — the handshake requests My/Factory/Cloud on one session, so this
+/// picks the Factory reply out of the shared accumulator.
+fn best_factory_list_from_reports(reports: &[Vec<u8>]) -> Option<Vec<String>> {
+    proto::reassemble_streams(reports)
+        .into_iter()
+        .chain(proto::reassemble_streams_final(reports))
+        .filter_map(|s| extract_preset_list_for(&s.body, LIST_ENUM_FACTORY))
         .max_by_key(|names| (names.len(), names.last().map_or(0, |s| s.len())))
 }
 
@@ -4172,6 +4227,43 @@ mod tests {
         ];
         let best = best_preset_list_from_reports(&reports).expect("my presets");
         assert_eq!(best, vec!["Guitar".to_string(), "Cello".to_string()]);
+    }
+
+    // The Factory harvest gates on listEnum == 4: it must pick the Factory reply
+    // out of the shared accumulator and ignore the My-Presets (listEnum 1) reply,
+    // even when My Presets is longer.
+    #[test]
+    fn best_factory_list_extracts_list_enum_4() {
+        fn ld(field: u32, inner: &[u8]) -> Vec<u8> {
+            let mut o = Vec::new();
+            o.push(((field << 3) | 2) as u8);
+            o.push(inner.len() as u8);
+            o.extend_from_slice(inner);
+            o
+        }
+        fn report(body: &[u8]) -> Vec<u8> {
+            let mut r = vec![0x00, 0x35, 0x00, body.len() as u8];
+            r.extend_from_slice(body);
+            r
+        }
+        let list = |list_enum: u8, names: &[&str]| {
+            let mut resp = vec![0x08, list_enum];
+            for n in names {
+                resp.extend(ld(2, &ld(1, n.as_bytes())));
+            }
+            ld(TMS_PRESET, &ld(PRESET_LIST_RESPONSE, &resp))
+        };
+        let reports = vec![
+            report(&list(1, &["Guitar", "Cello", "Synth"])), // My Presets, longer
+            report(&list(4, &["'65 Deluxe", "Cutting"])),    // Factory
+        ];
+        let factory = best_factory_list_from_reports(&reports).expect("factory list");
+        assert_eq!(
+            factory,
+            vec!["'65 Deluxe".to_string(), "Cutting".to_string()]
+        );
+        // And a reports set with NO factory reply yields nothing.
+        assert!(best_factory_list_from_reports(&[report(&list(1, &["Guitar"]))]).is_none());
     }
 
     #[test]
