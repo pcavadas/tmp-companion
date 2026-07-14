@@ -667,15 +667,13 @@ function measureLaneBracket(
 // strokes end exactly at x=0; symmetrically the right cap's strokes start at
 // x=W. Used single-sided by ForkTail/JoinHead and rendered twice (once per
 // side) by SplitGroup's two-sided bracket.
-function LaneBracketCap({
-  brk,
-  side,
-  ink,
-}: {
+interface LaneBracketCapProps {
   brk: { top: number; height: number } | null;
   side: BracketSide;
   ink: string;
-}) {
+}
+
+function LaneBracketCap({ brk, side, ink }: LaneBracketCapProps) {
   if (!brk) return null;
   return (
     <div
