@@ -100,7 +100,6 @@ export interface StripGraph {
 }
 
 type Size = "md" | "sm";
-type BracketPosition = "top" | "bottom";
 type BracketSide = "left" | "right";
 
 // Endpoint glyphs come from the DS icon catalog (`<Icon>`), never hand-rolled SVG:
@@ -342,16 +341,20 @@ function BlockTile({ b, size, skeleton }: BlockTileProps) {
 interface WireProps {
   ink: string;
   w?: number;
+  // A fork/join lane's own row is narrower than its longer sibling — grow
+  // instead of a fixed width so the trailing endpoint node (SinkNode/
+  // SourceNode) still lines up across lanes, with the drawn line stretching
+  // to meet it rather than leaving a dangling gap.
+  grow?: boolean;
 }
 
-function Wire({ ink, w = 18 }: WireProps) {
+function Wire({ ink, w = 18, grow }: WireProps) {
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        width: w,
-        flexShrink: 0,
+        ...(grow ? { flex: 1, minWidth: w } : { width: w, flexShrink: 0 }),
       }}
     >
       <div style={{ flex: 1, display: "flex", alignItems: "center" }}>
@@ -614,91 +617,225 @@ function EmptyLane({ size }: { size: Size }) {
   );
 }
 
-function WireBracketCap({
-  ink,
-  min = 10,
-  size,
-  position,
-  side,
-}: {
-  ink: string;
-  min?: number;
-  size: Size;
-  position: BracketPosition;
-  side: BracketSide;
-}) {
-  const artH = size === "sm" ? 46 : 58;
-  const tileH = artH + STRIP_LBL;
-  const yc = artH / 2;
-  const bw = 9;
-  const r = 5;
-  const ext = (tileH + 10) / 2;
-  const barLen = ext - r;
-  const svgW = bw + 2;
-  const svgPos = side === "right" ? { left: "100%" } : { right: "100%" };
-  const curvePath =
-    side === "right"
-      ? position === "top"
-        ? `M 0,${String(yc)} h ${String(bw - r)} q ${String(r)},0 ${String(r)},${String(r)} v ${String(barLen)}`
-        : `M 0,${String(yc)} h ${String(bw - r)} q ${String(r)},0 ${String(r)},${String(-r)} v ${String(-barLen)}`
-      : position === "top"
-        ? `M ${String(svgW)},${String(yc)} h ${String(-(bw - r))} q ${String(-r)},0 ${String(-r)},${String(r)} v ${String(barLen)}`
-        : `M ${String(svgW)},${String(yc)} h ${String(-(bw - r))} q ${String(-r)},0 ${String(-r)},${String(-r)} v ${String(-barLen)}`;
+// Shared bracket geometry for any split/join point (one or two diamonds, two
+// lane rows) — DOM-measured from the two lane rows' real rendered centres
+// rather than derived from hardcoded tile-height constants, so it stays exact
+// regardless of label/font metrics or lane content length (the old per-lane
+// SVG curve math assumed both lanes were exactly the same fixed height, which
+// left a visible gap once a gtrSplit/micSplit preset had a different block
+// count per output lane). Used by SplitGroup (two-sided, in-line splits like
+// gtrParallel1/2) and ForkTail/JoinHead (one-sided, split-output/dual-input
+// lanes) alike. Each caller runs its OWN `useLayoutEffect` calling this
+// function (refs created via useRef in the SAME component) rather than a
+// shared hook, so eslint's exhaustive-deps can see the refs are useRef-stable
+// instead of flagging them as effect dependencies. This helper is the shared
+// MATH only (not a hook itself — no eslint hook rules apply to it).
+function measureLaneBracket(
+  colRef: React.RefObject<HTMLDivElement | null>,
+  aRef: React.RefObject<HTMLDivElement | null>,
+  bRef: React.RefObject<HTMLDivElement | null>,
+  prev: { top: number; height: number } | null,
+): { top: number; height: number } | null {
+  const col = colRef.current,
+    ar = aRef.current,
+    br = bRef.current;
+  if (!col || !ar || !br) return prev;
+  const ct = col.getBoundingClientRect();
+  const arr = ar.getBoundingClientRect();
+  const brr = br.getBoundingClientRect();
+  if (!arr.height || !brr.height) return prev;
+  const aC = arr.top - ct.top + (arr.height - STRIP_LBL) / 2;
+  const bC = brr.top - ct.top + (brr.height - STRIP_LBL) / 2;
+  const next = { top: aC, height: Math.max(0, bC - aC) };
+  return prev &&
+    Math.abs(prev.top - next.top) < 0.5 &&
+    Math.abs(prev.height - next.height) < 0.5
+    ? prev
+    : next;
+}
 
+// The "[" (or mirrored "]") cap for one side of a bracket, sized from a
+// `measureLaneBracket` result. `boxSizing:border-box` is load-bearing: with
+// the default content-box the two 1.5px horizontal borders render OUTSIDE the
+// `height`, so the border-box grows to `brk.height + 3` and the bottom border
+// lands ~3px below `brk.top + brk.height` — a gap `SplitGroup`'s `emptyLine`
+// has to match. With border-box the border box is exactly `brk.height`:
+// borderTop occupies [brk.top, brk.top+1.5] and borderBottom
+// [brk.top+brk.height-1.5, brk.top+brk.height] — flush with `emptyLine`. It
+// also fixes X: border-box folds the 1.5px vertical border INTO the 9px, so
+// the left cap's border box spans [-9, 0] (was [-9, 1.5]) and its top/bottom
+// strokes end exactly at x=0; symmetrically the right cap's strokes start at
+// x=W. Used single-sided by ForkTail/JoinHead and rendered twice (once per
+// side) by SplitGroup's two-sided bracket.
+interface LaneBracketCapProps {
+  brk: { top: number; height: number } | null;
+  side: BracketSide;
+  ink: string;
+}
+
+function LaneBracketCap({ brk, side, ink }: LaneBracketCapProps) {
+  if (!brk) return null;
   return (
     <div
       style={{
-        flex: 1,
-        minWidth: min,
-        display: "flex",
-        flexDirection: "column",
+        position: "absolute",
+        boxSizing: "border-box",
+        [side]: -9,
+        top: brk.top,
+        height: brk.height,
+        width: 9,
+        borderTop: `${STROKE_W_PX} solid ${ink}`,
+        borderBottom: `${STROKE_W_PX} solid ${ink}`,
+        [side === "left" ? "borderLeft" : "borderRight"]:
+          `${STROKE_W_PX} solid ${ink}`,
+        borderRadius: side === "left" ? "5px 0 0 5px" : "0 5px 5px 0",
       }}
-    >
-      <div style={{ flex: 1, minHeight: artH, position: "relative" }}>
-        <svg
-          overflow="visible"
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            display: "block",
-          }}
-        >
-          <line
-            x1="0"
-            y1={yc}
-            x2="100%"
-            y2={yc}
-            stroke={ink}
-            strokeWidth="1.5"
-            strokeLinecap="butt"
-          />
-        </svg>
-        <svg
-          overflow="visible"
-          style={{
-            position: "absolute",
-            top: 0,
-            width: svgW,
-            height: "100%",
-            pointerEvents: "none",
-            ...svgPos,
-          }}
-        >
-          <path
-            d={curvePath}
-            fill="none"
-            stroke={ink}
-            strokeWidth="1.5"
-            strokeLinecap="butt"
-            strokeLinejoin="round"
-          />
-        </svg>
+    />
+  );
+}
+
+interface ForkTailProps {
+  outputs: NonNullable<StripGraph["outputs"]>;
+  ink: string;
+  size: Size;
+  skeleton?: boolean;
+  laneGap: number;
+  renderRow: (arr: StripBlock[], pfx: string) => React.ReactNode[];
+}
+
+// Split-OUTPUT lanes (gtrSplit/micSplit): one SPLIT diamond feeds two
+// independent lanes that each terminate in their own physical OUT — unlike
+// SplitGroup's in-line split, there's no MIX diamond on the far side, so only
+// one bracket (on the split side) is needed. Lanes may hold a different
+// number of blocks (HW-confirmed on a real "Instrument Split" preset): the
+// column wrapper stretches both rows to a common width (the flex column
+// default) so the two OUT jacks land on the same column regardless of lane
+// length, but the STRETCH is absorbed by a trailing growing `Wire` right
+// before SinkNode — not by the leading gap — so the tiles stay anchored
+// immediately after the split instead of being shoved rightward.
+function ForkTail({
+  outputs,
+  ink,
+  size,
+  skeleton,
+  laneGap,
+  renderRow,
+}: ForkTailProps) {
+  const { t } = useTheme();
+  const colRef = React.useRef<HTMLDivElement>(null);
+  const aRef = React.useRef<HTMLDivElement>(null);
+  const bRef = React.useRef<HTMLDivElement>(null);
+  const lanes = [outputs.a, outputs.b];
+  const laneRefs = [aRef, bRef];
+  const sig = `${String(outputs.a.blocks.length)}|${String(outputs.b.blocks.length)}`;
+  const [brk, setBrk] = React.useState<{ top: number; height: number } | null>(
+    null,
+  );
+  React.useLayoutEffect(() => {
+    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
+  }, [sig]);
+  return (
+    <>
+      <DiamondNode kind="split" ink={ink} skeleton={skeleton} />
+      <div
+        ref={colRef}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: laneGap,
+          position: "relative",
+          marginLeft: t.space6,
+        }}
+      >
+        <LaneBracketCap brk={brk} side="left" ink={ink} />
+        {lanes.map((lane, li) => (
+          <div
+            key={li}
+            ref={laneRefs[li]}
+            style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
+          >
+            {lane.blocks.length > 0 && renderRow(lane.blocks, `o${String(li)}`)}
+            <Wire ink={ink} grow w={lane.blocks.length > 0 ? 10 : 18} />
+            <SinkNode
+              type={lane.type}
+              ink={ink}
+              skeleton={skeleton}
+              size={size}
+            />
+          </div>
+        ))}
       </div>
-      <div style={{ height: STRIP_LBL }} />
-    </div>
+    </>
+  );
+}
+
+interface JoinHeadProps {
+  inputs: NonNullable<StripGraph["inputs"]>;
+  ink: string;
+  size: Size;
+  skeleton?: boolean;
+  laneGap: number;
+  renderRow: (arr: StripBlock[], pfx: string) => React.ReactNode[];
+}
+
+// Dual-INPUT lanes (gtrMicSeries/gtrMicMix/etc.): mirror of ForkTail — two
+// independent lanes converge into one JOIN diamond, so the single bracket
+// sits on the join side. Same stretch-absorbed-by-a-growing-Wire rationale as
+// ForkTail applies here, mirrored: the growing Wire sits right after
+// SourceNode so the two source jacks stay aligned regardless of lane length.
+function JoinHead({
+  inputs,
+  ink,
+  size,
+  skeleton,
+  laneGap,
+  renderRow,
+}: JoinHeadProps) {
+  const { t } = useTheme();
+  const colRef = React.useRef<HTMLDivElement>(null);
+  const aRef = React.useRef<HTMLDivElement>(null);
+  const bRef = React.useRef<HTMLDivElement>(null);
+  const lanes = [inputs.a, inputs.b];
+  const laneRefs = [aRef, bRef];
+  const sig = `${String(inputs.a.blocks.length)}|${String(inputs.b.blocks.length)}`;
+  const [brk, setBrk] = React.useState<{ top: number; height: number } | null>(
+    null,
+  );
+  React.useLayoutEffect(() => {
+    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
+  }, [sig]);
+  return (
+    <>
+      <div
+        ref={colRef}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: laneGap,
+          position: "relative",
+          marginRight: t.space6,
+        }}
+      >
+        <LaneBracketCap brk={brk} side="right" ink={ink} />
+        {lanes.map((lane, li) => (
+          <div
+            key={li}
+            ref={laneRefs[li]}
+            style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
+          >
+            <SourceNode
+              type={lane.type}
+              ink={ink}
+              skeleton={skeleton}
+              size={size}
+            />
+            <Wire ink={ink} grow w={lane.blocks.length > 0 ? 10 : 18} />
+            {lane.blocks.length > 0 && renderRow(lane.blocks, `i${String(li)}`)}
+          </div>
+        ))}
+      </div>
+      <DiamondNode kind="join" ink={ink} skeleton={skeleton} />
+    </>
   );
 }
 
@@ -736,57 +873,8 @@ function SplitGroup({
   // Re-measure when a height-affecting input changes (branch lengths or strip size).
   const sig = `${String(a.length)}|${String(b.length)}`;
   React.useLayoutEffect(() => {
-    const col = colRef.current,
-      ar = aRef.current,
-      br = bRef.current;
-    if (!col || !ar || !br) return;
-    const ct = col.getBoundingClientRect();
-    const arr = ar.getBoundingClientRect();
-    const brr = br.getBoundingClientRect();
-    if (!arr.height || !brr.height) return;
-    // Each branch row reserves an 18px label baseline at its bottom; the wire meets
-    // the centre of the art zone above that baseline.
-    const aC = arr.top - ct.top + (arr.height - STRIP_LBL) / 2;
-    const bC = brr.top - ct.top + (brr.height - STRIP_LBL) / 2;
-    const next = { top: aC, height: Math.max(0, bC - aC) };
-    setBrk((p) =>
-      p &&
-      Math.abs(p.top - next.top) < 0.5 &&
-      Math.abs(p.height - next.height) < 0.5
-        ? p
-        : next,
-    );
+    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
   }, [sig]);
-
-  // The "[" / "]" cap. `boxSizing:border-box` is load-bearing: with the default
-  // content-box the two 1.5px horizontal borders render OUTSIDE the `height`, so
-  // the border-box grows to `brk.height + 3` and the bottom border lands ~3px
-  // below `brk.top + brk.height` (bC) — the gap `emptyLine` used to leave. With
-  // border-box the border box is exactly `brk.height`: borderTop occupies
-  // [brk.top, brk.top+1.5] (top at aC) and borderBottom [brk.top+brk.height-1.5,
-  // brk.top+brk.height] (bottom flush at bC) — coinciding with `emptyLine` below.
-  // It also fixes X: border-box folds the 1.5px vertical border INTO the 9px, so
-  // the left cap's border box spans [-9, 0] (was [-9, 1.5]) and its top/bottom
-  // strokes end exactly at x=0, abutting `emptyLine`'s `left:0` with no overlap;
-  // symmetrically the right cap's strokes start at x=W, abutting `right:0`.
-  const bracket = (side: BracketSide) =>
-    brk ? (
-      <div
-        style={{
-          position: "absolute",
-          boxSizing: "border-box",
-          [side]: -9,
-          top: brk.top,
-          height: brk.height,
-          width: 9,
-          borderTop: `${STROKE_W_PX} solid ${ink}`,
-          borderBottom: `${STROKE_W_PX} solid ${ink}`,
-          [side === "left" ? "borderLeft" : "borderRight"]:
-            `${STROKE_W_PX} solid ${ink}`,
-          borderRadius: side === "left" ? "5px 0 0 5px" : "0 5px 5px 0",
-        }}
-      />
-    ) : null;
 
   // The straight-through line for an EMPTY branch, painted here (not by
   // `EmptyLane`) so it lands on the SAME measured y as the bracket's top/bottom
@@ -821,8 +909,8 @@ function SplitGroup({
           marginRight: t.space6,
         }}
       >
-        {bracket("left")}
-        {bracket("right")}
+        <LaneBracketCap brk={brk} side="left" ink={ink} />
+        <LaneBracketCap brk={brk} side="right" ink={ink} />
         {a.length === 0 && emptyLine(true)}
         {b.length === 0 && emptyLine(false)}
         <div
@@ -888,96 +976,6 @@ function SignalChainViewImpl({
       skeleton={skeleton}
       renderRow={row}
     />
-  );
-
-  const dualInputHead = (
-    inputs: NonNullable<StripGraph["inputs"]>,
-    key: string,
-  ) => (
-    <React.Fragment key={key}>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: laneGap,
-          position: "relative",
-          marginRight: t.space6,
-        }}
-      >
-        {[inputs.a, inputs.b].map((lane, li) => (
-          <div
-            key={li}
-            style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
-          >
-            <SourceNode
-              type={lane.type}
-              ink={ink}
-              skeleton={skeleton}
-              size={size}
-            />
-            {lane.blocks.length > 0 && (
-              <>
-                <Wire ink={ink} />
-                {row(lane.blocks, `i${String(li)}`)}
-              </>
-            )}
-            <WireBracketCap
-              ink={ink}
-              min={lane.blocks.length > 0 ? 10 : 28}
-              size={size}
-              position={li === 0 ? "top" : "bottom"}
-              side="right"
-            />
-          </div>
-        ))}
-      </div>
-      <DiamondNode kind="join" ink={ink} skeleton={skeleton} />
-    </React.Fragment>
-  );
-
-  const forkTail = (
-    outputs: NonNullable<StripGraph["outputs"]>,
-    key: string,
-  ) => (
-    <React.Fragment key={key}>
-      <DiamondNode kind="split" ink={ink} skeleton={skeleton} />
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: laneGap,
-          position: "relative",
-          marginLeft: t.space6,
-        }}
-      >
-        {[outputs.a, outputs.b].map((lane, li) => (
-          <div
-            key={li}
-            style={{ display: "flex", alignItems: "stretch", gap: t.space5 }}
-          >
-            <WireBracketCap
-              ink={ink}
-              min={lane.blocks.length > 0 ? 10 : 28}
-              size={size}
-              position={li === 0 ? "top" : "bottom"}
-              side="left"
-            />
-            {lane.blocks.length > 0 && (
-              <>
-                {row(lane.blocks, `o${String(li)}`)}
-                <Wire ink={ink} />
-              </>
-            )}
-            <SinkNode
-              type={lane.type}
-              ink={ink}
-              skeleton={skeleton}
-              size={size}
-            />
-          </div>
-        ))}
-      </div>
-    </React.Fragment>
   );
 
   // Inner strip — the handoff geometry verbatim (padding "2px 8px 4px"), with NO overflow
@@ -1061,7 +1059,17 @@ function SignalChainViewImpl({
 
   const kids: React.ReactNode[] = [];
   if (graph.inputs) {
-    kids.push(dualInputHead(graph.inputs, "inputs"));
+    kids.push(
+      <JoinHead
+        key="inputs"
+        inputs={graph.inputs}
+        ink={ink}
+        size={size}
+        skeleton={skeleton}
+        laneGap={laneGap}
+        renderRow={row}
+      />,
+    );
   } else {
     kids.push(
       <SourceNode
@@ -1089,7 +1097,17 @@ function SignalChainViewImpl({
 
   if (graph.outputs) {
     kids.push(<Wire key="wfork" ink={ink} />);
-    kids.push(forkTail(graph.outputs, "outputs"));
+    kids.push(
+      <ForkTail
+        key="outputs"
+        outputs={graph.outputs}
+        ink={ink}
+        size={size}
+        skeleton={skeleton}
+        laneGap={laneGap}
+        renderRow={row}
+      />,
+    );
   } else {
     kids.push(<Wire key="wout" ink={ink} />);
     kids.push(
