@@ -3254,6 +3254,7 @@ fn build_route_graph(
                     blocks: g("G3"),
                 },
             });
+            warn_unmapped_groups("gtrSplit", guitar, &["G1", "G2", "G3"]);
         }
         Some("micSplit") => {
             route.input_type = Some("mic".to_string());
@@ -3269,6 +3270,7 @@ fn build_route_graph(
                     blocks: m("M3"),
                 },
             });
+            warn_unmapped_groups("micSplit", mic, &["M1", "M2", "M3"]);
         }
         _ => push_series(&mut route.stages, all_g()),
     }
@@ -3288,6 +3290,28 @@ fn push_series(stages: &mut Vec<Stage>, blocks: Vec<GraphNode>) {
 fn push_split(stages: &mut Vec<Stage>, a: Vec<GraphNode>, b: Vec<GraphNode>) {
     if !a.is_empty() || !b.is_empty() {
         stages.push(Stage::Split { a, b });
+    }
+}
+
+/// gtrSplit/micSplit only read a fixed 3-group subset (G1-G3 / M1-M3) — the
+/// same shape of unverified "which groups does this template read" assumption
+/// that bunched the wrong groups per lane before it was HW-corrected. Warn
+/// (don't fail) if a device payload carries blocks in a group this arm never
+/// reads, so a future firmware/template surprise shows up in the logs instead
+/// of silently vanishing from the rendered strip.
+fn warn_unmapped_groups(
+    template: &str,
+    groups: &std::collections::BTreeMap<String, Vec<GraphNode>>,
+    used: &[&str],
+) {
+    for (group_id, blocks) in groups {
+        if !blocks.is_empty() && !used.contains(&group_id.as_str()) {
+            log::warn!(
+                "build_route_graph: {template} has {} block(s) in unmapped group {group_id} \
+                 — not rendered in the signal-chain strip",
+                blocks.len()
+            );
+        }
     }
 }
 
