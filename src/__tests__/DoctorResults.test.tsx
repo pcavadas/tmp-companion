@@ -89,6 +89,7 @@ function fixture(): DoctorCheckResult {
                 sev: "high",
                 bands: [1],
                 detail: "+4.2 dB around 250 Hz",
+                fromLevel: "rehearsal",
                 explain:
                   "Low-mids are piling up and swallowing your note definition.",
                 rx: [
@@ -144,6 +145,7 @@ function fixture(): DoctorCheckResult {
                 sev: "med",
                 bands: [],
                 detail: "tail 6 dB over dry",
+                fromLevel: "quiet",
                 explain: "The reverb tail is burying the dry signal.",
                 rx: [
                   {
@@ -187,11 +189,12 @@ function fixture(): DoctorCheckResult {
           worstDeltaDb: 6,
           rx: [
             {
-              kind: "oneclick",
-              title: "Trim the Crunch scene by 6 dB",
-              detail: "Levels the stomp between sounds.",
-              cpuNote: "0% CPU",
-              ops: [{ kind: "scene_trim", scene: 0, targetDeltaDb: -6 }],
+              kind: "advisory",
+              title: "Crunch is much louder than the base sound",
+              detail:
+                "Crunch jumps +6.0 dB when you switch to it — level it from the Level tab.",
+              cpuNote: "",
+              ops: [],
             },
           ],
         },
@@ -360,10 +363,26 @@ describe("DoctorResults — summary + cards", () => {
     await user.click(screen.getByText("Rhythm Crunch"));
     expect(screen.getByText(explain)).toBeInTheDocument();
     expect(screen.getByText("+4.2 dB around 250 Hz")).toBeInTheDocument();
+    // The finding carries a level indicator for the quietest level it fires at
+    // (fromLevel "rehearsal" → the aria/title says "at rehearsal volume and up").
+    expect(
+      screen.getAllByRole("img", { name: /at rehearsal volume and up/i })
+        .length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("Add a low cut at 90 Hz")).toBeInTheDocument();
 
     await user.click(screen.getByText("Rhythm Crunch"));
     expect(screen.queryByText(explain)).not.toBeInTheDocument();
+  });
+
+  it("shows a fires-at-every-volume finding as an at-any-volume indicator (previously invisible)", () => {
+    renderResults();
+    // "Washed out" fires at fromLevel "quiet" (every volume). The old text pill
+    // rendered NOTHING for that case; the indicator now shows it as an all-lit,
+    // accessibly-labelled state on the collapsed triage row.
+    expect(
+      screen.getAllByRole("img", { name: /washed out at any volume/i }).length,
+    ).toBeGreaterThan(0);
   });
 
   it("shows the full BandMeter only for a banded diagnosis, no toggle", async () => {
@@ -427,6 +446,7 @@ describe("DoctorResults — healthy collapse", () => {
       sev: "high",
       bands: [1],
       detail: "+4 dB around 250 Hz",
+      fromLevel: "quiet",
       explain: "Low-mids are piling up.",
       rx: [
         {
@@ -684,6 +704,7 @@ describe("DoctorResults — shared-block caption", () => {
       sev: "high",
       bands: [1],
       detail: "+4 dB around 250 Hz",
+      fromLevel: "quiet",
       explain: "Low-mids are piling up.",
       rx: [
         {
@@ -825,6 +846,7 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                   sev: "med",
                   bands: [],
                   detail: "swings 5.0 LU between peaks and average",
+                  fromLevel: "quiet",
                   explain:
                     "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
                   rx: [

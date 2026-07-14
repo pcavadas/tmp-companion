@@ -11,6 +11,7 @@ import { Tag } from "../../ui/Tag";
 import { BandMeter } from "./BandMeter";
 import { BandSpark } from "./BandSpark";
 import { DiagnosisChip } from "./DiagnosisChip";
+import { LevelIndicator } from "./LevelIndicator";
 import { PrescriptionCard } from "./PrescriptionCard";
 import { diagSevLabel, sevTone, soundSev, type Sev } from "./severity";
 import type { DoctorDiag, DoctorSoundResult } from "../../lib/types";
@@ -81,13 +82,8 @@ function affectsSharedBlock(
   return diags.some((d) =>
     d.rx.some((rx) =>
       rx.ops.some((op) => {
-        const n =
-          op.kind === "param"
-            ? op.nodeId
-            : op.kind === "insert_node"
-              ? op.fenderId
-              : null;
-        return n != null && !ownNodeIds.includes(n);
+        const n = op.kind === "param" ? op.nodeId : op.fenderId;
+        return !ownNodeIds.includes(n);
       }),
     ),
   );
@@ -190,7 +186,18 @@ export function SoundRow({
             </span>
           ) : hasDiags ? (
             sound.diags.map((d) => (
-              <DiagnosisChip key={d.key} label={d.label} sev={d.sev} />
+              <span
+                key={d.key}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              >
+                <DiagnosisChip label={d.label} sev={d.sev} />
+                <LevelIndicator
+                  level={d.fromLevel}
+                  sev={d.sev}
+                  finding={d.label}
+                  size="tiny"
+                />
+              </span>
             ))
           ) : (
             <span
@@ -205,6 +212,12 @@ export function SoundRow({
             >
               <Icon name="check" size={12} stroke={t.good} />
               Sounds good
+              <LevelIndicator
+                level="clean"
+                sev="ok"
+                finding="Sounds good"
+                size="tiny"
+              />
             </span>
           )}
         </span>
@@ -341,6 +354,12 @@ export function SoundRow({
                   >
                     {diag.detail}
                   </span>
+                  <LevelIndicator
+                    level={diag.fromLevel}
+                    sev={diag.sev}
+                    finding={diag.label}
+                    size="rich"
+                  />
                 </div>
                 <div
                   style={{

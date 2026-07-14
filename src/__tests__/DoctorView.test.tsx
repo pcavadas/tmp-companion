@@ -95,6 +95,7 @@ function mockOnePreset(
           profiles: [],
           profile_by_slot: {},
           targets: [{ name: "Rhythm", lufs: -26 }],
+          playback_level: "rehearsal",
         });
       case "read_library_via_backup":
         return Promise.resolve({

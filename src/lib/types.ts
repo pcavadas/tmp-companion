@@ -761,8 +761,7 @@ export type DoctorOp =
       beforeFenderId: string | null;
       fenderId: string;
       params: [string, number][];
-    }
-  | { kind: "scene_trim"; scene: number; targetDeltaDb: number };
+    };
 
 /** Chain-preview DTO on a `chain`-kind prescription: the resulting block list
  * by model id (the UI resolves art through its existing strip engine). */
@@ -781,9 +780,12 @@ export interface DoctorRx {
   chain?: DoctorChainPreview;
 }
 
-/** One diagnosis (`doctor::Diag`). `bands` indexes the sound's band layout
- * (`DoctorSoundResult.bandLabels` — 6 player bands, or 7 with "Sub" first for
- * bass-vi); empty = time-domain. */
+/** One diagnosis (`doctor::LeveledDiag` — a flattened `Diag` plus `fromLevel`).
+ * `bands` indexes the sound's band layout (`DoctorSoundResult.bandLabels` — 6
+ * player bands, or 7 with "Sub" first for bass-vi); empty = time-domain.
+ * `fromLevel` is the quietest playback level at which the finding fires (the
+ * sound is diagnosed at all three): `"quiet"` = a problem at any volume,
+ * `"rehearsal"`/`"stage"` = only appears at that volume and louder. */
 export interface DoctorDiag {
   key: string;
   label: string;
@@ -792,6 +794,7 @@ export interface DoctorDiag {
   detail: string;
   explain: string;
   rx: DoctorRx[];
+  fromLevel: PlaybackLevel;
 }
 
 export interface DoctorSoundResult {

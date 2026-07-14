@@ -119,7 +119,11 @@ pub struct DoctorSoundResult {
     pub footswitch: Option<u32>,
     pub label: String,
     pub tag: Option<String>,
-    pub diags: Vec<doctor::Diag>,
+    /// Findings for this sound, each tagged with the quietest playback level it
+    /// fires at (`doctor::diagnose_levels` — one capture, diagnosed at all three
+    /// levels). `fromLevel: "quiet"` = a problem at any volume; `rehearsal`/
+    /// `stage` = only appears at that volume and louder.
+    pub diags: Vec<doctor::LeveledDiag>,
     pub integrated_lufs: f64,
     pub tail_ratio_db: f64,
     pub balance_db: Vec<f64>,
@@ -393,9 +397,22 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // judged against a synthetic median reproduces false verdict flips (the
         // measured band-balance shift). An under-minimum group gets None
         // (absolute fallback), independently of the others.
-        let by_group: Vec<(doctor::Family, doctor::StimulusKind, &doctor::SoundProfile)> = measured
+        // Median dedupes to one sound per preset (base preferred) — a single
+        // preset's base + scenes would otherwise self-normalize (see
+        // `doctor::cohorts_by_family_kind`), so thread list_index + base-ness.
+        let by_group: Vec<(
+            doctor::Family,
+            doctor::StimulusKind,
+            u32,
+            bool,
+            &doctor::SoundProfile,
+        )> = measured
             .iter()
-            .map(|(i, p)| (instrument_of(&resolved[*i].0), resolved[*i].2, p))
+            .map(|(i, p)| {
+                let item = &resolved[*i].0;
+                let is_base = item.scene.is_none() && item.footswitch.is_none();
+                (instrument_of(item), resolved[*i].2, item.list_index, is_base, p)
+            })
             .collect();
         let cohorts = doctor::cohorts_by_family_kind(&by_group);
 
@@ -408,7 +425,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let band_labels = instrument.labels_owned();
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
-                    doctor::diagnose_kind(
+                    // Diagnosed at ALL three playback levels (each finding tagged
+                    // with its quietest firing level) — the capture is level-
+                    // independent, so this is three pure passes over one profile.
+                    doctor::diagnose_levels(
                         p,
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
                         instrument,
@@ -514,8 +534,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
 
 /// One prescription's apply job (camelCase wire — the frontend echoes the ops it
 /// got from `doctor_check`). `name` is the identity guard (apply refuses if the
-/// loaded slot's name differs). Scene-trim ops are rejected here — they route
-/// through the scene-leveling command frontend-side.
+/// loaded slot's name differs). Every `DoctorOp` variant (`Param` / `InsertNode`)
+/// is applied live; scene-consistency findings are advisory-only and carry no ops.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorApplyJob {
@@ -568,21 +588,6 @@ fn before_cache_put(key: BeforeKey, clip: String) {
     *crate::lock_ok(&BEFORE_CACHE) = Some((key, clip));
 }
 
-/// Reject the ops `doctor_apply` can't route live. Only `SceneTrim` is rejected
-/// (scene trims go through the scene-leveling command). Pure + device-free so the
-/// rejection is unit-testable.
-fn doctor_validate_ops(ops: &[doctor::DoctorOp]) -> Result<(), String> {
-    if ops
-        .iter()
-        .any(|op| matches!(op, doctor::DoctorOp::SceneTrim { .. }))
-    {
-        return Err(
-            "scene-trim prescriptions aren't applied here — use scene leveling instead".to_string(),
-        );
-    }
-    Ok(())
-}
-
 /// Apply a prescription LIVE onto the edit buffer (never saved) and return the
 /// before/after A/B clips. Flow (honoring one-engage-per-connection + set-then-
 /// engage): (a) capture the STORED preset — this also loads it, so (b) can
@@ -596,7 +601,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
     state: State<'_, AppState>,
     job: DoctorApplyJob,
 ) -> Result<DoctorApplyResult, String> {
-    doctor_validate_ops(&job.ops)?;
     let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
     with_released_seize(state.session.clone(), move || {
         let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
@@ -673,8 +677,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                         }
                         other => other,
                     },
-                    // Rejected up front by doctor_validate_ops.
-                    doctor::DoctorOp::SceneTrim { .. } => Ok(true),
                 };
                 let detail = match outcome {
                     Ok(true) => continue,
