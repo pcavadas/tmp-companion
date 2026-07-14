@@ -188,10 +188,10 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// entry (scene `None` = the BASE sound; `Some(wire index)` = one scene, the
 /// probe CSV's `slot:scene` form), capture the sound with the Doctor tail
 /// (`leveller::doctor_capture`), compute its band profile + time-domain metrics,
-/// then diagnose the whole cohort (median-relative when ≥ `doctor::MIN_COHORT`
-/// sounds) and print one JSON line per sound plus a human table — the headless
-/// iteration loop for tuning `doctor::Thresholds`. Read-only: loads + captures,
-/// NEVER saves; every capture path ends re-amp OFF.
+/// then diagnose each sound on its own measurements (the deterministic
+/// tilt-residual metric) and print one JSON line per sound plus a human table —
+/// the headless iteration loop for tuning `doctor::Thresholds`. Read-only: loads +
+/// captures, NEVER saves; every capture path ends re-amp OFF.
 pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<String, String> {
     let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
     let instrument = doctor::Family::from_topology(
@@ -263,19 +263,13 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
         return Err("no sound captured".to_string());
     }
 
-    let cohort = (sounds.len() >= doctor::MIN_COHORT).then(|| {
-        let refs: Vec<&doctor::SoundProfile> = sounds.iter().map(|(_, _, p, _)| p).collect();
-        doctor::cohort_median(&refs)
-    });
-
     let mut out = format!(
-        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
+        "doctor sweep ({topology_id}, {} sounds, tilt-residual)\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
         sounds.len(),
-        if cohort.is_some() { "median" } else { "absolute" },
         instrument.labels().join(" ")
     );
     for (slot, scene, profile, nodes) in &sounds {
-        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_deref());
+        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument);
         let bal = doctor::balance(&profile.bands);
         let label = match scene {
             Some(s) => format!("{slot}:{s}"),

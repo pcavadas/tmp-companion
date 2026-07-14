@@ -23,16 +23,20 @@ via an explicit prescription apply.
 ## Diagnoses (8)
 
 muddy / boomy / harsh / fizzy / washed / lost / buried / **spiky** — band
-deviations in "balance space" (a band's dB offset from the sound's own spectral
-mean) judged against the cohort median when ≥ `MIN_COHORT` = 4 **presets** ran,
-else absolute neighbour expectations (the result carries `cohort: "median"|"absolute"`).
-The median populates from ONE representative sound per preset (its base sound
-preferred, else its first measured sound) — a single preset's base + scenes would
-otherwise be a degenerate cohort whose median ≈ the preset itself, self-normalizing
-real problems away; every sound is still DIAGNOSED against that median.
-Exceptions: fizzy is self-relative (Air vs own presence band — the cohort median
-is bimodal across a library); washed is a post-stimulus tail-RMS rule; spiky is a
-dynamics-spread rule (clean chains only).
+deviations in "tilt-residual space": each band's dB level with the sound's own
+spectral tilt fit out (an OLS line over `log2(center)` vs `band_db`, so a
+flatter/darker amp shifts the fit rather than the residuals —
+`doctor::tilt_residuals`), compared against a per-family TARGET residual curve
+(`doctor::tonal_dev`; currently a provisional flat zero, role/instrument-aware
+curves are a later stage). The metric is fully DETERMINISTIC per sound: a
+verdict depends only on that sound's own measurements, never on which other
+sounds or presets ran in the same check — no cohort, no pooling, no run-to-run
+drift from what else was selected.
+Exceptions: fizzy is self-relative (Air vs own presence band, not the tilt
+residual — real-library measurement showed the Air band is bimodal across a
+library, so a tilt/target-relative deviation flagged every open preset);
+washed is a post-stimulus tail-RMS rule; spiky is a dynamics-spread rule
+(clean chains only).
 
 Thresholds are constants in `doctor.rs`, DUAL-keyed by **(Family, StimulusKind)**:
 families Guitar / Bass / **BassVi** (Bass VI gets a 7-band layout with a (30,60) Sub
@@ -62,10 +66,11 @@ onset — splitting at the raw stimulus length alone would leak latency-delayed
 body signal into the tail and skew `washed` measurements (and any calibration
 derived from them) toward the wash threshold. The stimulus is profile-aware (`resolve_stimulus_with_capture`):
 a calibrated profile's Tier-2 DI capture is injected and the sound is diagnosed
-in **Capture space** (`StimulusKind::Capture` — its own threshold table and
-cohort key; capture and synthetic cohorts NEVER pool, a real DI shifts band
-balance systematically, HW: +8..12 dB Lows / −8..10 dB Highs). Uncalibrated
-profiles use the synthetic topology WAV in the HW-calibrated Synthetic space —
+against the **CAPTURE threshold table** (`StimulusKind::Capture` selects it; a
+real DI shifts band balance systematically, HW: +8..12 dB Lows / −8..10 dB
+Highs, so capture and synthetic sounds are never compared against the same
+table). Uncalibrated profiles use the synthetic topology WAV against the
+HW-calibrated Synthetic table —
 and since the capture tables currently equal the synthetic ones, their verdicts
 read byte-identically until the `probe --doctor-calib` sweep retunes capture
 space.

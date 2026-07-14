@@ -86,8 +86,8 @@ pub(crate) fn resolve_stimulus_for_leveling<R: tauri::Runtime>(
 /// explicit path → the profile's stored Tier-2 DI capture → selected topology WAV
 /// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample. The bool
 /// reports whether the profile's Tier-2 DI capture won (`true`) — the Doctor uses
-/// it to pick its threshold table + cohort key (a real DI shifts the measured
-/// band balance systematically).
+/// it to pick its threshold table (a real DI shifts the measured band balance
+/// systematically).
 pub(crate) fn resolve_stimulus_with_capture<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     explicit: Option<String>,

@@ -1,8 +1,8 @@
 // src/views/doctor/useDoctorFlow.ts — the Doctor RUN orchestrator.
 //
 // Owns the run's live state (one streamed progress row per sound, keyed by the
-// selection key) and the cohort-relative DoctorCheckResult that rides the
-// command's return value. DoctorView owns the stage machine; this hook only
+// selection key) and the per-sound-deterministic DoctorCheckResult that rides
+// the command's return value. DoctorView owns the stage machine; this hook only
 // drives the single `doctor_check` call and exposes `buildItems` (turns the
 // list's chosen SetupOptions + the setup step's per-row instrument into the
 // wire DoctorInputArgs). Mirrors useLevelingFlow's structure, minus the
@@ -132,7 +132,8 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
   );
 
   // Fire the ONE backend command for the whole run. Progress rows update per key
-  // as the stream lands; the cohort-relative diagnoses ride the resolved value.
+  // as the stream lands; the per-sound tilt-residual diagnoses ride the resolved
+  // value (each verdict depends only on that sound, never on which others ran).
   // `restoreListIndex` = the pre-run active preset, reloaded when the run ends.
   const startRun = useCallback(
     (items: DoctorInputArg[], restoreListIndex: number | null) => {

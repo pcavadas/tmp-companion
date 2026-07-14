@@ -138,22 +138,24 @@ fn stim_hash(samples: &[f32]) -> String {
 }
 
 /// Per-slot rule metrics, in the SAME LHS space `doctor::diagnose` compares to
-/// each threshold (every rule is "metric > threshold"). `dev` mirrors diagnose:
-/// vs the cohort median, or the neighbour-expectation fallback when the sweep is
-/// under `MIN_COHORT`.
+/// each threshold (every rule is "metric > threshold"): the tilt-residual
+/// deviation ([`doctor::tonal_dev`]) for the tonal rules, the self-difference for
+/// fizzy, and the time-domain metrics for washed/spiky.
 fn rule_metrics(
     profile: &doctor::SoundProfile,
     family: doctor::Family,
-    cohort: Option<&[f64]>,
 ) -> Vec<(&'static str, f64)> {
-    let bal = doctor::balance(&profile.bands);
-    let dev = |i: usize| doctor::band_dev(&bal, cohort, i);
+    let bdb = doctor::band_db(&profile.bands);
+    let centers = family.band_centers();
+    let res = doctor::tilt_residuals(&bdb, &centers);
+    let target = doctor::target_residuals(family);
+    let dev = |i: usize| doctor::tonal_dev(&res, target, i);
     let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
     vec![
         ("muddy", dev(low_mids)),
         ("boomy", dev(lows)),
         ("harsh", dev(high_mids)),
-        ("fizzy", bal[air] - bal[highs]),
+        ("fizzy", bdb[air] - bdb[highs]),
         ("lost", -dev(mids)),
         ("washed", profile.tail_ratio_db),
         ("spiky", profile.spread_lu),
@@ -232,11 +234,6 @@ pub fn probe_doctor_calib(
         return Err("no sound captured".to_string());
     }
 
-    let cohort: Option<Vec<f64>> = (rows.len() >= doctor::MIN_COHORT).then(|| {
-        let refs: Vec<&doctor::SoundProfile> = rows.iter().map(|r| &r.profile).collect();
-        doctor::cohort_median(&refs)
-    });
-
     // Ground-truth positive slot lists per rule (0-based list indices).
     let labels: std::collections::HashMap<String, Vec<u32>> = match labels_path {
         Some(p) => {
@@ -249,7 +246,7 @@ pub fn probe_doctor_calib(
     // Per-slot rule metrics (shared by the report rows and the derivation).
     let metrics_by_slot: Vec<(u32, Vec<(&'static str, f64)>)> = rows
         .iter()
-        .map(|r| (r.slot, rule_metrics(&r.profile, family, cohort.as_deref())))
+        .map(|r| (r.slot, rule_metrics(&r.profile, family)))
         .collect();
 
     let report_rows: Vec<serde_json::Value> = rows
@@ -334,7 +331,7 @@ pub fn probe_doctor_calib(
             "refLevel": 0.5,
             "bandCoverageDb": doctor::BAND_COVERAGE_DB,
         },
-        "cohort": if cohort.is_some() { "median" } else { "absolute" },
+        "metric": "tilt-residual",
         "rows": report_rows,
         "derivations": serde_json::Value::Object(derivations),
     });
@@ -342,9 +339,8 @@ pub fn probe_doctor_calib(
     std::fs::write(out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
 
     let mut out = format!(
-        "doctor-calib sweep ({family_id}, {} sounds, cohort={}) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | noise dB | spread\n",
+        "doctor-calib sweep ({family_id}, {} sounds, tilt-residual) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | noise dB | spread\n",
         rows.len(),
-        if cohort.is_some() { "median" } else { "absolute" },
         stim_loud.integrated_lufs,
         stim_loud.spread_lu(),
     );

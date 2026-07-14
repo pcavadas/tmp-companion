@@ -166,7 +166,7 @@ impl Psd {
             .filter(|&(_, p)| p > 0.0)
             .map(|(f, p)| (f.log2(), 10.0 * p.log10()))
             .collect();
-        least_squares_slope(&pts)
+        least_squares_fit(&pts).0
     }
 
     /// Power-weighted spectral centroid, in Hz.
@@ -206,10 +206,13 @@ impl Psd {
     }
 }
 
-/// Ordinary-least-squares slope of `y` vs `x` (0.0 if under-determined or `x` is constant).
-fn least_squares_slope(pts: &[(f64, f64)]) -> f64 {
+/// Ordinary-least-squares fit of `y` vs `x`: returns `(slope, intercept)`,
+/// `(0.0, 0.0)` if under-determined; `slope` is `0.0` if `x` is constant.
+/// Shared by [`Psd::tilt`] and [`crate::doctor::tilt_residuals`] — one
+/// regression, two callers.
+pub(crate) fn least_squares_fit(pts: &[(f64, f64)]) -> (f64, f64) {
     if pts.len() < 2 {
-        return 0.0;
+        return (0.0, 0.0);
     }
     let n = pts.len() as f64;
     let mean_x = pts.iter().map(|p| p.0).sum::<f64>() / n;
@@ -220,11 +223,8 @@ fn least_squares_slope(pts: &[(f64, f64)]) -> f64 {
         sxy += (x - mean_x) * (y - mean_y);
         sxx += (x - mean_x) * (x - mean_x);
     }
-    if sxx > 0.0 {
-        sxy / sxx
-    } else {
-        0.0
-    }
+    let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+    (slope, mean_y - slope * mean_x)
 }
 
 #[cfg(test)]

@@ -22,8 +22,8 @@ pub struct DoctorInput {
     pub calibration_lufs: Option<f32>,
     /// Instrument profile id: when it has a stored Tier-2 DI capture, that WAV is
     /// the stimulus (read VERBATIM, calibration scaling off) and the sound is
-    /// diagnosed in CAPTURE threshold/cohort space. `None`/capture-less → the
-    /// synthetic topology sample + synthetic space (the pinned default).
+    /// diagnosed against the CAPTURE threshold table. `None`/capture-less → the
+    /// synthetic topology sample + synthetic threshold table (the pinned default).
     #[serde(default)]
     pub profile_id: Option<String>,
     #[serde(default)]
@@ -100,8 +100,8 @@ fn instrument_of(item: &DoctorInput) -> doctor::Instrument {
 }
 
 /// Streamed per-sound progress row (`active` → `done`/`error`). Diagnoses ride
-/// the command's RETURN value, not this channel — they're cohort-relative, so
-/// they can only be computed once every sound is measured.
+/// the command's RETURN value, not this channel — the structured per-preset
+/// results (incl. scene consistency) are assembled once every sound is measured.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorProgressItem {
@@ -148,8 +148,6 @@ pub struct DoctorPresetResult {
 pub struct DoctorCheckResult {
     pub presets: Vec<DoctorPresetResult>,
     pub stopped: bool,
-    /// "median" (≥ MIN_COHORT sounds measured) or "absolute".
-    pub cohort: String,
 }
 
 /// Cooperative cancel for [`doctor_check`] — stops before the next sound;
@@ -162,8 +160,8 @@ pub(crate) fn cancel_doctor_check() {
 }
 
 /// The Doctor RUN: capture every selected sound (Doctor tail), then diagnose
-/// the whole cohort (median-relative when ≥ `doctor::MIN_COHORT` measured) and
-/// derive per-preset scene consistency from the same captures. READ-ONLY on
+/// each sound on its OWN measurements (the deterministic tilt-residual metric)
+/// and derive per-preset scene consistency from the same captures. READ-ONLY on
 /// the unit: loads + captures, never a save; every capture ends re-amp OFF.
 /// One command per run (the `copy_apply`/`level_scenes_apply_batched` shape):
 /// per-sound progress streams over `on_result`, structured results return.
@@ -185,9 +183,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
     DOCTOR_CANCEL.store(false, SeqCst);
     // Resolve stimulus paths up front (needs the app handle; the closure below
     // runs on the blocking pool). The `from_capture` bool → the sound's
-    // `StimulusKind`: a real Tier-2 DI capture is diagnosed in CAPTURE space
-    // (its own thresholds + cohort key), a synthetic/topology WAV in the pinned
-    // synthetic space.
+    // `StimulusKind`: a real Tier-2 DI capture is diagnosed against its own
+    // CAPTURE threshold table, a synthetic/topology WAV against the pinned
+    // synthetic table.
     let resolved: Vec<(DoctorInput, String, doctor::StimulusKind)> = items
         .into_iter()
         .map(|it| {
@@ -392,36 +390,14 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         }
 
-        // Cohorts are PER (INSTRUMENT, STIMULUS KIND) — a bass preset judged
-        // against a guitar median reads falsely boomy, AND a real-DI capture
-        // judged against a synthetic median reproduces false verdict flips (the
-        // measured band-balance shift). An under-minimum group gets None
-        // (absolute fallback), independently of the others.
-        // Median dedupes to one sound per preset (base preferred) — a single
-        // preset's base + scenes would otherwise self-normalize (see
-        // `doctor::cohorts_by_family_kind`), so thread list_index + base-ness.
-        let by_group: Vec<(
-            doctor::Family,
-            doctor::StimulusKind,
-            u32,
-            bool,
-            &doctor::SoundProfile,
-        )> = measured
-            .iter()
-            .map(|(i, p)| {
-                let item = &resolved[*i].0;
-                let is_base = item.scene.is_none() && item.footswitch.is_none();
-                (instrument_of(item), resolved[*i].2, item.list_index, is_base, p)
-            })
-            .collect();
-        let cohorts = doctor::cohorts_by_family_kind(&by_group);
-
-        // Group results per preset, in first-seen item order.
+        // Group results per preset, in first-seen item order. Each sound is
+        // diagnosed on its OWN measurements (the deterministic tilt-residual
+        // metric) — no run-cohort, so a verdict never depends on which other
+        // sounds ran.
         let mut presets: Vec<DoctorPresetResult> = Vec::new();
         let sound_of = |i: usize, profile: Option<&doctor::SoundProfile>, err: Option<&String>| {
             let (item, _, kind) = &resolved[i];
             let instrument = instrument_of(item);
-            let cohort = cohorts.get(&(instrument, *kind)).and_then(|o| o.as_deref());
             let band_labels = instrument.labels_owned();
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
@@ -432,7 +408,6 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         p,
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
                         instrument,
-                        cohort,
                         *kind,
                         coverage_by_item.get(&i).map(Vec::as_slice),
                     ),
@@ -519,15 +494,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         }) {
             log::warn!("doctor_check: failed to restore active preset after run: {e}");
         }
-        Ok(DoctorCheckResult {
-            presets,
-            stopped,
-            cohort: if cohorts.values().any(Option::is_some) {
-                "median".to_string()
-            } else {
-                "absolute".to_string()
-            },
-        })
+        Ok(DoctorCheckResult { presets, stopped })
     })
     .await
 }

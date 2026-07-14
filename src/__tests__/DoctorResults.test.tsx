@@ -228,7 +228,6 @@ function fixture(): DoctorCheckResult {
       },
     ],
     stopped: false,
-    cohort: "absolute",
   };
 }
 
@@ -304,7 +303,6 @@ describe("DoctorResults — summary + cards", () => {
         },
       ],
       stopped: false,
-      cohort: "absolute",
     };
     renderResults(clean);
     expect(screen.getByText("All 1 sound sounds good")).toBeInTheDocument();
@@ -510,7 +508,6 @@ describe("DoctorResults — healthy collapse", () => {
         },
       ],
       stopped: false,
-      cohort: "absolute",
     };
   }
 
@@ -741,7 +738,6 @@ describe("DoctorResults — shared-block caption", () => {
     return {
       presets: [{ listIndex: 0, sounds: [sound], sceneConsistency: null }],
       stopped: false,
-      cohort: "absolute",
     };
   }
 
@@ -905,7 +901,6 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
         },
       ],
       stopped: false,
-      cohort: "absolute",
     };
   }
 

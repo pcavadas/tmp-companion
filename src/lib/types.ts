@@ -730,13 +730,13 @@ export interface DoctorInputArg {
   calibrationLufs: number | null;
   /** Instrument profile id (null when "none"): when it has a stored Tier-2 DI
    *  capture, the Doctor reads that WAV verbatim and diagnoses in CAPTURE
-   *  threshold/cohort space; else the synthetic topology sample. */
+   *  threshold space; else the synthetic topology sample. */
   profileId: string | null;
   nodes: GraphNode[];
 }
 
 /** Streamed per-sound progress row (`lib::DoctorProgressItem`). Diagnoses ride
- * the command's return value (cohort-relative — computable only at the end). */
+ * the command's return value (assembled once every sound is measured). */
 export interface DoctorProgressItem {
   key: string;
   status: "active" | "done" | "error";
@@ -842,8 +842,6 @@ export interface DoctorPresetResult {
 export interface DoctorCheckResult {
   presets: DoctorPresetResult[];
   stopped: boolean;
-  /** "median" (≥ 4 sounds measured) or "absolute" (small-run fallback). */
-  cohort: "median" | "absolute";
 }
 
 /** One prescription's apply job (`lib::DoctorApplyJob`, camelCase wire).
