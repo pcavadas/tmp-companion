@@ -122,10 +122,20 @@ merges by diagnosis key. The offsets are **monotonic in loudness** (louder ⇒
 tighter ⇒ strictly more firings — asserted by `playback_offsets_are_monotonic`),
 so a finding's firing set is always a louder-suffix and one ordinal fully
 describes it: `LeveledDiag.from_level` ∈ {quiet, rehearsal, stage}. The UI renders
-`quiet` untagged ("a problem at any volume"), `rehearsal`/`stage` as "at
-{level} volume and up". The offsets are additive at comparison time — they never
-mutate the pinned `Thresholds` consts — and the table is **PROVISIONAL**, pending
-an SPL-anchored recalibration sweep (see notes/doctor-calibration.md). The
+this as `LevelIndicator` (`src/views/doctor/LevelIndicator.tsx`) — three venue
+pictographs (headphones → combo amp → stage stack) lit in the finding's severity
+colour where it fires, dim where it doesn't: `tiny` beside each diagnosis chip on
+the collapsed triage row, `rich` (with Quiet/Rehearsal/Stage labels) in the
+expanded header. `quiet` now shows as an all-lit "at any volume" state (it used to
+render **nothing** — indistinguishable from no finding); `rehearsal`/`stage` light
+from that venue up. It is a genuinely-new local visual (a DS sign-off candidate,
+like BandMeter/BandSpark — not an `Icon` glyph, since Icon is stroke-only). **The
+indicator is a read-only render of `from_level` and is fully decoupled from the
+Settings `playback_level` store** — it never reads it or calls `set_playback_level`;
+the Doctor diagnoses all three levels regardless of the room level chosen for
+leveling. The offsets are additive at comparison time — they never mutate the
+pinned `Thresholds` consts — and the table is **PROVISIONAL**, pending an
+SPL-anchored recalibration sweep (see notes/doctor-calibration.md). The
 `set_playback_level` store value is now Settings/leveling-only (it no longer
 gates diagnosis). The marketing showcase's curated profiles sit far from every
 threshold, so they tag `quiet` (untagged) at every level — the pinned

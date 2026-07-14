@@ -363,12 +363,26 @@ describe("DoctorResults — summary + cards", () => {
     await user.click(screen.getByText("Rhythm Crunch"));
     expect(screen.getByText(explain)).toBeInTheDocument();
     expect(screen.getByText("+4.2 dB around 250 Hz")).toBeInTheDocument();
-    // The finding is tagged with the quietest level it fires at (fromLevel).
-    expect(screen.getByText("at rehearsal volume and up")).toBeInTheDocument();
+    // The finding carries a level indicator for the quietest level it fires at
+    // (fromLevel "rehearsal" → the aria/title says "at rehearsal volume and up").
+    expect(
+      screen.getAllByRole("img", { name: /at rehearsal volume and up/i })
+        .length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("Add a low cut at 90 Hz")).toBeInTheDocument();
 
     await user.click(screen.getByText("Rhythm Crunch"));
     expect(screen.queryByText(explain)).not.toBeInTheDocument();
+  });
+
+  it("shows a fires-at-every-volume finding as an at-any-volume indicator (previously invisible)", () => {
+    renderResults();
+    // "Washed out" fires at fromLevel "quiet" (every volume). The old text pill
+    // rendered NOTHING for that case; the indicator now shows it as an all-lit,
+    // accessibly-labelled state on the collapsed triage row.
+    expect(
+      screen.getAllByRole("img", { name: /washed out at any volume/i }).length,
+    ).toBeGreaterThan(0);
   });
 
   it("shows the full BandMeter only for a banded diagnosis, no toggle", async () => {

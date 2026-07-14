@@ -11,27 +11,13 @@ import { Tag } from "../../ui/Tag";
 import { BandMeter } from "./BandMeter";
 import { BandSpark } from "./BandSpark";
 import { DiagnosisChip } from "./DiagnosisChip";
+import { LevelIndicator } from "./LevelIndicator";
 import { PrescriptionCard } from "./PrescriptionCard";
 import { diagSevLabel, sevTone, soundSev, type Sev } from "./severity";
 import type { DoctorDiag, DoctorSoundResult } from "../../lib/types";
 
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
-
-/** How a finding's `fromLevel` reads to the player. `quiet` fires at every
- *  volume, so it needs no qualifier; the louder levels only show up as you turn
- *  up (the offsets are monotonic, so the firing set is always "this level and
- *  up"). Returns null when there's nothing to say. */
-function levelTag(fromLevel: DoctorDiag["fromLevel"]): string | null {
-  switch (fromLevel) {
-    case "quiet":
-      return null;
-    case "rehearsal":
-      return "at rehearsal volume and up";
-    case "stage":
-      return "at stage volume";
-  }
-}
 
 // ---- severity dot ----------------------------------------------------------
 
@@ -200,7 +186,18 @@ export function SoundRow({
             </span>
           ) : hasDiags ? (
             sound.diags.map((d) => (
-              <DiagnosisChip key={d.key} label={d.label} sev={d.sev} />
+              <span
+                key={d.key}
+                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+              >
+                <DiagnosisChip label={d.label} sev={d.sev} />
+                <LevelIndicator
+                  level={d.fromLevel}
+                  sev={d.sev}
+                  finding={d.label}
+                  size="tiny"
+                />
+              </span>
             ))
           ) : (
             <span
@@ -215,6 +212,12 @@ export function SoundRow({
             >
               <Icon name="check" size={12} stroke={t.good} />
               Sounds good
+              <LevelIndicator
+                level="clean"
+                sev="ok"
+                finding="Sounds good"
+                size="tiny"
+              />
             </span>
           )}
         </span>
@@ -305,7 +308,6 @@ export function SoundRow({
           )}
           {sound.diags.map((diag) => {
             const dTone = sevTone(t, diag.sev);
-            const lvl = levelTag(diag.fromLevel);
             return (
               <div
                 key={diag.key}
@@ -349,23 +351,12 @@ export function SoundRow({
                   >
                     {diag.detail}
                   </span>
-                  {lvl && (
-                    <span
-                      style={{
-                        fontFamily: t.sans,
-                        fontSize: 10,
-                        fontWeight: 500,
-                        color: t.accentDeep,
-                        background: t.accentSoft,
-                        border: `0.5px solid ${t.accentBorder}`,
-                        borderRadius: 4,
-                        padding: "0 5px",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {lvl}
-                    </span>
-                  )}
+                  <LevelIndicator
+                    level={diag.fromLevel}
+                    sev={diag.sev}
+                    finding={diag.label}
+                    size="rich"
+                  />
                 </div>
                 <div
                   style={{
