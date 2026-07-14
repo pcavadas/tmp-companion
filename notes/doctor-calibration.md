@@ -69,6 +69,12 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
   there is unreliable — sanity-check any firing preset's drive blocks against
   the real graph (Pro Control / the backup scan) before drawing threshold
   conclusions.
+- **Update (real-DI factory sweep, 2026-07):** on real Telecaster/ES-335 DI
+  captures the max observed `spread_lu` was ~1.88 vs the 4.0 gate, so `spiky` is
+  effectively **dead** (unreachable), not merely quiet — a retune should target the
+  real spread distribution, not chase the 4.0 gate. `washed`/tail is separately
+  fragile: its onset detection fails even on the synthetic stimulus (a structural
+  weakness, not DI-specific).
 
 ## Capture-stimulus recalibration (pending the attended sweep)
 
@@ -82,6 +88,15 @@ gating skips any band-keyed rule whose primary band the stimulus never
 excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
 EBow-heavy) from verdicts in bands they never probed.
 
+**Open bug — `balance()` dead-band contamination (capture space):** `doctor::balance()`
+(doctor.rs:403) subtracts the mean of ALL 6 bands, but in capture space 2 bands
+(Highs/Air) sit at the noise floor — their random level drags the mean and inflates
+all 4 live bands by a preset-dependent ±3 dB, which does NOT cancel between the
+reference and the runtime sound (it flipped a real `muddy` verdict in a 16-preset
+factory sweep: slot 31 dev +6.92 → +2.40 after recentering). Fix under
+consideration: center `balance()` on the covered bands only — re-derivable from an
+existing sweep with no re-capture (the mean cancels algebraically).
+
 The attended sweep derives the real capture thresholds:
 `probe --doctor-calib <slots_csv> --stim <capture.wav> --family <fam>
 [--labels labels.json] --out report.json` — deterministic JSON + markdown
@@ -89,6 +104,10 @@ The attended sweep derives the real capture thresholds:
 separation margins, pre-onset noise floor, stimulus band coverage). Replace
 the `*_CAPTURE` consts in `doctor.rs` from that report; the pinned
 `thresholds_for(Synthetic)` test guards the synthetic tables against drift.
+
+Captures are **Float32 WAV** (fmt tag 65534 / `WAVE_FORMAT_EXTENSIBLE`) — Python's
+`wave` module rejects them (`unknown extended format`); parse the fmt/data chunks
+manually (or use a float-aware reader). Rust `hound` round-trips them.
 
 ## Playback level (Fletcher–Munson) threshold offsets — PROVISIONAL
 

@@ -417,9 +417,12 @@ resources/samples/  7 committed per-topology shaped-noise WAVs — one per picku
 > linearizes at low drive; a clean Twin gave ~1.65 LU output per 6 dB input). Re-validate either with
 > those `probe` subcommands.
 > **Clipping caveat:** the dry-instrument tap (USB-Out 3) has no limiter and **clips at 0 dBFS** for
-> hot guitars / hard playing — calibrate with moderate playing or the guitar volume rolled back, else
-> the measured `calibration_lufs` is too low and the high end (the brightness K-weighting captures) is
-> flattened by the clipped transients. `calibrate_profile` guards the too-quiet case but NOT clipping.
+> hot guitars / hard playing. **Play EXACTLY as you really play — NEVER roll the guitar volume back:**
+> it under-drives the amp vs reality AND darkens the tone (volume-pot HF rolloff), corrupting the very
+> brightness K-weighting captures. Clipping is a capture-path / gain-staging fix, never a playing
+> instruction. `calibrate_profile` now clip-gates with a **flat-top run-length detector** (≥4 consecutive
+> full-scale samples, commit `c4cc680`) — a lone pick transient at 0 dBFS is NOT clipping (the DI tap is a
+> bit-exact USB bus, no analog gain to lose). It still guards the too-quiet case.
 
 ## How leveling works (one-shot open-loop — validated on hardware)
 

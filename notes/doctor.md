@@ -41,7 +41,13 @@ yet), × Synthetic / Capture stimulus spaces. The synthetic tables are
 HW-calibrated (`notes/doctor-calibration.md`); the `*_CAPTURE` tables are
 provisional copies pending the attended `probe --doctor-calib` sweep.
 Recalibration edits values there and nowhere else. A rule whose primary band the
-stimulus never excited is skipped (per-sound band-coverage check).
+stimulus never excited is skipped (per-sound band-coverage check). **Coverage keys
+on the INPUT stimulus (`band_coverage(samples)`), not the captured output** — a dry
+electric-guitar DI has ~0% coverage in Highs (3–6 kHz) + Air (6–12 kHz) at
+`BAND_COVERAGE_DB = 30`, so capture-space diagnosis is inherently LOW/MID-only and
+`fizzy` (needs Air+Highs covered) can NEVER fire on a real DI. Amp clipping-harmonic
+HF is invisible to the input-keyed gate; measuring coverage on the OUTPUT would
+revive the HF rules.
 
 ## Capture
 
