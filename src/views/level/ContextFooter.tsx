@@ -46,7 +46,11 @@ export function ContextFooter({
       <ActionBar
         left={
           <span
-            style={{ display: "inline-flex", alignItems: "center", gap: 12 }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: t.space6,
+            }}
           >
             <Button variant="ghost" small onClick={onHelp}>
               How it works
