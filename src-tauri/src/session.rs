@@ -3794,6 +3794,297 @@ mod tests {
         assert_eq!(outputs.b.blocks[0].model, "ACD_ExternalCab");
     }
 
+    #[test]
+    fn route_graph_mic_series_runs_all_groups_in_series() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"micSeries",
+                "micNodes":{
+                    "M1":[{"FenderId":"ACD_StudioPreamp"}],
+                    "M2":[{"FenderId":"ACD_LA2AComp"}],
+                    "M3":[{"FenderId":"ACD_RoomVerb"}],
+                    "M4":[{"FenderId":"ACD_TMSmallHall"}]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        assert_eq!(g.input_type.as_deref(), Some("mic"));
+        assert_eq!(g.stages.len(), 1);
+        assert!(matches!(&g.stages[0], Stage::Series { blocks }
+            if blocks.iter().map(|b| b.model.as_str()).collect::<Vec<_>>()
+                == vec!["ACD_StudioPreamp", "ACD_LA2AComp", "ACD_RoomVerb", "ACD_TMSmallHall"]));
+    }
+
+    #[test]
+    fn route_graph_mic_parallel1_splits_m2_m3_around_m1_and_m4() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"micParallel1",
+                "micNodes":{
+                    "M1":[{"FenderId":"ACD_StudioPreamp"}],
+                    "M2":[{"FenderId":"ACD_LA2AComp"}],
+                    "M3":[{"FenderId":"ACD_RoomVerb"}],
+                    "M4":[{"FenderId":"ACD_TMSmallHall"}]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        assert_eq!(g.stages.len(), 3);
+        assert!(
+            matches!(&g.stages[0], Stage::Series { blocks } if blocks[0].model == "ACD_StudioPreamp")
+        );
+        assert!(matches!(&g.stages[1], Stage::Split { a, b }
+            if a[0].model == "ACD_LA2AComp" && b[0].model == "ACD_RoomVerb"));
+        assert!(
+            matches!(&g.stages[2], Stage::Series { blocks } if blocks[0].model == "ACD_TMSmallHall")
+        );
+    }
+
+    // gtrParallel1 with EVERY group multi/populated (G1/G2 two blocks each, G3 one,
+    // G4..G7 all populated) — the direct regression guard for the old bug's
+    // tail-concat path silently bunching/dropping groups beyond the split lanes.
+    #[test]
+    fn build_stages_single_split_multi_block_groups_and_full_tail() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"gtrParallel1",
+                "guitarNodes":{
+                    "G1":[{"FenderId":"ACD_Compressor"},{"FenderId":"ACD_EPBooster"}],
+                    "G2":[{"FenderId":"ACD_TweedDeluxe"},{"FenderId":"ACD_KlonCentaur"}],
+                    "G3":[{"FenderId":"ACD_PrincetonReverb65NoFx"}],
+                    "G4":[{"FenderId":"ACD_SpaceEcho"}],
+                    "G5":[{"FenderId":"ACD_TMSmallHall"}],
+                    "G6":[{"FenderId":"ACD_MicroTronIV"}],
+                    "G7":[{"FenderId":"ACD_RoomVerb"}]
+                }}}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        assert_eq!(g.stages.len(), 3);
+        assert!(matches!(&g.stages[0], Stage::Series { blocks }
+            if blocks.iter().map(|b| b.model.as_str()).collect::<Vec<_>>()
+                == vec!["ACD_Compressor", "ACD_EPBooster"]));
+        assert!(matches!(&g.stages[1], Stage::Split { a, b }
+            if a.iter().map(|x| x.model.as_str()).collect::<Vec<_>>() == vec!["ACD_TweedDeluxe", "ACD_KlonCentaur"]
+                && b.iter().map(|x| x.model.as_str()).collect::<Vec<_>>() == vec!["ACD_PrincetonReverb65NoFx"]));
+        assert!(matches!(&g.stages[2], Stage::Series { blocks }
+            if blocks.iter().map(|b| b.model.as_str()).collect::<Vec<_>>()
+                == vec!["ACD_SpaceEcho", "ACD_TMSmallHall", "ACD_MicroTronIV", "ACD_RoomVerb"]));
+    }
+
+    // Same shape as `build_stages_dual_split_assigns_roles` but every group carries
+    // 2 blocks — proves a populated LANE (not just a populated group) preserves its
+    // own internal per-group order.
+    #[test]
+    fn build_stages_dual_split_multi_block_per_group() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"gtrParallel2",
+                "guitarNodes":{
+                    "G1":[{"FenderId":"ACD_EPBooster"},{"FenderId":"ACD_Compressor"}],
+                    "G2":[{"FenderId":"ACD_TweedDeluxe"},{"FenderId":"ACD_KlonCentaur"}],
+                    "G3":[{"FenderId":"ACD_PrincetonReverb65NoFx"},{"FenderId":"ACD_StudioPreamp"}],
+                    "G4":[{"FenderId":"ACD_SpaceEcho"},{"FenderId":"ACD_RoomVerb"}],
+                    "G5":[{"FenderId":"ACD_TMSmallHall"},{"FenderId":"ACD_LA2AComp"}],
+                    "G6":[{"FenderId":"ACD_MicroTronIV"},{"FenderId":"ACD_UserIRTMS"}],
+                    "G7":[{"FenderId":"ACD_TMSmallHall"},{"FenderId":"ACD_ExternalCab"}]
+                }}}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        let series = |s: &Stage| match s {
+            Stage::Series { blocks } => blocks.iter().map(|b| b.model.clone()).collect::<Vec<_>>(),
+            _ => panic!("expected series, got {s:?}"),
+        };
+        let split = |s: &Stage| match s {
+            Stage::Split { a, b } => (
+                a.iter().map(|x| x.model.clone()).collect::<Vec<_>>(),
+                b.iter().map(|x| x.model.clone()).collect::<Vec<_>>(),
+            ),
+            _ => panic!("expected split, got {s:?}"),
+        };
+        assert_eq!(g.stages.len(), 5);
+        assert_eq!(
+            series(&g.stages[0]),
+            vec!["ACD_EPBooster", "ACD_Compressor"]
+        );
+        assert_eq!(
+            split(&g.stages[1]),
+            (
+                vec!["ACD_TweedDeluxe".into(), "ACD_KlonCentaur".into()],
+                vec![
+                    "ACD_PrincetonReverb65NoFx".into(),
+                    "ACD_StudioPreamp".into()
+                ]
+            )
+        );
+        assert_eq!(series(&g.stages[2]), vec!["ACD_SpaceEcho", "ACD_RoomVerb"]);
+        assert_eq!(
+            split(&g.stages[3]),
+            (
+                vec!["ACD_TMSmallHall".into(), "ACD_LA2AComp".into()],
+                vec!["ACD_MicroTronIV".into(), "ACD_UserIRTMS".into()]
+            )
+        );
+        assert_eq!(
+            series(&g.stages[4]),
+            vec!["ACD_TMSmallHall", "ACD_ExternalCab"]
+        );
+    }
+
+    #[test]
+    fn route_graph_dual_inputs_join_multi_block_per_group() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"gtrMicSeries",
+                "guitarNodes":{
+                    "G1":[{"FenderId":"ACD_Compressor"},{"FenderId":"ACD_EPBooster"}],
+                    "G2":[{"FenderId":"ACD_TweedDeluxe"}]
+                },
+                "micNodes":{
+                    "M1":[{"FenderId":"ACD_StudioPreamp"}],
+                    "M2":[{"FenderId":"ACD_LA2AComp"},{"FenderId":"ACD_RoomVerb"}]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        assert!(matches!(&g.stages[0], Stage::Series { blocks }
+            if blocks.iter().map(|b| b.model.as_str()).collect::<Vec<_>>()
+                == vec!["ACD_Compressor", "ACD_EPBooster", "ACD_TweedDeluxe",
+                        "ACD_StudioPreamp", "ACD_LA2AComp", "ACD_RoomVerb"]));
+    }
+
+    // The three gtrMicMix aliases had ZERO coverage before this test — they carry
+    // NO stages at all (unlike gtrMicSeries), just the two full input rails.
+    #[test]
+    fn route_graph_gtr_mic_mix_aliases_expose_full_groups_as_inputs() {
+        for template in ["gtrMicMix", "gtrMicMix2", "gtrMicMix3"] {
+            let v: serde_json::Value = serde_json::from_str(&format!(
+                r#"{{"audioGraph":{{
+                    "template":"{template}",
+                    "guitarNodes":{{"G1":[{{"FenderId":"ACD_Compressor"}}]}},
+                    "micNodes":{{"M1":[{{"FenderId":"ACD_StudioPreamp"}}]}}
+                }}}}"#
+            ))
+            .unwrap();
+            let g = extract_active_graph(&v, None);
+            assert!(
+                g.stages.is_empty(),
+                "{template} should carry no stages, only inputs"
+            );
+            let inputs = g.inputs.expect("should expose dual inputs");
+            assert_eq!(inputs.a.kind, "guitar");
+            assert_eq!(inputs.a.blocks[0].model, "ACD_Compressor");
+            assert_eq!(inputs.b.kind, "mic");
+            assert_eq!(inputs.b.blocks[0].model, "ACD_StudioPreamp");
+            assert_eq!(g.outputs, None);
+            assert_eq!(g.lanes, None);
+        }
+    }
+
+    #[test]
+    fn route_graph_gtr_mic_parallel_multi_block_rails() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"gtrMicParallel",
+                "guitarNodes":{
+                    "G1":[{"FenderId":"ACD_Compressor"},{"FenderId":"ACD_EPBooster"}],
+                    "G2":[{"FenderId":"ACD_TweedDeluxe"}]
+                },
+                "micNodes":{
+                    "M1":[{"FenderId":"ACD_StudioPreamp"}],
+                    "M3":[{"FenderId":"ACD_RoomVerb"}]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        let lanes = g.lanes.expect("gtrMicParallel should expose rails");
+        assert_eq!(
+            lanes[0]
+                .blocks
+                .iter()
+                .map(|b| b.model.clone())
+                .collect::<Vec<_>>(),
+            vec!["ACD_Compressor", "ACD_EPBooster", "ACD_TweedDeluxe"]
+        );
+        assert_eq!(
+            lanes[1]
+                .blocks
+                .iter()
+                .map(|b| b.model.clone())
+                .collect::<Vec<_>>(),
+            vec!["ACD_StudioPreamp", "ACD_RoomVerb"]
+        );
+    }
+
+    // The micSplit sibling of `route_graph_gtr_split_lane_is_one_full_group_in_order`
+    // — the same asymmetric multi-block-per-lane guard, applied to the ONE split
+    // template that never got it (its own existing test only covered a
+    // single-block-per-lane shape, which is exactly the shape that hid the
+    // original bug on gtrSplit until a real preset exposed it).
+    #[test]
+    fn route_graph_mic_split_lane_is_one_full_group_in_order() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"audioGraph":{
+                "template":"micSplit",
+                "micNodes":{
+                    "M1":[{"FenderId":"ACD_StudioPreamp"}],
+                    "M2":[{"FenderId":"ACD_LA2AComp"},{"FenderId":"ACD_RoomVerb"}],
+                    "M3":[{"FenderId":"ACD_TMSmallHall"}]
+                }
+            }}"#,
+        )
+        .unwrap();
+        let g = extract_active_graph(&v, None);
+        assert!(
+            matches!(&g.stages[0], Stage::Series { blocks } if blocks[0].model == "ACD_StudioPreamp")
+        );
+        let outputs = g.outputs.expect("micSplit should expose split outputs");
+        assert_eq!(outputs.a.kind, "out1");
+        assert_eq!(
+            outputs
+                .a
+                .blocks
+                .iter()
+                .map(|n| n.model.clone())
+                .collect::<Vec<_>>(),
+            vec!["ACD_LA2AComp", "ACD_RoomVerb"]
+        );
+        assert_eq!(outputs.b.kind, "out2");
+        assert_eq!(outputs.b.blocks[0].model, "ACD_TMSmallHall");
+    }
+
+    #[test]
+    fn push_split_drops_stage_only_when_both_lanes_empty() {
+        let mut stages: Vec<Stage> = Vec::new();
+        push_split(&mut stages, Vec::new(), Vec::new());
+        assert!(
+            stages.is_empty(),
+            "an all-empty split slot pair must not draw an empty fork/mix"
+        );
+
+        let node = GraphNode {
+            group_id: "G3".to_string(),
+            node_id: "n1".to_string(),
+            model: "ACD_SpaceEcho".to_string(),
+            bypassed: false,
+            cab_sim_id: None,
+            cab_sim_id2: None,
+            cab_sim2_enabled: None,
+            params: std::collections::HashMap::new(),
+        };
+        push_split(&mut stages, Vec::new(), vec![node]);
+        assert_eq!(
+            stages.len(),
+            1,
+            "one populated lane must still draw the split"
+        );
+    }
+
     // Build a synthetic PresetListResponse and confirm extraction. This pins the
     // descent logic (TMS→preset→listResponse→records→displayName) without hardware.
     #[test]
