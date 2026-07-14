@@ -778,8 +778,10 @@ const EQ10_STEREO: &str = "ACD_TenBandEQStereo"; // never the Mono variant (abse
 /// cannot precisely drive: their band controlIds aren't in the graph param
 /// allowlist, so a one-click would be a BLIND overwrite of the player's own
 /// curve — the value-aware rule forbids it. When one is active, a muddy/harsh
-/// fix advises using it rather than stacking a redundant EQ-10. Freqout is a
-/// feedback pedal, not an EQ (see `freqout_is_not_an_eq`).
+/// fix advises using it rather than stacking a redundant EQ-10. Raw catalog
+/// FenderIds, exact-match like `DIST_IDS` (the `algoCategory == "eq"` blocks,
+/// minus the drivable `EQ10_STEREO`). Freqout is a feedback pedal, not an EQ
+/// (see `freqout_is_not_an_eq`).
 const OTHER_EQ_IDS: [&str; 4] = [
     "ACD_TenBandEQMono",
     "ACD_MustangSevenBandEq",
@@ -965,15 +967,23 @@ fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at: usize
     serde_json::json!({ "template": template, "blocks": blocks })
 }
 
-/// Insert anchor immediately AFTER the cab, in the cab's group. Returns
-/// `(group, before_fender_id, preview_index)`: `before` = the next same-group
-/// node's id, or `None` when the cab ends its group (append — same position;
-/// the wire's `beforeFenderId` is a same-group anchor, a cross-group one is
-/// silently dropped). `None` when the chain has no cab.
-fn after_cab_anchor(
-    nodes: &[DoctorNode],
-    facts: &GraphFacts,
-) -> Option<(String, Option<String>, usize)> {
+/// Where to drop a block immediately AFTER the cab, in the cab's group.
+/// Shared by the EQ and post-cab-compressor inserts.
+struct CabAnchor {
+    /// The cab's group id (the insert's group).
+    group: String,
+    /// The same-group `beforeFenderId` anchor: the next node's id, or `None`
+    /// when the cab ends its group (append — same position). The wire's
+    /// `beforeFenderId` is same-group only; a cross-group one is silently
+    /// dropped. Bypassed neighbours still anchor (position is chain order, not
+    /// audibility — skipping one would drift the block when it's re-enabled).
+    before: Option<String>,
+    /// Chain-preview insert index (cab index + 1).
+    at: usize,
+}
+
+/// The [`CabAnchor`] for the chain's cab, or `None` when there's no cab.
+fn after_cab_anchor(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<CabAnchor> {
     let (cab_group, cab_node, _) = facts.cab.as_ref()?;
     let idx = nodes
         .iter()
@@ -982,7 +992,11 @@ fn after_cab_anchor(
         .get(idx + 1)
         .filter(|n| &n.group_id == cab_group)
         .map(|n| n.node_id.clone());
-    Some((cab_group.clone(), before, idx + 1))
+    Some(CabAnchor {
+        group: cab_group.clone(),
+        before,
+        at: idx + 1,
+    })
 }
 
 /// Player-facing frequency label: `90.0` → "90 Hz", `8000.0` → "8 kHz".
@@ -1077,13 +1091,13 @@ fn eq_move(
     // No EQ to reuse → insert one, anchored right AFTER the cab so it shapes the
     // post-cab tone before any time-effects (not dumped at the chain's tail). No
     // cab (rare) falls back to the front group's tail.
-    let (group, before, at) = match after_cab_anchor(nodes, facts) {
+    let anchor = match after_cab_anchor(nodes, facts) {
         Some(a) => a,
-        None => (
-            facts.front.as_ref().map(|(g, _)| g.clone())?,
-            None,
-            nodes.len(),
-        ),
+        None => CabAnchor {
+            group: facts.front.as_ref().map(|(g, _)| g.clone())?,
+            before: None,
+            at: nodes.len(),
+        },
     };
     let cpu_note = insert_cpu_note(nodes, EQ10_STEREO)?;
     Some(Rx {
@@ -1092,12 +1106,12 @@ fn eq_move(
         detail: copy.insert_detail.to_string(),
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
-            group_id: group,
-            before_fender_id: before,
+            group_id: anchor.group,
+            before_fender_id: anchor.before,
             fender_id: EQ10_STEREO.to_string(),
             params: gains.iter().map(|(p, v)| ((*p).to_string(), *v)).collect(),
         }],
-        chain: Some(chain_preview(nodes, "after · +EQ", EQ10_STEREO, at)),
+        chain: Some(chain_preview(nodes, "after · +EQ", EQ10_STEREO, anchor.at)),
     })
 }
 
@@ -1229,29 +1243,17 @@ fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
     ) {
         return Some(a);
     }
-    let (cab_group, cab_node, _) = facts.cab.as_ref()?;
-    let idx = nodes
-        .iter()
-        .position(|n| &n.group_id == cab_group && &n.node_id == cab_node)?;
+    let anchor = after_cab_anchor(nodes, facts)?;
     // A reverb/delay earlier in the cab's own group would then also sit before
     // the inserted comp — compressing its wet tail pumps, so bail to the
     // advisory-only path (the caller's None branch) instead of anchoring a
     // placement that contradicts the prescription's own detail text.
-    let time_effect_before_cab = nodes[..idx]
+    let time_effect_before_cab = nodes[..anchor.at - 1]
         .iter()
-        .any(|n| n.group_id == *cab_group && !n.bypassed && is_time_effect(&n.model));
+        .any(|n| n.group_id == anchor.group && !n.bypassed && is_time_effect(&n.model));
     if time_effect_before_cab {
         return None;
     }
-    // Anchor = the NEXT node in the SAME group: the wire's beforeFenderId is a
-    // same-group anchor and a cross-group one is silently dropped (proto.rs
-    // field 2), so a cab that ends its group appends (None) — same position.
-    // Bypassed neighbours still anchor: position is chain order, not
-    // audibility — skipping one would drift the comp when it's re-enabled.
-    let before = nodes
-        .get(idx + 1)
-        .filter(|n| &n.group_id == cab_group)
-        .map(|n| n.node_id.clone());
     let cpu_note = insert_cpu_note(nodes, COMPRESSOR_STUDIO)?;
     Some(Rx {
         kind: RxKind::Chain,
@@ -1260,12 +1262,12 @@ fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
             .to_string(),
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
-            group_id: cab_group.clone(),
-            before_fender_id: before,
+            group_id: anchor.group.clone(),
+            before_fender_id: anchor.before,
             fender_id: COMPRESSOR_STUDIO.to_string(),
             params: Vec::new(),
         }],
-        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR_STUDIO, idx + 1)),
+        chain: Some(chain_preview(nodes, "after · +COMP", COMPRESSOR_STUDIO, anchor.at)),
     })
 }
 
@@ -2109,26 +2111,14 @@ mod tests {
         // Amp · cab · delay, no EQ → the inserted EQ-10 anchors right AFTER the
         // cab (before the delay), not at the chain's tail.
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_SpaceEcho"], &[]);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
-        let insert = rx
-            .iter()
-            .find(|r| r.kind == RxKind::Chain)
-            .expect("insert rx");
-        match &insert.ops[0] {
-            DoctorOp::InsertNode {
-                fender_id,
-                before_fender_id,
-                ..
-            } => {
-                assert_eq!(fender_id, "ACD_TenBandEQStereo");
-                assert_eq!(
-                    before_fender_id.as_deref(),
-                    Some("ACD_SpaceEcho"),
-                    "anchored after the cab, before the delay"
-                );
-            }
-            other => panic!("expected InsertNode, got {other:?}"),
-        }
+        let (fid, before) =
+            eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert rx");
+        assert_eq!(fid, "ACD_TenBandEQStereo");
+        assert_eq!(
+            before.as_deref(),
+            Some("ACD_SpaceEcho"),
+            "anchored after the cab, before the delay"
+        );
     }
 
     // ─── EQ prescription regression lock ─────────────────────────────────────
