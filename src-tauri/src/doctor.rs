@@ -774,6 +774,18 @@ const DELAY_IDS: [&str; 30] = [
 
 const CAB_STANDALONE: &str = "ACD_CabSimTMS";
 const EQ10_STEREO: &str = "ACD_TenBandEQStereo"; // never the Mono variant (absent from the product profile)
+/// Graphic/parametric EQ blocks a preset may ALREADY carry that the Doctor
+/// cannot precisely drive: their band controlIds aren't in the graph param
+/// allowlist, so a one-click would be a BLIND overwrite of the player's own
+/// curve — the value-aware rule forbids it. When one is active, a muddy/harsh
+/// fix advises using it rather than stacking a redundant EQ-10. Freqout is a
+/// feedback pedal, not an EQ (see `freqout_is_not_an_eq`).
+const OTHER_EQ_IDS: [&str; 4] = [
+    "ACD_TenBandEQMono",
+    "ACD_MustangSevenBandEq",
+    "ACD_FiveBandParamEQ",
+    "ACD_MustangPEQ",
+];
 const HIGH_LOW_PASS: &str = "ACD_HighLowPass";
 const COMPRESSOR: &str = "ACD_DynaComp"; // classic 2-knob pedal comp, schema-verified
 /// Soft-knee studio comp: transparent post-cab leveling (1.0% CPU vs the
@@ -842,6 +854,10 @@ struct GraphFacts {
     cab: Option<(String, String, HashMap<String, f64>)>,
     /// Existing EQ-10 stereo node, if any: (group, node_id, current band gains).
     eq10: Option<(String, String, HashMap<String, f64>)>,
+    /// True when an EQ the Doctor can't precisely drive (a 7-band GE, parametric,
+    /// mono 10-band — [`OTHER_EQ_IDS`]) is already ACTIVE in the chain. Gates the
+    /// EQ moves to an advisory (use the one you have) instead of a second EQ.
+    eq_other: bool,
     /// First reverb with a real mix param: (group, node_id, mix_param, current
     /// mix value when the graph carried it).
     reverb_mix: Option<(String, String, String, Option<f64>)>,
@@ -879,6 +895,8 @@ fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
         }
         if n.model == EQ10_STEREO {
             f.eq10 = Some((n.group_id.clone(), n.node_id.clone(), n.params.clone()));
+        } else if OTHER_EQ_IDS.contains(&n.model.as_str()) {
+            f.eq_other = true;
         }
         if f.reverb_mix.is_none() {
             if let Some((_, Some(p))) = REVERB_MIX.iter().find(|(id, _)| *id == n.model) {
@@ -947,16 +965,24 @@ fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at: usize
     serde_json::json!({ "template": template, "blocks": blocks })
 }
 
-/// EQ-10 insert carrying `gains` (controlId → dB) on the fresh node; all other
-/// bands stay at the device default (0 dB).
-fn eq10_insert(nodes: &[DoctorNode], group: &str, gains: &[(&str, f64)]) -> Option<DoctorOp> {
-    insert_cpu_note(nodes, EQ10_STEREO)?;
-    Some(DoctorOp::InsertNode {
-        group_id: group.to_string(),
-        before_fender_id: None,
-        fender_id: EQ10_STEREO.to_string(),
-        params: gains.iter().map(|(p, v)| ((*p).to_string(), *v)).collect(),
-    })
+/// Insert anchor immediately AFTER the cab, in the cab's group. Returns
+/// `(group, before_fender_id, preview_index)`: `before` = the next same-group
+/// node's id, or `None` when the cab ends its group (append — same position;
+/// the wire's `beforeFenderId` is a same-group anchor, a cross-group one is
+/// silently dropped). `None` when the chain has no cab.
+fn after_cab_anchor(
+    nodes: &[DoctorNode],
+    facts: &GraphFacts,
+) -> Option<(String, Option<String>, usize)> {
+    let (cab_group, cab_node, _) = facts.cab.as_ref()?;
+    let idx = nodes
+        .iter()
+        .position(|n| &n.group_id == cab_group && &n.node_id == cab_node)?;
+    let before = nodes
+        .get(idx + 1)
+        .filter(|n| &n.group_id == cab_group)
+        .map(|n| n.node_id.clone());
+    Some((cab_group.clone(), before, idx + 1))
 }
 
 /// Player-facing frequency label: `90.0` → "90 Hz", `8000.0` → "8 kHz".
@@ -978,21 +1004,34 @@ fn eq_band_label(param: &str) -> String {
     }
 }
 
-/// The muddy/harsh EQ move: reuse the chain's EQ-10 when present, else insert
-/// one. `gains` are RELATIVE moves (e.g. −3 = cut 3 dB): on an existing EQ-10
-/// whose current band values are known they're applied on top (`current + move`,
-/// clamped to the band range) under `reuse_title`; when a band's current value
-/// is unknown the write is the absolute value and the title says that truth
-/// ("Set the 250 Hz band to −3 dB"). A fresh insert starts at 0 dB, so absolute
-/// == relative there. Returns None when no EQ-10 exists and the insert fails
-/// the caps.
+/// Player-facing copy for an [`eq_move`], varying per diagnosis.
+struct EqCopy<'a> {
+    /// One-click title when a drivable EQ-10 is reused (known band values).
+    reuse_title: &'a str,
+    reuse_detail: &'a str,
+    /// Chain title/detail when no EQ exists and one is inserted.
+    insert_title: &'a str,
+    insert_detail: &'a str,
+    /// Advisory detail when a non-drivable EQ is already present.
+    advise_detail: &'a str,
+}
+
+/// The muddy/harsh EQ move, in priority order:
+/// 1. A drivable EQ-10 stereo already in the chain → a value-aware one-click on
+///    it. `gains` are RELATIVE moves (e.g. −3 = cut 3 dB): known band values get
+///    `current + move` clamped to the band range under `copy.reuse_title`; an
+///    unknown value writes the absolute and the title says so ("Set the 250 Hz
+///    band to −3 dB"). A fresh insert starts at 0 dB, so absolute == relative.
+/// 2. A DIFFERENT EQ (7-band GE, parametric, mono 10-band) already present →
+///    `advisory(copy.reuse_title, copy.advise_detail)`: its bands aren't drivable
+///    value-aware, so we point the player at it rather than stacking a second EQ.
+/// 3. Otherwise insert an EQ-10 anchored right AFTER the cab (not the chain tail).
+///
+/// Returns None only when an insert is needed but fails the caps / has no anchor.
 fn eq_move(
     nodes: &[DoctorNode],
     facts: &GraphFacts,
-    reuse_title: &str,
-    reuse_detail: &str,
-    insert_title: &str,
-    insert_detail: &str,
+    copy: &EqCopy,
     gains: &[(&str, f64)],
 ) -> Option<Rx> {
     if let Some((group, node, current)) = &facts.eq10 {
@@ -1010,7 +1049,7 @@ fn eq_move(
             })
             .collect();
         let title = if known {
-            reuse_title.to_string()
+            copy.reuse_title.to_string()
         } else {
             // Unknown current values → the write is absolute, say so honestly.
             let bands: Vec<String> = gains.iter().map(|(p, _)| eq_band_label(p)).collect();
@@ -1024,31 +1063,41 @@ fn eq_move(
         return Some(Rx {
             kind: RxKind::OneClick,
             title,
-            detail: reuse_detail.to_string(),
+            detail: copy.reuse_detail.to_string(),
             cpu_note: "no CPU change".to_string(),
             ops,
             chain: None,
         });
     }
-    let group = facts
-        .cab
-        .as_ref()
-        .map(|(g, _, _)| g.clone())
-        .or_else(|| facts.front.as_ref().map(|(g, _)| g.clone()))?;
+    // A different EQ is already in the chain — advise using it (title reuses the
+    // cut description), never stack a second one we can't drive value-aware.
+    if facts.eq_other {
+        return Some(advisory(copy.reuse_title, copy.advise_detail));
+    }
+    // No EQ to reuse → insert one, anchored right AFTER the cab so it shapes the
+    // post-cab tone before any time-effects (not dumped at the chain's tail). No
+    // cab (rare) falls back to the front group's tail.
+    let (group, before, at) = match after_cab_anchor(nodes, facts) {
+        Some(a) => a,
+        None => (
+            facts.front.as_ref().map(|(g, _)| g.clone())?,
+            None,
+            nodes.len(),
+        ),
+    };
     let cpu_note = insert_cpu_note(nodes, EQ10_STEREO)?;
-    let op = eq10_insert(nodes, &group, gains)?;
     Some(Rx {
         kind: RxKind::Chain,
-        title: insert_title.to_string(),
-        detail: insert_detail.to_string(),
+        title: copy.insert_title.to_string(),
+        detail: copy.insert_detail.to_string(),
         cpu_note,
-        ops: vec![op],
-        chain: Some(chain_preview(
-            nodes,
-            "after · +EQ",
-            EQ10_STEREO,
-            nodes.len(),
-        )),
+        ops: vec![DoctorOp::InsertNode {
+            group_id: group,
+            before_fender_id: before,
+            fender_id: EQ10_STEREO.to_string(),
+            params: gains.iter().map(|(p, v)| ((*p).to_string(), *v)).collect(),
+        }],
+        chain: Some(chain_preview(nodes, "after · +EQ", EQ10_STEREO, at)),
     })
 }
 
@@ -1230,10 +1279,13 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             if let Some(m) = eq_move(
                 nodes,
                 &facts,
-                "Cut 3 dB around 300 Hz on your EQ",
-                "Dips the muddy low-mids on the EQ you already have — the note stays, the mud goes.",
-                "Add a 10-band EQ and cut 3 dB around 300 Hz",
-                "Puts a graphic EQ after the cab and dips the muddy low-mids — the note stays, the mud goes.",
+                &EqCopy {
+                    reuse_title: "Cut 3 dB around 300 Hz on your EQ",
+                    reuse_detail: "Dips the muddy low-mids on the EQ you already have — the note stays, the mud goes.",
+                    insert_title: "Add a 10-band EQ and cut 3 dB around 300 Hz",
+                    insert_detail: "Puts a graphic EQ after the cab and dips the muddy low-mids — the note stays, the mud goes.",
+                    advise_detail: "Your chain already runs a graphic EQ — pull its band nearest 300 Hz down about 3 dB, rather than adding a second EQ.",
+                },
                 &[("gain250hz", -3.0)],
             ) {
                 rx.push(m);
@@ -1274,10 +1326,13 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             if let Some(m) = eq_move(
                 nodes,
                 &facts,
-                "Cut 2 dB around 1–3 kHz",
-                "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
-                "Cut 2 dB around 1–3 kHz",
-                "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
+                &EqCopy {
+                    reuse_title: "Cut 2 dB around 1–3 kHz",
+                    reuse_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
+                    insert_title: "Cut 2 dB around 1–3 kHz",
+                    insert_detail: "Dips the harsh high-mids right where the spike lives and leaves the rest of the tone alone.",
+                    advise_detail: "Your chain already runs a graphic EQ — pull its 1–3 kHz bands down about 2 dB, rather than adding a second EQ.",
+                },
                 &[("gain1khz", -2.0), ("gain2khz", -2.0)],
             ) {
                 rx.push(m);
@@ -2019,6 +2074,61 @@ mod tests {
         }
         // The advisory alternative always rides along.
         assert!(rx.iter().any(|r| r.kind == RxKind::Advisory));
+    }
+
+    #[test]
+    fn muddy_advises_using_an_existing_non_eq10_eq() {
+        // A 7-band GE already in the chain can't be driven value-aware → advise
+        // using it, NEVER insert a second EQ on top.
+        let p = chain(
+            &["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_MustangSevenBandEq"],
+            &[],
+        );
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        assert!(
+            rx.iter().all(|r| r.kind != RxKind::Chain),
+            "must not insert a second EQ"
+        );
+        assert!(
+            rx.iter().all(|r| !r
+                .ops
+                .iter()
+                .any(|o| matches!(o, DoctorOp::InsertNode { .. }))),
+            "no InsertNode op"
+        );
+        assert!(
+            rx.iter()
+                .any(|r| r.kind == RxKind::Advisory
+                    && r.title == "Cut 3 dB around 300 Hz on your EQ"),
+            "advises using the EQ already present"
+        );
+    }
+
+    #[test]
+    fn eq_insert_lands_after_the_cab() {
+        // Amp · cab · delay, no EQ → the inserted EQ-10 anchors right AFTER the
+        // cab (before the delay), not at the chain's tail.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_SpaceEcho"], &[]);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let insert = rx
+            .iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .expect("insert rx");
+        match &insert.ops[0] {
+            DoctorOp::InsertNode {
+                fender_id,
+                before_fender_id,
+                ..
+            } => {
+                assert_eq!(fender_id, "ACD_TenBandEQStereo");
+                assert_eq!(
+                    before_fender_id.as_deref(),
+                    Some("ACD_SpaceEcho"),
+                    "anchored after the cab, before the delay"
+                );
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
     }
 
     #[test]

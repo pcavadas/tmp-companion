@@ -76,7 +76,15 @@ shift, a −80 dB empty-tail sentinel) — repeated runs are the arbiter.
 `Rx` derivation is graph-aware (`graph_facts`): fixes prefer an existing
 carrier block over inserting one, inserts are gated by the `blockcaps` limits,
 and comp-aware rules avoid stacking compressors; parallel-split placements the
-wire can't express are skipped. Param one-clicks are **value-aware** wherever
+wire can't express are skipped. The **muddy/harsh EQ move** (`eq_move`) is
+EQ-aware in three tiers: (1) a drivable EQ-10 stereo already in the chain → a
+value-aware one-click on it; (2) a DIFFERENT EQ already present (7-band GE,
+parametric, mono 10-band — `OTHER_EQ_IDS`) → an **advisory** to use the one you
+have, never a second inserted EQ (its bands aren't in the param allowlist, so a
+one-click would blind-overwrite the player's curve); (3) no EQ → insert an EQ-10
+anchored right **after the cab** (`after_cab_anchor`, mirroring `comp_after_cab`),
+so it shapes the post-cab tone before any time-effects — not dumped at the chain
+tail. Param one-clicks are **value-aware** wherever
 the current value rides the graph allowlist (`session::GraphNode.params`: reverb
 `mix`/`wetdrymix`, cab `hpf`/`lpf`, EQ-10 `gain*hz`): a write that would move a
 known value the WRONG way is dropped (washed skips an already-low mix; the
