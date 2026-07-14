@@ -694,6 +694,26 @@ function LaneBracketCap({ brk, side, ink }: LaneBracketCapProps) {
   );
 }
 
+// Shared ref/measurement scaffolding for any split/join bracket — collapses
+// the col/laneA/laneB refs + re-measure effect that SplitGroup, ForkTail, and
+// JoinHead each used to duplicate. Refs are created HERE (inside the hook),
+// not passed in as parameters, so eslint's exhaustive-deps still sees them as
+// useRef-stable and doesn't flag them as effect dependencies (the reason a
+// shared plain function alone wasn't enough — see `measureLaneBracket`).
+function useLaneBracket(aLen: number, bLen: number) {
+  const colRef = React.useRef<HTMLDivElement>(null);
+  const aRef = React.useRef<HTMLDivElement>(null);
+  const bRef = React.useRef<HTMLDivElement>(null);
+  const sig = `${String(aLen)}|${String(bLen)}`;
+  const [brk, setBrk] = React.useState<{ top: number; height: number } | null>(
+    null,
+  );
+  React.useLayoutEffect(() => {
+    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
+  }, [sig]);
+  return { colRef, aRef, bRef, brk };
+}
+
 interface ForkTailProps {
   outputs: NonNullable<StripGraph["outputs"]>;
   ink: string;
@@ -722,18 +742,12 @@ function ForkTail({
   renderRow,
 }: ForkTailProps) {
   const { t } = useTheme();
-  const colRef = React.useRef<HTMLDivElement>(null);
-  const aRef = React.useRef<HTMLDivElement>(null);
-  const bRef = React.useRef<HTMLDivElement>(null);
+  const { colRef, aRef, bRef, brk } = useLaneBracket(
+    outputs.a.blocks.length,
+    outputs.b.blocks.length,
+  );
   const lanes = [outputs.a, outputs.b];
   const laneRefs = [aRef, bRef];
-  const sig = `${String(outputs.a.blocks.length)}|${String(outputs.b.blocks.length)}`;
-  const [brk, setBrk] = React.useState<{ top: number; height: number } | null>(
-    null,
-  );
-  React.useLayoutEffect(() => {
-    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
-  }, [sig]);
   return (
     <>
       <DiamondNode kind="split" ink={ink} skeleton={skeleton} />
@@ -792,18 +806,12 @@ function JoinHead({
   renderRow,
 }: JoinHeadProps) {
   const { t } = useTheme();
-  const colRef = React.useRef<HTMLDivElement>(null);
-  const aRef = React.useRef<HTMLDivElement>(null);
-  const bRef = React.useRef<HTMLDivElement>(null);
+  const { colRef, aRef, bRef, brk } = useLaneBracket(
+    inputs.a.blocks.length,
+    inputs.b.blocks.length,
+  );
   const lanes = [inputs.a, inputs.b];
   const laneRefs = [aRef, bRef];
-  const sig = `${String(inputs.a.blocks.length)}|${String(inputs.b.blocks.length)}`;
-  const [brk, setBrk] = React.useState<{ top: number; height: number } | null>(
-    null,
-  );
-  React.useLayoutEffect(() => {
-    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
-  }, [sig]);
   return (
     <>
       <div
@@ -864,17 +872,7 @@ function SplitGroup({
   renderRow,
 }: SplitGroupProps) {
   const { t } = useTheme();
-  const colRef = React.useRef<HTMLDivElement>(null);
-  const aRef = React.useRef<HTMLDivElement>(null);
-  const bRef = React.useRef<HTMLDivElement>(null);
-  const [brk, setBrk] = React.useState<{ top: number; height: number } | null>(
-    null,
-  );
-  // Re-measure when a height-affecting input changes (branch lengths or strip size).
-  const sig = `${String(a.length)}|${String(b.length)}`;
-  React.useLayoutEffect(() => {
-    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
-  }, [sig]);
+  const { colRef, aRef, bRef, brk } = useLaneBracket(a.length, b.length);
 
   // The straight-through line for an EMPTY branch, painted here (not by
   // `EmptyLane`) so it lands on the SAME measured y as the bracket's top/bottom
