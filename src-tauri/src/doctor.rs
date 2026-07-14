@@ -2131,6 +2131,223 @@ mod tests {
         }
     }
 
+    // ─── EQ prescription regression lock ─────────────────────────────────────
+    // The "muddy/harsh stacks a redundant EQ / drops it at the chain tail" bug
+    // class, pinned exhaustively at the public `generate_rx` boundary so the
+    // guarantee survives any refactor of eq_move / graph_facts / after_cab_anchor.
+
+    /// The (fender_id, before_fender_id) of the single inserted block, if any.
+    fn eq_insert(rx: &[Rx]) -> Option<(String, Option<String>)> {
+        rx.iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .and_then(|r| match &r.ops[0] {
+                DoctorOp::InsertNode {
+                    fender_id,
+                    before_fender_id,
+                    ..
+                } => Some((fender_id.clone(), before_fender_id.clone())),
+                _ => None,
+            })
+    }
+
+    /// True when NO prescription in the set inserts a block.
+    fn inserts_nothing(rx: &[Rx]) -> bool {
+        rx.iter().all(|r| {
+            !r.ops
+                .iter()
+                .any(|o| matches!(o, DoctorOp::InsertNode { .. }))
+        })
+    }
+
+    #[test]
+    fn every_non_eq10_eq_family_is_reused_not_duplicated() {
+        // Each graphic/parametric EQ the Doctor can't drive value-aware → an
+        // advisory to use it, NEVER a second inserted EQ. Guards the whole
+        // OTHER_EQ_IDS set: add a family and forget the detection, this fails.
+        for eq in OTHER_EQ_IDS {
+            let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", eq], &[]);
+            for key in ["muddy", "harsh"] {
+                let rx = generate_rx(key, &p, Instrument::Guitar);
+                assert!(
+                    inserts_nothing(&rx),
+                    "{key} must not insert a 2nd EQ when {eq} is present"
+                );
+                assert!(
+                    rx.iter()
+                        .any(|r| r.kind == RxKind::Advisory && r.title.starts_with("Cut")),
+                    "{key} must advise using the {eq} already present"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drivable_eq10_wins_over_a_second_eq() {
+        // A GE-7 AND a drivable EQ-10 present → the value-aware one-click on the
+        // EQ-10, never an advisory-only nor an insert — order-independent.
+        for order in [
+            ["ACD_MustangSevenBandEq", "ACD_TenBandEQStereo"],
+            ["ACD_TenBandEQStereo", "ACD_MustangSevenBandEq"],
+        ] {
+            let p = chain(&["ACD_TweedDeluxe", order[0], order[1]], &[]);
+            let rx = generate_rx("muddy", &p, Instrument::Guitar);
+            assert!(rx.iter().any(|r| r.kind == RxKind::OneClick), "{order:?}");
+            assert!(inserts_nothing(&rx), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_bypassed_eq_does_not_block_the_insert() {
+        // A bypassed EQ processes no signal → treated as absent → the fix
+        // inserts a fresh EQ (current behaviour; a bypassed EQ is not yet a
+        // "switch it back on" carrier the way a bypassed comp is).
+        let mut p = chain(
+            &["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_MustangSevenBandEq"],
+            &[],
+        );
+        p[2].bypassed = true;
+        let (fid, _) = eq_insert(&generate_rx("muddy", &p, Instrument::Guitar))
+            .expect("bypassed EQ ignored → insert");
+        assert_eq!(fid, "ACD_TenBandEQStereo");
+    }
+
+    #[test]
+    fn freqout_is_not_treated_as_an_existing_eq() {
+        // ACD_Freqout substring-contains "eq" but is a feedback pedal — with a
+        // cab present the muddy fix must INSERT an EQ, never mistake it for one.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_Freqout"], &[]);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        assert!(eq_insert(&rx).is_some(), "Freqout is not an EQ → insert");
+    }
+
+    #[test]
+    fn eq_insert_appends_when_the_cab_ends_its_group() {
+        // Amp · cab (cab last) → append after the cab (before None, same spot).
+        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let (fid, before) =
+            eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert");
+        assert_eq!(fid, "ACD_TenBandEQStereo");
+        assert_eq!(before, None, "cab last in group → append");
+    }
+
+    #[test]
+    fn eq_insert_after_a_cabir_amp() {
+        // A CabIR amp carries the cab on the amp node (cab_sim_id present); the
+        // EQ still anchors right after it, before the following block.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_SpaceEcho"], &["ACD_TweedDeluxe"]);
+        let (_, before) = eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert");
+        assert_eq!(before.as_deref(), Some("ACD_SpaceEcho"));
+    }
+
+    #[test]
+    fn eq_insert_without_a_cab_falls_back_to_the_front_group() {
+        // No cab anywhere → insert in the front guitar group, appended.
+        let p = chain(&["ACD_TubeScreamer", "ACD_TweedDeluxe"], &[]);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let chain_rx = rx.iter().find(|r| r.kind == RxKind::Chain).expect("insert");
+        match &chain_rx.ops[0] {
+            DoctorOp::InsertNode {
+                group_id,
+                before_fender_id,
+                ..
+            } => {
+                assert_eq!(group_id, "G1");
+                assert_eq!(before_fender_id.as_deref(), None);
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eq_insert_anchor_never_crosses_into_another_group() {
+        // Cab last in G1, a mic group M1 follows. beforeFenderId is a same-group
+        // anchor (a cross-group one is silently dropped on the wire), so the
+        // anchor must be None (append to G1), never the M1 node.
+        let mut p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        p.push(DoctorNode {
+            group_id: "M1".into(),
+            node_id: "mic-1".into(),
+            model: "ACD_Sm57".into(),
+            bypassed: false,
+            cab_sim_id: None,
+            cab_sim2_enabled: None,
+            params: HashMap::new(),
+        });
+        let (_, before) = eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert");
+        assert_eq!(before, None, "cross-group anchor must not be used");
+    }
+
+    #[test]
+    fn eq_insert_chain_preview_marks_the_added_block_after_the_cab() {
+        // The preview the UI renders must place the +added EQ tile right after
+        // the cab, not at the tail — the visible half of the placement fix.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_SpaceEcho"], &[]);
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let preview = rx
+            .iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .and_then(|r| r.chain.clone())
+            .expect("chain preview");
+        let blocks = preview["blocks"].as_array().expect("blocks array");
+        // amp(0) · cab(1) · +EQ(2, added) · delay(3)
+        assert_eq!(blocks[2]["model"], "ACD_TenBandEQStereo");
+        assert_eq!(blocks[2]["added"], true);
+        assert!(
+            blocks[3].get("added").is_none(),
+            "the delay stays downstream of the EQ"
+        );
+    }
+
+    #[test]
+    fn muddy_and_harsh_inserts_carry_their_band_cuts() {
+        // muddy → the 250 Hz band at −3; harsh → the 1k + 2k bands at −2. Fresh
+        // insert, so the values are absolute.
+        let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let muddy = generate_rx("muddy", &p, Instrument::Guitar);
+        match &muddy.iter().find(|r| r.kind == RxKind::Chain).unwrap().ops[0] {
+            DoctorOp::InsertNode { params, .. } => {
+                assert_eq!(params, &vec![("gain250hz".to_string(), -3.0)]);
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+        let harsh = generate_rx("harsh", &p, Instrument::Guitar);
+        match &harsh.iter().find(|r| r.kind == RxKind::Chain).unwrap().ops[0] {
+            DoctorOp::InsertNode { params, .. } => {
+                assert!(params.contains(&("gain1khz".to_string(), -2.0)));
+                assert!(params.contains(&("gain2khz".to_string(), -2.0)));
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn other_eq_ids_excludes_the_drivable_stereo() {
+        // The drivable one-click EQ must never sit in the advisory-only set,
+        // else a preset that has it would advise instead of driving it.
+        assert!(!OTHER_EQ_IDS.contains(&EQ10_STEREO));
+    }
+
+    #[test]
+    fn real_world_ge7_preset_advises_rather_than_stacking() {
+        // The reported shape: a CabIR amp · comp · delay · reverb · a GE-7
+        // already present. muddy must point at the GE-7, never add a 2nd EQ.
+        let p = chain(
+            &[
+                "ACD_TweedDeluxe",
+                "ACD_DynaComp",
+                "ACD_SpaceEcho",
+                "ACD_TMSmallHall",
+                "ACD_MustangSevenBandEq",
+            ],
+            &["ACD_TweedDeluxe"],
+        );
+        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        assert!(inserts_nothing(&rx), "must not stack a 2nd EQ");
+        assert!(rx
+            .iter()
+            .any(|r| r.kind == RxKind::Advisory && r.title == "Cut 3 dB around 300 Hz on your EQ"));
+    }
+
     #[test]
     fn washed_targets_reverb_mix_param_per_model() {
         let mut plate = chain(&["ACD_TMLargePlate"], &[]);
