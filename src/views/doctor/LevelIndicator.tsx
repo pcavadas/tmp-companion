@@ -51,7 +51,9 @@ const STATES: Record<
     aria: (f) => `${f} at rehearsal volume and up`,
   },
   all: { fire: [true, true, true], aria: (f) => `${f} at any volume` },
-  clean: { fire: [false, false, false], aria: () => "clean at every volume" },
+  // clean lights every venue (it's healthy at every level); the caller passes
+  // sev "ok" so the lit colour is green.
+  clean: { fire: [true, true, true], aria: () => "clean at every volume" },
 };
 
 interface VenueGlyphProps {
@@ -152,7 +154,7 @@ export interface LevelIndicatorProps {
   /** The quietest playback level the finding fires at, or `"clean"` for the
    *  all-clear row. */
   level: PlaybackLevel | "clean";
-  /** Picks the lit colour (via `sevTone`); ignored for `clean` (always green). */
+  /** Picks the lit colour via `sevTone`; the all-clear row passes `"ok"` (green). */
   sev: Sev;
   /** The finding label, used only to compose the aria-label/title. */
   finding: string;
@@ -168,41 +170,15 @@ export function LevelIndicator({
   size = "tiny",
 }: LevelIndicatorProps) {
   const { t } = useTheme();
-  const state = stateFor(level);
-  const st = STATES[state];
-  const litCol = sevTone(t, state === "clean" ? "ok" : sev).fg;
+  const st = STATES[stateFor(level)];
+  const litCol = sevTone(t, sev).fg;
   const sizes = VENUE_SIZE[size];
   const aria = st.aria(finding);
-  const on = (i: number) => state === "clean" || st.fire[i];
+  const rich = size === "rich";
 
-  // tiny — label-less, for the collapsed triage row
-  if (size !== "rich") {
-    return (
-      <span
-        role="img"
-        aria-label={aria}
-        title={aria}
-        style={{
-          display: "inline-flex",
-          alignItems: "flex-end",
-          gap: 5,
-          flexShrink: 0,
-        }}
-      >
-        {VENUE_KINDS.map((k, i) => (
-          <VenueGlyph
-            key={k}
-            kind={k}
-            size={sizes[i]}
-            on={on(i)}
-            col={litCol}
-          />
-        ))}
-      </span>
-    );
-  }
-
-  // rich — captioned, for the expanded finding header
+  // One render: three glyphs lit where the finding fires. `rich` (expanded
+  // header) stacks a Quiet/Rehearsal/Stage caption under each; `tiny` (collapsed
+  // triage row) is label-less.
   return (
     <span
       role="img"
@@ -211,37 +187,46 @@ export function LevelIndicator({
       style={{
         display: "inline-flex",
         alignItems: "flex-end",
-        gap: 11,
+        gap: rich ? 11 : 5,
         flexShrink: 0,
       }}
     >
-      {VENUE_KINDS.map((k, i) => (
-        <span
-          key={k}
-          style={{
-            display: "inline-flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 5,
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "flex-end", height: 26 }}>
-            <VenueGlyph kind={k} size={sizes[i]} on={on(i)} col={litCol} />
-          </span>
+      {VENUE_KINDS.map((k, i) => {
+        const on = st.fire[i];
+        const glyph = (
+          <VenueGlyph key={k} kind={k} size={sizes[i]} on={on} col={litCol} />
+        );
+        if (!rich) return glyph;
+        return (
           <span
+            key={k}
             style={{
-              fontFamily: t.mono,
-              fontSize: 7.5,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: on(i) ? litCol : t.faint,
-              lineHeight: 1,
+              display: "inline-flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 5,
             }}
           >
-            {LEVEL_NAMES[i]}
+            <span
+              style={{ display: "flex", alignItems: "flex-end", height: 26 }}
+            >
+              {glyph}
+            </span>
+            <span
+              style={{
+                fontFamily: t.mono,
+                fontSize: 7.5,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                color: on ? litCol : t.faint,
+                lineHeight: 1,
+              }}
+            >
+              {LEVEL_NAMES[i]}
+            </span>
           </span>
-        </span>
-      ))}
+        );
+      })}
     </span>
   );
 }
