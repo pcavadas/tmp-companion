@@ -551,7 +551,17 @@ pub enum Sev {
 pub struct Diag {
     pub key: &'static str,
     pub label: &'static str,
+    /// Coarse tint (High/Med) — unchanged by the reliability layer.
     pub sev: Sev,
+    /// Magnitude PAST threshold in the rule's natural unit (dB for the
+    /// band/fizzy/washed rules, LU for spiky) — `metric − threshold`, always ≥ 0
+    /// for a fired card. Playback offsets shift the threshold, so they shift this.
+    pub severity: f64,
+    /// Reliability of the verdict, 0..1: `clamp(margin / (Z_CONF·σ), 0, 1)` where
+    /// `margin == severity` and σ is the rule's provisional noise ([`rule_sigma`]).
+    /// A fired card with `confidence < POSSIBLE_MAX_CONFIDENCE` (margin < σ) is a
+    /// near-threshold "possible" verdict the UI renders muted.
+    pub confidence: f64,
     /// Indices into the sound's family band layout ([`Family::bands`]) that
     /// light up in the UI; empty = a time-domain finding (washed / buried).
     pub bands: Vec<usize>,
@@ -559,6 +569,23 @@ pub struct Diag {
     pub detail: String,
     pub explain: &'static str,
     pub rx: Vec<Rx>,
+}
+
+/// Confidence scaling: a card sitting exactly AT threshold has confidence 0, one
+/// `Z_CONF·σ` past it saturates to 1.0. Two σ of margin ⇒ full confidence.
+const Z_CONF: f64 = 2.0;
+
+/// Provisional per-rule measurement noise σ, in the rule's natural unit (dB for
+/// the band-residual/fizzy/washed rules, LU for spiky). Only scales `confidence`;
+/// the fire threshold is untouched.
+// ponytail: refined by the Stage-0 HW repeatability sweep.
+fn rule_sigma(key: &str) -> f64 {
+    match key {
+        "washed" => 1.5,
+        "spiky" => 0.5,
+        // Band-residual rules (muddy/boomy/harsh/lost/buried) + fizzy.
+        _ => 1.0,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1472,12 +1499,16 @@ pub fn diagnose_kind(
     let (lows, low_mids, mids, high_mids, highs, air) = instrument.semantic_bands();
     let facts = nodes.map(graph_facts);
     let mut out = Vec::new();
+    // `margin` = metric − (offset-adjusted) threshold, ≥ 0 for a fired card. It IS
+    // the severity (magnitude past threshold); confidence scales it by the rule's σ.
     let mut push = |key: &'static str,
                     label: &'static str,
                     sev: Sev,
+                    margin: f64,
                     bands: Vec<usize>,
                     detail: String,
                     explain: &'static str| {
+        let confidence = (margin / (Z_CONF * rule_sigma(key))).clamp(0.0, 1.0);
         let rx = nodes
             .map(|n| generate_rx(key, n, instrument))
             .unwrap_or_default();
@@ -1485,6 +1516,8 @@ pub fn diagnose_kind(
             key,
             label,
             sev,
+            severity: margin,
+            confidence,
             bands,
             detail,
             explain,
@@ -1492,31 +1525,42 @@ pub fn diagnose_kind(
         });
     };
 
-    if covered(low_mids) && dev(low_mids) > t.muddy_db + offsets.low_end_db {
+    // Every rule fires on `margin > 0` (metric strictly past the offset-adjusted
+    // threshold) exactly as before — the reliability layer only ATTACHES a
+    // severity + confidence, it does not change WHICH cards fire.
+    // ponytail: guard-band widening (surfacing below-threshold cards) is a later,
+    // HW-σ-calibrated step — keep the raw `> threshold` fire condition here.
+    let muddy_margin = dev(low_mids) - (t.muddy_db + offsets.low_end_db);
+    if covered(low_mids) && muddy_margin > 0.0 {
         push(
             "muddy",
             "Muddy",
             Sev::High,
+            muddy_margin,
             vec![low_mids],
             format!("buildup around 250–350 Hz ({:+.1} dB)", dev(low_mids)),
             "There's a buildup in the low-mids that stacks up with the bass player.",
         );
     }
-    if covered(lows) && dev(lows) > t.boomy_db + offsets.low_end_db {
+    let boomy_margin = dev(lows) - (t.boomy_db + offsets.low_end_db);
+    if covered(lows) && boomy_margin > 0.0 {
         push(
             "boomy",
             "Boomy",
             Sev::Med,
+            boomy_margin,
             vec![lows],
             format!("excess energy below 100 Hz ({:+.1} dB)", dev(lows)),
             "Too much deep low end — it booms and loses focus once you turn up.",
         );
     }
-    if covered(high_mids) && dev(high_mids) > t.harsh_db {
+    let harsh_margin = dev(high_mids) - t.harsh_db;
+    if covered(high_mids) && harsh_margin > 0.0 {
         push(
             "harsh",
             "Harsh",
             Sev::High,
+            harsh_margin,
             vec![high_mids],
             format!("spike around 1–3 kHz ({:+.1} dB)", dev(high_mids)),
             "A sharp peak in the high-mids makes it harsh and tiring to listen to.",
@@ -1526,11 +1570,13 @@ pub fn diagnose_kind(
     // difference of the two bands' own dB (self-mean cancels, so it's identical
     // to the old balance-space form). See `Thresholds::fizzy_db`. Own-spectrum,
     // so it needs BOTH the Air and Highs bands actually excited.
-    if covered(air) && covered(highs) && bdb[air] - bdb[highs] > t.fizzy_db + offsets.fizzy_db {
+    let fizzy_margin = (bdb[air] - bdb[highs]) - (t.fizzy_db + offsets.fizzy_db);
+    if covered(air) && covered(highs) && fizzy_margin > 0.0 {
         push(
             "fizzy",
             "Fizzy",
             Sev::Med,
+            fizzy_margin,
             vec![air],
             format!(
                 "content above 6 kHz only {:.1} dB under the presence band",
@@ -1539,17 +1585,20 @@ pub fn diagnose_kind(
             "Fizzy, buzzy top end — the kind that sounds like radio static on the note tails.",
         );
     }
-    if covered(mids) && -dev(mids) > t.lost_db {
+    let lost_margin = -dev(mids) - t.lost_db;
+    if covered(mids) && lost_margin > 0.0 {
         push(
             "lost",
             "Gets lost in the mix",
             Sev::High,
+            lost_margin,
             vec![mids],
             format!("mids scooped {:.1} dB around 800 Hz", -dev(mids)),
             "The mids are scooped, so it sounds big alone but disappears with a full band.",
         );
     }
-    if profile.tail_ratio_db > t.wash_tail_db {
+    let washed_margin = profile.tail_ratio_db - t.wash_tail_db;
+    if washed_margin > 0.0 {
         let detail = format!(
             "decay tail only {:.0} dB under the note",
             -profile.tail_ratio_db
@@ -1558,6 +1607,7 @@ pub fn diagnose_kind(
             "washed",
             "Washed out",
             Sev::Med,
+            washed_margin,
             vec![],
             detail,
             "The reverb is drowning the note — it washes out instead of ringing clearly.",
@@ -1566,25 +1616,29 @@ pub fn diagnose_kind(
     // Spread is gain-invariant and preset-intrinsic (lufs::spread_lu), so it's
     // judged absolutely, cohort-independent — like fizzy. Graph required: a
     // drive pedal compresses naturally, so spiky is a CLEAN-chain finding.
-    if profile.spread_lu > t.spiky_spread_lu && facts.as_ref().map(|f| f.has_drive) == Some(false) {
+    let spiky_margin = profile.spread_lu - t.spiky_spread_lu;
+    if spiky_margin > 0.0 && facts.as_ref().map(|f| f.has_drive) == Some(false) {
         push(
             "spiky",
             "Spiky",
             Sev::Med,
+            spiky_margin,
             vec![],
             format!("swings {:.1} LU between peaks and average", profile.spread_lu),
             "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
         );
     }
+    let buried_margin = -dev(lows) - t.buried_lows_db;
     if matches!(instrument, Family::Bass | Family::BassVi)
         && facts.as_ref().map(|f| f.has_drive) == Some(true)
         && covered(lows)
-        && -dev(lows) > t.buried_lows_db
+        && buried_margin > 0.0
     {
         push(
             "buried",
             "Buried clean tone",
             Sev::Med,
+            buried_margin,
             vec![],
             "drive stacked in series".to_string(),
             "Your clean low end is buried under the drive — common on a driven bass sound.",
@@ -1993,6 +2047,130 @@ mod tests {
         let c = keys(&diagnose(&p, None, Instrument::Guitar));
         assert_eq!(a, b);
         assert_eq!(b, c);
+    }
+
+    // ── severity + confidence (the reliability layer) ──
+
+    fn find(diags: &[Diag], key: &str) -> Diag {
+        diags
+            .iter()
+            .find(|d| d.key == key)
+            .expect("rule fired")
+            .clone()
+    }
+
+    #[test]
+    fn rule_sigma_table_is_provisional_values() {
+        for k in ["muddy", "boomy", "harsh", "lost", "buried", "fizzy"] {
+            assert_eq!(rule_sigma(k), 1.0, "{k} band/fizzy σ");
+        }
+        assert_eq!(rule_sigma("washed"), 1.5);
+        assert_eq!(rule_sigma("spiky"), 0.5);
+    }
+
+    #[test]
+    fn far_past_threshold_is_full_confidence_and_severity_equals_db_past() {
+        // margin = 4 dB = 2σ (σ_muddy = 1) → confidence saturates at 1.0, and
+        // severity is exactly the dB past threshold.
+        let hot = resid_profile(1, GUITAR.muddy_db + 4.0);
+        let muddy = find(&diagnose(&hot, None, Instrument::Guitar), "muddy");
+        assert!(muddy.severity >= 0.0);
+        assert!(
+            (muddy.severity - 4.0).abs() < 0.05,
+            "severity {}",
+            muddy.severity
+        );
+        assert!(
+            (muddy.confidence - 1.0).abs() < 1e-9,
+            "confidence {}",
+            muddy.confidence
+        );
+    }
+
+    #[test]
+    fn just_past_threshold_is_a_possible_verdict() {
+        // margin = 0.5 dB < σ (1.0) → confidence 0.25 < POSSIBLE_MAX (0.5).
+        let barely = resid_profile(1, GUITAR.muddy_db + 0.5);
+        let muddy = find(&diagnose(&barely, None, Instrument::Guitar), "muddy");
+        assert!(muddy.severity > 0.0, "still a fired card");
+        assert!(
+            muddy.confidence < 0.5, // mirror of severity.ts POSSIBLE_MAX_CONFIDENCE
+            "possible: confidence {}",
+            muddy.confidence
+        );
+        assert!(
+            (muddy.confidence - 0.25).abs() < 0.02,
+            "confidence {}",
+            muddy.confidence
+        );
+    }
+
+    #[test]
+    fn confidence_is_monotonic_in_margin() {
+        let mut prev = -1.0;
+        for extra in [0.2_f64, 0.6, 1.0, 1.6, 2.2, 3.0] {
+            let p = resid_profile(1, GUITAR.muddy_db + extra);
+            let muddy = find(&diagnose(&p, None, Instrument::Guitar), "muddy");
+            assert!(muddy.severity >= 0.0);
+            assert!(
+                muddy.confidence >= prev,
+                "confidence must not decrease with margin"
+            );
+            prev = muddy.confidence;
+        }
+        assert!((prev - 1.0).abs() < 1e-9, "saturates at 1.0 by 2σ");
+    }
+
+    #[test]
+    fn washed_confidence_uses_its_wider_sigma() {
+        // σ_washed = 1.5, so it saturates only at 3.0 dB past threshold, and sits
+        // exactly at the POSSIBLE_MAX boundary at 1.5 dB (= σ) past.
+        let mut p = resid_profile(2, 0.0);
+        p.tail_ratio_db = GUITAR.wash_tail_db + 3.0;
+        let washed = find(&diagnose(&p, None, Instrument::Guitar), "washed");
+        assert!((washed.severity - 3.0).abs() < 1e-9);
+        assert!((washed.confidence - 1.0).abs() < 1e-9);
+        p.tail_ratio_db = GUITAR.wash_tail_db + 1.5;
+        let washed = find(&diagnose(&p, None, Instrument::Guitar), "washed");
+        assert!((washed.confidence - 0.5).abs() < 1e-9); // mirror of severity.ts POSSIBLE_MAX_CONFIDENCE
+    }
+
+    #[test]
+    fn playback_offset_shifts_severity_and_confidence() {
+        // Stage lowers the boomy threshold by 2 dB, so the same sound reads 2 dB
+        // MORE margin (higher severity + confidence) at Stage than at Rehearsal.
+        use crate::profiles::PlaybackLevel::{Rehearsal, Stage};
+        let p = resid_profile(0, GUITAR.boomy_db + 1.0); // rehearsal margin = 1.0
+        let at = |lvl| {
+            find(
+                &diagnose_kind(
+                    &p,
+                    None,
+                    Family::Guitar,
+                    StimulusKind::Synthetic,
+                    None,
+                    playback_offsets(lvl),
+                ),
+                "boomy",
+            )
+        };
+        let reh = at(Rehearsal);
+        let stg = at(Stage);
+        assert!((reh.severity - 1.0).abs() < 0.05);
+        assert!(
+            (stg.severity - 3.0).abs() < 0.05,
+            "stage margin = 1.0 + 2.0"
+        );
+        assert!(stg.confidence > reh.confidence);
+    }
+
+    #[test]
+    fn wire_shape_carries_severity_and_confidence() {
+        let p = resid_profile(1, GUITAR.muddy_db + 1.0);
+        let v = serde_json::to_value(&diagnose(&p, None, Family::Guitar)[0]).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(obj.contains_key("severity"));
+        assert!(obj.contains_key("confidence"));
     }
 
     // ── tail_energy_ratio ──

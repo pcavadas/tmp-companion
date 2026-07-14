@@ -6,6 +6,7 @@
 
 import type { ThemeTokens } from "../../theme/tokens";
 import type {
+  DoctorDiag,
   DoctorPresetResult,
   DoctorSceneConsistency,
   DoctorSev,
@@ -45,6 +46,32 @@ const RANK: Record<Sev, number> = { ok: 0, med: 1, high: 2 };
 /** Sort key for worst-first ordering (high > med > ok). */
 export function sevRank(sev: Sev): number {
   return RANK[sev];
+}
+
+/** Mirror of `doctor::POSSIBLE_MAX_CONFIDENCE`: a fired diagnosis below this
+ *  confidence is a near-threshold "possible" verdict (muted, ranked lower). */
+export const POSSIBLE_MAX_CONFIDENCE = 0.5;
+
+/** True when a diagnosis is a low-confidence "possible" verdict. */
+export function isPossible(diag: DoctorDiag): boolean {
+  return diag.confidence < POSSIBLE_MAX_CONFIDENCE;
+}
+
+/** The label as shown in the UI: "Possible X" when `isPossible`, else the bare
+ *  label. The one place that builds this string — chip + expanded heading + the
+ *  LevelIndicator aria-label all route through it so the hedge is never dropped. */
+export function possibleLabel(diag: DoctorDiag): string {
+  return isPossible(diag) ? `Possible ${diag.label}` : diag.label;
+}
+
+/** A sound's diagnoses worst-first: severity (high before med) is the primary
+ *  key, confidence (descending) the tiebreaker — so confident findings sort above
+ *  "possible" ones. */
+export function sortedDiags(diags: DoctorDiag[]): DoctorDiag[] {
+  return [...diags].sort((a, b) => {
+    const r = sevRank(b.sev) - sevRank(a.sev);
+    return r !== 0 ? r : b.confidence - a.confidence;
+  });
 }
 
 /** A scene-loudness jump beyond this (dB) bumps the preset's worst severity to

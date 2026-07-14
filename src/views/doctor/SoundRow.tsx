@@ -13,7 +13,15 @@ import { BandSpark } from "./BandSpark";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { LevelIndicator } from "./LevelIndicator";
 import { PrescriptionCard } from "./PrescriptionCard";
-import { diagSevLabel, sevTone, soundSev, type Sev } from "./severity";
+import {
+  diagSevLabel,
+  isPossible,
+  possibleLabel,
+  sevTone,
+  sortedDiags,
+  soundSev,
+  type Sev,
+} from "./severity";
 import type { DoctorDiag, DoctorSoundResult } from "../../lib/types";
 
 const SHARED_CAPTION =
@@ -114,7 +122,9 @@ export function SoundRow({
   const sev = soundSev(sound);
   const tone = sevTone(t, sev);
   const isTagged = sound.scene != null || sound.footswitch != null;
-  const hotBands = [...new Set(sound.diags.flatMap((d) => d.bands))];
+  // Worst-first, confident above "possible" — one order for the chips + panels.
+  const diags = sortedDiags(sound.diags);
+  const hotBands = [...new Set(diags.flatMap((d) => d.bands))];
   const shared = hasDiags && affectsSharedBlock(sound.diags, ownNodeIds);
   const lufsOk = Number.isFinite(sound.integratedLufs);
 
@@ -185,16 +195,20 @@ export function SoundRow({
               {sound.error}
             </span>
           ) : hasDiags ? (
-            sound.diags.map((d) => (
+            diags.map((d) => (
               <span
                 key={d.key}
                 style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
               >
-                <DiagnosisChip label={d.label} sev={d.sev} />
+                <DiagnosisChip
+                  label={possibleLabel(d)}
+                  sev={d.sev}
+                  possible={isPossible(d)}
+                />
                 <LevelIndicator
                   level={d.fromLevel}
                   sev={d.sev}
-                  finding={d.label}
+                  finding={possibleLabel(d)}
                   size="tiny"
                 />
               </span>
@@ -306,8 +320,9 @@ export function SoundRow({
               <span>{SHARED_CAPTION}</span>
             </div>
           )}
-          {sound.diags.map((diag) => {
+          {diags.map((diag) => {
             const dTone = sevTone(t, diag.sev);
+            const possible = isPossible(diag);
             return (
               <div
                 key={diag.key}
@@ -329,10 +344,10 @@ export function SoundRow({
                       fontFamily: t.sans,
                       fontSize: 13,
                       fontWeight: 600,
-                      color: dTone.fg,
+                      color: possible ? t.mutedInk : dTone.fg,
                     }}
                   >
-                    {diag.label}
+                    {possibleLabel(diag)}
                   </span>
                   <span
                     style={{
@@ -357,7 +372,7 @@ export function SoundRow({
                   <LevelIndicator
                     level={diag.fromLevel}
                     sev={diag.sev}
-                    finding={diag.label}
+                    finding={possibleLabel(diag)}
                     size="rich"
                   />
                 </div>
