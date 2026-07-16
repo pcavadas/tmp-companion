@@ -16,7 +16,9 @@
 //!
 //! ## Block matching
 //! Exact-FenderId membership only — never substring (`ACD_Freqout` is a
-//! feedback pedal that substring-matches "eq"). The `DIST_IDS` / `REVERB_MIX`
+//! feedback pedal that substring-matches "eq"). The one documented exception
+//! is [`has_time_effect`]'s conservative tail-length catch-all (see its doc
+//! for why a false positive is harmless there). The `DIST_IDS` / `REVERB_MIX`
 //! tables are extracted from the fw 1.8.45 embedded schemas
 //! (`algoCategory == "dist" / "reverb"`); re-derive with the carve script if a
 //! firmware rev adds blocks.
@@ -442,8 +444,8 @@ pub const BAND_COVERAGE_DB: f64 = 30.0;
 /// is inert there by design (only `Capture` reads it).
 pub const FIZZY_MIN_FLATNESS: f64 = 0.35;
 
-/// Per-band coverage of a spectrum: `bands` are linear energies (as returned by
-/// `spectrum::band_energies`); a band is "covered" when within [`BAND_COVERAGE_DB`]
+/// Per-band coverage of a spectrum: `bands` are linear band powers (as returned
+/// by [`crate::psd::welch_psd`] + `band_powers`); a band is "covered" when within [`BAND_COVERAGE_DB`]
 /// of the loudest band. A sparse stimulus (an EBow drone, a couple of notes)
 /// leaves bands uncovered, and the Doctor skips any rule keyed on a band the
 /// stimulus never excited. Synthetic stimuli cover every band by construction, so
@@ -602,15 +604,49 @@ pub(crate) fn rms_f64(samples: &[f32]) -> f64 {
 }
 
 /// A signal's own band coverage in a family's layout — [`coverage`] over its
-/// band energies at the device's 48 kHz clock. The one home for the
-/// (rate, layout) pairing shared by the Doctor's gating, the calibration
-/// readout, and the `--doctor-calib` sweep.
+/// Welch-PSD band powers ([`crate::psd::welch_psd`]) at the device's 48 kHz
+/// clock. The one home for the (rate, layout) pairing shared by the Tier-2
+/// calibration readout and the `--doctor-calib` sweep. NOT used by the live
+/// `doctor_check` gate anymore — that reads the CAPTURED OUTPUT's own coverage
+/// ([`output_coverage`]), since the input stimulus can't see amp-created
+/// distortion HF.
 pub fn band_coverage(samples: &[f32], family: Family) -> Vec<bool> {
-    coverage(&crate::spectrum::band_energies(
-        samples,
-        48_000.0,
-        family.bands(),
-    ))
+    coverage(&crate::psd::welch_psd(samples, 48_000.0).band_powers(family.bands()))
+}
+
+/// SNR margin (dB) a captured-output band must clear its pre-onset noise floor
+/// by to count as "covered" in [`output_coverage`].
+pub const OUTPUT_SNR_MARGIN_DB: f64 = 8.0;
+
+/// Per-band coverage measured on the CAPTURED OUTPUT rather than the input
+/// stimulus ([`band_coverage`]): the pre-onset window (device idle floor,
+/// re-amp engaged but the stimulus not yet arrived) is the noise-floor
+/// reference, and a band counts as covered when the post-onset body's band
+/// power exceeds the floor's by [`OUTPUT_SNR_MARGIN_DB`]. Gating on the output
+/// — not the input — revives `fizzy`/`harsh` on the DI path, where amp
+/// distortion CREATES high-frequency content the input stimulus never
+/// carried; gating on the input would starve those rules of a band they
+/// should be allowed to fire in.
+///
+/// `onset < MIN_FLOOR_SAMPLES` or `onset >= samples.len()` means no usable
+/// pre-onset floor window (un-aligned/low-confidence onset — `audio::estimate_onset`
+/// returns 0 when unconfident, caught here) — falls back to "every band
+/// covered", today's synthetic-stimulus behavior.
+pub fn output_coverage(samples: &[f32], rate: u32, onset: usize, family: Family) -> Vec<bool> {
+    /// Minimum pre-onset window for a stable Welch floor estimate.
+    const MIN_FLOOR_SAMPLES: usize = 2048;
+    let bands = family.bands();
+    if onset < MIN_FLOOR_SAMPLES || onset >= samples.len() {
+        return vec![true; bands.len()];
+    }
+    let floor = crate::psd::welch_psd(&samples[..onset], rate as f32).band_powers(bands);
+    let body = crate::psd::welch_psd(&samples[onset..], rate as f32).band_powers(bands);
+    let margin = 10f64.powf(OUTPUT_SNR_MARGIN_DB / 10.0);
+    floor
+        .iter()
+        .zip(&body)
+        .map(|(&f, &b)| b > f * margin)
+        .collect()
 }
 
 /// Post-stimulus tail energy vs stimulus-body energy, in dB (≤ 0 in practice;
@@ -975,6 +1011,41 @@ struct GraphFacts {
 /// would pump.
 fn is_time_effect(model: &str) -> bool {
     REVERB_MIX.iter().any(|(id, _)| *id == model) || DELAY_IDS.contains(&model)
+}
+
+/// True when the chain carries anything the `washed` rule could plausibly fire
+/// on: a curated reverb/delay id ([`is_time_effect`]) OR a substring match on
+/// "Reverb"/"Delay"/"Echo"/"Rvb" — a catch-all for ids the curated lists miss
+/// plus amp models with baked-in convolution reverb (e.g. an amp id ending
+/// `…CabIRConvRvb`). Gates the Doctor capture's tail length via
+/// [`doctor_tail_ms`] — a full tail exists only so `washed` has wash to
+/// analyze.
+///
+/// The substring matcher is DELIBERATELY conservative (broad, not precise):
+/// the two failure directions are asymmetric. A FALSE POSITIVE — an amp
+/// NAMED Reverb with no live reverb block, e.g. `ACD_DeluxeReverb65…NoFx` —
+/// merely keeps the full ~2 s tail (wasted capture time, no verdict impact).
+/// A false NEGATIVE would silently starve `washed` of its tail window on a
+/// genuinely wet preset. So when in doubt, this says yes.
+pub fn has_time_effect(nodes: &[DoctorNode]) -> bool {
+    const SUBSTRINGS: [&str; 4] = ["Reverb", "Delay", "Echo", "Rvb"];
+    nodes
+        .iter()
+        .any(|n| is_time_effect(&n.model) || SUBSTRINGS.iter().any(|s| n.model.contains(s)))
+}
+
+/// The Doctor capture tail (ms) for a chain: the full wash-analysis tail
+/// (`leveller::DOCTOR_TAIL_MS`) when the graph is unknown (empty `nodes` —
+/// conservative default) or carries a time-based block ([`has_time_effect`]);
+/// otherwise the short settle-only tail (`leveller::DOCTOR_TAIL_DRY_MS` —
+/// `washed` can't fire without a time-based block, so the full tail buys
+/// nothing there). The ONE home of the tail-length policy.
+pub fn doctor_tail_ms(nodes: &[DoctorNode]) -> u32 {
+    if nodes.is_empty() || has_time_effect(nodes) {
+        crate::leveller::DOCTOR_TAIL_MS
+    } else {
+        crate::leveller::DOCTOR_TAIL_DRY_MS
+    }
 }
 
 fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
@@ -1585,10 +1656,12 @@ pub fn diagnose(
 }
 
 /// Diagnose one sound with an explicit stimulus `kind` (picks the threshold
-/// table) and optional band `coverage` (the STIMULUS's own per-band excitation,
-/// [`coverage`]): a band-keyed rule whose primary band is UNCOVERED is skipped —
-/// a sparse capture must not produce verdicts in bands it never excited.
-/// `coverage = None` disables gating (all bands treated as covered).
+/// table) and optional band `coverage` — per-band excitation of whatever
+/// coverage source the caller supplies (the input stimulus via [`coverage`],
+/// or the captured output via [`output_coverage`]): a band-keyed rule whose
+/// primary band is UNCOVERED is skipped — a sparse capture must not produce
+/// verdicts in bands it never excited. `coverage = None` disables gating
+/// (all bands treated as covered).
 pub fn diagnose_kind(
     profile: &SoundProfile,
     nodes: Option<&[DoctorNode]>,
@@ -1598,7 +1671,7 @@ pub fn diagnose_kind(
     offsets: PlaybackOffsets,
 ) -> Vec<Diag> {
     let t = instrument.thresholds_for(kind);
-    // A rule keyed on band `i` fires only when the stimulus actually excited it.
+    // A rule keyed on band `i` fires only when the coverage source excited it.
     let covered = |i: usize| band_covered(coverage, i);
     // Deviation-from-target + Theil–Sen tilt/local split: each band's dB above
     // the authored target curve, then decomposed into a broadband TILT (the
@@ -3530,6 +3603,139 @@ mod tests {
         let past_boundary = 10f64.powf(-30.5 / 10.0);
         assert_eq!(coverage(&[1.0, at_boundary]), vec![true, true]);
         assert_eq!(coverage(&[1.0, past_boundary]), vec![true, false]);
+    }
+
+    // ── output_coverage / Welch band_coverage / has_time_effect (R2) ──
+
+    /// Deterministic bipolar LCG noise (Numerical Recipes constants) — a local
+    /// copy of `psd::tests::Lcg`'s generator, which is private to its own
+    /// test module.
+    fn lcg_noise(n: usize, amp: f32, seed: u64) -> Vec<f32> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+                (unit as f32 * 2.0 - 1.0) * amp
+            })
+            .collect()
+    }
+
+    fn test_sine(freq: f32, amp: f32, n: usize, rate: f32) -> Vec<f32> {
+        (0..n)
+            .map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / rate).sin())
+            .collect()
+    }
+
+    #[test]
+    fn output_coverage_onset_zero_is_all_true() {
+        let samples = vec![0.0f32; 200];
+        assert_eq!(
+            output_coverage(&samples, 48_000, 0, Family::Guitar),
+            vec![true; 6]
+        );
+    }
+
+    #[test]
+    fn output_coverage_onset_at_or_past_end_is_all_true() {
+        let samples = vec![0.0f32; 200];
+        assert_eq!(
+            output_coverage(&samples, 48_000, 200, Family::Guitar),
+            vec![true; 6]
+        );
+        assert_eq!(
+            output_coverage(&samples, 48_000, 5_000, Family::Guitar),
+            vec![true; 6]
+        );
+    }
+
+    #[test]
+    fn output_coverage_body_sine_covers_only_its_own_band() {
+        const RATE: u32 = 48_000;
+        let onset = 4096usize;
+        // Near-silent pre-onset floor (−54 dBFS noise, well above the Hann
+        // sidelobe leakage floor so the comparison isn't a coin flip) + a
+        // 2 kHz sine body — the band containing 2 kHz (High-mids, 1–3 kHz)
+        // must clear the floor; a distant band never excited by the sine
+        // (Lows, 60–120 Hz) must not.
+        let mut samples = lcg_noise(onset, 1e-3, 7);
+        samples.extend(test_sine(2_000.0, 0.5, 48_000, RATE as f32));
+        let cov = output_coverage(&samples, RATE, onset, Family::Guitar);
+        assert_eq!(cov.len(), 6);
+        assert!(cov[3], "High-mids (1–3 kHz) should be covered: {cov:?}");
+        assert!(!cov[0], "Lows (60–120 Hz) should NOT be covered: {cov:?}");
+    }
+
+    #[test]
+    fn band_coverage_welch_white_noise_covers_all_bands() {
+        let samples = lcg_noise(96_000, 0.3, 11);
+        assert_eq!(band_coverage(&samples, Family::Guitar), vec![true; 6]);
+    }
+
+    #[test]
+    fn band_coverage_welch_single_sine_covers_only_its_band() {
+        // Mirrors the old Goertzel-based behavior (`coverage_sparse_take_covers_
+        // only_played_bands`), now on the Welch estimator.
+        let samples = test_sine(2_000.0, 1.0, 96_000, 48_000.0);
+        let cov = band_coverage(&samples, Family::Guitar);
+        assert!(cov[3], "High-mids should be covered: {cov:?}");
+        assert!(!cov[0], "Lows should not be covered: {cov:?}");
+        assert!(!cov[5], "Air should not be covered: {cov:?}");
+    }
+
+    #[test]
+    fn has_time_effect_curated_reverb_id() {
+        assert!(has_time_effect(&chain(&["ACD_TMLargeHall"], &[])));
+    }
+
+    #[test]
+    fn has_time_effect_curated_delay_id() {
+        assert!(has_time_effect(&chain(&["ACD_MemoryMan"], &[])));
+    }
+
+    #[test]
+    fn has_time_effect_convrvb_substring_catch_all() {
+        // A model the curated tables don't list (e.g. an amp with baked-in
+        // convolution reverb) still trips the conservative substring match.
+        assert!(has_time_effect(&chain(&["ACD_SomethingConvRvb"], &[])));
+    }
+
+    #[test]
+    fn has_time_effect_clean_chain_is_false() {
+        let nodes = chain(
+            &["ACD_HiwattDR103CanMod", "ACD_CabSimTMS", "ACD_TubeScreamer"],
+            &[],
+        );
+        assert!(!has_time_effect(&nodes));
+    }
+
+    #[test]
+    fn has_time_effect_reverb_named_amp_is_a_documented_false_positive() {
+        // Not in REVERB_MIX/DELAY_IDS (it's an amp id, not an effect block) —
+        // the "Reverb" substring alone trips it. Deliberate: see `has_time_
+        // effect`'s doc comment on the asymmetry.
+        assert!(has_time_effect(&chain(
+            &["ACD_DeluxeReverb65BlondeNoFx"],
+            &[]
+        )));
+    }
+
+    #[test]
+    fn doctor_tail_ms_owns_the_whole_policy() {
+        // Unknown graph (empty nodes) → conservative full tail.
+        assert_eq!(doctor_tail_ms(&[]), crate::leveller::DOCTOR_TAIL_MS);
+        // Wet chain → full tail.
+        assert_eq!(
+            doctor_tail_ms(&chain(&["ACD_TMLargeHall"], &[])),
+            crate::leveller::DOCTOR_TAIL_MS
+        );
+        // Known dry chain → short settle-only tail.
+        assert_eq!(
+            doctor_tail_ms(&chain(&["ACD_TubeScreamer"], &[])),
+            crate::leveller::DOCTOR_TAIL_DRY_MS
+        );
     }
 
     #[test]

@@ -239,7 +239,17 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
             ),
         }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, scene, &fb, &stim, Some(0.5), false) {
+        // Calibration sweep: always the full tail (this is the reference recipe
+        // R4/R5 re-baseline against, not the app's per-sound dry-tail shortcut).
+        match leveller::doctor_capture(
+            slot,
+            scene,
+            &fb,
+            &stim,
+            Some(0.5),
+            u64::from(leveller::DOCTOR_TAIL_MS),
+            false,
+        ) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 if !confident {

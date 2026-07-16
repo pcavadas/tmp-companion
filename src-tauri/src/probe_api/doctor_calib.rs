@@ -222,7 +222,15 @@ pub fn probe_doctor_calib(
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), false) {
+        match leveller::doctor_capture(
+            slot,
+            None,
+            &fb,
+            &stim,
+            Some(0.5),
+            u64::from(leveller::DOCTOR_TAIL_MS),
+            false,
+        ) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 let profile =
@@ -424,7 +432,11 @@ pub fn probe_doctor_calib_factory(
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture_current(&stim, Some(0.5)) {
+        match leveller::doctor_capture_current(
+            &stim,
+            Some(0.5),
+            u64::from(leveller::DOCTOR_TAIL_MS),
+        ) {
             Ok((samples, rate)) => {
                 let (onset, _confident) = audio::estimate_onset(&stim, &samples, rate);
                 let profile =

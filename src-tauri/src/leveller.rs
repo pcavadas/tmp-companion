@@ -58,6 +58,15 @@ const CAPTURE_TAIL_MS: u64 = 800;
 /// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change. 2.5 s
 /// covers typical reverb/delay decay without doubling the leveling run time.
 pub const DOCTOR_TAIL_MS: u32 = 2500;
+/// Doctor capture tail for a chain WITHOUT a time effect (no reverb/delay node,
+/// [`crate::doctor::has_time_effect`]): a bare settle guard, not a wash window —
+/// `washed` cannot fire without a time-based block in the chain, so the full 2.5 s
+/// buys nothing there. Shrinking the tail also shrinks `tail_ratio_db`'s window
+/// (an empty/near-empty tail floors it at −80, `doctor::tail_energy_ratio`) and
+/// marginally shifts `spread_lu` on these dry captures — expected and harmless
+/// since `washed` is inapplicable by construction; the R4/R5 hardware sweeps
+/// re-baseline the OTHER thresholds against this shorter recipe.
+pub const DOCTOR_TAIL_DRY_MS: u32 = 300;
 // Scene mode (`SetNodeSceneEdit`) MUST be enabled before the value write, or the
 // write hits the BASE/global value and leaks across scenes (HW). But the settle must
 // stay SHORT: the device accepts the scene write only within ~700–750 ms of the
@@ -503,20 +512,23 @@ pub fn capture_samples(
 }
 
 /// Doctor-only MEASURE seam: like `capture_samples`, but optionally activates a scene
-/// first (0-based `scenes[]` wire index, `None` = base) and captures with the longer
-/// `DOCTOR_TAIL_MS` tail so reverb/delay wash is analyzable. Shares `capture_full_at`
+/// first (0-based `scenes[]` wire index, `None` = base) and captures with a
+/// caller-chosen tail (`tail_ms` below). Shares `capture_full_at`
 /// with the leveling capture path — the leveling window/timings are untouched.
 /// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None` for
 /// the apply A/B (capture at the preset's own level — never writes presetLevel,
 /// so a later `doctor_save` can't persist a reference level).
 /// `skip_load`: see `capture_full_at` — the Doctor's consecutive-scene chain skips
 /// the redundant per-sound preset reload (same preset, previous sound clean + Ok).
+/// `tail_ms`: the caller picks — `DOCTOR_TAIL_MS` for a chain that may wash, else
+/// the shorter `DOCTOR_TAIL_DRY_MS` (`doctor::has_time_effect` decides).
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     ref_level: Option<f32>,
+    tail_ms: u64,
     skip_load: bool,
 ) -> Result<(Vec<f32>, u32), String> {
     let cap = capture_full_at(
@@ -525,7 +537,7 @@ pub fn doctor_capture(
         force_bypass,
         stimulus,
         ref_level,
-        u64::from(DOCTOR_TAIL_MS),
+        tail_ms,
         skip_load,
     )?;
     let (ch, _) = cap.loudest_channel();
@@ -538,10 +550,12 @@ pub fn doctor_capture(
 /// the reference level BEFORE engaging → engage re-amp once → capture with the
 /// Doctor tail → guaranteed re-amp off → loudest channel. `ref_level` MUST match
 /// the before-capture's so the A/B is level-fair (`doctor_apply` passes `None`
-/// to both: the preset's own level, never a presetLevel write).
+/// to both: the preset's own level, never a presetLevel write). `tail_ms`: see
+/// `doctor_capture`.
 pub fn doctor_capture_current(
     stimulus: &[f32],
     ref_level: Option<f32>,
+    tail_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect_lean()?;
@@ -551,7 +565,7 @@ pub fn doctor_capture_current(
     }
     let _ = s.set_reamp_mode(true)?;
     std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
-    let cap = audio::reamp_capture(stimulus, RATE, u64::from(DOCTOR_TAIL_MS));
+    let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
     let cap = cap?;
     let (ch, _) = cap.loudest_channel();

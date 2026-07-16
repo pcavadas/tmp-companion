@@ -304,6 +304,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             };
             let family = instrument_of(item);
             let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
+            let tail_ms = u64::from(doctor::doctor_tail_ms(&item.nodes));
             // One capture + profile attempt, `skip_load` threaded through (the retry
             // below forces a fresh preset recall — a floor read means the inject
             // failed, not that the working copy is stale).
@@ -316,6 +317,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     &fb,
                     stim,
                     Some(0.5),
+                    tail_ms,
                     skip_load,
                 )?;
                 // Align the body/tail split to where the stimulus actually starts
@@ -329,9 +331,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 }
                 let profile =
                     doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
-                // The STIMULUS's own band coverage (family layout) — a sparse
-                // capture must not fire rules in bands it never excited.
-                let cov = doctor::band_coverage(stim, family);
+                // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
+                // what the device actually produced, not what the input stimulus
+                // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
+                // just because the DI input never had it.
+                let cov = doctor::output_coverage(&samples, rate, onset, family);
                 Ok((profile, cov))
             };
             let result = stim.and_then(|(stim, stim_spread)| {
@@ -593,8 +597,17 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                 clip
             }
             None => {
-                let (before, rate) =
-                    leveller::doctor_capture(job.list_index, None, &[], &stim, None, false)?;
+                // `DoctorApplyJob` carries no graph (`nodes`) to decide the
+                // dry-tail shortcut on — conservative full DOCTOR_TAIL_MS.
+                let (before, rate) = leveller::doctor_capture(
+                    job.list_index,
+                    None,
+                    &[],
+                    &stim,
+                    None,
+                    u64::from(leveller::DOCTOR_TAIL_MS),
+                    false,
+                )?;
                 let clip = format!(
                     "data:audio/wav;base64,{}",
                     base64_encode(&wav_bytes(&before, rate)?)
@@ -663,8 +676,10 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 
         // (c) AFTER: capture the live edit buffer WITHOUT reloading. ref_level
         //     None like (a): nothing touched the level between the captures, so
-        //     the A/B is inherently level-fair at the preset's own level.
-        let (after, rate) = leveller::doctor_capture_current(&stim, None)?;
+        //     the A/B is inherently level-fair at the preset's own level. Same
+        //     conservative full-tail choice as (a) — no graph in scope here either.
+        let (after, rate) =
+            leveller::doctor_capture_current(&stim, None, u64::from(leveller::DOCTOR_TAIL_MS))?;
         let after_clip = format!(
             "data:audio/wav;base64,{}",
             base64_encode(&wav_bytes(&after, rate)?)
