@@ -76,15 +76,46 @@ pub fn doctor_stim_samples() -> usize {
     (RATE as usize / 1000) * DOCTOR_STIM_MS
 }
 
-/// The Doctor's stimulus window (first [`DOCTOR_STIM_MS`]) — one home so
-/// capture, onset alignment, floor-guard spread, and `stimulus_samples` all
-/// agree on the same window. Takes the freshly-read buffer by value and
-/// truncates in place (every caller owns a throwaway full read; a borrow form
-/// just forced a second allocation).
+/// Silent preamble prepended to the Doctor stimulus: the true inject latency is
+/// only ~32 ms (HW, `audio::estimate_onset` across 15 captures), which leaves a
+/// pre-onset noise-floor window too short for a full Welch segment
+/// (`psd::SEG` = 8192 ≈ 171 ms) — the output-SNR coverage gate needs a stable
+/// floor estimate. 200 ms of played silence stretches the floor window to
+/// ~230 ms at the cost of 200 ms per capture. Spectrally neutral: LUFS gating
+/// drops silence, and the body PSD starts at [`doctor_signal_start`].
+pub const DOCTOR_PAD_MS: usize = 200;
+
+/// [`DOCTOR_PAD_MS`] at the device clock, in samples.
+pub fn doctor_pad_samples() -> usize {
+    (RATE as usize / 1000) * DOCTOR_PAD_MS
+}
+
+/// The Doctor's stimulus window: the first [`DOCTOR_STIM_MS`] of the source,
+/// behind [`DOCTOR_PAD_MS`] of leading silence — one home so capture, onset
+/// alignment, floor-guard spread, and `stimulus_samples` all agree on the same
+/// window. Takes the freshly-read buffer by value and edits in place (every
+/// caller owns a throwaway full read; a borrow form just forced a second
+/// allocation).
 pub fn doctor_stim_slice(mut stim: Vec<f32>) -> Vec<f32> {
     stim.truncate(doctor_stim_samples());
+    stim.splice(0..0, std::iter::repeat_n(0.0, doctor_pad_samples()));
     stim
 }
+
+/// Where the SIGNAL actually starts in a Doctor capture: the estimated onset is
+/// where the PADDED stimulus aligns (= the inject latency), so the played
+/// silence sits at `[onset, onset + pad)` and real signal begins after it. The
+/// body PSD and the coverage gate's floor/body split use THIS; the tail split
+/// keeps the raw `onset` (it adds the padded `stimulus_samples`, which already
+/// contains the pad). An unconfident onset keeps the legacy whole-buffer 0.
+pub fn doctor_signal_start(onset: usize, confident: bool) -> usize {
+    if confident {
+        onset + doctor_pad_samples()
+    } else {
+        0
+    }
+}
+
 /// Doctor capture tail for a chain WITHOUT a time effect (no reverb/delay node,
 /// [`crate::doctor::has_time_effect`]): a bare settle guard, not a wash window —
 /// `washed` cannot fire without a time-based block in the chain, so the full tail
@@ -3279,6 +3310,19 @@ mod floor_guard_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_stim_slice_truncates_then_pads_with_leading_silence() {
+        let src = vec![0.7f32; doctor_stim_samples() * 2];
+        let prepared = doctor_stim_slice(src);
+        assert_eq!(prepared.len(), doctor_pad_samples() + doctor_stim_samples());
+        assert!(prepared[..doctor_pad_samples()].iter().all(|&s| s == 0.0));
+        assert!(prepared[doctor_pad_samples()..].iter().all(|&s| s == 0.7));
+        // Signal start accounting: confident onset = latency + the pad; an
+        // unconfident onset keeps the legacy whole-buffer 0.
+        assert_eq!(doctor_signal_start(1536, true), 1536 + doctor_pad_samples());
+        assert_eq!(doctor_signal_start(1536, false), 0);
+    }
 
     // A cancel flag already set at entry must bail at the PRE-MEASURE checkpoint —
     // before any `Session::connect`/device touch — so this runs with no hardware and

@@ -117,8 +117,29 @@ fn opspec_arg(arg: Option<&String>) -> String {
     }
 }
 
+/// Minimal stderr logger: the shared library modules (leveller floor guards,
+/// `audio::estimate_onset`, session retries) diagnose through `log::*`, which is
+/// silently DROPPED without an installed logger — in the app tauri-plugin-log
+/// owns it; in this CLI the diagnostics belong on stderr next to the eprintln
+/// status lines. No timestamps/levels-config — probe is an attended tool.
+struct StderrLog;
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if log::set_logger(&StderrLog).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
 
     if args.iter().any(|a| a == "--activegraph") {
         match tmp_companion_lib::probe_active_graph() {

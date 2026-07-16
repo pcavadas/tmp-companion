@@ -102,24 +102,27 @@ fn propose_threshold(clean: &[f64], positive: &[f64]) -> (f64, Option<f64>) {
     )
 }
 
-/// Pre-onset noise-floor metric: `20·log10(rms(capture[..onset]) / rms(body))`
-/// dB — how far the leading (pre-signal) hiss sits under the stimulus body. `None`
-/// when the onset isn't confident or sits under 10 ms of samples (no meaningful
-/// pre-window to measure) or the body is silent. Pure.
+/// Pre-signal noise-floor metric: `20·log10(rms(capture[..signal_start]) /
+/// rms(body))` dB — how far the leading (pre-signal) hiss sits under the
+/// stimulus body. `body_end` is the raw onset + the padded stimulus length
+/// (where the played audio ends) — passed explicitly because `signal_start`
+/// is pad-SHIFTED, so `signal_start + stimulus_samples` would overshoot the
+/// body by one pad. `None` when the onset isn't confident or sits under 10 ms
+/// of samples (no meaningful pre-window) or the body is silent. Pure.
 fn noise_floor_db(
     samples: &[f32],
     rate: u32,
-    onset: usize,
+    signal_start: usize,
     confident: bool,
-    stimulus_samples: usize,
+    body_end: usize,
 ) -> Option<f64> {
     let min_onset = rate as usize / 100; // 10 ms
-    if !confident || onset < min_onset || onset > samples.len() {
+    if !confident || signal_start < min_onset || signal_start > samples.len() {
         return None;
     }
-    let body_end = onset.saturating_add(stimulus_samples).min(samples.len());
-    let pre = doctor::rms_f64(&samples[..onset]);
-    let body = doctor::rms_f64(&samples[onset..body_end]);
+    let body_end = body_end.min(samples.len());
+    let pre = doctor::rms_f64(&samples[..signal_start]);
+    let body = doctor::rms_f64(&samples[signal_start..body_end]);
     if body <= 0.0 {
         return None;
     }
@@ -226,10 +229,24 @@ pub fn probe_doctor_calib(
         ) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let profile =
-                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
+                let profile = doctor::SoundProfile::from_capture(
+                    &samples,
+                    rate,
+                    stim.len(),
+                    onset,
+                    confident,
+                    family,
+                )?;
                 let coverage = doctor::band_coverage(&stim, family);
-                let noise_floor_db = noise_floor_db(&samples, rate, onset, confident, stim.len());
+                // body_end pairs the RAW onset with the padded stim length (the
+                // pad cancels); the floor window ends at the pad-shifted start.
+                let noise_floor_db = noise_floor_db(
+                    &samples,
+                    rate,
+                    leveller::doctor_signal_start(onset, confident),
+                    confident,
+                    onset + stim.len(),
+                );
                 rows.push(Row {
                     slot,
                     profile,
@@ -427,9 +444,15 @@ pub fn probe_doctor_calib_factory(
             u64::from(leveller::DOCTOR_TAIL_MS),
         ) {
             Ok((samples, rate)) => {
-                let (onset, _confident) = audio::estimate_onset(&stim, &samples, rate);
-                let profile =
-                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
+                let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
+                let profile = doctor::SoundProfile::from_capture(
+                    &samples,
+                    rate,
+                    stim.len(),
+                    onset,
+                    confident,
+                    family,
+                )?;
                 let coverage = doctor::band_coverage(&stim, family);
                 rows.push(Row {
                     slot,

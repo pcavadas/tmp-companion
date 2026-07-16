@@ -1001,7 +1001,17 @@ const ONSET_MAX_LAG_MS: usize = 250;
 /// Envelope hop — sets the estimate's resolution (well inside the ±5 ms goal).
 const ONSET_HOP_MS: usize = 2;
 /// Normalized-correlation floor below which the estimate is not trusted.
-const ONSET_MIN_CORR: f64 = 0.5;
+/// HW-calibrated (2026-07-16, 15 captures × 5 presets): chains that preserve
+/// ANY envelope find the true ~32 ms latency with corr 0.24–0.48 (fuzz
+/// compression floors it near 0.24), while envelope-DESTROYING chains (reverse
+/// delay, shoegaze wash) sit ≤ 0.08 — 0.15 splits the clusters with margin
+/// both ways. The original 0.5 rejected every real capture.
+const ONSET_MIN_CORR: f64 = 0.15;
+/// Latency plausibility ceiling: the rig's true inject latency measured a tight
+/// 30–34 ms across every preset/run, while envelope-destroyed chains produced
+/// artifact lags of 190–222 ms (wash buildup correlating with the stimulus
+/// head). A best lag beyond this is an artifact regardless of its correlation.
+const ONSET_MAX_PLAUSIBLE_LAG_MS: usize = 120;
 
 /// Estimate where the played stimulus actually STARTS inside a capture (the
 /// capture begins at stream start, before the audio has propagated through
@@ -1061,9 +1071,17 @@ pub(crate) fn estimate_onset(stimulus: &[f32], capture: &[f32], rate: u32) -> (u
             best = (lag, corr);
         }
     }
-    if best.1 >= ONSET_MIN_CORR {
+    if best.1 >= ONSET_MIN_CORR && best.0 * ONSET_HOP_MS <= ONSET_MAX_PLAUSIBLE_LAG_MS {
         (best.0 * hop, true)
     } else {
+        // The diagnosing tell rides in this log: a best lag PINNED at the search
+        // ceiling means real latency exceeds ONSET_MAX_LAG_MS (raise the bound);
+        // a mid-range lag with low corr means the chain destroyed the envelope.
+        log::warn!(
+            "estimate_onset: not confident (best corr {:.3} vs {ONSET_MIN_CORR} at lag {} ms, plausible ≤ {ONSET_MAX_PLAUSIBLE_LAG_MS} ms)",
+            best.1,
+            best.0 * ONSET_HOP_MS
+        );
         (0, false)
     }
 }
@@ -1129,6 +1147,38 @@ mod onset_tests {
         let (onset, confident) = estimate_onset(&stim, &cap, SR);
         assert!(!confident);
         assert_eq!(onset, 0);
+    }
+
+    #[test]
+    fn implausibly_late_match_is_rejected_even_with_high_correlation() {
+        // A perfect envelope match at 200 ms — beyond any real inject latency
+        // (HW: 30–34 ms across every preset/run). The wash-artifact case: the
+        // lag plausibility ceiling must reject it no matter how well the
+        // buildup correlates with the stimulus head.
+        let stim = plucky(2.0);
+        let lag = (SR as usize) * 200 / 1000;
+        let mut cap = vec![0.0f32; lag];
+        cap.extend(stim.iter().copied());
+        cap.extend(std::iter::repeat_n(0.0f32, SR as usize / 2));
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(!confident, "200 ms lag must be implausible");
+        assert_eq!(onset, 0);
+    }
+
+    #[test]
+    fn heavily_compressed_envelope_still_confident_at_a_plausible_lag() {
+        // Fuzz-style crush: hard clipping flattens the envelope so the
+        // correlation lands well under the old 0.5 bar (HW measured 0.24 on a
+        // fuzz preset) — the recalibrated floor must still accept the true lag.
+        let stim = plucky(2.0);
+        let lag = (SR as usize) * 32 / 1000; // the measured rig latency
+        let mut cap = vec![0.0f32; lag];
+        cap.extend(stim.iter().map(|&x| (x * 40.0).tanh() * 0.3));
+        cap.extend(std::iter::repeat_n(0.0f32, SR as usize / 2));
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(confident);
+        let err = (onset as i64 - lag as i64).unsigned_abs() as usize;
+        assert!(err <= SR as usize * 5 / 1000, "onset {onset} vs lag {lag}");
     }
 }
 

@@ -9,7 +9,7 @@
 //!
 //! PURELY ADDITIVE for now: nothing in production wires this in yet (the Goertzel stays
 //! for the spectrum/EQ-match/best-SIC feature). Reachable via the unit tests below; a
-//! later stage swaps `SoundProfile::from_capture` onto it and rewrites the dependent rules.
+//! production consumers are `doctor::body_psd` + `SoundProfile::from_capture_with_psd`.
 
 use realfft::RealFftPlanner;
 

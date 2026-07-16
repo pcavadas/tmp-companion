@@ -263,6 +263,7 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                     rate,
                     stim.len(),
                     onset,
+                    confident,
                     instrument,
                 )?;
                 sounds.push((slot, scene, profile, nodes));

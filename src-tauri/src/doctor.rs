@@ -328,36 +328,40 @@ pub struct SoundProfile {
 }
 
 impl SoundProfile {
-    /// Build a profile from one captured mono signal: the 6 Doctor-band
-    /// energies, integrated loudness, and the reverb-wash tail ratio. Shared by
-    /// the `doctor_check` command and the `probe --doctor` calibration sweep.
-    /// `onset` = where the stimulus starts inside the capture (0 = un-aligned).
-    /// Thin wrapper over [`SoundProfile::from_capture_with_psd`]: computes the
-    /// shared post-onset BODY Welch PSD itself ([`body_psd`]) and hands it in —
-    /// every synthetic-stimulus call site passes `onset = 0`, which keeps the
-    /// legacy WHOLE-BUFFER PSD space byte-identical.
+    /// Build a profile from one Doctor capture of the PADDED stimulus
+    /// ([`crate::leveller::doctor_stim_slice`]): resolves the pad-aware signal
+    /// start ([`crate::leveller::doctor_signal_start`]), computes the body PSD
+    /// ([`body_psd`]) internally, and delegates to
+    /// [`SoundProfile::from_capture_with_psd`]. The convenience form for
+    /// callers that don't reuse the body PSD (the probe sweeps);
+    /// `doctor_check`'s closure keeps the manual split because it shares the
+    /// PSD with the coverage gate.
     pub fn from_capture(
         samples: &[f32],
         rate: u32,
         stimulus_samples: usize,
         onset: usize,
+        confident: bool,
         family: Family,
     ) -> Result<SoundProfile, String> {
-        let psd = body_psd(samples, rate, onset);
+        let signal_start = crate::leveller::doctor_signal_start(onset, confident);
+        let psd = body_psd(samples, rate, signal_start);
         Self::from_capture_with_psd(samples, rate, stimulus_samples, onset, family, &psd)
     }
 
-    /// [`SoundProfile::from_capture`] with the body Welch PSD supplied by the
-    /// caller instead of recomputed. The seam lets `doctor_check`'s capture
-    /// closure compute ONE post-onset body PSD ([`body_psd`]) and share it
-    /// between the profile's band powers/air-flatness and
-    /// [`output_coverage_with_body`]'s SNR gate, instead of each independently
-    /// computing (and disagreeing on) its own — the body PSD excludes the
-    /// pre-onset preamble (device idle floor) so band powers measure the SOUND,
-    /// not the silence. LUFS/spread (whole-buffer, time-domain — leading
-    /// silence dilutes them uniformly and the gated LUFS discards it anyway)
-    /// and `tail_ratio_db` (already onset-aware, see [`tail_energy_ratio`]) are
-    /// unchanged by which PSD is passed in.
+    /// Build a profile from one captured mono signal — the 6 Doctor-band
+    /// energies, integrated loudness, and the reverb-wash tail ratio — with the
+    /// body Welch PSD supplied by the caller instead of recomputed. The seam
+    /// lets `doctor_check`'s capture closure compute ONE post-onset body PSD
+    /// ([`body_psd`]) and share it between the profile's band
+    /// powers/air-flatness and [`output_coverage_with_body`]'s SNR gate,
+    /// instead of each independently computing (and disagreeing on) its own —
+    /// the body PSD excludes the pre-signal preamble (device idle floor + the
+    /// played pad) so band powers measure the SOUND, not the silence.
+    /// LUFS/spread (whole-buffer, time-domain — leading silence dilutes them
+    /// uniformly and the gated LUFS discards it anyway) and `tail_ratio_db`
+    /// (already onset-aware, see [`tail_energy_ratio`]) are unchanged by which
+    /// PSD is passed in.
     pub fn from_capture_with_psd(
         samples: &[f32],
         rate: u32,
@@ -674,25 +678,26 @@ pub const OUTPUT_SNR_MARGIN_DB: f64 = 8.0;
 /// [`SoundProfile::from_capture_with_psd`]'s doc for why sharing one body PSD
 /// per capture matters (`doctor_check`'s capture path shares one `body_psd`
 /// across the profile + this coverage gate, see `commands/doctor.rs`).
-/// `onset < MIN_FLOOR_SAMPLES` or `onset >= samples.len()` means no usable
-/// pre-onset floor window (un-aligned/low-confidence onset —
-/// `audio::estimate_onset` returns 0 when unconfident, caught here) — falls
-/// back to "every band covered" WITHOUT touching `body_psd`, today's
-/// synthetic-stimulus behavior.
+/// `signal_start` is the pad-shifted start of real signal
+/// ([`crate::leveller::doctor_signal_start`]); a confident onset always lands
+/// it well past MIN_FLOOR_SAMPLES thanks to the 200 ms stimulus preamble,
+/// so the guard below fires only on the UNCONFIDENT-onset fallback
+/// (`signal_start == 0`) — then every band reads covered WITHOUT touching
+/// `body_psd`, the legacy permissive behavior.
 pub fn output_coverage_with_body(
     samples: &[f32],
     rate: u32,
-    onset: usize,
+    signal_start: usize,
     family: Family,
     body_psd: &crate::psd::Psd,
 ) -> Vec<bool> {
-    /// Minimum pre-onset window for a stable Welch floor estimate.
+    /// Minimum pre-signal window for a stable Welch floor estimate.
     const MIN_FLOOR_SAMPLES: usize = 2048;
     let bands = family.bands();
-    if onset < MIN_FLOOR_SAMPLES || onset >= samples.len() {
+    if signal_start < MIN_FLOOR_SAMPLES || signal_start >= samples.len() {
         return vec![true; bands.len()];
     }
-    let floor = crate::psd::welch_psd(&samples[..onset], rate as f32).band_powers(bands);
+    let floor = crate::psd::welch_psd(&samples[..signal_start], rate as f32).band_powers(bands);
     let body = body_psd.band_powers(bands);
     let margin = 10f64.powf(OUTPUT_SNR_MARGIN_DB / 10.0);
     floor
@@ -3509,8 +3514,10 @@ mod tests {
     #[test]
     fn silent_capture_errors_instead_of_minus_inf() {
         let silence = vec![0.0f32; 96_000];
-        let err = SoundProfile::from_capture(&silence, 48_000, 48_000, 0, Family::Guitar)
-            .expect_err("silence must not produce a profile");
+        let psd = body_psd(&silence, 48_000, 0);
+        let err =
+            SoundProfile::from_capture_with_psd(&silence, 48_000, 48_000, 0, Family::Guitar, &psd)
+                .expect_err("silence must not produce a profile");
         assert!(err.contains("silent"), "{err}");
     }
 
@@ -3750,8 +3757,16 @@ mod tests {
         // to a direct whole-buffer welch_psd computation — the legacy space.
         const RATE: u32 = 48_000;
         let samples = test_sine(1_000.0, 0.4, RATE as usize, RATE as f32);
-        let profile = SoundProfile::from_capture(&samples, RATE, samples.len(), 0, Family::Guitar)
-            .expect("finite loudness");
+        let psd = body_psd(&samples, RATE, 0);
+        let profile = SoundProfile::from_capture_with_psd(
+            &samples,
+            RATE,
+            samples.len(),
+            0,
+            Family::Guitar,
+            &psd,
+        )
+        .expect("finite loudness");
         let whole = crate::psd::welch_psd(&samples, RATE as f32);
         assert_eq!(profile.bands, whole.band_powers(Family::Guitar.bands()));
         assert_eq!(profile.air_flatness, whole.flatness(6_000.0, 12_000.0));
@@ -3768,9 +3783,15 @@ mod tests {
         let mut samples = vec![0.0f32; onset];
         samples.extend(test_sine(1_000.0, 0.4, RATE as usize, RATE as f32));
         let stim_samples = samples.len() - onset;
-        let profile =
-            SoundProfile::from_capture(&samples, RATE, stim_samples, onset, Family::Guitar)
-                .expect("finite loudness");
+        let profile = SoundProfile::from_capture_with_psd(
+            &samples,
+            RATE,
+            stim_samples,
+            onset,
+            Family::Guitar,
+            &body_psd(&samples, RATE, onset),
+        )
+        .expect("finite loudness");
 
         let explicit_body = crate::psd::welch_psd(&samples[onset..], RATE as f32);
         let via_with_psd = SoundProfile::from_capture_with_psd(

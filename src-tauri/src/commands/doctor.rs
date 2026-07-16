@@ -385,10 +385,14 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         item.key
                     );
                 }
+                // The SIGNAL starts after the stimulus's silent preamble
+                // (`doctor_signal_start`); the tail split below keeps the raw
+                // `onset` (its `stimulus_samples` already carries the pad).
+                let signal_start = leveller::doctor_signal_start(onset, confident);
                 // ONE shared post-onset body PSD for this capture — read by both the
                 // profile's band powers/air-flatness and the output-coverage SNR
                 // gate below, instead of each computing its own (disagreeing) space.
-                let body_psd = doctor::body_psd(&samples, rate, onset);
+                let body_psd = doctor::body_psd(&samples, rate, signal_start);
                 let profile = doctor::SoundProfile::from_capture_with_psd(
                     &samples,
                     rate,
@@ -401,8 +405,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 // what the device actually produced, not what the input stimulus
                 // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
                 // just because the DI input never had it.
-                let cov =
-                    doctor::output_coverage_with_body(&samples, rate, onset, family, &body_psd);
+                let cov = doctor::output_coverage_with_body(
+                    &samples,
+                    rate,
+                    signal_start,
+                    family,
+                    &body_psd,
+                );
                 Ok((profile, cov))
             };
             let result = stim.and_then(|(stim, stim_spread)| {

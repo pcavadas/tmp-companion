@@ -4,7 +4,10 @@
 > stimulus slice + 1.5 s tail (HW-A/B'd vs the 6 s + 2.5 s oracle,
 > `probe --doctor-window-ab`). The 2.5 s-tail numbers below are the historical
 > record of that original recipe; the R5 sweep re-derives thresholds under the
-> new window.
+> new window. The same date's onset recalibration (corr floor 0.15 + a 120 ms
+> lag plausibility ceiling + the 200 ms silent stimulus preamble) FIXED the
+> "onset detection fails even on the synthetic stimulus" weakness noted below —
+> onsets now resolve confidently on all sweep presets, including wet ones.
 
 Method: `probe --doctor <slots> <topology>` sweeps on the real unit (fw-current,
 read-only: loads + captures with the 2.5 s Doctor tail, never a save), then
