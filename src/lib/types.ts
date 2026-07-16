@@ -809,6 +809,17 @@ export interface DoctorDiag {
   fromLevel: PlaybackLevel;
 }
 
+/** The "does this cut through the mix?" ESTIMATE (`doctor::CutThrough`) —
+ * a presence-contrast reading vs the measured 25-preset factory-bank
+ * distribution, not a diagnosis: it's not in `diags` and carries no `rx`.
+ * `factoryPercentile`/`advisory` are null/false outside Guitar (no bass
+ * factory anchor yet). */
+export interface CutThrough {
+  contrastDb: number;
+  factoryPercentile: number | null;
+  advisory: boolean;
+}
+
 export interface DoctorSoundResult {
   key: string;
   listIndex: number;
@@ -826,6 +837,9 @@ export interface DoctorSoundResult {
    *  "Air") or 7 for bass-vi ("Sub" + the same six). `balanceDb.length` and
    *  `DoctorDiag.bands` indices both index this same layout. */
   bandLabels: string[];
+  /** Null when this sound's capture failed or the ratio was degenerate (e.g.
+   *  a silent capture). */
+  cutThrough: CutThrough | null;
   /** Set when this sound's capture failed (no diags then); the run continued. */
   error: string | null;
 }

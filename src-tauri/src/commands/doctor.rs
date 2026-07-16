@@ -207,6 +207,11 @@ pub struct DoctorSoundResult {
     /// `balance_db` and the `Diag.bands` indices (6 for guitar/bass, 7 for
     /// Bass VI's Sub-first layout). The frontend renders bars/labels from this.
     pub band_labels: Vec<String>,
+    /// The "does this cut through the mix?" ESTIMATE (`doctor::cut_through`) —
+    /// a presence-contrast reading vs the measured factory-bank distribution,
+    /// not a diagnosis: it fires no rule and carries no `Rx`. `None` when this
+    /// sound's capture failed or the ratio was degenerate.
+    pub cut_through: Option<doctor::CutThrough>,
     /// Set when this sound's capture failed (no diags then); the run continues.
     pub error: Option<String>,
 }
@@ -501,6 +506,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 ),
                 None => (Vec::new(), 0.0, 0.0, Vec::new()),
             };
+            let cut_through = profile.and_then(|p| doctor::cut_through(p, instrument));
             DoctorSoundResult {
                 key: item.key.clone(),
                 list_index: item.list_index,
@@ -513,6 +519,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 tail_ratio_db: tail,
                 balance_db: bal,
                 band_labels,
+                cut_through,
                 error: err.cloned(),
             }
         };

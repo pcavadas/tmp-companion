@@ -84,10 +84,43 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
         tail_ratio_db: 0.0,
         balance_db: Vec::new(),
         band_labels: Vec::new(),
+        cut_through: None,
         error: None,
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["footswitch"], 0);
+    // cutThrough serializes as an explicit null (never an omitted key) when
+    // this sound has no estimate — errored sounds, degenerate ratios.
+    assert_eq!(v["cutThrough"], serde_json::Value::Null);
+}
+
+/// `DoctorSoundResult.cutThrough` carries the estimate's three fields
+/// verbatim, camelCase, when present.
+#[test]
+fn doctor_sound_result_cut_through_serializes_camel_case() {
+    let row = DoctorSoundResult {
+        key: "p4".to_string(),
+        list_index: 4,
+        scene: None,
+        footswitch: None,
+        label: "Base".to_string(),
+        tag: None,
+        diags: Vec::new(),
+        integrated_lufs: 0.0,
+        tail_ratio_db: 0.0,
+        balance_db: Vec::new(),
+        band_labels: Vec::new(),
+        cut_through: Some(doctor::CutThrough {
+            contrast_db: 12.5,
+            factory_percentile: Some(63.2),
+            advisory: false,
+        }),
+        error: None,
+    };
+    let v = serde_json::to_value(&row).unwrap();
+    assert_eq!(v["cutThrough"]["contrastDb"], 12.5);
+    assert_eq!(v["cutThrough"]["factoryPercentile"], 63.2);
+    assert_eq!(v["cutThrough"]["advisory"], false);
 }
 
 #[test]

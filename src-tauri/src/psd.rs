@@ -1,15 +1,15 @@
 //! Windowed Welch power-spectral-density estimator.
 //!
-//! The tone-diagnosis foundation: a LOW-VARIANCE spectral estimate to replace the
-//! noisy single-bin Goertzel probes in [`crate::spectrum::band_energies`] (4 un-windowed
-//! probes per band → ~±2.5 dB variance + heavy HF spectral leakage). This computes a
-//! Hann-windowed, 50%-overlap Welch periodogram average — the variance drops with the
-//! segment count and the Hann taper kills the leakage that made a pure tone bleed across
-//! bands.
+//! The tone-diagnosis foundation: a LOW-VARIANCE spectral estimate that replaced the
+//! noisy single-bin Goertzel probes formerly in [`crate::spectrum::band_energies`] (4
+//! un-windowed probes per band → ~±2.5 dB variance + heavy HF spectral leakage). This
+//! computes a Hann-windowed, 50%-overlap Welch periodogram average — the variance drops
+//! with the segment count and the Hann taper kills the leakage that made a pure tone
+//! bleed across bands.
 //!
-//! PURELY ADDITIVE for now: nothing in production wires this in yet (the Goertzel stays
-//! for the spectrum/EQ-match/best-SIC feature). Reachable via the unit tests below; a
-//! production consumers are `doctor::body_psd` + `SoundProfile::from_capture_with_psd`.
+//! Production consumers: `doctor::body_psd` + `SoundProfile::from_capture_with_psd`
+//! (the Doctor), and [`crate::spectrum::band_energies`] (the spectrum-report/EQ-match/
+//! best-SIC feature — the Goertzel probes it used are gone, see that module's doc).
 
 use realfft::RealFftPlanner;
 

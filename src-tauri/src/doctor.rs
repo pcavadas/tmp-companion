@@ -775,6 +775,114 @@ pub fn centered_deviations(dev: &[f64], family: Family) -> Vec<f64> {
     dev.iter().map(|&d| d - m).collect()
 }
 
+// ─── cut-through estimate ─────────────────────────────────────────────────
+
+/// One sound's "does this cut through the mix?" estimate — see [`cut_through`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutThrough {
+    /// Presence contrast in dB — see [`cut_through`]'s formula.
+    pub contrast_db: f64,
+    /// This contrast's position (0..100) within [`FACTORY_CONTRAST_DB`], the
+    /// measured factory-bank distribution. `None` outside Guitar (no bass
+    /// factory anchor yet).
+    pub factory_percentile: Option<f64>,
+    /// `contrast_db` below [`CUT_THROUGH_ADVISORY_DB`] — "may struggle to cut
+    /// through". Always `false` outside Guitar.
+    pub advisory: bool,
+}
+
+/// Sorted presence contrasts (dB, see [`cut_through`]'s formula) of the
+/// 25-slot flagship factory-bank sweep (`probe --doctor-calib-factory`, the
+/// same sweep [`GUITAR_TARGET`] is derived from) — the reference population
+/// [`cut_through`]'s `factory_percentile` ranks a sound against.
+const FACTORY_CONTRAST_DB: [f64; 25] = [
+    6.59, 9.25, 10.18, 10.47, 11.00, 11.10, 12.52, 12.86, 13.03, 14.49, 14.96, 15.00, 15.13, 15.60,
+    15.61, 15.82, 17.14, 17.14, 17.28, 19.02, 19.12, 20.19, 20.43, 20.43, 22.65,
+];
+
+/// Below this presence contrast (dB), [`cut_through`] flags `advisory` —
+/// approximately the factory bank's own p10 ([`FACTORY_CONTRAST_DB`]).
+pub const CUT_THROUGH_ADVISORY_DB: f64 = 10.0;
+
+/// `contrast_db`'s position (0..100) within the sorted [`FACTORY_CONTRAST_DB`]:
+/// the standard linear-interpolation percentile-of-score, treating pinned
+/// value `i` (of `n`) as sitting at `100·i/(n-1)` — so the array's own median
+/// (index 12 of 25) lands at exactly 50. Clamped to `[0, 100]` outside the
+/// pinned range.
+fn factory_percentile(contrast_db: f64) -> f64 {
+    let xs = FACTORY_CONTRAST_DB;
+    let n = xs.len();
+    if contrast_db <= xs[0] {
+        return 0.0;
+    }
+    if contrast_db >= xs[n - 1] {
+        return 100.0;
+    }
+    for i in 0..n - 1 {
+        if contrast_db <= xs[i + 1] {
+            let (lo, hi) = (xs[i], xs[i + 1]);
+            let frac = if hi > lo {
+                (contrast_db - lo) / (hi - lo)
+            } else {
+                0.0
+            };
+            return 100.0 * (i as f64 + frac) / (n - 1) as f64;
+        }
+    }
+    100.0 // unreachable (the >= xs[n-1] guard above covers it) — safe fallback
+}
+
+/// The Doctor's flagship "why doesn't this preset cut through the mix?"
+/// estimate: presence CONTRAST in dB —
+/// `10·log10(Σ high-mid+high band power / Σ low+low-mid+mid band power)` —
+/// using [`Family::semantic_bands`]'s body-band indices. The Air band (fizz
+/// hash, not cut-through) and Bass VI's Sub band sit in NEITHER group and are
+/// excluded from the ratio entirely.
+///
+/// PROVENANCE (supervisor-locked 2026-07-16): the original plan compared a
+/// preset's presence energy against an INVENTED "typical dense mix masker"
+/// spectrum — a number nobody measured, and nobody could audit. That was
+/// dropped in favor of anchoring against [`FACTORY_CONTRAST_DB`], the
+/// MEASURED contrast distribution of the same 25-preset flagship factory-bank
+/// sweep the diagnosis thresholds are calibrated against — a real reference
+/// population beats an authored constant.
+///
+/// Guitar-only anchor for now: `factory_percentile`/`advisory` are
+/// `None`/`false` for Bass/Bass VI (no bass factory sweep yet, see
+/// [`GUITAR_TARGET`]'s doc for the same caveat on the target curve) — the
+/// contrast itself is still computed and returned for every family.
+///
+/// This is an ESTIMATE card, not a [`Diag`]: it never enters [`diagnose`] or
+/// `apply_thresholds`, fires no rule, and has no [`Rx`].
+///
+/// Returns `None` when `profile.bands` is too short for `family`'s layout, or
+/// the resulting ratio is non-finite (a zero-power band — an empty/silent
+/// capture).
+pub fn cut_through(profile: &SoundProfile, family: Family) -> Option<CutThrough> {
+    let (lows, low_mids, mids, high_mids, highs, _air) = family.semantic_bands();
+    let low_power =
+        *profile.bands.get(lows)? + *profile.bands.get(low_mids)? + *profile.bands.get(mids)?;
+    let presence_power = *profile.bands.get(high_mids)? + *profile.bands.get(highs)?;
+    let contrast_db = 10.0 * (presence_power / low_power).log10();
+    if !contrast_db.is_finite() {
+        return None;
+    }
+    let (percentile, advisory) = if family == Family::Guitar {
+        (
+            Some(factory_percentile(contrast_db)),
+            contrast_db < CUT_THROUGH_ADVISORY_DB,
+        )
+    } else {
+        (None, false)
+    };
+    Some(CutThrough {
+        contrast_db,
+        factory_percentile: percentile,
+        advisory,
+    })
+}
+
 /// RMS of a sample window, in f64 (0.0 for an empty window). The ONE copy of the
 /// formula shared by [`tail_energy_ratio`] and the `--doctor-calib` noise-floor
 /// metric — a precision/edge-case fix must not drift between them.
@@ -2632,6 +2740,126 @@ mod onset_split_tests {
         let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
         assert!((unaligned - aligned).abs() < 2.0);
         assert!(aligned > -13.0); // stays on the washed side
+    }
+}
+
+#[cfg(test)]
+mod cut_through_tests {
+    use super::*;
+
+    /// A profile whose presence contrast is EXACTLY `contrast_db`: the `lows`
+    /// band alone carries the whole low-side power (1.0), the `high_mids` band
+    /// alone carries `10^(contrast_db/10)` — so
+    /// `10*log10(presence/low) == contrast_db` up to `powf`/`log10` round-trip
+    /// error (well under 1e-6). Every other body/Sub/Air band is a nonzero
+    /// filler (never zero, so a stray `?`-guard bug would show up as a
+    /// wrong-but-finite number, not a silent `None`).
+    fn contrast_profile(family: Family, contrast_db: f64) -> SoundProfile {
+        let n = family.bands().len();
+        let mut bands = vec![1e-9; n];
+        let (lows, _low_mids, _mids, high_mids, _highs, _air) = family.semantic_bands();
+        bands[lows] = 1.0;
+        bands[high_mids] = 10f64.powf(contrast_db / 10.0);
+        SoundProfile {
+            bands,
+            integrated_lufs: -20.0,
+            spread_lu: 0.0,
+            tail_ratio_db: -80.0,
+            air_flatness: 0.5,
+            peaks: Vec::new(),
+        }
+    }
+
+    // (a) A hand-built profile → contrast computed exactly.
+    // low_power = 1+1+1 = 3, presence_power = 2+2 = 4;
+    // contrast = 10*log10(4/3) = 1.2493873660829993 dB (python3: 10*math.log10(4/3)).
+    #[test]
+    fn contrast_db_is_exact_log_ratio() {
+        let p = SoundProfile {
+            bands: vec![1.0, 1.0, 1.0, 2.0, 2.0, 0.1],
+            integrated_lufs: -20.0,
+            spread_lu: 0.0,
+            tail_ratio_db: -80.0,
+            air_flatness: 0.5,
+            peaks: Vec::new(),
+        };
+        let ct = cut_through(&p, Family::Guitar).expect("finite ratio");
+        let want = 10.0 * (4.0f64 / 3.0).log10();
+        assert!(
+            (ct.contrast_db - want).abs() < 1e-9,
+            "got {} want {want}",
+            ct.contrast_db
+        );
+    }
+
+    // (b) percentile: the pinned median (index 12 of 25, `FACTORY_CONTRAST_DB`)
+    // lands exactly 50 (`factory_percentile`'s doc); below the pinned min
+    // clamps to 0; above the pinned max clamps to 100.
+    #[test]
+    fn percentile_matches_pinned_rank_positions() {
+        let median = cut_through(
+            &contrast_profile(Family::Guitar, FACTORY_CONTRAST_DB[12]),
+            Family::Guitar,
+        )
+        .unwrap();
+        assert!((median.factory_percentile.unwrap() - 50.0).abs() < 1e-6);
+
+        let below = cut_through(
+            &contrast_profile(Family::Guitar, FACTORY_CONTRAST_DB[0] - 5.0),
+            Family::Guitar,
+        )
+        .unwrap();
+        assert_eq!(below.factory_percentile, Some(0.0));
+
+        let above = cut_through(
+            &contrast_profile(Family::Guitar, FACTORY_CONTRAST_DB[24] + 5.0),
+            Family::Guitar,
+        )
+        .unwrap();
+        assert_eq!(above.factory_percentile, Some(100.0));
+    }
+
+    // (c) advisory fires strictly below CUT_THROUGH_ADVISORY_DB (10.0), not at
+    // or above it. The "at" case nudges 0.01 dB above the pinned threshold
+    // rather than sitting exactly on it — `contrast_profile` round-trips the
+    // target dB through `powf`/`log10`, which is not guaranteed bit-exact at
+    // an exact boundary, so testing exactly-at would assert on FP noise
+    // rather than the `<` in `cut_through`'s advisory gate.
+    #[test]
+    fn advisory_fires_below_threshold_only() {
+        let below = cut_through(&contrast_profile(Family::Guitar, 9.0), Family::Guitar).unwrap();
+        assert!(below.advisory);
+        let at = cut_through(
+            &contrast_profile(Family::Guitar, CUT_THROUGH_ADVISORY_DB + 0.01),
+            Family::Guitar,
+        )
+        .unwrap();
+        assert!(!at.advisory);
+        let above = cut_through(&contrast_profile(Family::Guitar, 11.0), Family::Guitar).unwrap();
+        assert!(!above.advisory);
+    }
+
+    // (d) Non-Guitar families get no factory anchor: percentile None, advisory
+    // always false — even at a contrast far below the Guitar advisory gate.
+    #[test]
+    fn bass_has_no_factory_anchor() {
+        let ct = cut_through(&contrast_profile(Family::Bass, 0.0), Family::Bass).unwrap();
+        assert_eq!(ct.factory_percentile, None);
+        assert!(!ct.advisory);
+    }
+
+    // (e) Bass VI's Sub band (semantic index 0, outside both the low and
+    // presence groups) must not move the contrast — two profiles differing
+    // ONLY in Sub give an identical contrast_db.
+    #[test]
+    fn bass_vi_sub_band_does_not_affect_contrast() {
+        let mut a = contrast_profile(Family::BassVi, 12.0);
+        let mut b = a.clone();
+        a.bands[0] = 1e-6; // Sub
+        b.bands[0] = 500.0; // wildly different Sub
+        let ca = cut_through(&a, Family::BassVi).unwrap();
+        let cb = cut_through(&b, Family::BassVi).unwrap();
+        assert!((ca.contrast_db - cb.contrast_db).abs() < 1e-9);
     }
 }
 
