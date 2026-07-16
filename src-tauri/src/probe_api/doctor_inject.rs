@@ -22,22 +22,26 @@
 use crate::doctor;
 use crate::leveller;
 
-use super::analyze::analyze_capture;
+use super::analyze::{analyze_capture, DoctorRead};
 use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
 
-/// One capture's Doctor read: verdicts + the metric internals per band.
-fn measure(
+/// One capture's Doctor read (verdicts + the metric internals per band) AND
+/// its standard debug line — `pub(crate)` so `--doctor-defects`
+/// (`doctor_defects.rs`) reuses the exact same capture→line pipeline instead
+/// of forking it; a metric-pipeline change can't drift the two arms' report
+/// format apart.
+pub(crate) fn measure(
     stim: &[f32],
     label: &str,
     capture: Result<(Vec<f32>, u32), String>,
-) -> Result<String, String> {
+) -> Result<(DoctorRead, String), String> {
     let (samples, rate) = capture?;
     // Padded production stim (`leveller::doctor_stim_slice`) → the body PSD's
     // onset is pad-adjusted via `doctor_signal_start` (`pad_aware: true`) —
     // see `analyze_capture`'s doc for why this differs from
     // `doctor_window_ab`'s raw-stim variant.
     let read = analyze_capture(stim, &samples, rate, doctor::Family::Guitar, true)?;
-    Ok(format!(
+    let line = format!(
         "  {label:<7} tilt={} dev={} locals={} tail={:.1} verdicts={:?}\n",
         read.tilt_slope.map_or("n/a".into(), |s| format!("{s:+.2}")),
         read.deviations
@@ -52,7 +56,8 @@ fn measure(
             .join(","),
         read.tail_ratio_db,
         read.verdicts
-    ))
+    );
+    Ok((read, line))
 }
 
 /// See the module doc. `gains` empty = the clean-insert control.
@@ -71,11 +76,12 @@ pub fn probe_doctor_inject(slot: u32, gains: &[(String, f64)]) -> Result<String,
     );
     // BEFORE: the stored preset as-is (also loads it, so the live edit below
     // confirms the already-current preset — the doctor_apply shape).
-    out += &measure(
+    let (_, before_line) = measure(
         &stim,
         "before",
         leveller::doctor_capture(slot, None, &[], &stim, Some(0.5), tail, false),
     )?;
+    out += &before_line;
 
     // Insert the EQ at the END of the chain (the LAST guitar node's group,
     // appended) — the same anchor the Doctor's own Rx inserts use (post-amp/
@@ -113,11 +119,12 @@ pub fn probe_doctor_inject(slot: u32, gains: &[(String, f64)]) -> Result<String,
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     // AFTER: the edit buffer, no reload (a load would discard the insert).
-    out += &measure(
+    let (_, after_line) = measure(
         &stim,
         "after",
         leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail),
     )?;
+    out += &after_line;
 
     // Discard the injected defect + belt-and-braces re-amp OFF.
     leveller::restore_saved_preset(slot)?;

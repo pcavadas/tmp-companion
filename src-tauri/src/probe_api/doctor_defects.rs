@@ -1,0 +1,404 @@
+//! `probe --doctor-defects <slot>` — the versioned KNOWN-DEFECT fixture sweep.
+//!
+//! Generalizes `--doctor-inject` (one ad-hoc gains vector per invocation) into
+//! a COMMITTED table of named defect recipes with pinned pass/fail verdicts:
+//! each recipe injects ops into a clean preset's live edit buffer (the same
+//! `ops_session` vehicle the Doctor's own prescriptions use), captures
+//! before/after, and checks the after-capture's fired verdicts against
+//! `must_fire` (all required) / `must_not_fire` (none allowed). This is the
+//! repo's "author presets with known issues and verify the doctor against
+//! them" harness — the recipe table below IS the fixture set; no `.preset`
+//! files, no import machinery. Never saves (the edit buffer is discarded by a
+//! stored-preset reload after every recipe, and again belt-and-braces at the
+//! end); ends re-amp OFF.
+//!
+//! Usage:
+//! ```text
+//! probe --doctor-defects <slot> [--out <report.json>]
+//! ```
+//! `slot` is a 0-based list index carrying a CLEAN preset (any chain — the
+//! recipes append their own EQ-10/reverb inserts, they don't touch existing
+//! blocks). If the stored preset itself already fires a verdict, each
+//! affected recipe prints a loud warning and is still scored (the result is
+//! flagged unreliable via `beforeClean` in the JSON row, not skipped).
+//! Attended; loads the probed slot.
+
+use crate::doctor;
+use crate::leveller;
+
+use super::analyze::DoctorRead;
+use super::doctor_inject::measure;
+use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
+
+/// One versioned defect recipe: inject `ops` into a clean preset's live edit
+/// buffer, capture, diagnose — `must_fire` verdicts must ALL appear in the
+/// after-capture, and no verdict in `must_not_fire` may appear. An
+/// `informational` recipe (empty `must_fire` by design — we don't yet know
+/// what SHOULD fire) reports as "info" instead of scoring HIT/MISS, but its
+/// `must_not_fire` is still enforced (a VIOLATION always outranks "info").
+struct DefectRecipe {
+    name: &'static str,
+    /// Why this recipe produces (or probes for) the defect — shown verbatim
+    /// in the report.
+    rationale: &'static str,
+    ops: Vec<doctor::DoctorOp>,
+    must_fire: &'static [&'static str],
+    must_not_fire: &'static [&'static str],
+    informational: bool,
+}
+
+/// An `ACD_TenBandEQStereo` insert at `group_id` with the given `controlId=dB`
+/// band gains (empty = the clean-insert control — an all-zero-gain EQ proves
+/// the insert itself doesn't shift verdicts).
+fn eq10_insert(group_id: &str, gains: &[(&str, f64)]) -> doctor::DoctorOp {
+    doctor::DoctorOp::InsertNode {
+        group_id: group_id.to_string(),
+        before_fender_id: None,
+        fender_id: "ACD_TenBandEQStereo".to_string(),
+        params: gains.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
+    }
+}
+
+/// The versioned recipe table (see the module doc for the design). `group_id`
+/// is the chain's last group — the same post-amp/cab anchor `--doctor-inject`
+/// uses — resolved once per slot by the runner (it needs the live graph) and
+/// threaded in here since the ops can't be `const`.
+///
+/// A 6th recipe (`resonant_probe`, a narrow high-Q parametric-EQ boost) was
+/// SPEC'd but is deliberately omitted: the catalog carries two parametric EQ
+/// blocks (`ACD_MustangPEQ` "EQ-3 PARAMETRIC", `ACD_FiveBandParamEQ` "EQ-5
+/// PARAMETRIC" — both already in `doctor.rs`'s `EQ_IDS`), but NEITHER block's
+/// freq/gain/Q `controlId`s are documented anywhere in this repo (no fw-schema
+/// dump is checked in, and the carve script `doctor.rs`'s module doc points at
+/// is maintainer-machine tooling, not in-tree) — inventing them risks a wrong
+/// param silently no-oping (harmless) or, worse, hitting an unrelated
+/// existing param on a real chain (not harmless). Add it once a schema dump
+/// pins the controlIds.
+fn recipes(group_id: &str) -> Vec<DefectRecipe> {
+    vec![
+        DefectRecipe {
+            name: "control",
+            rationale: "clean-insert control: an all-zero-gain EQ-10 insert — proves the insert itself doesn't shift any verdict.",
+            ops: vec![eq10_insert(group_id, &[])],
+            must_fire: &[],
+            must_not_fire: &[
+                "muddy", "boomy", "harsh", "lost", "thin", "resonant", "boxy", "washed",
+            ],
+            informational: false,
+        },
+        DefectRecipe {
+            name: "muddy",
+            rationale: "EQ-10 gain250hz=+12 dB — a textbook low-mid buildup, the band the muddy rule reads directly.",
+            ops: vec![eq10_insert(group_id, &[("gain250hz", 12.0)])],
+            must_fire: &["muddy"],
+            must_not_fire: &["thin", "boomy"],
+            informational: false,
+        },
+        DefectRecipe {
+            name: "lost",
+            rationale: "EQ-10 gain500hz=-12 dB, gain1khz=-12 dB — a mids scoop, the band the lost rule reads directly.",
+            ops: vec![eq10_insert(group_id, &[("gain500hz", -12.0), ("gain1khz", -12.0)])],
+            must_fire: &["lost"],
+            must_not_fire: &[],
+            informational: false,
+        },
+        DefectRecipe {
+            name: "washed",
+            rationale: "ACD_TMSmallHall reverb inserted with `mix` (its `REVERB_MIX`-table controlId — the SAME one the washed Rx turns down) cranked to 0.9 of range. Decay is left at the freshly-inserted block's device default: no decay controlId is documented anywhere in this repo (same evidence gap as the omitted resonant_probe below), and mix alone should already push the post-stimulus tail well past the washed threshold.",
+            ops: vec![doctor::DoctorOp::InsertNode {
+                group_id: group_id.to_string(),
+                before_fender_id: None,
+                fender_id: "ACD_TMSmallHall".to_string(),
+                params: vec![("mix".to_string(), 0.9)],
+            }],
+            must_fire: &["washed"],
+            must_not_fire: &[],
+            informational: false,
+        },
+        DefectRecipe {
+            name: "boxy_probe",
+            rationale: "EQ-10 gain500hz=+12 dB — informational: a WIDE graphic-EQ band, not a narrow resonance, so it's unknown whether it trips the narrow-hump boxy rule at all (report what fires); but it must never read as the high-Q resonant rule.",
+            ops: vec![eq10_insert(group_id, &[("gain500hz", 12.0)])],
+            must_fire: &[],
+            must_not_fire: &["resonant"],
+            informational: true,
+        },
+    ]
+}
+
+/// Run one recipe: before capture (stored preset) → inject on a live edit
+/// buffer → after capture (edit buffer, no reload) → discard. Mirrors
+/// `probe_doctor_inject`'s single-recipe body exactly (shares its `measure`
+/// helper for both captures) — see that module's doc for the capture/restore
+/// sequencing. On an op-apply failure `ops_session` already restores the
+/// stored preset before returning; on an after-capture failure the edit
+/// buffer is left injected — same as `--doctor-inject` — but the NEXT
+/// recipe's before-capture reloads the stored preset regardless (a `load`
+/// always discards an unsaved edit buffer), and the runner's own final
+/// belt-and-braces restore covers the last recipe.
+fn run_recipe(
+    slot: u32,
+    stim: &[f32],
+    tail_ms: u64,
+    preset_name: &str,
+    recipe: &DefectRecipe,
+) -> Result<(DoctorRead, DoctorRead, String), String> {
+    let mut text = String::new();
+    let (before, line) = measure(
+        stim,
+        "before",
+        leveller::doctor_capture(slot, None, &[], stim, Some(0.5), tail_ms, false),
+    )?;
+    text += &line;
+    if !before.verdicts.is_empty() {
+        text += &format!(
+            "  !!! WARNING: slot {slot}'s stored preset already fires {:?} before injecting — not clean, this recipe's result is unreliable !!!\n",
+            before.verdicts
+        );
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    drop(crate::commands::doctor::ops_session(
+        slot,
+        preset_name,
+        &recipe.ops,
+        "inject",
+    )?);
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+
+    let (after, line) = measure(
+        stim,
+        "after",
+        leveller::doctor_capture_current(stim, None, &[], Some(0.5), tail_ms),
+    )?;
+    text += &line;
+
+    leveller::restore_saved_preset(slot)?;
+    text += "  (edit buffer discarded — stored preset reloaded)\n";
+    Ok((before, after, text))
+}
+
+/// Score `recipe` against `after`'s fired verdicts and build its JSON row.
+/// Pure (no device I/O) — unit-tested directly.
+fn recipe_row(recipe: &DefectRecipe, before: &DoctorRead, after: &DoctorRead) -> serde_json::Value {
+    let violation = recipe
+        .must_not_fire
+        .iter()
+        .any(|k| after.verdicts.contains(k));
+    let hit = recipe.must_fire.iter().all(|k| after.verdicts.contains(k));
+    let status = if violation {
+        "VIOLATION"
+    } else if recipe.informational {
+        "info"
+    } else if hit {
+        "HIT"
+    } else {
+        "MISS"
+    };
+    serde_json::json!({
+        "recipe": recipe.name,
+        "rationale": recipe.rationale,
+        "informational": recipe.informational,
+        "mustFire": recipe.must_fire,
+        "mustNotFire": recipe.must_not_fire,
+        "beforeClean": before.verdicts.is_empty(),
+        "before": {
+            "verdicts": before.verdicts,
+            "tiltDbPerOct": before.tilt_slope,
+            "tailRatioDb": before.tail_ratio_db,
+        },
+        "after": {
+            "verdicts": after.verdicts,
+            "tiltDbPerOct": after.tilt_slope,
+            "tailRatioDb": after.tail_ratio_db,
+            "deviations": after.deviations,
+            "locals": after.locals,
+        },
+        "status": status,
+    })
+}
+
+/// See the module doc. `out_path` optionally writes a deterministic JSON
+/// report (rows + summary counts), mirroring `--doctor-window-ab`'s `--out`.
+pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String, String> {
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
+        "guitar-humbucker",
+    )?)?);
+    let tail = u64::from(leveller::DOCTOR_TAIL_MS);
+
+    // Resolve the insert anchor (last group) + preset name ONCE — stable
+    // across every recipe since each one restores the stored preset before
+    // the next injects (same anchor `--doctor-inject` uses).
+    let (group_id, name) = {
+        let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
+        let group = crate::session::extract_active_graph(&preset, None)
+            .nodes
+            .last()
+            .map(|n| n.group_id.clone())
+            .ok_or("empty graph — nowhere to anchor the defect inserts")?;
+        let name = preset
+            .pointer("/info/displayName")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        (group, name)
+    };
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+
+    let mut out = format!("doctor-defects slot {slot} ({name})\n");
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let (mut hits, mut misses, mut violations, mut infos, mut errors) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
+
+    for recipe in recipes(&group_id) {
+        out += &format!("\n[{}] {}\n", recipe.name, recipe.rationale);
+        match run_recipe(slot, &stim, tail, &name, &recipe) {
+            Ok((before, after, text)) => {
+                out += &text;
+                let row = recipe_row(&recipe, &before, &after);
+                let status = row["status"].as_str().unwrap_or("?");
+                match status {
+                    "HIT" => hits += 1,
+                    "MISS" => misses += 1,
+                    "VIOLATION" => violations += 1,
+                    "info" => infos += 1,
+                    _ => {}
+                }
+                out += &format!("  → {status}\n");
+                rows.push(row);
+            }
+            Err(e) => {
+                out += &format!("  FAILED: {e}\n");
+                errors += 1;
+                rows.push(serde_json::json!({ "recipe": recipe.name, "error": e }));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    }
+
+    // Belt-and-braces: whatever the last recipe left behind (a failed
+    // after-capture can leave an injected edit buffer, see `run_recipe`'s
+    // doc), restore the stored preset and leave re-amp OFF.
+    let _ = leveller::restore_saved_preset(slot);
+    super::reamp_off_best_effort();
+
+    out += &format!(
+        "\ndoctor-defects summary: {} recipe(s) — HIT={hits} MISS={misses} VIOLATION={violations} info={infos} error={errors}\n",
+        rows.len()
+    );
+
+    if let Some(path) = out_path {
+        let report = serde_json::json!({
+            "slot": slot,
+            "presetName": name,
+            "rows": rows,
+            "summary": {
+                "hit": hits,
+                "miss": misses,
+                "violation": violations,
+                "info": infos,
+                "error": errors,
+            },
+        });
+        let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        std::fs::write(path, &json).map_err(|e| format!("write {path}: {e}"))?;
+        out += &format!("  → {path}\n");
+    }
+
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full verdict-key set `doctor::diagnose_kind` can push (from
+    /// `doctor.rs`'s `push`/`localized` calls) — pinned here so a recipe
+    /// typo'ing a key is caught without HW.
+    const KNOWN_VERDICT_KEYS: &[&str] = &[
+        "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "spiky", "buried", "dark",
+        "bright", "resonant", "boxy",
+    ];
+
+    fn fake_read(verdicts: Vec<&'static str>) -> DoctorRead {
+        DoctorRead {
+            band_db: vec![],
+            deviations: vec![],
+            tilt_slope: None,
+            locals: vec![],
+            tail_ratio_db: -20.0,
+            spread_lu: 0.0,
+            verdicts,
+            onset_confident: true,
+        }
+    }
+
+    #[test]
+    fn recipes_nonempty_and_every_key_known() {
+        let rs = recipes("G1");
+        assert!(!rs.is_empty());
+        for r in &rs {
+            for k in r.must_fire.iter().chain(r.must_not_fire.iter()) {
+                assert!(
+                    KNOWN_VERDICT_KEYS.contains(k),
+                    "recipe {}: unknown verdict key {k:?}",
+                    r.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn control_recipe_injects_all_zero_gains() {
+        let rs = recipes("G1");
+        let control = rs
+            .iter()
+            .find(|r| r.name == "control")
+            .expect("control recipe present");
+        match control.ops.as_slice() {
+            [doctor::DoctorOp::InsertNode {
+                fender_id, params, ..
+            }] => {
+                assert_eq!(fender_id, "ACD_TenBandEQStereo");
+                assert!(
+                    params.is_empty(),
+                    "control must write no gain params — by construction a no-op insert"
+                );
+            }
+            other => panic!("control recipe should be a single EQ-10 insert, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scoring_hit_miss_violation_info() {
+        let rs = recipes("G1");
+        let muddy = rs.iter().find(|r| r.name == "muddy").unwrap();
+        let clean_before = fake_read(vec![]);
+
+        let hit = recipe_row(muddy, &clean_before, &fake_read(vec!["muddy"]));
+        assert_eq!(hit["status"], "HIT");
+
+        let miss = recipe_row(muddy, &clean_before, &fake_read(vec![]));
+        assert_eq!(miss["status"], "MISS");
+
+        let violation = recipe_row(muddy, &clean_before, &fake_read(vec!["muddy", "boomy"]));
+        assert_eq!(violation["status"], "VIOLATION");
+
+        let boxy_probe = rs.iter().find(|r| r.name == "boxy_probe").unwrap();
+        let info = recipe_row(boxy_probe, &clean_before, &fake_read(vec!["boxy"]));
+        assert_eq!(info["status"], "info");
+        let info_violation = recipe_row(boxy_probe, &clean_before, &fake_read(vec!["resonant"]));
+        assert_eq!(info_violation["status"], "VIOLATION");
+    }
+
+    #[test]
+    fn defect_row_json_shape_serializes() {
+        let rs = recipes("G1");
+        let control = rs.iter().find(|r| r.name == "control").unwrap();
+        let row = recipe_row(control, &fake_read(vec![]), &fake_read(vec![]));
+        let s = serde_json::to_string(&row).expect("row must serialize");
+        assert!(s.contains("\"recipe\":\"control\""));
+        assert!(s.contains("\"status\":\"HIT\""));
+        assert!(row["beforeClean"].as_bool().unwrap());
+    }
+}

@@ -6,6 +6,7 @@
 
 pub(crate) mod analyze;
 pub(crate) mod doctor_calib;
+pub(crate) mod doctor_defects;
 pub(crate) mod doctor_inject;
 pub(crate) mod doctor_iso_ab;
 pub(crate) mod doctor_window_ab;
@@ -50,6 +51,7 @@ pub(crate) fn reamp_off_best_effort() {
 }
 
 pub use doctor_calib::*;
+pub use doctor_defects::*;
 pub use doctor_inject::*;
 pub use doctor_iso_ab::*;
 pub use doctor_window_ab::*;

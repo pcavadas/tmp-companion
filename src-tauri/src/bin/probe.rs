@@ -51,6 +51,13 @@
 //!                                  READ-ONLY: loads + captures, never saves
 //!   probe --doctor-inject <slot> <gains_csv|none>   R5 defect-injection A/B (live EQ-10 insert,
 //!                                   never saves; loads the slot)
+//!   probe --doctor-defects <slot> [--out <report.json>]
+//!                                  Versioned KNOWN-DEFECT fixture sweep: injects a committed
+//!                                  table of named recipes (control/muddy/lost/washed/boxy_probe)
+//!                                  one at a time into a clean preset's live edit buffer, checks
+//!                                  each after-capture's fired verdicts against the recipe's
+//!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION/info
+//!                                  table. Never saves; loads the slot; ends re-amp OFF.
 //!   probe --doctor-iso-ab           A/B: the OFFLINE `derived_force_bypass` isolation list
 //!                                  (backup-scan data, no device read) vs the LIVE
 //!                                  `doctor_force_bypass` list (a field-8 preset read), for
@@ -233,6 +240,29 @@ fn main() {
                 .collect(),
         };
         match tmp_companion_lib::probe_doctor_inject(slot, &gains) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-defects") {
+        // --doctor-defects <slot> [--out <report.json>]  (versioned defect-fixture sweep)
+        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+            Some(s) => s,
+            None => {
+                eprintln!("usage: probe --doctor-defects <slot> [--out <report.json>]");
+                std::process::exit(2);
+            }
+        };
+        let out = flag_arg(&args, "--out");
+        eprintln!("[probe] doctor-defects: slot {slot}…");
+        match tmp_companion_lib::probe_doctor_defects(slot, out.as_deref()) {
             Ok(report) => {
                 print!("{report}");
                 return;
