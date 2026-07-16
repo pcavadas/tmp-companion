@@ -709,7 +709,15 @@ function useLaneBracket(aLen: number, bLen: number) {
     null,
   );
   React.useLayoutEffect(() => {
-    setBrk((p) => measureLaneBracket(colRef, aRef, bRef, p));
+    const nextBrk = measureLaneBracket(colRef, aRef, bRef, null);
+    setBrk((p) => {
+      if (!nextBrk) return p;
+      return p &&
+        Math.abs(p.top - nextBrk.top) < 0.5 &&
+        Math.abs(p.height - nextBrk.height) < 0.5
+        ? p
+        : nextBrk;
+    });
   }, [sig]);
   return { colRef, aRef, bRef, brk };
 }
