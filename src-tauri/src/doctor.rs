@@ -1,11 +1,11 @@
 //! The Doctor diagnosis engine — PURE (no device I/O, no Tauri).
 //!
 //! Turns a re-amp capture's measurements (`SoundProfile`) into named tone
-//! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried / spiky) with
-//! concrete, graph-derived prescriptions (`Rx` → `DoctorOp`s), plus the
-//! scene-loudness consistency check. The device work (capture, apply) lives in
-//! `leveller::doctor_capture` and the `doctor_*` commands; this module is the
-//! rules.
+//! diagnoses (muddy / boomy / harsh / fizzy / washed / lost / buried / spiky /
+//! dark / bright / thin) with concrete, graph-derived prescriptions (`Rx` →
+//! `DoctorOp`s), plus the scene-loudness consistency check. The device work
+//! (capture, apply) lives in `leveller::doctor_capture` and the `doctor_*`
+//! commands; this module is the rules.
 //!
 //! ## Wire param casing (load-bearing)
 //! Preset JSON serializes each parameter under the firmware schema's
@@ -72,13 +72,14 @@ const LABELS_7: [&str; 7] = [
 ];
 
 /// Rule constants — ALL of them, one place. dB values are deviations in
-/// tilt-residual space (a band's dB above the sound's own smooth spectral trend
-/// line, minus the target curve — see [`tilt_residuals`] / [`tonal_dev`]).
+/// deviation-from-target space (a band's dB above the authored [`target_curve`],
+/// after the Theil–Sen tilt/local split — see [`deviations`] / [`tilt_split`]).
 ///
-/// The SYNTHETIC-space tables are HW-calibrated via probe --doctor sweeps (see
-/// the `GUITAR` const doc + notes/doctor-calibration.md); the `*_CAPTURE`
-/// tables are PROVISIONAL copies pending the attended `probe --doctor-calib`
-/// sweep. Any recalibration pass edits values here and nowhere else.
+/// ONE table per family (no more synthetic/capture split): the diagnosis metric
+/// itself is deterministic per sound, and capture-space is discriminated by the
+/// `fizzy` rule's [`FIZZY_MIN_FLATNESS`] gate, not a second threshold table. A
+/// DI-specific recalibration of these values is an explicit follow-up (the R5
+/// attended sweep). Any recalibration pass edits values here and nowhere else.
 pub struct Thresholds {
     /// Low-mid excess ⇒ muddy.
     pub muddy_db: f64,
@@ -108,6 +109,13 @@ pub struct Thresholds {
     pub spiky_spread_lu: f64,
     /// Scene-to-base loudness jump ⇒ scene-consistency flag.
     pub scene_delta_db: f64,
+    /// Broadband Theil–Sen tilt magnitude (dB/oct) past which the whole tone
+    /// reads dark (negative slope) or bright (positive slope).
+    // ponytail: provisional; R5 re-derives.
+    pub tilt_db_per_oct: f64,
+    /// Lows local deficit (dB, guitar only) past which a tone reads thin.
+    // ponytail: provisional; R5 re-derives.
+    pub thin_db: f64,
 }
 
 /// Calibrated 2026-07-03 against a 14-preset real-library guitar sweep
@@ -126,6 +134,8 @@ pub const GUITAR: Thresholds = Thresholds {
     buried_lows_db: f64::INFINITY, // bass-only rule
     spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
+    tilt_db_per_oct: 1.0,
+    thin_db: 4.5,
 };
 
 pub const BASS: Thresholds = Thresholds {
@@ -138,38 +148,33 @@ pub const BASS: Thresholds = Thresholds {
     buried_lows_db: 4.0,
     spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
+    tilt_db_per_oct: 1.0,
+    thin_db: f64::INFINITY, // guitar-only rule
 };
 
 /// PROVISIONAL — a straight copy of `BASS`, pending the attended Bass VI
 /// calibration sweep (PR-7). Bass VI shares bass's low-fundamental character, so
 /// bass thresholds are the honest starting point until `probe --doctor` on a
-/// real Bass VI library re-derives them.
+/// real Bass VI library re-derives them. (`thin_db` stays `INFINITY` here too,
+/// inherited from `BASS` — thin is guitar-only.)
 pub const BASS_VI: Thresholds = BASS;
 
 /// Whether a sound was captured through the SYNTHETIC shaped-noise stimulus (the
-/// Doctor default, whose thresholds are HW-calibrated) or a real Tier-2 DI
-/// CAPTURE. A real DI shifts the measured band balance systematically (HW: +8..12
-/// dB Lows / −8..10 dB Highs, fizzy ~−8 dB), so a capture is diagnosed against
-/// its own `*_CAPTURE` threshold table rather than the synthetic one. The
-/// diagnosis metric itself (the tilt-removed residual vs the target curve,
-/// [`tilt_residuals`] / [`tonal_dev`]) is deterministic per sound — this enum
-/// only SELECTS which threshold table it's compared against, never pools
-/// measurements across sounds.
+/// Doctor default) or a real Tier-2 DI CAPTURE. Both diagnose against the SAME
+/// per-family `Thresholds` table now — a real DI's HF hash reads as noise-like
+/// broadband content rather than a systematic band-balance shift, so the one
+/// place capture space needs different behavior is the `fizzy` rule: it gains an
+/// extra [`FIZZY_MIN_FLATNESS`] gate on `Capture` (the synthetic shaped-noise
+/// stimulus is noise-like everywhere, so the gate is inert there by
+/// construction). The diagnosis metric itself ([`deviations`] / [`tilt_split`])
+/// is deterministic per sound — this enum never pools measurements across
+/// sounds. A DI-specific threshold recalibration is an explicit follow-up (see
+/// `Thresholds` doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StimulusKind {
     Synthetic,
     Capture,
 }
-
-// ─── capture-stimulus thresholds (PROVISIONAL) ──────────────────────────────
-// Copies of the synthetic tables, doc-marked provisional: they are REPLACED by
-// the attended `probe --doctor-calib` sweep report (the recal tooling below).
-// Until then a capture-driven diagnosis reads IDENTICALLY to a synthetic one —
-// the split exists so the sweep can retune capture space without touching the
-// HW-calibrated synthetic values (backward compat for uncalibrated users).
-pub const GUITAR_CAPTURE: Thresholds = GUITAR;
-pub const BASS_CAPTURE: Thresholds = BASS;
-pub const BASS_VI_CAPTURE: Thresholds = BASS_VI;
 
 /// Per-rule threshold shifts (dB) added at COMPARISON time for the user's
 /// playback level — a separate additive mechanism, never a mutation of the
@@ -239,17 +244,15 @@ impl Family {
     pub fn thresholds(self) -> &'static Thresholds {
         self.thresholds_for(StimulusKind::Synthetic)
     }
-    /// The threshold table for a stimulus kind: `Synthetic` is today's
-    /// HW-calibrated values UNCHANGED; `Capture` is the provisional `*_CAPTURE`
-    /// table the recal sweep replaces.
-    pub fn thresholds_for(self, kind: StimulusKind) -> &'static Thresholds {
-        match (self, kind) {
-            (Family::Guitar, StimulusKind::Synthetic) => &GUITAR,
-            (Family::Bass, StimulusKind::Synthetic) => &BASS,
-            (Family::BassVi, StimulusKind::Synthetic) => &BASS_VI,
-            (Family::Guitar, StimulusKind::Capture) => &GUITAR_CAPTURE,
-            (Family::Bass, StimulusKind::Capture) => &BASS_CAPTURE,
-            (Family::BassVi, StimulusKind::Capture) => &BASS_VI_CAPTURE,
+    /// The threshold table for a stimulus kind: ONE table per family — `kind`
+    /// no longer selects a different table (see the `StimulusKind` doc); it
+    /// stays a parameter so call sites read the same regardless of which
+    /// stimulus produced the sound.
+    pub fn thresholds_for(self, _kind: StimulusKind) -> &'static Thresholds {
+        match self {
+            Family::Guitar => &GUITAR,
+            Family::Bass => &BASS,
+            Family::BassVi => &BASS_VI,
         }
     }
     /// Map a topology's `instrument` field ("guitar" | "bass" | "bass-vi").
@@ -292,7 +295,7 @@ impl Family {
         self.labels().iter().map(|s| (*s).to_string()).collect()
     }
     /// Geometric centre frequency `sqrt(lo·hi)` of each layout band (Hz). The x
-    /// axis the tilt-residual line is fit over ([`tilt_residuals`]).
+    /// axis the Theil–Sen tilt line is fit over ([`tilt_split`]).
     pub fn band_centers(self) -> Vec<f64> {
         self.bands()
             .iter()
@@ -314,9 +317,11 @@ pub struct SoundProfile {
     pub spread_lu: f64,
     /// Post-stimulus tail RMS vs body RMS, in dB (see [`tail_energy_ratio`]).
     pub tail_ratio_db: f64,
-    /// Broadband spectral tilt (dB/oct, `psd::Psd::tilt`). Level- and
-    /// band-invariant; a later stage keys tilt-drift rules on it.
-    pub tilt: f64,
+    /// Spectral flatness (SFM, `psd::Psd::flatness`) of the top octave
+    /// (6–12 kHz), `0..1`. Separates NOISE-like HF hash (fizz, high on a real DI
+    /// capture) from a merely bright cab's harmonic top — gates the `fizzy` rule
+    /// under [`StimulusKind::Capture`] (see [`FIZZY_MIN_FLATNESS`]).
+    pub air_flatness: f64,
 }
 
 impl SoundProfile {
@@ -336,7 +341,7 @@ impl SoundProfile {
     ) -> Result<SoundProfile, String> {
         // Low-variance Welch PSD (Stage 1) replaces the noisy single-bin Goertzel
         // probes — true integrated band power over each layout band, plus the
-        // broadband tilt the tilt-residual metric and later stages read.
+        // top-octave flatness the capture-space fizzy gate reads.
         let psd = crate::psd::welch_psd(samples, rate as f32);
         let bands = psd.band_powers(family.bands());
         let loudness = crate::lufs::measure_mono(samples, rate)?;
@@ -352,7 +357,7 @@ impl SoundProfile {
             integrated_lufs,
             spread_lu: loudness.spread_lu(),
             tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples, onset),
-            tilt: psd.tilt(),
+            air_flatness: psd.flatness(6000.0, 12000.0),
         })
     }
 }
@@ -364,15 +369,33 @@ impl SoundProfile {
 /// index (`commands/doctor.rs`), so the REAL `diagnose` engine renders genuine
 /// cards.
 ///
-/// The three mapped presets cover five of the six guitar diagnoses (two cards
-/// each). Band values are ABSOLUTE per-band dB fed through the tilt-residual
-/// metric ([`tilt_residuals`]); `fizzy` (Air − Highs) and `washed` (tail) ride
-/// independently. NOTE: boomy + muddy CANNOT co-fire under the tilt-residual
-/// metric (residuals are orthogonal to the tilt basis, so two adjacent low-band
-/// bumps can't both clear threshold without spiking Air → fizzy), so preset 11's
-/// old boomy+muddy became muddy+lost; boomy is exercised only by the firing unit
-/// tests now, not the marketing showcase. Verified by the
-/// `showcase_profile_diagnoses` test — keep those presets PLAIN and scene-less.
+/// The three mapped presets cover five of the six original guitar diagnoses
+/// (two cards each), now judged under the deviation-from-target + Theil–Sen
+/// tilt/local metric ([`deviations`] / [`tilt_split`]). Band values are
+/// ABSOLUTE per-band dB; `fizzy` (Air − Highs) and `washed` (tail) ride
+/// independently of the tilt/local split. NOTE: a tilt (dark/bright) and a local
+/// bump (muddy/boomy/harsh/lost) now CAN co-fire — Theil–Sen's median fit
+/// doesn't absorb a single-band bump into the trend the way the old OLS fit did
+/// — so preset 11 is muddy+dark (a −1.8 dB/oct dark tilt plus a +6 dB low-mid
+/// bump on top of the guitar target). The one co-firing limit that remains: a
+/// SYMMETRIC 2-band low shelf (both Lows and Low-mids raised together) reads as
+/// a tilt (dark), not a local bump — an accepted 6-point identifiability limit
+/// of a single slope+intercept fit. Verified by the `showcase_profile_diagnoses`
+/// test — keep those presets PLAIN and scene-less.
+/// Band dB `[Lo, LoM, Mid, HiM, Hi, Air]` for the −1.8 dB/oct dark tilt PLUS a
+/// +6 dB low-mid bump case (`deviations`/`tilt_split` oracle case O4): shared
+/// by [`showcase_profile`]'s preset 11 (Tweed Warm) and the
+/// `oracle_o4_dark_and_muddy_co_fire` test so the two stay byte-identical.
+#[cfg(any(test, feature = "e2e"))]
+pub(crate) const SHOWCASE_DARK_MUDDY_BDB: [f64; 6] = [
+    3.271_65,
+    9.808_381,
+    1.055_377,
+    -3.560_825,
+    -13.887_291,
+    -33.687_291,
+];
+
 #[cfg(any(test, feature = "e2e"))]
 pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
     // (band dB `[Lo, LoM, Mid, HiM, Hi, Air]`, tail_ratio_db). Scooped Verse (index 4)
@@ -380,9 +403,17 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
     // feature the add-a-compressor fix.
     let (db, tail): ([f64; 6], f64) = match list_index {
         4 => ([0.0, 0.0, -8.0, -2.0, 0.0, -16.0], -8.0), // Scooped Verse → lost + washed
-        11 => ([-2.0, 16.0, -14.0, 0.0, 2.0, -16.0], -80.0), // Tweed Warm → muddy + lost
-        167 => ([-6.0, -4.0, 0.0, 9.0, 5.0, 3.0], -80.0), // Direct Acoustic → harsh + fizzy
-        _ => ([2.0, 0.0, -3.0, -6.0, -10.0, -24.0], -80.0), // any other preset → all clear
+        // Tweed Warm → dark + muddy: target + a −1.8 dB/oct dark tilt + a +6 dB
+        // low-mid bump (`deviations`/`tilt_split` oracle case O4).
+        11 => (SHOWCASE_DARK_MUDDY_BDB, -80.0),
+        // Direct Acoustic → harsh + fizzy: target + a +7 dB high-mid spike + a
+        // +12 dB air excess (re-derived for the new metric — the old vector's
+        // slope now reads as "bright" too, breaking the intended pair).
+        167 => ([-3.0, 0.0, 0.0, 5.0, -10.0, -16.0], -80.0),
+        // any other preset → all clear: a gentle variation around the guitar
+        // target curve (re-derived for the new metric — the old vector now
+        // reads as a −1.1 dB/oct dark tilt).
+        _ => ([-3.0, 1.0, -1.0, -3.0, -9.0, -27.0], -80.0),
     };
     SoundProfile {
         bands: db.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
@@ -390,7 +421,7 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
         // Steady by construction — the showcase never features the spiky card.
         spread_lu: 0.0,
         tail_ratio_db: tail,
-        tilt: 0.0,
+        air_flatness: 0.5,
     }
 }
 
@@ -402,6 +433,14 @@ fn to_db(p: f64) -> f64 {
 /// many dB of the loudest band in the capture — anything quieter reads as
 /// unplayed or fully masked.
 pub const BAND_COVERAGE_DB: f64 = 30.0;
+
+/// Minimum top-octave spectral flatness ([`SoundProfile::air_flatness`]) for the
+/// `fizzy` rule to fire under [`StimulusKind::Capture`]. Fizz is NOISE-like HF
+/// hash; on a real-DI capture the top octave's flatness separates it from a
+/// merely bright cab's harmonic top. On the SYNTHETIC shaped-noise stimulus
+/// everything above the cab's rolloff is noise-like by construction, so the gate
+/// is inert there by design (only `Capture` reads it).
+pub const FIZZY_MIN_FLATNESS: f64 = 0.35;
 
 /// Per-band coverage of a spectrum: `bands` are linear energies (as returned by
 /// `spectrum::band_energies`); a band is "covered" when within [`BAND_COVERAGE_DB`]
@@ -421,8 +460,8 @@ pub fn coverage(bands: &[f64]) -> Vec<bool> {
 
 /// A sound's spectral "balance": each band's dB offset from the sound's own
 /// mean band level. Level-invariant — the UI's `balance_db` bar meter
-/// (`commands/doctor.rs`). NOT the diagnosis metric anymore (that's the
-/// tilt-residual below); kept only for the display bars.
+/// (`commands/doctor.rs`). NOT the diagnosis metric anymore (that's
+/// [`deviations`] / [`tilt_split`] below); kept only for the display bars.
 pub fn balance(bands: &[f64]) -> Vec<f64> {
     let db: Vec<f64> = bands.iter().copied().map(to_db).collect();
     let n = db.len().max(1);
@@ -431,56 +470,120 @@ pub fn balance(bands: &[f64]) -> Vec<f64> {
 }
 
 /// Per-band level in dB: `10·log10(power)`, floored so a silent band is finite.
-/// The dB space the tilt-residual metric fits its trend line in.
+/// The dB space [`deviations`] and the [`tilt_split`] fit both work in.
 pub fn band_db(bands: &[f64]) -> Vec<f64> {
     bands.iter().copied().map(to_db).collect()
 }
 
-/// Tilt-removed per-band residuals: fit an OLS line to `(log2(center_i),
-/// band_db[i])` and return `band_db[i] − line(log2(center_i))`. This is BOTH
-/// level- and tilt-invariant (a flatter/darker amp shifts the line, not the
-/// residuals) and robust to a single band's anomaly (one outlier barely moves
-/// the fit), so a rule keyed on a residual measures a LOCAL bump above the
-/// sound's own smooth spectral trend — deterministic and corpus-free, unlike the
-/// old runtime cohort median. `centers` = each band's geometric centre
-/// ([`Family::band_centers`]); a degenerate input (< 2 bands or a length
-/// mismatch) returns all-zero residuals.
-pub fn tilt_residuals(band_db: &[f64], centers: &[f64]) -> Vec<f64> {
-    let n = band_db.len();
-    if n < 2 || centers.len() != n {
-        return vec![0.0; n];
-    }
-    let xs: Vec<f64> = centers.iter().map(|c| c.log2()).collect();
-    let pts: Vec<(f64, f64)> = xs.iter().copied().zip(band_db.iter().copied()).collect();
-    let (slope, intercept) = crate::psd::least_squares_fit(&pts);
-    xs.iter()
-        .zip(band_db)
-        .map(|(&x, &y)| y - (slope * x + intercept))
-        .collect()
-}
+/// Authored per-family target curves, in RAW band-power dB space (`band_db` —
+/// note `band_power` is a width-integral, so wider high bands carry a bigger
+/// term baked into these numbers). DSP-informed documented OPINIONS —
+/// deliberately NOT derived from any preset corpus: a corpus-derived target and
+/// threshold are confounded (the target IS "what a typical preset does", so
+/// comparing a preset against it can only ever measure how atypical it is,
+/// never whether it sounds good) — the flaw that killed the old runtime-cohort
+/// metric. The R5 attended calibration sweep SANITY-BANDS these values (checks
+/// they're in a plausible range), never re-centers them on a corpus.
+// ponytail: provisional voicings; the R5 attended sweep validates them.
+const GUITAR_TARGET: [f64; 6] = [-3.0, 0.0, 0.0, -2.0, -10.0, -28.0];
+const BASS_TARGET: [f64; 6] = [4.0, 4.0, 0.0, -4.0, -14.0, -30.0];
+const BASS_VI_TARGET: [f64; 7] = [-6.0, 2.0, 2.0, 0.0, -4.0, -13.0, -29.0];
 
-// The target curve's per-band tilt-removed residuals: a rule fires on the sound's
-// residual MINUS this target ([`tonal_dev`]), so the tonal rules measure a bump
-// above the sound's own smooth trend.
-// ponytail: provisional flat target; role/instrument curves land in a later stage.
-const TARGET_RESIDUALS_6: [f64; 6] = [0.0; 6];
-const TARGET_RESIDUALS_7: [f64; 7] = [0.0; 7];
-
-/// The target curve's per-band tilt-removed residuals for a family (length =
-/// its band count). Provisional flat zeros for now — see [`TARGET_RESIDUALS_6`].
-pub fn target_residuals(family: Family) -> &'static [f64] {
+/// The authored target curve for a family (length = its band count) — see
+/// [`GUITAR_TARGET`].
+pub fn target_curve(family: Family) -> &'static [f64] {
     match family {
-        Family::BassVi => &TARGET_RESIDUALS_7,
-        _ => &TARGET_RESIDUALS_6,
+        Family::Guitar => &GUITAR_TARGET,
+        Family::Bass => &BASS_TARGET,
+        Family::BassVi => &BASS_VI_TARGET,
     }
 }
 
-/// Deviation of band `i` from the target: the sound's tilt-removed residual minus
-/// the target curve's. The ONE metric shared by [`diagnose_kind`] and the
-/// `--doctor-calib` sweep, so calibration derives thresholds in EXACTLY the space
-/// production compares against.
-pub fn tonal_dev(residuals: &[f64], target: &[f64], i: usize) -> f64 {
-    residuals[i] - target[i]
+/// Per-band deviation from the family's authored target curve: `band_db[i] −
+/// target_curve(family)[i]`, where `band_db` is the caller's already-computed
+/// [`band_db`] output. NO mean removal anywhere — absolute level is absorbed
+/// by the Theil–Sen fit's intercept in [`tilt_split`], so this stays
+/// level-invariant by construction downstream, not by subtracting a mean here.
+/// A length mismatch (should not happen — `band_db` always follows `family`'s
+/// layout) truncates to the shorter of the two via `zip`.
+pub fn deviations(band_db: &[f64], family: Family) -> Vec<f64> {
+    let target = target_curve(family);
+    band_db.iter().zip(target).map(|(&d, &t)| d - t).collect()
+}
+
+/// The one shared median: `xs` (sorted internally) — the middle value for an
+/// odd count, the mean of the two middles for an even count. `f64::total_cmp`
+/// keeps the sort NaN-safe (a failed loudness measure won't panic) and — so
+/// the result — deterministic. `0.0` for an empty slice.
+pub(crate) fn median(mut xs: Vec<f64>) -> f64 {
+    xs.sort_by(f64::total_cmp);
+    let n = xs.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n % 2 == 1 {
+        xs[n / 2]
+    } else {
+        (xs[n / 2 - 1] + xs[n / 2]) / 2.0
+    }
+}
+
+/// Whether band `i` is covered by the stimulus: `true` when `coverage` is
+/// `None` (gating disabled — all bands treated as covered) or the band's own
+/// entry, defaulting to covered when the index is out of range. Shared by
+/// [`tilt_split`]'s fit-band filter and [`diagnose_kind`]'s per-rule gate.
+fn band_covered(coverage: Option<&[bool]>, i: usize) -> bool {
+    coverage.is_none_or(|c| c.get(i).copied().unwrap_or(true))
+}
+
+/// Robust tilt/local decomposition of a sound's target deviations: a Theil–Sen
+/// line fit over `(log2(band_center), dev[i])` for the semantic BODY bands
+/// ([`Family::semantic_bands`]'s `lows..=highs` — Sub and Air are excluded from
+/// the fit, further restricted to `covered` bands when `Some`), returning the
+/// fitted slope (`None` when fewer than 3 fit points survive) and the per-band
+/// LOCAL residual after removing that line from every band (including the
+/// excluded Sub/Air bands, extrapolated — display/unused there).
+///
+/// Theil–Sen (median of all pairwise slopes), not OLS: a median fit doesn't
+/// absorb a 1–2-band genuine bump into the trend line the way a least-squares
+/// fit does (an OLS fit on 5 points reads a real +8 dB low bump as only +3.2 dB
+/// local — see the doctor-metric oracle tests), while a true broadband tilt
+/// still lands exactly in the slope either way. Median-of-medians ties broken
+/// via `f64::total_cmp` ⇒ deterministic.
+pub fn tilt_split(
+    dev: &[f64],
+    family: Family,
+    covered: Option<&[bool]>,
+) -> (Option<f64>, Vec<f64>) {
+    let xs: Vec<f64> = family.band_centers().iter().map(|c| c.log2()).collect();
+    let (lows, _low_mids, _mids, _high_mids, highs, _air) = family.semantic_bands();
+    let fit: Vec<usize> = (lows..=highs)
+        .filter(|&i| band_covered(covered, i))
+        .collect();
+
+    let (slope, intercept) = if fit.len() >= 3 {
+        let mut slopes = Vec::with_capacity(fit.len() * (fit.len() - 1) / 2);
+        for a in 0..fit.len() {
+            for &j in &fit[a + 1..] {
+                let i = fit[a];
+                slopes.push((dev[j] - dev[i]) / (xs[j] - xs[i]));
+            }
+        }
+        let slope = median(slopes);
+        let intercept = median(fit.iter().map(|&i| dev[i] - slope * xs[i]).collect());
+        (Some(slope), intercept)
+    } else {
+        let intercept = median(fit.iter().map(|&i| dev[i]).collect());
+        (None, intercept)
+    };
+
+    let s = slope.unwrap_or(0.0);
+    let locals = xs
+        .iter()
+        .zip(dev)
+        .map(|(&x, &d)| d - (s * x + intercept))
+        .collect();
+    (slope, locals)
 }
 
 /// RMS of a sample window, in f64 (0.0 for an empty window). The ONE copy of the
@@ -551,17 +654,18 @@ pub enum Sev {
 pub struct Diag {
     pub key: &'static str,
     pub label: &'static str,
-    /// Coarse tint (High/Med) — unchanged by the reliability layer.
+    /// Coarse tint (High/Med).
     pub sev: Sev,
     /// Magnitude PAST threshold in the rule's natural unit (dB for the
     /// band/fizzy/washed rules, LU for spiky) — `metric − threshold`, always ≥ 0
     /// for a fired card. Playback offsets shift the threshold, so they shift this.
+    /// The frontend's `isPossible` (a near-threshold "possible" verdict, rendered
+    /// muted) reads this directly — see `severity.ts::POSSIBLE_MAX_SEVERITY`. The
+    /// UI renders a fired card as "possible" when `severity < 1.0` — a flat
+    /// provisional cutoff applied uniformly across every rule's own unit, not a
+    /// per-rule-calibrated one; the R5 calibration sweep is expected to refine it
+    /// per rule.
     pub severity: f64,
-    /// Reliability of the verdict, 0..1: `clamp(margin / (Z_CONF·σ), 0, 1)` where
-    /// `margin == severity` and σ is the rule's provisional noise ([`rule_sigma`]).
-    /// A fired card with `confidence < POSSIBLE_MAX_CONFIDENCE` (margin < σ) is a
-    /// near-threshold "possible" verdict the UI renders muted.
-    pub confidence: f64,
     /// Indices into the sound's family band layout ([`Family::bands`]) that
     /// light up in the UI; empty = a time-domain finding (washed / buried).
     pub bands: Vec<usize>,
@@ -569,23 +673,6 @@ pub struct Diag {
     pub detail: String,
     pub explain: &'static str,
     pub rx: Vec<Rx>,
-}
-
-/// Confidence scaling: a card sitting exactly AT threshold has confidence 0, one
-/// `Z_CONF·σ` past it saturates to 1.0. Two σ of margin ⇒ full confidence.
-const Z_CONF: f64 = 2.0;
-
-/// Provisional per-rule measurement noise σ, in the rule's natural unit (dB for
-/// the band-residual/fizzy/washed rules, LU for spiky). Only scales `confidence`;
-/// the fire threshold is untouched.
-// ponytail: refined by the Stage-0 HW repeatability sweep.
-fn rule_sigma(key: &str) -> f64 {
-    match key {
-        "washed" => 1.5,
-        "spiky" => 0.5,
-        // Band-residual rules (muddy/boomy/harsh/lost/buried) + fizzy.
-        _ => 1.0,
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1442,6 +1529,32 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             }
             rx
         }
+        // dark/bright/thin are broadband tilt/local findings, not a single
+        // block's fault — advisory-only. ponytail deviation from the frozen
+        // spec: dark's "reuse the EQ as a lift" branch is SKIPPED (advisory-only
+        // for both directions) rather than reusing `eq_move`'s cut-only helper —
+        // no verified EQ-10 band controlId exists in this codebase past
+        // gain1khz/gain2khz (harsh) and gain250hz (muddy), and this codebase's
+        // exact-id-matching discipline (see the module doc) makes guessing one
+        // (e.g. a `gain4khz`/`gain8khz`) too risky to ship unverified.
+        "dark" => vec![
+            advisory(
+                "Open the amp's treble and presence",
+                "A small treble or presence lift on the amp brings the whole tone forward — try that before reaching for an EQ.",
+            ),
+            advisory(
+                "Or tame the low end",
+                "If the lows are what's heavy, easing bass on the amp gets the same balance back.",
+            ),
+        ],
+        "bright" => vec![advisory(
+            "Ease the treble/presence on the amp",
+            "Backing Presence and Treble off a notch takes the brittle edge off without losing the amp's character.",
+        )],
+        "thin" => vec![advisory(
+            "Bring up the amp's bass, or move toward the neck pickup",
+            "There's little happening below the low-mids — riding up the amp's Bass, or picking closer to the neck, fills it back in.",
+        )],
         _ => Vec::new(),
     }
 }
@@ -1451,8 +1564,8 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
 /// Diagnose one sound. `nodes` (the preset's chain, from the backup scan's
 /// graph) enriches detection (drive presence) and drives prescriptions;
 /// diagnosis still works without it (graph-dependent rx are simply absent).
-/// Deterministic — the verdict depends only on THIS sound (tilt-residual vs a
-/// fixed target), never on which other sounds ran.
+/// Deterministic — the verdict depends only on THIS sound (its deviation from a
+/// fixed authored target curve), never on which other sounds ran.
 pub fn diagnose(
     profile: &SoundProfile,
     nodes: Option<&[DoctorNode]>,
@@ -1486,21 +1599,21 @@ pub fn diagnose_kind(
 ) -> Vec<Diag> {
     let t = instrument.thresholds_for(kind);
     // A rule keyed on band `i` fires only when the stimulus actually excited it.
-    let covered = |i: usize| coverage.is_none_or(|c| c.get(i).copied().unwrap_or(true));
-    // Tilt-residual metric: each band's dB deviation from the sound's OWN smooth
-    // spectral trend, minus the (flat) target curve. Level- and tilt-invariant and
-    // robust to a single-band anomaly — deterministic, cohort-free, the same space
-    // the `--doctor-calib` sweep derives thresholds in.
+    let covered = |i: usize| band_covered(coverage, i);
+    // Deviation-from-target + Theil–Sen tilt/local split: each band's dB above
+    // the authored target curve, then decomposed into a broadband TILT (the
+    // whole-tone dark/bright lean) and per-band LOCAL bumps (muddy/boomy/harsh/
+    // lost/buried/thin) — level-invariant by construction (no mean removal), and
+    // robust to a single-band anomaly. The same space the `--doctor-calib` sweep
+    // derives thresholds in.
     let bdb = band_db(&profile.bands);
-    let centers = instrument.band_centers();
-    let res = tilt_residuals(&bdb, &centers);
-    let target = target_residuals(instrument);
-    let dev = |i: usize| tonal_dev(&res, target, i);
+    let dev = deviations(&bdb, instrument);
+    let (slope, locals) = tilt_split(&dev, instrument, coverage);
     let (lows, low_mids, mids, high_mids, highs, air) = instrument.semantic_bands();
     let facts = nodes.map(graph_facts);
     let mut out = Vec::new();
-    // `margin` = metric − (offset-adjusted) threshold, ≥ 0 for a fired card. It IS
-    // the severity (magnitude past threshold); confidence scales it by the rule's σ.
+    // `margin` = metric − (offset-adjusted) threshold, ≥ 0 for a fired card. It
+    // IS the severity (magnitude past threshold).
     let mut push = |key: &'static str,
                     label: &'static str,
                     sev: Sev,
@@ -1508,7 +1621,6 @@ pub fn diagnose_kind(
                     bands: Vec<usize>,
                     detail: String,
                     explain: &'static str| {
-        let confidence = (margin / (Z_CONF * rule_sigma(key))).clamp(0.0, 1.0);
         let rx = nodes
             .map(|n| generate_rx(key, n, instrument))
             .unwrap_or_default();
@@ -1517,7 +1629,6 @@ pub fn diagnose_kind(
             label,
             sev,
             severity: margin,
-            confidence,
             bands,
             detail,
             explain,
@@ -1526,11 +1637,10 @@ pub fn diagnose_kind(
     };
 
     // Every rule fires on `margin > 0` (metric strictly past the offset-adjusted
-    // threshold) exactly as before — the reliability layer only ATTACHES a
-    // severity + confidence, it does not change WHICH cards fire.
+    // threshold).
     // ponytail: guard-band widening (surfacing below-threshold cards) is a later,
     // HW-σ-calibrated step — keep the raw `> threshold` fire condition here.
-    let muddy_margin = dev(low_mids) - (t.muddy_db + offsets.low_end_db);
+    let muddy_margin = locals[low_mids] - (t.muddy_db + offsets.low_end_db);
     if covered(low_mids) && muddy_margin > 0.0 {
         push(
             "muddy",
@@ -1538,11 +1648,11 @@ pub fn diagnose_kind(
             Sev::High,
             muddy_margin,
             vec![low_mids],
-            format!("buildup around 250–350 Hz ({:+.1} dB)", dev(low_mids)),
+            format!("buildup around 250–350 Hz ({:+.1} dB)", locals[low_mids]),
             "There's a buildup in the low-mids that stacks up with the bass player.",
         );
     }
-    let boomy_margin = dev(lows) - (t.boomy_db + offsets.low_end_db);
+    let boomy_margin = locals[lows] - (t.boomy_db + offsets.low_end_db);
     if covered(lows) && boomy_margin > 0.0 {
         push(
             "boomy",
@@ -1550,11 +1660,11 @@ pub fn diagnose_kind(
             Sev::Med,
             boomy_margin,
             vec![lows],
-            format!("excess energy below 100 Hz ({:+.1} dB)", dev(lows)),
+            format!("excess energy below 100 Hz ({:+.1} dB)", locals[lows]),
             "Too much deep low end — it booms and loses focus once you turn up.",
         );
     }
-    let harsh_margin = dev(high_mids) - t.harsh_db;
+    let harsh_margin = locals[high_mids] - t.harsh_db;
     if covered(high_mids) && harsh_margin > 0.0 {
         push(
             "harsh",
@@ -1562,16 +1672,20 @@ pub fn diagnose_kind(
             Sev::High,
             harsh_margin,
             vec![high_mids],
-            format!("spike around 1–3 kHz ({:+.1} dB)", dev(high_mids)),
+            format!("spike around 1–3 kHz ({:+.1} dB)", locals[high_mids]),
             "A sharp peak in the high-mids makes it harsh and tiring to listen to.",
         );
     }
     // Fizz is the Air band failing to roll off below the presence band — a
     // difference of the two bands' own dB (self-mean cancels, so it's identical
     // to the old balance-space form). See `Thresholds::fizzy_db`. Own-spectrum,
-    // so it needs BOTH the Air and Highs bands actually excited.
+    // so it needs BOTH the Air and Highs bands actually excited. On a real DI
+    // capture, gate on the top octave's spectral flatness (noise-like HF hash vs
+    // a merely bright cab) — inert on the synthetic stimulus (see
+    // `FIZZY_MIN_FLATNESS`).
     let fizzy_margin = (bdb[air] - bdb[highs]) - (t.fizzy_db + offsets.fizzy_db);
-    if covered(air) && covered(highs) && fizzy_margin > 0.0 {
+    let fizzy_gated = kind != StimulusKind::Capture || profile.air_flatness >= FIZZY_MIN_FLATNESS;
+    if covered(air) && covered(highs) && fizzy_margin > 0.0 && fizzy_gated {
         push(
             "fizzy",
             "Fizzy",
@@ -1585,7 +1699,7 @@ pub fn diagnose_kind(
             "Fizzy, buzzy top end — the kind that sounds like radio static on the note tails.",
         );
     }
-    let lost_margin = -dev(mids) - t.lost_db;
+    let lost_margin = -locals[mids] - t.lost_db;
     if covered(mids) && lost_margin > 0.0 {
         push(
             "lost",
@@ -1593,9 +1707,62 @@ pub fn diagnose_kind(
             Sev::High,
             lost_margin,
             vec![mids],
-            format!("mids scooped {:.1} dB around 800 Hz", -dev(mids)),
+            format!("mids scooped {:.1} dB around 800 Hz", -locals[mids]),
             "The mids are scooped, so it sounds big alone but disappears with a full band.",
         );
+    }
+    // Broadband tilt (dark/bright) and the guitar-only thin local: all three
+    // need a determined slope (≥3 fit points survived `covered` gating) — a
+    // fit anchored on fewer points is too unreliable to support a whole-tone or
+    // local verdict.
+    if let Some(s) = slope {
+        let tilt_bands = vec![highs, air];
+        let tilt_margin = s.abs() - t.tilt_db_per_oct;
+        if tilt_margin > 0.0 {
+            let (key, label, dir, explain) = if s < 0.0 {
+                (
+                    "dark",
+                    "Dark",
+                    "darker",
+                    "The whole tone leans dark — the top end is shy across the board, so it sounds dull and boxed-in.",
+                )
+            } else {
+                (
+                    "bright",
+                    "Bright",
+                    "brighter",
+                    "The whole tone leans bright — it gets brittle and tiring, with little warmth underneath.",
+                )
+            };
+            push(
+                key,
+                label,
+                Sev::Med,
+                tilt_margin,
+                tilt_bands,
+                format!(
+                    "tilted {:.1} dB/octave {dir} than the target voicing",
+                    s.abs()
+                ),
+                explain,
+            );
+        }
+        // Bass low-deficit is `buried`'s domain (needs a drive + graph); thin is
+        // the graph-free, guitar-only counterpart.
+        if instrument == Family::Guitar {
+            let thin_margin = -locals[lows] - t.thin_db;
+            if covered(lows) && thin_margin > 0.0 {
+                push(
+                    "thin",
+                    "Thin",
+                    Sev::Med,
+                    thin_margin,
+                    vec![lows],
+                    format!("low end {:.1} dB under the target voicing", -locals[lows]),
+                    "The low end is missing, so the tone sounds small and never fills the room.",
+                );
+            }
+        }
     }
     let washed_margin = profile.tail_ratio_db - t.wash_tail_db;
     if washed_margin > 0.0 {
@@ -1628,7 +1795,7 @@ pub fn diagnose_kind(
             "The level jumps between loud peaks and a much quieter average — it pokes out of the mix one moment and disappears the next.",
         );
     }
-    let buried_margin = -dev(lows) - t.buried_lows_db;
+    let buried_margin = -locals[lows] - t.buried_lows_db;
     if matches!(instrument, Family::Bass | Family::BassVi)
         && facts.as_ref().map(|f| f.has_drive) == Some(true)
         && covered(lows)
@@ -1878,30 +2045,26 @@ mod onset_split_tests {
 mod tests {
     use super::*;
 
-    /// A `SoundProfile` on a straight −12 dB/oct baseline line (all tilt-residuals
-    /// ≈ 0, Air rolled 12 dB below Highs so fizzy stays silent) whose tilt-residual
-    /// at `band` is EXACTLY `resid` dB. Computes `band`'s per-band tilt-residual
-    /// self-gain directly (bump the baseline by +1.0 dB at `band` and read the
-    /// resulting residual back through the real [`tilt_residuals`] metric — OLS
-    /// residuals are linear in `y`, so that gain scales exactly, with no
-    /// approximation error to separately guard against). Guitar/bass 6-band
-    /// layout. `spread_lu`/`tail` are inert (no spiky/washed).
-    fn resid_profile(band: usize, resid: f64) -> SoundProfile {
-        const SLOPE: f64 = -12.0;
-        let centers = Family::Guitar.band_centers();
-        let x0 = centers[0].log2();
-        let baseline: Vec<f64> = centers.iter().map(|c| SLOPE * (c.log2() - x0)).collect();
-        let mut bumped = baseline.clone();
-        bumped[band] += 1.0;
-        let gain = tilt_residuals(&bumped, &centers)[band];
-        let mut bdb = baseline;
-        bdb[band] += resid / gain;
+    /// A `SoundProfile` sitting EXACTLY on `family`'s authored target curve,
+    /// except band `band` bumped by `local` dB. Since only one of the 5 semantic
+    /// BODY bands differs from the (otherwise flat-zero) target deviation, the
+    /// Theil–Sen fit's slope and intercept both land EXACTLY at 0 regardless of
+    /// which band is bumped or by how much — at least 6 of the 10 pairwise
+    /// slopes are between two zero-deviation points, which pins the median at 0
+    /// (verified against the real [`tilt_split`] in the oracle tests below) — so
+    /// `tilt_split`'s `locals[band]` reads back EXACTLY `local`, no approximation.
+    /// `band` must be one of the 5 body indices ([`Family::semantic_bands`]'s
+    /// `lows..=highs`). `spread_lu`/`tail`/`air_flatness` are inert defaults (no
+    /// spiky/washed/capture-gate effect) unless the caller overwrites them.
+    fn resid_profile(family: Family, band: usize, local: f64) -> SoundProfile {
+        let mut bdb: Vec<f64> = target_curve(family).to_vec();
+        bdb[band] += local;
         SoundProfile {
             bands: bdb.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
             integrated_lufs: -20.0,
             spread_lu: 0.0,
             tail_ratio_db: -40.0,
-            tilt: 0.0,
+            air_flatness: 0.5,
         }
     }
 
@@ -1921,61 +2084,280 @@ mod tests {
     }
 
     #[test]
-    fn tilt_residuals_pure_tilt_reads_zero() {
-        // A perfect line in log2(freq) → all residuals ≈ 0, at ANY slope (level-
-        // and tilt-invariant). The absolute intercept is irrelevant too.
-        let centers = Family::Guitar.band_centers();
-        let x0 = centers[0].log2();
-        for slope in [-12.0, -3.0, 0.0, 4.0] {
-            let bdb: Vec<f64> = centers
-                .iter()
-                .map(|c| 30.0 + slope * (c.log2() - x0))
-                .collect();
-            for r in tilt_residuals(&bdb, &centers) {
-                assert!(r.abs() < 1e-9, "slope {slope}: residual {r} !≈ 0");
-            }
+    fn target_curve_length_and_values_pinned() {
+        assert_eq!(target_curve(Family::Guitar).len(), 6);
+        assert_eq!(target_curve(Family::Bass).len(), 6);
+        assert_eq!(target_curve(Family::BassVi).len(), 7);
+        assert_eq!(target_curve(Family::Guitar)[0], -3.0);
+        assert_eq!(target_curve(Family::Bass)[0], 4.0);
+        assert_eq!(target_curve(Family::BassVi)[0], -6.0); // Sub
+                                                           // Deliberately DIFFERENT authored opinions per family, not a shared flat
+                                                           // baseline (the old provisional-zero target).
+        assert_ne!(
+            target_curve(Family::Guitar)[1],
+            target_curve(Family::Bass)[1]
+        );
+    }
+
+    #[test]
+    fn deviations_is_band_db_minus_target() {
+        let bands = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]; // 0 dB in every band
+        let dev = deviations(&band_db(&bands), Family::Guitar);
+        for (d, t) in dev.iter().zip(GUITAR_TARGET) {
+            assert!((d - (0.0 - t)).abs() < 1e-9);
+        }
+    }
+
+    // ── deviation/tilt-split oracle tests (supervisor-derived constants,
+    //    independent of the implementation) — build a band-dB vector, check
+    //    `deviations` + `tilt_split` against precomputed slope/local values,
+    //    then confirm the `diagnose()`-level firing set. Guitar x-axis (log2 of
+    //    `Family::Guitar.band_centers()`): [6.406891, 7.775373, 9.30482,
+    //    10.758266, 12.050747, 13.050747].
+
+    fn oracle_profile(bdb: &[f64]) -> SoundProfile {
+        SoundProfile {
+            bands: bdb.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
+            integrated_lufs: -20.0,
+            spread_lu: 0.0,
+            tail_ratio_db: -80.0,
+            air_flatness: 0.5,
+        }
+    }
+
+    fn assert_locals_close(got: &[f64], want: &[f64], tol: f64) {
+        assert_eq!(got.len(), want.len());
+        for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
+            assert!((g - w).abs() <= tol, "local[{i}]: got {g}, want {w}");
         }
     }
 
     #[test]
-    fn tilt_residuals_single_bump_no_cross_contamination() {
-        // A single-band bump lands almost entirely on that band's residual; the
-        // neighbours stay small — the property the old self-mean balance lacked
-        // (an excess in one band depressed ALL others uniformly).
-        let centers = Family::Guitar.band_centers();
-        let x0 = centers[0].log2();
-        let mut bdb: Vec<f64> = centers.iter().map(|c| -6.0 * (c.log2() - x0)).collect();
-        bdb[2] += 10.0; // +10 dB bump at the Mids band
-        let res = tilt_residuals(&bdb, &centers);
-        assert!(res[2] > 7.5, "bump band carries the excess: {}", res[2]);
-        for (i, r) in res.iter().enumerate() {
-            if i != 2 {
-                assert!(r.abs() < 3.0, "neighbour {i} residual {r} must stay small");
-            }
+    fn oracle_o1_pure_target_no_cards() {
+        let bdb: Vec<f64> = target_curve(Family::Guitar)
+            .iter()
+            .map(|t| t + 12.0)
+            .collect();
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - 0.0).abs() <= 0.01);
+        assert_locals_close(&locals, &[0.0; 6], 0.01);
+        assert!(keys(&diagnose(&p, None, Family::Guitar)).is_empty());
+    }
+
+    #[test]
+    fn oracle_o2_muddy_local_bump() {
+        let bdb = [5.0, 14.0, 8.0, 6.0, -2.0, -20.0]; // target+8 uniform, +6 low-mids
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - 0.0).abs() <= 0.01);
+        assert_locals_close(&locals, &[0.0, 6.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        let diags = diagnose(&p, None, Family::Guitar);
+        let got = keys(&diags);
+        assert!((find(&diags, "muddy").severity - 1.5).abs() < 0.01);
+        for absent in ["boomy", "dark", "bright", "thin"] {
+            assert!(!got.contains(&absent), "{absent} must not fire");
         }
     }
 
     #[test]
-    fn tonal_dev_subtracts_the_target() {
-        assert!((tonal_dev(&[5.0, -2.0], &[1.0, -1.0], 0) - 4.0).abs() < 1e-9);
-        assert!((tonal_dev(&[5.0, -2.0], &[1.0, -1.0], 1) - (-1.0)).abs() < 1e-9);
+    fn oracle_o3_dark_tilt_only() {
+        let bdb = [
+            10.27165, 10.808381, 8.055377, 3.439175, -6.887291, -26.687291,
+        ];
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - (-1.8)).abs() <= 0.01);
+        assert_locals_close(&locals, &[0.0; 6], 0.01);
+        let diags = diagnose(&p, None, Family::Guitar);
+        let got = keys(&diags);
+        assert!((find(&diags, "dark").severity - 0.8).abs() < 0.01);
+        for absent in ["boomy", "muddy", "thin"] {
+            assert!(!got.contains(&absent), "{absent} must not fire");
+        }
     }
 
     #[test]
-    fn target_residuals_length_matches_family() {
-        assert_eq!(target_residuals(Family::Guitar).len(), 6);
-        assert_eq!(target_residuals(Family::Bass).len(), 6);
-        assert_eq!(target_residuals(Family::BassVi).len(), 7);
-        // Provisional bootstrap is flat zeros.
-        assert!(target_residuals(Family::Guitar).iter().all(|&t| t == 0.0));
+    fn oracle_o4_dark_and_muddy_co_fire() {
+        // The multi-defect lock: a −1.8 dB/oct dark tilt PLUS a +6 dB low-mid
+        // bump on top — under Theil–Sen (unlike the old OLS fit) both verdicts
+        // fire together. Same vector as the marketing showcase's preset 11.
+        let bdb = SHOWCASE_DARK_MUDDY_BDB;
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - (-1.8)).abs() <= 0.01);
+        assert_locals_close(&locals, &[0.0, 6.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        let got = keys(&diagnose(&p, None, Family::Guitar));
+        assert!(got.contains(&"dark"));
+        assert!(got.contains(&"muddy"));
+    }
+
+    #[test]
+    fn oracle_o5_no_false_fire() {
+        let bdb = [-4.0, -1.0, 0.0, 0.0, -8.0, -25.0]; // a different normal combo
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - 0.6716).abs() <= 0.01);
+        assert!(locals[..5].iter().all(|l| l.abs() <= 0.87), "{locals:?}");
+        assert!(
+            keys(&diagnose(&p, None, Family::Guitar)).is_empty(),
+            "no-false-harsh lock"
+        );
+    }
+
+    #[test]
+    fn oracle_o7_bright_only() {
+        let bdb = [
+            -8.226375, -3.173651, -0.87948, -0.699313, -6.760591, -23.260591,
+        ];
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - 1.5).abs() <= 0.01);
+        assert_locals_close(&locals, &[0.0; 6], 0.01);
+        let got = keys(&diagnose(&p, None, Family::Guitar));
+        assert!(got.contains(&"bright"));
+        assert!(!got.contains(&"thin"));
+    }
+
+    #[test]
+    fn oracle_o8_thin_is_guitar_only() {
+        let bdb: Vec<f64> = target_curve(Family::Guitar)
+            .iter()
+            .zip([-6.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .map(|(t, d)| t + d)
+            .collect();
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - 0.0).abs() <= 0.01);
+        assert_locals_close(&locals, &[-6.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        let diags = diagnose(&p, None, Family::Guitar);
+        assert!((find(&diags, "thin").severity - 1.5).abs() < 0.01);
+        // Same profile judged as Bass: no thin (guitar-only gate) — and no
+        // buried either (buried needs a graph-derived drive; nodes=None here).
+        let got_bass = keys(&diagnose(&p, None, Family::Bass));
+        assert!(!got_bass.contains(&"thin"));
+        assert!(!got_bass.contains(&"buried"));
+    }
+
+    #[test]
+    fn oracle_o9_boomy_the_old_ols_miss() {
+        // The old OLS metric read this bump as 3.21 dB and missed the 5.0 dB
+        // boomy threshold; Theil–Sen reads the full 8.0 dB local bump.
+        let bdb: Vec<f64> = target_curve(Family::Guitar)
+            .iter()
+            .zip([8.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            .map(|(t, d)| t + d)
+            .collect();
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, None);
+        assert!((slope.unwrap() - 0.0).abs() <= 0.01);
+        assert_locals_close(&locals, &[8.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        let diags = diagnose(&p, None, Family::Guitar);
+        assert!((find(&diags, "boomy").severity - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn oracle_o10_bass_vi_semantic_addressing() {
+        let bdb: Vec<f64> = target_curve(Family::BassVi)
+            .iter()
+            .zip([9.0, 9.0, 16.0, 9.0, 9.0, 9.0, 9.0])
+            .map(|(t, d)| t + d)
+            .collect();
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::BassVi);
+        let (slope, locals) = tilt_split(&dev, Family::BassVi, None);
+        assert!((slope.unwrap() - 0.0).abs() <= 0.01);
+        assert_locals_close(&locals, &[0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 0.0], 0.01);
+        assert!(keys(&diagnose(&p, None, Family::BassVi)).contains(&"muddy"));
+    }
+
+    #[test]
+    fn oracle_fizzy_gate_inert_on_synthetic_gated_on_capture() {
+        // bdb[air]−bdb[highs] = −5, past the −9 dB threshold either way.
+        let mut bdb: Vec<f64> = target_curve(Family::Guitar).to_vec();
+        bdb[5] = bdb[4] - 5.0;
+        let mk = |flatness: f64| {
+            let mut p = oracle_profile(&bdb);
+            p.air_flatness = flatness;
+            p
+        };
+        let fires = |p: &SoundProfile, kind: StimulusKind| {
+            keys(&diagnose_kind(
+                p,
+                None,
+                Family::Guitar,
+                kind,
+                None,
+                PlaybackOffsets::NONE,
+            ))
+            .contains(&"fizzy")
+        };
+        // Synthetic: fires regardless of flatness — the gate is inert there.
+        assert!(fires(&mk(0.1), StimulusKind::Synthetic));
+        assert!(fires(&mk(0.9), StimulusKind::Synthetic));
+        // Capture: gated on air_flatness ≥ FIZZY_MIN_FLATNESS (0.35).
+        assert!(!fires(&mk(0.1), StimulusKind::Capture));
+        assert!(fires(&mk(0.5), StimulusKind::Capture));
+    }
+
+    #[test]
+    fn oracle_coverage_excludes_uncovered_body_band_but_keeps_finite_locals() {
+        let bdb = [5.0, 14.0, 8.0, 6.0, -2.0, -20.0]; // O2
+        let dev = deviations(&bdb, Family::Guitar);
+        let covered = [false, true, true, true, true, true]; // lows excluded
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, Some(&covered));
+        assert!(
+            slope.is_some(),
+            "4 remaining fit points still determine a slope"
+        );
+        assert!(locals.iter().all(|l| l.is_finite()));
+        assert_eq!(locals.len(), 6);
+    }
+
+    #[test]
+    fn oracle_coverage_two_body_bands_gives_no_slope_and_no_tilt_cards() {
+        // O3's pure −1.8 dB/oct tilt — with full coverage this fires `dark`.
+        let bdb = [
+            10.27165, 10.808381, 8.055377, 3.439175, -6.887291, -26.687291,
+        ];
+        let p = oracle_profile(&bdb);
+        let dev = deviations(&bdb, Family::Guitar);
+        // Only lows + low-mids covered in the body → 2 fit points.
+        let covered = [true, true, false, false, false, true];
+        let (slope, locals) = tilt_split(&dev, Family::Guitar, Some(&covered));
+        assert!(
+            slope.is_none(),
+            "only 2 fit points must not determine a slope"
+        );
+        assert!(locals.iter().all(|l| l.is_finite()));
+
+        let got = keys(&diagnose_kind(
+            &p,
+            None,
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            Some(&covered),
+            PlaybackOffsets::NONE,
+        ));
+        for absent in ["dark", "bright", "thin"] {
+            assert!(!got.contains(&absent), "{absent} must not fire");
+        }
     }
 
     // ── rules fire just-above, stay silent just-below ──
 
     #[test]
     fn muddy_fires_above_threshold_only() {
-        let hot = resid_profile(1, GUITAR.muddy_db + 1.0);
-        let cold = resid_profile(1, GUITAR.muddy_db - 1.0);
+        let hot = resid_profile(Family::Guitar, 1, GUITAR.muddy_db + 1.0);
+        let cold = resid_profile(Family::Guitar, 1, GUITAR.muddy_db - 1.0);
         assert!(keys(&diagnose(&hot, None, Instrument::Guitar)).contains(&"muddy"));
         assert!(!keys(&diagnose(&cold, None, Instrument::Guitar)).contains(&"muddy"));
     }
@@ -1986,12 +2368,12 @@ mod tests {
             (0usize, "boomy", GUITAR.boomy_db),
             (3, "harsh", GUITAR.harsh_db),
         ] {
-            let hot = resid_profile(band, thr + 1.0);
+            let hot = resid_profile(Family::Guitar, band, thr + 1.0);
             assert!(
                 keys(&diagnose(&hot, None, Instrument::Guitar)).contains(&key),
                 "{key} should fire"
             );
-            let cold = resid_profile(band, thr - 1.0);
+            let cold = resid_profile(Family::Guitar, band, thr - 1.0);
             assert!(
                 !keys(&diagnose(&cold, None, Instrument::Guitar)).contains(&key),
                 "{key} should stay silent below threshold"
@@ -2003,26 +2385,26 @@ mod tests {
     fn fizzy_fires_on_missing_air_rolloff() {
         // Fizz = Air failing to roll off below the presence band (a self-difference
         // bdb[Air]−bdb[Highs], not a tilt residual — see Thresholds::fizzy_db).
-        let mut hash = resid_profile(2, 0.0);
+        let mut hash = resid_profile(Family::Guitar, 2, 0.0);
         hash.bands[5] = hash.bands[4]; // no rolloff at all: air == highs → diff 0 > −9
         assert!(keys(&diagnose(&hash, None, Instrument::Guitar)).contains(&"fizzy"));
         // The bare −12 dB/oct baseline rolls Air 12 dB below Highs → never fizzes.
-        let cabbed = resid_profile(2, 0.0);
+        let cabbed = resid_profile(Family::Guitar, 2, 0.0);
         assert!(!keys(&diagnose(&cabbed, None, Instrument::Guitar)).contains(&"fizzy"));
     }
 
     #[test]
     fn lost_fires_on_mid_scoop() {
         // lost = −dev(mids) over threshold, i.e. the Mids residual pushed DOWN.
-        let scooped = resid_profile(2, -(GUITAR.lost_db + 1.0));
+        let scooped = resid_profile(Family::Guitar, 2, -(GUITAR.lost_db + 1.0));
         assert!(keys(&diagnose(&scooped, None, Instrument::Guitar)).contains(&"lost"));
-        let shallow = resid_profile(2, -(GUITAR.lost_db - 1.0));
+        let shallow = resid_profile(Family::Guitar, 2, -(GUITAR.lost_db - 1.0));
         assert!(!keys(&diagnose(&shallow, None, Instrument::Guitar)).contains(&"lost"));
     }
 
     #[test]
     fn washed_fires_on_wet_tail() {
-        let mut p = resid_profile(2, 0.0);
+        let mut p = resid_profile(Family::Guitar, 2, 0.0);
         p.tail_ratio_db = GUITAR.wash_tail_db + 5.0;
         assert!(keys(&diagnose(&p, None, Instrument::Guitar)).contains(&"washed"));
         p.tail_ratio_db = GUITAR.wash_tail_db - 5.0;
@@ -2031,9 +2413,9 @@ mod tests {
 
     #[test]
     fn a_clean_line_profile_is_all_clear() {
-        // The whole point of the tilt-residual metric: a smooth (even steeply
-        // tilted) spectrum reads clean — no rule fires on the baseline line.
-        let clean = resid_profile(0, 0.0);
+        // A sound sitting exactly on the target curve (no local bump, see
+        // `oracle_o1_pure_target_no_cards` for the tilted case) reads clean.
+        let clean = resid_profile(Family::Guitar, 0, 0.0);
         assert!(keys(&diagnose(&clean, None, Instrument::Guitar)).is_empty());
     }
 
@@ -2041,7 +2423,7 @@ mod tests {
     fn diagnose_is_deterministic_across_calls() {
         // No runtime cohort → the SAME input yields the SAME key set every call,
         // independent of any other sound.
-        let p = resid_profile(1, GUITAR.muddy_db + 1.0);
+        let p = resid_profile(Family::Guitar, 1, GUITAR.muddy_db + 1.0);
         let a = keys(&diagnose(&p, None, Instrument::Guitar));
         let b = keys(&diagnose(&p, None, Instrument::Guitar));
         let c = keys(&diagnose(&p, None, Instrument::Guitar));
@@ -2049,7 +2431,8 @@ mod tests {
         assert_eq!(b, c);
     }
 
-    // ── severity + confidence (the reliability layer) ──
+    // ── severity (magnitude past threshold — no backend confidence anymore;
+    //    "possible" is a pure frontend threshold on severity, see severity.ts) ──
 
     fn find(diags: &[Diag], key: &str) -> Diag {
         diags
@@ -2060,87 +2443,22 @@ mod tests {
     }
 
     #[test]
-    fn rule_sigma_table_is_provisional_values() {
-        for k in ["muddy", "boomy", "harsh", "lost", "buried", "fizzy"] {
-            assert_eq!(rule_sigma(k), 1.0, "{k} band/fizzy σ");
-        }
-        assert_eq!(rule_sigma("washed"), 1.5);
-        assert_eq!(rule_sigma("spiky"), 0.5);
-    }
-
-    #[test]
-    fn far_past_threshold_is_full_confidence_and_severity_equals_db_past() {
-        // margin = 4 dB = 2σ (σ_muddy = 1) → confidence saturates at 1.0, and
-        // severity is exactly the dB past threshold.
-        let hot = resid_profile(1, GUITAR.muddy_db + 4.0);
+    fn far_past_threshold_severity_equals_db_past() {
+        let hot = resid_profile(Family::Guitar, 1, GUITAR.muddy_db + 4.0);
         let muddy = find(&diagnose(&hot, None, Instrument::Guitar), "muddy");
-        assert!(muddy.severity >= 0.0);
         assert!(
             (muddy.severity - 4.0).abs() < 0.05,
             "severity {}",
             muddy.severity
         );
-        assert!(
-            (muddy.confidence - 1.0).abs() < 1e-9,
-            "confidence {}",
-            muddy.confidence
-        );
     }
 
     #[test]
-    fn just_past_threshold_is_a_possible_verdict() {
-        // margin = 0.5 dB < σ (1.0) → confidence 0.25 < POSSIBLE_MAX (0.5).
-        let barely = resid_profile(1, GUITAR.muddy_db + 0.5);
-        let muddy = find(&diagnose(&barely, None, Instrument::Guitar), "muddy");
-        assert!(muddy.severity > 0.0, "still a fired card");
-        assert!(
-            muddy.confidence < 0.5, // mirror of severity.ts POSSIBLE_MAX_CONFIDENCE
-            "possible: confidence {}",
-            muddy.confidence
-        );
-        assert!(
-            (muddy.confidence - 0.25).abs() < 0.02,
-            "confidence {}",
-            muddy.confidence
-        );
-    }
-
-    #[test]
-    fn confidence_is_monotonic_in_margin() {
-        let mut prev = -1.0;
-        for extra in [0.2_f64, 0.6, 1.0, 1.6, 2.2, 3.0] {
-            let p = resid_profile(1, GUITAR.muddy_db + extra);
-            let muddy = find(&diagnose(&p, None, Instrument::Guitar), "muddy");
-            assert!(muddy.severity >= 0.0);
-            assert!(
-                muddy.confidence >= prev,
-                "confidence must not decrease with margin"
-            );
-            prev = muddy.confidence;
-        }
-        assert!((prev - 1.0).abs() < 1e-9, "saturates at 1.0 by 2σ");
-    }
-
-    #[test]
-    fn washed_confidence_uses_its_wider_sigma() {
-        // σ_washed = 1.5, so it saturates only at 3.0 dB past threshold, and sits
-        // exactly at the POSSIBLE_MAX boundary at 1.5 dB (= σ) past.
-        let mut p = resid_profile(2, 0.0);
-        p.tail_ratio_db = GUITAR.wash_tail_db + 3.0;
-        let washed = find(&diagnose(&p, None, Instrument::Guitar), "washed");
-        assert!((washed.severity - 3.0).abs() < 1e-9);
-        assert!((washed.confidence - 1.0).abs() < 1e-9);
-        p.tail_ratio_db = GUITAR.wash_tail_db + 1.5;
-        let washed = find(&diagnose(&p, None, Instrument::Guitar), "washed");
-        assert!((washed.confidence - 0.5).abs() < 1e-9); // mirror of severity.ts POSSIBLE_MAX_CONFIDENCE
-    }
-
-    #[test]
-    fn playback_offset_shifts_severity_and_confidence() {
+    fn playback_offset_shifts_severity() {
         // Stage lowers the boomy threshold by 2 dB, so the same sound reads 2 dB
-        // MORE margin (higher severity + confidence) at Stage than at Rehearsal.
+        // MORE margin (higher severity) at Stage than at Rehearsal.
         use crate::profiles::PlaybackLevel::{Rehearsal, Stage};
-        let p = resid_profile(0, GUITAR.boomy_db + 1.0); // rehearsal margin = 1.0
+        let p = resid_profile(Family::Guitar, 0, GUITAR.boomy_db + 1.0); // rehearsal margin = 1.0
         let at = |lvl| {
             find(
                 &diagnose_kind(
@@ -2161,16 +2479,18 @@ mod tests {
             (stg.severity - 3.0).abs() < 0.05,
             "stage margin = 1.0 + 2.0"
         );
-        assert!(stg.confidence > reh.confidence);
     }
 
     #[test]
-    fn wire_shape_carries_severity_and_confidence() {
-        let p = resid_profile(1, GUITAR.muddy_db + 1.0);
+    fn wire_shape_carries_severity_and_not_confidence() {
+        let p = resid_profile(Family::Guitar, 1, GUITAR.muddy_db + 1.0);
         let v = serde_json::to_value(&diagnose(&p, None, Family::Guitar)[0]).unwrap();
         let obj = v.as_object().unwrap();
         assert!(obj.contains_key("severity"));
-        assert!(obj.contains_key("confidence"));
+        assert!(
+            !obj.contains_key("confidence"),
+            "confidence was deleted — the wire shape must not carry it"
+        );
     }
 
     // ── tail_energy_ratio ──
@@ -2723,14 +3043,14 @@ mod tests {
             &[],
         );
 
-        let mut hot = resid_profile(0, 0.0);
+        let mut hot = resid_profile(Family::Guitar, 0, 0.0);
         hot.spread_lu = GUITAR.spiky_spread_lu + 1.0;
         assert!(keys(&diagnose(&hot, Some(&clean), Instrument::Guitar)).contains(&"spiky"));
         // A drive block in the chain means the amp is already compressing it —
         // spiky is a clean-chain-only finding.
         assert!(!keys(&diagnose(&hot, Some(&driven), Instrument::Guitar)).contains(&"spiky"));
 
-        let mut cold = resid_profile(0, 0.0);
+        let mut cold = resid_profile(Family::Guitar, 0, 0.0);
         cold.spread_lu = GUITAR.spiky_spread_lu - 1.0;
         assert!(!keys(&diagnose(&cold, Some(&clean), Instrument::Guitar)).contains(&"spiky"));
 
@@ -2909,8 +3229,8 @@ mod tests {
 
     #[test]
     fn buried_is_bass_only_and_needs_a_drive() {
-        // buried = the Lows residual scooped past buried_lows_db (−dev(lows)).
-        let scooped_lows = resid_profile(0, -(BASS.buried_lows_db + 1.0));
+        // buried = the Lows local scooped past buried_lows_db (−locals[lows]).
+        let scooped_lows = resid_profile(Family::Bass, 0, -(BASS.buried_lows_db + 1.0));
         let driven = chain(&["ACD_ModernBassOverdrive", "ACD_TweedDeluxe"], &[]);
         let got = diagnose(&scooped_lows, Some(&driven), Instrument::Bass);
         assert!(keys(&got).contains(&"buried"));
@@ -3117,7 +3437,7 @@ mod tests {
             integrated_lufs: -20.0,
             spread_lu: 0.0,
             tail_ratio_db: -40.0,
-            tilt: 0.0,
+            air_flatness: 0.5,
         };
         let diags = diagnose(&p, None, Family::BassVi);
         assert!(
@@ -3139,39 +3459,30 @@ mod tests {
         assert_eq!(a.buried_lows_db, b.buried_lows_db);
         assert_eq!(a.spiky_spread_lu, b.spiky_spread_lu);
         assert_eq!(a.scene_delta_db, b.scene_delta_db);
+        assert_eq!(a.tilt_db_per_oct, b.tilt_db_per_oct);
+        assert_eq!(a.thin_db, b.thin_db);
     }
 
     #[test]
-    fn thresholds_for_synthetic_matches_pinned_consts() {
-        // BACKWARD COMPAT: the synthetic table must stay byte-identical to the
-        // pinned HW-calibrated consts (uncalibrated users' verdicts never move).
-        assert_same_thresholds(
-            Family::Guitar.thresholds_for(StimulusKind::Synthetic),
-            &GUITAR,
-        );
-        assert_same_thresholds(Family::Bass.thresholds_for(StimulusKind::Synthetic), &BASS);
-        assert_same_thresholds(
-            Family::BassVi.thresholds_for(StimulusKind::Synthetic),
-            &BASS_VI,
-        );
-        // thresholds() is the synthetic alias.
-        for fam in [Family::Guitar, Family::Bass, Family::BassVi] {
-            assert_same_thresholds(
-                fam.thresholds(),
-                fam.thresholds_for(StimulusKind::Synthetic),
-            );
+    fn thresholds_for_matches_pinned_consts_regardless_of_kind() {
+        // ONE table per family now — `kind` no longer selects a different table
+        // (the `*_CAPTURE` consts are gone), so both kinds must read identically
+        // to the pinned HW-calibrated consts.
+        for (fam, pinned) in [
+            (Family::Guitar, &GUITAR),
+            (Family::Bass, &BASS),
+            (Family::BassVi, &BASS_VI),
+        ] {
+            assert_same_thresholds(fam.thresholds_for(StimulusKind::Synthetic), pinned);
+            assert_same_thresholds(fam.thresholds_for(StimulusKind::Capture), pinned);
+            assert_same_thresholds(fam.thresholds(), pinned); // thresholds() alias
         }
-        // Capture starts as a copy (provisional) — same values until the sweep retunes.
-        assert_same_thresholds(
-            Family::Guitar.thresholds_for(StimulusKind::Capture),
-            &GUITAR,
-        );
     }
 
     #[test]
     fn band_gate_suppresses_rule_when_primary_band_uncovered() {
         // A hot Lows band → boomy fires when every band is covered...
-        let hot = resid_profile(0, GUITAR.boomy_db + 1.0);
+        let hot = resid_profile(Family::Guitar, 0, GUITAR.boomy_db + 1.0);
         let all_covered = vec![true; 6];
         assert!(keys(&diagnose_kind(
             &hot,
@@ -3231,7 +3542,7 @@ mod tests {
             vec![true; 6],
             "flat synthetic spectrum covers all bands"
         );
-        let hot = resid_profile(0, GUITAR.boomy_db + 1.0);
+        let hot = resid_profile(Family::Guitar, 0, GUITAR.boomy_db + 1.0);
         let gated = keys(&diagnose_kind(
             &hot,
             None,
@@ -3319,7 +3630,7 @@ mod tests {
         use crate::profiles::PlaybackLevel::{Rehearsal, Stage};
         // dev(lows) = 4.0 dB — between Stage's 3.0 (5.0−2.0) and Rehearsal's 5.0
         // boomy threshold.
-        let p = resid_profile(0, 4.0);
+        let p = resid_profile(Family::Guitar, 0, 4.0);
         assert!(!diag_keys_at(&p, Rehearsal).contains(&"boomy"));
         assert!(diag_keys_at(&p, Stage).contains(&"boomy"));
     }
@@ -3328,7 +3639,7 @@ mod tests {
     fn quiet_relaxes_a_boomy_verdict_rehearsal_fires() {
         use crate::profiles::PlaybackLevel::{Quiet, Rehearsal};
         // dev(lows) = 6.0 — above Rehearsal's 5.0 but below Quiet's 7.0 (5.0+2.0).
-        let p = resid_profile(0, 6.0);
+        let p = resid_profile(Family::Guitar, 0, 6.0);
         assert!(diag_keys_at(&p, Rehearsal).contains(&"boomy"));
         assert!(!diag_keys_at(&p, Quiet).contains(&"boomy"));
     }
@@ -3339,7 +3650,7 @@ mod tests {
         // fizzy fires when bdb[air]−bdb[highs] > fizzy_db (−9) + offset. Construct
         // air−highs = −9.5: below −9 (Rehearsal silent) but above Stage's −10 (fires),
         // proving the sign — a NEGATIVE offset makes fizzy fire MORE easily.
-        let mut p = resid_profile(0, 0.0);
+        let mut p = resid_profile(Family::Guitar, 0, 0.0);
         // Raise Air to sit 9.5 dB under Highs (the baseline rolls it 12 dB under).
         p.bands[5] = p.bands[4] * 10f64.powf(-9.5 / 10.0);
         assert!(!diag_keys_at(&p, Rehearsal).contains(&"fizzy"));
@@ -3349,7 +3660,7 @@ mod tests {
     #[test]
     fn rehearsal_matches_legacy_diagnose_byte_for_byte() {
         // A hot low-mid (muddy) profile; the Rehearsal anchor must equal diagnose().
-        let p = resid_profile(1, GUITAR.muddy_db + 2.0);
+        let p = resid_profile(Family::Guitar, 1, GUITAR.muddy_db + 2.0);
         let legacy = serde_json::to_value(diagnose(&p, None, Family::Guitar)).unwrap();
         let rehearsal = serde_json::to_value(diagnose_kind(
             &p,
@@ -3380,7 +3691,7 @@ mod tests {
     fn diagnose_levels_tags_each_finding_with_its_quietest_level() {
         // A boomy-only profile that fires at Stage (3.0) and Rehearsal (5.0) but
         // NOT Quiet (7.0): dev(lows) = 6.0.
-        let p = resid_profile(0, 6.0);
+        let p = resid_profile(Family::Guitar, 0, 6.0);
         let leveled = diagnose_levels(&p, None, Family::Guitar, StimulusKind::Synthetic, None);
         let boomy = leveled
             .iter()
@@ -3389,7 +3700,7 @@ mod tests {
         assert_eq!(boomy.from_level, crate::profiles::PlaybackLevel::Rehearsal);
         // A level-independent finding (a mid scoop → lost) tags `quiet` (fires
         // everywhere). Add a scoop hot enough to fire, keep it in one profile.
-        let scooped = resid_profile(2, -(GUITAR.lost_db + 2.0));
+        let scooped = resid_profile(Family::Guitar, 2, -(GUITAR.lost_db + 2.0));
         let leveled = diagnose_levels(
             &scooped,
             None,
@@ -3413,7 +3724,7 @@ mod tests {
         // +2.5 (not +2.0) clears the Quiet-relaxed threshold (muddy_db + 2.0) with
         // margin — the rule is a strict `>`, so sitting exactly on the boundary is
         // not a safe way to assert "fires at every level".
-        let p = resid_profile(1, GUITAR.muddy_db + 2.5);
+        let p = resid_profile(Family::Guitar, 1, GUITAR.muddy_db + 2.5);
         let leveled = diagnose_levels(&p, None, Family::Guitar, StimulusKind::Synthetic, None);
         let v = serde_json::to_value(&leveled[0]).unwrap();
         let obj = v.as_object().unwrap();
@@ -3486,19 +3797,21 @@ mod tests {
 
     #[test]
     fn showcase_profile_diagnoses() {
-        // The marketing-screenshot presets, judged under the tilt-residual metric.
-        // Each mapped preset must produce exactly its intended diagnosis pair; every
-        // other slot must be clear. Guards docs/assets/doctor.png from silently
-        // reverting to "All clear" on a threshold retune. boomy+muddy can't co-fire
-        // under this metric (see showcase_profile's doc), so preset 11 is muddy+lost;
-        // together the three cover five of the six guitar diagnoses.
+        // The marketing-screenshot presets, judged under the deviation-from-
+        // target + Theil–Sen tilt/local metric. Each mapped preset must produce
+        // exactly its intended diagnosis pair; every other slot must be clear.
+        // Guards docs/assets/doctor.png from silently reverting to "All clear"
+        // on a threshold retune. Under Theil–Sen a tilt (dark) and a local bump
+        // (muddy) CAN co-fire together (see showcase_profile's doc), so preset
+        // 11 is dark+muddy; together the three presets cover five of the six
+        // guitar diagnoses.
         let diag_set = |idx: u32| {
             let mut got = keys(&diagnose(&showcase_profile(idx), None, Instrument::Guitar));
             got.sort_unstable();
             got
         };
         assert_eq!(diag_set(4), vec!["lost", "washed"]); // Scooped Verse
-        assert_eq!(diag_set(11), vec!["lost", "muddy"]); // Tweed Warm
+        assert_eq!(diag_set(11), vec!["dark", "muddy"]); // Tweed Warm
         assert_eq!(diag_set(167), vec!["fizzy", "harsh"]); // Direct Acoustic
         assert!(diag_set(0).is_empty()); // any other preset → all clear
     }

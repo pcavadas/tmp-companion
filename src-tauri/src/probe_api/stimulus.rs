@@ -189,7 +189,7 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// probe CSV's `slot:scene` form), capture the sound with the Doctor tail
 /// (`leveller::doctor_capture`), compute its band profile + time-domain metrics,
 /// then diagnose each sound on its own measurements (the deterministic
-/// tilt-residual metric) and print one JSON line per sound plus a human table —
+/// target-deviation metric) and print one JSON line per sound plus a human table —
 /// the headless iteration loop for tuning `doctor::Thresholds`. Read-only: loads +
 /// captures, NEVER saves; every capture path ends re-amp OFF.
 pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<String, String> {
@@ -264,7 +264,7 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
     }
 
     let mut out = format!(
-        "doctor sweep ({topology_id}, {} sounds, tilt-residual)\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
+        "doctor sweep ({topology_id}, {} sounds, target-deviation)\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
         sounds.len(),
         instrument.labels().join(" ")
     );

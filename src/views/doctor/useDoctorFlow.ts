@@ -132,7 +132,7 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
   );
 
   // Fire the ONE backend command for the whole run. Progress rows update per key
-  // as the stream lands; the per-sound tilt-residual diagnoses ride the resolved
+  // as the stream lands; the per-sound target-deviation diagnoses ride the resolved
   // value (each verdict depends only on that sound, never on which others ran).
   // `restoreListIndex` = the pre-run active preset, reloaded when the run ends.
   const startRun = useCallback(

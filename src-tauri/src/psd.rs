@@ -130,8 +130,8 @@ impl Psd {
     }
 
     /// The `(freq, psd)` pairs whose bin centre frequency falls in the inclusive
-    /// `[lo, hi]` range — the one range-walk shared by [`Psd::band_power`],
-    /// [`Psd::tilt`], and [`Psd::flatness`].
+    /// `[lo, hi]` range — the one range-walk shared by [`Psd::band_power`] and
+    /// [`Psd::flatness`].
     fn bins_in(&self, lo: f64, hi: f64) -> impl Iterator<Item = (f64, f64)> + '_ {
         self.psd.iter().enumerate().filter_map(move |(k, &p)| {
             let f = self.freq(k);
@@ -158,32 +158,6 @@ impl Psd {
             .collect()
     }
 
-    /// Spectral tilt: the least-squares slope of `10·log10(psd)` vs `log2(freq)` over
-    /// ~50 Hz–12 kHz, in **dB per octave** (one octave = one unit of `log2(freq)`).
-    pub fn tilt(&self) -> f64 {
-        let pts: Vec<(f64, f64)> = self
-            .bins_in(50.0, 12_000.0)
-            .filter(|&(_, p)| p > 0.0)
-            .map(|(f, p)| (f.log2(), 10.0 * p.log10()))
-            .collect();
-        least_squares_fit(&pts).0
-    }
-
-    /// Power-weighted spectral centroid, in Hz.
-    pub fn centroid(&self) -> f64 {
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for (k, &p) in self.psd.iter().enumerate() {
-            num += self.freq(k) * p;
-            den += p;
-        }
-        if den > 0.0 {
-            num / den
-        } else {
-            0.0
-        }
-    }
-
     /// Spectral flatness (SFM) over `[lo, hi]` = geometric-mean / arithmetic-mean of the
     /// in-range PSD bins, in `[0, 1]` (1 = perfectly flat, →0 = tonal).
     pub fn flatness(&self, lo: f32, hi: f32) -> f64 {
@@ -204,27 +178,6 @@ impl Psd {
         let arith = sum / count as f64;
         (geo / arith).clamp(0.0, 1.0)
     }
-}
-
-/// Ordinary-least-squares fit of `y` vs `x`: returns `(slope, intercept)`,
-/// `(0.0, 0.0)` if under-determined; `slope` is `0.0` if `x` is constant.
-/// Shared by [`Psd::tilt`] and [`crate::doctor::tilt_residuals`] — one
-/// regression, two callers.
-pub(crate) fn least_squares_fit(pts: &[(f64, f64)]) -> (f64, f64) {
-    if pts.len() < 2 {
-        return (0.0, 0.0);
-    }
-    let n = pts.len() as f64;
-    let mean_x = pts.iter().map(|p| p.0).sum::<f64>() / n;
-    let mean_y = pts.iter().map(|p| p.1).sum::<f64>() / n;
-    let mut sxy = 0.0;
-    let mut sxx = 0.0;
-    for &(x, y) in pts {
-        sxy += (x - mean_x) * (y - mean_y);
-        sxx += (x - mean_x) * (x - mean_x);
-    }
-    let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
-    (slope, mean_y - slope * mean_x)
 }
 
 #[cfg(test)]
@@ -258,28 +211,6 @@ mod tests {
         (0..n).map(|_| rng.next_bipolar()).collect()
     }
 
-    /// Paul Kellet's refined pink-noise filter (accurate to ±0.05 dB above ~9 Hz):
-    /// shapes white noise to a -3 dB/oct (1/f power) spectrum.
-    fn pink_noise(n: usize, seed: u64) -> Vec<f32> {
-        let mut rng = Lcg::new(seed);
-        let (mut b0, mut b1, mut b2, mut b3, mut b4, mut b5, mut b6) =
-            (0.0f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        (0..n)
-            .map(|_| {
-                let w = f64::from(rng.next_bipolar());
-                b0 = 0.998_86 * b0 + w * 0.055_517_9;
-                b1 = 0.993_32 * b1 + w * 0.075_075_9;
-                b2 = 0.969_00 * b2 + w * 0.153_852_0;
-                b3 = 0.866_50 * b3 + w * 0.310_485_6;
-                b4 = 0.550_00 * b4 + w * 0.532_952_2;
-                b5 = -0.761_6 * b5 - w * 0.016_898_0;
-                let pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.536_2;
-                b6 = w * 0.115_926;
-                (pink * 0.11) as f32
-            })
-            .collect()
-    }
-
     fn sine(freq: f32, amp: f32, n: usize) -> Vec<f32> {
         (0..n)
             .map(|i| amp * (2.0 * std::f32::consts::PI * freq * i as f32 / RATE).sin())
@@ -297,11 +228,10 @@ mod tests {
         10.0 * x.max(1e-30).log10()
     }
 
-    // White noise → flat spectrum: tilt ≈ 0 and a high flatness.
+    // White noise → a high flatness (near-flat spectrum).
     #[test]
     fn white_noise_flat() {
         let psd = welch_psd(&white_noise(96_000, 1), RATE);
-        assert!(psd.tilt().abs() <= 1.0, "white tilt {} !≈ 0", psd.tilt());
         let f = psd.flatness(50.0, 12_000.0);
         assert!(f >= 0.5, "white flatness {f} should be ≥ 0.5");
     }
@@ -319,14 +249,6 @@ mod tests {
             ratio_db >= 40.0,
             "octave-away band should be ≥40 dB down, got {ratio_db:.1} dB"
         );
-    }
-
-    // Pink (1/f) noise → tilt ≈ -3 dB/oct.
-    #[test]
-    fn pink_noise_tilt() {
-        let psd = welch_psd(&pink_noise(192_000, 7), RATE);
-        let t = psd.tilt();
-        assert!((t - (-3.0)).abs() <= 1.0, "pink tilt {t} !≈ -3 dB/oct");
     }
 
     // Parseval: Σ psd·bin_hz ≈ mean-square of the signal (white noise + a tone).
@@ -365,19 +287,6 @@ mod tests {
         assert!(wf >= 0.5, "white flatness {wf} should be ≥ 0.5");
     }
 
-    // Centroid ordering: a low tone → low centroid, a high tone → high centroid.
-    #[test]
-    fn centroid_ordering() {
-        let low = welch_psd(&sine(200.0, 1.0, 96_000), RATE).centroid();
-        let high = welch_psd(&sine(5_000.0, 1.0, 96_000), RATE).centroid();
-        assert!(
-            low < high,
-            "centroid ordering: 200 Hz {low} vs 5 kHz {high}"
-        );
-        assert!(low < 1_000.0, "200 Hz tone centroid {low} should be low");
-        assert!(high > 3_000.0, "5 kHz tone centroid {high} should be high");
-    }
-
     // band_powers matches band_power element-wise.
     #[test]
     fn band_powers_matches_scalar() {
@@ -414,8 +323,6 @@ mod tests {
         let psd = welch_psd(&[], RATE);
         assert!(psd.psd.iter().all(|p| p.is_finite()));
         assert!(psd.band_power(100.0, 200.0).is_finite());
-        assert!(psd.tilt().is_finite());
-        assert!(psd.centroid().is_finite());
         assert!(psd.flatness(50.0, 12_000.0).is_finite());
     }
 
@@ -425,8 +332,6 @@ mod tests {
         let psd = welch_psd(&white_noise(1_000, 17), RATE);
         assert_eq!(psd.psd.len(), 512 / 2 + 1);
         assert!(psd.psd.iter().all(|p| p.is_finite() && *p >= 0.0));
-        assert!(psd.tilt().is_finite());
-        assert!(psd.centroid().is_finite());
     }
 
     #[test]
@@ -435,8 +340,6 @@ mod tests {
         assert!(psd.psd.iter().all(|p| p.is_finite()));
         assert!(psd.psd.iter().all(|&p| p == 0.0), "zeros → zero PSD");
         assert_eq!(psd.band_power(100.0, 4_000.0), 0.0);
-        assert_eq!(psd.centroid(), 0.0);
-        assert!(psd.tilt().is_finite());
         assert!(psd.flatness(50.0, 12_000.0).is_finite());
     }
 }

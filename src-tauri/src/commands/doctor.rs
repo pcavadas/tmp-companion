@@ -160,7 +160,7 @@ pub(crate) fn cancel_doctor_check() {
 }
 
 /// The Doctor RUN: capture every selected sound (Doctor tail), then diagnose
-/// each sound on its OWN measurements (the deterministic tilt-residual metric)
+/// each sound on its OWN measurements (the deterministic target-deviation metric)
 /// and derive per-preset scene consistency from the same captures. READ-ONLY on
 /// the unit: loads + captures, never a save; every capture ends re-amp OFF.
 /// One command per run (the `copy_apply`/`level_scenes_apply_batched` shape):
@@ -391,7 +391,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         }
 
         // Group results per preset, in first-seen item order. Each sound is
-        // diagnosed on its OWN measurements (the deterministic tilt-residual
+        // diagnosed on its OWN measurements (the deterministic target-deviation
         // metric) — no run-cohort, so a verdict never depends on which other
         // sounds ran.
         let mut presets: Vec<DoctorPresetResult> = Vec::new();

@@ -48,13 +48,15 @@ export function sevRank(sev: Sev): number {
   return RANK[sev];
 }
 
-/** Mirror of `doctor::POSSIBLE_MAX_CONFIDENCE`: a fired diagnosis below this
- *  confidence is a near-threshold "possible" verdict (muted, ranked lower). */
-export const POSSIBLE_MAX_CONFIDENCE = 0.5;
+/** A fired card within this many units of its threshold (severity = margin past
+ *  threshold, in the rule's own dB/LU unit) is a near-threshold "possible"
+ *  verdict (muted, ranked lower). No backend confidence anymore — this is a
+ *  pure severity threshold. */
+export const POSSIBLE_MAX_SEVERITY = 1.0;
 
-/** True when a diagnosis is a low-confidence "possible" verdict. */
+/** True when a diagnosis is a low-severity "possible" verdict. */
 export function isPossible(diag: DoctorDiag): boolean {
-  return diag.confidence < POSSIBLE_MAX_CONFIDENCE;
+  return diag.severity < POSSIBLE_MAX_SEVERITY;
 }
 
 /** The label as shown in the UI: "Possible X" when `isPossible`, else the bare
@@ -64,13 +66,14 @@ export function possibleLabel(diag: DoctorDiag): string {
   return isPossible(diag) ? `Possible ${diag.label}` : diag.label;
 }
 
-/** A sound's diagnoses worst-first: severity (high before med) is the primary
- *  key, confidence (descending) the tiebreaker — so confident findings sort above
- *  "possible" ones. */
+/** A sound's diagnoses worst-first: severity tint (high before med) is the
+ *  primary key, raw severity magnitude (descending) the tiebreaker — so
+ *  confidently-past-threshold findings sort above near-threshold "possible"
+ *  ones. */
 export function sortedDiags(diags: DoctorDiag[]): DoctorDiag[] {
   return [...diags].sort((a, b) => {
     const r = sevRank(b.sev) - sevRank(a.sev);
-    return r !== 0 ? r : b.confidence - a.confidence;
+    return r !== 0 ? r : b.severity - a.severity;
   });
 }
 

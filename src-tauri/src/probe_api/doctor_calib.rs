@@ -4,8 +4,10 @@
 //! through a REAL stimulus (a Tier-2 DI capture wav, `--stim`), measure every
 //! selected slot's Doctor `SoundProfile` + the pre-onset noise-floor metric + the
 //! stimulus band coverage, and — when a `--labels` ground-truth is supplied —
-//! DERIVE proposed `Thresholds` for the CAPTURE table (`doctor::*_CAPTURE`) that
-//! separate the labelled-positive slots from the clean ones per rule.
+//! DERIVE proposed `Thresholds` values. There is no separate CAPTURE table:
+//! `StimulusKind::Synthetic` and `StimulusKind::Capture` share one per-family
+//! `Thresholds` table, and this sweep's derived values inform the R5 attended
+//! recalibration of that shared table.
 //!
 //! Output is a DETERMINISTIC JSON report (no timestamps; the operator names the
 //! `--out` file) plus a human markdown summary on stdout. READ-ONLY on the unit:
@@ -137,30 +139,40 @@ fn stim_hash(samples: &[f32]) -> String {
     format!("{h:016x}")
 }
 
+/// One rule's metric value, keyed by rule name.
+type RuleMetric = (&'static str, f64);
+
+/// A slot's rule metrics + its broadband tilt slope: `(slot, tilt_slope, rule_metrics)`.
+type SlotMetrics = (u32, Option<f64>, Vec<RuleMetric>);
+
 /// Per-slot rule metrics, in the SAME LHS space `doctor::diagnose` compares to
-/// each threshold (every rule is "metric > threshold"): the tilt-residual
-/// deviation ([`doctor::tonal_dev`]) for the tonal rules, the self-difference for
-/// fizzy, and the time-domain metrics for washed/spiky.
+/// each threshold (every rule is "metric > threshold"): the target-deviation
+/// LOCAL ([`doctor::deviations`] / [`doctor::tilt_split`]) for the tonal rules,
+/// the self-difference for fizzy, and the time-domain metrics for washed/spiky.
+/// Also returns the broadband tilt slope (`tilt_split`'s discarded first value)
+/// so callers building a `tiltDbPerOct` report field don't re-run the same
+/// deviations+tilt_split pass.
 fn rule_metrics(
     profile: &doctor::SoundProfile,
     family: doctor::Family,
-) -> Vec<(&'static str, f64)> {
+) -> (Option<f64>, Vec<RuleMetric>) {
     let bdb = doctor::band_db(&profile.bands);
-    let centers = family.band_centers();
-    let res = doctor::tilt_residuals(&bdb, &centers);
-    let target = doctor::target_residuals(family);
-    let dev = |i: usize| doctor::tonal_dev(&res, target, i);
+    let dev = doctor::deviations(&bdb, family);
+    let (slope, locals) = doctor::tilt_split(&dev, family, None);
     let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
-    vec![
-        ("muddy", dev(low_mids)),
-        ("boomy", dev(lows)),
-        ("harsh", dev(high_mids)),
-        ("fizzy", bdb[air] - bdb[highs]),
-        ("lost", -dev(mids)),
-        ("washed", profile.tail_ratio_db),
-        ("spiky", profile.spread_lu),
-        ("buried", -dev(lows)),
-    ]
+    (
+        slope,
+        vec![
+            ("muddy", locals[low_mids]),
+            ("boomy", locals[lows]),
+            ("harsh", locals[high_mids]),
+            ("fizzy", bdb[air] - bdb[highs]),
+            ("lost", -locals[mids]),
+            ("washed", profile.tail_ratio_db),
+            ("spiky", profile.spread_lu),
+            ("buried", -locals[lows]),
+        ],
+    )
 }
 
 /// One measured slot in the sweep.
@@ -180,7 +192,7 @@ pub fn probe_doctor_calib(
 ) -> Result<String, String> {
     // `from_topology` silently defaults unrecognized strings to Guitar — fine for
     // `--doctor` (topology ids), but a typo'd `--family` here would sweep + derive
-    // `*_CAPTURE` thresholds under the wrong band layout. Fail loudly first.
+    // threshold values under the wrong band layout. Fail loudly first.
     if !matches!(
         family_id.to_ascii_lowercase().as_str(),
         "guitar" | "bass" | "bass-vi"
@@ -243,15 +255,20 @@ pub fn probe_doctor_calib(
         None => std::collections::HashMap::new(),
     };
 
-    // Per-slot rule metrics (shared by the report rows and the derivation).
-    let metrics_by_slot: Vec<(u32, Vec<(&'static str, f64)>)> = rows
+    // Per-slot rule metrics + tilt slope (shared by the report rows and the
+    // derivation).
+    let metrics_by_slot: Vec<SlotMetrics> = rows
         .iter()
-        .map(|r| (r.slot, rule_metrics(&r.profile, family)))
+        .map(|r| {
+            let (slope, metrics) = rule_metrics(&r.profile, family);
+            (r.slot, slope, metrics)
+        })
         .collect();
 
     let report_rows: Vec<serde_json::Value> = rows
         .iter()
-        .map(|r| {
+        .zip(&metrics_by_slot)
+        .map(|(r, (_, slope, _))| {
             serde_json::json!({
                 "slot": r.slot,
                 "balanceDb": doctor::balance(&r.profile.bands),
@@ -260,6 +277,7 @@ pub fn probe_doctor_calib(
                 "noiseFloorDb": r.noise_floor_db,
                 "integratedLufs": r.profile.integrated_lufs,
                 "coverage": r.coverage,
+                "tiltDbPerOct": slope,
             })
         })
         .collect();
@@ -274,11 +292,11 @@ pub fn probe_doctor_calib(
         let metric_of = |slot: u32| -> Option<f64> {
             metrics_by_slot
                 .iter()
-                .find(|(s, _)| *s == slot)
-                .and_then(|(_, m)| m.iter().find(|(k, _)| *k == rule).map(|(_, v)| *v))
+                .find(|(s, _, _)| *s == slot)
+                .and_then(|(_, _, m)| m.iter().find(|(k, _)| *k == rule).map(|(_, v)| *v))
         };
         let (mut clean, mut positive) = (Vec::new(), Vec::new());
-        for (slot, m) in &metrics_by_slot {
+        for (slot, _slope, m) in &metrics_by_slot {
             let v = m
                 .iter()
                 .find(|(k, _)| *k == rule)
@@ -331,7 +349,7 @@ pub fn probe_doctor_calib(
             "refLevel": 0.5,
             "bandCoverageDb": doctor::BAND_COVERAGE_DB,
         },
-        "metric": "tilt-residual",
+        "metric": "target-deviation-theil-sen",
         "rows": report_rows,
         "derivations": serde_json::Value::Object(derivations),
     });
@@ -339,7 +357,7 @@ pub fn probe_doctor_calib(
     std::fs::write(out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
 
     let mut out = format!(
-        "doctor-calib sweep ({family_id}, {} sounds, tilt-residual) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | noise dB | spread\n",
+        "doctor-calib sweep ({family_id}, {} sounds, target-deviation) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | noise dB | spread\n",
         rows.len(),
         stim_loud.integrated_lufs,
         stim_loud.spread_lu(),
@@ -432,6 +450,7 @@ pub fn probe_doctor_calib_factory(
     let report_rows: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
+            let (slope, _metrics) = rule_metrics(&r.profile, family);
             serde_json::json!({
                 "slot": r.slot,
                 "balanceDb": doctor::balance(&r.profile.bands),
@@ -439,6 +458,7 @@ pub fn probe_doctor_calib_factory(
                 "spreadLu": r.profile.spread_lu,
                 "integratedLufs": r.profile.integrated_lufs,
                 "coverage": r.coverage,
+                "tiltDbPerOct": slope,
             })
         })
         .collect();

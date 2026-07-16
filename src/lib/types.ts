@@ -791,11 +791,9 @@ export interface DoctorDiag {
   label: string;
   sev: DoctorSev;
   /** Magnitude past the fire threshold in the rule's natural unit (dB, or LU for
-   *  spiky) — `metric − threshold`, ≥ 0. */
+   *  spiky) — `metric − threshold`, ≥ 0. `< 1.0` (below `POSSIBLE_MAX_SEVERITY`)
+   *  is a near-threshold "possible" verdict rendered muted. */
   severity: number;
-  /** Verdict reliability 0..1. `< 0.5` (below `POSSIBLE_MAX_CONFIDENCE`) is a
-   *  near-threshold "possible" verdict rendered muted. */
-  confidence: number;
   bands: number[];
   detail: string;
   explain: string;

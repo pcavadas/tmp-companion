@@ -179,7 +179,7 @@ export const cancelFootswitchLeveling = (): Promise<void> =>
 
 /** The Doctor RUN: capture + measure every selected sound (one backend command,
  * ~9 s each, read-only on the unit), streaming a progress row per sound; the
- * per-sound tilt-residual diagnoses + per-preset scene consistency ride the return.
+ * per-sound target-deviation diagnoses + per-preset scene consistency ride the return.
  * `restoreListIndex` is the pre-run active preset (0-based), reloaded when the
  * run ends so the player's slot survives the check; null → the backend reloads
  * the last-scanned slot (either way the reference-level edit buffer is cleared). */

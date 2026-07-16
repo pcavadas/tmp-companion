@@ -88,7 +88,6 @@ function fixture(): DoctorCheckResult {
                 label: "Muddy",
                 sev: "high",
                 severity: 4.2,
-                confidence: 1,
                 bands: [1],
                 detail: "+4.2 dB around 250 Hz",
                 fromLevel: "rehearsal",
@@ -146,7 +145,6 @@ function fixture(): DoctorCheckResult {
                 label: "Washed out",
                 sev: "med",
                 severity: 6,
-                confidence: 1,
                 bands: [],
                 detail: "tail 6 dB over dry",
                 fromLevel: "quiet",
@@ -447,7 +445,6 @@ describe("DoctorResults — healthy collapse", () => {
       label: "Muddy",
       sev: "high",
       severity: 4,
-      confidence: 1,
       bands: [1],
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
@@ -706,7 +703,6 @@ describe("DoctorResults — shared-block caption", () => {
       label: key === "muddy" ? "Muddy" : "Harsh",
       sev: "high",
       severity: 4,
-      confidence: 1,
       bands: [1],
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
@@ -849,7 +845,6 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                   label: "Spiky",
                   sev: "med",
                   severity: 5,
-                  confidence: 1,
                   bands: [],
                   detail: "swings 5.0 LU between peaks and average",
                   fromLevel: "quiet",
@@ -936,22 +931,18 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
   });
 });
 
-describe("DoctorResults — confidence (possible verdicts)", () => {
+describe("DoctorResults — severity (possible verdicts)", () => {
   beforeEach(resetMocks);
 
-  // One sound with two equal-severity diagnoses so confidence is the ONLY
-  // differentiator: a confident finding (0.9) and a near-threshold one (0.2).
-  function confidenceFixture(): DoctorCheckResult {
-    const mk = (
-      key: string,
-      label: string,
-      confidence: number,
-    ): DoctorDiag => ({
+  // One sound with two equal-sev-tint diagnoses so severity is the ONLY
+  // differentiator: a confidently-past-threshold finding (3.0) and a
+  // near-threshold one (0.4, below POSSIBLE_MAX_SEVERITY).
+  function severityFixture(): DoctorCheckResult {
+    const mk = (key: string, label: string, severity: number): DoctorDiag => ({
       key,
       label,
       sev: "med",
-      severity: confidence < 0.5 ? 0.4 : 3.0,
-      confidence,
+      severity,
       bands: [],
       detail: `${label} detail`,
       fromLevel: "quiet",
@@ -980,7 +971,7 @@ describe("DoctorResults — confidence (possible verdicts)", () => {
               tag: null,
               // Deliberately possible-first in the source array — the UI must
               // REORDER it below the confident one.
-              diags: [mk("fizzy", "Fizzy", 0.2), mk("harsh", "Harsh", 0.9)],
+              diags: [mk("fizzy", "Fizzy", 0.4), mk("harsh", "Harsh", 3.0)],
               integratedLufs: -18,
               tailRatioDb: 0,
               balanceDb: [0, 0, 0, 0, 0, 0],
@@ -1002,17 +993,17 @@ describe("DoctorResults — confidence (possible verdicts)", () => {
     };
   }
 
-  it("mutes a low-confidence finding as 'Possible …' and leaves a confident one plain", () => {
-    renderResults(confidenceFixture());
-    // Low confidence (0.2) → the "possible" chip treatment.
+  it("mutes a low-severity finding as 'Possible …' and leaves a confident one plain", () => {
+    renderResults(severityFixture());
+    // Low severity (0.4 < POSSIBLE_MAX_SEVERITY) → the "possible" chip treatment.
     expect(screen.getByText("Possible Fizzy")).toBeInTheDocument();
-    // High confidence (0.9) → the plain label, no "Possible" prefix.
+    // High severity (3.0) → the plain label, no "Possible" prefix.
     expect(screen.getByText("Harsh")).toBeInTheDocument();
     expect(screen.queryByText("Possible Harsh")).not.toBeInTheDocument();
   });
 
   it("ranks the confident finding above the 'possible' one", () => {
-    const { container } = renderResults(confidenceFixture());
+    const { container } = renderResults(severityFixture());
     const text = container.textContent;
     // Confident (Harsh) renders before possible (Fizzy) despite the source order.
     expect(text.indexOf("Harsh")).toBeGreaterThanOrEqual(0);
