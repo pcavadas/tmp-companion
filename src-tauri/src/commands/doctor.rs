@@ -475,7 +475,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // metric) — no run-cohort, so a verdict never depends on which other
         // sounds ran.
         let mut presets: Vec<DoctorPresetResult> = Vec::new();
-        let sound_of = |i: usize, profile: Option<&doctor::SoundProfile>, err: Option<&String>| {
+        let sound_of = |i: usize,
+                        profile: Option<&doctor::SoundProfile>,
+                        err: Option<&String>| {
             let (item, _, kind) = &resolved[i];
             let instrument = instrument_of(item);
             let band_labels = instrument.labels_owned();
@@ -484,6 +486,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     // Diagnosed at ALL three playback levels (each finding tagged
                     // with its quietest firing level) — the capture is level-
                     // independent, so this is three pure passes over one profile.
+                    // The localized resonant/boxy rules read `p.peaks` (measured
+                    // by the capture; empty on the showcase's curated profiles).
                     doctor::diagnose_levels(
                         p,
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),

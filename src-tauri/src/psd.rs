@@ -178,6 +178,141 @@ impl Psd {
         let arith = sum / count as f64;
         (geo / arith).clamp(0.0, 1.0)
     }
+
+    /// log-power (`10·log10(psd)`, floored like [`Psd::flatness`]) for every bin.
+    fn log_psd(&self) -> Vec<f64> {
+        self.psd
+            .iter()
+            .map(|&p| 10.0 * p.max(1e-30).log10())
+            .collect()
+    }
+
+    /// A ~1/3-octave MEDIAN-smoothed envelope of `log_psd` for bins
+    /// `from..=to` ONLY (the rest of the returned full-length vec stays at a
+    /// `NEG_INFINITY` sentinel — computing the whole spectrum wasted ~9× the
+    /// sort work on bins [`Psd::find_peaks`] never reads, with the costliest
+    /// windows at the unused near-Nyquist end): for the bin at frequency `f`,
+    /// the median of `log_psd` over `[f/2^(1/6), f·2^(1/6)]` (± 1/6 octave =
+    /// 1/3 octave total). Median (not mean) so the envelope doesn't follow a
+    /// peak into its own window. Bin 0 (DC, freq 0) borrows bin 1's frequency
+    /// for its window so it isn't a degenerate single-bin "median".
+    fn third_octave_envelope(&self, log_psd: &[f64], from: usize, to: usize) -> Vec<f64> {
+        const THIRD_OCT: f64 = 1.0 / 6.0; // half-window exponent (2^(1/6) each side)
+        let n = log_psd.len();
+        let mut env = vec![f64::NEG_INFINITY; n];
+        let mut window = Vec::new();
+        for (k, slot) in env.iter_mut().enumerate().take(to + 1).skip(from) {
+            let f = if k == 0 { self.bin_hz } else { self.freq(k) };
+            let lo_bin = ((f / 2f64.powf(THIRD_OCT)) / self.bin_hz).floor().max(0.0) as usize;
+            let hi_bin = (((f * 2f64.powf(THIRD_OCT)) / self.bin_hz).ceil() as usize).min(n - 1);
+            window.clear();
+            window.extend_from_slice(&log_psd[lo_bin..=hi_bin]);
+            window.sort_by(f64::total_cmp);
+            let mid = window.len() / 2;
+            *slot = if window.len() % 2 == 1 {
+                window[mid]
+            } else {
+                (window[mid - 1] + window[mid]) / 2.0
+            };
+        }
+        env
+    }
+
+    /// Quality factor of the peak at `excess[peak_bin]`: center frequency over the
+    /// bin-resolution `−3 dB`-from-peak width (walk outward from the peak bin until
+    /// `excess` drops 3 dB below the peak, on each side; no panic at the array
+    /// edges — an edge-clipped peak just reports the width it can see).
+    fn peak_q(&self, excess: &[f64], peak_bin: usize) -> f64 {
+        let target = excess[peak_bin] - 3.0;
+        let mut left = peak_bin;
+        while left > 0 && excess[left - 1] > target {
+            left -= 1;
+        }
+        let mut right = peak_bin;
+        while right + 1 < excess.len() && excess[right + 1] > target {
+            right += 1;
+        }
+        let width_hz = (right - left).max(1) as f64 * self.bin_hz;
+        if width_hz <= 0.0 {
+            return 0.0;
+        }
+        self.freq(peak_bin) / width_hz
+    }
+
+    /// Find localized spectral peaks in `[lo_hz, hi_hz]`: log-PSD minus a
+    /// [`Psd::third_octave_envelope`] (so the envelope doesn't follow the peak
+    /// itself), contiguous bins whose excess clears `min_height_db` become ONE
+    /// peak (center = the run's maximum bin, height = its excess, Q = the −3 dB
+    /// width around that bin, walked past the run and clamped at a one-octave
+    /// apron outside `[lo_hz, hi_hz]` — the envelope is only computed there,
+    /// and any peak whose −3 dB width exceeds an octave is Q ≲ 1.5, far below
+    /// any Q gate, so the clamp can't change a verdict). Sorted highest-first.
+    /// Empty on a degenerate PSD (no bins, no bin spacing) or an
+    /// empty/inverted range.
+    pub fn find_peaks(&self, lo_hz: f64, hi_hz: f64, min_height_db: f64) -> Vec<SpectralPeak> {
+        let n = self.psd.len();
+        if n == 0 || self.bin_hz <= 0.0 || lo_hz > hi_hz {
+            return Vec::new();
+        }
+        let lo_bin = (lo_hz / self.bin_hz).ceil().max(0.0) as usize;
+        let hi_bin = ((hi_hz / self.bin_hz).floor() as usize).min(n - 1);
+        if lo_bin > hi_bin {
+            return Vec::new();
+        }
+        // One-octave apron each side: `peak_q`'s −3 dB walk may step outside
+        // the scan range; past the apron the sentinel −∞ excess stops it.
+        let walk_lo = lo_bin / 2;
+        let walk_hi = (hi_bin * 2).min(n - 1);
+        let log_psd = self.log_psd();
+        let envelope = self.third_octave_envelope(&log_psd, walk_lo, walk_hi);
+        // −∞ outside the apron (a −∞ envelope would make excess +∞ there).
+        let excess: Vec<f64> = log_psd
+            .iter()
+            .zip(&envelope)
+            .map(|(&l, &e)| {
+                if e.is_finite() {
+                    l - e
+                } else {
+                    f64::NEG_INFINITY
+                }
+            })
+            .collect();
+
+        let mut peaks = Vec::new();
+        let mut k = lo_bin;
+        while k <= hi_bin {
+            if excess[k] >= min_height_db {
+                let start = k;
+                let mut end = k;
+                while end < hi_bin && excess[end + 1] >= min_height_db {
+                    end += 1;
+                }
+                let peak_bin = (start..=end)
+                    .max_by(|&a, &b| excess[a].total_cmp(&excess[b]))
+                    .unwrap_or(start);
+                peaks.push(SpectralPeak {
+                    freq_hz: self.freq(peak_bin),
+                    height_db: excess[peak_bin],
+                    q: self.peak_q(&excess, peak_bin),
+                });
+                k = end + 1;
+            } else {
+                k += 1;
+            }
+        }
+        peaks.sort_by(|a, b| b.height_db.total_cmp(&a.height_db));
+        peaks
+    }
+}
+
+/// A localized spectral peak found by [`Psd::find_peaks`]: center frequency,
+/// height above the smoothed spectral envelope (dB), and quality factor
+/// (center / the −3 dB-from-peak width).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralPeak {
+    pub freq_hz: f64,
+    pub height_db: f64,
+    pub q: f64,
 }
 
 #[cfg(test)]
@@ -341,5 +476,83 @@ mod tests {
         assert!(psd.psd.iter().all(|&p| p == 0.0), "zeros → zero PSD");
         assert_eq!(psd.band_power(100.0, 4_000.0), 0.0);
         assert!(psd.flatness(50.0, 12_000.0).is_finite());
+    }
+
+    // ── find_peaks ──────────────────────────────────────────────────────────
+
+    fn add(a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter().zip(b).map(|(&x, &y)| x + y).collect()
+    }
+
+    fn scale(a: &[f32], g: f32) -> Vec<f32> {
+        a.iter().map(|&x| x * g).collect()
+    }
+
+    // Broadband noise + one strong sine → exactly one peak, at the sine's
+    // frequency within one bin, with a plausible (> 1) Q.
+    #[test]
+    fn find_peaks_locates_one_strong_sine() {
+        let noise = scale(&white_noise(96_000, 21), 0.05);
+        let sig = add(&noise, &sine(2_000.0, 0.8, 96_000));
+        let psd = welch_psd(&sig, RATE);
+        let peaks = psd.find_peaks(200.0, 8_000.0, 6.0);
+        assert_eq!(peaks.len(), 1, "expected exactly one peak, got {peaks:?}");
+        let p = peaks[0];
+        assert!(
+            (p.freq_hz - 2_000.0).abs() <= psd.bin_hz + 1e-6,
+            "peak at {} Hz, expected ≈2000 Hz (bin_hz={})",
+            p.freq_hz,
+            psd.bin_hz
+        );
+        assert!(p.height_db > 6.0, "height {}", p.height_db);
+        assert!(p.q > 1.0, "plausible Q, got {}", p.q);
+    }
+
+    // Plain white noise → no peaks at a sane min_height (nothing localized
+    // stands out of the smoothed envelope by 6 dB).
+    #[test]
+    fn find_peaks_plain_noise_finds_none() {
+        let psd = welch_psd(&white_noise(96_000, 31), RATE);
+        let peaks = psd.find_peaks(200.0, 8_000.0, 6.0);
+        assert!(
+            peaks.is_empty(),
+            "white noise should have no 6 dB peaks, got {peaks:?}"
+        );
+    }
+
+    // Two well-separated sines of different heights → two peaks, height-sorted
+    // (the louder 5 kHz tone first).
+    #[test]
+    fn find_peaks_two_sines_height_sorted() {
+        let noise = scale(&white_noise(96_000, 41), 0.02);
+        let sig = add(
+            &add(&noise, &sine(1_000.0, 0.3, 96_000)),
+            &sine(5_000.0, 0.9, 96_000),
+        );
+        let psd = welch_psd(&sig, RATE);
+        let peaks = psd.find_peaks(200.0, 8_000.0, 6.0);
+        assert_eq!(peaks.len(), 2, "expected two peaks, got {peaks:?}");
+        assert!(
+            peaks[0].height_db >= peaks[1].height_db,
+            "height-sorted highest-first: {peaks:?}"
+        );
+        assert!(
+            (peaks[0].freq_hz - 5_000.0).abs() <= psd.bin_hz * 2.0,
+            "louder peak should be the 5 kHz tone: {peaks:?}"
+        );
+        assert!(
+            (peaks[1].freq_hz - 1_000.0).abs() <= psd.bin_hz * 2.0,
+            "quieter peak should be the 1 kHz tone: {peaks:?}"
+        );
+    }
+
+    // Degenerate ranges/PSDs never panic.
+    #[test]
+    fn find_peaks_edge_cases() {
+        let psd = welch_psd(&white_noise(96_000, 51), RATE);
+        assert!(psd.find_peaks(8_000.0, 200.0, 6.0).is_empty()); // inverted range
+        assert!(psd.find_peaks(50_000.0, 60_000.0, 6.0).is_empty()); // past Nyquist
+        let empty = welch_psd(&[], RATE);
+        assert!(empty.find_peaks(200.0, 8_000.0, 6.0).is_empty());
     }
 }

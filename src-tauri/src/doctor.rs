@@ -381,6 +381,14 @@ pub struct SoundProfile {
     /// capture) from a merely bright cab's harmonic top — gates the `fizzy` rule
     /// under [`StimulusKind::Capture`] (see [`FIZZY_MIN_FLATNESS`]).
     pub air_flatness: f64,
+    /// Localized spectral peaks (200 Hz–8 kHz, see [`PEAK_DETECT_FLOOR_DB`])
+    /// off the FINE body Welch PSD the capture measured — drives the
+    /// `resonant`/`boxy` localized rules. Empty for profiles built without a
+    /// PSD (curated fixtures, hand-built test vectors): both rules then
+    /// silently no-op, same as every other Option-gated rule input. Skipped in
+    /// serialization — a diagnosis input, not a report measurement.
+    #[serde(skip)]
+    pub peaks: Vec<crate::psd::SpectralPeak>,
 }
 
 impl SoundProfile {
@@ -441,6 +449,11 @@ impl SoundProfile {
             spread_lu: loudness.spread_lu(),
             tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples, onset),
             air_flatness: body_psd.flatness(6000.0, 12000.0),
+            peaks: body_psd.find_peaks(
+                RESONANT_SCAN_LO_HZ,
+                RESONANT_SCAN_HI_HZ,
+                PEAK_DETECT_FLOOR_DB,
+            ),
         })
     }
 }
@@ -538,6 +551,7 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
         spread_lu: 0.0,
         tail_ratio_db: tail,
         air_flatness: 0.5,
+        peaks: Vec::new(),
     }
 }
 
@@ -557,6 +571,35 @@ pub const BAND_COVERAGE_DB: f64 = 30.0;
 /// everything above the cab's rolloff is noise-like by construction, so the gate
 /// is inert there by design (only `Capture` reads it).
 pub const FIZZY_MIN_FLATNESS: f64 = 0.35;
+
+// ─── localized peak (resonant/boxy) constants ────────────────────────────────
+
+/// The frequency range [`RuleMetrics::peaks`] scans — every EQ-10-drivable
+/// band the `resonant` rule can target sits inside it.
+const RESONANT_SCAN_LO_HZ: f64 = 200.0;
+const RESONANT_SCAN_HI_HZ: f64 = 8_000.0;
+
+/// [`crate::psd::Psd::find_peaks`]'s detection floor: well below both rule
+/// gates below so a below-threshold peak is still CANDIDATE data the rules can
+/// compare against, rather than invisible to `find_peaks` entirely. ponytail:
+/// an arbitrary "clearly a bump, not noise" floor — no HW calibration behind
+/// this one (only the two rule gates below are pinned to the R8 sweep).
+const PEAK_DETECT_FLOOR_DB: f64 = 3.0;
+
+/// Minimum height (dB above the ~1/3-octave envelope, [`crate::psd::Psd::find_peaks`])
+/// for the strongest peak in `RESONANT_SCAN_LO_HZ..RESONANT_SCAN_HI_HZ` to read
+/// as `resonant` — PROVISIONAL, pending an R8 factory false-fire check (no HW
+/// sweep behind this value yet, unlike the R5-calibrated `Thresholds` fields).
+pub const RESONANT_MIN_HEIGHT_DB: f64 = 10.0;
+/// Minimum quality factor (center / −3 dB width) for that same peak —
+/// PROVISIONAL, see [`RESONANT_MIN_HEIGHT_DB`].
+pub const RESONANT_MIN_Q: f64 = 4.0;
+/// Minimum height for a peak centered in 300–500 Hz to read as `boxy` (a
+/// narrower, more specific verdict than `muddy`'s whole-band buildup) — any Q
+/// counts. PROVISIONAL, see [`RESONANT_MIN_HEIGHT_DB`].
+pub const BOXY_MIN_HEIGHT_DB: f64 = 7.0;
+const BOXY_LO_HZ: f64 = 300.0;
+const BOXY_HI_HZ: f64 = 500.0;
 
 /// Per-band coverage of a spectrum: `bands` are linear band powers (as returned
 /// by [`crate::psd::welch_psd`] + `band_powers`); a band is "covered" when within [`BAND_COVERAGE_DB`]
@@ -845,7 +888,10 @@ pub enum Sev {
 #[serde(rename_all = "camelCase")]
 pub struct Diag {
     pub key: &'static str,
-    pub label: &'static str,
+    /// Card headline. `String` (not `&'static str`) because the localized
+    /// resonant/boxy rules name the MEASURED frequency (e.g. "Rings at 2.8
+    /// kHz") — every other rule's label is still a fixed string, just owned.
+    pub label: String,
     /// Coarse tint (High/Med).
     pub sev: Sev,
     /// Magnitude PAST threshold in the rule's natural unit (dB for the
@@ -1439,6 +1485,102 @@ fn eq_move(
     })
 }
 
+/// Player-facing label for a MEASURED frequency (a `resonant`/`boxy` peak
+/// center, NOT an EQ-10 controlId — see [`eq_band_label`] for that): Hz below
+/// 1 kHz (no decimal), kHz above with ONE decimal — `380.0` → "380 Hz",
+/// `2_800.0` → "2.8 kHz". Distinct from [`freq_label`] (whole-number cab cut
+/// frequencies) because a measured peak center is rarely a round number.
+fn measured_freq_label(hz: f64) -> String {
+    if hz >= 1000.0 {
+        format!("{:.1} kHz", hz / 1000.0)
+    } else {
+        format!("{hz:.0} Hz")
+    }
+}
+
+/// The 10 standard EQ-10 graphic-EQ bands (Hz, gain controlId), ascending.
+/// HW-verified via `probe --doctor-inject` (a wrong id silently no-ops on the
+/// device, visible as the defect not appearing in the after-capture):
+/// 62/125/250/500/1k/2k/4k/8k. Only `gain31hz`/`gain16khz` remain
+/// unverified — both UNREACHABLE by the resonant/boxy Rx (the 200 Hz–8 kHz
+/// scan's log-nearest bands span 250 Hz–8 kHz).
+const EQ10_BANDS: [(f64, &str); 10] = [
+    (31.0, "gain31hz"),
+    (62.0, "gain62hz"),
+    (125.0, "gain125hz"),
+    (250.0, "gain250hz"),
+    (500.0, "gain500hz"),
+    (1_000.0, "gain1khz"),
+    (2_000.0, "gain2khz"),
+    (4_000.0, "gain4khz"),
+    (8_000.0, "gain8khz"),
+    (16_000.0, "gain16khz"),
+];
+
+/// The controlId of the LOG-FREQUENCY-nearest band in `bands` to `freq_hz`
+/// (log distance, not linear — EQ bands are octave-spaced).
+fn nearest_band(freq_hz: f64, bands: &[(f64, &'static str)]) -> &'static str {
+    bands
+        .iter()
+        .min_by(|a, b| {
+            (a.0.ln() - freq_hz.ln())
+                .abs()
+                .total_cmp(&(b.0.ln() - freq_hz.ln()).abs())
+        })
+        .map(|&(_, id)| id)
+        .expect("bands is never empty ([`EQ10_BANDS`] or a fixed slice of it)")
+}
+
+/// Nearest of all 10 [`EQ10_BANDS`] to a `resonant` peak's measured center.
+fn nearest_eq10_band(freq_hz: f64) -> &'static str {
+    nearest_band(freq_hz, &EQ10_BANDS)
+}
+
+/// Nearest of the 250/500 Hz pair to a `boxy` peak's measured center — the
+/// task's explicit "500 Hz (or 250 Hz if nearer)" band choice.
+fn nearest_boxy_band(freq_hz: f64) -> &'static str {
+    nearest_band(freq_hz, &EQ10_BANDS[3..=4])
+}
+
+/// Round to the nearest 0.5 (the resonant/boxy Rx's gain step).
+fn round_to_half(x: f64) -> f64 {
+    (x * 2.0).round() / 2.0
+}
+
+/// The family band index whose Hz range contains `freq_hz` — `None` only if
+/// it falls outside every band, which shouldn't happen for the resonant/boxy
+/// scan ranges (both sit inside `Family::bands`'s 60 Hz–12 kHz span) but is
+/// handled safely (an unmapped peak is treated as "covered" by the caller,
+/// same `None` = allow convention every other coverage gate in this file uses).
+fn band_index_for_freq(instrument: Family, freq_hz: f64) -> Option<usize> {
+    instrument
+        .bands()
+        .iter()
+        .position(|&(lo, hi)| freq_hz >= f64::from(lo) && freq_hz <= f64::from(hi))
+}
+
+/// The resonant/boxy Rx: a cut of `−min(max_cut_db, height_db/2)` (rounded to
+/// the nearest 0.5) on `band_id`, via the SAME value-aware reuse/insert/
+/// advisory machinery [`eq_move`] gives every other EQ move. `nodes`/`facts`
+/// absent (no graph) → no Rx, same as every other graph-dependent
+/// prescription in this file.
+fn localized_cut_rx(
+    nodes: Option<&[DoctorNode]>,
+    facts: &Option<GraphFacts>,
+    band_id: &'static str,
+    max_cut_db: f64,
+    height_db: f64,
+    copy: &EqCopy,
+) -> Vec<Rx> {
+    let (Some(nodes), Some(facts)) = (nodes, facts.as_ref()) else {
+        return Vec::new();
+    };
+    let gain = round_to_half(-(height_db / 2.0).min(max_cut_db));
+    eq_move(nodes, facts, copy, &[(band_id, gain)])
+        .into_iter()
+        .collect()
+}
+
 /// A cut-filter move on the existing cab (standalone only — the amp-embedded
 /// cab's `hpf`/`lpf` share the schema but ride the amp node; supported the
 /// same way) or an `ACD_HighLowPass` insert when the chain has no cab.
@@ -1782,6 +1924,11 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument
             "Bring up the amp's bass, or move toward the neck pickup",
             "There's little happening below the low-mids — riding up the amp's Bass, or picking closer to the neck, fills it back in.",
         )],
+        // Generated inline in `apply_thresholds` ([`localized_cut_rx`]) — their
+        // Rx needs the peak's MEASURED freq/height, which this key-only
+        // signature can't carry. Explicit arms so the absence reads as a
+        // decision, not a missing case in this otherwise-exhaustive map.
+        "resonant" | "boxy" => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -1880,7 +2027,9 @@ fn consensus(tilt_val: f64, tilt_gate: f64, centered_val: f64, centered_gate: f6
 /// or the captured output via [`output_coverage`]): a band-keyed rule whose
 /// primary band is UNCOVERED is skipped — a sparse capture must not produce
 /// verdicts in bands it never excited. `coverage = None` disables gating
-/// (all bands treated as covered).
+/// (all bands treated as covered). The localized `resonant`/`boxy` rules read
+/// `profile.peaks` (populated by [`SoundProfile::from_capture_with_psd`];
+/// empty on PSD-less profiles, silently skipping both).
 pub fn diagnose_kind(
     profile: &SoundProfile,
     nodes: Option<&[DoctorNode]>,
@@ -1922,7 +2071,7 @@ fn apply_thresholds(
     // `margin` = metric − (offset-adjusted) threshold, ≥ 0 for a fired card. It
     // IS the severity (magnitude past threshold).
     let mut push = |key: &'static str,
-                    label: &'static str,
+                    label: String,
                     sev: Sev,
                     margin: f64,
                     bands: Vec<usize>,
@@ -1959,7 +2108,7 @@ fn apply_thresholds(
     if covered(low_mids) && muddy_fires {
         push(
             "muddy",
-            "Muddy",
+            "Muddy".to_string(),
             Sev::High,
             muddy_margin,
             vec![low_mids],
@@ -1976,7 +2125,7 @@ fn apply_thresholds(
     if covered(lows) && boomy_fires {
         push(
             "boomy",
-            "Boomy",
+            "Boomy".to_string(),
             Sev::Med,
             boomy_margin,
             vec![lows],
@@ -1993,7 +2142,7 @@ fn apply_thresholds(
     if covered(high_mids) && harsh_fires {
         push(
             "harsh",
-            "Harsh",
+            "Harsh".to_string(),
             Sev::High,
             harsh_margin,
             vec![high_mids],
@@ -2013,7 +2162,7 @@ fn apply_thresholds(
     if covered(air) && covered(highs) && fizzy_margin > 0.0 && fizzy_gated {
         push(
             "fizzy",
-            "Fizzy",
+            "Fizzy".to_string(),
             Sev::Med,
             fizzy_margin,
             vec![air],
@@ -2033,7 +2182,7 @@ fn apply_thresholds(
     if covered(mids) && lost_fires {
         push(
             "lost",
-            "Gets lost in the mix",
+            "Gets lost in the mix".to_string(),
             Sev::High,
             lost_margin,
             vec![mids],
@@ -2066,7 +2215,7 @@ fn apply_thresholds(
             };
             push(
                 key,
-                label,
+                label.to_string(),
                 Sev::Med,
                 tilt_margin,
                 tilt_bands,
@@ -2089,7 +2238,7 @@ fn apply_thresholds(
             if covered(lows) && thin_fires {
                 push(
                     "thin",
-                    "Thin",
+                    "Thin".to_string(),
                     Sev::Med,
                     thin_margin,
                     vec![lows],
@@ -2107,7 +2256,7 @@ fn apply_thresholds(
         );
         push(
             "washed",
-            "Washed out",
+            "Washed out".to_string(),
             Sev::Med,
             washed_margin,
             vec![],
@@ -2122,7 +2271,7 @@ fn apply_thresholds(
     if spiky_margin > 0.0 && facts.as_ref().map(|f| f.has_drive) == Some(false) {
         push(
             "spiky",
-            "Spiky",
+            "Spiky".to_string(),
             Sev::Med,
             spiky_margin,
             vec![],
@@ -2143,7 +2292,7 @@ fn apply_thresholds(
     {
         push(
             "buried",
-            "Buried clean tone",
+            "Buried clean tone".to_string(),
             Sev::Med,
             buried_margin,
             vec![],
@@ -2151,6 +2300,106 @@ fn apply_thresholds(
             "Your clean low end is buried under the drive — common on a driven bass sound.",
         );
     }
+
+    // ── Localized resonance, off the FINE Welch PSD (`profile.peaks`, empty
+    // on PSD-less profiles — both rules then silently no-op, same as every
+    // other Option-gated rule input this function reads). Built into a
+    // separate Vec (not the `push` closure above, shaped for the band rules)
+    // and appended at the end.
+    let mut localized: Vec<Diag> = Vec::new();
+    // `boxy` is the more specific verdict when a peak's center sits in its
+    // 300–500 Hz range (see its doc) — picked first so the resonant search
+    // below can exclude the SAME peak from also firing.
+    let boxy_pick = profile
+        .peaks
+        .iter()
+        .filter(|p| {
+            (BOXY_LO_HZ..=BOXY_HI_HZ).contains(&p.freq_hz) && p.height_db >= BOXY_MIN_HEIGHT_DB
+        })
+        .max_by(|a, b| a.height_db.total_cmp(&b.height_db));
+    if let Some(peak) = boxy_pick {
+        let band = band_index_for_freq(instrument, peak.freq_hz);
+        if band.is_none_or(covered) {
+            let freq = measured_freq_label(peak.freq_hz);
+            let band_id = nearest_boxy_band(peak.freq_hz);
+            let band_label = eq_band_label(band_id);
+            localized.push(Diag {
+                key: "boxy",
+                label: format!("Boxy (a {freq} hump)"),
+                sev: Sev::Med,
+                severity: peak.height_db - BOXY_MIN_HEIGHT_DB,
+                bands: band.into_iter().collect(),
+                detail: format!(
+                    "{freq} hump, {:.1} dB above the surrounding spectrum",
+                    peak.height_db
+                ),
+                explain: "A narrow bump in the low-mids reads as boxy — a closed-in, cardboard coloration rather than a broad muddy buildup.",
+                rx: {
+                    let title = format!("Cut the {band_label} band");
+                    localized_cut_rx(
+                        nodes,
+                        facts,
+                        band_id,
+                        4.0,
+                        peak.height_db,
+                        &EqCopy {
+                            reuse_title: &title,
+                            reuse_detail: "Dips the boxy hump right where it measures, on the EQ you already have.",
+                            insert_title: &title,
+                            insert_detail: "Puts a graphic EQ after the cab and dips the boxy hump right where it measures.",
+                            advise_detail: "Your chain already runs a graphic EQ — pull its band nearest the hump down, rather than adding a second EQ.",
+                        },
+                    )
+                },
+            });
+        }
+    }
+    let resonant_pick = profile
+        .peaks
+        .iter()
+        .filter(|p| p.height_db >= RESONANT_MIN_HEIGHT_DB && p.q >= RESONANT_MIN_Q)
+        .max_by(|a, b| a.height_db.total_cmp(&b.height_db));
+    if let Some(peak) = resonant_pick {
+        // Same peak `boxy` already claimed → boxy is the more specific verdict
+        // (see its doc); don't also fire resonant.
+        let claimed_by_boxy = (BOXY_LO_HZ..=BOXY_HI_HZ).contains(&peak.freq_hz);
+        let band = band_index_for_freq(instrument, peak.freq_hz);
+        if !claimed_by_boxy && band.is_none_or(covered) {
+            let freq = measured_freq_label(peak.freq_hz);
+            let band_id = nearest_eq10_band(peak.freq_hz);
+            let band_label = eq_band_label(band_id);
+            localized.push(Diag {
+                key: "resonant",
+                label: format!("Rings at {freq}"),
+                sev: Sev::High,
+                severity: peak.height_db - RESONANT_MIN_HEIGHT_DB,
+                bands: band.into_iter().collect(),
+                detail: format!(
+                    "{freq}, {:.1} dB above the surrounding spectrum, Q {:.1}",
+                    peak.height_db, peak.q
+                ),
+                explain: "A narrow spectral peak rings out and colors the tone at that one frequency — a precise EQ cut right on it is the fix.",
+                rx: {
+                    let title = format!("Rings at {freq} — cut the {band_label} band");
+                    localized_cut_rx(
+                        nodes,
+                        facts,
+                        band_id,
+                        6.0,
+                        peak.height_db,
+                        &EqCopy {
+                            reuse_title: &title,
+                            reuse_detail: "Dips the ring right where it measures, on the EQ you already have.",
+                            insert_title: &title,
+                            insert_detail: "Puts a graphic EQ after the cab and dips the ring right where it measures.",
+                            advise_detail: "Your chain already runs a graphic EQ — pull its band nearest the ring down, rather than adding a second EQ.",
+                        },
+                    )
+                },
+            });
+        }
+    }
+    out.extend(localized);
     out
 }
 
@@ -2410,6 +2659,7 @@ mod tests {
             spread_lu: 0.0,
             tail_ratio_db: -40.0,
             air_flatness: 0.5,
+            peaks: Vec::new(),
         }
     }
 
@@ -2489,6 +2739,7 @@ mod tests {
             spread_lu: 0.0,
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
+            peaks: Vec::new(),
         }
     }
 
@@ -3961,6 +4212,7 @@ mod tests {
             spread_lu: 0.0,
             tail_ratio_db: -40.0,
             air_flatness: 0.5,
+            peaks: Vec::new(),
         };
         let diags = diagnose(&p, None, Family::BassVi);
         assert!(
@@ -4407,6 +4659,169 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(legacy, rehearsal);
+    }
+
+    // ── R6: localized resonance (resonant/boxy) off the fine Welch PSD ──
+
+    /// A capture = broadband noise + one strong sine, built via the REAL
+    /// `welch_psd`/`SoundProfile::from_capture_with_psd` pipeline (never a
+    /// hand-mocked `Psd`) — the resonant/boxy oracle fixture. 2 s at 48 kHz
+    /// gives `find_peaks` ~22 Welch segments to average (SEG=8192, 50%
+    /// overlap). The returned profile carries the measured `peaks`.
+    fn ringing_profile(freq_hz: f32, sine_amp: f32) -> SoundProfile {
+        const RATE: u32 = 48_000;
+        let n = RATE as usize * 2;
+        let mut samples = lcg_noise(n, 0.05, 71);
+        for (s, t) in samples
+            .iter_mut()
+            .zip(test_sine(freq_hz, sine_amp, n, RATE as f32))
+        {
+            *s += t;
+        }
+        let psd = body_psd(&samples, RATE, 0);
+        SoundProfile::from_capture_with_psd(&samples, RATE, samples.len(), 0, Family::Guitar, &psd)
+            .expect("finite loudness")
+    }
+
+    #[test]
+    fn oracle_resonant_fires_at_measured_freq_with_nearest_eq10_band() {
+        // A clean 2.8 kHz ring (noise 0.05, sine 0.8) — empirically height≈60 dB,
+        // Q≈478 (`cargo test` probe), miles past RESONANT_MIN_HEIGHT_DB(10)/
+        // RESONANT_MIN_Q(4) and outside the 300–500 Hz boxy range. Log-nearest
+        // EQ-10 band: |ln(2000/2800.78)|≈0.337 < |ln(4000/2800.78)|≈0.357, so
+        // 2 kHz wins — matching the task's own worked example verbatim.
+        let p = ringing_profile(2_800.0, 0.8);
+        let peak = p.peaks[0];
+        let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let diags = diagnose_kind(
+            &p,
+            Some(&nodes),
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            None,
+            PlaybackOffsets::NONE,
+        );
+        let d = diags
+            .iter()
+            .find(|d| d.key == "resonant")
+            .expect("resonant should fire");
+        assert_eq!(
+            d.label,
+            format!("Rings at {}", measured_freq_label(peak.freq_hz))
+        );
+        assert!(d.severity > 0.0, "severity {}", d.severity);
+        let rx =
+            d.rx.iter()
+                .find(|r| r.kind == RxKind::Chain)
+                .expect("an EQ-10 insert Rx");
+        match &rx.ops[0] {
+            DoctorOp::InsertNode {
+                fender_id, params, ..
+            } => {
+                assert_eq!(fender_id, EQ10_STEREO);
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].0, "gain2khz");
+                assert!(
+                    params[0].1 < 0.0,
+                    "a resonant fix is always a CUT: {params:?}"
+                );
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oracle_boxy_range_sine_fires_boxy_not_resonant() {
+        // Same shape, centered at 380 Hz — inside the 300–500 Hz boxy range and
+        // easily past both rules' height/Q gates, so `boxy` (the more specific
+        // verdict) must win and `resonant` must NOT also fire for this peak.
+        let p = ringing_profile(380.0, 0.8);
+        let peak = p.peaks[0];
+        assert!(
+            peak.height_db >= RESONANT_MIN_HEIGHT_DB && peak.q >= RESONANT_MIN_Q,
+            "fixture must ALSO clear the resonant gate to prove the suppression: {peak:?}"
+        );
+        let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let diags = diagnose_kind(
+            &p,
+            Some(&nodes),
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            None,
+            PlaybackOffsets::NONE,
+        );
+        let keys = keys(&diags);
+        assert!(keys.contains(&"boxy"), "{keys:?}");
+        assert!(!keys.contains(&"resonant"), "{keys:?}");
+        let d = diags.iter().find(|d| d.key == "boxy").unwrap();
+        assert_eq!(
+            d.label,
+            format!("Boxy (a {} hump)", measured_freq_label(peak.freq_hz))
+        );
+    }
+
+    #[test]
+    fn oracle_below_gate_peak_is_silent() {
+        // A real but weak 2.8 kHz peak (sine amp 0.001) — `find_peaks` still
+        // registers it (height≈4.6 dB clears the 3 dB detection floor), but it
+        // never reaches RESONANT_MIN_HEIGHT_DB(10)/BOXY_MIN_HEIGHT_DB(7), so
+        // neither rule fires.
+        let p = ringing_profile(2_800.0, 0.001);
+        let peaks = &p.peaks;
+        assert_eq!(
+            peaks.len(),
+            1,
+            "fixture must register exactly one candidate peak: {peaks:?}"
+        );
+        assert!(
+            peaks[0].height_db < BOXY_MIN_HEIGHT_DB,
+            "fixture must sit under BOTH gates: {peaks:?}"
+        );
+        let keys = keys(&diagnose_kind(
+            &p,
+            None,
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            None,
+            PlaybackOffsets::NONE,
+        ));
+        assert!(!keys.contains(&"resonant"), "{keys:?}");
+        assert!(!keys.contains(&"boxy"), "{keys:?}");
+    }
+
+    #[test]
+    fn empty_peaks_produce_no_localized_diags_and_match_the_peaked_baseline() {
+        // The same ringing capture, diagnosed once with its measured
+        // `profile.peaks` (resonant fires) and once with `peaks` cleared (the
+        // PSD-less-profile shape: curated fixtures, hand-built vectors) —
+        // every OTHER diag must be byte-identical, proving the localized rules
+        // are a strict addition that never perturbs the pre-existing
+        // band/tilt/washed/spiky/buried rules.
+        let p = ringing_profile(2_800.0, 0.8);
+        let mut peakless = p.clone();
+        peakless.peaks = Vec::new();
+        let diagnose_one = |profile: &SoundProfile| {
+            diagnose_kind(
+                profile,
+                None,
+                Family::Guitar,
+                StimulusKind::Synthetic,
+                None,
+                PlaybackOffsets::NONE,
+            )
+        };
+        let with_peaks = diagnose_one(&p);
+        let without_peaks = diagnose_one(&peakless);
+        assert!(keys(&with_peaks).contains(&"resonant"));
+        assert!(!keys(&without_peaks).contains(&"resonant"));
+        assert!(!keys(&without_peaks).contains(&"boxy"));
+        let non_localized = |ds: &[Diag]| -> Vec<serde_json::Value> {
+            ds.iter()
+                .filter(|d| d.key != "resonant" && d.key != "boxy")
+                .map(|d| serde_json::to_value(d).unwrap())
+                .collect()
+        };
+        assert_eq!(non_localized(&with_peaks), non_localized(&without_peaks));
     }
 
     #[test]
