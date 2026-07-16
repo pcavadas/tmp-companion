@@ -193,7 +193,8 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// the headless iteration loop for tuning `doctor::Thresholds`. Read-only: loads +
 /// captures, NEVER saves; every capture path ends re-amp OFF.
 pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<String, String> {
-    let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
+    // Mirrors doctor_check's capture space: the production 3 s Doctor window.
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(topology_id)?)?);
     let instrument = doctor::Family::from_topology(
         topologies::by_id(topology_id)
             .map(|t| t.instrument)

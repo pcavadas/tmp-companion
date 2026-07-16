@@ -193,7 +193,9 @@ pub fn probe_doctor_calib(
     // A typo'd `--family` here would sweep + derive threshold values under the
     // wrong band layout. Fail loudly first.
     let family = super::parse_family_arg(family_id)?;
-    let stim = read_stimulus_48k(stim_path)?;
+    // Production Doctor window (3 s slice + the shorter tail): thresholds/targets
+    // must be derived in the SAME capture space `doctor_check` measures in.
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(stim_path)?);
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
     let mut rows: Vec<Row> = Vec::new();
@@ -393,7 +395,9 @@ pub fn probe_doctor_calib_factory(
     out_path: &str,
 ) -> Result<String, String> {
     let family = super::parse_family_arg(family_id)?;
-    let stim = read_stimulus_48k(stim_path)?;
+    // Production Doctor window (3 s slice + the shorter tail): thresholds/targets
+    // must be derived in the SAME capture space `doctor_check` measures in.
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(stim_path)?);
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
     let mut rows: Vec<Row> = Vec::new();

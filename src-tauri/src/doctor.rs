@@ -104,7 +104,8 @@ pub struct Thresholds {
     /// Lows deficit on a driven bass ⇒ buried clean tone (bass rule).
     pub buried_lows_db: f64,
     /// Dynamics spread (short-term-max − integrated LU) on a clean chain ⇒
-    /// spiky. Baselined 2026-07-09 under the DOCTOR capture (2.5 s tail):
+    /// spiky. Baselined 2026-07-09 under the DOCTOR capture (then a 2.5 s tail;
+    /// the R5 sweep re-derives every threshold under the 3 s + 1.5 s window):
     /// 0.12–0.81 LU across all 16 library sounds — the feared wet-preset tail
     /// inflation did not materialize, and `spiky` fires on zero library
     /// presets by design (see notes/doctor-calibration.md).
@@ -711,7 +712,7 @@ pub fn output_coverage_with_body(
 /// see `audio::estimate_onset`). Splitting at `stimulus_samples` alone leaks the
 /// last ~latency of body-level signal into the tail, inflating a bone-dry
 /// preset's ratio toward the washed threshold (~−17 dB vs the −13 dB gate for a
-/// 50 ms leak into a 2.5 s tail). Pass 0 to keep the un-aligned legacy split.
+/// 50 ms leak into a multi-second tail). Pass 0 to keep the un-aligned legacy split.
 pub fn tail_energy_ratio(
     samples: &[f32],
     _rate: u32,
@@ -1076,7 +1077,7 @@ fn is_time_effect(model: &str) -> bool {
 /// The substring matcher is DELIBERATELY conservative (broad, not precise):
 /// the two failure directions are asymmetric. A FALSE POSITIVE — an amp
 /// NAMED Reverb with no live reverb block, e.g. `ACD_DeluxeReverb65…NoFx` —
-/// merely keeps the full ~2 s tail (wasted capture time, no verdict impact).
+/// merely keeps the full wash tail (wasted capture time, no verdict impact).
 /// A false NEGATIVE would silently starve `washed` of its tail window on a
 /// genuinely wet preset. So when in doubt, this says yes.
 pub fn has_time_effect(nodes: &[DoctorNode]) -> bool {
@@ -2134,7 +2135,7 @@ mod onset_split_tests {
     fn onset_aligned_split_stops_body_leak_into_the_tail() {
         let stim_n = SR as usize * 6;
         let lag = SR as usize / 20; // 50 ms
-        let tail_n = SR as usize * 5 / 2; // 2.5 s Doctor tail
+        let tail_n = SR as usize * 5 / 2; // 2.5 s tail (illustrative; > today's 1.5 s DOCTOR_TAIL_MS)
         let mut cap = vec![0.0f32; lag];
         cap.extend(std::iter::repeat_n(0.5f32, stim_n)); // body
         cap.extend(std::iter::repeat_n(0.0005f32, tail_n)); // truly dry tail

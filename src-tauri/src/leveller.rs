@@ -55,12 +55,39 @@ pub(crate) const RECONNECT_GAP_MS: u64 = 400;
 const CAPTURE_TAIL_MS: u64 = 800;
 /// Doctor-only capture tail: Doctor diagnostic captures (reverb/delay wash analysis)
 /// keep a longer post-stimulus tail than the leveling capture, whose 800 ms tail is
-/// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change. 2.5 s
-/// covers typical reverb/delay decay without doubling the leveling run time.
-pub const DOCTOR_TAIL_MS: u32 = 2500;
+/// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change.
+/// 1.5 s (down from the original 2.5 s) was HW-A/B'd against the 6 s + 2.5 s
+/// full-capture oracle (`probe --doctor-window-ab`, 2026-07-16, 6 diverse presets
+/// incl. two wet ones): 0 verdict flips, Δtilt ≤ 0.08 dB/oct, band deltas within
+/// wash-preset run variance, `washed` still fires on both wet presets.
+pub const DOCTOR_TAIL_MS: u32 = 1500;
+/// Doctor stimulus window: diagnosis captures re-amp only the first 3 s of the
+/// stimulus ([`doctor_stim_slice`]) — the leveling window (full stimulus + its
+/// 800 ms tail) is UNTOUCHED per the capture-window lesson (a window change is a
+/// re-baseline, validated only against the full-capture oracle). Same
+/// `--doctor-window-ab` evidence as [`DOCTOR_TAIL_MS`]; the 4 s fallback showed
+/// no better fidelity. Spectral balance (not absolute loudness) is the Doctor's
+/// measurement, so the delay/reverb-buildup LUFS shift that forbids trimming the
+/// LEVELING window does not apply here.
+pub const DOCTOR_STIM_MS: usize = 3000;
+
+/// [`DOCTOR_STIM_MS`] at the device clock ([`RATE`]), in samples.
+pub fn doctor_stim_samples() -> usize {
+    (RATE as usize / 1000) * DOCTOR_STIM_MS
+}
+
+/// The Doctor's stimulus window (first [`DOCTOR_STIM_MS`]) — one home so
+/// capture, onset alignment, floor-guard spread, and `stimulus_samples` all
+/// agree on the same window. Takes the freshly-read buffer by value and
+/// truncates in place (every caller owns a throwaway full read; a borrow form
+/// just forced a second allocation).
+pub fn doctor_stim_slice(mut stim: Vec<f32>) -> Vec<f32> {
+    stim.truncate(doctor_stim_samples());
+    stim
+}
 /// Doctor capture tail for a chain WITHOUT a time effect (no reverb/delay node,
 /// [`crate::doctor::has_time_effect`]): a bare settle guard, not a wash window —
-/// `washed` cannot fire without a time-based block in the chain, so the full 2.5 s
+/// `washed` cannot fire without a time-based block in the chain, so the full tail
 /// buys nothing there. Shrinking the tail also shrinks `tail_ratio_db`'s window
 /// (an empty/near-empty tail floors it at −80, `doctor::tail_energy_ratio`) and
 /// marginally shifts `spread_lu` on these dry captures — expected and harmless

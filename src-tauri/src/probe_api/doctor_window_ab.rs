@@ -1,9 +1,12 @@
 //! `probe --doctor-window-ab` — capture-WINDOW A/B evidence arm.
 //!
-//! The Doctor capture window today is the full 6 s stimulus + `leveller::
-//! DOCTOR_TAIL_MS` (2500 ms) tail. The plan wants to shrink it to 3 s stimulus +
-//! 1500 ms tail (4 s fallback) IF an A/B against the 6 s oracle shows no material
-//! spectral drift. Per the repo's hard-won lesson (CLAUDE.md's leveling
+//! The ORIGINAL Doctor capture window was the full 6 s stimulus + 2500 ms tail
+//! ([`ORACLE_TAIL_MS`] — pinned here, deliberately NOT `leveller::DOCTOR_TAIL_MS`,
+//! which became the shorter production value once this arm's 2026-07-16 run
+//! validated the shrink: 6 slots incl. two wet, 0 verdict flips, Δtilt ≤ 0.08,
+//! band deltas within wash-preset run variance). The production window is now
+//! 3 s + 1500 ms (`leveller::DOCTOR_STIM_MS`/`DOCTOR_TAIL_MS`); re-run this arm
+//! against the SAME original oracle to re-validate any future window change. Per the repo's hard-won lesson (CLAUDE.md's leveling
 //! capture-window note): a capture-window change is a RE-BASELINE, validated
 //! only against a full-capture oracle — never self-consistently (a level→verify
 //! round-trip that reuses the same short method would hide the very offset it's
@@ -33,6 +36,8 @@ use crate::leveller;
 
 use super::stimulus::read_stimulus_calibrated;
 
+/// The ORIGINAL full-window tail the oracle captures with (see module doc).
+const ORACLE_TAIL_MS: u64 = 2_500;
 /// Post-3 s/4 s tail — see the module doc for the plan's proposed shorter window.
 const SHORT_TAIL_MS: u64 = 1_500;
 
@@ -124,7 +129,11 @@ pub fn probe_doctor_window_ab(
     // layout — fail loudly first (mirrors --doctor-calib).
     let family = super::parse_family_arg(family_id)?;
     let stim = read_stimulus_calibrated(stim_path, None)?;
-    let three_s = stim.len().min(3 * 48_000);
+    // Variant b TRACKS the production window (re-running this arm re-validates
+    // whatever ships); the oracle tail (`ORACLE_TAIL_MS`) and the 4 s fallback
+    // are deliberately PINNED literals — the oracle must never drift with the
+    // production constants, and 4 s has no production counterpart.
+    let three_s = stim.len().min(leveller::doctor_stim_samples());
     let four_s = stim.len().min(4 * 48_000);
 
     let mut rows: Vec<serde_json::Value> = Vec::new();
@@ -139,8 +148,7 @@ pub fn probe_doctor_window_ab(
 
     for &slot in slots {
         eprintln!("[probe] doctor-window-ab: slot {slot} — oracle (full stim)…");
-        let oracle = match capture_variant(slot, &stim, u64::from(leveller::DOCTOR_TAIL_MS), family)
-        {
+        let oracle = match capture_variant(slot, &stim, ORACLE_TAIL_MS, family) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[probe] slot {slot}: oracle capture failed: {e} (skipping slot)");
@@ -250,7 +258,7 @@ pub fn probe_doctor_window_ab(
             "family": family_id,
             "bands": family.bands(),
             "bandLabels": family.labels(),
-            "oracleTailMs": leveller::DOCTOR_TAIL_MS,
+            "oracleTailMs": ORACLE_TAIL_MS,
             "shortTailMs": SHORT_TAIL_MS,
             "rows": rows,
             "summary": {

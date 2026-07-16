@@ -338,7 +338,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let stim = match stims.entry(stim_key) {
                 std::collections::hash_map::Entry::Occupied(e) => Ok(&*e.into_mut()),
                 std::collections::hash_map::Entry::Vacant(e) => {
+                    // Sliced to the Doctor window ONCE at cache fill so the
+                    // capture, onset alignment, floor-guard spread, and
+                    // `stimulus_samples` all see the same 3 s stimulus.
                     read_stimulus_calibrated(path, cal).map(|s| {
+                        let s = leveller::doctor_stim_slice(s);
                         let spread = leveller::stimulus_spread_lu(&s);
                         &*e.insert((s, spread))
                     })
@@ -743,7 +747,12 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 ) -> Result<DoctorApplyResult, String> {
     let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
     with_released_seize(state.session.clone(), move || {
-        let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
+        // Same 3 s Doctor window as the diagnosis captures — the A/B clips must
+        // be measured (and heard) over the space the verdicts were made in.
+        let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(
+            &stim_path,
+            job.calibration_lufs,
+        )?);
 
         // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
         // policy `doctor_check` uses, now shared (its own preset-read cache: a

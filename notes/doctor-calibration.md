@@ -1,5 +1,11 @@
 # Doctor threshold calibration — 2026-07-03
 
+> **2026-07-16 addendum:** the Doctor capture window has since shrunk to a 3 s
+> stimulus slice + 1.5 s tail (HW-A/B'd vs the 6 s + 2.5 s oracle,
+> `probe --doctor-window-ab`). The 2.5 s-tail numbers below are the historical
+> record of that original recipe; the R5 sweep re-derives thresholds under the
+> new window.
+
 Method: `probe --doctor <slots> <topology>` sweeps on the real unit (fw-current,
 read-only: loads + captures with the 2.5 s Doctor tail, never a save), then
 tuning `doctor::Thresholds` until the fired diagnoses matched the presets'

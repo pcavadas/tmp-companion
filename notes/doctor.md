@@ -57,7 +57,9 @@ revive the HF rules.
 
 Same isolation rules as leveling (`doctor_force_bypass`: Base = all block-acting
 footswitches off; a scene/footswitch sound gets its engaged state), but with a
-**2.5 s tail** (`DOCTOR_TAIL_MS`) instead of leveling's 0.8 s — the wash rule
+**1.5 s tail** (`DOCTOR_TAIL_MS`; HW-A/B'd down from the original 2.5 s via
+`probe --doctor-window-ab`, together with a 3 s stimulus slice `DOCTOR_STIM_MS`)
+instead of leveling's 0.8 s — the wash rule
 needs the decay. The body/tail split is onset-aligned, not a fixed boundary:
 `audio::estimate_onset` locates where the stimulus actually starts in the
 capture (the buffer begins at stream start, before the audio propagates
