@@ -30,10 +30,10 @@
 //! Human-readable table on stdout + an optional deterministic JSON `--out`.
 //! READ-ONLY on the unit in the sense of never saving; ends re-amp OFF.
 
-use crate::audio;
 use crate::doctor;
 use crate::leveller;
 
+use super::analyze::analyze_capture;
 use super::stimulus::read_stimulus_calibrated;
 
 /// The ORIGINAL full-window tail the oracle captures with (see module doc).
@@ -62,42 +62,22 @@ fn capture_variant(
 ) -> Result<Capture, String> {
     let (samples, rate) =
         leveller::doctor_capture(slot, None, &[], stim_slice, Some(0.5), tail_ms, false)?;
-    let (onset, confident) = audio::estimate_onset(stim_slice, &samples, rate);
-    if !confident {
+    // Raw, unpadded stim → the estimated onset feeds the body PSD directly
+    // (`pad_aware: false`) — see `analyze_capture`'s doc for why this differs
+    // from `doctor_inject`'s padded/`doctor_signal_start` variant.
+    let read = analyze_capture(stim_slice, &samples, rate, family, false)?;
+    if !read.onset_confident {
         eprintln!(
             "[probe] doctor-window-ab: onset not confidently found for slot {slot} (tail {tail_ms}ms) — un-aligned split"
         );
     }
-    let body_psd = doctor::body_psd(&samples, rate, onset);
-    let profile = doctor::SoundProfile::from_capture_with_psd(
-        &samples,
-        rate,
-        stim_slice.len(),
-        onset,
-        family,
-        &body_psd,
-    )?;
-    let band_db = doctor::band_db(&profile.bands);
-    let dev = doctor::deviations(&band_db, family);
-    let (tilt_slope, _locals) = doctor::tilt_split(&dev, family, None);
-    let verdicts: Vec<&'static str> = doctor::diagnose_kind(
-        &profile,
-        None,
-        family,
-        doctor::StimulusKind::Synthetic,
-        None,
-        doctor::PlaybackOffsets::NONE,
-    )
-    .into_iter()
-    .map(|d| d.key)
-    .collect();
     Ok(Capture {
-        band_db,
-        deviations: dev,
-        tilt_slope,
-        tail_ratio_db: profile.tail_ratio_db,
-        spread_lu: profile.spread_lu,
-        verdicts,
+        band_db: read.band_db,
+        deviations: read.deviations,
+        tilt_slope: read.tilt_slope,
+        tail_ratio_db: read.tail_ratio_db,
+        spread_lu: read.spread_lu,
+        verdicts: read.verdicts,
     })
 }
 

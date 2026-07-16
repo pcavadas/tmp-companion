@@ -49,6 +49,8 @@
 //!                                  band coverage, and (with --labels {"rule":[slots]}) DERIVE
 //!                                  proposed *_CAPTURE thresholds → a DETERMINISTIC JSON report.
 //!                                  READ-ONLY: loads + captures, never saves
+//!   probe --doctor-inject <slot> <gains_csv|none>   R5 defect-injection A/B (live EQ-10 insert,
+//!                                   never saves; loads the slot)
 //!   probe --doctor-iso-ab           A/B: the OFFLINE `derived_force_bypass` isolation list
 //!                                  (backup-scan data, no device read) vs the LIVE
 //!                                  `doctor_force_bypass` list (a field-8 preset read), for
@@ -206,6 +208,31 @@ fn main() {
     if args.iter().any(|a| a == "--doctor-iso-ab") {
         eprintln!("[probe] doctor-iso-ab: derived (offline) vs live (field-8) force-bypass A/B…");
         match tmp_companion_lib::probe_doctor_iso_ab() {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-inject") {
+        // --doctor-inject <slot> <gains_csv|none>  (R5 defect-injection A/B)
+        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let gains: Vec<(String, f64)> = match args.get(i + 2).map(String::as_str) {
+            None | Some("none") => Vec::new(),
+            Some(csv) => csv
+                .split(',')
+                .filter_map(|kv| {
+                    let (k, v) = kv.split_once('=')?;
+                    Some((k.to_string(), v.parse().ok()?))
+                })
+                .collect(),
+        };
+        match tmp_companion_lib::probe_doctor_inject(slot, &gains) {
             Ok(report) => {
                 print!("{report}");
                 return;

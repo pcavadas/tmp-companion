@@ -716,7 +716,18 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
 /// seize) BEFORE `restore_saved_preset` reconnects to discard the partial
 /// edit, and an error naming `verb` ("apply"/"save") is returned — the exact
 /// text both callers relied on before this extraction.
-fn ops_session(
+///
+/// `pub(crate)`, not `pub`: deliberately the ONE shared live-edit seam
+/// (connect → confirm → `begin_live_edit` → ops, restore-on-failure) reused
+/// across layers — the command layer (`doctor_apply`/`doctor_save`) AND
+/// `probe --doctor-inject` (`probe_api::doctor_inject`) both call it directly.
+/// That cross-layer call is acceptable only because this function touches
+/// nothing but `Session`/`leveller` — no Tauri state, no command-layer
+/// concerns — so a probe caller reaching into `commands::doctor` costs
+/// nothing extra. A SECOND such cross-layer caller should prompt moving this
+/// out of `commands::doctor` into a shared module instead of normalizing the
+/// reach-in.
+pub(crate) fn ops_session(
     list_index: u32,
     expect_name: &str,
     ops: &[doctor::DoctorOp],

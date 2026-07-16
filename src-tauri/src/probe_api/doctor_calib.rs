@@ -142,16 +142,21 @@ fn stim_hash(samples: &[f32]) -> String {
     format!("{h:016x}")
 }
 
-/// One rule's metric value, keyed by rule name.
-type RuleMetric = (&'static str, f64);
+/// One rule's metric value(s), keyed by rule name: `(tilt-space, centered-space)`.
+/// The two differ only for the CONSENSUS band rules (muddy/boomy/harsh/lost/
+/// buried — see `doctor::Thresholds`'s doc); for fizzy/washed/spiky (no centered
+/// gate exists) both fields carry the same single-space value, so every rule's
+/// derivation can go through the one code path below.
+type RuleMetric = (&'static str, f64, f64);
 
 /// A slot's rule metrics + its broadband tilt slope: `(slot, tilt_slope, rule_metrics)`.
 type SlotMetrics = (u32, Option<f64>, Vec<RuleMetric>);
 
 /// Per-slot rule metrics, in the SAME LHS space `doctor::diagnose` compares to
 /// each threshold (every rule is "metric > threshold"): the target-deviation
-/// LOCAL ([`doctor::deviations`] / [`doctor::tilt_split`]) for the tonal rules,
-/// the self-difference for fizzy, and the time-domain metrics for washed/spiky.
+/// tilt-split LOCAL ([`doctor::deviations`] / [`doctor::tilt_split`]) plus the
+/// R6 CONSENSUS [`doctor::centered_deviations`] value for the tonal rules, the
+/// self-difference for fizzy, and the time-domain metrics for washed/spiky.
 /// Also returns the broadband tilt slope (`tilt_split`'s discarded first value)
 /// so callers building a `tiltDbPerOct` report field don't re-run the same
 /// deviations+tilt_split pass.
@@ -162,18 +167,20 @@ fn rule_metrics(
     let bdb = doctor::band_db(&profile.bands);
     let dev = doctor::deviations(&bdb, family);
     let (slope, locals) = doctor::tilt_split(&dev, family, None);
+    let centered = doctor::centered_deviations(&dev, family);
     let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
+    let fizzy = bdb[air] - bdb[highs];
     (
         slope,
         vec![
-            ("muddy", locals[low_mids]),
-            ("boomy", locals[lows]),
-            ("harsh", locals[high_mids]),
-            ("fizzy", bdb[air] - bdb[highs]),
-            ("lost", -locals[mids]),
-            ("washed", profile.tail_ratio_db),
-            ("spiky", profile.spread_lu),
-            ("buried", -locals[lows]),
+            ("muddy", locals[low_mids], centered[low_mids]),
+            ("boomy", locals[lows], centered[lows]),
+            ("harsh", locals[high_mids], centered[high_mids]),
+            ("fizzy", fizzy, fizzy),
+            ("lost", -locals[mids], -centered[mids]),
+            ("washed", profile.tail_ratio_db, profile.tail_ratio_db),
+            ("spiky", profile.spread_lu, profile.spread_lu),
+            ("buried", -locals[lows], -centered[lows]),
         ],
     )
 }
@@ -300,55 +307,72 @@ pub fn probe_doctor_calib(
         })
         .collect();
 
-    // Per-rule derivation (only rules present in --labels).
+    // Per-rule derivation (only rules present in --labels), BOTH consensus
+    // spaces independently — tilt and centered each get their own clean/
+    // positive split + proposed threshold (R6: a band rule now fires only when
+    // BOTH spaces clear their own gate, see `doctor::Thresholds`'s doc).
     let mut derivations = serde_json::Map::new();
     let mut md = String::new();
     for rule in RULES {
         let Some(positives) = labels.get(rule) else {
             continue;
         };
-        let metric_of = |slot: u32| -> Option<f64> {
-            metrics_by_slot
-                .iter()
-                .find(|(s, _, _)| *s == slot)
-                .and_then(|(_, _, m)| m.iter().find(|(k, _)| *k == rule).map(|(_, v)| *v))
-        };
-        let (mut clean, mut positive) = (Vec::new(), Vec::new());
+        let (mut clean_t, mut positive_t) = (Vec::new(), Vec::new());
+        let (mut clean_c, mut positive_c) = (Vec::new(), Vec::new());
         for (slot, _slope, m) in &metrics_by_slot {
-            let v = m
+            let (vt, vc) = m
                 .iter()
-                .find(|(k, _)| *k == rule)
-                .map(|(_, v)| *v)
-                .unwrap_or(0.0);
+                .find(|(k, _, _)| *k == rule)
+                .map(|(_, vt, vc)| (*vt, *vc))
+                .unwrap_or((0.0, 0.0));
             if positives.contains(slot) {
-                positive.push(v);
+                positive_t.push(vt);
+                positive_c.push(vc);
             } else {
-                clean.push(v);
+                clean_t.push(vt);
+                clean_c.push(vc);
             }
         }
-        // Positive slots labelled but not captured this sweep are dropped by
-        // metric_of returning None — report them so the operator notices.
+        // Positive slots labelled but not captured this sweep — report them so
+        // the operator notices (every captured slot's metrics vec always
+        // carries all RULES, so "missing" means "not captured at all").
         let missing: Vec<u32> = positives
             .iter()
             .copied()
-            .filter(|s| metric_of(*s).is_none())
+            .filter(|s| !metrics_by_slot.iter().any(|(slot, _, _)| slot == s))
             .collect();
-        let (proposed, separation) = propose_threshold(&clean, &positive);
-        let (cmin, cmed, cp90, cmax) = stats(&clean).unwrap_or((0.0, 0.0, 0.0, 0.0));
-        derivations.insert(
-            rule.to_string(),
+        let (proposed_t, sep_t) = propose_threshold(&clean_t, &positive_t);
+        let (proposed_c, sep_c) = propose_threshold(&clean_c, &positive_c);
+        let (cmin_t, cmed_t, cp90_t, cmax_t) = stats(&clean_t).unwrap_or((0.0, 0.0, 0.0, 0.0));
+        let (cmin_c, cmed_c, cp90_c, cmax_c) = stats(&clean_c).unwrap_or((0.0, 0.0, 0.0, 0.0));
+        let space_json = |proposed: f64,
+                          separation: Option<f64>,
+                          positive: &[f64],
+                          (cmin, cmed, cp90, cmax): (f64, f64, f64, f64)| {
             serde_json::json!({
                 "cleanStats": { "min": cmin, "median": cmed, "p90": cp90, "max": cmax },
                 "positiveValues": positive,
                 "proposedThreshold": proposed,
                 "separationMargin": separation,
+            })
+        };
+        derivations.insert(
+            rule.to_string(),
+            serde_json::json!({
+                "tilt": space_json(proposed_t, sep_t, &positive_t, (cmin_t, cmed_t, cp90_t, cmax_t)),
+                "centered": space_json(proposed_c, sep_c, &positive_c, (cmin_c, cmed_c, cp90_c, cmax_c)),
                 "missingLabelledSlots": missing,
             }),
         );
         md += &format!(
-            "  {rule:<7} proposed={proposed:>8.3}  sep={}  clean[min/med/p90/max]={cmin:.2}/{cmed:.2}/{cp90:.2}/{cmax:.2}  pos={:?}\n",
-            separation.map_or("   n/a".to_string(), |s| format!("{s:>6.2}")),
-            positive.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(),
+            "  {rule:<7} tilt     proposed={proposed_t:>8.3}  sep={}  clean[min/med/p90/max]={cmin_t:.2}/{cmed_t:.2}/{cp90_t:.2}/{cmax_t:.2}  pos={:?}\n",
+            sep_t.map_or("   n/a".to_string(), |s| format!("{s:>6.2}")),
+            positive_t.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(),
+        );
+        md += &format!(
+            "  {rule:<7} centered proposed={proposed_c:>8.3}  sep={}  clean[min/med/p90/max]={cmin_c:.2}/{cmed_c:.2}/{cp90_c:.2}/{cmax_c:.2}  pos={:?}\n",
+            sep_c.map_or("   n/a".to_string(), |s| format!("{s:>6.2}")),
+            positive_c.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(),
         );
     }
 
