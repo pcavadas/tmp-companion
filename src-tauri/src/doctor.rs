@@ -147,9 +147,13 @@ pub struct Thresholds {
 /// band-rule gate is the healthy-population max plus the R4 repeatability
 /// margin (3σ ≈ 1.2 dB for the band rules; tilt σ ≈ 0.05 dB/oct).
 /// `wash_tail_db` sits in the NEW aligned-tail space (R4's onset fix moved dry
-/// tails from ≈−19 to ≈−40 dB) — the factory wet cluster measures
-/// −6.3…−7.8 dB and the wettest flagship preset −3.0 dB, which is meant to
-/// fire. `spiky_spread_lu` is reachable only on Capture stimuli (the
+/// tails from ≈−19 to ≈−40 dB). Set to −10.0 by the R8 ground-truth injection
+/// (`probe --doctor-defects` / `--doctor-inject --block ACD_TMSmallHall`): a
+/// verified 90%-wet reverb measures tail −7.9…−8.1 dB (mix writes confirmed
+/// landing — mix 0.2 → −34.2), so the earlier −4.0 gate missed unambiguous
+/// wash; the final factory sweep's wet cluster sits −6.2…−8.1 with the
+/// wettest at −2.7 and the next-driest preset at −15.5, leaving ≥5 dB of
+/// clearance below the gate and ≥11 dB above the dry population (−21…−44). `spiky_spread_lu` is reachable only on Capture stimuli (the
 /// synthetic-stimulus max observed across the sweep was 1.17 LU) — pending
 /// the Tier-2 DI sweep.
 ///
@@ -170,7 +174,7 @@ pub const GUITAR: Thresholds = Thresholds {
     harsh_db: 2.5,
     fizzy_db: -9.0,
     lost_db: 3.5,
-    wash_tail_db: -4.0,
+    wash_tail_db: -10.0,
     buried_lows_db: f64::INFINITY, // bass-only rule
     spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
@@ -197,7 +201,7 @@ pub const BASS: Thresholds = Thresholds {
     harsh_db: 3.0,
     fizzy_db: -9.0,
     lost_db: 4.0,
-    wash_tail_db: -4.0,
+    wash_tail_db: -10.0,
     buried_lows_db: 3.0,
     spiky_spread_lu: 4.0,
     scene_delta_db: 3.0,
@@ -403,14 +407,23 @@ impl SoundProfile {
     pub fn from_capture(
         samples: &[f32],
         rate: u32,
-        stimulus_samples: usize,
+        stimulus: &[f32],
         onset: usize,
         confident: bool,
         family: Family,
     ) -> Result<SoundProfile, String> {
         let signal_start = crate::leveller::doctor_signal_start(onset, confident);
         let psd = body_psd(samples, rate, signal_start);
-        Self::from_capture_with_psd(samples, rate, stimulus_samples, onset, family, &psd)
+        let stim_psd = crate::psd::welch_psd(stimulus, rate as f32);
+        Self::from_capture_with_psd(
+            samples,
+            rate,
+            stimulus.len(),
+            onset,
+            family,
+            &psd,
+            Some(&stim_psd),
+        )
     }
 
     /// Build a profile from one captured mono signal — the 6 Doctor-band
@@ -426,6 +439,7 @@ impl SoundProfile {
     /// uniformly and the gated LUFS discards it anyway) and `tail_ratio_db`
     /// (already onset-aware, see [`tail_energy_ratio`]) are unchanged by which
     /// PSD is passed in.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_capture_with_psd(
         samples: &[f32],
         rate: u32,
@@ -433,6 +447,7 @@ impl SoundProfile {
         onset: usize,
         family: Family,
         body_psd: &crate::psd::Psd,
+        stim_psd: Option<&crate::psd::Psd>,
     ) -> Result<SoundProfile, String> {
         let bands = body_psd.band_powers(family.bands());
         let loudness = crate::lufs::measure_mono(samples, rate)?;
@@ -449,11 +464,22 @@ impl SoundProfile {
             spread_lu: loudness.spread_lu(),
             tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples, onset),
             air_flatness: body_psd.flatness(6000.0, 12000.0),
-            peaks: body_psd.find_peaks(
-                RESONANT_SCAN_LO_HZ,
-                RESONANT_SCAN_HI_HZ,
-                PEAK_DETECT_FLOOR_DB,
-            ),
+            // Localization runs on the TRANSFER (capture − stimulus, dB) so
+            // the deterministic stimulus's own spectral ridges cancel — raw
+            // capture-space peaks false-fired `resonant` on 25/25 clean
+            // factory presets (see `Psd::transfer_db`). No stimulus PSD (or a
+            // mismatched grid) → no localization, empty peaks.
+            peaks: stim_psd
+                .and_then(|sp| body_psd.transfer_db(sp))
+                .map(|t| {
+                    body_psd.find_peaks_in_db(
+                        &t,
+                        RESONANT_SCAN_LO_HZ,
+                        RESONANT_SCAN_HI_HZ,
+                        PEAK_DETECT_FLOOR_DB,
+                    )
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -586,14 +612,50 @@ const RESONANT_SCAN_HI_HZ: f64 = 8_000.0;
 /// this one (only the two rule gates below are pinned to the R8 sweep).
 const PEAK_DETECT_FLOOR_DB: f64 = 3.0;
 
-/// Minimum height (dB above the ~1/3-octave envelope, [`crate::psd::Psd::find_peaks`])
-/// for the strongest peak in `RESONANT_SCAN_LO_HZ..RESONANT_SCAN_HI_HZ` to read
-/// as `resonant` — PROVISIONAL, pending an R8 factory false-fire check (no HW
-/// sweep behind this value yet, unlike the R5-calibrated `Thresholds` fields).
-pub const RESONANT_MIN_HEIGHT_DB: f64 = 10.0;
-/// Minimum quality factor (center / −3 dB width) for that same peak —
-/// PROVISIONAL, see [`RESONANT_MIN_HEIGHT_DB`].
-pub const RESONANT_MIN_Q: f64 = 4.0;
+/// Minimum height (dB of TRANSFER excess over its one-octave median
+/// envelope — see [`crate::psd::Psd::transfer_db`]: localization runs on
+/// capture−stimulus, where the stimulus's own spectral ridges cancel; raw
+/// capture-space detection false-fired `resonant` on 25/25 clean factory
+/// presets) for a peak in `RESONANT_SCAN_LO_HZ..RESONANT_SCAN_HI_HZ` to read
+/// as `resonant`. R8-calibrated (2026-07-16) against the cocked-wah HW probe
+/// (`--doctor-inject --block ACD_CryBabyGCB95`, the canonical real resonance:
+/// bump ≈7.5 dB, Q≈6) and the 25-slot factory bank (which shows NO clean
+/// peak inside the Q window below — see [`RESONANT_MAX_Q`]).
+pub const RESONANT_MIN_HEIGHT_DB: f64 = 6.5;
+/// Minimum quality factor (center / −3 dB width) — 2.0 admits real-world
+/// resonances (wah/cocked filter, Q 2–6) while an octave-wide +12 dB
+/// graphic-EQ band stays below (Q < 2; HW-verified it never reads resonant).
+pub const RESONANT_MIN_Q: f64 = 2.0;
+/// Maximum quality factor — one of two false-positive controls (HW,
+/// 2026-07-16 factory sweeps): a real chain's transfer is FULL of narrow
+/// high-Q fine structure (cab-IR comb, nonlinear residue) at up to 16 dB,
+/// while PLAYABLE resonances (the ones a player can hear ring and fix with
+/// an EQ cut) are wide — the injected wah measures Q≈6. Isolated comb LINES
+/// measure Q ≫ this ceiling; dense comb FORESTS however can mimic ANY Q at
+/// this estimator resolution (several lines within 3 dB read as one
+/// plateau — a shape-only rule false-fired 19/25 clean factory presets even
+/// with this ceiling), which is why the BAND CORROBORATION gate below is the
+/// second, load-bearing control. Shared by `boxy`.
+pub const RESONANT_MAX_Q: f64 = 16.0;
+/// BAND CORROBORATION — the decisive false-positive control for both
+/// localized rules: a peak only counts when ITS OWN band is hot in BOTH
+/// consensus spaces (tilt-split local AND median-centered deviation > this
+/// gate). The peak then LOCALIZES heat the calibrated band metric already
+/// confirms, instead of asking the noisy fine-structure shape to prove a
+/// defect on its own. HW (2026-07-16): the injected cocked wah carries
+/// +15.7 dB of mid-band local; every comb-forest fake sits in a ≈0-local
+/// band — corroboration cut the factory sweep's shape-only resonant fires
+/// from 19/25 to 2/25, and both survivors are audible localized bumps (a
+/// +5.5 dB 709 Hz honk, a +2.6 dB 2.25 kHz ridge). Looser than the band
+/// rules' own gates by design: the peak supplies the specificity.
+pub const RESONANT_MIN_BAND_LOCAL_DB: f64 = 2.0;
+
+/// Master switch for the localized `resonant`/`boxy` VERDICTS — `false` for
+/// this release (see [`localized_diags`]'s doc for the three-round HW
+/// evidence). The detection pipeline still runs (peaks are measured,
+/// recorded by the probe arms, and unit-locked) so the next calibration
+/// round starts from live machinery, not a rebuild.
+pub const LOCALIZED_RULES_ENABLED: bool = false;
 /// Minimum height for a peak centered in 300–500 Hz to read as `boxy` (a
 /// narrower, more specific verdict than `muddy`'s whole-band buildup) — any Q
 /// counts. PROVISIONAL, see [`RESONANT_MIN_HEIGHT_DB`].
@@ -2417,6 +2479,40 @@ fn apply_thresholds(
         );
     }
 
+    // Localized resonance — machinery HW-validated, verdicts gated OFF
+    // pending a controlled calibration round (see `localized_diags`'s doc).
+    if LOCALIZED_RULES_ENABLED {
+        out.extend(localized_diags(
+            profile, metrics, instrument, nodes, &covered,
+        ));
+    }
+    out
+}
+
+/// The localized `resonant`/`boxy` diagnoses (see the gate consts around
+/// [`RESONANT_MIN_HEIGHT_DB`]). SHIPS DISABLED ([`LOCALIZED_RULES_ENABLED`]):
+/// three 2026-07-16 HW design rounds (raw capture space → transfer space →
+/// Q-window + band corroboration) each moved the boundary between a playable
+/// resonance and a normal chain's comb fine structure, but the final round
+/// still MISSED the canonical injected wah (its resonance is wide enough
+/// that the octave envelope tracks it) while firing on a designated-clean
+/// preset's mild 715 Hz concentration — inverted utility. The detection
+/// machinery (transfer peaks, Q estimator, notch Rx, probe arms, these
+/// tests) ships as the calibration foundation; the VERDICTS wait for a
+/// controlled ground-truth round (a parametric-EQ schema dump enabling
+/// exact height/Q defect injection). A wah-class defect still surfaces
+/// meanwhile via the band rules ("thin" + a +15.7 dB mid local in the
+/// meter).
+fn localized_diags(
+    profile: &SoundProfile,
+    metrics: &RuleMetrics,
+    instrument: Family,
+    nodes: Option<&[DoctorNode]>,
+    covered: &impl Fn(usize) -> bool,
+) -> Vec<Diag> {
+    // The graph facts ride `metrics` (computed once in `compute_rule_metrics`)
+    // — no separate parameter to drift from it.
+    let facts = &metrics.facts;
     // ── Localized resonance, off the FINE Welch PSD (`profile.peaks`, empty
     // on PSD-less profiles — both rules then silently no-op, same as every
     // other Option-gated rule input this function reads). Built into a
@@ -2426,12 +2522,24 @@ fn apply_thresholds(
     // `boxy` is the more specific verdict when a peak's center sits in its
     // 300–500 Hz range (see its doc) — picked first so the resonant search
     // below can exclude the SAME peak from also firing.
+    // Band corroboration (see `RESONANT_MIN_BAND_LOCAL_DB`): the peak's own
+    // band must read hot in BOTH consensus spaces — a peak outside the family
+    // layout can't corroborate.
+    let corroborated = |p: &&crate::psd::SpectralPeak| {
+        band_index_for_freq(instrument, p.freq_hz).is_some_and(|bi| {
+            metrics.locals[bi] > RESONANT_MIN_BAND_LOCAL_DB
+                && metrics.centered[bi] > RESONANT_MIN_BAND_LOCAL_DB
+        })
+    };
     let boxy_pick = profile
         .peaks
         .iter()
         .filter(|p| {
-            (BOXY_LO_HZ..=BOXY_HI_HZ).contains(&p.freq_hz) && p.height_db >= BOXY_MIN_HEIGHT_DB
+            (BOXY_LO_HZ..=BOXY_HI_HZ).contains(&p.freq_hz)
+                && p.height_db >= BOXY_MIN_HEIGHT_DB
+                && p.q <= RESONANT_MAX_Q
         })
+        .filter(corroborated)
         .max_by(|a, b| a.height_db.total_cmp(&b.height_db));
     if let Some(peak) = boxy_pick {
         let band = band_index_for_freq(instrument, peak.freq_hz);
@@ -2473,7 +2581,10 @@ fn apply_thresholds(
     let resonant_pick = profile
         .peaks
         .iter()
-        .filter(|p| p.height_db >= RESONANT_MIN_HEIGHT_DB && p.q >= RESONANT_MIN_Q)
+        .filter(|p| {
+            p.height_db >= RESONANT_MIN_HEIGHT_DB && p.q >= RESONANT_MIN_Q && p.q <= RESONANT_MAX_Q
+        })
+        .filter(corroborated)
         .max_by(|a, b| a.height_db.total_cmp(&b.height_db));
     if let Some(peak) = resonant_pick {
         // Same peak `boxy` already claimed → boxy is the more specific verdict
@@ -2515,8 +2626,7 @@ fn apply_thresholds(
             });
         }
     }
-    out.extend(localized);
-    out
+    localized
 }
 
 /// A diagnosis plus the playback levels at which it fires. `from_level` is the
@@ -4395,9 +4505,16 @@ mod tests {
     fn silent_capture_errors_instead_of_minus_inf() {
         let silence = vec![0.0f32; 96_000];
         let psd = body_psd(&silence, 48_000, 0);
-        let err =
-            SoundProfile::from_capture_with_psd(&silence, 48_000, 48_000, 0, Family::Guitar, &psd)
-                .expect_err("silence must not produce a profile");
+        let err = SoundProfile::from_capture_with_psd(
+            &silence,
+            48_000,
+            48_000,
+            0,
+            Family::Guitar,
+            &psd,
+            None,
+        )
+        .expect_err("silence must not produce a profile");
         assert!(err.contains("silent"), "{err}");
     }
 
@@ -4656,6 +4773,7 @@ mod tests {
             0,
             Family::Guitar,
             &psd,
+            None,
         )
         .expect("finite loudness");
         let whole = crate::psd::welch_psd(&samples, RATE as f32);
@@ -4681,6 +4799,7 @@ mod tests {
             onset,
             Family::Guitar,
             &body_psd(&samples, RATE, onset),
+            None,
         )
         .expect("finite loudness");
 
@@ -4692,6 +4811,7 @@ mod tests {
             onset,
             Family::Guitar,
             &explicit_body,
+            None,
         )
         .expect("finite loudness");
         assert_eq!(profile.bands, via_with_psd.bands);
@@ -4904,42 +5024,83 @@ mod tests {
 
     /// A capture = broadband noise + one strong sine, built via the REAL
     /// `welch_psd`/`SoundProfile::from_capture_with_psd` pipeline (never a
-    /// hand-mocked `Psd`) — the resonant/boxy oracle fixture. 2 s at 48 kHz
-    /// gives `find_peaks` ~22 Welch segments to average (SEG=8192, 50%
-    /// overlap). The returned profile carries the measured `peaks`.
+    /// hand-mocked `Psd`) — the resonant/boxy oracle fixture, in TRANSFER
+    /// space: the "stimulus" is the bare noise bed, the "capture" is the same
+    /// noise plus one sine — so the transfer (capture − stimulus, dB) is flat
+    /// except the ring, exactly the production discriminator (a stimulus
+    /// ridge appears in both and cancels). 2 s at 48 kHz gives the detector
+    /// ~22 Welch segments to average (SEG=8192, 50% overlap). The returned
+    /// profile carries the measured `peaks`.
     fn ringing_profile(freq_hz: f32, sine_amp: f32) -> SoundProfile {
+        ringing_profile_q(freq_hz, sine_amp, 9.0)
+    }
+
+    /// Run the (release-disabled, see `LOCALIZED_RULES_ENABLED`) localized
+    /// rules directly — the oracle tests lock the machinery so the next
+    /// calibration round starts from proven code.
+    fn localized_for(p: &SoundProfile, nodes: Option<&[DoctorNode]>) -> Vec<Diag> {
+        let metrics = compute_rule_metrics(p, nodes, Family::Guitar, None);
+        localized_diags(p, &metrics, Family::Guitar, nodes, &|_| true)
+    }
+
+    /// [`ringing_profile`] with an explicit resonator Q target (the boxy
+    /// fixture's low center needs its own bandwidth to stay Q≈9).
+    fn ringing_profile_q(freq_hz: f32, sine_amp: f32, q: f32) -> SoundProfile {
         const RATE: u32 = 48_000;
         let n = RATE as usize * 2;
-        let mut samples = lcg_noise(n, 0.05, 71);
-        for (s, t) in samples
-            .iter_mut()
-            .zip(test_sine(freq_hz, sine_amp, n, RATE as f32))
-        {
-            *s += t;
+        let stimulus = lcg_noise(n, 0.05, 71);
+        let mut samples = stimulus.clone();
+        // A REALISTIC-Q ring, not a pure sine: an independent deterministic
+        // noise stream through a two-pole resonator (r = 0.98 → −3 dB
+        // bandwidth ≈ fs·(1−r)/π ≈ 300 Hz → Q ≈ 9 at 2.8 kHz — inside the
+        // RESONANT_MIN_Q..RESONANT_MAX_Q window). Noise-excited like a real
+        // chain, so Welch's segment averaging smooths the bump. A pure sine's
+        // Q measures in the hundreds — exactly the cab-comb fine structure
+        // the Q CEILING exists to reject — and a deterministic sine cluster
+        // is identical in every Welch segment, so its interference ripple
+        // never averages out and the −3 dB walk reads the ripple, not the
+        // bump (both shapes were tried and correctly do NOT fire).
+        let drive = lcg_noise(n, sine_amp, 137);
+        // Two-pole resonator: −3 dB bandwidth ≈ fs·(1−r)/π, so r solves for
+        // the requested Q = freq/bandwidth.
+        let r = (1.0 - std::f32::consts::PI * (freq_hz / q) / RATE as f32).clamp(0.9, 0.9999);
+        let theta = std::f32::consts::TAU * freq_hz / RATE as f32;
+        let (a1, a2) = (2.0 * r * theta.cos(), -(r * r));
+        let (mut y1, mut y2) = (0.0f32, 0.0f32);
+        for (s, &x) in samples.iter_mut().zip(&drive) {
+            let y = x + a1 * y1 + a2 * y2;
+            y2 = y1;
+            y1 = y;
+            // The resonator has gain ≈ 1/(1−r) at center — scale back so
+            // `sine_amp` stays the caller's intuitive drive knob.
+            *s += y * (1.0 - r);
         }
         let psd = body_psd(&samples, RATE, 0);
-        SoundProfile::from_capture_with_psd(&samples, RATE, samples.len(), 0, Family::Guitar, &psd)
-            .expect("finite loudness")
+        let stim_psd = crate::psd::welch_psd(&stimulus, RATE as f32);
+        SoundProfile::from_capture_with_psd(
+            &samples,
+            RATE,
+            samples.len(),
+            0,
+            Family::Guitar,
+            &psd,
+            Some(&stim_psd),
+        )
+        .expect("finite loudness")
     }
 
     #[test]
     fn oracle_resonant_fires_at_measured_freq_with_nearest_eq10_band() {
-        // A clean 2.8 kHz ring (noise 0.05, sine 0.8) — empirically height≈60 dB,
-        // Q≈478 (`cargo test` probe), miles past RESONANT_MIN_HEIGHT_DB(10)/
-        // RESONANT_MIN_Q(4) and outside the 300–500 Hz boxy range. Log-nearest
-        // EQ-10 band: |ln(2000/2800.78)|≈0.337 < |ln(4000/2800.78)|≈0.357, so
-        // 2 kHz wins — matching the task's own worked example verbatim.
-        let p = ringing_profile(2_800.0, 0.8);
+        // A clean 2.6 kHz ring (noise bed 0.05, resonator drive 0.8, Q≈9) —
+        // measures h≈13 dB, Q≈10.8 (fit×run, see `peak_q`): past
+        // RESONANT_MIN_HEIGHT_DB(6.5), inside the [2, 16] Q window, and
+        // outside the 300–500 Hz boxy range. 2.6 kHz keeps the bin-quantized
+        // peak clear of the 2k/4k log-midpoint (≈2828 Hz): |ln(2630/2000)| ≈
+        // 0.27 < |ln(4000/2630)| ≈ 0.42, so the 2 kHz band wins decisively.
+        let p = ringing_profile(2_600.0, 0.8);
         let peak = p.peaks[0];
         let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let diags = diagnose_kind(
-            &p,
-            Some(&nodes),
-            Family::Guitar,
-            StimulusKind::Synthetic,
-            None,
-            PlaybackOffsets::NONE,
-        );
+        let diags = localized_for(&p, Some(&nodes));
         let d = diags
             .iter()
             .find(|d| d.key == "resonant")
@@ -4981,14 +5142,7 @@ mod tests {
             "fixture must ALSO clear the resonant gate to prove the suppression: {peak:?}"
         );
         let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let diags = diagnose_kind(
-            &p,
-            Some(&nodes),
-            Family::Guitar,
-            StimulusKind::Synthetic,
-            None,
-            PlaybackOffsets::NONE,
-        );
+        let diags = localized_for(&p, Some(&nodes));
         let keys = keys(&diags);
         assert!(keys.contains(&"boxy"), "{keys:?}");
         assert!(!keys.contains(&"resonant"), "{keys:?}");
@@ -5001,19 +5155,17 @@ mod tests {
 
     #[test]
     fn oracle_below_gate_peak_is_silent() {
-        // A real but weak 2.8 kHz peak (sine amp 0.001) — `find_peaks` still
-        // registers it (height≈4.6 dB clears the 3 dB detection floor), but it
-        // never reaches RESONANT_MIN_HEIGHT_DB(10)/BOXY_MIN_HEIGHT_DB(7), so
+        // A real but weak 2.6 kHz ring (drive 0.04) — `find_peaks` still
+        // registers it (clears the 3 dB detection floor), but its height
+        // stays under RESONANT_MIN_HEIGHT_DB(6.5)/BOXY_MIN_HEIGHT_DB(7), so
         // neither rule fires.
-        let p = ringing_profile(2_800.0, 0.001);
+        let p = ringing_profile(2_600.0, 0.04);
         let peaks = &p.peaks;
-        assert_eq!(
-            peaks.len(),
-            1,
-            "fixture must register exactly one candidate peak: {peaks:?}"
-        );
+        assert!(!peaks.is_empty(), "fixture must register a candidate peak");
         assert!(
-            peaks[0].height_db < BOXY_MIN_HEIGHT_DB,
+            peaks
+                .iter()
+                .all(|pk| pk.height_db < RESONANT_MIN_HEIGHT_DB.min(BOXY_MIN_HEIGHT_DB)),
             "fixture must sit under BOTH gates: {peaks:?}"
         );
         let keys = keys(&diagnose_kind(
@@ -5029,6 +5181,28 @@ mod tests {
     }
 
     #[test]
+    fn shipped_diagnose_never_emits_localized_kinds_while_disabled() {
+        // The release gate (`LOCALIZED_RULES_ENABLED = false`): even a
+        // strongly-ringing capture must produce NO resonant/boxy through the
+        // shipped diagnose path — the machinery is exercised only via
+        // `localized_diags` (the oracle tests above).
+        // (Flipping `LOCALIZED_RULES_ENABLED` ships the verdicts — re-run the
+        // calibration round first; these assertions then need re-deriving.)
+        let p = ringing_profile(2_600.0, 0.8);
+        let diags = diagnose_kind(
+            &p,
+            None,
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            None,
+            PlaybackOffsets::NONE,
+        );
+        let keys = keys(&diags);
+        assert!(!keys.contains(&"resonant"), "{keys:?}");
+        assert!(!keys.contains(&"boxy"), "{keys:?}");
+    }
+
+    #[test]
     fn empty_peaks_produce_no_localized_diags_and_match_the_peaked_baseline() {
         // The same ringing capture, diagnosed once with its measured
         // `profile.peaks` (resonant fires) and once with `peaks` cleared (the
@@ -5036,31 +5210,13 @@ mod tests {
         // every OTHER diag must be byte-identical, proving the localized rules
         // are a strict addition that never perturbs the pre-existing
         // band/tilt/washed/spiky/buried rules.
-        let p = ringing_profile(2_800.0, 0.8);
+        let p = ringing_profile(2_600.0, 0.8);
         let mut peakless = p.clone();
         peakless.peaks = Vec::new();
-        let diagnose_one = |profile: &SoundProfile| {
-            diagnose_kind(
-                profile,
-                None,
-                Family::Guitar,
-                StimulusKind::Synthetic,
-                None,
-                PlaybackOffsets::NONE,
-            )
-        };
-        let with_peaks = diagnose_one(&p);
-        let without_peaks = diagnose_one(&peakless);
+        let with_peaks = localized_for(&p, None);
+        let without_peaks = localized_for(&peakless, None);
         assert!(keys(&with_peaks).contains(&"resonant"));
-        assert!(!keys(&without_peaks).contains(&"resonant"));
-        assert!(!keys(&without_peaks).contains(&"boxy"));
-        let non_localized = |ds: &[Diag]| -> Vec<serde_json::Value> {
-            ds.iter()
-                .filter(|d| d.key != "resonant" && d.key != "boxy")
-                .map(|d| serde_json::to_value(d).unwrap())
-                .collect()
-        };
-        assert_eq!(non_localized(&with_peaks), non_localized(&without_peaks));
+        assert!(without_peaks.is_empty(), "{:?}", keys(&without_peaks));
     }
 
     #[test]

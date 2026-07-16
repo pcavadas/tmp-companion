@@ -185,6 +185,41 @@ fn rule_metrics(
     )
 }
 
+/// The engine's ACTUAL verdict keys for one measured row — recorded in the
+/// sweep JSON so a sanity/false-fire check reads real engine output, not a
+/// re-derivation (an earlier check silently read a MISSING `verdicts` key and
+/// concluded "0 fires" from vacuous data — never again).
+fn row_verdicts(
+    profile: &doctor::SoundProfile,
+    coverage: &[bool],
+    family: doctor::Family,
+) -> Vec<&'static str> {
+    doctor::diagnose_kind(
+        profile,
+        None,
+        family,
+        doctor::StimulusKind::Synthetic,
+        Some(coverage),
+        doctor::PlaybackOffsets::NONE,
+    )
+    .into_iter()
+    .map(|d| d.key)
+    .collect()
+}
+
+/// Top localized peaks (`SoundProfile::peaks`, height-sorted) as JSON — the
+/// resonant/boxy gate evidence per row.
+fn peaks_json(profile: &doctor::SoundProfile) -> serde_json::Value {
+    serde_json::Value::Array(
+        profile
+            .peaks
+            .iter()
+            .take(3)
+            .map(|p| serde_json::json!({ "freqHz": p.freq_hz, "heightDb": p.height_db, "q": p.q }))
+            .collect(),
+    )
+}
+
 /// One measured slot in the sweep.
 struct Row {
     slot: u32,
@@ -237,12 +272,7 @@ pub fn probe_doctor_calib(
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 let profile = doctor::SoundProfile::from_capture(
-                    &samples,
-                    rate,
-                    stim.len(),
-                    onset,
-                    confident,
-                    family,
+                    &samples, rate, &stim, onset, confident, family,
                 )?;
                 let coverage = doctor::band_coverage(&stim, family);
                 // body_end pairs the RAW onset with the padded stim length (the
@@ -303,6 +333,8 @@ pub fn probe_doctor_calib(
                 "integratedLufs": r.profile.integrated_lufs,
                 "coverage": r.coverage,
                 "tiltDbPerOct": slope,
+                "verdicts": row_verdicts(&r.profile, &r.coverage, family),
+                "peaks": peaks_json(&r.profile),
             })
         })
         .collect();
@@ -470,12 +502,7 @@ pub fn probe_doctor_calib_factory(
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 let profile = doctor::SoundProfile::from_capture(
-                    &samples,
-                    rate,
-                    stim.len(),
-                    onset,
-                    confident,
-                    family,
+                    &samples, rate, &stim, onset, confident, family,
                 )?;
                 let coverage = doctor::band_coverage(&stim, family);
                 rows.push(Row {
@@ -507,6 +534,8 @@ pub fn probe_doctor_calib_factory(
                 "integratedLufs": r.profile.integrated_lufs,
                 "coverage": r.coverage,
                 "tiltDbPerOct": slope,
+                "verdicts": row_verdicts(&r.profile, &r.coverage, family),
+                "peaks": peaks_json(&r.profile),
             })
         })
         .collect();

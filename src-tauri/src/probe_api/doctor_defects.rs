@@ -64,16 +64,11 @@ fn eq10_insert(group_id: &str, gains: &[(&str, f64)]) -> doctor::DoctorOp {
 /// uses — resolved once per slot by the runner (it needs the live graph) and
 /// threaded in here since the ops can't be `const`.
 ///
-/// A 6th recipe (`resonant_probe`, a narrow high-Q parametric-EQ boost) was
-/// SPEC'd but is deliberately omitted: the catalog carries two parametric EQ
-/// blocks (`ACD_MustangPEQ` "EQ-3 PARAMETRIC", `ACD_FiveBandParamEQ` "EQ-5
-/// PARAMETRIC" — both already in `doctor.rs`'s `EQ_IDS`), but NEITHER block's
-/// freq/gain/Q `controlId`s are documented anywhere in this repo (no fw-schema
-/// dump is checked in, and the carve script `doctor.rs`'s module doc points at
-/// is maintainer-machine tooling, not in-tree) — inventing them risks a wrong
-/// param silently no-oping (harmless) or, worse, hitting an unrelated
-/// existing param on a real chain (not harmless). Add it once a schema dump
-/// pins the controlIds.
+/// The resonant positive is a WAH at its default (cocked) position — the
+/// canonical playable resonance, needing zero documented controlIds. (A
+/// parametric-EQ variant was spec'd first but omitted: neither in-catalog
+/// parametric block's freq/gain/Q controlIds are documented in-tree, and
+/// inventing them risks hitting an unrelated real param on a live chain.)
 fn recipes(group_id: &str) -> Vec<DefectRecipe> {
     vec![
         DefectRecipe {
@@ -114,6 +109,24 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             must_fire: &["washed"],
             must_not_fire: &[],
             informational: false,
+        },
+        DefectRecipe {
+            name: "resonant_wah",
+            rationale: "ACD_CryBabyGCB95 inserted at its DEFAULT (cocked) pedal position — the canonical playable resonance (HW: a wide mid bump, transfer Q≈6, inside the resonant [2,16] Q window; the chain's own cab-comb lines sit at Q 39+ and are excluded by the ceiling).",
+            ops: vec![doctor::DoctorOp::InsertNode {
+                group_id: group_id.to_string(),
+                before_fender_id: None,
+                fender_id: "ACD_CryBabyGCB95".to_string(),
+                params: Vec::new(),
+            }],
+            // INFORMATIONAL while the localized verdicts ship disabled
+            // (`doctor::LOCALIZED_RULES_ENABLED` = false): this recipe is the
+            // ground-truth positive the next calibration round scores
+            // against. The wah also guts the low end (an honest co-fire:
+            // "thin") — only a mistaken WASHED read would be a violation.
+            must_fire: &[],
+            must_not_fire: &["washed"],
+            informational: true,
         },
         DefectRecipe {
             name: "boxy_probe",
@@ -330,6 +343,7 @@ mod tests {
             spread_lu: 0.0,
             verdicts,
             onset_confident: true,
+            peaks: Vec::new(),
         }
     }
 

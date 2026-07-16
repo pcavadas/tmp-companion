@@ -15,104 +15,192 @@ via an explicit prescription apply.
 
 - `doctor.rs` — PURE rules, no device I/O, no Tauri: capture measurements
   (`SoundProfile`) → diagnoses + graph-derived `Rx` prescriptions
-  (`DoctorOp`s) + the scene-loudness consistency check.
+  (`DoctorOp`s) + the scene-loudness consistency check + the cut-through
+  estimate.
 - Device work — `leveller::doctor_capture` (capture) + `commands/doctor.rs`
   (`doctor_check` / `doctor_apply` / `doctor_save` / `doctor_discard` /
   `doctor_cancel`).
 
-## Diagnoses (8)
+## The metric (deviation vs authored target + consensus)
 
-muddy / boomy / harsh / fizzy / washed / lost / buried / **spiky** — band
-deviations in "tilt-residual space": each band's dB level with the sound's own
-spectral tilt fit out (an OLS line over `log2(center)` vs `band_db`, so a
-flatter/darker amp shifts the fit rather than the residuals —
-`doctor::tilt_residuals`), compared against a per-family TARGET residual curve
-(`doctor::tonal_dev`; currently a provisional flat zero, role/instrument-aware
-curves are a later stage). The metric is fully DETERMINISTIC per sound: a
-verdict depends only on that sound's own measurements, never on which other
-sounds or presets ran in the same check — no cohort, no pooling, no run-to-run
-drift from what else was selected.
-Exceptions: fizzy is self-relative (Air vs own presence band, not the tilt
-residual — real-library measurement showed the Air band is bimodal across a
-library, so a tilt/target-relative deviation flagged every open preset);
-washed is a post-stimulus tail-RMS rule; spiky is a dynamics-spread rule
-(clean chains only).
+Each capture's band powers (one shared post-onset body Welch PSD,
+`doctor::body_psd`) become `deviation[i] = band_db[i] − TARGET[i]` against an
+**authored per-family target curve** (`GUITAR_TARGET` = the median of the
+25-slot flagship factory sweep through the humbucker stimulus; bass/bass-vi
+targets are provisional few-anchor curves). Band powers are WIDTH-INTEGRATED
+(a per-Hz-density-minded target misread every factory preset as bright+lost).
+The deviations split via a **Theil–Sen** (median-slope) fit into a broadband
+TILT (the dark/bright/thin lean) and per-band LOCALS — and every band rule
+(muddy/boomy/harsh/lost/thin/buried) fires only on a **two-space consensus**:
+the tilt-split local AND the median-centered deviation
+(`centered_deviations`) must each clear their own gate; severity is the
+smaller margin. Why two spaces: HW defect injection (`probe --doctor-inject`)
+showed the tilt-split alone misattributes a skirted single-band defect (+12 dB
+@250 Hz read as false "thin"), while the centered space alone is contaminated
+by healthy tilt at the endpoint bands — the false-positive control lives in
+the intersection. The metric is fully DETERMINISTIC per sound: a verdict
+depends only on that sound's own measurements, never on which other sounds ran
+in the same check.
 
-Thresholds are constants in `doctor.rs`, DUAL-keyed by **(Family, StimulusKind)**:
-families Guitar / Bass / **BassVi** (Bass VI gets a 7-band layout with a (30,60) Sub
-band for its E1 ≈ 41 Hz octave — measured and displayed only, no rule keys on it
-yet), × Synthetic / Capture stimulus spaces. The synthetic tables are
-HW-calibrated (`notes/doctor-calibration.md`); the `*_CAPTURE` tables are
-provisional copies pending the attended `probe --doctor-calib` sweep.
-Recalibration edits values there and nowhere else. A rule whose primary band the
-stimulus never excited is skipped (per-sound band-coverage check). **Coverage keys
-on the INPUT stimulus (`band_coverage(samples)`), not the captured output** — a dry
-electric-guitar DI has ~0% coverage in Highs (3–6 kHz) + Air (6–12 kHz) at
-`BAND_COVERAGE_DB = 30`, so capture-space diagnosis is inherently LOW/MID-only and
-`fizzy` (needs Air+Highs covered) can NEVER fire on a real DI. Amp clipping-harmonic
-HF is invisible to the input-keyed gate; measuring coverage on the OUTPUT would
-revive the HF rules.
+## Diagnoses (13)
+
+- **Band rules** (consensus, above): muddy / boomy / harsh / lost / thin /
+  buried.
+- **Tilt rules**: dark / bright (Theil–Sen slope vs the tilt gates).
+- **fizzy** — self-relative (Air vs own presence band; the Air band is bimodal
+  across a library, so a target-relative rule flagged every open preset),
+  gated on top-octave spectral flatness under `StimulusKind::Capture` (noise
+  hash fires, a bright cab's harmonic top doesn't).
+- **washed** — post-stimulus tail-RMS rule (onset-aligned split).
+- **spiky** — dynamics-spread rule (clean chains only).
+- **resonant / boxy** — detection machinery ships, VERDICTS ship DISABLED
+  (`LOCALIZED_RULES_ENABLED = false`): three HW design rounds (raw capture
+  space → transfer space → Q-window + band corroboration) each moved the
+  boundary between a playable resonance and a normal chain's comb fine
+  structure, and the final round still missed the injected cocked wah (its
+  resonance is wide enough that the octave envelope tracks it) while firing
+  on a designated-clean preset — inverted utility, so the verdicts wait for
+  a controlled ground-truth round (a parametric-EQ schema dump enabling
+  exact height/Q injection). A wah-class defect still surfaces via the band
+  rules ("thin" + the mid local in the meter). The machinery below stays
+  live, unit-locked (via `localized_diags`), and recorded by the probe arms.
+  (localized, in TRANSFER space: `Psd::transfer_db` =
+  capture log-PSD − STIMULUS log-PSD, so the deterministic stimulus's own
+  spectral ridges cancel; then excess over a one-octave median envelope, wide
+  enough that a real cocked-wah resonance develops excess instead of being
+  tracked flat; peaks carried on `SoundProfile.peaks`): `resonant` = the
+  strongest 200 Hz–8 kHz peak ≥ 6.5 dB with **Q in [2, 16]** AND **band
+  corroboration** — the peak's OWN band must be hot in both consensus spaces
+  (local AND centered > `RESONANT_MIN_BAND_LOCAL_DB` = 2.0). Corroboration is
+  the decisive false-positive control: a real chain's transfer is full of
+  narrow high-Q comb fine structure (isolated lines Q 39…1098; dense forests
+  mimic ANY Q — shape-only detection false-fired resonant on up to 25/25
+  clean factory presets), but the fakes all sit in ≈0-local bands, while a
+  playable resonance carries real band heat (the injected cocked wah: Q≈6,
+  +15.7 dB mid local; `probe --doctor-inject --block ACD_CryBabyGCB95`).
+  Under the full gate the factory bank fires 2/25, both audible localized
+  bumps (a +5.5 dB 709 Hz honk, a corroborated 2.25 kHz ridge). Q is measured
+  pessimistically as max(±20-bin parabola-fit bandwidth, above-floor run
+  width) — a first-crossing −3 dB walk reads estimate noise, not bandwidth.
+  `boxy` = a 300–500 Hz hump ≥ 7 dB under the same Q ceiling + corroboration
+  (wins over resonant when the same peak is in-band). An octave-wide graphic-EQ
+  lift keeps Q < 2 and never reads resonant (HW-verified). Their Rx is a cut
+  on the log-nearest EQ-10 band naming the MEASURED frequency — generated
+  inline (not via `generate_rx`, whose key-only signature can't carry the
+  peak).
+
+Thresholds are constants in `doctor.rs`, DUAL-keyed by **(Family,
+StimulusKind)**: families Guitar / Bass / **BassVi** (7-band layout with a
+(30,60) Sub band — measured and displayed only, no rule keys on it yet), ×
+Synthetic / Capture stimulus spaces. The synthetic tables are HW-calibrated
+(`notes/doctor-calibration.md`); the `*_CAPTURE` tables are provisional copies
+pending the attended `probe --doctor-calib` DI sweep. Recalibration edits
+values there and nowhere else. A rule whose primary band was never excited is
+skipped — **coverage keys on the CAPTURED OUTPUT's own SNR**
+(`output_coverage_with_body`: band power vs the pre-onset noise floor +
+`OUTPUT_SNR_MARGIN_DB`), not the input stimulus, so amp-created HF
+(clipping harmonics, fizz) stays diagnosable on a dark DI input.
 
 ## Capture
 
-Same isolation rules as leveling (`doctor_force_bypass`: Base = all block-acting
-footswitches off; a scene/footswitch sound gets its engaged state), but with a
-**1.5 s tail** (`DOCTOR_TAIL_MS`; HW-A/B'd down from the original 2.5 s via
-`probe --doctor-window-ab`, together with a 3 s stimulus slice `DOCTOR_STIM_MS`)
-instead of leveling's 0.8 s — the wash rule
-needs the decay. The body/tail split is onset-aligned, not a fixed boundary:
-`audio::estimate_onset` locates where the stimulus actually starts in the
-capture (the buffer begins at stream start, before the audio propagates
-through cpal/USB/DSP), and `tail_energy_ratio` splits body-vs-tail from that
-onset — splitting at the raw stimulus length alone would leak latency-delayed
-body signal into the tail and skew `washed` measurements (and any calibration
-derived from them) toward the wash threshold. The stimulus is profile-aware (`resolve_stimulus_with_capture`):
-a calibrated profile's Tier-2 DI capture is injected and the sound is diagnosed
-against the **CAPTURE threshold table** (`StimulusKind::Capture` selects it; a
-real DI shifts band balance systematically, HW: +8..12 dB Lows / −8..10 dB
-Highs, so capture and synthetic sounds are never compared against the same
-table). Uncalibrated profiles use the synthetic topology WAV against the
-HW-calibrated Synthetic table —
-and since the capture tables currently equal the synthetic ones, their verdicts
-read byte-identically until the `probe --doctor-calib` sweep retunes capture
-space.
+Isolation matches leveling (Base = all block-acting footswitches off; a
+footswitch sound gets its switch-active state; scenes ride their own
+overrides) but derives **OFFLINE** from the startup backup scan
+(`footswitch::derived_force_bypass` over `DoctorInput.{nodes,footswitches}`;
+HW 60/60 equivalent to the old ~1.9 s per-preset field-8 read, which survives
+only as the empty-graph fallback). One `resolve_sound_isolation` policy is
+shared by `doctor_check` AND `doctor_apply`, so the A/B can never observe a
+different bypass state than the diagnosis.
 
-Capture choreography (2026-07, `notes/perf.md`): consecutive **scene** sounds of the
-same preset skip the per-sound preset reload (`doctor_skip_load` — only when the
-previous sound wrote nothing and succeeded; base/footswitch sounds always reload),
-and the capture connections use the lean handshake (`Session::connect_lean`). A
-single capture can occasionally misread (~1-in-7 outliers observed: a 3 dB band
-shift, a −80 dB empty-tail sentinel) — repeated runs are the arbiter.
+Window: a **3 s stimulus slice + 200 ms silent preamble pad**
+(`doctor_stim_slice`) + a **graph-aware tail** — 1.5 s when the chain carries
+a time-based block (the wash rule needs the decay), 0.3 s dry
+(`doctor::doctor_tail_ms`). HW-A/B'd against the original 6 s + 2.5 s oracle
+(`probe --doctor-window-ab`): 0 verdict flips. Capture runs ~4.7 s/sound
+(pad + tail included). Captures are the **stereo mix** of USB-out 1/2
+(`Capture::stereo_mix`, Doctor seams only — leveling's loudest-channel pick is
+untouched, A/B'd −0.00 LU).
+
+The body/tail split is onset-aligned: `audio::estimate_onset` (correlation
+≥ 0.15 at a plausible ≤ 120 ms lag — recalibrated from HW latency
+measurements, true latency 30–34 ms) locates the stimulus in the capture; the
+pad's silence→signal edge makes onsets reliably confident on real chains, and
+`doctor_signal_start` shifts the body PSD past the pad. Dry-chain tails
+measure −21..−24 dB truer post-fix. The stimulus is profile-aware
+(`resolve_stimulus_with_capture`): a calibrated profile's Tier-2 DI capture is
+injected and diagnosed against the **CAPTURE threshold table** (a real DI
+shifts band balance systematically, HW: +8..12 dB Lows / −8..10 dB Highs);
+uncalibrated profiles use the synthetic topology WAV against the Synthetic
+table. The capture tables currently equal the synthetic ones, so verdicts read
+byte-identically until the DI sweep retunes capture space.
+
+Capture choreography (`notes/perf.md`): consecutive **scene** sounds of the
+same preset skip the per-sound preset reload (`doctor_skip_load` — only when
+the previous sound wrote nothing and succeeded; base/footswitch sounds always
+reload), and the capture connections use the lean handshake
+(`Session::connect_lean`). Every capture is floor-guarded (a silent-inject
+floor read retries once after a quiet gap). A single capture can occasionally
+misread — repeated runs are the arbiter.
 
 ## Prescriptions & apply
 
 `Rx` derivation is graph-aware (`graph_facts`): fixes prefer an existing
 carrier block over inserting one, inserts are gated by the `blockcaps` limits,
 and comp-aware rules avoid stacking compressors; parallel-split placements the
-wire can't express are skipped. The **muddy/harsh EQ move** (`eq_move`) is
-EQ-aware in three tiers: (1) a drivable EQ-10 stereo already in the chain → a
-value-aware one-click on it; (2) a DIFFERENT EQ already present (7-band GE,
-parametric, mono 10-band — `OTHER_EQ_IDS`) → an **advisory** to use the one you
-have, never a second inserted EQ (its bands aren't in the param allowlist, so a
-one-click would blind-overwrite the player's curve); (3) no EQ → insert an EQ-10
-anchored right **after the cab** (`after_cab_anchor`, mirroring `comp_after_cab`),
-so it shapes the post-cab tone before any time-effects — not dumped at the chain
-tail. Param one-clicks are **value-aware** wherever
-the current value rides the graph allowlist (`session::GraphNode.params`: reverb
-`mix`/`wetdrymix`, cab `hpf`/`lpf`, EQ-10 `gain*hz`): a write that would move a
-known value the WRONG way is dropped (washed skips an already-low mix; the
-boomy/fizzy cab cut skips an hpf already ≥ 90 Hz / lpf already ≤ 8 kHz and falls
-back to the advisory), and a blind write on an UNKNOWN value keeps an honest
-"Set …" title instead of a directional "Raise/Lower/Cut" promise. Apply (`doctor_apply`) edits the device edit
-buffer on a held session — nothing persists until `doctor_save`;
-`doctor_discard` reloads the stored preset. The frontend serializes applies
-(`applyLock.ts`) and allows ONE unsaved prescription at a time; A/B audition
-captures before/after clips for comparison. The BEFORE clip is cached across
-consecutive applies on the same sound (`BEFORE_CACHE`, single entry, keyed on
-list index + name + stimulus path + calibration; a cache hit still reloads the slot — the load feeds
-`confirm_active` and discards stale edit buffers; invalidated at the `Session`
-stored-preset mutation choke points + device detach — see `notes/perf.md`). `severity.ts` ranks findings per
-sound and rolls up the preset's worst severity (scene-jump bumps rank).
+wire can't express are skipped. The **EQ move** (`eq_move`) is EQ-aware in
+three tiers: (1) a drivable EQ-10 stereo already in the chain → a value-aware
+one-click on it; (2) a DIFFERENT EQ already present (`OTHER_EQ_IDS`) → an
+**advisory** to use the one you have; (3) no EQ → insert an EQ-10 anchored
+right **after the cab** (`after_cab_anchor` — the wire anchor is the
+neighbour's FenderId, NOT its node_id; a duplicated-model neighbour used to
+silently drop the anchor). Param one-clicks are **value-aware** wherever the
+current value rides the graph allowlist: a write that would move a known value
+the WRONG way is dropped, and a blind write on an UNKNOWN value keeps an
+honest "Set …" title. Apply (`doctor_apply`) edits the device edit buffer
+under the DIAGNOSED scene/footswitch isolation — nothing persists until
+`doctor_save`, which **rebuilds SAVED+ops from scratch** (restore → fresh
+confirmed session → re-apply exactly `ops` → save), so intermediate
+edit-buffer pollution can never be persisted structurally. `doctor_discard`
+reloads the stored preset. The frontend serializes applies (`applyLock.ts`)
+and allows ONE unsaved prescription at a time; A/B audition captures
+before/after clips (BEFORE cached per sound — `BEFORE_CACHE`, keyed on
+list index + name + stimulus + calibration + scene + footswitch; a cache hit
+still reloads the slot). `severity.ts` ranks findings per sound and rolls up
+the preset's worst severity.
+
+## Cut-through estimate + reference match (flagship)
+
+- **Cut-through** (`doctor::cut_through` → `DoctorSoundResult.cutThrough`):
+  presence contrast = high-mids+highs over lows..mids band power (dB; Air and
+  the Bass VI Sub band excluded), with a percentile against the **pinned
+  25-value factory-bank distribution** (`FACTORY_CONTRAST_DB`) and an advisory
+  below the factory p10 (+10 dB). Framed "estimated" in the UI
+  (`CutThroughCard`); guitar-anchored — bass families report contrast only
+  (no bass factory sweep yet). An ESTIMATE card, not a diagnosis: no rule, no
+  Rx ops. (The originally-planned invented "dense mix masker spectrum" was
+  dropped — anchoring on a measured distribution is defensible; a constant we
+  made up is not.)
+- **Reference match** (`matchModel.ts` + `MatchCard`, fully CLIENT-side): pick
+  any sound of the run as reference; other same-layout sounds get EQ-10 moves
+  from the balanceDb deltas already on the wire (log-nearest band, combined
+  when bands collide, clamped ±6 dB, sub-1.5 dB moves dropped) applied through
+  the existing PrescriptionCard A/B flow as one EQ-10 insert; when any delta
+  exceeds EQ reach the card adds an honest cab/amp-swap advisory. Zero new
+  captures, commands, or wire fields.
+
+## Validation arms (probe)
+
+- `probe --doctor-inject <slot> <gains_csv|none>` — single EQ-10 defect
+  injection, before/after verdicts (the R5 consensus calibration evidence;
+  also HW-verifies EQ-10 band controlIds — a wrong id shows as the defect not
+  appearing).
+- `probe --doctor-defects <slot> [--out r.json]` — the VERSIONED defect-recipe
+  sweep (control / muddy / lost / washed / boxy-probe): each recipe's ops
+  inject live, hit/miss/violation table against `must_fire`/`must_not_fire`.
+  The recipe table in `doctor_defects.rs` is the fixture set.
+- `probe --doctor-window-ab` / `--doctor-iso-ab` / `--doctor-calib` — window
+  re-baseline vs the pinned 6 s oracle · isolation-derivation equivalence ·
+  threshold-space sweeps.
 
 ## Scene consistency
 
@@ -134,30 +222,25 @@ genuinely be clean quiet and boomy loud, and the Doctor **shows** that instead o
 hiding it behind a mode toggle.
 
 The capture is level-independent (the offset shifts the comparison THRESHOLD, not
-the measured deviation), so this is free: one ~11 s hardware capture per sound,
-then three microsecond-scale pure passes. `doctor::diagnose_levels` runs the pure
-`diagnose_kind` at each level (`doctor::playback_offsets`: **Stage** tightens
-boomy/muddy −2.0 dB, fizzy −1.0 dB → fire earlier; **Quiet** relaxes +2.0 / +1.0;
-**Rehearsal** is the anchor, 0 and byte-identical to the legacy `diagnose()`) and
-merges by diagnosis key. The offsets are **monotonic in loudness** (louder ⇒
-tighter ⇒ strictly more firings — asserted by `playback_offsets_are_monotonic`),
-so a finding's firing set is always a louder-suffix and one ordinal fully
-describes it: `LeveledDiag.from_level` ∈ {quiet, rehearsal, stage}. The UI renders
-this as `LevelIndicator` (`src/views/doctor/LevelIndicator.tsx`) — three venue
-pictographs (headphones → combo amp → stage stack) lit in the finding's severity
-colour where it fires, dim where it doesn't: `tiny` beside each diagnosis chip on
-the collapsed triage row, `rich` (with Quiet/Rehearsal/Stage labels) in the
-expanded header. `quiet` now shows as an all-lit "at any volume" state (it used to
-render **nothing** — indistinguishable from no finding); `rehearsal`/`stage` light
-from that venue up. It is a genuinely-new local visual (a DS sign-off candidate,
-like BandMeter/BandSpark — not an `Icon` glyph, since Icon is stroke-only). **The
-indicator is a read-only render of `from_level` and is fully decoupled from the
-Settings `playback_level` store** — it never reads it or calls `set_playback_level`;
-the Doctor diagnoses all three levels regardless of the room level chosen for
-leveling. The offsets are additive at comparison time — they never mutate the
-pinned `Thresholds` consts — and the table is **PROVISIONAL**, pending an
-SPL-anchored recalibration sweep (see notes/doctor-calibration.md). The
-`set_playback_level` store value is now Settings/leveling-only (it no longer
-gates diagnosis). The marketing showcase's curated profiles sit far from every
-threshold, so they tag `quiet` (untagged) at every level — the pinned
-`showcase_profile_diagnoses` test uses the offset-free `diagnose()`.
+the measured deviation), so this is free: one ~5 s hardware capture per sound,
+then three microsecond-scale pure passes over ONE `RuleMetrics`
+(`doctor::diagnose_levels` → `apply_thresholds` ×3; `doctor::playback_offsets`:
+**Stage** tightens boomy/muddy −2.0 dB, fizzy −1.0 dB → fire earlier; **Quiet**
+relaxes +2.0 / +1.0; **Rehearsal** is the anchor, 0 and byte-identical to the
+legacy `diagnose()`) merged by diagnosis key. The offsets are **monotonic in
+loudness** (louder ⇒ tighter ⇒ strictly more firings — asserted by
+`playback_offsets_are_monotonic`), so a finding's firing set is always a
+louder-suffix and one ordinal fully describes it: `LeveledDiag.from_level` ∈
+{quiet, rehearsal, stage}. The UI renders this as `LevelIndicator`
+(`src/views/doctor/LevelIndicator.tsx`) — three venue pictographs lit in the
+finding's severity colour where it fires: `tiny` beside each diagnosis chip on
+the collapsed triage row, `rich` (with labels) in the expanded header. `quiet`
+shows as an all-lit "at any volume" state. **The indicator is a read-only render
+of `from_level` and is fully decoupled from the Settings `playback_level`
+store** — the Doctor diagnoses all three levels regardless of the room level
+chosen for leveling. The offsets are additive at comparison time — they never
+mutate the pinned `Thresholds` consts — and the table is **PROVISIONAL**,
+pending an SPL-anchored recalibration sweep (see notes/doctor-calibration.md).
+The marketing showcase's curated profiles sit far from every threshold, so they
+tag `quiet` (untagged) at every level — the pinned `showcase_profile_diagnoses`
+test uses the offset-free `diagnose()`.

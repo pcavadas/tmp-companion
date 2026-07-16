@@ -259,12 +259,7 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                     );
                 }
                 let profile = doctor::SoundProfile::from_capture(
-                    &samples,
-                    rate,
-                    stim.len(),
-                    onset,
-                    confident,
-                    instrument,
+                    &samples, rate, &stim, onset, confident, instrument,
                 )?;
                 sounds.push((slot, scene, profile, nodes));
             }

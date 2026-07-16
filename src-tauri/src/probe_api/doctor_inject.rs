@@ -41,7 +41,7 @@ pub(crate) fn measure(
     // see `analyze_capture`'s doc for why this differs from
     // `doctor_window_ab`'s raw-stim variant.
     let read = analyze_capture(stim, &samples, rate, doctor::Family::Guitar, true)?;
-    let line = format!(
+    let mut line = format!(
         "  {label:<7} tilt={} dev={} locals={} tail={:.1} verdicts={:?}\n",
         read.tilt_slope.map_or("n/a".into(), |s| format!("{s:+.2}")),
         read.deviations
@@ -57,18 +57,36 @@ pub(crate) fn measure(
         read.tail_ratio_db,
         read.verdicts
     );
+    if !read.peaks.is_empty() {
+        let tops: Vec<String> = read
+            .peaks
+            .iter()
+            .take(3)
+            .map(|p| format!("{:.0}Hz h={:.1}dB q={:.1}", p.freq_hz, p.height_db, p.q))
+            .collect();
+        line += &format!("          peaks: {}\n", tops.join(" · "));
+    }
     Ok((read, line))
 }
 
-/// See the module doc. `gains` empty = the clean-insert control.
-pub fn probe_doctor_inject(slot: u32, gains: &[(String, f64)]) -> Result<String, String> {
+/// See the module doc. `gains` empty = the clean-insert control. `block`
+/// overrides the EQ-10 insert vehicle (default) — e.g. `ACD_CryBabyGCB95`
+/// with no gains injects a wah at its DEFAULT (cocked) position, the classic
+/// high-Q resonance the `resonant` rule exists for, without needing any
+/// documented controlIds.
+pub fn probe_doctor_inject(
+    slot: u32,
+    gains: &[(String, f64)],
+    block: Option<&str>,
+) -> Result<String, String> {
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
         "guitar-humbucker",
     )?)?);
     let tail = u64::from(leveller::DOCTOR_TAIL_MS);
 
+    let fender_id = block.unwrap_or("ACD_TenBandEQStereo");
     let mut out = format!(
-        "doctor-inject slot {slot} gains {:?}\n",
+        "doctor-inject slot {slot} block {fender_id} gains {:?}\n",
         gains
             .iter()
             .map(|(p, v)| format!("{p}={v}"))
@@ -109,7 +127,7 @@ pub fn probe_doctor_inject(slot: u32, gains: &[(String, f64)]) -> Result<String,
     let ops = vec![doctor::DoctorOp::InsertNode {
         group_id: last_group,
         before_fender_id: None,
-        fender_id: "ACD_TenBandEQStereo".to_string(),
+        fender_id: fender_id.to_string(),
         params: gains.to_vec(),
     }];
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));

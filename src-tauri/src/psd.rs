@@ -187,26 +187,37 @@ impl Psd {
             .collect()
     }
 
-    /// A ~1/3-octave MEDIAN-smoothed envelope of `log_psd` for bins
+    /// A ONE-OCTAVE MEDIAN-smoothed envelope of a dB `series` (one value per
+    /// bin) for bins
     /// `from..=to` ONLY (the rest of the returned full-length vec stays at a
     /// `NEG_INFINITY` sentinel — computing the whole spectrum wasted ~9× the
     /// sort work on bins [`Psd::find_peaks`] never reads, with the costliest
     /// windows at the unused near-Nyquist end): for the bin at frequency `f`,
-    /// the median of `log_psd` over `[f/2^(1/6), f·2^(1/6)]` (± 1/6 octave =
-    /// 1/3 octave total). Median (not mean) so the envelope doesn't follow a
-    /// peak into its own window. Bin 0 (DC, freq 0) borrows bin 1's frequency
-    /// for its window so it isn't a degenerate single-bin "median".
-    fn third_octave_envelope(&self, log_psd: &[f64], from: usize, to: usize) -> Vec<f64> {
-        const THIRD_OCT: f64 = 1.0 / 6.0; // half-window exponent (2^(1/6) each side)
-        let n = log_psd.len();
+    /// the median of `log_psd` over `[f/2^(1/2), f·2^(1/2)]` (± 1/2 octave =
+    /// 1 octave total). Median (not mean) so the envelope doesn't follow a
+    /// peak into its own window — and the window must be ~2× WIDER than the
+    /// widest peak the detector should see: the original ±1/6-octave window
+    /// tracked a real cocked-wah resonance (≈1/3–1/2 octave wide, +15.7 dB of
+    /// band-local prominence on HW) so closely that its excess read ≈0 and
+    /// the peak was INVISIBLE (HW `probe --doctor-inject --block
+    /// ACD_CryBabyGCB95`, 2026-07-16). A median over a monotonic stretch is
+    /// ~the centre value, so broad rolloffs (the cab knee) still null out —
+    /// only convex bumps gain excess. Bin 0 (DC, freq 0) borrows bin 1's
+    /// frequency for its window so it isn't a degenerate single-bin "median".
+    fn octave_envelope(&self, series: &[f64], from: usize, to: usize) -> Vec<f64> {
+        const HALF_WINDOW_OCT: f64 = 1.0 / 2.0; // half-window exponent (2^(1/2) each side)
+        let n = series.len();
         let mut env = vec![f64::NEG_INFINITY; n];
         let mut window = Vec::new();
         for (k, slot) in env.iter_mut().enumerate().take(to + 1).skip(from) {
             let f = if k == 0 { self.bin_hz } else { self.freq(k) };
-            let lo_bin = ((f / 2f64.powf(THIRD_OCT)) / self.bin_hz).floor().max(0.0) as usize;
-            let hi_bin = (((f * 2f64.powf(THIRD_OCT)) / self.bin_hz).ceil() as usize).min(n - 1);
+            let lo_bin = ((f / 2f64.powf(HALF_WINDOW_OCT)) / self.bin_hz)
+                .floor()
+                .max(0.0) as usize;
+            let hi_bin =
+                (((f * 2f64.powf(HALF_WINDOW_OCT)) / self.bin_hz).ceil() as usize).min(n - 1);
             window.clear();
-            window.extend_from_slice(&log_psd[lo_bin..=hi_bin]);
+            window.extend_from_slice(&series[lo_bin..=hi_bin]);
             window.sort_by(f64::total_cmp);
             let mid = window.len() / 2;
             *slot = if window.len() % 2 == 1 {
@@ -218,40 +229,101 @@ impl Psd {
         env
     }
 
-    /// Quality factor of the peak at `excess[peak_bin]`: center frequency over the
-    /// bin-resolution `−3 dB`-from-peak width (walk outward from the peak bin until
-    /// `excess` drops 3 dB below the peak, on each side; no panic at the array
-    /// edges — an edge-clipped peak just reports the width it can see).
+    /// Quality factor of the peak at `excess[peak_bin]`: center frequency
+    /// over an estimated −3 dB width from a least-squares PARABOLA fit of
+    /// `excess` over ±20 bins around the peak (`y ≈ h + c·x²` on the symmetric
+    /// window; width = `2·√(3/−c)` bins). A walk to the first −3 dB crossing
+    /// is hopelessly noise-bound: the Welch estimate's per-bin scatter (plus
+    /// the capture/stimulus cross-term in transfer space) creates spurious
+    /// crossings within a few bins of a genuinely 300 Hz-wide bump's top and
+    /// read Q in the hundreds for a true Q≈9 resonance. The fit averages 41
+    /// bins: a one-bin comb line has huge curvature (Q ≫ any ceiling), an
+    /// octave-wide EQ bump has almost none (Q ≈ 1), and a wah-like resonance
+    /// lands near its physical Q (the quadratic under-reads a Lorentzian's
+    /// width by ~×0.83 — well inside the gate margins). Non-concave fits
+    /// (c ≥ 0, a plateau/shoulder) report Q = 0 (maximally wide).
     fn peak_q(&self, excess: &[f64], peak_bin: usize) -> f64 {
-        let target = excess[peak_bin] - 3.0;
-        let mut left = peak_bin;
-        while left > 0 && excess[left - 1] > target {
-            left -= 1;
+        let n = excess.len();
+        // Symmetric window so the odd fit terms vanish; clamp at the edges
+        // (an edge-clipped peak just fits the width it can see).
+        let half = 20.min(peak_bin).min(n - 1 - peak_bin);
+        if half == 0 {
+            return 0.0;
         }
-        let mut right = peak_bin;
-        while right + 1 < excess.len() && excess[right + 1] > target {
-            right += 1;
+        let (mut sy, mut sx2y, mut sx2, mut sx4, mut count) =
+            (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for dx in -(half as i64)..=(half as i64) {
+            let y = excess[(peak_bin as i64 + dx) as usize];
+            if !y.is_finite() {
+                continue; // apron sentinel — skip, the fit stays symmetric enough
+            }
+            let x2 = (dx * dx) as f64;
+            sy += y;
+            sx2y += x2 * y;
+            sx2 += x2;
+            sx4 += x2 * x2;
+            count += 1.0;
         }
-        let width_hz = (right - left).max(1) as f64 * self.bin_hz;
+        let denom = sx4 - sx2 * sx2 / count;
+        if denom <= 0.0 {
+            return 0.0;
+        }
+        let c = (sx2y - sx2 * sy / count) / denom;
+        if c >= -1e-9 {
+            return 0.0; // flat or concave-up: no measurable narrowness
+        }
+        let width_bins = 2.0 * (3.0 / -c).sqrt();
+        let width_hz = width_bins * self.bin_hz;
         if width_hz <= 0.0 {
             return 0.0;
         }
         self.freq(peak_bin) / width_hz
     }
 
-    /// Find localized spectral peaks in `[lo_hz, hi_hz]`: log-PSD minus a
-    /// [`Psd::third_octave_envelope`] (so the envelope doesn't follow the peak
-    /// itself), contiguous bins whose excess clears `min_height_db` become ONE
-    /// peak (center = the run's maximum bin, height = its excess, Q = the −3 dB
-    /// width around that bin, walked past the run and clamped at a one-octave
-    /// apron outside `[lo_hz, hi_hz]` — the envelope is only computed there,
-    /// and any peak whose −3 dB width exceeds an octave is Q ≲ 1.5, far below
-    /// any Q gate, so the clamp can't change a verdict). Sorted highest-first.
-    /// Empty on a degenerate PSD (no bins, no bin spacing) or an
-    /// empty/inverted range.
-    pub fn find_peaks(&self, lo_hz: f64, hi_hz: f64, min_height_db: f64) -> Vec<SpectralPeak> {
+    /// The chain's TRANSFER magnitude in dB per bin: this capture's log-PSD
+    /// minus the STIMULUS's (`10·log10(capture/stimulus)`). The stimulus's own
+    /// fine structure (the deterministic shaped-noise ridges) is present in
+    /// both and cancels exactly, so a localized peak OF THE TRANSFER is a
+    /// chain resonance, never a stimulus artifact — raw capture-space peak
+    /// detection tripped on those ridges (HW 2026-07-16: `resonant` fired on
+    /// 25/25 clean factory presets under a one-octave envelope; the ridges
+    /// measured h≈12 dB on a CLEAN chain). `None` when the two grids differ
+    /// (segment length / bin spacing) — callers treat that as "no
+    /// localization".
+    pub fn transfer_db(&self, stimulus: &Psd) -> Option<Vec<f64>> {
+        if self.psd.len() != stimulus.psd.len() || self.bin_hz != stimulus.bin_hz {
+            return None;
+        }
+        Some(
+            self.log_psd()
+                .iter()
+                .zip(stimulus.log_psd())
+                .map(|(c, s)| c - s)
+                .collect(),
+        )
+    }
+
+    /// Find localized spectral peaks of an arbitrary dB `series` on this PSD's
+    /// bin grid (one value per bin — the production caller passes
+    /// [`Psd::transfer_db`]; [`Psd::find_peaks`] passes the raw log-PSD):
+    /// `series` minus a [`Psd::octave_envelope`] (so the envelope doesn't
+    /// follow the peak itself), contiguous bins whose excess clears
+    /// `min_height_db` become ONE peak (center = the run's maximum bin,
+    /// height = its excess, Q = the −3 dB width around that bin, walked past
+    /// the run and clamped at a one-octave apron outside `[lo_hz, hi_hz]` —
+    /// the envelope is only computed there, and any peak whose −3 dB width
+    /// exceeds an octave is Q ≲ 1.5, far below any Q gate, so the clamp can't
+    /// change a verdict). Sorted highest-first. Empty on a degenerate PSD, an
+    /// empty/inverted range, or a `series` that doesn't match the bin grid.
+    pub fn find_peaks_in_db(
+        &self,
+        series: &[f64],
+        lo_hz: f64,
+        hi_hz: f64,
+        min_height_db: f64,
+    ) -> Vec<SpectralPeak> {
         let n = self.psd.len();
-        if n == 0 || self.bin_hz <= 0.0 || lo_hz > hi_hz {
+        if n == 0 || series.len() != n || self.bin_hz <= 0.0 || lo_hz > hi_hz {
             return Vec::new();
         }
         let lo_bin = (lo_hz / self.bin_hz).ceil().max(0.0) as usize;
@@ -263,10 +335,9 @@ impl Psd {
         // the scan range; past the apron the sentinel −∞ excess stops it.
         let walk_lo = lo_bin / 2;
         let walk_hi = (hi_bin * 2).min(n - 1);
-        let log_psd = self.log_psd();
-        let envelope = self.third_octave_envelope(&log_psd, walk_lo, walk_hi);
+        let envelope = self.octave_envelope(series, walk_lo, walk_hi);
         // −∞ outside the apron (a −∞ envelope would make excess +∞ there).
-        let excess: Vec<f64> = log_psd
+        let excess: Vec<f64> = series
             .iter()
             .zip(&envelope)
             .map(|(&l, &e)| {
@@ -290,10 +361,19 @@ impl Psd {
                 let peak_bin = (start..=end)
                     .max_by(|&a, &b| excess[a].total_cmp(&excess[b]))
                     .unwrap_or(start);
+                // Two independent narrowness reads, combined pessimistically
+                // (NARROWER wins): the parabola fit measures a smooth bump's
+                // true bandwidth but flattens a one-bin comb line over its
+                // wide window, while the above-floor RUN width nails the comb
+                // line (1–3 bins) but over-reads a tall bump (its skirt stays
+                // above the floor far past −3 dB). max() lets either signal
+                // veto a fake "wide" reading — a spike can't hide behind a
+                // flat fit, a real resonance isn't penalized by its skirt.
+                let run_q = self.freq(peak_bin) / ((end - start + 1) as f64 * self.bin_hz);
                 peaks.push(SpectralPeak {
                     freq_hz: self.freq(peak_bin),
                     height_db: excess[peak_bin],
-                    q: self.peak_q(&excess, peak_bin),
+                    q: self.peak_q(&excess, peak_bin).max(run_q),
                 });
                 k = end + 1;
             } else {
@@ -302,6 +382,14 @@ impl Psd {
         }
         peaks.sort_by(|a, b| b.height_db.total_cmp(&a.height_db));
         peaks
+    }
+
+    /// [`Psd::find_peaks_in_db`] over this PSD's OWN log-power — peaks vs the
+    /// spectrum's own envelope (kept for the unit tests / any caller without a
+    /// stimulus reference; production localization uses the transfer, see
+    /// [`Psd::transfer_db`]).
+    pub fn find_peaks(&self, lo_hz: f64, hi_hz: f64, min_height_db: f64) -> Vec<SpectralPeak> {
+        self.find_peaks_in_db(&self.log_psd(), lo_hz, hi_hz, min_height_db)
     }
 }
 

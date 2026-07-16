@@ -108,13 +108,23 @@ src-tauri/src/
   leveller.rs     Leveling seams: measure_c / solve_level / apply_level (composed by level_preset)
                   + level_setlist (common-target). Self-contained: opens its own connections.
   doctor.rs       The Doctor diagnosis engine — PURE rules (no device I/O): capture measurements
-                  (SoundProfile) → muddy/boomy/harsh/fizzy/washed/lost/buried/spiky diagnoses + graph-
-                  derived Rx prescriptions + the scene-loudness consistency check. Device work
-                  lives in leveller::doctor_capture + commands/doctor.rs (doctor_check/apply/
-                  save/discard/cancel); families Guitar/Bass/BassVi (7-band Bass VI layout);
+                  (SoundProfile, incl. its fine-PSD `peaks`) → 13 diagnoses (band rules muddy/boomy/
+                  harsh/lost/thin/buried fire only on the TWO-SPACE CONSENSUS — Theil–Sen tilt-split
+                  local AND median-centered deviation vs the AUTHORED factory-median target; tilt
+                  dark/bright; fizzy/washed/spiky; localized resonant/boxy machinery off the TRANSFER's
+                  (capture−stimulus, `Psd::transfer_db`) one-octave-median-envelope excess —
+                  verdicts SHIP DISABLED (`LOCALIZED_RULES_ENABLED=false`, pending a controlled
+                  ground-truth calibration round; see notes/doctor.md)) + graph-derived Rx prescriptions (EQ-10 notch
+                  at the MEASURED freq for resonant/boxy) + the scene-loudness consistency check +
+                  the cut-through estimate (presence contrast vs the pinned factory distribution).
+                  Device work lives in leveller::doctor_capture + commands/doctor.rs (doctor_check/
+                  apply/save/discard/cancel); families Guitar/Bass/BassVi (7-band Bass VI layout);
                   thresholds are DUAL per StimulusKind — synthetic HW-calibrated
-                  (notes/doctor-calibration.md) + provisional capture tables pending the
-                  attended `probe --doctor-calib` sweep. Feature doc: notes/doctor.md.
+                  (notes/doctor-calibration.md; defect-injection validated via `probe
+                  --doctor-inject`/`--doctor-defects`) + provisional capture tables pending the
+                  attended `probe --doctor-calib` DI sweep. SPEED: ~5 s/sound — 3 s stimulus +
+                  200 ms pad + graph-aware 1.5 s/0.3 s tail, isolation derived OFFLINE from the
+                  backup scan (no per-preset field-8 read). Feature doc: notes/doctor.md.
   blockcaps.rs    Firmware-faithful pre-flight guard for the 5 block-count caps — the SOLE
                   enforcement (the device engine does NOT reject over-cap edits with a
                   presetError; the cap code is client-side only), gating the live apply paths.

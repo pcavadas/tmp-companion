@@ -20,7 +20,7 @@ test.describe("Doctor — select, check, results", () => {
     await clearScenario(page);
   });
 
-  test("checks two presets end to end and lands on Results", async ({
+  test("checks three presets end to end and lands on Results", async ({
     page,
   }) => {
     await ensureScenario(page);
@@ -33,19 +33,22 @@ test.describe("Doctor — select, check, results", () => {
 
     await page.getByRole("button", { name: "Doctor" }).click();
 
-    // Select the two PLAIN scenario presets (Base only → 2 sounds).
+    // Select the two PLAIN scenario presets (Base only → 1 sound each) AND the
+    // Reference preset (Base + 2 scenes + block-acting footswitches) so the run
+    // exercises the scene/footswitch doctor paths too — the sound count is
+    // scenario-shape-dependent, so the buttons match on /\d+ sounds/.
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
-    const plain = [SCENARIO[1], SCENARIO[2]];
-    for (const p of plain) {
+    const picked = [SCENARIO[0], SCENARIO[1], SCENARIO[2]];
+    for (const p of picked) {
       await filter.fill(p.name);
       await page.getByTitle("Select preset to check").first().click();
     }
     await filter.fill("");
 
-    await page.getByRole("button", { name: /Check 2 sounds/ }).click();
+    await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
 
     // Set up: keep the defaults, run.
-    await page.getByRole("button", { name: /Run check on 2 sounds/ }).click();
+    await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
 
     // The run auto-advances to Results on a natural finish. Progress events don't
     // stream over the bridge, so the only signal is the terminal Results page.
@@ -54,8 +57,18 @@ test.describe("Doctor — select, check, results", () => {
     ).toBeVisible({ timeout: 240_000 });
 
     // Every checked preset renders on Results — a card (flagged) or "All clear".
-    for (const p of plain) {
+    for (const p of picked) {
       await expect(page.getByText(p.name).first()).toBeVisible();
     }
+
+    // Expanding any measured sound row surfaces the cut-through estimate —
+    // `cutThrough` is non-null for every successful guitar capture, so this is
+    // deterministic (unlike diagnosis content, which stays unasserted). A plain
+    // preset's base row is labeled with the preset name, so the LAST match is
+    // the clickable sound row (the first is the card header).
+    await page.getByText(picked[1].name).last().click();
+    await expect(
+      page.getByText("Cut-through (estimated)").first(),
+    ).toBeVisible();
   });
 });

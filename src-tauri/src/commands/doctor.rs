@@ -398,6 +398,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 // profile's band powers/air-flatness and the output-coverage SNR
                 // gate below, instead of each computing its own (disagreeing) space.
                 let body_psd = doctor::body_psd(&samples, rate, signal_start);
+                // The STIMULUS's own PSD — the reference the localized
+                // resonant/boxy rules diff against (`Psd::transfer_db`), so
+                // the stimulus's spectral ridges can't read as chain
+                // resonances. Cheap (~ms) next to the ~5 s capture.
+                let stim_psd = crate::psd::welch_psd(stim, rate as f32);
                 let profile = doctor::SoundProfile::from_capture_with_psd(
                     &samples,
                     rate,
@@ -405,6 +410,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     onset,
                     family,
                     &body_psd,
+                    Some(&stim_psd),
                 )?;
                 // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
                 // what the device actually produced, not what the input stimulus

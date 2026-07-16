@@ -23,6 +23,10 @@ pub(crate) struct DoctorRead {
     /// Whether `audio::estimate_onset` found the onset confidently — callers
     /// that care (e.g. to warn) read this instead of re-deriving it.
     pub onset_confident: bool,
+    /// The capture's localized spectral peaks (`SoundProfile::peaks`,
+    /// height-sorted) — printed by the inject arm so a resonant/boxy gate
+    /// decision can be made from the measured height/Q, not just the verdict.
+    pub peaks: Vec<crate::psd::SpectralPeak>,
 }
 
 /// Run the shared band/diagnosis pipeline over one capture. `stim` is
@@ -54,6 +58,7 @@ pub(crate) fn analyze_capture(
         onset
     };
     let body_psd = doctor::body_psd(samples, rate, psd_onset);
+    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
     let profile = doctor::SoundProfile::from_capture_with_psd(
         samples,
         rate,
@@ -61,6 +66,7 @@ pub(crate) fn analyze_capture(
         onset,
         family,
         &body_psd,
+        Some(&stim_psd),
     )?;
     let band_db = doctor::band_db(&profile.bands);
     let deviations = doctor::deviations(&band_db, family);
@@ -85,5 +91,6 @@ pub(crate) fn analyze_capture(
         spread_lu: profile.spread_lu,
         verdicts,
         onset_confident: confident,
+        peaks: profile.peaks,
     })
 }

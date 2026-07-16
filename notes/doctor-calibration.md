@@ -1,13 +1,19 @@
 # Doctor threshold calibration — 2026-07-03
 
-> **2026-07-16 addendum:** the Doctor capture window has since shrunk to a 3 s
-> stimulus slice + 1.5 s tail (HW-A/B'd vs the 6 s + 2.5 s oracle,
-> `probe --doctor-window-ab`). The 2.5 s-tail numbers below are the historical
-> record of that original recipe; the R5 sweep re-derives thresholds under the
-> new window. The same date's onset recalibration (corr floor 0.15 + a 120 ms
-> lag plausibility ceiling + the 200 ms silent stimulus preamble) FIXED the
-> "onset detection fails even on the synthetic stimulus" weakness noted below —
-> onsets now resolve confidently on all sweep presets, including wet ones.
+> **2026-07-16 addendum:** three things changed since this document's sweeps —
+> the numbers below are the historical record of the ORIGINAL recipe/metric.
+>
+> 1. **Window**: 3 s stimulus slice + 200 ms pad + graph-aware 1.5 s/0.3 s tail
+>    (HW-A/B'd vs the 6 s + 2.5 s oracle, `probe --doctor-window-ab`, 0 flips).
+> 2. **Onset**: corr floor 0.15 + a 120 ms lag plausibility ceiling + the pad's
+>    silence→signal edge FIXED the "onset detection fails even on the synthetic
+>    stimulus" weakness noted below — onsets now resolve confidently on all
+>    sweep presets, including wet ones (dry tails measure −21..−24 dB truer).
+> 3. **Metric**: deviation vs the AUTHORED factory-median target + Theil–Sen
+>    tilt split + the two-space consensus (see `notes/doctor.md`); gates were
+>    re-derived 2026-07-16 from the ±12 dB HW defect-injection matrix
+>    (`probe --doctor-inject`) + the 25-slot factory sanity band. The
+>    cohort-median machinery this document tuned against is deleted.
 
 Method: `probe --doctor <slots> <topology>` sweeps on the real unit (fw-current,
 read-only: loads + captures with the 2.5 s Doctor tail, never a save), then
@@ -90,8 +96,8 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
 The Doctor diagnoses a calibrated profile's DI capture against its own
 threshold table: `StimulusKind::Capture` selects the `*_CAPTURE` tables
 (currently byte-identical copies of the synthetic ones — PROVISIONAL).
-Diagnosis is per-sound and deterministic (the tilt-removed-residual-vs-target
-metric never pools measurements across sounds), so a capture is only ever
+Diagnosis is per-sound and deterministic (the deviation-vs-authored-target
+consensus metric never pools measurements across sounds), so a capture is only ever
 compared against the capture-space table — the measured band-balance shift
 between stimuli (+8…12 dB lows / −8…10 dB highs) would otherwise reproduce
 false verdict flips if a capture were judged against the synthetic table.
@@ -100,14 +106,17 @@ gating skips any band-keyed rule whose primary band the stimulus never
 excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
 EBow-heavy) from verdicts in bands they never probed.
 
-**Open bug — `balance()` dead-band contamination (capture space):** `doctor::balance()`
-(doctor.rs:403) subtracts the mean of ALL 6 bands, but in capture space 2 bands
-(Highs/Air) sit at the noise floor — their random level drags the mean and inflates
-all 4 live bands by a preset-dependent ±3 dB, which does NOT cancel between the
-reference and the runtime sound (it flipped a real `muddy` verdict in a 16-preset
-factory sweep: slot 31 dev +6.92 → +2.40 after recentering). Fix under
-consideration: center `balance()` on the covered bands only — re-derivable from an
-existing sweep with no re-capture (the mean cancels algebraically).
+**RESOLVED (2026-07-16) — the `balance()` dead-band contamination is
+structurally gone under the shipped metric.** The old bug: `balance()`
+subtracts the mean of ALL 6 bands, and in capture space the floor-riding
+Highs/Air dragged that mean, inflating the live bands ±3 dB preset-dependently
+(it flipped a real `muddy` in a 16-preset factory sweep). The shipped rule
+path has NO all-band mean anywhere: `deviations()` is raw `band_db − target`
+(level absorbed by the Theil–Sen intercept, which fits COVERED bands only),
+and `centered_deviations()` medians over the BODY bands (`lows..=highs`,
+excluding Air and the Bass VI Sub). `balance()` survives only for the wire's
+display `balanceDb` and the cut-through contrast (a ratio, where the mean
+cancels) — neither feeds a verdict threshold.
 
 The attended sweep derives the real capture thresholds:
 `probe --doctor-calib <slots_csv> --stim <capture.wav> --family <fam>
