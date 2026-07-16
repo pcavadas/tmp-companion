@@ -6,12 +6,14 @@ import {
   invoke,
 } from "../fixtures/scenario";
 
-// ONE-OFF attended validation (UNTRACKED — run explicitly, then delete):
-// exercises the doctor_apply → doctor_save and doctor_apply → doctor_discard
-// command paths end-to-end on the REAL device with a deterministic hand-built
-// job (an EQ-10 cut inserted into E2E Target 1's known G1 chain), independent
-// of which verdicts the diagnosis happens to fire. Net-zero: the scenario
-// slots are cleared in teardown.
+// ONLINE-ONLY suite member: exercises the doctor_apply → doctor_save and
+// doctor_apply → doctor_discard command paths end-to-end on the REAL device
+// with a deterministic hand-built job (an EQ-10 cut inserted into E2E
+// Target 1's known G1 chain), independent of which verdicts the diagnosis
+// happens to fire — UI-driven Apply can't be asserted deterministically
+// (prescription content is sound-dependent). Net-zero: the scenario slots
+// are cleared in teardown. Adds ~1–2 min to the attended online run; skipped
+// offline (see below).
 test.describe("Doctor apply/save/discard — one-off HW validation", () => {
   // ONLINE-ONLY: offline the fake re-amp never loads the slot, so the apply's
   // identity guard (confirm_active) correctly refuses ("slot echo None") —
