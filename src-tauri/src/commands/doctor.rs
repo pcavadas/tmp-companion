@@ -603,110 +603,123 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 ) -> Result<DoctorApplyResult, String> {
     let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
     with_released_seize(state.session.clone(), move || {
-        let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
+        let run = || -> Result<DoctorApplyResult, String> {
+            let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
 
-        // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
-        //     the slot, so (b) below confirms the already-current preset — no reload.
-        //     ref_level None: capture at the preset's OWN level — never write a
-        //     reference presetLevel a later doctor_save would PERSIST (#1).
-        //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
-        //     a cache hit MUST still load the slot — the load is what (b) relies on
-        //     AND what discards a stale unsaved edit buffer (a failed earlier apply
-        //     whose restore also failed would otherwise stack Rx on Rx).
-        let key: BeforeKey = (
-            job.list_index,
-            job.name.clone(),
-            stim_path.clone(),
-            job.calibration_lufs.map(f32::to_bits),
-        );
-        let before_clip = match before_cache_get(&key) {
-            Some(clip) => {
-                leveller::restore_saved_preset(job.list_index)?;
-                std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                clip
-            }
-            None => {
-                let (before, rate) =
-                    leveller::doctor_capture(job.list_index, None, &[], &stim, None, false)?;
-                let clip = format!(
-                    "data:audio/wav;base64,{}",
-                    base64_encode(&wav_bytes(&before, rate)?)
-                );
-                before_cache_put(key, clip.clone());
-                clip
-            }
-        };
+            // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
+            //     the slot, so (b) below confirms the already-current preset — no reload.
+            //     ref_level None: capture at the preset's OWN level — never write a
+            //     reference presetLevel a later doctor_save would PERSIST (#1).
+            //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
+            //     a cache hit MUST still load the slot — the load is what (b) relies on
+            //     AND what discards a stale unsaved edit buffer (a failed earlier apply
+            //     whose restore also failed would otherwise stack Rx on Rx).
+            let key: BeforeKey = (
+                job.list_index,
+                job.name.clone(),
+                stim_path.clone(),
+                job.calibration_lufs.map(f32::to_bits),
+            );
+            let before_clip = match before_cache_get(&key) {
+                Some(clip) => {
+                    leveller::restore_saved_preset(job.list_index)?;
+                    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                    clip
+                }
+                None => {
+                    let (before, rate) =
+                        leveller::doctor_capture(job.list_index, None, &[], &stim, None, false)?;
+                    let clip = format!(
+                        "data:audio/wav;base64,{}",
+                        base64_encode(&wav_bytes(&before, rate)?)
+                    );
+                    before_cache_put(key, clip.clone());
+                    clip
+                }
+            };
 
-        // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
-        //     stored preset is reloaded (the partial edit is discarded).
-        {
-            let mut s = Session::connect()?;
-            s.confirm_active(job.list_index, Some(&job.name))?;
-            s.begin_live_edit()?;
-            for op in &job.ops {
-                let outcome: Result<bool, String> = match op {
-                    doctor::DoctorOp::Param {
-                        group_id,
-                        node_id,
-                        param,
-                        value,
-                    } => s
-                        .change_parameter(group_id, node_id, param, *value as f32)
-                        .map(|_| true),
-                    doctor::DoctorOp::InsertNode {
-                        group_id,
-                        before_fender_id,
-                        fender_id,
-                        params,
-                    } => match s.insert_node(group_id, before_fender_id.as_deref(), fender_id) {
-                        Ok(true) => {
-                            let mut r = Ok(true);
-                            for (p, v) in params {
-                                // The fresh node's id == its fender id — Doctor only
-                                // inserts models ABSENT from the chain (guaranteed at
-                                // GENERATION: comp/EQ/cut inserts only fire when
-                                // graph_facts found none), so no collision.
-                                if let Err(e) =
-                                    s.change_parameter(group_id, fender_id, p, *v as f32)
-                                {
-                                    r = Err(e);
-                                    break;
+            // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
+            //     stored preset is reloaded (the partial edit is discarded).
+            {
+                let mut s = Session::connect()?;
+                s.confirm_active(job.list_index, Some(&job.name))?;
+                s.begin_live_edit()?;
+                for op in &job.ops {
+                    let outcome: Result<bool, String> = match op {
+                        doctor::DoctorOp::Param {
+                            group_id,
+                            node_id,
+                            param,
+                            value,
+                        } => s
+                            .change_parameter(group_id, node_id, param, *value as f32)
+                            .map(|_| true),
+                        doctor::DoctorOp::InsertNode {
+                            group_id,
+                            before_fender_id,
+                            fender_id,
+                            params,
+                        } => match s.insert_node(group_id, before_fender_id.as_deref(), fender_id) {
+                            Ok(true) => {
+                                let mut r = Ok(true);
+                                for (p, v) in params {
+                                    // The fresh node's id == its fender id — Doctor only
+                                    // inserts models ABSENT from the chain (guaranteed at
+                                    // GENERATION: comp/EQ/cut inserts only fire when
+                                    // graph_facts found none), so no collision.
+                                    if let Err(e) =
+                                        s.change_parameter(group_id, fender_id, p, *v as f32)
+                                    {
+                                        r = Err(e);
+                                        break;
+                                    }
                                 }
+                                r
                             }
-                            r
+                            other => other,
+                        },
+                    };
+                    let detail = match outcome {
+                        Ok(true) => continue,
+                        Ok(false) => "the device rejected the edit".to_string(),
+                        Err(e) => e,
+                    };
+                    return Err(match leveller::restore_saved_preset(job.list_index) {
+                        Ok(()) => {
+                            format!("couldn't apply — the preset was restored unchanged: {detail}")
                         }
-                        other => other,
-                    },
-                };
-                let detail = match outcome {
-                    Ok(true) => continue,
-                    Ok(false) => "the device rejected the edit".to_string(),
-                    Err(e) => e,
-                };
-                return Err(match leveller::restore_saved_preset(job.list_index) {
-                    Ok(()) => {
-                        format!("couldn't apply — the preset was restored unchanged: {detail}")
-                    }
-                    Err(restore_err) => format!(
-                        "couldn't apply ({detail}) AND the restore also failed ({restore_err}) — verify the preset on the unit"
-                    ),
-                });
+                        Err(restore_err) => format!(
+                            "couldn't apply ({detail}) AND the restore also failed ({restore_err}) — verify the preset on the unit"
+                        ),
+                    });
+                }
             }
+
+            // (c) AFTER: capture the live edit buffer WITHOUT reloading. ref_level
+            //     None like (a): nothing touched the level between the captures, so
+            //     the A/B is inherently level-fair at the preset's own level.
+            let (after, rate) = leveller::doctor_capture_current(&stim, None)?;
+            let after_clip = format!(
+                "data:audio/wav;base64,{}",
+                base64_encode(&wav_bytes(&after, rate)?)
+            );
+
+            Ok(DoctorApplyResult {
+                before_clip,
+                after_clip,
+            })
+        };
+        let result = run();
+        // GUARANTEED re-amp OFF on a fresh connection, success or failure — same
+        // rationale as level_scenes.rs:234 (an in-session disengage sent after
+        // ~1s of HID idle is silently dropped, and both the before/after captures
+        // above idle that long). ONLY the reamp toggle — never a load_preset here,
+        // which would discard the just-applied unsaved edit buffer on the success path.
+        match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
+            Ok(_) => log::info!("doctor_apply: final re-amp OFF sent"),
+            Err(e) => log::warn!("doctor_apply: final re-amp OFF failed ({e})"),
         }
-
-        // (c) AFTER: capture the live edit buffer WITHOUT reloading. ref_level
-        //     None like (a): nothing touched the level between the captures, so
-        //     the A/B is inherently level-fair at the preset's own level.
-        let (after, rate) = leveller::doctor_capture_current(&stim, None)?;
-        let after_clip = format!(
-            "data:audio/wav;base64,{}",
-            base64_encode(&wav_bytes(&after, rate)?)
-        );
-
-        Ok(DoctorApplyResult {
-            before_clip,
-            after_clip,
-        })
+        result
     })
     .await
 }

@@ -291,6 +291,14 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
             ),
             Err(e) => log::warn!("level_preset slot={slot} save={save} failed: {e}"),
         }
+        // GUARANTEED re-amp OFF on a fresh connection, success or failure. The
+        // leveller's in-connection `set_reamp_mode(false)` is fire-and-forget and
+        // gets dropped by the device once the session has sat idle ~1s — every
+        // leveling capture idles that long (HW-confirmed; see level_scenes.rs:234).
+        match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
+            Ok(_) => log::info!("level_preset: final re-amp OFF sent"),
+            Err(e) => log::warn!("level_preset: final re-amp OFF failed ({e})"),
+        }
         result
     })
     .await

@@ -514,7 +514,16 @@ pub(crate) async fn level_setlist(
                 offset_lu: *off,
             })
             .collect();
-        leveller::level_setlist(&lvl_entries, SETLIST_HEADROOM_LU, 0.5, save)
+        let result = leveller::level_setlist(&lvl_entries, SETLIST_HEADROOM_LU, 0.5, save);
+        // GUARANTEED re-amp OFF on a fresh connection, success or failure — same
+        // rationale as level_scenes_apply above (level_scenes.rs:234): the device
+        // drops an in-session disengage sent after ~1s of HID idle, and every
+        // leveling capture idles that long.
+        match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
+            Ok(_) => log::info!("level_setlist: final re-amp OFF sent"),
+            Err(e) => log::warn!("level_setlist: final re-amp OFF failed ({e})"),
+        }
+        result
     })
     .await
 }

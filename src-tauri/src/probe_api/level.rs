@@ -255,7 +255,12 @@ pub fn probe_level_preset(
         ..Default::default()
     };
     // probe = raw benchmark behavior: no idempotency skip, always measure+apply+save.
-    let r = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false)?;
+    let result = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false);
+    // GUARANTEED re-amp OFF on a fresh connection, success or failure — same
+    // rationale as level_scenes.rs:234: the device drops an in-session disengage
+    // sent after ~1s of HID idle, and every leveling capture idles that long.
+    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    let r = result?;
 
     let mut out = format!(
         "slot {slot}: measured {:.2} LUFS @ ref {:.2}  (C={:.2})\n\
