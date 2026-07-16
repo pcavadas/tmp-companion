@@ -27,6 +27,8 @@ import type {
   DoctorChainPreview,
   DoctorRx,
   DoctorRxKind,
+  FootswitchInfo,
+  GraphNode,
 } from "../../lib/types";
 
 const KIND_ICON: Record<DoctorRxKind, IconName> = {
@@ -68,6 +70,15 @@ export interface PrescriptionCardProps {
   /** Scene-consistency prescriptions can't be applied by the wire (it rejects
    *  scene trims) — render with no Apply button regardless of kind. */
   scene?: boolean;
+  /** The diagnosed SOUND's own scene/footswitch (not the `scene` flag above)
+   *  + the preset's chain/footswitches — so the A/B captures under the SAME
+   *  context `doctor_check` diagnosed, not the as-saved base. Omitted (all
+   *  default to "no context") only by scene-consistency cards, which are
+   *  never applicable and so never call `doctorApply`/`doctorSave`. */
+  soundScene?: number | null;
+  soundFootswitch?: number | null;
+  nodes?: GraphNode[];
+  footswitches?: FootswitchInfo[];
 }
 
 export function PrescriptionCard({
@@ -75,6 +86,10 @@ export function PrescriptionCard({
   listIndex,
   presetName,
   scene = false,
+  soundScene = null,
+  soundFootswitch = null,
+  nodes = [],
+  footswitches = [],
 }: PrescriptionCardProps) {
   const { t } = useTheme();
   const [phase, setPhase] = useState<Phase>("draft");
@@ -125,6 +140,10 @@ export function PrescriptionCard({
         ops: rx.ops,
         topologyId: null,
         calibrationLufs: null,
+        scene: soundScene,
+        footswitch: soundFootswitch,
+        nodes,
+        footswitches,
       });
       setClips(res);
       setPhase("applied");
@@ -156,7 +175,7 @@ export function PrescriptionCard({
     setBusy(true);
     setError(null);
     try {
-      await doctorSave(listIndex, presetName);
+      await doctorSave(listIndex, presetName, rx.ops);
       setPhase("saved");
       lock.release(cardId);
     } catch (e) {

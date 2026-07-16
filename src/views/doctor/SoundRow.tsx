@@ -22,7 +22,12 @@ import {
   soundSev,
   type Sev,
 } from "./severity";
-import type { DoctorDiag, DoctorSoundResult } from "../../lib/types";
+import type {
+  DoctorDiag,
+  DoctorSoundResult,
+  FootswitchInfo,
+  GraphNode,
+} from "../../lib/types";
 
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
@@ -104,6 +109,13 @@ export interface SoundRowProps {
   /** The nodes this footswitch sound's own switch toggles; undefined for
    *  Base/scene sounds (drives the "shared block" caption). */
   ownNodeIds?: string[];
+  /** The preset's full chain + block-acting footswitches (same data
+   *  `doctor_check` was given) — threaded into every prescription card so its
+   *  A/B captures under the diagnosed sound's own context, not the as-saved
+   *  base (`derived_force_bypass` needs the whole preset, not just this
+   *  sound's own blocks). */
+  nodes: GraphNode[];
+  footswitches: FootswitchInfo[];
   open: boolean;
   onToggle: () => void;
 }
@@ -113,6 +125,8 @@ export function SoundRow({
   listIndex,
   presetName,
   ownNodeIds,
+  nodes,
+  footswitches,
   open,
   onToggle,
 }: SoundRowProps) {
@@ -409,6 +423,10 @@ export function SoundRow({
                       rx={rx}
                       listIndex={listIndex}
                       presetName={presetName}
+                      soundScene={sound.scene}
+                      soundFootswitch={sound.footswitch}
+                      nodes={nodes}
+                      footswitches={footswitches}
                     />
                   ))}
                 </div>

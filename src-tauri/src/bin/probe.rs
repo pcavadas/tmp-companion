@@ -49,6 +49,21 @@
 //!                                  band coverage, and (with --labels {"rule":[slots]}) DERIVE
 //!                                  proposed *_CAPTURE thresholds → a DETERMINISTIC JSON report.
 //!                                  READ-ONLY: loads + captures, never saves
+//!   probe --doctor-iso-ab           A/B: the OFFLINE `derived_force_bypass` isolation list
+//!                                  (backup-scan data, no device read) vs the LIVE
+//!                                  `doctor_force_bypass` list (a field-8 preset read), for
+//!                                  every library preset's base + block-acting footswitch
+//!                                  sounds. PASS/DIFF per sound + a summary line.
+//!                                  NON-DESTRUCTIVE: one device backup + per-preset field-8
+//!                                  reads, no LoadPreset/save
+//!   probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
+//!                                  CAPTURE-WINDOW A/B evidence arm: per slot, captures the
+//!                                  oracle (full 6s stim + DOCTOR_TAIL_MS) vs a 3s-stim/1.5s-tail
+//!                                  and a 4s-stim/1.5s-tail variant, reports band-dB/tilt/tail
+//!                                  deltas + whether the fired-verdict set changed (the
+//!                                  re-baseline decision aid — never self-consistent).
+//!                                  LOADS the probed slots (LoadPreset via doctor_capture);
+//!                                  never saves; ends re-amp OFF
 //!   probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]
 //!                                  DEVICE A/B: measure_c per preset with two stimuli →
 //!                                  C/spread/ΔC table (playing-style sensitivity; capture
@@ -79,6 +94,16 @@
 //!                                  preset → is the inject AGC'd? (TMP_LEVELLER_STIMULUS)
 //!
 //! Exits non-zero on failure so it can gate dev scripts.
+
+/// Look up a `--name value` CLI flag in `args`, by adjacent position (the
+/// value is the arg right after the flag). Shared by the doctor-calib-style
+/// subcommands, each of which parses several such flags.
+fn flag_arg(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|j| args.get(j + 1))
+        .cloned()
+}
 
 /// Resolve an opspec argument: if it names an existing file, read its contents;
 /// otherwise treat it as a literal inline JSON string. Empty when absent.
@@ -146,6 +171,20 @@ fn main() {
     if args.iter().any(|a| a == "--device-backup") {
         eprintln!("[probe] device backup (BackupRequest → tar.lz4 stream → extract DB)…");
         match tmp_companion_lib::probe_device_backup() {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--doctor-iso-ab") {
+        eprintln!("[probe] doctor-iso-ab: derived (offline) vs live (field-8) force-bypass A/B…");
+        match tmp_companion_lib::probe_doctor_iso_ab() {
             Ok(report) => {
                 print!("{report}");
                 return;
@@ -1635,17 +1674,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--doctor-calib") {
         // --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi>
         //                [--labels <rules.json>] --out <report.json>  (read-only sweep)
-        let flag = |name: &str| -> Option<String> {
-            args.iter()
-                .position(|a| a == name)
-                .and_then(|j| args.get(j + 1))
-                .cloned()
-        };
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let stim = flag("--stim").unwrap_or_default();
-        let family = flag("--family").unwrap_or_default();
-        let out = flag("--out").unwrap_or_default();
-        let labels = flag("--labels");
+        let stim = flag_arg(&args, "--stim").unwrap_or_default();
+        let family = flag_arg(&args, "--family").unwrap_or_default();
+        let out = flag_arg(&args, "--out").unwrap_or_default();
+        let labels = flag_arg(&args, "--labels");
         let slots: Vec<u32> = match slots_csv
             .split(',')
             .map(|x| x.trim())
@@ -1683,16 +1716,10 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--doctor-calib-factory") {
         // --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <..> --out <report.json>
         // Loads each FACTORY preset (tabEnum=4) + captures AS-LOADED for reference derivation.
-        let flag = |name: &str| -> Option<String> {
-            args.iter()
-                .position(|a| a == name)
-                .and_then(|j| args.get(j + 1))
-                .cloned()
-        };
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let stim = flag("--stim").unwrap_or_default();
-        let family = flag("--family").unwrap_or_default();
-        let out = flag("--out").unwrap_or_default();
+        let stim = flag_arg(&args, "--stim").unwrap_or_default();
+        let family = flag_arg(&args, "--family").unwrap_or_default();
+        let out = flag_arg(&args, "--out").unwrap_or_default();
         let slots: Vec<u32> = match slots_csv
             .split(',')
             .map(|x| x.trim())
@@ -1715,6 +1742,44 @@ fn main() {
             slots.len()
         );
         match tmp_companion_lib::probe_doctor_calib_factory(&slots, &stim, &family, &out) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-window-ab") {
+        // --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>]
+        //                    [--out <report.json>]  (LOADS the probed slots, read-only otherwise)
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let stim = flag_arg(&args, "--stim").unwrap_or_default();
+        let family = flag_arg(&args, "--family").unwrap_or_else(|| "guitar".to_string());
+        let out = flag_arg(&args, "--out");
+        let slots: Vec<u32> = match slots_csv
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) if !s.is_empty() && !stim.is_empty() => s,
+            _ => {
+                eprintln!(
+                    "usage: probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]"
+                );
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "[probe] doctor-window-ab sweep over {} slot(s), family={family}, stim={stim}…",
+            slots.len()
+        );
+        match tmp_companion_lib::probe_doctor_window_ab(&slots, &stim, &family, out.as_deref()) {
             Ok(r) => {
                 print!("{r}");
                 return;

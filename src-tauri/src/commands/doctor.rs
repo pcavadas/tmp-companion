@@ -28,6 +28,14 @@ pub struct DoctorInput {
     pub profile_id: Option<String>,
     #[serde(default)]
     pub nodes: Vec<doctor::DoctorNode>,
+    /// The preset's block-acting footswitches, from the startup backup scan
+    /// (`BackupPresetRow.footswitches`) — drives OFFLINE force-bypass isolation
+    /// derivation ([`footswitch::derived_force_bypass`]) so base/footswitch sounds skip the
+    /// live ~1.9 s field-8 isolation read whenever the frontend has this (which
+    /// it always does once the backup scan has reached the preset). Empty when
+    /// absent (pre-scan, or a preset the scan couldn't parse).
+    #[serde(default)]
+    pub footswitches: Vec<footswitch::FootswitchInfo>,
 }
 
 /// The force-bypass isolation list for capturing one sound cleanly (mirrors the
@@ -37,7 +45,7 @@ pub struct DoctorInput {
 /// on a preset saved with the switch engaged, HW preset 024's BD2) while forcing
 /// every other switch's block off; a scene contributes NOTHING (its own bypass
 /// overrides define it). `(group_id, node_id, bypass_to_write)`.
-fn doctor_force_bypass(
+pub(crate) fn doctor_force_bypass(
     ftsw: &serde_json::Value,
     preset: &serde_json::Value,
     footswitch: Option<u32>,
@@ -52,6 +60,74 @@ fn doctor_force_bypass(
             .into_iter()
             .map(|(g, n)| (g, n, true))
             .collect(),
+    }
+}
+
+/// `DoctorNode`s → a `node_id → saved bypass` map, first-occurrence-wins
+/// (mirrors the pre-extraction `nodes.iter().find(...)` semantics) — the shape
+/// [`footswitch::derived_force_bypass`] needs, decoupled from the Doctor's own
+/// node type.
+fn saved_bypass_map(nodes: &[doctor::DoctorNode]) -> std::collections::HashMap<String, bool> {
+    let mut map = std::collections::HashMap::new();
+    for n in nodes {
+        map.entry(n.node_id.clone()).or_insert(n.bypassed);
+    }
+    map
+}
+
+/// Resolve the force-bypass isolation for a diagnosed sound — one policy for
+/// doctor_check AND doctor_apply so the audition can never observe a different
+/// bypass state than the diagnosis. Graph present → offline derivation; graph
+/// absent → scene sounds get no isolation (their overrides define them), other
+/// sounds fall back to ONE cached live field-8 read per preset.
+fn resolve_sound_isolation(
+    nodes: &[doctor::DoctorNode],
+    footswitches: &[footswitch::FootswitchInfo],
+    scene: Option<u32>,
+    footswitch: Option<u32>,
+    list_index: u32,
+    preset_cache: &mut std::collections::HashMap<u32, serde_json::Value>,
+) -> Vec<(String, String, bool)> {
+    if !nodes.is_empty() {
+        // A scene sound is measured against the SAME all-switches-off baseline
+        // as the base sound: the scene-consistency check compares scene
+        // loudness against base, which is captured with every footswitch
+        // block forced off, so a preset saved with a switch engaged would
+        // otherwise poison the deltas — scenes never trigger a device read
+        // either way.
+        let fs = if scene.is_some() { None } else { footswitch };
+        footswitch::derived_force_bypass(footswitches, &saved_bypass_map(nodes), fs)
+    } else if scene.is_some() {
+        Vec::new()
+    } else {
+        // Base/footswitch sounds fall back to the legacy live field-8 read
+        // (cached per list index across that preset's base + footswitch
+        // sounds) only when the backup scan missed this preset's graph (rare
+        // — its presetJson failed to parse). A read hiccup on that fallback
+        // degrades to no isolation (best-effort, like `level_preset`), never
+        // fails the run.
+        if let std::collections::hash_map::Entry::Vacant(e) = preset_cache.entry(list_index) {
+            let preset = match read_slot_preset_parsed(list_index) {
+                Ok((p, _, _)) => p,
+                Err(err) => {
+                    log::warn!(
+                        "doctor_check slot={list_index}: isolation preset read failed ({err}), capturing without isolation"
+                    );
+                    serde_json::Value::Null
+                }
+            };
+            e.insert(preset);
+            // The read opened (or tried to open) its own session — gap before
+            // the capture reconnects, else the quick reopen risks the HID
+            // open-lockout (0xe00002c5).
+            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        }
+        let preset = &preset_cache[&list_index];
+        doctor_force_bypass(
+            preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+            preset,
+            footswitch,
+        )
     }
 }
 
@@ -268,40 +344,16 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     })
                 }
             };
-            // Force-bypass isolation for this sound. A scene sound contributes
-            // nothing (its own bypass overrides define it), so skip the preset read
-            // entirely for it (the optimization guard) — base + footswitch sounds
-            // share one cached read per list index. A read hiccup degrades to no
-            // isolation (best-effort, like `level_preset`), never fails the run.
-            let fb = if item.scene.is_some() {
-                Vec::new()
-            } else {
-                if let std::collections::hash_map::Entry::Vacant(e) =
-                    preset_cache.entry(item.list_index)
-                {
-                    let preset = match read_slot_preset_parsed(item.list_index) {
-                        Ok((p, _, _)) => p,
-                        Err(err) => {
-                            log::warn!(
-                                "doctor_check slot={}: isolation preset read failed ({err}), capturing without isolation",
-                                item.list_index
-                            );
-                            serde_json::Value::Null
-                        }
-                    };
-                    e.insert(preset);
-                    // The read opened (or tried to open) its own session — gap before
-                    // the capture reconnects, else the quick reopen risks the HID
-                    // open-lockout (0xe00002c5).
-                    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                }
-                let preset = &preset_cache[&item.list_index];
-                doctor_force_bypass(
-                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
-                    preset,
-                    item.footswitch,
-                )
-            };
+            // Force-bypass isolation for this sound — the shared
+            // `resolve_sound_isolation` policy (see its doc).
+            let fb = resolve_sound_isolation(
+                &item.nodes,
+                &item.footswitches,
+                item.scene,
+                item.footswitch,
+                item.list_index,
+                &mut preset_cache,
+            );
             let family = instrument_of(item);
             let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
             let tail_ms = u64::from(doctor::doctor_tail_ms(&item.nodes));
@@ -329,13 +381,24 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         item.key
                     );
                 }
-                let profile =
-                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
+                // ONE shared post-onset body PSD for this capture — read by both the
+                // profile's band powers/air-flatness and the output-coverage SNR
+                // gate below, instead of each computing its own (disagreeing) space.
+                let body_psd = doctor::body_psd(&samples, rate, onset);
+                let profile = doctor::SoundProfile::from_capture_with_psd(
+                    &samples,
+                    rate,
+                    stim.len(),
+                    onset,
+                    family,
+                    &body_psd,
+                )?;
                 // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
                 // what the device actually produced, not what the input stimulus
                 // carried, so amp-created HF (fizz/harsh distortion) isn't gated out
                 // just because the DI input never had it.
-                let cov = doctor::output_coverage(&samples, rate, onset, family);
+                let cov =
+                    doctor::output_coverage_with_body(&samples, rate, onset, family, &body_psd);
                 Ok((profile, cov))
             };
             let result = stim.and_then(|(stim, stim_spread)| {
@@ -515,6 +578,26 @@ pub struct DoctorApplyJob {
     pub ops: Vec<doctor::DoctorOp>,
     pub topology_id: Option<String>,
     pub calibration_lufs: Option<f32>,
+    /// The diagnosed sound's own scene (0-based `scenes[]` wire index), when it
+    /// was a scene sound — `None` for Base/footswitch. The A/B captures recall
+    /// this scene so the player auditions the fix in the state that was
+    /// actually diagnosed, not the as-saved base.
+    #[serde(default)]
+    pub scene: Option<u32>,
+    /// The diagnosed sound's own block-acting footswitch (0-based `ftsw` index),
+    /// when it was a footswitch sound — `None` for Base/scene.
+    #[serde(default)]
+    pub footswitch: Option<u32>,
+    /// The preset's chain, from the SAME backup-scan data `doctor_check` was
+    /// given — drives the A/B's OFFLINE force-bypass isolation derivation
+    /// (`footswitch::derived_force_bypass`), mirroring the check's isolation exactly. Empty
+    /// (the pre-fix default) captures with no isolation, same as before.
+    #[serde(default)]
+    pub nodes: Vec<doctor::DoctorNode>,
+    /// The preset's block-acting footswitches, paired with `nodes` for the same
+    /// isolation derivation.
+    #[serde(default)]
+    pub footswitches: Vec<footswitch::FootswitchInfo>,
 }
 
 /// Result of a live (unsaved) prescription apply: the before/after audition clips
@@ -527,9 +610,12 @@ pub struct DoctorApplyResult {
     pub after_clip: String,
 }
 
-/// Identity of a cached BEFORE clip: sound + stimulus. `name` catches rename/move,
-/// the stimulus path + calibration catch an instrument-profile switch between applies.
-type BeforeKey = (u32, String, String, Option<u32>);
+/// Identity of a cached BEFORE clip: sound + stimulus + diagnosed context.
+/// `name` catches rename/move, the stimulus path + calibration catch an
+/// instrument-profile switch between applies, and `scene`/`footswitch` (the
+/// last two fields) catch a switch between sounds of the SAME preset — a
+/// scene's cached clip must never serve a different scene or the base sound.
+type BeforeKey = (u32, String, String, Option<u32>, Option<u32>, Option<u32>);
 
 /// Single-entry cache of `doctor_apply`'s BEFORE clip (the stored preset captured at
 /// its own level — ~11 s to produce). The before-state is stable across consecutive
@@ -559,9 +645,92 @@ fn before_cache_put(key: BeforeKey, clip: String) {
     *crate::lock_ok(&BEFORE_CACHE) = Some((key, clip));
 }
 
+/// Apply every op in `ops` on `s`'s live edit buffer (the caller must already
+/// have `confirm_active` + `begin_live_edit`'d the session). Shared by
+/// `doctor_apply` (unsaved A/B) and `doctor_save` (rebuild-from-scratch
+/// persist) — the ONE home of the per-op wire semantics (`Param` →
+/// `change_parameter`; `InsertNode` → `insert_node` + its param follow-ups —
+/// the fresh node's id == its fender id, Doctor only inserts models ABSENT
+/// from the chain, so no collision). Returns the first failure's detail
+/// string; the caller decides how to recover (both today: restore the stored
+/// preset and report the detail).
+fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), String> {
+    for op in ops {
+        let outcome: Result<bool, String> = match op {
+            doctor::DoctorOp::Param {
+                group_id,
+                node_id,
+                param,
+                value,
+            } => s
+                .change_parameter(group_id, node_id, param, *value as f32)
+                .map(|_| true),
+            doctor::DoctorOp::InsertNode {
+                group_id,
+                before_fender_id,
+                fender_id,
+                params,
+            } => match s.insert_node(group_id, before_fender_id.as_deref(), fender_id) {
+                Ok(true) => {
+                    let mut r = Ok(true);
+                    for (p, v) in params {
+                        if let Err(e) = s.change_parameter(group_id, fender_id, p, *v as f32) {
+                            r = Err(e);
+                            break;
+                        }
+                    }
+                    r
+                }
+                other => other,
+            },
+        };
+        match outcome {
+            Ok(true) => continue,
+            Ok(false) => return Err("the device rejected the edit".to_string()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Open a live-edit session on `list_index`, confirm identity, and apply
+/// `ops` — the ONE home of the connect → `confirm_active` → `begin_live_edit`
+/// → `apply_doctor_ops` sequence shared by `doctor_apply` step (b) (unsaved
+/// A/B) and `doctor_save` (rebuild-from-scratch persist). On success returns
+/// the still-open session — `doctor_apply` drops it (never saves), `doctor_save`
+/// calls `save_current_preset` on it (save must stay the LAST op on that
+/// connection). On ANY op failure the live session is dropped (freeing the
+/// seize) BEFORE `restore_saved_preset` reconnects to discard the partial
+/// edit, and an error naming `verb` ("apply"/"save") is returned — the exact
+/// text both callers relied on before this extraction.
+fn ops_session(
+    list_index: u32,
+    expect_name: &str,
+    ops: &[doctor::DoctorOp],
+    verb: &str,
+) -> Result<Session, String> {
+    let mut s = Session::connect()?;
+    s.confirm_active(list_index, Some(expect_name))?;
+    s.begin_live_edit()?;
+    if let Err(detail) = apply_doctor_ops(&mut s, ops) {
+        drop(s);
+        return Err(match leveller::restore_saved_preset(list_index) {
+            Ok(()) => format!("couldn't {verb} — the preset was restored unchanged: {detail}"),
+            Err(restore_err) => format!(
+                "couldn't {verb} ({detail}) AND the restore also failed ({restore_err}) — verify the preset on the unit"
+            ),
+        });
+    }
+    Ok(s)
+}
+
 /// Apply a prescription LIVE onto the edit buffer (never saved) and return the
-/// before/after A/B clips. Flow (honoring one-engage-per-connection + set-then-
-/// engage): (a) capture the STORED preset — this also loads it, so (b) can
+/// before/after A/B clips. Both captures run under the diagnosed sound's OWN
+/// context (`job.scene`/`job.footswitch` recalled + isolated via
+/// `footswitch::derived_force_bypass`, same as `doctor_check`'s check loop) — the player
+/// auditions the fix in the state that was actually diagnosed, not the
+/// as-saved base. Flow (honoring one-engage-per-connection + set-then-engage):
+/// (a) capture the STORED preset — this also loads it, so (b) can
 /// `confirm_active` without a second load — (b) apply each op on a fresh session's
 /// live edit buffer, restoring the stored preset on ANY failure, and (c) capture
 /// the edit buffer WITHOUT reloading (a load would discard the unsaved edit).
@@ -576,6 +745,31 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
 
+        // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
+        // policy `doctor_check` uses, now shared (its own preset-read cache: a
+        // single apply has no cross-sound cache to share). NOTE this differs
+        // from the pre-extraction behavior: empty `nodes` (no graph passed) on
+        // a base/footswitch sound now falls back to a live field-8 read
+        // (previously degraded straight to no isolation) — the point of
+        // sharing one policy is that the apply A/B can never observe a
+        // different bypass state than what `doctor_check` diagnosed. A scene
+        // sound's `job.footswitch` is already `None` by construction (a
+        // diagnosed sound is exactly one of base/scene/footswitch) — the base
+        // isolation this derives is the same baseline `doctor_check` measured
+        // the scene against.
+        let fb = resolve_sound_isolation(
+            &job.nodes,
+            &job.footswitches,
+            job.scene,
+            job.footswitch,
+            job.list_index,
+            &mut std::collections::HashMap::new(),
+        );
+        // The Doctor capture tail for this chain — the ONE home of the policy
+        // (`doctor::doctor_tail_ms`); empty `nodes` conservatively keeps the
+        // full wash-analysis tail, same default as before this fix.
+        let tail_ms = u64::from(doctor::doctor_tail_ms(&job.nodes));
+
         // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
         //     the slot, so (b) below confirms the already-current preset — no reload.
         //     ref_level None: capture at the preset's OWN level — never write a
@@ -589,6 +783,8 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             job.name.clone(),
             stim_path.clone(),
             job.calibration_lufs.map(f32::to_bits),
+            job.scene,
+            job.footswitch,
         );
         let before_clip = match before_cache_get(&key) {
             Some(clip) => {
@@ -597,15 +793,13 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                 clip
             }
             None => {
-                // `DoctorApplyJob` carries no graph (`nodes`) to decide the
-                // dry-tail shortcut on — conservative full DOCTOR_TAIL_MS.
                 let (before, rate) = leveller::doctor_capture(
                     job.list_index,
-                    None,
-                    &[],
+                    job.scene,
+                    &fb,
                     &stim,
                     None,
-                    u64::from(leveller::DOCTOR_TAIL_MS),
+                    tail_ms,
                     false,
                 )?;
                 let clip = format!(
@@ -619,67 +813,13 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 
         // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
         //     stored preset is reloaded (the partial edit is discarded).
-        {
-            let mut s = Session::connect()?;
-            s.confirm_active(job.list_index, Some(&job.name))?;
-            s.begin_live_edit()?;
-            for op in &job.ops {
-                let outcome: Result<bool, String> = match op {
-                    doctor::DoctorOp::Param {
-                        group_id,
-                        node_id,
-                        param,
-                        value,
-                    } => s
-                        .change_parameter(group_id, node_id, param, *value as f32)
-                        .map(|_| true),
-                    doctor::DoctorOp::InsertNode {
-                        group_id,
-                        before_fender_id,
-                        fender_id,
-                        params,
-                    } => match s.insert_node(group_id, before_fender_id.as_deref(), fender_id) {
-                        Ok(true) => {
-                            let mut r = Ok(true);
-                            for (p, v) in params {
-                                // The fresh node's id == its fender id — Doctor only
-                                // inserts models ABSENT from the chain (guaranteed at
-                                // GENERATION: comp/EQ/cut inserts only fire when
-                                // graph_facts found none), so no collision.
-                                if let Err(e) =
-                                    s.change_parameter(group_id, fender_id, p, *v as f32)
-                                {
-                                    r = Err(e);
-                                    break;
-                                }
-                            }
-                            r
-                        }
-                        other => other,
-                    },
-                };
-                let detail = match outcome {
-                    Ok(true) => continue,
-                    Ok(false) => "the device rejected the edit".to_string(),
-                    Err(e) => e,
-                };
-                return Err(match leveller::restore_saved_preset(job.list_index) {
-                    Ok(()) => {
-                        format!("couldn't apply — the preset was restored unchanged: {detail}")
-                    }
-                    Err(restore_err) => format!(
-                        "couldn't apply ({detail}) AND the restore also failed ({restore_err}) — verify the preset on the unit"
-                    ),
-                });
-            }
-        }
+        ops_session(job.list_index, &job.name, &job.ops, "apply")?;
 
-        // (c) AFTER: capture the live edit buffer WITHOUT reloading. ref_level
-        //     None like (a): nothing touched the level between the captures, so
-        //     the A/B is inherently level-fair at the preset's own level. Same
-        //     conservative full-tail choice as (a) — no graph in scope here either.
-        let (after, rate) =
-            leveller::doctor_capture_current(&stim, None, u64::from(leveller::DOCTOR_TAIL_MS))?;
+        // (c) AFTER: capture the live edit buffer WITHOUT reloading, under the
+        //     SAME scene/isolation as (a). ref_level None like (a): nothing
+        //     touched the level between the captures, so the A/B is inherently
+        //     level-fair at the preset's own level.
+        let (after, rate) = leveller::doctor_capture_current(&stim, job.scene, &fb, None, tail_ms)?;
         let after_clip = format!(
             "data:audio/wav;base64,{}",
             base64_encode(&wav_bytes(&after, rate)?)
@@ -693,17 +833,26 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
     .await
 }
 
-/// Persist the applied (still-live) edit buffer to `list_index`. Fresh session,
-/// identity-guarded — `confirm_active` never loads, so the edit buffer survives.
+/// Persist the applied (still-live) edit buffer to `list_index` — SAFELY: the
+/// live edit buffer is NEVER the thing that gets saved. Instead this rebuilds
+/// SAVED+`ops` from scratch — `restore_saved_preset` discards whatever the A/B
+/// captures (or a stacked earlier failed apply) left in the buffer (forced
+/// bypasses, a scene recall — see `doctor_capture_current`'s doc), THEN
+/// re-applies exactly `ops` on a fresh confirmed session and saves. So no
+/// intermediate edit-buffer pollution can ever be persisted, structurally —
+/// not by convention. A failed re-apply reloads the stored preset and returns
+/// an error without saving.
 #[tauri::command]
 pub(crate) async fn doctor_save(
     state: State<'_, AppState>,
     list_index: u32,
     expect_name: String,
+    ops: Vec<doctor::DoctorOp>,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
-        let mut s = Session::connect()?;
-        s.confirm_active(list_index, Some(&expect_name))?;
+        leveller::restore_saved_preset(list_index)?;
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        let mut s = ops_session(list_index, &expect_name, &ops, "save")?;
         s.save_current_preset(list_index)?;
         Ok(())
     })

@@ -36,6 +36,10 @@ export interface FootswitchFn {
   parameter_id: string | null;
   value_a: number | null;
   value_b: number | null;
+  /** The assignment's own `isActive` — for an on-off function, the CURRENT
+   *  engaged state at save time. Drives the Doctor's offline force-bypass
+   *  isolation derivation (no live preset read). */
+  is_active: boolean;
 }
 
 /** A continuous block parameter the leveler can target (`footswitch::LevelParamCandidate`). */
@@ -733,6 +737,10 @@ export interface DoctorInputArg {
    *  threshold space; else the synthetic topology sample. */
   profileId: string | null;
   nodes: GraphNode[];
+  /** The preset's block-acting footswitches (empty when none/unknown), off the
+   *  same backup-scan data as `nodes` — drives the backend's OFFLINE force-bypass
+   *  isolation derivation (no live preset read per sound). */
+  footswitches: FootswitchInfo[];
 }
 
 /** Streamed per-sound progress row (`lib::DoctorProgressItem`). Diagnoses ride
@@ -858,6 +866,20 @@ export interface DoctorApplyJob {
   ops: DoctorOp[];
   topologyId: string | null;
   calibrationLufs: number | null;
+  /** The diagnosed sound's own scene (0-based `scenes[]` wire index) — null
+   *  for Base/footswitch. The A/B captures recall this scene so the player
+   *  auditions the fix in the state that was actually diagnosed. */
+  scene: number | null;
+  /** The diagnosed sound's own block-acting footswitch (0-based `ftsw`
+   *  index) — null for Base/scene. */
+  footswitch: number | null;
+  /** The preset's chain (same data threaded into `DoctorInputArg.nodes`) —
+   *  drives the backend's OFFLINE force-bypass isolation derivation for the
+   *  A/B captures, mirroring `doctor_check`'s isolation exactly. */
+  nodes: GraphNode[];
+  /** The preset's block-acting footswitches, paired with `nodes` for the
+   *  same isolation derivation. */
+  footswitches: FootswitchInfo[];
 }
 
 /** Result of a live (unsaved) prescription apply: before/after audition clips

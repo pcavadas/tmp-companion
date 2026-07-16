@@ -18,6 +18,7 @@ import type {
   DoctorCheckResult,
   Store,
   ActiveGraph,
+  FootswitchInfo,
 } from "../../lib/types";
 
 /** The Doctor wizard's 3-step rail, shared by the full-page Set up (current 0)
@@ -59,6 +60,10 @@ export interface UseDoctorFlowDeps {
    *  index — the source of each sound's `nodes` (chain passed verbatim so
    *  prescriptions target real blocks with no extra device read). */
   graphByIndex: Map<number, ActiveGraph>;
+  /** Per-preset block-acting footswitches from the SAME startup backup, keyed
+   *  by 0-based list index — the source of each sound's `footswitches` (drives
+   *  the backend's OFFLINE force-bypass isolation derivation, no device read). */
+  footswitchesByIndex: Map<number, FootswitchInfo[]>;
 }
 
 function countTerminal(
@@ -71,7 +76,11 @@ function countTerminal(
   }, 0);
 }
 
-export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
+export function useDoctorFlow({
+  store,
+  graphByIndex,
+  footswitchesByIndex,
+}: UseDoctorFlowDeps) {
   const [run, setRun] = useState<DoctorRunState>(EMPTY_RUN);
   const [result, setResult] = useState<DoctorCheckResult | null>(null);
   // Set only when the whole `doctor_check` command REJECTS (an IPC/backend
@@ -114,9 +123,10 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
           // Tier-2 DI capture as the verbatim stimulus + CAPTURE diagnosis space.
           profileId: profile?.id ?? null,
           nodes: graphByIndex.get(o.slot)?.nodes ?? [],
+          footswitches: footswitchesByIndex.get(o.slot) ?? [],
         };
       }),
-    [store, graphByIndex],
+    [store, graphByIndex, footswitchesByIndex],
   );
 
   // Unmounting mid-run (a tab switch) would orphan the backend check — fire the

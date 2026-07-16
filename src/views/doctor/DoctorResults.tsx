@@ -23,6 +23,7 @@ import {
   type ApplyLock,
 } from "./applyLock";
 import type {
+  ActiveGraph,
   DoctorCheckResult,
   DoctorPresetResult,
   FootswitchInfo,
@@ -43,6 +44,10 @@ export interface DoctorResultsProps {
   /** 0-based list index → the preset's block-acting footswitches (their toggled
    *  nodes drive the "shared block" caption on FS-sound prescriptions). */
   footswitchInfo: Map<number, FootswitchInfo[]>;
+  /** 0-based list index → the preset's signal chain, from the SAME startup
+   *  backup scan as `footswitchInfo` — threaded into every prescription card
+   *  so its A/B captures under the diagnosed sound's own context. */
+  graphByIndex: Map<number, ActiveGraph>;
   onCheckMore: () => void;
 }
 
@@ -50,6 +55,7 @@ export function DoctorResults({
   result,
   presetNames,
   footswitchInfo,
+  graphByIndex,
   onCheckMore,
 }: DoctorResultsProps) {
   const { t } = useTheme();
@@ -259,6 +265,7 @@ export function DoctorResults({
                 `Slot ${slotLabel(preset.listIndex)}`
               }
               footswitchInfo={footswitchInfo}
+              graphByIndex={graphByIndex}
               expanded={expanded}
               onToggleRow={toggleRow}
             />

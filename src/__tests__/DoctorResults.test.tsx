@@ -243,6 +243,7 @@ function renderResults(
         result={result}
         presetNames={NAMES}
         footswitchInfo={new Map()}
+        graphByIndex={new Map()}
         onCheckMore={onCheckMore}
       />
     </ThemeProvider>,
@@ -566,8 +567,18 @@ describe("DoctorResults — prescription lifecycle", () => {
     expect(
       screen.getByText("Applied to the unit · not saved"),
     ).toBeInTheDocument();
+    // "Rhythm Crunch" (p1s0) is the BASE sound — scene/footswitch null, and the
+    // preset has no graph/footswitches wired in this fixture, so both arrive
+    // empty. The diagnosed context rides every apply, not just a subset.
     expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({ listIndex: 1, name: "Muddy Rhythm" }),
+      expect.objectContaining({
+        listIndex: 1,
+        name: "Muddy Rhythm",
+        scene: null,
+        footswitch: null,
+        nodes: [],
+        footswitches: [],
+      }),
     );
 
     const save = screen.getByRole("button", { name: /save to preset/i });
@@ -579,7 +590,32 @@ describe("DoctorResults — prescription lifecycle", () => {
     await user.click(save);
 
     expect(await screen.findByText("Saved to the preset.")).toBeInTheDocument();
-    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm");
+    // The save re-applies the SAME ops the card applied (the structural-safety
+    // redesign: doctor_save never persists the live edit buffer).
+    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", [
+      { kind: "param", groupId: "g", nodeId: "n", param: "hpf", value: 90 },
+    ]);
+  });
+
+  it("applies a SCENE sound's fix under its own scene, not the base", async () => {
+    // "Lead Solo" (p1s1) is scene 0 of preset 1 — the A/B must recall that
+    // scene, not diagnose/audition the as-saved base.
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Lead Solo"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+
+    expect(doctorApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listIndex: 1,
+        name: "Muddy Rhythm",
+        scene: 0,
+        footswitch: null,
+      }),
+    );
   });
 
   it("discards an applied prescription back to draft", async () => {
@@ -763,6 +799,7 @@ describe("DoctorResults — shared-block caption", () => {
               parameter_id: null,
               value_a: null,
               value_b: null,
+              is_active: false,
             },
           ],
           level_params: [],
@@ -786,6 +823,7 @@ describe("DoctorResults — shared-block caption", () => {
           result={result}
           presetNames={new Map([[0, "Overdrive Rhythm"]])}
           footswitchInfo={fsInfo}
+          graphByIndex={new Map()}
           onCheckMore={() => undefined}
         />
       </ThemeProvider>,
@@ -817,6 +855,23 @@ describe("DoctorResults — shared-block caption", () => {
     renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], null));
     await user.click(screen.getByText("Overdrive"));
     expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
+  });
+
+  it("applies a FOOTSWITCH sound's fix under its own switch + the preset's footswitches", async () => {
+    const user = userEvent.setup();
+    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], 3));
+    await user.click(screen.getByText("Overdrive"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    expect(doctorApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listIndex: 0,
+        scene: null,
+        footswitch: 3,
+        footswitches: fsInfo.get(0),
+      }),
+    );
   });
 });
 

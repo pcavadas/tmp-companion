@@ -5,13 +5,13 @@
 //! `exp` (a dict of jacks: `exp1`/`exp2`/`midiExp1`/`midiExp2`/`toe`). A full-overwrite
 //! apply of a layout across selected presets, with firmware-defined fields only.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// One block-acting function on a footswitch (a `func:"on-off"` node toggle or a
 /// `func:"param"` parameter change). MIDI / amp-control / scene / looper functions are
 /// excluded by the enumerator.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FootswitchFn {
     pub func: String, // "on-off" | "param"
     pub group_id: String,
@@ -20,11 +20,17 @@ pub struct FootswitchFn {
     pub parameter_id: Option<String>, // param functions only
     pub value_a: Option<f64>,         // param: switch-ON value
     pub value_b: Option<f64>,         // param: switch-OFF value
+    /// The assignment's own `isActive` (default false when absent) — for an
+    /// on-off function, the CURRENT engaged state at save time (see
+    /// [`engaged_bypass_for_switch`]'s note); carried here so a Doctor
+    /// isolation derivation working from the backup scan's already-enumerated
+    /// `FootswitchInfo` (no live `ftsw` JSON in hand) can replicate it.
+    pub is_active: bool,
 }
 
 /// A continuous block parameter the leveler can solve on (numeric `dspUnitParameter` in
 /// `[0,1]`), surfaced so the UI can offer a block+parameter picker per footswitch.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LevelParamCandidate {
     pub group_id: String,
     pub node_id: String,
@@ -36,7 +42,7 @@ pub struct LevelParamCandidate {
 /// A footswitch that acts on at least one block (on/off or parameter change), with its
 /// block-acting functions and the continuous parameters of those blocks the leveler can
 /// target. `switch` is the `ftsw` array index (== the wire `footswitchAddress`, HW-verified).
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FootswitchInfo {
     pub switch: u32,
     pub label: String,
@@ -110,6 +116,7 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
                     .filter(|&g| g != 0)
                     .map(|g| g as u32);
             }
+            let is_active = a.get("isActive").and_then(Value::as_bool).unwrap_or(false);
             match func {
                 "on-off" => {
                     for n in a
@@ -131,6 +138,7 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
                             parameter_id: None,
                             value_a: None,
                             value_b: None,
+                            is_active,
                         });
                         acted.push((g.into(), nid.into()));
                     }
@@ -152,6 +160,7 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
                             .map(String::from),
                         value_a: a.get("valueA").and_then(Value::as_f64),
                         value_b: a.get("valueB").and_then(Value::as_f64),
+                        is_active,
                     });
                     acted.push((g.into(), nid.into()));
                 }
@@ -345,6 +354,86 @@ pub fn siblings_off_excluding(ftsw: &Value, switch: u32) -> Vec<(String, String,
         .filter(|(_, nid)| !own.contains(nid))
         .map(|(g, n)| (g, n, true))
         .collect()
+}
+
+/// Derive the force-bypass isolation list OFFLINE from the backup scan's data
+/// (footswitch assignments + each block's saved bypass state) — the same list
+/// [`crate::doctor_force_bypass`] computes from a live field-8 preset read, but
+/// walking the already-enumerated `FootswitchInfo` + a `node_id → saved bypass`
+/// map (both sourced from the SAME backup-scan `presetJson`
+/// [`crate::doctor_force_bypass`] would otherwise re-fetch live) instead of
+/// `ftsw`/`preset` JSON — decoupled from the Doctor's own node type so this
+/// lives next to its live twins (`all_onoff_blocks`/`siblings_off_excluding`/
+/// `engaged_bypass_for_switch`). Mirrors `all_onoff_blocks` (base: every
+/// distinct on-off `(group,node)` across all switches, dedup on first occurrence
+/// in switch/function order) and `siblings_off_excluding` +
+/// `engaged_bypass_for_switch` (one footswitch: every OTHER switch's on-off block
+/// off, then this switch's own on-off nodes flipped to their engaged state —
+/// `isActive`-aware, see `engaged_bypass_for_switch`'s doc). Order differences
+/// from the live path are not a defect (the caller only ever needs the set). A
+/// `node_id` missing from `saved_bypass` keeps today's `unwrap_or(false)` +
+/// one-shot warn.
+pub fn derived_force_bypass(
+    footswitches: &[FootswitchInfo],
+    saved_bypass: &std::collections::HashMap<String, bool>,
+    footswitch: Option<u32>,
+) -> Vec<(String, String, bool)> {
+    // Every switch's on-off (group_id, node_id), deduped on first occurrence —
+    // mirrors `all_onoff_blocks`'s walk of `ftsw` in array order.
+    let mut all_onoff: Vec<(String, String)> = Vec::new();
+    for fi in footswitches {
+        for f in fi.functions.iter().filter(|f| f.func == "on-off") {
+            let pair = (f.group_id.clone(), f.node_id.clone());
+            if !all_onoff.contains(&pair) {
+                all_onoff.push(pair);
+            }
+        }
+    }
+    let Some(s) = footswitch else {
+        return all_onoff.into_iter().map(|(g, n)| (g, n, true)).collect();
+    };
+    let switch_info = footswitches.iter().find(|fi| fi.switch == s);
+    // Siblings: every other switch's on-off block off — excludes THIS switch's
+    // own node_ids (mirrors `siblings_off_excluding`'s node_id-only exclusion set,
+    // so a node shared with another switch stays excluded too).
+    let own: std::collections::HashSet<&str> = switch_info
+        .map(|fi| {
+            fi.functions
+                .iter()
+                .filter(|f| f.func == "on-off")
+                .map(|f| f.node_id.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out: Vec<(String, String, bool)> = all_onoff
+        .into_iter()
+        .filter(|(_, n)| !own.contains(n.as_str()))
+        .map(|(g, n)| (g, n, true))
+        .collect();
+    // This switch's own on-off nodes, flipped to their engaged state.
+    let mut warned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    if let Some(fi) = switch_info {
+        for f in fi.functions.iter().filter(|f| f.func == "on-off") {
+            let saved = saved_bypass
+                .get(&f.node_id)
+                .copied()
+                .unwrap_or_else(|| {
+                    if warned.insert(f.node_id.as_str()) {
+                        log::warn!(
+                            "derived_force_bypass: node {} (switch {s}) missing from the backup graph — assuming not bypassed",
+                            f.node_id
+                        );
+                    }
+                    false
+                });
+            out.push((
+                f.group_id.clone(),
+                f.node_id.clone(),
+                if f.is_active { saved } else { !saved },
+            ));
+        }
+    }
+    out
 }
 
 /// Index of an existing `param` function on `switch` targeting `(node_id, param)`, if any —

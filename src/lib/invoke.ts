@@ -37,6 +37,7 @@ import type {
   DoctorCheckResult,
   DoctorApplyJob,
   DoctorApplyResult,
+  DoctorOp,
 } from "./types";
 
 /**
@@ -205,12 +206,16 @@ export const cancelDoctorCheck = (): Promise<void> =>
 export const doctorApply = (job: DoctorApplyJob): Promise<DoctorApplyResult> =>
   invoke("doctor_apply", { job });
 
-/** Persist an applied prescription (`save_current_preset`, identity-guarded).
+/** Persist an applied prescription. Structurally safe: the backend rebuilds
+ * SAVED+`ops` from scratch (reload the stored preset, re-apply `ops` on a
+ * fresh confirmed session, save) rather than persisting whatever the A/B left
+ * in the live edit buffer — so `ops` must be the SAME ops the card applied.
  * Only offered behind the backup acknowledgment. */
 export const doctorSave = (
   listIndex: number,
   expectName: string,
-): Promise<void> => invoke("doctor_save", { listIndex, expectName });
+  ops: DoctorOp[],
+): Promise<void> => invoke("doctor_save", { listIndex, expectName, ops });
 
 /** Discard an applied-but-unsaved prescription by reloading the stored preset
  * (the device's edit buffer is dropped on load — the established revert). */

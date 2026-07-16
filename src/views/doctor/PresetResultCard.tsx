@@ -19,6 +19,7 @@ import {
   soundSev,
 } from "./severity";
 import type {
+  ActiveGraph,
   DoctorPresetResult,
   DoctorSoundResult,
   FootswitchInfo,
@@ -28,6 +29,10 @@ export interface PresetResultCardProps {
   preset: DoctorPresetResult;
   presetName: string;
   footswitchInfo: Map<number, FootswitchInfo[]>;
+  /** 0-based list index → the preset's signal chain, from the SAME startup
+   *  backup scan as `footswitchInfo` — threaded into every prescription card
+   *  so its A/B captures under the diagnosed sound's own context. */
+  graphByIndex: Map<number, ActiveGraph>;
   /** Open row ids, keyed `${listIndex}|${sound.key}` (and `|consistency`). */
   expanded: Set<string>;
   onToggleRow: (id: string) => void;
@@ -49,6 +54,7 @@ export function PresetResultCard({
   preset,
   presetName,
   footswitchInfo,
+  graphByIndex,
   expanded,
   onToggleRow,
 }: PresetResultCardProps) {
@@ -72,6 +78,9 @@ export function PresetResultCard({
   );
   const visibleProblemRows = [...problems, ...errored];
 
+  const presetFootswitches = footswitchInfo.get(preset.listIndex);
+  const presetNodes = graphByIndex.get(preset.listIndex)?.nodes ?? [];
+
   const row = (sound: DoctorSoundResult) => {
     const id = `${String(preset.listIndex)}|${sound.key}`;
     return (
@@ -80,7 +89,9 @@ export function PresetResultCard({
         sound={sound}
         listIndex={preset.listIndex}
         presetName={presetName}
-        ownNodeIds={ownNodeIdsFor(sound, footswitchInfo.get(preset.listIndex))}
+        ownNodeIds={ownNodeIdsFor(sound, presetFootswitches)}
+        nodes={presetNodes}
+        footswitches={presetFootswitches ?? []}
         open={expanded.has(id)}
         onToggle={() => {
           onToggleRow(id);

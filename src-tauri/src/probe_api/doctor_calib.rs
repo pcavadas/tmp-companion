@@ -190,18 +190,9 @@ pub fn probe_doctor_calib(
     labels_path: Option<&str>,
     out_path: &str,
 ) -> Result<String, String> {
-    // `from_topology` silently defaults unrecognized strings to Guitar — fine for
-    // `--doctor` (topology ids), but a typo'd `--family` here would sweep + derive
-    // threshold values under the wrong band layout. Fail loudly first.
-    if !matches!(
-        family_id.to_ascii_lowercase().as_str(),
-        "guitar" | "bass" | "bass-vi"
-    ) {
-        return Err(format!(
-            "unrecognized --family '{family_id}' (expected guitar|bass|bass-vi)"
-        ));
-    }
-    let family = doctor::Family::from_topology(family_id);
+    // A typo'd `--family` here would sweep + derive threshold values under the
+    // wrong band layout. Fail loudly first.
+    let family = super::parse_family_arg(family_id)?;
     let stim = read_stimulus_48k(stim_path)?;
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
@@ -248,7 +239,7 @@ pub fn probe_doctor_calib(
         }
     }
     // Belt-and-braces re-amp OFF even on a mid-sweep error.
-    let _ = session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    super::reamp_off_best_effort();
 
     if rows.is_empty() {
         return Err("no sound captured".to_string());
@@ -401,15 +392,7 @@ pub fn probe_doctor_calib_factory(
     family_id: &str,
     out_path: &str,
 ) -> Result<String, String> {
-    if !matches!(
-        family_id.to_ascii_lowercase().as_str(),
-        "guitar" | "bass" | "bass-vi"
-    ) {
-        return Err(format!(
-            "unrecognized --family '{family_id}' (expected guitar|bass|bass-vi)"
-        ));
-    }
-    let family = doctor::Family::from_topology(family_id);
+    let family = super::parse_family_arg(family_id)?;
     let stim = read_stimulus_48k(stim_path)?;
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
@@ -434,6 +417,8 @@ pub fn probe_doctor_calib_factory(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match leveller::doctor_capture_current(
             &stim,
+            None,
+            &[],
             Some(0.5),
             u64::from(leveller::DOCTOR_TAIL_MS),
         ) {
@@ -453,7 +438,7 @@ pub fn probe_doctor_calib_factory(
         }
     }
     // Belt-and-braces re-amp OFF even on a mid-sweep error.
-    let _ = session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    super::reamp_off_best_effort();
 
     if rows.is_empty() {
         return Err("no sound captured".to_string());

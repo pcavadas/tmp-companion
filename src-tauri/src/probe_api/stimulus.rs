@@ -386,23 +386,47 @@ pub(crate) fn read_stimulus_calibrated_with_shortfall(
 ) -> Result<(Vec<f32>, Option<f32>), String> {
     let mut stim = read_stimulus_48k(path)?;
     let mut shortfall_lu = None;
+
+    // The gain to apply before the shared peak cap below: solved from the
+    // calibration target when the stimulus's own loudness is finite (a
+    // non-finite reading — e.g. a silent stimulus — means NO scaling at all,
+    // matching the old calibrated branch's short-circuit); `1.0` (a no-op
+    // multiply) when uncalibrated, so the cap-to-0.99 logic is the ONE shared
+    // path for both branches — the stimulus passes VERBATIM into the re-amp
+    // inject otherwise, which has NO limiter, so an explicit/env-var WAV (or,
+    // in principle, a stored Tier-2 capture, though `calibrate_profile`
+    // already clip-gates those at capture time) at/above full scale would
+    // clip the inject and corrupt the whole downstream measurement.
+    let mut gain: Option<f32> = Some(1.0);
     if let Some(target_lufs) = calibration_lufs {
         let stim_lufs = lufs::measure_mono(&stim, 48_000)?.integrated_lufs;
-        if stim_lufs.is_finite() {
-            let mut g = 10f32.powf((target_lufs - stim_lufs as f32) / 20.0);
-            let peak = stim.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-            if peak * g > 0.99 {
-                let shortfall = 20.0 * (peak * g / 0.99).log10();
-                log::warn!(
-                    "stimulus calibration capped: {path} cannot reach {target_lufs:.1} LUFS \
-                     without clipping — driving {shortfall:.1} LU softer"
-                );
-                shortfall_lu = Some(shortfall);
-                g = 0.99 / peak; // guard against clipping the injected signal
+        gain = stim_lufs
+            .is_finite()
+            .then(|| 10f32.powf((target_lufs - stim_lufs as f32) / 20.0));
+    }
+
+    if let Some(mut g) = gain {
+        let peak = stim.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        if peak * g > 0.99 {
+            match calibration_lufs {
+                Some(target_lufs) => {
+                    let shortfall = 20.0 * (peak * g / 0.99).log10();
+                    log::warn!(
+                        "stimulus calibration capped: {path} cannot reach {target_lufs:.1} LUFS \
+                         without clipping — driving {shortfall:.1} LU softer"
+                    );
+                    shortfall_lu = Some(shortfall);
+                }
+                None => {
+                    log::warn!(
+                        "stimulus inject peak {peak:.3} would clip the re-amp path — scaling to 0.99: {path}"
+                    );
+                }
             }
-            for s in &mut stim {
-                *s *= g;
-            }
+            g = 0.99 / peak; // guard against clipping the injected signal
+        }
+        for s in &mut stim {
+            *s *= g;
         }
     }
     Ok((stim, shortfall_lu))
@@ -552,6 +576,53 @@ mod stimulus_shortfall_tests {
     fn uncalibrated_has_no_shortfall() {
         let (_, shortfall) = read_stimulus_calibrated_with_shortfall(&wav(), None).unwrap();
         assert_eq!(shortfall, None);
+    }
+}
+
+#[cfg(test)]
+mod di_inject_clip_guard_tests {
+    use super::{read_stimulus_calibrated_with_shortfall, write_wav_mono};
+
+    /// Write a tiny mono 48 kHz fixture WAV to the temp dir (reusing the same
+    /// `write_wav_mono` the production capture paths write with).
+    fn fixture(tag: &str, samples: &[f32]) -> String {
+        let path =
+            std::env::temp_dir().join(format!("tmp-stim-clip-{tag}-{}.wav", std::process::id()));
+        write_wav_mono(path.to_str().unwrap(), samples, 48_000).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn verbatim_full_scale_peak_gets_capped_and_shape_preserved() {
+        let samples = [0.5f32, -1.0, 0.25, 1.0, -0.1];
+        let path = fixture("full", &samples);
+        let (out, shortfall) = read_stimulus_calibrated_with_shortfall(&path, None).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(shortfall, None, "no calibration target → no shortfall");
+        let peak = out.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(peak <= 0.99 + 1e-4, "peak {peak} not capped at 0.99");
+        assert_eq!(out.len(), samples.len());
+        // Uniform scale-down: every sample's ratio to the original is identical.
+        let g = out[1] / samples[1];
+        assert!(g <= 1.0, "must never scale UP: g={g}");
+        for (o, s) in out.iter().zip(samples.iter()) {
+            assert!(
+                (o - s * g).abs() < 1e-6,
+                "ratio not preserved: {o} vs {s}*{g}"
+            );
+        }
+    }
+
+    #[test]
+    fn verbatim_safe_peak_is_bit_identical() {
+        let samples = [0.5f32, -0.3, 0.1, -0.5, 0.0];
+        let path = fixture("half", &samples);
+        let (out, shortfall) = read_stimulus_calibrated_with_shortfall(&path, None).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(shortfall, None);
+        assert_eq!(out, samples, "0.5 peak must pass through unscaled");
     }
 }
 

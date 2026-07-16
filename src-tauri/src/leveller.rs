@@ -522,6 +522,10 @@ pub fn capture_samples(
 /// the redundant per-sound preset reload (same preset, previous sound clean + Ok).
 /// `tail_ms`: the caller picks — `DOCTOR_TAIL_MS` for a chain that may wash, else
 /// the shorter `DOCTOR_TAIL_DRY_MS` (`doctor::has_time_effect` decides).
+/// Mixes down via `Capture::stereo_mix` (deterministic average of USB-Out 1/2),
+/// not the leveling path's argmax `loudest_channel` — on a stereo preset (ping-
+/// pong delay, hard-panned dual amps) the argmax can flip L/R across runs and
+/// flip spectral verdicts with it.
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
@@ -540,36 +544,48 @@ pub fn doctor_capture(
         tail_ms,
         skip_load,
     )?;
-    let (ch, _) = cap.loudest_channel();
-    Ok((cap.channel(ch), cap.sample_rate))
+    let sr = cap.sample_rate;
+    Ok((cap.stereo_mix(), sr))
 }
 
 /// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
 /// loading — a load would discard the unsaved `doctor_apply` prescription edit.
-/// Mirrors `capture_full_at` MINUS the load block: fresh-connect → optionally set
-/// the reference level BEFORE engaging → engage re-amp once → capture with the
-/// Doctor tail → guaranteed re-amp off → loudest channel. `ref_level` MUST match
+/// Delegates to `capture_full_at` with `skip_load: true` (its non-load branch is
+/// byte-for-byte this: fresh-connect → (when `scene` is `Some`) re-activate that
+/// 0-based `scenes[]` wire index on THIS connection → write `force_bypass`
+/// isolation → optionally set the reference level BEFORE engaging → engage
+/// re-amp once → capture with the Doctor tail → guaranteed re-amp off), plus
+/// the leading `RECONNECT_GAP_MS` gap `capture_full_at`'s own load branch would
+/// otherwise supply. Deterministic stereo mixdown (`Capture::stereo_mix`, not
+/// the leveling path's argmax `loudest_channel` — see `doctor_capture`'s doc
+/// for why). The scene recall + force-bypass writes land on the UNSAVED edit
+/// buffer ON PURPOSE: `doctor_save` never persists this live buffer (it
+/// rebuilds SAVED+ops from scratch, see `commands/doctor.rs::doctor_save`), so
+/// a forced bypass or scene recall made here can never leak into a save —
+/// `doctor_discard`'s reload clears them either way. `ref_level` MUST match
 /// the before-capture's so the A/B is level-fair (`doctor_apply` passes `None`
-/// to both: the preset's own level, never a presetLevel write). `tail_ms`: see
-/// `doctor_capture`.
+/// to both: the preset's own level, never a presetLevel write). `scene`/
+/// `force_bypass`/`tail_ms`: see `doctor_capture` — the AFTER capture must be
+/// taken under the SAME diagnosed context (scene + isolation) as the BEFORE.
 pub fn doctor_capture_current(
     stimulus: &[f32],
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
     ref_level: Option<f32>,
     tail_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    let mut s = Session::connect_lean()?;
-    if let Some(ref_level) = ref_level {
-        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
-    }
-    let _ = s.set_reamp_mode(true)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
-    let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
-    let _ = s.set_reamp_mode(false);
-    let cap = cap?;
-    let (ch, _) = cap.loudest_channel();
-    Ok((cap.channel(ch), cap.sample_rate))
+    let cap = capture_full_at(
+        0, // slot unused: skip_load
+        scene,
+        force_bypass,
+        stimulus,
+        ref_level,
+        tail_ms,
+        true,
+    )?;
+    let sr = cap.sample_rate;
+    Ok((cap.stereo_mix(), sr))
 }
 
 /// MEASURE seam for scene leveling: load `slot`, then for each scene in

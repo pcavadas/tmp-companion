@@ -63,7 +63,11 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const [chosen, setChosen] = useState<SetupOption[]>([]);
   const [instByKey, setInstByKey] = useState<Record<string, string>>({});
 
-  const flow = useDoctorFlow({ store, graphByIndex });
+  const flow = useDoctorFlow({
+    store,
+    graphByIndex,
+    footswitchesByIndex: footswitchInfo,
+  });
 
   // The run recalls presets on the unit — remember the player's live slot so
   // the backend can restore it when the check ends (null → last-scanned slot).
@@ -160,6 +164,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
         result={flow.result}
         presetNames={presetNames}
         footswitchInfo={footswitchInfo}
+        graphByIndex={graphByIndex}
         onCheckMore={handleCheckMore}
       />
     );

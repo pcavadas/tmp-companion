@@ -155,6 +155,22 @@ impl Capture {
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap_or((0, 0.0))
     }
+
+    /// Deterministic mono mixdown of the processed stereo pair (USB-Out 1/2 =
+    /// capture channels 0/1): the per-sample average. Kills the argmax-mono flip
+    /// `loudest_channel` has on stereo presets (L/R can trade loudest across
+    /// runs, flipping spectral verdicts). Channel 2 (dry instrument send) and
+    /// beyond are deliberately excluded. Falls back to channel 0 when the
+    /// capture is mono.
+    pub fn stereo_mix(&self) -> Vec<f32> {
+        if self.channels < 2 {
+            return self.channel(0);
+        }
+        self.interleaved
+            .chunks(self.channels)
+            .map(|f| (f.first().copied().unwrap_or(0.0) + f.get(1).copied().unwrap_or(0.0)) / 2.0)
+            .collect()
+    }
 }
 
 // ── Advisory live-LUFS sink ──────────────────────────────────────────────────
@@ -1126,6 +1142,27 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * PI * freq * i as f32 / rate as f32).sin())
             .collect()
+    }
+
+    #[test]
+    fn stereo_mix_averages_the_processed_pair_and_excludes_dry() {
+        // 3-channel interleaved: ch0=[1,1], ch1=[0,0], ch2=[9,9] (dry send).
+        let cap = Capture {
+            interleaved: vec![1.0, 0.0, 9.0, 1.0, 0.0, 9.0],
+            channels: 3,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.stereo_mix(), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn stereo_mix_passes_through_mono() {
+        let cap = Capture {
+            interleaved: vec![0.25, -0.5, 0.75],
+            channels: 1,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.stereo_mix(), vec![0.25, -0.5, 0.75]);
     }
 
     #[test]

@@ -190,6 +190,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         calibrationLufs: null,
         profileId: null,
         nodes: [],
+        footswitches: [],
       },
     ];
     const onResult = vi.fn(() => {
@@ -215,26 +216,31 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
   });
 
   it("doctor_apply wraps the job; save + discard are identity-addressed", async () => {
+    const ops = [
+      {
+        kind: "param" as const,
+        groupId: "G1",
+        nodeId: "ACD_CabSimTMS",
+        param: "lpf",
+        value: 8000,
+      },
+    ];
     const job = {
       listIndex: 3,
       name: "Synth",
-      ops: [
-        {
-          kind: "param" as const,
-          groupId: "G1",
-          nodeId: "ACD_CabSimTMS",
-          param: "lpf",
-          value: 8000,
-        },
-      ],
+      ops,
       topologyId: null,
       calibrationLufs: null,
+      scene: null,
+      footswitch: null,
+      nodes: [],
+      footswitches: [],
     };
     await doctorApply(job);
     expectCall("doctor_apply", { job });
     invokeMock.mockClear();
-    await doctorSave(3, "Synth");
-    expectCall("doctor_save", { listIndex: 3, expectName: "Synth" });
+    await doctorSave(3, "Synth", ops);
+    expectCall("doctor_save", { listIndex: 3, expectName: "Synth", ops });
     invokeMock.mockClear();
     await doctorDiscard(3);
     expectCall("doctor_discard", { listIndex: 3 });
