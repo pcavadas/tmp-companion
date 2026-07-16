@@ -1,17 +1,22 @@
 // src/views/doctor/SoundRow.tsx — one checked sound as a dense, expandable triage
 // row: severity dot · name + FS/BASE tag · diagnosis chips (or "Sounds good" / an
-// error) · band sparkline · LUFS · caret. Clicking a problem row toggles its
-// expansion (open state threaded from the results page); the expanded region holds
-// the shared-block caption, then per-diagnosis: the explainer, the full BandMeter,
-// and the prescription card(s). Clear and errored rows are not expandable.
+// error) · band sparkline · LUFS · caret. Clicking a row toggles its expansion
+// (open state threaded from the results page); the expanded region holds the
+// shared-block caption, then per-diagnosis: the explainer, the full BandMeter, and
+// the prescription card(s), then the cut-through estimate + the Match-reference
+// picker/card. Only errored rows (no usable capture) are not expandable — a clean
+// row still expands (to pick it as a reference / show its cut-through read).
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
+import { Button } from "../../ui/primitives";
 import { BandMeter } from "./BandMeter";
 import { BandSpark } from "./BandSpark";
+import { CutThroughCard } from "./CutThroughCard";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { LevelIndicator } from "./LevelIndicator";
+import { MatchCard } from "./MatchCard";
 import { PrescriptionCard } from "./PrescriptionCard";
 import {
   diagSevLabel,
@@ -118,6 +123,15 @@ export interface SoundRowProps {
   footswitches: FootswitchInfo[];
   open: boolean;
   onToggle: () => void;
+  /** This row's page-wide composite id (`${listIndex}|${sound.key}`) — how
+   *  the Match-reference picker identifies a sound across presets. */
+  id: string;
+  /** The page-wide picked Match-reference sound (any preset in the same
+   *  run), or null before one is picked. */
+  referenceSound: DoctorSoundResult | null;
+  referenceId: string | null;
+  onSetReference: (id: string) => void;
+  onClearReference: () => void;
 }
 
 export function SoundRow({
@@ -129,6 +143,11 @@ export function SoundRow({
   footswitches,
   open,
   onToggle,
+  id,
+  referenceSound,
+  referenceId,
+  onSetReference,
+  onClearReference,
 }: SoundRowProps) {
   const { t } = useTheme();
   const hasDiags = sound.diags.length > 0;
@@ -141,18 +160,27 @@ export function SoundRow({
   const hotBands = [...new Set(diags.flatMap((d) => d.bands))];
   const shared = hasDiags && affectsSharedBlock(sound.diags, ownNodeIds);
   const lufsOk = Number.isFinite(sound.integratedLufs);
+  // A clean sound still expands — to show its cut-through read or let the
+  // player pick it as the Match reference. Only an errored capture (no
+  // usable balanceDb) stays flat/non-interactive.
+  const expandable = !isError;
+  const isReference = id === referenceId;
+  const canMatch =
+    referenceSound != null &&
+    !isReference &&
+    referenceSound.bandLabels.length === sound.bandLabels.length;
 
   return (
     <div style={{ borderTop: `0.5px solid ${t.hairline}` }}>
       <div
-        onClick={hasDiags ? onToggle : undefined}
+        onClick={expandable ? onToggle : undefined}
         style={{
           display: "flex",
           alignItems: "center",
           gap: t.space5,
           minHeight: 38,
           padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
-          cursor: hasDiags ? "pointer" : "default",
+          cursor: expandable ? "pointer" : "default",
           background: open ? t.rowSel : "transparent",
         }}
       >
@@ -288,10 +316,10 @@ export function SoundRow({
             flexShrink: 0,
             display: "inline-flex",
             justifyContent: "center",
-            opacity: hasDiags ? 0.6 : 0,
+            opacity: expandable ? 0.6 : 0,
           }}
         >
-          {hasDiags && (
+          {expandable && (
             <span
               style={{
                 display: "inline-flex",
@@ -305,7 +333,7 @@ export function SoundRow({
         </span>
       </div>
 
-      {open && hasDiags && (
+      {open && expandable && (
         <div
           style={{
             padding: `${String(t.space1)}px ${String(t.space5)}px ${String(t.space7)}px ${String(t.space11)}px`,
@@ -314,6 +342,26 @@ export function SoundRow({
             gap: t.space6,
           }}
         >
+          <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
+            {isReference ? (
+              <>
+                <Tag tone="accent">Reference</Tag>
+                <Button variant="ghost" small onClick={onClearReference}>
+                  Clear reference
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="ghost"
+                small
+                onClick={() => {
+                  onSetReference(id);
+                }}
+              >
+                Set as reference
+              </Button>
+            )}
+          </div>
           {shared && (
             <div
               style={{
@@ -433,6 +481,17 @@ export function SoundRow({
               </div>
             );
           })}
+          {sound.cutThrough && <CutThroughCard cutThrough={sound.cutThrough} />}
+          {canMatch && (
+            <MatchCard
+              sound={sound}
+              reference={referenceSound}
+              listIndex={listIndex}
+              presetName={presetName}
+              nodes={nodes}
+              footswitches={footswitches}
+            />
+          )}
         </div>
       )}
     </div>

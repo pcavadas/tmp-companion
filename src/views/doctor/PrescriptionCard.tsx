@@ -7,6 +7,7 @@ import { useId, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { doctorCard } from "./severity";
 import { Icon, type IconName } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Spinner } from "../../ui/Spinner";
@@ -109,13 +110,9 @@ export function PrescriptionCard({
   // scene-consistency cards are static.
   const applicable = !scene && (rx.kind === "oneclick" || rx.kind === "chain");
 
-  const card: CSSProperties = {
-    flexShrink: 0,
-    border: `0.5px solid ${phase === "saved" ? t.good : t.hairlineStrong}`,
-    borderRadius: 10,
-    background: t.bg,
-    padding: t.space6,
-  };
+  const card: CSSProperties = doctorCard(t, {
+    border: phase === "saved" ? t.good : undefined,
+  });
 
   // Shared by the advisory / scene / shared-block caption lines below.
   const noteLine: CSSProperties = {

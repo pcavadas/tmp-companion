@@ -12,12 +12,8 @@ import { DiagnosisChip } from "./DiagnosisChip";
 import { PrescriptionCard } from "./PrescriptionCard";
 import { SevDot } from "./SoundRow";
 import { sceneConsistencySev, sevTone } from "./severity";
+import { signedDb } from "../../lib/format";
 import type { DoctorSceneConsistency } from "../../lib/types";
-
-/** Signed one-decimal dB with the real minus glyph (e.g. +6 → "+6.0", −3 → "−3.0"). */
-function signedDb(db: number): string {
-  return `${db < 0 ? "−" : "+"}${Math.abs(db).toFixed(1)}`;
-}
 
 export interface SceneConsistencyProps {
   sc: DoctorSceneConsistency;

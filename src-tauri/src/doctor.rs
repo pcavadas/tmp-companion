@@ -1450,11 +1450,14 @@ fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at: usize
 struct CabAnchor {
     /// The cab's group id (the insert's group).
     group: String,
-    /// The same-group `beforeFenderId` anchor: the next node's id, or `None`
-    /// when the cab ends its group (append — same position). The wire's
-    /// `beforeFenderId` is same-group only; a cross-group one is silently
-    /// dropped. Bypassed neighbours still anchor (position is chain order, not
-    /// audibility — skipping one would drift the block when it's re-enabled).
+    /// The same-group `beforeFenderId` anchor: the next node's FenderId
+    /// (`model`), or `None` when the cab ends its group (append — same
+    /// position). The wire's `beforeFenderId` is same-group only and matches
+    /// by MODEL; a cross-group or unknown anchor is silently dropped. When the
+    /// model is duplicated in the group the device resolves the FIRST
+    /// instance — a wire limitation, still same-group and post-cab. Bypassed
+    /// neighbours still anchor (position is chain order, not audibility —
+    /// skipping one would drift the block when it's re-enabled).
     before: Option<String>,
     /// Chain-preview insert index (cab index + 1).
     at: usize,
@@ -1466,10 +1469,15 @@ fn after_cab_anchor(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<CabAncho
     let idx = nodes
         .iter()
         .position(|n| &n.group_id == cab_group && &n.node_id == cab_node)?;
+    // The wire anchor is the neighbour's FenderId (`model`), NOT its node_id —
+    // insertNode field-2 names a same-group MODEL to insert before; a node_id
+    // only coincides with it on a model's first instance (a duplicated model
+    // gets a suffixed node_id, and the device silently drops an unknown
+    // anchor → the insert would fall to the group's tail, after time-effects).
     let before = nodes
         .get(idx + 1)
         .filter(|n| &n.group_id == cab_group)
-        .map(|n| n.node_id.clone());
+        .map(|n| n.model.clone());
     Some(CabAnchor {
         group: cab_group.clone(),
         before,
@@ -4126,9 +4134,12 @@ mod tests {
     }
 
     #[test]
-    fn spiky_comp_anchors_on_node_id_not_model() {
-        // Two same-model reverb nodes after the cab: only the node_id
-        // distinguishes which one the anchor must reference.
+    fn spiky_comp_anchor_is_the_neighbours_fender_id() {
+        // Two same-model reverb nodes after the cab: the wire anchor matches
+        // by MODEL (insertNode field-2 is a FenderId — a node_id like
+        // "reverb-a" is unknown to the device and would be silently dropped,
+        // appending at the group tail). The device resolves the first
+        // instance; both sit right after the cab here, so position holds.
         let p = vec![
             DoctorNode {
                 group_id: "G1".into(),
@@ -4158,7 +4169,7 @@ mod tests {
             DoctorOp::InsertNode {
                 before_fender_id, ..
             } => {
-                assert_eq!(before_fender_id.as_deref(), Some("reverb-a"));
+                assert_eq!(before_fender_id.as_deref(), Some("ACD_TMSmallHall"));
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }

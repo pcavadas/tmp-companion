@@ -48,3 +48,11 @@ export function fmtLufs(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return DASH;
   return `${v < 0 ? "−" : ""}${Math.abs(v).toFixed(1)}`;
 }
+
+/** A dB DELTA with an explicit sign + the real minus glyph, one decimal (e.g.
+ * +6 → "+6.0", -3 → "−3.0") — unlike `fmtLufs` (a bare reading, minus-only),
+ * a delta/contrast is always signed so "+" vs "−" reads as unambiguous
+ * direction at a glance. */
+export function signedDb(db: number): string {
+  return `${db < 0 ? "−" : "+"}${Math.abs(db).toFixed(1)}`;
+}

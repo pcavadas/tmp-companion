@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
 import { Button, SegmentedControl } from "../../ui/primitives";
 import { doctorDiscard } from "../../lib/invoke";
 import { slotLabel } from "../../lib/format";
@@ -26,6 +27,7 @@ import type {
   ActiveGraph,
   DoctorCheckResult,
   DoctorPresetResult,
+  DoctorSoundResult,
   FootswitchInfo,
 } from "../../lib/types";
 
@@ -61,6 +63,27 @@ export function DoctorResults({
   const { t } = useTheme();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<Filter>("look");
+
+  // The "Match reference" picker: ONE sound, page-wide (any preset in this
+  // run, not just its own preset) — every other sound offers to move its
+  // spectrum toward it. Keyed by the same `${listIndex}|${sound.key}`
+  // composite id the row-expansion state already uses.
+  const soundById = useMemo(() => {
+    const m = new Map<string, DoctorSoundResult>();
+    for (const p of result.presets) {
+      for (const s of p.sounds) {
+        m.set(`${String(p.listIndex)}|${s.key}`, s);
+      }
+    }
+    return m;
+  }, [result]);
+  const [referenceId, setReferenceId] = useState<string | null>(null);
+  const referenceSound = referenceId
+    ? (soundById.get(referenceId) ?? null)
+    : null;
+  const clearReference = useCallback(() => {
+    setReferenceId(null);
+  }, []);
 
   // ONE applied-but-unsaved prescription across the whole page — the device has
   // a single edit buffer, so a second card's apply (even in another preset)
@@ -245,6 +268,23 @@ export function DoctorResults({
           )}
         </div>
 
+        {referenceSound && (
+          <div
+            style={{
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              gap: t.space4,
+              padding: `0 ${String(t.space10)}px ${String(t.space6)}px`,
+            }}
+          >
+            <Tag tone="accent">{`Reference: ${referenceSound.label}`}</Tag>
+            <Button variant="ghost" small onClick={clearReference}>
+              Clear
+            </Button>
+          </div>
+        )}
+
         <div
           style={{
             flex: 1,
@@ -268,6 +308,10 @@ export function DoctorResults({
               graphByIndex={graphByIndex}
               expanded={expanded}
               onToggleRow={toggleRow}
+              referenceSound={referenceSound}
+              referenceId={referenceId}
+              onSetReference={setReferenceId}
+              onClearReference={clearReference}
             />
           ))}
           {showFilter && filter === "look" && (

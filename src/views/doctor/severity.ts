@@ -4,6 +4,8 @@
 //
 // Colors map 1:1 onto theme tokens EXCEPT the med soft tint (see MED_SOFT).
 
+import type { CSSProperties } from "react";
+
 import type { ThemeTokens } from "../../theme/tokens";
 import type {
   DoctorDiag,
@@ -128,4 +130,20 @@ export function presetLookCount(preset: DoctorPresetResult): number {
 /** The uppercase mono severity kicker shown in an expanded diagnosis panel. */
 export function diagSevLabel(sev: DoctorSev): string {
   return sev === "high" ? "Needs attention" : "Worth a look";
+}
+
+/** The Doctor detail-card chrome (PrescriptionCard / CutThroughCard /
+ * MatchCard) — one home for the border/radius/padding so the three cards
+ * can't drift; callers override only the tone (border/background). */
+export function doctorCard(
+  t: ThemeTokens,
+  tone?: { border?: string; background?: string },
+): CSSProperties {
+  return {
+    flexShrink: 0,
+    border: `0.5px solid ${tone?.border ?? t.hairlineStrong}`,
+    borderRadius: 10,
+    background: tone?.background ?? t.bg,
+    padding: t.space6,
+  };
 }

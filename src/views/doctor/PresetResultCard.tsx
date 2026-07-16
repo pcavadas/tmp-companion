@@ -36,6 +36,12 @@ export interface PresetResultCardProps {
   /** Open row ids, keyed `${listIndex}|${sound.key}` (and `|consistency`). */
   expanded: Set<string>;
   onToggleRow: (id: string) => void;
+  /** The page-wide picked Match-reference sound (any preset in the run), or
+   *  null before one is picked — see `DoctorResults`'s `soundById`. */
+  referenceSound: DoctorSoundResult | null;
+  referenceId: string | null;
+  onSetReference: (id: string) => void;
+  onClearReference: () => void;
 }
 
 /** The node ids a footswitch SOUND owns — the blocks its own switch toggles.
@@ -57,6 +63,10 @@ export function PresetResultCard({
   graphByIndex,
   expanded,
   onToggleRow,
+  referenceSound,
+  referenceId,
+  onSetReference,
+  onClearReference,
 }: PresetResultCardProps) {
   const { t } = useTheme();
   const worst = presetWorstSev(preset);
@@ -96,6 +106,11 @@ export function PresetResultCard({
         onToggle={() => {
           onToggleRow(id);
         }}
+        id={id}
+        referenceSound={referenceSound}
+        referenceId={referenceId}
+        onSetReference={onSetReference}
+        onClearReference={onClearReference}
       />
     );
   };
