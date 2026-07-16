@@ -3297,33 +3297,40 @@ fn build_route_graph(
             ]);
         }
         Some("gtrSplit") => {
-            push_series(&mut route.stages, g("G1"));
+            // One array, read once here and passed to the unmapped-group check below
+            // — a single source of truth for "which groups this arm reads" instead of
+            // a second hand-maintained literal that could silently drift from it.
+            const USED: [&str; 3] = ["G1", "G2", "G3"];
+            push_series(&mut route.stages, g(USED[0]));
             route.output_type = None;
             route.outputs = Some(OutputPair {
                 a: OutputLane {
                     kind: "out1".to_string(),
-                    blocks: g("G2"),
+                    blocks: g(USED[1]),
                 },
                 b: OutputLane {
                     kind: "out2".to_string(),
-                    blocks: g("G3"),
+                    blocks: g(USED[2]),
                 },
             });
+            warn_unmapped_groups("gtrSplit", guitar, &USED);
         }
         Some("micSplit") => {
+            const USED: [&str; 3] = ["M1", "M2", "M3"];
             route.input_type = Some("mic".to_string());
             route.output_type = None;
-            push_series(&mut route.stages, m("M1"));
+            push_series(&mut route.stages, m(USED[0]));
             route.outputs = Some(OutputPair {
                 a: OutputLane {
                     kind: "out1".to_string(),
-                    blocks: m("M2"),
+                    blocks: m(USED[1]),
                 },
                 b: OutputLane {
                     kind: "out2".to_string(),
-                    blocks: m("M3"),
+                    blocks: m(USED[2]),
                 },
             });
+            warn_unmapped_groups("micSplit", mic, &USED);
         }
         _ => push_series(&mut route.stages, all_g()),
     }
@@ -3346,9 +3353,52 @@ fn push_split(stages: &mut Vec<Stage>, a: Vec<GraphNode>, b: Vec<GraphNode>) {
     }
 }
 
+/// gtrSplit/micSplit only read a fixed 3-group subset (G1-G3 / M1-M3) — the
+/// same shape of unverified "which groups does this template read" assumption
+/// that bunched the wrong groups per lane before it was HW-corrected. Warn
+/// (don't fail) if a device payload carries blocks in a group this arm never
+/// reads, so a future firmware/template surprise shows up in the logs instead
+/// of silently vanishing from the rendered strip.
+fn warn_unmapped_groups(
+    template: &str,
+    groups: &std::collections::BTreeMap<String, Vec<GraphNode>>,
+    used: &[&str],
+) {
+    for (group_id, blocks) in groups {
+        if !blocks.is_empty() && !used.contains(&group_id.as_str()) {
+            log::warn!(
+                "build_route_graph: {template} has {} block(s) in unmapped group {group_id} \
+                 — not rendered in the signal-chain strip",
+                blocks.len()
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The model ids of a series stage, in order. Panics on a non-series stage
+    /// (a test asserting the wrong `Stage` variant should fail loudly, not
+    /// silently mismatch).
+    fn stage_series(s: &Stage) -> Vec<String> {
+        match s {
+            Stage::Series { blocks } => blocks.iter().map(|b| b.model.clone()).collect(),
+            _ => panic!("expected series, got {s:?}"),
+        }
+    }
+
+    /// The model ids of each split lane, in order.
+    fn stage_split(s: &Stage) -> (Vec<String>, Vec<String>) {
+        match s {
+            Stage::Split { a, b } => (
+                a.iter().map(|x| x.model.clone()).collect(),
+                b.iter().map(|x| x.model.clone()).collect(),
+            ),
+            _ => panic!("expected split, got {s:?}"),
+        }
+    }
 
     /// Records every body the handshake sends; replies are empty (the handshake
     /// never parses them inline — it only accumulates).
@@ -3639,43 +3689,30 @@ mod tests {
         .unwrap();
         let g = extract_active_graph(&v, None);
 
-        // Helper: the model ids of a series stage / each split lane.
-        let series = |s: &Stage| match s {
-            Stage::Series { blocks } => blocks.iter().map(|b| b.model.clone()).collect::<Vec<_>>(),
-            _ => panic!("expected series, got {s:?}"),
-        };
-        let split = |s: &Stage| match s {
-            Stage::Split { a, b } => (
-                a.iter().map(|x| x.model.clone()).collect::<Vec<_>>(),
-                b.iter().map(|x| x.model.clone()).collect::<Vec<_>>(),
-            ),
-            _ => panic!("expected split, got {s:?}"),
-        };
-
         assert_eq!(g.stages.len(), 5, "pre · split1 · mid · split2 · post");
         // 1. XO Boost stays in SERIES before the first split (the old bug pulled it
         //    into a lane).
-        assert_eq!(series(&g.stages[0]), vec!["ACD_EPBooster"]);
+        assert_eq!(stage_series(&g.stages[0]), vec!["ACD_EPBooster"]);
         // 2. First split: lane A = 57 Deluxe, lane B = 65 Princeton (not shifted).
         assert_eq!(
-            split(&g.stages[1]),
+            stage_split(&g.stages[1]),
             (
                 vec!["ACD_TweedDeluxe".into()],
                 vec!["ACD_PrincetonReverb65NoFx".into()]
             )
         );
         // 3. Space Echo runs in SERIES between the two splits.
-        assert_eq!(series(&g.stages[2]), vec!["ACD_SpaceEcho"]);
+        assert_eq!(stage_series(&g.stages[2]), vec!["ACD_SpaceEcho"]);
         // 4. SECOND split survives (the old bug flattened it): Small Hall ‖ Filtron.
         assert_eq!(
-            split(&g.stages[3]),
+            stage_split(&g.stages[3]),
             (
                 vec!["ACD_TMSmallHall".into()],
                 vec!["ACD_MicroTronIV".into()]
             )
         );
         // 5. Trailing Small Hall stays in series after the last mix.
-        assert_eq!(series(&g.stages[4]), vec!["ACD_TMSmallHall"]);
+        assert_eq!(stage_series(&g.stages[4]), vec!["ACD_TMSmallHall"]);
     }
 
     #[test]
@@ -3949,24 +3986,13 @@ mod tests {
         )
         .unwrap();
         let g = extract_active_graph(&v, None);
-        let series = |s: &Stage| match s {
-            Stage::Series { blocks } => blocks.iter().map(|b| b.model.clone()).collect::<Vec<_>>(),
-            _ => panic!("expected series, got {s:?}"),
-        };
-        let split = |s: &Stage| match s {
-            Stage::Split { a, b } => (
-                a.iter().map(|x| x.model.clone()).collect::<Vec<_>>(),
-                b.iter().map(|x| x.model.clone()).collect::<Vec<_>>(),
-            ),
-            _ => panic!("expected split, got {s:?}"),
-        };
         assert_eq!(g.stages.len(), 5);
         assert_eq!(
-            series(&g.stages[0]),
+            stage_series(&g.stages[0]),
             vec!["ACD_EPBooster", "ACD_Compressor"]
         );
         assert_eq!(
-            split(&g.stages[1]),
+            stage_split(&g.stages[1]),
             (
                 vec!["ACD_TweedDeluxe".into(), "ACD_KlonCentaur".into()],
                 vec![
@@ -3975,16 +4001,19 @@ mod tests {
                 ]
             )
         );
-        assert_eq!(series(&g.stages[2]), vec!["ACD_SpaceEcho", "ACD_RoomVerb"]);
         assert_eq!(
-            split(&g.stages[3]),
+            stage_series(&g.stages[2]),
+            vec!["ACD_SpaceEcho", "ACD_RoomVerb"]
+        );
+        assert_eq!(
+            stage_split(&g.stages[3]),
             (
                 vec!["ACD_TMSmallHall".into(), "ACD_LA2AComp".into()],
                 vec!["ACD_MicroTronIV".into(), "ACD_UserIRTMS".into()]
             )
         );
         assert_eq!(
-            series(&g.stages[4]),
+            stage_series(&g.stages[4]),
             vec!["ACD_TMSmallHall", "ACD_ExternalCab"]
         );
     }

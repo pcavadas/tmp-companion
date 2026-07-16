@@ -14,6 +14,73 @@ use crate::session;
 use crate::session::Session;
 use crate::LevelBlockArg;
 
+/// DIAGNOSTIC (reamp-stuck investigation): PASSIVE re-amp state read — zero HID
+/// traffic. Plays the stimulus into USB-In 3 and captures USB-Out WITHOUT sending
+/// any device command: chain audio in the capture (finite LUFS, real spread) means
+/// re-amp is ENGAGED right now; silence/floor means it is OFF. Prints raw numbers;
+/// the caller judges against a calibrated known-ON/known-OFF pair.
+pub fn probe_reamp_state(topology_id: &str) -> Result<String, String> {
+    let stim_path = probe_stimulus_path(topology_id)?;
+    let mut stim = read_stimulus_48k(&stim_path)?;
+    // TMP_REAMP_STATE_SILENT=1: inject digital silence instead — discriminates
+    // "my stimulus through the chain" (engaged) from the chain's own hiss floor
+    // (normal mode): a reading that PERSISTS under silent inject is device hiss.
+    if std::env::var("TMP_REAMP_STATE_SILENT").is_ok() {
+        stim.fill(0.0);
+    }
+    let cap = audio::reamp_capture(&stim, 48_000, 800)?;
+    let (ch, _) = cap.loudest_channel();
+    let samples = cap.channel(ch);
+    let peak = cap.channel_peak(ch);
+    let peak_db = if peak > 1e-9 {
+        20.0 * (peak as f64).log10()
+    } else {
+        -120.0
+    };
+    match lufs::measure_mono(&samples, cap.sample_rate) {
+        Ok(l) => Ok(format!(
+            "reamp-state: loudest ch{ch}  {:.2} LUFS  spread {:.2} LU  peak {:.1} dBFS  => {}",
+            l.integrated_lufs,
+            l.spread_lu(),
+            peak_db,
+            if l.integrated_lufs.is_finite() && l.integrated_lufs > -50.0 && l.spread_lu() > 0.5 {
+                "ENGAGED (stimulus audible through chain)"
+            } else {
+                "off/floor (no chain audio)"
+            }
+        )),
+        Err(e) => Ok(format!(
+            "reamp-state: loudest ch{ch}  unmeasurable ({e})  peak {peak_db:.1} dBFS  => OFF (silent capture)"
+        )),
+    }
+}
+
+/// DIAGNOSTIC (reamp-stuck investigation): engage → idle `idle_ms` (optionally
+/// heartbeating every 250 ms) → OFF on the SAME session → report the OFF's echo.
+/// No audio at all. Discriminates the drop mechanisms: if OFF lands at idle 0 but
+/// drops after a capture-length idle → session lapse; if heartbeats rescue it →
+/// keep-alive fix shape; if OFF drops even at idle 0 → second-toggle-per-session
+/// is inherently unreliable. Judge the REAL state with `--reamp-state` after.
+pub fn probe_reamp_toggle_test(idle_ms: u64, heartbeat: bool) -> Result<String, String> {
+    let mut s = Session::connect_lean()?;
+    let on_echo = s.set_reamp_mode(true)?;
+    if heartbeat {
+        let mut left = idle_ms;
+        while left > 0 {
+            let step = left.min(250);
+            std::thread::sleep(std::time::Duration::from_millis(step));
+            let _ = s.heartbeat();
+            left -= step;
+        }
+    } else {
+        std::thread::sleep(std::time::Duration::from_millis(idle_ms));
+    }
+    let off_echo = s.set_reamp_mode(false)?;
+    Ok(format!(
+        "toggle-test: idle={idle_ms}ms hb={heartbeat}  ON echo={on_echo:?}  OFF echo={off_echo:?}"
+    ))
+}
+
 /// Measure the currently selected preset/scene through re-amp without changing
 /// preset level or block parameters. Optional `slot` loads a preset first in its
 /// own connection; optional `scene_slot` recalls a scene before capture. No save.
@@ -187,7 +254,11 @@ pub fn probe_level_preset(
         ..Default::default()
     };
     // probe = raw benchmark behavior: no idempotency skip, always measure+apply+save.
-    let r = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false)?;
+    let result = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false);
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
+    // device drops an in-session OFF sent after ~1 s of idle — every capture).
+    leveller::reamp_off_guaranteed("probe --levelpreset");
+    let r = result?;
 
     let mut out = format!(
         "slot {slot}: measured {:.2} LUFS @ ref {:.2}  (C={:.2})\n\

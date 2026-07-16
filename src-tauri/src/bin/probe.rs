@@ -1036,6 +1036,37 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--reamp-state") {
+        // DIAGNOSTIC (reamp-stuck investigation): passive re-amp state read — no
+        // HID commands; audio-only tell (see probe_api::level::probe_reamp_state).
+        match tmp_companion_lib::probe_reamp_state("guitar-humbucker") {
+            Ok(report) => {
+                println!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--reamp-toggle-test") {
+        // DIAGNOSTIC (reamp-stuck investigation): --reamp-toggle-test <idle_ms> [hb]
+        let idle_ms: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let hb = args.iter().any(|a| a == "hb");
+        match tmp_companion_lib::probe_reamp_toggle_test(idle_ms, hb) {
+            Ok(report) => {
+                println!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.iter().any(|a| a == "--reamp-off") {
         // Recovery: force re-amp OFF (a stranded re-amp mutes the guitar input).
         match tmp_companion_lib::probe_reamp_off() {

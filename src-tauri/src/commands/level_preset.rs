@@ -207,6 +207,12 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
             Some((group_id, node_id, parameter_id)) => {
                 let (lo, hi) = knob_bounds(block_value.unwrap_or(0.5));
                 let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
+                // Pre-dispatch cancel: nothing has touched the device yet — early-return
+                // (the leveller bails at its own pre-measure checkpoint) so the run-end
+                // backstop below is skipped, mirroring the None arm's cancel path.
+                if cancelled() {
+                    return leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled);
+                }
                 leveller::level_preset_block(slot, &stim, &knob, lo, hi, target_lufs, opts, cancelled)
             }
             None => {
@@ -291,6 +297,9 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
             ),
             Err(e) => log::warn!("level_preset slot={slot} save={save} failed: {e}"),
         }
+        // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
+        // device drops an in-session OFF sent after ~1 s of idle — every capture).
+        leveller::reamp_off_guaranteed("level_preset");
         result
     })
     .await

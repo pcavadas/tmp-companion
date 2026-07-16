@@ -778,97 +778,110 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 ) -> Result<DoctorApplyResult, String> {
     let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
     with_released_seize(state.session.clone(), move || {
+        // Local WAV read, before the run closure: a stimulus failure has touched
+        // no device state, so it must not pay the run-end backstop connection.
         // Same 3 s Doctor window as the diagnosis captures — the A/B clips must
         // be measured (and heard) over the space the verdicts were made in.
         let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(
             &stim_path,
             job.calibration_lufs,
         )?);
+        let run = || -> Result<DoctorApplyResult, String> {
+            // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
+            // policy `doctor_check` uses, now shared (its own preset-read cache: a
+            // single apply has no cross-sound cache to share). NOTE this differs
+            // from the pre-extraction behavior: empty `nodes` (no graph passed) on
+            // a base/footswitch sound now falls back to a live field-8 read
+            // (previously degraded straight to no isolation) — the point of
+            // sharing one policy is that the apply A/B can never observe a
+            // different bypass state than what `doctor_check` diagnosed. A scene
+            // sound's `job.footswitch` is already `None` by construction (a
+            // diagnosed sound is exactly one of base/scene/footswitch) — the base
+            // isolation this derives is the same baseline `doctor_check` measured
+            // the scene against. Inside `run` (unlike the stimulus read): its
+            // empty-graph fallback is a live device read the backstop must cover.
+            let fb = resolve_sound_isolation(
+                &job.nodes,
+                &job.footswitches,
+                job.scene,
+                job.footswitch,
+                job.list_index,
+                &mut std::collections::HashMap::new(),
+            );
+            // The Doctor capture tail for this chain — the ONE home of the policy
+            // (`doctor::doctor_tail_ms`); empty `nodes` conservatively keeps the
+            // full wash-analysis tail, same default as before this fix.
+            let tail_ms = u64::from(doctor::doctor_tail_ms(&job.nodes));
 
-        // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
-        // policy `doctor_check` uses, now shared (its own preset-read cache: a
-        // single apply has no cross-sound cache to share). NOTE this differs
-        // from the pre-extraction behavior: empty `nodes` (no graph passed) on
-        // a base/footswitch sound now falls back to a live field-8 read
-        // (previously degraded straight to no isolation) — the point of
-        // sharing one policy is that the apply A/B can never observe a
-        // different bypass state than what `doctor_check` diagnosed. A scene
-        // sound's `job.footswitch` is already `None` by construction (a
-        // diagnosed sound is exactly one of base/scene/footswitch) — the base
-        // isolation this derives is the same baseline `doctor_check` measured
-        // the scene against.
-        let fb = resolve_sound_isolation(
-            &job.nodes,
-            &job.footswitches,
-            job.scene,
-            job.footswitch,
-            job.list_index,
-            &mut std::collections::HashMap::new(),
-        );
-        // The Doctor capture tail for this chain — the ONE home of the policy
-        // (`doctor::doctor_tail_ms`); empty `nodes` conservatively keeps the
-        // full wash-analysis tail, same default as before this fix.
-        let tail_ms = u64::from(doctor::doctor_tail_ms(&job.nodes));
+            // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
+            //     the slot, so (b) below confirms the already-current preset — no reload.
+            //     ref_level None: capture at the preset's OWN level — never write a
+            //     reference presetLevel a later doctor_save would PERSIST (#1).
+            //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
+            //     a cache hit MUST still load the slot — the load is what (b) relies on
+            //     AND what discards a stale unsaved edit buffer (a failed earlier apply
+            //     whose restore also failed would otherwise stack Rx on Rx).
+            let key: BeforeKey = (
+                job.list_index,
+                job.name.clone(),
+                stim_path.clone(),
+                job.calibration_lufs.map(f32::to_bits),
+                job.scene,
+                job.footswitch,
+            );
+            let before_clip = match before_cache_get(&key) {
+                Some(clip) => {
+                    leveller::restore_saved_preset(job.list_index)?;
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        leveller::RECONNECT_GAP_MS,
+                    ));
+                    clip
+                }
+                None => {
+                    let (before, rate) = leveller::doctor_capture(
+                        job.list_index,
+                        job.scene,
+                        &fb,
+                        &stim,
+                        None,
+                        tail_ms,
+                        false,
+                    )?;
+                    let clip = format!(
+                        "data:audio/wav;base64,{}",
+                        base64_encode(&wav_bytes(&before, rate)?)
+                    );
+                    before_cache_put(key, clip.clone());
+                    clip
+                }
+            };
 
-        // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
-        //     the slot, so (b) below confirms the already-current preset — no reload.
-        //     ref_level None: capture at the preset's OWN level — never write a
-        //     reference presetLevel a later doctor_save would PERSIST (#1).
-        //     Cached across consecutive applies on the same sound (see BEFORE_CACHE);
-        //     a cache hit MUST still load the slot — the load is what (b) relies on
-        //     AND what discards a stale unsaved edit buffer (a failed earlier apply
-        //     whose restore also failed would otherwise stack Rx on Rx).
-        let key: BeforeKey = (
-            job.list_index,
-            job.name.clone(),
-            stim_path.clone(),
-            job.calibration_lufs.map(f32::to_bits),
-            job.scene,
-            job.footswitch,
-        );
-        let before_clip = match before_cache_get(&key) {
-            Some(clip) => {
-                leveller::restore_saved_preset(job.list_index)?;
-                std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                clip
-            }
-            None => {
-                let (before, rate) = leveller::doctor_capture(
-                    job.list_index,
-                    job.scene,
-                    &fb,
-                    &stim,
-                    None,
-                    tail_ms,
-                    false,
-                )?;
-                let clip = format!(
-                    "data:audio/wav;base64,{}",
-                    base64_encode(&wav_bytes(&before, rate)?)
-                );
-                before_cache_put(key, clip.clone());
-                clip
-            }
+            // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
+            //     stored preset is reloaded (the partial edit is discarded).
+            ops_session(job.list_index, &job.name, &job.ops, "apply")?;
+
+            // (c) AFTER: capture the live edit buffer WITHOUT reloading, under the
+            //     SAME scene/isolation as (a). ref_level None like (a): nothing
+            //     touched the level between the captures, so the A/B is inherently
+            //     level-fair at the preset's own level.
+            let (after, rate) =
+                leveller::doctor_capture_current(&stim, job.scene, &fb, None, tail_ms)?;
+            let after_clip = format!(
+                "data:audio/wav;base64,{}",
+                base64_encode(&wav_bytes(&after, rate)?)
+            );
+
+            Ok(DoctorApplyResult {
+                before_clip,
+                after_clip,
+            })
         };
-
-        // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
-        //     stored preset is reloaded (the partial edit is discarded).
-        ops_session(job.list_index, &job.name, &job.ops, "apply")?;
-
-        // (c) AFTER: capture the live edit buffer WITHOUT reloading, under the
-        //     SAME scene/isolation as (a). ref_level None like (a): nothing
-        //     touched the level between the captures, so the A/B is inherently
-        //     level-fair at the preset's own level.
-        let (after, rate) = leveller::doctor_capture_current(&stim, job.scene, &fb, None, tail_ms)?;
-        let after_clip = format!(
-            "data:audio/wav;base64,{}",
-            base64_encode(&wav_bytes(&after, rate)?)
-        );
-
-        Ok(DoctorApplyResult {
-            before_clip,
-            after_clip,
-        })
+        let result = run();
+        // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
+        // the reamp toggle — never a load_preset here, which would discard the
+        // just-applied unsaved edit buffer on the success path.
+        leveller::reamp_off_guaranteed("doctor_apply");
+        result
     })
     .await
 }
