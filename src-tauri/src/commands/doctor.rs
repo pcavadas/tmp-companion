@@ -603,9 +603,10 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 ) -> Result<DoctorApplyResult, String> {
     let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
     with_released_seize(state.session.clone(), move || {
+        // Local WAV read, before the run closure: a stimulus failure has touched
+        // no device state, so it must not pay the run-end backstop connection.
+        let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
         let run = || -> Result<DoctorApplyResult, String> {
-            let stim = read_stimulus_calibrated(&stim_path, job.calibration_lufs)?;
-
             // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
             //     the slot, so (b) below confirms the already-current preset — no reload.
             //     ref_level None: capture at the preset's OWN level — never write a
@@ -710,15 +711,10 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             })
         };
         let result = run();
-        // GUARANTEED re-amp OFF on a fresh connection, success or failure — same
-        // rationale as level_scenes.rs:234 (an in-session disengage sent after
-        // ~1s of HID idle is silently dropped, and both the before/after captures
-        // above idle that long). ONLY the reamp toggle — never a load_preset here,
-        // which would discard the just-applied unsaved edit buffer on the success path.
-        match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
-            Ok(_) => log::info!("doctor_apply: final re-amp OFF sent"),
-            Err(e) => log::warn!("doctor_apply: final re-amp OFF failed ({e})"),
-        }
+        // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
+        // the reamp toggle — never a load_preset here, which would discard the
+        // just-applied unsaved edit buffer on the success path.
+        leveller::reamp_off_guaranteed("doctor_apply");
         result
     })
     .await

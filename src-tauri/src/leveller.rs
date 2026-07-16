@@ -1237,6 +1237,22 @@ pub(crate) fn engage_measure_disengage(
     loudest_loudness(cap)
 }
 
+/// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
+/// command that engages re-amp must call, success or failure. The device
+/// silently DROPS a `set_reamp_mode(false)` sent on a session that has sat
+/// idle >~1 s (HW-bisected: 300 ms lands, 1 s+ drops; heartbeats through the
+/// idle rescue it — the same session-lapse cliff as the ~700 ms scene-write
+/// drop), and every ~7 s leveling capture idles that long, so the in-session
+/// disengage after each capture cannot be trusted. A dropped final OFF strands
+/// the unit input-muted until a power-cycle (HW-observed; recovery:
+/// `probe --reamp-off`). `tag` names the calling lane in the log lines.
+pub(crate) fn reamp_off_guaranteed(tag: &str) {
+    match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
+        Ok(_) => log::info!("{tag}: final re-amp OFF sent"),
+        Err(e) => log::warn!("{tag}: final re-amp OFF failed ({e})"),
+    }
+}
+
 fn measure_scene_asis(scene_slot: u32, stimulus: &[f32]) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;

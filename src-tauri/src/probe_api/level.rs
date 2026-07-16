@@ -26,14 +26,12 @@ pub fn probe_reamp_state(topology_id: &str) -> Result<String, String> {
     // "my stimulus through the chain" (engaged) from the chain's own hiss floor
     // (normal mode): a reading that PERSISTS under silent inject is device hiss.
     if std::env::var("TMP_REAMP_STATE_SILENT").is_ok() {
-        for x in &mut stim {
-            *x = 0.0;
-        }
+        stim.fill(0.0);
     }
     let cap = audio::reamp_capture(&stim, 48_000, 800)?;
     let (ch, _) = cap.loudest_channel();
     let samples = cap.channel(ch);
-    let peak = samples.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+    let peak = cap.channel_peak(ch);
     let peak_db = if peak > 1e-9 {
         20.0 * (peak as f64).log10()
     } else {
@@ -67,11 +65,12 @@ pub fn probe_reamp_toggle_test(idle_ms: u64, heartbeat: bool) -> Result<String, 
     let mut s = Session::connect_lean()?;
     let on_echo = s.set_reamp_mode(true)?;
     if heartbeat {
-        let mut left = idle_ms as i64;
+        let mut left = idle_ms;
         while left > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(250.min(left as u64)));
+            let step = left.min(250);
+            std::thread::sleep(std::time::Duration::from_millis(step));
             let _ = s.heartbeat();
-            left -= 250;
+            left -= step;
         }
     } else {
         std::thread::sleep(std::time::Duration::from_millis(idle_ms));
@@ -256,10 +255,9 @@ pub fn probe_level_preset(
     };
     // probe = raw benchmark behavior: no idempotency skip, always measure+apply+save.
     let result = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false);
-    // GUARANTEED re-amp OFF on a fresh connection, success or failure — same
-    // rationale as level_scenes.rs:234: the device drops an in-session disengage
-    // sent after ~1s of HID idle, and every leveling capture idles that long.
-    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
+    // device drops an in-session OFF sent after ~1 s of idle — every capture).
+    leveller::reamp_off_guaranteed("probe --levelpreset");
     let r = result?;
 
     let mut out = format!(
