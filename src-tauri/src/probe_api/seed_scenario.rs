@@ -48,10 +48,10 @@ fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Ve
         .collect()
 }
 
-/// Clear every stray on the GIVEN session. The guard is the completeness-validated
+/// Clear every stray on the GIVEN session. The guard is the completeness-floored
 /// list taken seconds before on the SAME connection, in the same list-index address
-/// space as the clears; a per-stray fresh reconnect would be safer-looking but is
-/// exactly the rapid open/close churn that congests the device. Settles briefly after
+/// space as the clears; a per-stray fresh reconnect would be safer-looking but each
+/// extra open is another chance to land in the post-close open lockout. Settles after
 /// the last clear so a follow-up list read reflects the freed slots (clears are
 /// fire-and-forget and the device's list lags its own writes).
 fn sweep_on(

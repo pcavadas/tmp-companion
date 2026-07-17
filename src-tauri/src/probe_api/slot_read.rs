@@ -322,7 +322,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     // ── Exp E: re-arm the burst window ON THE SAME CONNECTION by re-sending
     // connection_request (+ My Presets) before each read. If the device treats
     // connection_request as a session reset, a whole-library scan needs only
-    // ONE connection — no open/close churn (the congestion gotcha).
+    // ONE connection — no open/close churn (the open-lockout gotcha).
     out += "\n── Exp E: connection_request re-arm per read, ONE connection ──\n";
     {
         let t0 = std::time::Instant::now();

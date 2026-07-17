@@ -375,7 +375,7 @@ fn replace_one_live(
         s1.heartbeat()?;
         s1.pump_collect(500)?;
     }
-    // Quiet settle before reconnecting — avoids the HID open-lockout/congestion a rapid
+    // Quiet settle before reconnecting — avoids the HID open-lockout a rapid
     // drop→reopen triggers.
     std::thread::sleep(std::time::Duration::from_millis(400));
 

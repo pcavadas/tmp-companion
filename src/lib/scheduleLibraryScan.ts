@@ -1,7 +1,7 @@
 // src/lib/scheduleLibraryScan.ts — hold the ~22 s library backup scan until the
 // active signal path is in hand, so the hero paints right away.
 //
-// Why: the connect snapshot can arrive with graph=none (a congested first
+// Why: the connect snapshot can arrive with graph=none (a flooded first
 // handshake). The monitor then schedules a graph-retry ~3 s out — but the backup
 // scan pauses the monitor the instant it starts, preempting that retry, so the
 // hero signal path stays blank for the WHOLE backup (~26 s observed on HW). So we

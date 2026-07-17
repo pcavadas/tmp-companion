@@ -51,9 +51,10 @@ pub(crate) fn replace_inplace_core(
 
 /// `verify` = read the Song-1 bindings (before/after) + the post-save settle/re-read
 /// that fill the outcome's report fields. The e2e seed passes `false`: scratch slots
-/// carry no Song rows, and each verification read costs 1–4 fresh connections on a
-/// device whose open/close budget the seed must conserve (HW-observed: connection
-/// churn congests the unit into truncated list reads + `0xe00002c5` open lockouts).
+/// carry no Song rows, and each verification read costs 1–4 fresh connections —
+/// every open is one more chance to land in the device's post-close open LOCKOUT
+/// (`0xe00002c5`, armed by aborted sessions and re-armed by each failed attempt),
+/// so the seed keeps its open count minimal.
 /// The write-safety chain (floored landing lists → `confirm_active` → guarded clear)
 /// is identical in both modes.
 pub(crate) fn replace_inplace_with(

@@ -1204,7 +1204,7 @@ impl Session {
     /// Completeness-validated My-Presets list for the snapshot path. The tolerant
     /// `list_my_presets` harvest accepts a tail-truncated multi-packet response
     /// (observed: 371 of 504 records when the monitor reconnected right after a
-    /// heavy field-8 sweep congested the device). This variant:
+    /// heavy field-8 sweep left the line flooded). This variant:
     /// 1. tries the strict harvest on the already-accumulated handshake reports;
     /// 2. retries by RE-ARMING the open session (the `read_slot_preset_json`
     ///    recipe: quiet line → `connection_request` → `preset_list_request`) —
@@ -4201,7 +4201,7 @@ mod tests {
     }
 
     // The tolerant extractor must also reject other lists' responses: after a
-    // congested handshake truncated the My-Presets reply, the complete FACTORY
+    // flooded handshake truncated the My-Presets reply, the complete FACTORY
     // reply (listEnum=4, 249 records) was served as My Presets — silently, with
     // factory names in the Level tab.
     #[test]

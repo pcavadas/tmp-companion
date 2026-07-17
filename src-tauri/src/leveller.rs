@@ -1718,7 +1718,7 @@ pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<
                 .to_string();
                 // Confirm the set landed: the device ECHOES field 54 on success (checked first,
                 // before the read-back clears the buffer); the working-copy read-back corroborates
-                // (it can lag a heartbeat under post-measurement congestion). The first edit after
+                // (it can lag a heartbeat on a post-measurement flooded line). The first edit after
                 // a fresh load can be silently dropped, so retry the whole set+confirm once.
                 let mut confirmed = false;
                 let mut last_seen = Vec::new();

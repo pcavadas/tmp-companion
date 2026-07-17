@@ -376,7 +376,7 @@ export function ActiveSignalChainView(props: ActiveSignalChainViewProps) {
         </div>
       </div>
       {/* The diagram always redraws from the unit's REAL block state after a recall.
-          That read can transiently fail (device congestion) — the scene row already
+          That read can transiently fail (busy device line) — the scene row already
           updated, but this picture is stale: dim + grayscale it and offer a Retry. */}
       <div style={{ position: "relative" }}>
         <div

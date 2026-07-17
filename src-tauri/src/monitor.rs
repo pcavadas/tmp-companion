@@ -507,7 +507,7 @@ const STARTUP_GRAPH_WARMUP_STEPS: u32 = 8;
 const STARTUP_GRAPH_WARMUP_MS: u64 = 120;
 
 /// Re-snapshot retries when a connect lands with `graph=none` (every in-session
-/// fallback exhausted — a congested handshake can miss the field-3 push AND the
+/// fallback exhausted — a flooded handshake can miss the field-3 push AND the
 /// PresetLoaded body the field-8 fallback needs). An IDLE device never pushes
 /// field-3 on its own, so without a retry the hero stays "No active preset"
 /// until the user touches the amp. A fresh handshake after a short backoff is
@@ -655,9 +655,9 @@ fn run_monitor_iteration(
                 seen = 0;
             }
             if graph_missing && *graph_retries < GRAPH_RETRY_MAX {
-                // Every in-session fallback failed (congested handshake) and an
+                // Every in-session fallback failed (flooded handshake) and an
                 // idle device will never push field-3 on its own — drop the
-                // session, let the congestion clear, and re-handshake. The
+                // session, let the flood drain, and re-handshake. The
                 // stored snapshot keeps serving the list meanwhile; a graph-ok
                 // retry replaces it and its handshake decode emits the graph.
                 *graph_retries += 1;
@@ -731,7 +731,7 @@ fn assemble_startup_snapshot(
     let firmware = session.firmware_version();
     // Strict (completeness-validated) list: the tolerant harvest silently accepted
     // a tail-truncated 371-of-504 list when this reconnect ran right after a heavy
-    // sweep congested the device.
+    // sweep left the line flooded.
     let presets = session.list_my_presets_strict()?;
     let (live, reset_seen) = startup_live(session);
     let graph = live.as_ref().and_then(|l| l.graph.clone());

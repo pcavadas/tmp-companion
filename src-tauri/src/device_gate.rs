@@ -21,7 +21,7 @@ static DEVICE_OP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Bounded wait for the monitor to ack a pause (≈ `PAUSE_WAIT_TRIES × 25 ms`). The
 /// monitor pumps in ~120 ms windows, so it checks the flag ~8×/sec; 40 × 25 ms = 1 s
-/// is generous. If the budget is exceeded (monitor mid-connect on a congested
+/// is generous. If the budget is exceeded (monitor mid-connect on a flooded
 /// device), the command proceeds anyway — `hid.rs`'s bounded `IOHIDDeviceOpen` retry
 /// (≤0.48 s on `0xe00002c5`) absorbs the residual race, the same safety net that
 /// already covers `with_released_seize`'s own drop→reconnect lag.
