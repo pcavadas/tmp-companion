@@ -1418,6 +1418,7 @@ pub fn has_time_effect(nodes: &[DoctorNode]) -> bool {
     const SUBSTRINGS: [&str; 4] = ["Reverb", "Delay", "Echo", "Rvb"];
     nodes
         .iter()
+        .filter(|n| !n.bypassed)
         .any(|n| is_time_effect(&n.model) || SUBSTRINGS.iter().any(|s| n.model.contains(s)))
 }
 
@@ -2136,6 +2137,13 @@ pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
 /// diagnosis still works without it (graph-dependent rx are simply absent).
 /// Deterministic — the verdict depends only on THIS sound (its deviation from a
 /// fixed authored target curve), never on which other sounds ran.
+/// Test-only: every production/probe caller now goes through [`diagnose_kind`]
+/// directly with real `coverage` (this shim's `None` disables the low-energy-
+/// band gate — the exact class of bug fixed in `probe_doctor`/`analyze_capture`).
+/// Kept as the tests' concise default (`StimulusKind::Synthetic`,
+/// `PlaybackOffsets::NONE`, no coverage) — synthetic stimuli cover every band
+/// by construction, so skipping the gate there is correct, not an oversight.
+#[cfg(test)]
 pub fn diagnose(
     profile: &SoundProfile,
     nodes: Option<&[DoctorNode]>,
@@ -2541,11 +2549,15 @@ fn localized_diags(
     // 300–500 Hz range (see its doc) — picked first so the resonant search
     // below can exclude the SAME peak from also firing.
     // Band corroboration (see `RESONANT_MIN_BAND_LOCAL_DB`): the peak's own
-    // band must read hot in BOTH consensus spaces — a peak outside the family
-    // layout can't corroborate.
+    // band must be covered by the stimulus AND read hot in BOTH consensus
+    // spaces — a peak outside the family layout can't corroborate. Coverage
+    // is checked HERE (before `max_by`), not just on the winner: an uncovered
+    // band's peak must lose the tallest-peak pick to a shorter but valid
+    // peak in a covered band, not win it and then get discarded outright.
     let corroborated = |p: &&crate::psd::SpectralPeak| {
         band_index_for_freq(instrument, p.freq_hz).is_some_and(|bi| {
-            metrics.locals[bi] > RESONANT_MIN_BAND_LOCAL_DB
+            covered(bi)
+                && metrics.locals[bi] > RESONANT_MIN_BAND_LOCAL_DB
                 && metrics.centered[bi] > RESONANT_MIN_BAND_LOCAL_DB
         })
     };
@@ -4838,6 +4850,15 @@ mod tests {
             &["ACD_DeluxeReverb65BlondeNoFx"],
             &[]
         )));
+    }
+
+    #[test]
+    fn has_time_effect_ignores_a_bypassed_reverb() {
+        // A bypassed reverb produces no wet signal — it must not enable washed
+        // (or the full tail) any more than an absent one would.
+        let mut nodes = chain(&["ACD_TMLargeHall"], &[]);
+        nodes[0].bypassed = true;
+        assert!(!has_time_effect(&nodes));
     }
 
     #[test]

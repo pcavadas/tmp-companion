@@ -95,15 +95,14 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
 
 ## Capture-stimulus recalibration (pending the attended sweep)
 
-The Doctor diagnoses a calibrated profile's DI capture against its own
-threshold table: `StimulusKind::Capture` selects the `*_CAPTURE` tables
-(currently byte-identical copies of the synthetic ones — PROVISIONAL).
-Diagnosis is per-sound and deterministic (the deviation-vs-authored-target
-consensus metric never pools measurements across sounds), so a capture is only ever
-compared against the capture-space table — the measured band-balance shift
-between stimuli (+8…12 dB lows / −8…10 dB highs) would otherwise reproduce
-false verdict flips if a capture were judged against the synthetic table.
-Band-confidence
+The Doctor diagnoses a calibrated profile's DI capture against the SAME
+per-family threshold table a synthetic stimulus uses — `Family::thresholds()`
+no longer branches on `StimulusKind` (only the fizzy flatness gate still
+does). Diagnosis is per-sound and deterministic (the deviation-vs-authored-target
+consensus metric never pools measurements across sounds); a real DI's measured
+band-balance shift (+8…12 dB lows / −8…10 dB highs) is absorbed as an
+honest tilt/deviation reading against the shared table rather than
+compensated by a separate table. Band-confidence
 gating skips any band-keyed rule whose primary band the stimulus never
 excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
 EBow-heavy) from verdicts in bands they never probed.

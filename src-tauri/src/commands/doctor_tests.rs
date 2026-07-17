@@ -390,6 +390,29 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
         )),
         None
     );
+    // ...or a different scene/footswitch of the SAME preset.
+    assert_eq!(
+        before_cache_get(&(
+            7,
+            "Lead".into(),
+            "/stim/tele.wav".into(),
+            key.3,
+            Some(1),
+            key.5
+        )),
+        None
+    );
+    assert_eq!(
+        before_cache_get(&(
+            7,
+            "Lead".into(),
+            "/stim/tele.wav".into(),
+            key.3,
+            key.4,
+            Some(2)
+        )),
+        None
+    );
     // A save invalidates (clear_doctor_before_cache is what doctor_save calls).
     clear_doctor_before_cache();
     assert_eq!(before_cache_get(&key), None);

@@ -85,6 +85,31 @@ fn node_params<'a>(doc: &'a serde_json::Value, fender_id: &str) -> Option<&'a se
     })
 }
 
+/// The insert anchor for both defect-injection probe arms: the LAST guitar
+/// node's group (post-amp/cab, never pre-drive, never a mic group) — the
+/// same anchor the Doctor's own Rx inserts use — plus the preset's display
+/// name (needed by `ops_session`'s `confirm_active`). `pub(crate)` so
+/// `--doctor-defects` (`doctor_defects.rs`) shares this exact resolution
+/// instead of forking it — a graph shaped `[...guitar, ...mic]` (any
+/// gtrMicMix/Parallel/Series template) would otherwise let a plain
+/// `.nodes.last()` pick a mic node.
+pub(crate) fn last_guitar_group_anchor(slot: u32) -> Result<(String, String), String> {
+    let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
+    let group = crate::session::extract_active_graph(&preset, None)
+        .nodes
+        .into_iter()
+        .rev()
+        .find(|n| n.group_id.starts_with('G'))
+        .map(|n| n.group_id)
+        .ok_or("empty graph — nowhere to anchor the insert")?;
+    let name = preset
+        .pointer("/info/displayName")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok((group, name))
+}
+
 /// See the module doc. `gains` empty = the clean-insert control. `block`
 /// overrides the EQ-10 insert vehicle (default) — e.g. `ACD_CryBabyGCB95`
 /// with no gains injects a wah at its DEFAULT (cocked) position, the classic
@@ -120,20 +145,7 @@ pub fn probe_doctor_inject(
     // Insert the EQ at the END of the chain (the LAST guitar node's group,
     // appended) — the same anchor the Doctor's own Rx inserts use (post-amp/
     // cab, never pre-drive).
-    let (last_group, name) = {
-        let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
-        let group = crate::session::extract_active_graph(&preset, None)
-            .nodes
-            .last()
-            .map(|n| n.group_id.clone())
-            .ok_or("empty graph — nowhere to anchor the EQ insert")?;
-        let name = preset
-            .pointer("/info/displayName")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        (group, name)
-    };
+    let (last_group, name) = last_guitar_group_anchor(slot)?;
     let ops = vec![doctor::DoctorOp::InsertNode {
         group_id: last_group,
         before_fender_id: None,

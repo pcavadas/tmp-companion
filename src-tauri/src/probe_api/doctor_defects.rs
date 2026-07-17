@@ -27,7 +27,7 @@ use crate::doctor;
 use crate::leveller;
 
 use super::analyze::DoctorRead;
-use super::doctor_inject::measure;
+use super::doctor_inject::{last_guitar_group_anchor, measure};
 use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
 
 /// One versioned defect recipe: inject `ops` into a clean preset's live edit
@@ -129,7 +129,7 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             // (thin fires today, an honest co-fire), never as peak-space
             // `resonant` (that would mean the octave-envelope discriminator
             // regressed) and never as WASHED.
-            must_fire: &[],
+            must_fire: &["thin"],
             must_not_fire: &["washed", "resonant"],
         },
         DefectRecipe {
@@ -285,21 +285,8 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
 
     // Resolve the insert anchor (last group) + preset name ONCE — stable
     // across every recipe since each one restores the stored preset before
-    // the next injects (same anchor `--doctor-inject` uses).
-    let (group_id, name) = {
-        let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
-        let group = crate::session::extract_active_graph(&preset, None)
-            .nodes
-            .last()
-            .map(|n| n.group_id.clone())
-            .ok_or("empty graph — nowhere to anchor the defect inserts")?;
-        let name = preset
-            .pointer("/info/displayName")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        (group, name)
-    };
+    // the next injects.
+    let (group_id, name) = last_guitar_group_anchor(slot)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let mut out = format!("doctor-defects slot {slot} ({name})\n");
@@ -353,6 +340,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
                 "hit": hits,
                 "miss": misses,
                 "violation": violations,
+                "unreliable": unreliable,
                 "error": errors,
             },
         });

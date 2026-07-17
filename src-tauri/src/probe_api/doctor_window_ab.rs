@@ -5,8 +5,10 @@
 //! which became the shorter production value once this arm's 2026-07-16 run
 //! validated the shrink: 6 slots incl. two wet, 0 verdict flips, Δtilt ≤ 0.08,
 //! band deltas within wash-preset run variance). The production window is now
-//! 3 s + 1500 ms (`leveller::DOCTOR_STIM_MS`/`DOCTOR_TAIL_MS`); re-run this arm
-//! against the SAME original oracle to re-validate any future window change. Per the repo's hard-won lesson (CLAUDE.md's leveling
+//! 3 s stim + a GRAPH-GATED tail (`leveller::DOCTOR_STIM_MS`/`doctor::doctor_tail_ms`
+//! — 300 ms `DOCTOR_TAIL_DRY_MS` for a known-dry chain, else the full 1500 ms
+//! `DOCTOR_TAIL_MS`); re-run this arm against the SAME original oracle to
+//! re-validate any future window change. Per the repo's hard-won lesson (CLAUDE.md's leveling
 //! capture-window note): a capture-window change is a RE-BASELINE, validated
 //! only against a full-capture oracle — never self-consistently (a level→verify
 //! round-trip that reuses the same short method would hide the very offset it's
@@ -20,7 +22,9 @@
 //! ```
 //! Captures each slot THREE ways on its own fresh connections (oracle: full
 //! stimulus + the pinned 2.5 s [`ORACLE_TAIL_MS`]; the production-prepared
-//! 3 s arm — `doctor_stim_slice`, pad-aware; 4 s-stim + 1500 ms tail)
+//! 3 s arm — `doctor_stim_slice`, pad-aware, tail resolved per slot via
+//! `doctor::doctor_tail_ms` off that slot's live graph, same as
+//! `commands/doctor.rs`; 4 s-stim + the pinned 1.5 s [`SHORT_TAIL_MS`])
 //! via `leveller::doctor_capture` (LOADS the probed slots — accepted for this
 //! attended arm, same recipe as `--doctor-calib`), builds each capture's
 //! `SoundProfile` off ONE shared post-onset body PSD (the Task-1 seams,
@@ -39,7 +43,7 @@ use super::stimulus::read_stimulus_calibrated;
 
 /// The ORIGINAL full-window tail the oracle captures with (see module doc).
 const ORACLE_TAIL_MS: u64 = 2_500;
-/// Post-3 s/4 s tail — see the module doc for the plan's proposed shorter window.
+/// The 4 s fallback's tail — pinned independently of production (see module doc).
 const SHORT_TAIL_MS: u64 = 1_500;
 
 /// One capture's derived Doctor measurements — everything the A/B compares.
@@ -130,6 +134,13 @@ pub fn probe_doctor_window_ab(
     // production constants, and 4 s has no production counterpart.
     let prod_stim = leveller::doctor_stim_slice(stim.clone());
     let four_s = stim.len().min(4 * 48_000);
+    // Variant b's tail must match what `doctor_check`/`doctor_apply` actually
+    // pick for THIS slot's graph — 300 ms dry, 1500 ms wet/unknown
+    // (`doctor::doctor_tail_ms`, `commands/doctor.rs`'s `tail_ms`) — else a
+    // dry preset's shipped 300 ms window goes unvalidated by an arm labeled
+    // "production". Resolved once per slot below via the same
+    // `read_slot_preset_parsed` + `extract_active_graph` pattern
+    // `doctor_inject`/`doctor_defects` use.
     // Cap the oracle to exactly 6 s too — a longer --stim source (e.g. a Tier-2
     // capture) would otherwise let the oracle capture on more signal than the b/c
     // variants, shifting tail placement and invalidating the delta comparison.
@@ -158,10 +169,27 @@ pub fn probe_doctor_window_ab(
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
+        let prod_tail_ms = match crate::read_slot_preset_parsed(slot) {
+            Ok((preset, _, _)) => {
+                let nodes: Vec<doctor::DoctorNode> =
+                    crate::session::extract_active_graph(&preset, None)
+                        .nodes
+                        .iter()
+                        .map(doctor::DoctorNode::from_graph_node)
+                        .collect();
+                u64::from(doctor::doctor_tail_ms(&nodes))
+            }
+            Err(e) => {
+                eprintln!(
+                    "[probe] slot {slot}: graph resolve failed ({e}) — falling back to the conservative {SHORT_TAIL_MS}ms tail"
+                );
+                SHORT_TAIL_MS
+            }
+        };
         eprintln!(
-            "[probe] doctor-window-ab: slot {slot} — production 3 s stim (padded) + 1.5 s tail…"
+            "[probe] doctor-window-ab: slot {slot} — production 3 s stim (padded) + {prod_tail_ms} ms tail…"
         );
-        let b = match capture_variant(slot, &prod_stim, SHORT_TAIL_MS, family, true) {
+        let b = match capture_variant(slot, &prod_stim, prod_tail_ms, family, true) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[probe] slot {slot}: 3s capture failed: {e} (skipping slot)");
@@ -209,7 +237,7 @@ pub fn probe_doctor_window_ab(
         max_delta_c = max_delta_c.max(delta_c.iter().fold(0.0f64, |m, d| m.max(d.abs())));
 
         out += &format!(
-            "slot {slot}\n  oracle  tilt={:>6.2?} tail={:>6.1} verdicts={:?}\n  3s/1.5s tilt={:>6.2?} tail={:>6.1} Δband={delta_b:>5.1?} Δtilt={:?} Δtail={:>+5.2} flip={b_flip} verdicts={:?}\n  4s/1.5s tilt={:>6.2?} tail={:>6.1} Δband={delta_c:>5.1?} Δtilt={:?} Δtail={:>+5.2} flip={c_flip} verdicts={:?}\n",
+            "slot {slot}\n  oracle  tilt={:>6.2?} tail={:>6.1} verdicts={:?}\n  3s/{prod_tail_ms}ms tilt={:>6.2?} tail={:>6.1} Δband={delta_b:>5.1?} Δtilt={:?} Δtail={:>+5.2} flip={b_flip} verdicts={:?}\n  4s/1.5s tilt={:>6.2?} tail={:>6.1} Δband={delta_c:>5.1?} Δtilt={:?} Δtail={:>+5.2} flip={c_flip} verdicts={:?}\n",
             oracle.tilt_slope,
             oracle.tail_ratio_db,
             oracle.verdicts,
@@ -229,6 +257,7 @@ pub fn probe_doctor_window_ab(
             "slot": slot,
             "oracle": capture_to_json(&oracle),
             "threeSec": {
+                "tailMs": prod_tail_ms,
                 "capture": capture_to_json(&b),
                 "deltaBandDb": delta_b,
                 "deltaTiltDbPerOct": tilt_delta(&b),

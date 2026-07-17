@@ -206,6 +206,7 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
         Option<u32>,
         doctor::SoundProfile,
         Option<Vec<doctor::DoctorNode>>,
+        Vec<bool>,
     );
     let mut sounds: Vec<Sound> = Vec::new();
     for &(slot, scene) in slots {
@@ -258,10 +259,26 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                         "[probe] slot {slot}: onset not confidently found — un-aligned split"
                     );
                 }
-                let profile = doctor::SoundProfile::from_capture(
-                    &samples, rate, &stim, onset, confident, instrument,
+                // Share ONE body PSD between the profile and the coverage gate
+                // (mirrors `analyze_capture` / production `doctor_check`) so this
+                // calibration sweep's printed verdicts match what the app would
+                // actually fire, instead of the gate-free `diagnose` shim.
+                let psd_onset = leveller::doctor_signal_start(onset, confident);
+                let body_psd = doctor::body_psd(&samples, rate, psd_onset);
+                let stim_psd = crate::psd::welch_psd(&stim, rate as f32);
+                let profile = doctor::SoundProfile::from_capture_with_psd(
+                    &samples,
+                    rate,
+                    stim.len(),
+                    onset,
+                    instrument,
+                    &body_psd,
+                    Some(&stim_psd),
                 )?;
-                sounds.push((slot, scene, profile, nodes));
+                let coverage = doctor::output_coverage_with_body(
+                    &samples, rate, psd_onset, instrument, &body_psd,
+                );
+                sounds.push((slot, scene, profile, nodes, coverage));
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
         }
@@ -275,8 +292,15 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
         sounds.len(),
         instrument.labels().join(" ")
     );
-    for (slot, scene, profile, nodes) in &sounds {
-        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument);
+    for (slot, scene, profile, nodes, coverage) in &sounds {
+        let diags = doctor::diagnose_kind(
+            profile,
+            nodes.as_deref(),
+            instrument,
+            doctor::StimulusKind::Synthetic,
+            Some(coverage),
+            doctor::PlaybackOffsets::NONE,
+        );
         let bal = doctor::balance(&profile.bands);
         let label = match scene {
             Some(s) => format!("{slot}:{s}"),

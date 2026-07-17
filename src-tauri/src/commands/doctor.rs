@@ -869,13 +869,30 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             // (c) AFTER: capture the live edit buffer WITHOUT reloading, under the
             //     SAME scene/isolation as (a). ref_level None like (a): nothing
             //     touched the level between the captures, so the A/B is inherently
-            //     level-fair at the preset's own level.
-            let (after, rate) =
-                leveller::doctor_capture_current(&stim, job.scene, &fb, None, tail_ms)?;
-            let after_clip = format!(
-                "data:audio/wav;base64,{}",
-                base64_encode(&wav_bytes(&after, rate)?)
-            );
+            //     level-fair at the preset's own level. Past this point the ops
+            //     already applied (b succeeded), so ANY failure here must restore
+            //     the stored preset before returning — the frontend's applyLock
+            //     releases on any `doctorApply` error assuming an auto-restore
+            //     (`PrescriptionCard.tsx`'s "a failed apply auto-restores"), and a
+            //     stranded mutated buffer would let a sibling card Apply on top of it.
+            let after_clip = match (|| -> Result<String, String> {
+                let (after, rate) =
+                    leveller::doctor_capture_current(&stim, job.scene, &fb, None, tail_ms)?;
+                Ok(format!(
+                    "data:audio/wav;base64,{}",
+                    base64_encode(&wav_bytes(&after, rate)?)
+                ))
+            })() {
+                Ok(clip) => clip,
+                Err(after_err) => {
+                    return Err(match leveller::restore_saved_preset(job.list_index) {
+                        Ok(()) => after_err,
+                        Err(restore_err) => format!(
+                            "{after_err} AND the restore also failed ({restore_err}) — verify the preset on the unit"
+                        ),
+                    });
+                }
+            };
 
             Ok(DoctorApplyResult {
                 before_clip,

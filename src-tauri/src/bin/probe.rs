@@ -103,10 +103,15 @@
 /// Look up a `--name value` CLI flag in `args`, by adjacent position (the
 /// value is the arg right after the flag). Shared by the doctor-calib-style
 /// subcommands, each of which parses several such flags.
+///
+/// A missing value (flag is last, or immediately followed by another `--flag`)
+/// yields `None` rather than swallowing the next flag's name as this flag's
+/// value — callers already treat `None`/empty as "not provided".
 fn flag_arg(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
         .and_then(|j| args.get(j + 1))
+        .filter(|v| !v.starts_with("--"))
         .cloned()
 }
 

@@ -38,6 +38,11 @@ import type {
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
 
+/** Diagnosis-row header min-height (SevDot + serif label baseline) — off the
+ *  t.spaceN scale, so it's a role-named const shared with SceneConsistency's
+ *  identical row shape rather than a bare literal in each file. */
+export const ROW_MIN_HEIGHT = 38;
+
 // ---- severity dot ----------------------------------------------------------
 
 export interface SevDotProps {
@@ -190,7 +195,7 @@ export function SoundRow({
           display: "flex",
           alignItems: "center",
           gap: t.space5,
-          minHeight: 38,
+          minHeight: ROW_MIN_HEIGHT,
           padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
           cursor: expandable ? "pointer" : "default",
           background: open ? t.rowSel : "transparent",
@@ -252,7 +257,11 @@ export function SoundRow({
             diags.map((d) => (
               <span
                 key={d.key}
-                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: t.space3,
+                }}
               >
                 <DiagnosisChip
                   label={possibleLabel(d)}
