@@ -36,7 +36,7 @@ export function CutThroughCard({ cutThrough }: CutThroughCardProps) {
       <div
         style={{
           fontFamily: t.mono,
-          fontSize: 12.5,
+          fontSize: t.fsControl,
           color: advisory ? t.warn : t.mutedInk,
           marginTop: t.space2,
         }}

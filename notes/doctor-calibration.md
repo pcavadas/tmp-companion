@@ -87,9 +87,11 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
 - **Update (real-DI factory sweep, 2026-07):** on real Telecaster/ES-335 DI
   captures the max observed `spread_lu` was ~1.88 vs the 4.0 gate, so `spiky` is
   effectively **dead** (unreachable), not merely quiet — a retune should target the
-  real spread distribution, not chase the 4.0 gate. `washed`/tail is separately
-  fragile: its onset detection fails even on the synthetic stimulus (a structural
-  weakness, not DI-specific).
+  real spread distribution, not chase the 4.0 gate. `washed`/tail was separately
+  fragile AT THE TIME of this sweep: its onset detection failed even on the
+  synthetic stimulus (a structural weakness, not DI-specific) — HISTORICAL; the
+  pad edge + recalibrated onset logic (point 2 at the top of this file) fixed
+  exactly this, and onsets now resolve confidently on all sweep presets.
 
 ## Capture-stimulus recalibration (pending the attended sweep)
 

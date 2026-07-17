@@ -1414,6 +1414,11 @@ struct GraphFacts {
     comp: Option<bool>,
     /// First node of the first guitar group (the "front of chain" insert anchor).
     front: Option<(String, String)>,
+    /// The chain carries a time-based block ([`has_time_effect`]) — gates
+    /// `washed` the same way [`doctor_tail_ms`] gates the capture tail: a
+    /// known-dry chain can't be "washed out" no matter what its short decay
+    /// measures (a hot 300 ms dry decay must not earn reverb advice).
+    has_time: bool,
 }
 
 /// A reverb (any `REVERB_MIX` row, dwell-only ones included) or a delay —
@@ -1459,7 +1464,10 @@ pub fn doctor_tail_ms(nodes: &[DoctorNode]) -> u32 {
 }
 
 fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
-    let mut f = GraphFacts::default();
+    let mut f = GraphFacts {
+        has_time: has_time_effect(nodes),
+        ..GraphFacts::default()
+    };
     for n in nodes {
         if f.front.is_none() && n.group_id.starts_with('G') {
             f.front = Some((n.group_id.clone(), n.model.clone()));
@@ -2464,8 +2472,12 @@ fn apply_thresholds(
             }
         }
     }
+    // Graph-gated like the capture tail itself (`doctor_tail_ms`): a KNOWN-dry
+    // chain gets the short settle tail, whose hot 300 ms decay must never read
+    // as wash — `washed` fires only when the graph is unknown (conservative)
+    // or actually carries a time-based block.
     let washed_margin = profile.tail_ratio_db - t.wash_tail_db;
-    if washed_margin > 0.0 {
+    if washed_margin > 0.0 && facts.as_ref().map(|f| f.has_time) != Some(false) {
         let detail = format!(
             "decay tail only {:.0} dB under the note",
             -profile.tail_ratio_db
@@ -2623,7 +2635,12 @@ fn localized_diags(
         .peaks
         .iter()
         .filter(|p| {
+            // Boxy-range peaks are excluded BEFORE the tallest-wins pick (boxy
+            // is the more specific verdict for them, see its doc) — excluding
+            // only the WINNER would let a taller boxy peak shadow a separate
+            // legitimate ring elsewhere in the spectrum.
             p.freq_hz <= RESONANT_MAX_FREQ_HZ
+                && !(BOXY_LO_HZ..=BOXY_HI_HZ).contains(&p.freq_hz)
                 && p.height_db >= RESONANT_MIN_HEIGHT_DB
                 && p.q >= RESONANT_MIN_Q
                 && p.q <= RESONANT_MAX_Q
@@ -2631,11 +2648,8 @@ fn localized_diags(
         .filter(corroborated)
         .max_by(|a, b| a.height_db.total_cmp(&b.height_db));
     if let Some(peak) = resonant_pick {
-        // Same peak `boxy` already claimed → boxy is the more specific verdict
-        // (see its doc); don't also fire resonant.
-        let claimed_by_boxy = (BOXY_LO_HZ..=BOXY_HI_HZ).contains(&peak.freq_hz);
         let band = band_index_for_freq(instrument, peak.freq_hz);
-        if !claimed_by_boxy && band.is_none_or(covered) {
+        if band.is_none_or(covered) {
             let freq = measured_freq_label(peak.freq_hz);
             let band_id = nearest_eq10_band(peak.freq_hz);
             let band_label = eq_band_label(band_id);
@@ -5194,7 +5208,7 @@ mod tests {
         // and past the boxy gate. (It can no longer ALSO clear the resonant
         // floor: at 380 Hz the Welch bin resolution (~5.9 Hz/bin) can't
         // resolve a high-Q ring, and saturation caps a resolvable one below
-        // 13.5 — so the `claimed_by_boxy` suppression branch is
+        // 13.5 — so the boxy-range exclusion in `resonant_pick`'s filter is
         // belt-and-braces; the user-visible contract stays: boxy fires,
         // resonant does not.)
         let p = flagrant_ring(380.0);
@@ -5213,6 +5227,56 @@ mod tests {
             d.label,
             format!("Boxy (a {} hump)", measured_freq_label(peak.freq_hz))
         );
+    }
+
+    #[test]
+    fn a_taller_boxy_peak_does_not_shadow_a_separate_resonance() {
+        // Regression for the pick order: a 380 Hz boxy-range peak TALLER than a
+        // legitimate 2.6 kHz ring must not win the tallest-peak selection and
+        // then be discarded — the 2.6 kHz resonance still fires. The boxy peak
+        // is hand-stacked on a real ringing fixture (the boxy range is excluded
+        // from the pick before max_by, so its stats never matter).
+        let mut p = flagrant_ring(2_600.0);
+        let taller = p.peaks[0].height_db + 5.0;
+        p.peaks.insert(
+            0,
+            crate::psd::SpectralPeak {
+                freq_hz: 380.0,
+                height_db: taller,
+                q: 8.0,
+            },
+        );
+        let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        let diags = localized_for(&p, Some(&nodes));
+        let d = diags
+            .iter()
+            .find(|d| d.key == "resonant")
+            .unwrap_or_else(|| {
+                panic!(
+                    "resonant should fire past the boxy peak: {:?}",
+                    keys(&diags)
+                )
+            });
+        assert!(
+            d.label.contains(&measured_freq_label(2_600.0)) || d.label.contains("kHz"),
+            "resonant must anchor on the 2.6 kHz ring, not the boxy peak: {}",
+            d.label
+        );
+    }
+
+    #[test]
+    fn washed_never_fires_on_a_known_dry_chain() {
+        // A hot decay reading on a KNOWN-dry graph (no time-based block) must
+        // not earn "Washed out" + reverb advice — the graph gate mirrors
+        // `doctor_tail_ms`'s dry-tail policy. Unknown graph stays conservative
+        // (fires), and a wet chain fires as before.
+        let mut p = resid_profile(Family::Guitar, 2, 0.0);
+        p.tail_ratio_db = GUITAR.wash_tail_db + 5.0;
+        let dry = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
+        assert!(!keys(&diagnose(&p, Some(&dry), Instrument::Guitar)).contains(&"washed"));
+        assert!(keys(&diagnose(&p, None, Instrument::Guitar)).contains(&"washed"));
+        let wet = chain(&["ACD_TweedDeluxe", "ACD_TMSmallHall"], &[]);
+        assert!(keys(&diagnose(&p, Some(&wet), Instrument::Guitar)).contains(&"washed"));
     }
 
     #[test]

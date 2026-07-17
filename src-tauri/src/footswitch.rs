@@ -25,6 +25,7 @@ pub struct FootswitchFn {
     /// [`engaged_bypass_for_switch`]'s note); carried here so a Doctor
     /// isolation derivation working from the backup scan's already-enumerated
     /// `FootswitchInfo` (no live `ftsw` JSON in hand) can replicate it.
+    #[serde(default)]
     pub is_active: bool,
 }
 

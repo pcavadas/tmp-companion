@@ -1599,7 +1599,15 @@ impl Session {
     /// +1, no hardcoded tab) — the `probe --load-probe` experiment for the factory
     /// bank. Same fire-and-forget `transact_eager` path as `load_preset` (which is
     /// HW-proven to change the active preset).
-    pub fn load_preset_raw(&mut self, preset_slot: u64, tab_enum: u64) -> Result<(), String> {
+    // `pub(crate)`, not `pub`: raw device-slot addressing bypasses the
+    // session-owned 0-based→1-based translation, so only the deliberate verbatim
+    // experiment arm (`probe_api::slot_read::probe_load_probe`) may reach it —
+    // everything else goes through `load_preset`/`load_factory_preset`.
+    pub(crate) fn load_preset_raw(
+        &mut self,
+        preset_slot: u64,
+        tab_enum: u64,
+    ) -> Result<(), String> {
         self.hid
             .transact_eager(&proto::load_preset(preset_slot, tab_enum), 300)?;
         Ok(())

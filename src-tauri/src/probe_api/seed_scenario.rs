@@ -48,50 +48,47 @@ fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Ve
         .collect()
 }
 
-/// The fixture `info.preset_id` values carried by the committed scenario presets —
-/// the seed-owned ownership marker the stray sweep requires before clearing a slot.
-/// Pure.
-fn spec_preset_ids(spec: &[ScenarioPreset]) -> Vec<String> {
-    spec.iter()
-        .filter_map(|p| {
-            let v: serde_json::Value = serde_json::from_str(&p.preset_json).ok()?;
-            crate::library::preset_id_of(&v).map(str::to_string)
-        })
-        .collect()
+/// Seed-owned ownership markers that SURVIVE a device import — `info.preset_id`
+/// cannot serve (the device stamps a fresh uuid on import, HW 2026-07-17):
+/// the fixture's `info.source_id` stamp + the Reference's scene-uuid prefix
+/// (the latter also covers pre-stamp legacy copies).
+const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
+
+/// Substring probe (truncation-proof vs the field-8 partial). Pure.
+fn is_fixture_body(bytes: &[u8]) -> bool {
+    let body = String::from_utf8_lossy(bytes);
+    FIXTURE_MARKERS.iter().any(|m| body.contains(m))
 }
 
-/// Clear every stray on the GIVEN session. Two guards, both in the same list-index
-/// address space as the clears: (1) the completeness-floored list taken seconds
-/// before on the SAME connection classifies the candidates; (2) a per-candidate
-/// field-8 read must find a FIXTURE `preset_id` in the slot before it is cleared —
-/// a display name is not an ownership marker, so a real user preset that happens to
-/// be named "E2E Reference" (its own uuid) is skipped, never deleted. A candidate
-/// whose read fails or mismatches is left untouched (fail-closed) and reported.
-/// A per-stray fresh reconnect would be safer-looking but each extra open is
-/// another chance to land in the post-close open lockout. Settles after the last
-/// clear so a follow-up list read reflects the freed slots (clears are
-/// fire-and-forget and the device's list lags its own writes).
+/// Field-8-read `device_slot` (1-based) and require a fixture marker — the one
+/// ownership probe the sweep and the target classification share.
+fn slot_is_fixture_owned(s: &mut Session, device_slot: u32) -> bool {
+    matches!(s.read_slot_preset_json(device_slot), Ok(Some(bytes)) if is_fixture_body(&bytes))
+}
+
+/// Clear every stray on the GIVEN session — but only after a per-candidate
+/// field-8 read finds a [`FIXTURE_MARKERS`] hit (a name is not ownership; a
+/// user preset coincidentally named "E2E Reference" is skipped, fail-closed).
+/// One session for reads+clears (each extra open risks the post-close lockout);
+/// settles after the last clear (the device's list lags its own writes).
 fn sweep_on(
     s: &mut Session,
     list: &[session::PresetEntry],
     spec: &[ScenarioPreset],
 ) -> Result<Vec<u32>, String> {
-    let fixture_ids = spec_preset_ids(spec);
+    let strays = scenario_strays(list, spec);
+    if strays.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Field-8 reads on a mid-flood line are dropped device-side — drain first.
+    s.drain_until_quiet(250, 20)?;
     let mut swept = Vec::new();
-    for (slot, name) in scenario_strays(list, spec) {
-        // The field-8 partial always contains the leading `info` block, so a
-        // plain substring probe is truncation-proof; parsing isn't needed.
-        let owned = match s.read_slot_preset_json(slot + 1) {
-            Ok(Some(bytes)) => {
-                let body = String::from_utf8_lossy(&bytes);
-                fixture_ids.iter().any(|id| body.contains(id.as_str()))
-            }
-            Ok(None) | Err(_) => false,
-        };
+    for (slot, name) in strays {
+        let owned = slot_is_fixture_owned(s, slot + 1);
         if !owned {
             eprintln!(
-                "[seed] slot {slot} ({name:?}) matches a scenario name but not the \
-                 fixture preset_id — leaving it untouched"
+                "[seed] slot {slot} ({name:?}) matches a scenario name but not a \
+                 fixture content marker — leaving it untouched"
             );
             continue;
         }
@@ -113,19 +110,12 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
     sweep_on(&mut s, &list, &spec)
 }
 
-/// TOLERANT list read + a hard completeness floor. Tolerant, not strict: the strict
-/// harvest decodes only terminal-frame streams and FAILS on the interleaved mid-flood
-/// responses back-to-back lean sessions produce (HW-observed on a healthy device:
-/// tolerant read 504/504 every time while strict returned "no PresetListResponse" or
-/// truncated 190–236-record fallbacks, and its re-arm retries left the line in a
-/// state that armed the open lockout for the following attempts). The floor is the
-/// actual safety: a partial view must never drive clears or imports — index 400
-/// "missing" reads as out-of-range / every high slot reads as empty, and a
-/// tail-truncated list would hide strays above the cut from the sweep. Truncation
-/// is tail-only (present entries keep correct slots — `preset_entries` derives
-/// each slot from its index), so a full-bank length check IS the completeness
-/// check.
-const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45 My-Presets bank; fail-loud if a fw rev resizes it
+/// TOLERANT list read + a full-bank completeness floor. Tolerant because the
+/// strict harvest fails on interleaved back-to-back-session responses (see the
+/// CLAUDE.md 0xe00002c5 entry); the floor is the real safety — a partial view
+/// must never drive clears or imports, and truncation is tail-only, so a
+/// length check IS the completeness check.
+const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45; fail-loud if a fw rev resizes the bank
 
 fn read_full_list(s: &mut Session) -> Result<Vec<session::PresetEntry>, String> {
     let list = s.list_my_presets()?;
@@ -152,17 +142,36 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
     let mut s = Session::connect()?;
     let list = read_full_list(&mut s)?;
     let swept = sweep_on(&mut s, &list, &spec)?;
+
+    // Classify every TARGET before ANY import: seedable = empty (or swept this
+    // run); skippable = verified fixture (name + marker — a name-only skip
+    // would bless a user preset and hand it to teardown's clear); anything
+    // else aborts before `replace_inplace_with` can overwrite user data.
+    s.drain_until_quiet(250, 20)?;
+    let mut to_seed: Vec<&ScenarioPreset> = Vec::new();
+    for p in &spec {
+        let entry = list.iter().find(|e| e.slot == p.list_index);
+        let empty = swept.contains(&p.list_index)
+            || entry.is_none_or(|e| session::is_empty_slot_name(&e.name));
+        if empty {
+            to_seed.push(p);
+            continue;
+        }
+        let e = entry.expect("occupied entries exist in the floored list");
+        let owned = e.name == p.name && slot_is_fixture_owned(&mut s, p.list_index + 1);
+        if !owned {
+            return Err(format!(
+                "target slot {} is occupied by {:?} and does not carry a fixture \
+                 content marker — refusing to seed over it (move that preset, then rerun)",
+                p.list_index, e.name
+            ));
+        }
+        // Verified fixture already in place — nothing to redo for this slot.
+    }
     drop(s);
 
     let mut seeded = Vec::new();
-    for p in &spec {
-        // Per-preset presence skip: a partially-seeded bank only redoes the gaps.
-        if list
-            .iter()
-            .any(|e| e.slot == p.list_index && e.name == p.name)
-        {
-            continue;
-        }
+    for p in to_seed {
         if !seeded.is_empty() {
             // Quiet gap between imports: each lands via several fresh connections
             // (import → landing read → load/confirm/save → guarded clear), and the
@@ -235,5 +244,20 @@ mod tests {
         );
         // No spec → nothing is ever a stray.
         assert!(scenario_strays(&list, &[]).is_empty());
+    }
+
+    /// A fixture regen that drops the `source_id` stamp must fail here, not on
+    /// the unit (the guards would refuse to manage unmarked copies).
+    #[test]
+    fn committed_fixtures_carry_an_ownership_marker() {
+        let spec = scenario_spec().expect("committed spec parses");
+        assert_eq!(spec.len(), 3);
+        for p in &spec {
+            assert!(
+                is_fixture_body(p.preset_json.as_bytes()),
+                "{} carries no fixture marker",
+                p.name
+            );
+        }
     }
 }

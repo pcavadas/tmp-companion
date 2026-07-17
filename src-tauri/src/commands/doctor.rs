@@ -22,8 +22,10 @@ pub struct DoctorInput {
     pub calibration_lufs: Option<f32>,
     /// Instrument profile id: when it has a stored Tier-2 DI capture, that WAV is
     /// the stimulus (read VERBATIM, calibration scaling off) and the sound is
-    /// diagnosed against the CAPTURE threshold table. `None`/capture-less → the
-    /// synthetic topology sample + synthetic threshold table (the pinned default).
+    /// diagnosed as `StimulusKind::Capture` — ONE shared threshold table per
+    /// family (`thresholds_for` ignores the kind); Capture differs only through
+    /// the capture-only `fizzy` flatness gate. `None`/capture-less → the
+    /// synthetic topology sample (the pinned default).
     #[serde(default)]
     pub profile_id: Option<String>,
     #[serde(default)]
@@ -264,9 +266,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
     DOCTOR_CANCEL.store(false, SeqCst);
     // Resolve stimulus paths up front (needs the app handle; the closure below
     // runs on the blocking pool). The `from_capture` bool → the sound's
-    // `StimulusKind`: a real Tier-2 DI capture is diagnosed against its own
-    // CAPTURE threshold table, a synthetic/topology WAV against the pinned
-    // synthetic table.
+    // `StimulusKind`: one shared threshold table per family either way
+    // (`thresholds_for` ignores the kind); a real Tier-2 DI capture differs
+    // only through verbatim injection (no calibration scaling, below) and the
+    // capture-only `fizzy` flatness gate.
     let resolved: Vec<(DoctorInput, String, doctor::StimulusKind)> = items
         .into_iter()
         .map(|it| {

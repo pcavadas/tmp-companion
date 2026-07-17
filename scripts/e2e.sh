@@ -4,7 +4,7 @@
 #
 #   scripts/e2e.sh                  # OFFLINE (SimDevice) — fast, default, no hardware (~1.5 min)
 #   scripts/e2e.sh offline copy     # OFFLINE, only the copy spec
-#   scripts/e2e.sh online           # ONLINE (real device) — songs, copy, level in turn (~9 min)
+#   scripts/e2e.sh online           # ONLINE (real device) — songs, copy, doctor, level in turn
 #   scripts/e2e.sh online level     # ONLINE, only the level spec
 #   scripts/e2e.sh online all       # ONLINE, the full set (= the default online set)
 #
@@ -48,7 +48,7 @@ for a in "$@"; do
 Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|all ...]
   (no args)        OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy     OFFLINE — only the copy spec
-  online           ONLINE  — songs, copy, level vs the real unit (~9 min; Pro Control closed)
+  online           ONLINE  — songs, copy, doctor, level vs the real unit (Pro Control closed)
   online level     ONLINE  — only the level spec
 USAGE
       exit 0 ;;
@@ -149,7 +149,7 @@ fi
 trap cleanup EXIT INT TERM
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy level) ;; esac
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level) ;; esac
 
 # Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
 # never from inside a spec: Playwright's per-test budget (300 s) can't absorb seed

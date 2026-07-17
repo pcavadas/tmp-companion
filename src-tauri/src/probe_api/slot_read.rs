@@ -132,15 +132,11 @@ pub fn probe_factory_list() -> Result<String, String> {
 
 /// `probe --load-probe <slot> <tabEnum>`: send a RAW `loadPreset(presetSlot=slot,
 /// tabEnum=tabEnum)` (both values passed VERBATIM — the human experiments with
-/// 0-/1-based slots and unknown Factory tabEnums), then read back the ACTIVE
-/// preset's identity (name + first block model) from the `currentPresetDataChanged`
-/// (field 3) / `currentPresetInfoChanged` (field 22) pushes.
+/// 0-/1-based slots and unknown Factory tabEnums). SEND-ONLY: the TMP's own
+/// screen is the verification oracle for which preset went active (a field-3
+/// name readback proved unreliable on a lean one-shot session and was removed).
 ///
 /// Non-destructive: only LoadPreset (changes the active preset) — never saves.
-/// The load is fired on a QUIET line (a mid-flood request is dropped device-side)
-/// via `send_and_collect` (NOT the fire-and-forget `Session::load_preset`, which
-/// discards the reports the field-3 push rides on); the field-3 push arrives only
-/// on a CHANGE, coaxed here with a few dense heartbeats (the monitor's cadence).
 pub fn probe_load_probe(slot: u64, tab_enum: u64) -> Result<String, String> {
     let mut s = Session::connect()?;
     // Fire-and-forget via the SAME transact_eager path `session::load_preset` uses

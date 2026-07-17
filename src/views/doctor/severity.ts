@@ -142,7 +142,7 @@ export function doctorCard(
   return {
     flexShrink: 0,
     border: `0.5px solid ${tone?.border ?? t.hairlineStrong}`,
-    borderRadius: 10,
+    borderRadius: t.rLg,
     background: tone?.background ?? t.bg,
     padding: t.space6,
   };

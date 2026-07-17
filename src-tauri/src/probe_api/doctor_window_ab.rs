@@ -19,7 +19,8 @@
 //! probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
 //! ```
 //! Captures each slot THREE ways on its own fresh connections (oracle: full
-//! stimulus + `DOCTOR_TAIL_MS`; 3 s-stim + 1500 ms tail; 4 s-stim + 1500 ms tail)
+//! stimulus + the pinned 2.5 s [`ORACLE_TAIL_MS`]; the production-prepared
+//! 3 s arm — `doctor_stim_slice`, pad-aware; 4 s-stim + 1500 ms tail)
 //! via `leveller::doctor_capture` (LOADS the probed slots — accepted for this
 //! attended arm, same recipe as `--doctor-calib`), builds each capture's
 //! `SoundProfile` off ONE shared post-onset body PSD (the Task-1 seams,
@@ -59,13 +60,15 @@ fn capture_variant(
     stim_slice: &[f32],
     tail_ms: u64,
     family: doctor::Family,
+    pad_aware: bool,
 ) -> Result<Capture, String> {
     let (samples, rate) =
         leveller::doctor_capture(slot, None, &[], stim_slice, Some(0.5), tail_ms, false)?;
-    // Raw, unpadded stim → the estimated onset feeds the body PSD directly
-    // (`pad_aware: false`) — see `analyze_capture`'s doc for why this differs
-    // from `doctor_inject`'s padded/`doctor_signal_start` variant.
-    let read = analyze_capture(stim_slice, &samples, rate, family, false)?;
+    // `pad_aware`: true for the production-prepared 3 s arm (padded stim, body
+    // PSD starts at `doctor_signal_start` — exactly `doctor_check`'s path);
+    // false for the raw oracle/4 s slices, whose estimated onset feeds the body
+    // PSD directly — see `analyze_capture`'s doc.
+    let read = analyze_capture(stim_slice, &samples, rate, family, pad_aware)?;
     if !read.onset_confident {
         eprintln!(
             "[probe] doctor-window-ab: onset not confidently found for slot {slot} (tail {tail_ms}ms) — un-aligned split"
@@ -119,10 +122,13 @@ pub fn probe_doctor_window_ab(
         ));
     }
     // Variant b TRACKS the production window (re-running this arm re-validates
-    // whatever ships); the oracle tail (`ORACLE_TAIL_MS`) and the 4 s fallback
-    // are deliberately PINNED literals — the oracle must never drift with the
+    // whatever ships), including the production stimulus PREPARATION: the same
+    // `doctor_stim_slice` pad+slice and pad-aware analysis `doctor_check` uses —
+    // a raw un-padded slice would validate a capture path production never
+    // runs. The oracle tail (`ORACLE_TAIL_MS`) and the 4 s fallback are
+    // deliberately PINNED literals — the oracle must never drift with the
     // production constants, and 4 s has no production counterpart.
-    let three_s = stim.len().min(leveller::doctor_stim_samples());
+    let prod_stim = leveller::doctor_stim_slice(stim.clone());
     let four_s = stim.len().min(4 * 48_000);
 
     let mut rows: Vec<serde_json::Value> = Vec::new();
@@ -134,33 +140,39 @@ pub fn probe_doctor_window_ab(
     let mut max_delta_c = 0.0f64;
     let mut flips_b = 0usize;
     let mut flips_c = 0usize;
+    let mut skipped: Vec<u32> = Vec::new();
 
     for &slot in slots {
         eprintln!("[probe] doctor-window-ab: slot {slot} — oracle (full stim)…");
-        let oracle = match capture_variant(slot, &stim, ORACLE_TAIL_MS, family) {
+        let oracle = match capture_variant(slot, &stim, ORACLE_TAIL_MS, family, false) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[probe] slot {slot}: oracle capture failed: {e} (skipping slot)");
+                skipped.push(slot);
                 continue;
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
-        eprintln!("[probe] doctor-window-ab: slot {slot} — 3 s stim + 1.5 s tail…");
-        let b = match capture_variant(slot, &stim[..three_s], SHORT_TAIL_MS, family) {
+        eprintln!(
+            "[probe] doctor-window-ab: slot {slot} — production 3 s stim (padded) + 1.5 s tail…"
+        );
+        let b = match capture_variant(slot, &prod_stim, SHORT_TAIL_MS, family, true) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[probe] slot {slot}: 3s capture failed: {e} (skipping slot)");
+                skipped.push(slot);
                 continue;
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         eprintln!("[probe] doctor-window-ab: slot {slot} — 4 s stim + 1.5 s tail…");
-        let c = match capture_variant(slot, &stim[..four_s], SHORT_TAIL_MS, family) {
+        let c = match capture_variant(slot, &stim[..four_s], SHORT_TAIL_MS, family, false) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[probe] slot {slot}: 4s capture failed: {e} (skipping slot)");
+                skipped.push(slot);
                 continue;
             }
         };
@@ -240,6 +252,13 @@ pub fn probe_doctor_window_ab(
         "doctor-window-ab summary: {} slot(s) — max |Δband dB| 3s={max_delta_b:.2} 4s={max_delta_c:.2}; verdict-set flips 3s={flips_b} 4s={flips_c}\n",
         rows.len(),
     );
+    // A skipped slot carries no evidence — a zero-flip summary must never read
+    // as complete when part of the requested sweep couldn't be captured.
+    if !skipped.is_empty() {
+        out += &format!(
+            "doctor-window-ab: INCOMPLETE — slots {skipped:?} could not be captured; rerun before trusting the deltas\n"
+        );
+    }
 
     if let Some(path) = out_path {
         let report = serde_json::json!({
@@ -250,6 +269,7 @@ pub fn probe_doctor_window_ab(
             "oracleTailMs": ORACLE_TAIL_MS,
             "shortTailMs": SHORT_TAIL_MS,
             "rows": rows,
+            "skippedSlots": skipped,
             "summary": {
                 "maxAbsBandDeltaDb3s": max_delta_b,
                 "maxAbsBandDeltaDb4s": max_delta_c,

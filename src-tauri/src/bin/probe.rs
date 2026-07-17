@@ -53,7 +53,8 @@
 //!                                   never saves; loads the slot)
 //!   probe --doctor-defects <slot> [--out <report.json>]
 //!                                  Versioned KNOWN-DEFECT fixture sweep: injects a committed
-//!                                  table of named recipes (control/muddy/lost/washed/boxy_probe)
+//!                                  table of named recipes (control/muddy/lost/washed/
+//!                                  resonant_wah/resonant_peq/boxy_peq)
 //!                                  one at a time into a clean preset's live edit buffer, checks
 //!                                  each after-capture's fired verdicts against the recipe's
 //!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION/info
@@ -67,7 +68,9 @@
 //!                                  reads, no LoadPreset/save
 //!   probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
 //!                                  CAPTURE-WINDOW A/B evidence arm: per slot, captures the
-//!                                  oracle (full 6s stim + DOCTOR_TAIL_MS) vs a 3s-stim/1.5s-tail
+//!                                  oracle (full 6s stim + the pinned 2.5s oracle tail —
+//!                                  ORACLE_TAIL_MS, deliberately NOT the production
+//!                                  DOCTOR_TAIL_MS) vs a 3s-stim/1.5s-tail
 //!                                  and a 4s-stim/1.5s-tail variant, reports band-dB/tilt/tail
 //!                                  deltas + whether the fired-verdict set changed (the
 //!                                  re-baseline decision aid — never self-consistent).
@@ -1344,9 +1347,10 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--load-probe") {
-        // --load-probe <slot> <tabEnum> — raw loadPreset + read-back active
-        // identity. Both values pass through verbatim (experiment with 0-/1-based
-        // slots + unknown Factory tabEnums). Non-destructive (load only, no save).
+        // --load-probe <slot> <tabEnum> — raw loadPreset, SEND-ONLY (the TMP
+        // screen is the verification oracle). Both values pass through verbatim
+        // (experiment with 0-/1-based slots + unknown Factory tabEnums).
+        // Non-destructive (load only, no save).
         let slot: u64 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())

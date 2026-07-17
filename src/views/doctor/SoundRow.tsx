@@ -170,10 +170,15 @@ export function SoundRow({
   // usable balanceDb) stays flat/non-interactive.
   const expandable = !isError;
   const isReference = id === referenceId;
+  // A null cutThrough on a non-errored row marks a DEGENERATE capture (the
+  // presence/low contrast came out non-finite) — such a spectrum must neither
+  // serve as a Match reference nor receive generated EQ moves.
+  const hasMatchSpectrum = sound.cutThrough != null;
   // Label-identity, not just count: Bass and Bass VI are both 7 bands, and a
   // cross-layout pair must not offer a Match section that can't render.
   const canMatch =
-    referenceSound != null &&
+    hasMatchSpectrum &&
+    referenceSound?.cutThrough != null &&
     !isReference &&
     bandLayoutsMatch(referenceSound, sound);
 
@@ -357,7 +362,7 @@ export function SoundRow({
                   Clear reference
                 </Button>
               </>
-            ) : (
+            ) : hasMatchSpectrum ? (
               <Button
                 variant="ghost"
                 small
@@ -367,7 +372,7 @@ export function SoundRow({
               >
                 Set as reference
               </Button>
-            )}
+            ) : null}
           </div>
           {shared && (
             <div

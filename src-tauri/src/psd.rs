@@ -28,8 +28,6 @@ pub struct Psd {
     pub psd: Vec<f64>,
     /// Frequency spacing between adjacent bins, `rate / seg`.
     pub bin_hz: f64,
-    /// The sample rate the estimate was computed at.
-    pub rate: f32,
 }
 
 /// Largest power of two ≤ `n` (0 for `n == 0`).
@@ -64,7 +62,6 @@ pub fn welch_psd(signal: &[f32], rate: f32) -> Psd {
         return Psd {
             psd: vec![0.0; bins],
             bin_hz: 0.0,
-            rate,
         };
     }
 
@@ -105,7 +102,6 @@ pub fn welch_psd(signal: &[f32], rate: f32) -> Psd {
         return Psd {
             psd: vec![0.0; bins],
             bin_hz,
-            rate,
         };
     }
 
@@ -120,7 +116,7 @@ pub fn welch_psd(signal: &[f32], rate: f32) -> Psd {
         })
         .collect();
 
-    Psd { psd, bin_hz, rate }
+    Psd { psd, bin_hz }
 }
 
 impl Psd {
@@ -388,6 +384,7 @@ impl Psd {
     /// spectrum's own envelope (kept for the unit tests / any caller without a
     /// stimulus reference; production localization uses the transfer, see
     /// [`Psd::transfer_db`]).
+    #[cfg(test)] // production detects peaks in TRANSFER space via `find_peaks_in_db`
     pub fn find_peaks(&self, lo_hz: f64, hi_hz: f64, min_height_db: f64) -> Vec<SpectralPeak> {
         self.find_peaks_in_db(&self.log_psd(), lo_hz, hi_hz, min_height_db)
     }

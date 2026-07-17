@@ -231,6 +231,16 @@ struct Row {
     noise_floor_db: Option<f64>,
 }
 
+/// Requested-but-not-captured slots — recorded in the JSON and flagged
+/// INCOMPLETE on stdout so a biased subset never reads as complete evidence.
+fn skipped_slots(requested: &[u32], rows: &[Row]) -> Vec<u32> {
+    requested
+        .iter()
+        .copied()
+        .filter(|s| !rows.iter().any(|r| r.slot == *s))
+        .collect()
+}
+
 pub fn probe_doctor_calib(
     slots: &[u32],
     stim_path: &str,
@@ -411,6 +421,7 @@ pub fn probe_doctor_calib(
         );
     }
 
+    let skipped = skipped_slots(slots, &rows);
     let report = serde_json::json!({
         "stimulus": {
             "path": stim_path,
@@ -421,6 +432,7 @@ pub fn probe_doctor_calib(
         "family": family_id,
         "bands": family.bands(),
         "bandLabels": family.labels(),
+        "skippedSlots": skipped,
         "captureParams": {
             "doctorTailMs": leveller::DOCTOR_TAIL_MS,
             "refLevel": 0.5,
@@ -439,6 +451,11 @@ pub fn probe_doctor_calib(
         stim_loud.integrated_lufs,
         stim_loud.spread_lu(),
     );
+    if !skipped.is_empty() {
+        out += &format!(
+            "  INCOMPLETE — requested slots {skipped:?} could not be captured; the derivations cover a subset\n"
+        );
+    }
     for r in &rows {
         out += &format!(
             "  {:>4} | {:>8.2} | {:>8.1} | {:>8} | {:>6.2}\n",
@@ -543,6 +560,7 @@ pub fn probe_doctor_calib_factory(
         })
         .collect();
 
+    let skipped = skipped_slots(factory_slots, &rows);
     let report = serde_json::json!({
         "stimulus": {
             "path": stim_path,
@@ -555,6 +573,7 @@ pub fn probe_doctor_calib_factory(
         "bandLabels": family.labels(),
         "source": "factory",
         "rows": report_rows,
+        "skippedSlots": skipped,
     });
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
@@ -565,6 +584,11 @@ pub fn probe_doctor_calib_factory(
         stim_loud.integrated_lufs,
         stim_loud.spread_lu(),
     );
+    if !skipped.is_empty() {
+        out += &format!(
+            "  INCOMPLETE — requested slots {skipped:?} could not be captured; the reference medians cover a subset\n"
+        );
+    }
     for r in &rows {
         out += &format!(
             "  {:>4} | {:>8.2} | {:>8.1} | {:>6.2}\n",

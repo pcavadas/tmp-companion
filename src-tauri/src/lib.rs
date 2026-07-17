@@ -52,9 +52,6 @@ mod probe_api;
 mod profiles;
 #[allow(dead_code)]
 mod proto;
-// Additive: the Welch PSD estimator is reachable only from its own unit tests until a
-// later stage wires it into the doctor's SoundProfile (nothing in production calls it yet).
-#[allow(dead_code)]
 mod psd;
 mod rename;
 mod replace_inplace;
