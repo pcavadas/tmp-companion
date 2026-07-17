@@ -372,36 +372,6 @@ pub struct SoundProfile {
 }
 
 impl SoundProfile {
-    /// Build a profile from one Doctor capture of the PADDED stimulus
-    /// ([`crate::leveller::doctor_stim_slice`]): resolves the pad-aware signal
-    /// start ([`crate::leveller::doctor_signal_start`]), computes the body PSD
-    /// ([`body_psd`]) internally, and delegates to
-    /// [`SoundProfile::from_capture_with_psd`]. The convenience form for
-    /// callers that don't reuse the body PSD (the probe sweeps);
-    /// `doctor_check`'s closure keeps the manual split because it shares the
-    /// PSD with the coverage gate.
-    pub fn from_capture(
-        samples: &[f32],
-        rate: u32,
-        stimulus: &[f32],
-        onset: usize,
-        confident: bool,
-        family: Family,
-    ) -> Result<SoundProfile, String> {
-        let signal_start = crate::leveller::doctor_signal_start(onset, confident);
-        let psd = body_psd(samples, rate, signal_start);
-        let stim_psd = crate::psd::welch_psd(stimulus, rate as f32);
-        Self::from_capture_with_psd(
-            samples,
-            rate,
-            stimulus.len(),
-            onset,
-            family,
-            &psd,
-            Some(&stim_psd),
-        )
-    }
-
     /// Build a profile from one captured mono signal — the 6 Doctor-band
     /// energies, integrated loudness, and the reverb-wash tail ratio — with the
     /// body Welch PSD supplied by the caller instead of recomputed. The seam
@@ -1422,14 +1392,22 @@ pub fn has_time_effect(nodes: &[DoctorNode]) -> bool {
         .any(|n| is_time_effect(&n.model) || SUBSTRINGS.iter().any(|s| n.model.contains(s)))
 }
 
+/// Conservative "treat as wet" read: an unknown graph (empty `nodes`) OR one
+/// carrying a time-based block ([`has_time_effect`]). Gates BOTH the capture
+/// tail length ([`doctor_tail_ms`]) and `washed` eligibility ([`graph_facts`]'s
+/// `has_time`) — `has_time_effect(&[])` alone is vacuously `false`, which would
+/// otherwise read a graph-less chain as known-dry in either place.
+fn graph_is_wet_or_unknown(nodes: &[DoctorNode]) -> bool {
+    nodes.is_empty() || has_time_effect(nodes)
+}
+
 /// The Doctor capture tail (ms) for a chain: the full wash-analysis tail
-/// (`leveller::DOCTOR_TAIL_MS`) when the graph is unknown (empty `nodes` —
-/// conservative default) or carries a time-based block ([`has_time_effect`]);
-/// otherwise the short settle-only tail (`leveller::DOCTOR_TAIL_DRY_MS` —
-/// `washed` can't fire without a time-based block, so the full tail buys
-/// nothing there). The ONE home of the tail-length policy.
+/// (`leveller::DOCTOR_TAIL_MS`) when [`graph_is_wet_or_unknown`]; otherwise the
+/// short settle-only tail (`leveller::DOCTOR_TAIL_DRY_MS` — `washed` can't fire
+/// without a time-based block, so the full tail buys nothing there). The ONE
+/// home of the tail-length policy.
 pub fn doctor_tail_ms(nodes: &[DoctorNode]) -> u32 {
-    if nodes.is_empty() || has_time_effect(nodes) {
+    if graph_is_wet_or_unknown(nodes) {
         crate::leveller::DOCTOR_TAIL_MS
     } else {
         crate::leveller::DOCTOR_TAIL_DRY_MS
@@ -1438,7 +1416,7 @@ pub fn doctor_tail_ms(nodes: &[DoctorNode]) -> u32 {
 
 fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
     let mut f = GraphFacts {
-        has_time: has_time_effect(nodes),
+        has_time: graph_is_wet_or_unknown(nodes),
         ..GraphFacts::default()
     };
     for n in nodes {
@@ -1555,10 +1533,20 @@ fn after_cab_anchor(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<CabAncho
     // only coincides with it on a model's first instance (a duplicated model
     // gets a suffixed node_id, and the device silently drops an unknown
     // anchor → the insert would fall to the group's tail, after time-effects).
+    // If that same model ALSO appears EARLIER in the group (before the cab),
+    // `beforeFenderId` would resolve to that earlier instance instead — landing
+    // (and on save, PERSISTING) the insert BEFORE the cab. Refuse the ambiguous
+    // anchor and fall back to `None` (append at the group's tail — unambiguous,
+    // always still post-cab).
     let before = nodes
         .get(idx + 1)
         .filter(|n| &n.group_id == cab_group)
-        .map(|n| n.model.clone());
+        .map(|n| n.model.clone())
+        .filter(|model| {
+            !nodes[..idx]
+                .iter()
+                .any(|n| &n.group_id == cab_group && &n.model == model)
+        });
     Some(CabAnchor {
         group: cab_group.clone(),
         before,
@@ -4312,6 +4300,64 @@ mod tests {
     }
 
     #[test]
+    fn spiky_comp_anchor_falls_back_to_append_on_an_earlier_duplicate() {
+        // A SAME-model (non-time-effect) pedal sits BOTH before and after the
+        // cab. The device resolves `beforeFenderId` to the FIRST same-group
+        // match — the earlier one — so naively anchoring on the model name
+        // would land (and on save, persist) the insert BEFORE the cab. The
+        // anchor must detect the ambiguity and fall back to append (before:
+        // None) instead. Deliberately NOT a time-effect model — that trips
+        // `comp_after_cab`'s separate time-effect-before-cab advisory bail
+        // (see the sibling test below), which would mask this scenario.
+        let p = vec![
+            DoctorNode {
+                group_id: "G1".into(),
+                node_id: "od-early".into(),
+                model: "ACD_TubeScreamer".into(),
+                bypassed: false,
+                cab_sim_id: None,
+                cab_sim2_enabled: None,
+                params: HashMap::new(),
+            },
+            DoctorNode {
+                group_id: "G1".into(),
+                node_id: "amp1".into(),
+                model: "ACD_TweedDeluxe".into(),
+                bypassed: false,
+                cab_sim_id: Some("SomeCab".to_string()),
+                cab_sim2_enabled: None,
+                params: HashMap::new(),
+            },
+            DoctorNode {
+                group_id: "G1".into(),
+                node_id: "od-late".into(),
+                model: "ACD_TubeScreamer".into(),
+                bypassed: false,
+                cab_sim_id: None,
+                cab_sim2_enabled: None,
+                params: HashMap::new(),
+            },
+        ];
+        let rx = generate_rx("spiky", &p);
+        let chain_rx = rx
+            .iter()
+            .find(|r| r.kind == RxKind::Chain)
+            .expect("chain rx");
+        match &chain_rx.ops[0] {
+            DoctorOp::InsertNode {
+                before_fender_id, ..
+            } => {
+                assert_eq!(
+                    before_fender_id, &None,
+                    "ambiguous anchor must fall back to append, never resolve to the \
+                     earlier pre-cab instance"
+                );
+            }
+            other => panic!("expected InsertNode, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn spiky_comp_skips_insert_when_time_effect_precedes_cab() {
         // [delay, cab]: compressing after the cab would still sit after the
         // delay's wet tail — bail to advisory-only rather than pump it.
@@ -5218,6 +5264,30 @@ mod tests {
         assert!(keys(&diagnose(&p, None, Instrument::Guitar)).contains(&"washed"));
         let wet = chain(&["ACD_TweedDeluxe", "ACD_TMSmallHall"], &[]);
         assert!(keys(&diagnose(&p, Some(&wet), Instrument::Guitar)).contains(&"washed"));
+    }
+
+    #[test]
+    fn washed_substring_match_alone_does_not_manufacture_a_verdict() {
+        // A "Reverb"-NAMED amp with no real time-effect block trips
+        // `has_time_effect`'s conservative substring match, making `washed`
+        // ELIGIBLE — but eligibility isn't firing: on a genuinely dry
+        // measured tail (default `resid_profile`, well under `wash_tail_db`),
+        // the dB gate still holds and `washed` must not fire.
+        let p = resid_profile(Family::Guitar, 2, 0.0);
+        let named = chain(&["ACD_DeluxeReverb65BlondeNoFx"], &[]);
+        assert!(!keys(&diagnose(&p, Some(&named), Instrument::Guitar)).contains(&"washed"));
+    }
+
+    #[test]
+    fn washed_empty_graph_is_conservative_like_unknown_graph() {
+        // `Some(&[])` (an explicitly-empty, as opposed to unknown/`None`,
+        // graph) must read the same as `None` — conservative "assume wet" —
+        // not as a known-dry chain. Mirrors `doctor_tail_ms_owns_the_whole_
+        // policy`'s `doctor_tail_ms(&[])` case for the washed-eligibility path.
+        let mut p = resid_profile(Family::Guitar, 2, 0.0);
+        p.tail_ratio_db = GUITAR.wash_tail_db + 5.0;
+        assert!(keys(&diagnose(&p, Some(&[]), Instrument::Guitar)).contains(&"washed"));
+        assert!(keys(&diagnose(&p, None, Instrument::Guitar)).contains(&"washed"));
     }
 
     #[test]

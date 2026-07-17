@@ -231,6 +231,36 @@ struct Row {
     noise_floor_db: Option<f64>,
 }
 
+/// One capture's `SoundProfile` + its CAPTURED OUTPUT's own coverage (mirrors
+/// production's `output_coverage_with_body` gate — a stimulus-only coverage
+/// would read a preset-suppressed band as "covered" and put this sweep's
+/// metrics/verdicts in a different space than the shipped engine), off ONE
+/// shared post-onset body PSD. Shared by both sweeps below.
+fn profile_and_coverage(
+    samples: &[f32],
+    rate: u32,
+    stim: &[f32],
+    onset: usize,
+    confident: bool,
+    family: doctor::Family,
+) -> Result<(doctor::SoundProfile, Vec<bool>, usize), String> {
+    let signal_start = leveller::doctor_signal_start(onset, confident);
+    let body_psd = doctor::body_psd(samples, rate, signal_start);
+    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
+    let profile = doctor::SoundProfile::from_capture_with_psd(
+        samples,
+        rate,
+        stim.len(),
+        onset,
+        family,
+        &body_psd,
+        Some(&stim_psd),
+    )?;
+    let coverage =
+        doctor::output_coverage_with_body(samples, rate, signal_start, family, &body_psd);
+    Ok((profile, coverage, signal_start))
+}
+
 /// Requested-but-not-captured slots — recorded in the JSON and flagged
 /// INCOMPLETE on stdout so a biased subset never reads as complete evidence.
 fn skipped_slots(requested: &[u32], rows: &[Row]) -> Vec<u32> {
@@ -259,44 +289,40 @@ pub fn probe_doctor_calib(
     let mut rows: Vec<Row> = Vec::new();
     for &slot in slots {
         // One field-8 slot read drives the base-sound force-bypass isolation
-        // (every on/off block off) — the same recipe as `probe --doctor`.
-        let fb: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot) {
+        // (every on/off block off) — the same recipe as `probe --doctor` —
+        // and, off the SAME read, the production tail (`doctor::doctor_tail_ms`,
+        // same policy `commands/doctor.rs` uses) for THIS slot's graph, so
+        // calibration evidence is gathered in production's capture space
+        // instead of a pinned literal.
+        let (fb, tail_ms): (Vec<(String, String, bool)>, u64) = match read_slot_preset_parsed(slot)
+        {
             Ok((preset, _, _)) => {
-                footswitch::all_onoff_blocks(preset.get("ftsw").unwrap_or(&serde_json::Value::Null))
-                    .into_iter()
-                    .map(|(g, n)| (g, n, true))
-                    .collect()
+                let fb = footswitch::all_onoff_blocks(
+                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                )
+                .into_iter()
+                .map(|(g, n)| (g, n, true))
+                .collect();
+                (
+                    fb,
+                    u64::from(super::doctor_inject::tail_ms_for_doc(&preset)),
+                )
             }
             Err(e) => {
                 eprintln!("[probe] slot {slot}: preset read failed ({e}) — no isolation");
-                Vec::new()
+                (Vec::new(), u64::from(leveller::DOCTOR_TAIL_MS))
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(
-            slot,
-            None,
-            &fb,
-            &stim,
-            Some(0.5),
-            u64::from(leveller::DOCTOR_TAIL_MS),
-            false,
-        ) {
+        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), tail_ms, false) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let profile = doctor::SoundProfile::from_capture(
-                    &samples, rate, &stim, onset, confident, family,
-                )?;
-                let coverage = doctor::band_coverage(&stim, family);
+                let (profile, coverage, signal_start) =
+                    profile_and_coverage(&samples, rate, &stim, onset, confident, family)?;
                 // body_end pairs the RAW onset with the padded stim length (the
                 // pad cancels); the floor window ends at the pad-shifted start.
-                let noise_floor_db = noise_floor_db(
-                    &samples,
-                    rate,
-                    leveller::doctor_signal_start(onset, confident),
-                    confident,
-                    onset + stim.len(),
-                );
+                let noise_floor_db =
+                    noise_floor_db(&samples, rate, signal_start, confident, onset + stim.len());
                 rows.push(Row {
                     slot,
                     profile,
@@ -434,7 +460,10 @@ pub fn probe_doctor_calib(
         "bandLabels": family.labels(),
         "skippedSlots": skipped,
         "captureParams": {
-            "doctorTailMs": leveller::DOCTOR_TAIL_MS,
+            // Per-slot now (`doctor::doctor_tail_ms` off each slot's own graph,
+            // 300 ms known-dry / 1500 ms wet-or-unknown) — no longer one fixed
+            // number, so this reports the policy, not a single capture value.
+            "doctorTailMsPolicy": "graph-derived per slot (doctor::doctor_tail_ms)",
             "refLevel": 0.5,
             "bandCoverageDb": doctor::BAND_COVERAGE_DB,
         },
@@ -497,12 +526,27 @@ pub fn probe_doctor_calib_factory(
     for &slot in factory_slots {
         // Load on its OWN connection (load + engage in one connection captures
         // silence — see `doctor_capture_current`); FactoryPresets tab = 4, 1-based.
+        // Conservative default tail (wet/unknown) until the load's own graph
+        // resolves below.
+        let mut tail_ms = u64::from(leveller::DOCTOR_TAIL_MS);
         {
             match session::Session::connect() {
                 Ok(mut s) => {
                     if let Err(e) = s.load_factory_preset(slot) {
                         eprintln!("[probe] factory slot {slot}: load failed: {e} (skipping)");
                         continue;
+                    }
+                    // `load_factory_preset` discards its own field-3 push
+                    // (fire-and-forget `transact_eager`) — pump once more to
+                    // harvest it, then resolve THIS preset's production tail
+                    // (`doctor::doctor_tail_ms`) so the capture below matches
+                    // the window `commands/doctor.rs` actually uses for it.
+                    let _ = s.pump_collect(700);
+                    match s.current_preset_value() {
+                        Ok(doc) => tail_ms = u64::from(super::doctor_inject::tail_ms_for_doc(&doc)),
+                        Err(e) => eprintln!(
+                            "[probe] factory slot {slot}: graph resolve failed ({e}) — falling back to the conservative {tail_ms}ms tail"
+                        ),
                     }
                 }
                 Err(e) => {
@@ -512,19 +556,11 @@ pub fn probe_doctor_calib_factory(
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture_current(
-            &stim,
-            None,
-            &[],
-            Some(0.5),
-            u64::from(leveller::DOCTOR_TAIL_MS),
-        ) {
+        match leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail_ms) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let profile = doctor::SoundProfile::from_capture(
-                    &samples, rate, &stim, onset, confident, family,
-                )?;
-                let coverage = doctor::band_coverage(&stim, family);
+                let (profile, coverage, _) =
+                    profile_and_coverage(&samples, rate, &stim, onset, confident, family)?;
                 rows.push(Row {
                     slot,
                     profile,

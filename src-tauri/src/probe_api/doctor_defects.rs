@@ -27,7 +27,7 @@ use crate::doctor;
 use crate::leveller;
 
 use super::analyze::DoctorRead;
-use super::doctor_inject::{last_guitar_group_anchor, measure};
+use super::doctor_inject::{last_guitar_group_anchor, measure, tail_ms_for_doc};
 use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
 
 /// One versioned defect recipe: inject `ops` into a clean preset's live edit
@@ -179,10 +179,18 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
 /// recipe's before-capture reloads the stored preset regardless (a `load`
 /// always discards an unsaved edit buffer), and the runner's own final
 /// belt-and-braces restore covers the last recipe.
+///
+/// `before_tail_ms` is the STORED preset's production tail (resolved ONCE by
+/// the caller — constant across recipes since each one restores the same
+/// base before the next injects). The AFTER capture re-resolves its OWN tail
+/// off the EDITED graph (`tail_ms_for_doc`) — same reasoning as
+/// `probe_doctor_inject`: the `washed` recipe inserts a reverb, which can
+/// turn a known-dry base preset wet, and reusing `before_tail_ms` would
+/// under-capture that recipe's own wash tail.
 fn run_recipe(
     slot: u32,
     stim: &[f32],
-    tail_ms: u64,
+    before_tail_ms: u64,
     preset_name: &str,
     recipe: &DefectRecipe,
 ) -> Result<(DoctorRead, DoctorRead, String), String> {
@@ -190,7 +198,7 @@ fn run_recipe(
     let (before, line) = measure(
         stim,
         "before",
-        leveller::doctor_capture(slot, None, &[], stim, Some(0.5), tail_ms, false),
+        leveller::doctor_capture(slot, None, &[], stim, Some(0.5), before_tail_ms, false),
     )?;
     text += &line;
     if !before.verdicts.is_empty() {
@@ -201,18 +209,18 @@ fn run_recipe(
     }
 
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    drop(crate::commands::doctor::ops_session(
-        slot,
-        preset_name,
-        &recipe.ops,
-        "inject",
-    )?);
+    let mut ops_s = crate::commands::doctor::ops_session(slot, preset_name, &recipe.ops, "inject")?;
+    let _ = ops_s.pump_collect(700);
+    let after_tail_ms = ops_s
+        .current_preset_value()
+        .map_or(before_tail_ms, |doc| u64::from(tail_ms_for_doc(&doc)));
+    drop(ops_s);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let after_res = measure(
         stim,
         "after",
-        leveller::doctor_capture_current(stim, None, &[], Some(0.5), tail_ms),
+        leveller::doctor_capture_current(stim, None, &[], Some(0.5), after_tail_ms),
     );
     // Restore BEFORE propagating an after-capture failure: a mid-table recipe's
     // next `before` load self-heals the buffer, but the LAST recipe has no next
@@ -281,12 +289,14 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
         "guitar-humbucker",
     )?)?);
-    let tail = u64::from(leveller::DOCTOR_TAIL_MS);
 
-    // Resolve the insert anchor (last group) + preset name ONCE — stable
-    // across every recipe since each one restores the stored preset before
-    // the next injects.
-    let (group_id, name) = last_guitar_group_anchor(slot)?;
+    // Resolve the insert anchor (last group) + preset name + the STORED
+    // preset's own production tail ONCE — the anchor/name/before-tail are all
+    // stable across every recipe since each one restores the stored preset
+    // before the next injects (each recipe's AFTER capture re-resolves its
+    // own tail off the edited graph — see `run_recipe`'s doc).
+    let (group_id, name, before_tail) = last_guitar_group_anchor(slot)?;
+    let before_tail = u64::from(before_tail);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let mut out = format!("doctor-defects slot {slot} ({name})\n");
@@ -296,7 +306,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
 
     for recipe in recipes(&group_id) {
         out += &format!("\n[{}] {}\n", recipe.name, recipe.rationale);
-        match run_recipe(slot, &stim, tail, &name, &recipe) {
+        match run_recipe(slot, &stim, before_tail, &name, &recipe) {
             Ok((before, after, text)) => {
                 out += &text;
                 let row = recipe_row(&recipe, &before, &after);

@@ -125,7 +125,7 @@ test.describe("Marketing screenshots", () => {
 
     // ── Doctor: check three PLAIN presets (Base only). The backend injects curated
     // SoundProfiles in showcase mode (doctor::showcase_profile), so the REAL diagnose
-    // engine renders genuine cards (lost/washed, muddy/lost, harsh/fizzy) — the offline
+    // engine renders genuine cards (lost/washed, dark/muddy, harsh/fizzy) — the offline
     // fake capture would otherwise read "All clear".
     await page.getByRole("button", { name: "Doctor" }).click();
     const filter = page.getByPlaceholder(/Filter by name or slot/i);

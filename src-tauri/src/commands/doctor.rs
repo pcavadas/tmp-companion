@@ -529,12 +529,19 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 error: err.cloned(),
             }
         };
-        // Measured sounds first (in run order), then the errored ones — one pass
-        // groups both into their presets.
-        let all = measured
-            .iter()
-            .map(|(i, p)| sound_of(*i, Some(p), None))
-            .chain(errors.iter().map(|(i, e)| sound_of(*i, None, Some(e))));
+        // Preserve the original sound/preset order: merge by index into
+        // `resolved` rather than measured-then-errors, which pushed every
+        // failure (and any preset whose only sound failed) behind every
+        // success. Every index landed in exactly one of the two Vecs above.
+        let mut profile_by_i: Vec<Option<&doctor::SoundProfile>> = vec![None; resolved.len()];
+        for (i, p) in &measured {
+            profile_by_i[*i] = Some(p);
+        }
+        let mut error_by_i: Vec<Option<&String>> = vec![None; resolved.len()];
+        for (i, e) in &errors {
+            error_by_i[*i] = Some(e);
+        }
+        let all = (0..resolved.len()).map(|i| sound_of(i, profile_by_i[i], error_by_i[i]));
         for sound in all {
             match presets
                 .iter_mut()
@@ -742,25 +749,40 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
 /// `pub(crate)`: shared with `probe --doctor-inject` (touches only
 /// `Session`/`leveller`, no Tauri state); move out of `commands::` if a third
 /// caller appears.
+///
+/// Every failure past this point — including `Session::connect`/`confirm_active`/
+/// `begin_live_edit`, not just `apply_doctor_ops` — routes through the same
+/// restore: the caller (`doctor_apply` step (b)) is invoked right after a BEFORE
+/// capture that already wrote unsaved force-bypass isolation onto the live edit
+/// buffer (`leveller::doctor_capture`/`capture_full_at`, which never reloads
+/// before returning), so the device is dirty even before this function's own
+/// `Session::connect` runs — a setup failure here must still discard that, not
+/// just an `apply_doctor_ops` failure.
 pub(crate) fn ops_session(
     list_index: u32,
     expect_name: &str,
     ops: &[doctor::DoctorOp],
     verb: &str,
 ) -> Result<Session, String> {
-    let mut s = Session::connect()?;
-    s.confirm_active(list_index, Some(expect_name))?;
-    s.begin_live_edit()?;
-    if let Err(detail) = apply_doctor_ops(&mut s, ops) {
-        drop(s);
-        return Err(match leveller::restore_saved_preset(list_index) {
+    fn restored_err(list_index: u32, verb: &str, detail: String) -> String {
+        match leveller::restore_saved_preset(list_index) {
             Ok(()) => format!("couldn't {verb} — the preset was restored unchanged: {detail}"),
             Err(restore_err) => format!(
                 "couldn't {verb} ({detail}) AND the restore also failed ({restore_err}) — verify the preset on the unit"
             ),
-        });
+        }
     }
-    Ok(s)
+    // `s` is local to this closure, so an early `?` return drops it (freeing
+    // the seize) as the closure's scope unwinds — BEFORE `.map_err` below
+    // calls `restored_err`, which opens its own connection to restore.
+    let setup = || -> Result<Session, String> {
+        let mut s = Session::connect()?;
+        s.confirm_active(list_index, Some(expect_name))?;
+        s.begin_live_edit()?;
+        apply_doctor_ops(&mut s, ops)?;
+        Ok(s)
+    };
+    setup().map_err(|detail| restored_err(list_index, verb, detail))
 }
 
 /// Apply a prescription LIVE onto the edit buffer (never saved) and return the
@@ -858,6 +880,12 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                         base64_encode(&wav_bytes(&before, rate)?)
                     );
                     before_cache_put(key, clip.clone());
+                    // Same inter-session gap the cache-hit branch takes after its
+                    // own restore: the BEFORE capture's session just closed, and
+                    // `ops_session` opens a fresh one next — let the seize release.
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        leveller::RECONNECT_GAP_MS,
+                    ));
                     clip
                 }
             };

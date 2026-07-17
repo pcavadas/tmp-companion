@@ -24,6 +24,16 @@ export interface ApplyLock {
   acquire: (id: string, listIndex: number) => void;
   /** Release the lock IFF `id` currently holds it (a stale release is a no-op). */
   release: (id: string) => void;
+  /** Discard the device edit + release the lock IFF `id` currently holds it,
+   *  else a no-op — the single arbiter a PrescriptionCard calls on ITS OWN
+   *  unmount (row collapse, a Match-reference swap, or an apply resolving
+   *  after unmount) so an abandoned applied-but-unsaved edit never strands
+   *  the device + the lock with no mounted UI left to save/discard it.
+   *  Backed by a ref (not React state) in the owner so it's race-safe no
+   *  matter which of two simultaneous unmounts (this card's vs the whole
+   *  results page's) runs its cleanup first — whichever calls it first wins,
+   *  the other becomes a no-op. */
+  discardIfMine: (id: string, listIndex: number) => void;
 }
 
 const NOOP: ApplyLock = {
@@ -32,6 +42,9 @@ const NOOP: ApplyLock = {
     /* no provider: unguarded */
   },
   release: () => {
+    /* no provider: unguarded */
+  },
+  discardIfMine: () => {
     /* no provider: unguarded */
   },
 };

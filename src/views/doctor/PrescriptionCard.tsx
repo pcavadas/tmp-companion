@@ -3,7 +3,7 @@
 // nothing to apply). The apply path writes LIVE (unsaved) and the save is gated on
 // the backup acknowledgment, mirroring the Leveling / Copy save-disclaimer model.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
@@ -131,6 +131,23 @@ export function PrescriptionCard({
   const lockedByOther =
     lock.activeCard !== null && lock.activeCard.id !== cardId;
 
+  // The card itself can unmount while an edit sits applied-but-unsaved on the
+  // device (row collapse, or a Match-reference swap that stops rendering this
+  // card) — with no mounted UI left to Save/Discard, that would strand the
+  // device edit AND the app-wide lock. `discardIfMine` is a stable function
+  // (always the same reference, however `lock`'s wrapping object churns from
+  // OTHER cards' acquire/release) that no-ops unless THIS card still holds
+  // the lock, so calling it unconditionally on unmount is safe and needs no
+  // extra phase/ownership bookkeeping here.
+  const { discardIfMine } = lock;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      discardIfMine(cardId, listIndex);
+    };
+  }, [discardIfMine, cardId, listIndex]);
+
   // Only oneclick / chain non-scene prescriptions have an Apply path; advisory and
   // scene-consistency cards are static.
   const applicable = !scene && (rx.kind === "oneclick" || rx.kind === "chain");
@@ -171,14 +188,24 @@ export function PrescriptionCard({
         nodes,
         footswitches,
       });
-      setClips(res);
-      setAppliedOps(ops);
-      setPhase("applied");
+      // If we unmounted while this was in flight (row collapsed, or the
+      // Match reference swapped away), the unmount cleanup above already
+      // fired `discardIfMine` — `lock.acquire` ran before the await, so
+      // ownership was already established for it to find and clean up,
+      // regardless of whether doctorApply itself had landed yet. Skip the
+      // local state updates here; there's no mounted UI left to show them.
+      if (mountedRef.current) {
+        setClips(res);
+        setAppliedOps(ops);
+        setPhase("applied");
+      }
     } catch (e) {
       lock.release(cardId);
-      setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
+      if (mountedRef.current) {
+        setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
+      }
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   }
 

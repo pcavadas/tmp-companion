@@ -95,6 +95,31 @@ export function DoctorResults({
   // would clobber the first card's live edit. Hence the lock lives here, not per
   // preset card.
   const [activeCard, setActiveCard] = useState<ActiveApplyCard | null>(null);
+
+  // An applied-but-unsaved edit sits in the DEVICE's edit buffer — leaving this
+  // page (unmount, or "Check other sounds" → flow.reset) must drop it, or the
+  // orphaned edit silently rides the next preset interaction. Fire-and-forget
+  // (the cancel-lane pattern); the ref is cleared first so the page's own
+  // unmount cleanup can't double-fire after the reset path already discarded.
+  const activeCardRef = useRef<ActiveApplyCard | null>(null);
+  useEffect(() => {
+    activeCardRef.current = activeCard;
+  }, [activeCard]);
+
+  // The single arbiter for "discard the device edit + drop the lock, but only
+  // if `id` is really still the holder" — reads/writes `activeCardRef`
+  // directly (not React state) so it's safe to call from BOTH this page's own
+  // unmount cleanup AND a PrescriptionCard's unmount cleanup without knowing
+  // which one runs first (React doesn't guarantee child-before-parent
+  // ordering when a whole subtree unmounts at once): the first call to fire
+  // wins, the second sees the ref already cleared and no-ops.
+  const discardIfMine = useCallback((id: string, listIndex: number) => {
+    if (activeCardRef.current?.id !== id) return;
+    activeCardRef.current = null;
+    void doctorDiscard(listIndex).catch(() => undefined);
+    setActiveCard((cur) => (cur?.id === id ? null : cur));
+  }, []);
+
   const lock = useMemo<ApplyLock>(
     () => ({
       activeCard,
@@ -104,26 +129,15 @@ export function DoctorResults({
       release: (id) => {
         setActiveCard((cur) => (cur?.id === id ? null : cur));
       },
+      discardIfMine,
     }),
-    [activeCard],
+    [activeCard, discardIfMine],
   );
 
-  // An applied-but-unsaved edit sits in the DEVICE's edit buffer — leaving this
-  // page (unmount, or "Check other sounds" → flow.reset) must drop it, or the
-  // orphaned edit silently rides the next preset interaction. Fire-and-forget
-  // (the cancel-lane pattern); the ref is cleared first so the unmount cleanup
-  // can't double-fire after the reset path already discarded.
-  const activeCardRef = useRef<ActiveApplyCard | null>(null);
-  useEffect(() => {
-    activeCardRef.current = activeCard;
-  }, [activeCard]);
   const discardActive = useCallback(() => {
     const cur = activeCardRef.current;
-    activeCardRef.current = null;
-    if (cur) {
-      void doctorDiscard(cur.listIndex).catch(() => undefined);
-    }
-  }, []);
+    if (cur) discardIfMine(cur.id, cur.listIndex);
+  }, [discardIfMine]);
   useEffect(() => {
     return discardActive; // unmount only (discardActive is stable)
   }, [discardActive]);

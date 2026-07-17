@@ -178,6 +178,32 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
             // device needs the gap for its read-after-write list propagation.
             std::thread::sleep(std::time::Duration::from_secs(8));
         }
+        // Re-confirm THIS target in the SAME address space as the mutation,
+        // immediately before it: the classification pass above ran off one
+        // snapshot, but seeding multiple presets spans many seconds and several
+        // connections per target — a later target's real state could have moved
+        // since. `replace_inplace_with` itself only verifies the SCRATCH slot
+        // before saving, never the destination, so this is the one guard.
+        let mut s = Session::connect()?;
+        let list = read_full_list(&mut s)?;
+        let entry = list
+            .iter()
+            .find(|e| e.slot == p.list_index)
+            .map(|e| e.name.clone());
+        let still_safe = match &entry {
+            None => true,
+            Some(name) if session::is_empty_slot_name(name) => true,
+            Some(name) if *name == p.name => slot_is_fixture_owned(&mut s, p.list_index + 1),
+            Some(_) => false,
+        };
+        drop(s);
+        if !still_safe {
+            return Err(format!(
+                "target slot {} changed since classification and is no longer safe \
+                 to seed over — refusing (rerun to re-classify)",
+                p.list_index
+            ));
+        }
         // A `.preset` file is `xor_jld(compact JSON)`; `import_preset` adds the outer
         // LZ4. Lean mode (no Song-binding/report reads): scratch slots have no Song
         // rows, and the seed must conserve the device's open/close budget.

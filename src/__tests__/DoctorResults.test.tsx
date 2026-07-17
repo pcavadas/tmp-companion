@@ -6,7 +6,7 @@
 // commands (apply/save/discard) are mocked.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -714,6 +714,72 @@ describe("DoctorResults — prescription lifecycle", () => {
 
     unmount();
     expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards the applied-but-unsaved edit when its OWN row collapses (page stays mounted)", async () => {
+    // The card unmounts on its own (SoundRow renders the expanded region
+    // conditionally) well before the whole results page ever does — that
+    // must not strand the device edit or the sibling Apply lock.
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(screen.getByText("Lead Solo"));
+    await user.click(
+      screen.getAllByRole("button", { name: /apply to the unit/i })[0],
+    );
+    await screen.findByText("Listen & compare");
+    expect(doctorDiscard).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    ).toBeDisabled();
+
+    // Collapse the row holding the applied-but-unsaved edit.
+    await user.click(screen.getByText("Rhythm Crunch"));
+
+    expect(screen.queryByText("Listen & compare")).not.toBeInTheDocument();
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+    // ...and the sibling unlocks now that the lock is free.
+    expect(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    ).toBeEnabled();
+  });
+
+  it("discards an apply that's still in flight when its row collapses, and doesn't re-discard once it resolves", async () => {
+    let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
+    vi.mocked(doctorApply).mockImplementation(
+      () =>
+        new Promise<DoctorApplyResult>((res) => {
+          resolveApply = res;
+        }),
+    );
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+
+    // Collapse before doctorApply resolves — no PrescriptionCard is mounted
+    // to receive the eventual result. The lock was already acquired before
+    // the await, so the row's own unmount cleanup can (and does) discard
+    // right away, without waiting on the in-flight apply.
+    await user.click(screen.getByText("Rhythm Crunch"));
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+
+    // The apply landing afterward must not re-discard nor blow up on an
+    // unmounted component.
+    resolveApply({
+      beforeClip: "data:audio/wav;base64,AAAA",
+      afterClip: "data:audio/wav;base64,BBBB",
+    });
+    await waitFor(() => {
+      expect(doctorApply).toHaveBeenCalledTimes(1);
+    });
     expect(doctorDiscard).toHaveBeenCalledTimes(1);
   });
 
