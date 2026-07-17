@@ -17,6 +17,7 @@ import type {
   AmpCandidate,
   FootswitchInfo,
   SceneInfo,
+  SilenceHint,
   SongRecord,
   SetlistRecord,
 } from "../../lib/types";
@@ -42,6 +43,9 @@ export interface LibraryScan {
   /** Per-preset routed signal graph keyed by 0-based LIST INDEX — read from the same
    *  backup. Drives the Copy feature's per-preset signal-path render. */
   graphByIndex: Map<number, ActiveGraph>;
+  /** Per-preset silence hint keyed by 0-based LIST INDEX — only flagged presets get an
+   *  entry. Refines the Level flow's offbranch ("not on USB 1/2") row status. */
+  silenceHintByIndex: Map<number, SilenceHint>;
   /** The unit's presets — `{ slot: 0-based LIST INDEX, name }` — for the Songs tab's
    *  Presets axis rail. Read from the same backup, so the axis needs no device call. */
   presets: { slot: number; name: string }[];
@@ -68,6 +72,7 @@ const emptyScan = (): LibraryScan => ({
   footswitchesPerIndex: new Map(),
   blocksByIndex: new Map(),
   graphByIndex: new Map(),
+  silenceHintByIndex: new Map(),
   presets: [],
   songPresetSlots: new Map(),
   songs: [],
@@ -129,6 +134,7 @@ export async function ensureLibraryScan(): Promise<void> {
     const fsw = new Map<number, FootswitchInfo[]>();
     const blocks = new Map<number, string[]>();
     const graphs = new Map<number, ActiveGraph>();
+    const silence = new Map<number, SilenceHint>();
     // backup slot is the 1-based device slot; the list is 0-based → −1.
     const presets: { slot: number; name: string }[] = [];
     res.presets.forEach((p) => {
@@ -143,6 +149,7 @@ export async function ensureLibraryScan(): Promise<void> {
         p.blocks.map((b) => b.fender_id),
       );
       graphs.set(p.slot - 1, p.graph);
+      if (p.silence_hint != null) silence.set(p.slot - 1, p.silence_hint);
       presets.push({ slot: p.slot - 1, name: p.name });
     });
     // Song slot → preset LIST INDICES (preset device slot − 1), deduped per song.
@@ -170,6 +177,7 @@ export async function ensureLibraryScan(): Promise<void> {
       footswitchesPerIndex: fsw,
       blocksByIndex: blocks,
       graphByIndex: graphs,
+      silenceHintByIndex: silence,
       presets,
       songPresetSlots,
       songs,

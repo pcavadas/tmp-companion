@@ -576,7 +576,15 @@ export interface BackupPresetRow {
    * params, from the same presetJson — drives the footswitch picker + preset-list
    * tags for the whole library with no extra device read. Empty otherwise. */
   footswitches: FootswitchInfo[];
+  /** JSON-visible cause of a silent leveling capture (`backup_read::silence_hint`):
+   * `amp_zero` = every active amp's outputLevel saved at 0 (definite silence);
+   * `exp_mute` = an exp-pedal binding zeroes an amp outputLevel at one end (silence
+   * only when a physical pedal sits there). Refines the "not on USB 1/2" verdict. */
+  silence_hint: SilenceHint | null;
 }
+
+/** A [`BackupPresetRow.silence_hint`] value. */
+export type SilenceHint = "amp_zero" | "exp_mute";
 
 /** One block in a backup preset's audioGraph roster (`lib::BackupBlock`). */
 export interface BackupBlock {

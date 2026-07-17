@@ -36,6 +36,7 @@ const row = (slot: number, name: string) => ({
   blocks: [],
   graph: emptyGraph,
   footswitches: [],
+  silence_hint: null,
 });
 
 // device slots 8 / 58 → list indices 7 / 57; three song→preset bindings.
@@ -59,6 +60,27 @@ describe("libraryScan — songs↔presets axis data", () => {
   beforeEach(() => {
     resetLibraryScan();
     vi.mocked(invoke).mockReset();
+  });
+
+  it("keys silence hints by 0-based list index, only for flagged rows", async () => {
+    const backup: BackupReadResult = {
+      ...BACKUP,
+      presets: [
+        { ...row(8, "Plexi Crunch"), silence_hint: "amp_zero" },
+        row(58, "Stadium Lead"),
+      ],
+    };
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(backup)
+        : Promise.resolve(null),
+    );
+
+    await ensureLibraryScan();
+    const lib = getLibraryScan();
+
+    expect(lib.silenceHintByIndex.get(7)).toBe("amp_zero");
+    expect(lib.silenceHintByIndex.has(57)).toBe(false);
   });
 
   it("derives the preset list + song→preset map from one backup", async () => {

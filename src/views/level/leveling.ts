@@ -20,6 +20,7 @@ import type {
   LevelParamCandidate,
   Profile,
   SceneInfo,
+  SilenceHint,
 } from "../../lib/types";
 import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
@@ -321,6 +322,17 @@ export interface RunItem {
    *  above the gated average; `rebalance` = shallow lane-mute isolation made the parallel
    *  balance approximate. Resolved to a single cause when the RunItem is built. */
   verifyByEar?: "envelope" | "dynamic" | "rebalance";
+  /** The preset's backup-scan silence hint, stamped at item build — refines the
+   *  offbranch row status (see `offbranchStatus`). */
+  silenceHint?: SilenceHint;
+}
+
+/** The offbranch ("silent capture") row status, refined by the preset's JSON-visible
+ *  cause when the backup scan found one. Rendered verbatim in RunBody + SummaryBody. */
+export function offbranchStatus(hint: SilenceHint | undefined): string {
+  if (hint === "amp_zero") return "amp output at zero";
+  if (hint === "exp_mute") return "exp pedal may mute";
+  return "not on USB 1/2";
 }
 
 /** Turn a checked setup row into a run item with its resolved instrument + target. */

@@ -451,3 +451,116 @@ fn build_scenario_fixture() {
         n_presets,
     );
 }
+
+// --- silence_hint: the Layer-1 static pre-flight for the "not on USB 1/2" clamp ---
+// A silent leveling capture has two JSON-visible causes the generic routing verdict
+// hides: the amp's outputLevel saved at 0 (definite silence), and an expression-pedal
+// binding whose zero end mutes the amp when a physical pedal sits there (conditional).
+
+#[test]
+fn silence_hint_flags_zeroed_active_amp() {
+    let v = serde_json::json!({"audioGraph":{"guitarNodes":{"G1":[
+        {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+         "dspUnitParameters":{"bypass":false,"outputLevel":0.0}}]}}});
+    assert_eq!(silence_hint(&v), Some("amp_zero"));
+}
+
+#[test]
+fn silence_hint_ignores_bypassed_amp_at_zero() {
+    // A bypassed amp passes signal flat — outputLevel 0 on it is inert.
+    let v = serde_json::json!({"audioGraph":{"guitarNodes":{"G1":[
+        {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+         "dspUnitParameters":{"bypass":true,"outputLevel":0.0}}]}}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_ignores_zero_when_another_active_amp_is_live() {
+    // Parallel-lane case: one amp muted, the other still feeds USB.
+    let v = serde_json::json!({"audioGraph":{"guitarNodes":{
+        "G1":[{"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+               "dspUnitParameters":{"bypass":false,"outputLevel":0.0}}],
+        "G2":[{"FenderId":"ACD_TwinReverb65","nodeId":"ACD_TwinReverb65",
+               "dspUnitParameters":{"bypass":false,"outputLevel":0.5}}]}}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_flags_exp_binding_with_zero_end() {
+    // The HW-confirmed field case (user preset "Rhythm"): exp2 → amp outputLevel,
+    // heel 0.0 / liveMode — a pedal parked at heel measures deep digital silence.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_TweedDeluxe",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68,"liveMode":true}]}});
+    assert_eq!(silence_hint(&v), Some("exp_mute"));
+}
+
+#[test]
+fn silence_hint_none_on_healthy_preset() {
+    // Live amp + an exp binding whose BOTH ends are non-zero (no mutable position).
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_TweedDeluxe",
+             "paramId":"outputLevel","heel":0.3,"toe":1.0}]}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_amp_zero_wins_over_exp_binding() {
+    // Both present → the definite cause (saved zero) outranks the conditional one.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.0}}]}},
+        "exp":{"exp2":[
+            {"func":"param","paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), Some("amp_zero"));
+}
+
+#[test]
+fn silence_hint_ignores_exp_binding_on_non_amp_node() {
+    // The bound groupId/nodeId resolves, but the node isn't an amp (e.g. an EQ block
+    // that happens to expose a same-named "outputLevel" param) — must not flag.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_FiveBandParamEQ",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_ignores_exp_binding_on_missing_node() {
+    // A stale binding pointing at a groupId/nodeId no longer present in the graph.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_GoneNow",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_ignores_exp_binding_on_bypassed_amp() {
+    // The bound amp is bypassed — its outputLevel is inert, so a zero-end binding
+    // can't mute anything live.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":true,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_TweedDeluxe",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), None);
+}
