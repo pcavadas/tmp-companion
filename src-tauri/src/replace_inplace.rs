@@ -54,7 +54,7 @@ pub(crate) fn replace_inplace_core(
 /// carry no Song rows, and each verification read costs 1–4 fresh connections on a
 /// device whose open/close budget the seed must conserve (HW-observed: connection
 /// churn congests the unit into truncated list reads + `0xe00002c5` open lockouts).
-/// The write-safety chain (strict landing lists → `confirm_active` → guarded clear)
+/// The write-safety chain (floored landing lists → `confirm_active` → guarded clear)
 /// is identical in both modes.
 pub(crate) fn replace_inplace_with(
     orig_list_index: u32,

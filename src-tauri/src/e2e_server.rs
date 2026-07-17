@@ -328,7 +328,7 @@ async fn e2e_mark_seeded() -> Result<(), String> {
 
 /// ONLINE-e2e recovery arm: sweep stray scenario imports out of the user's bank
 /// (fail-closed: only exact scenario-name matches at wrong slots, off a
-/// completeness-floored strict list). Invoked by spec teardown + the e2e.sh recovery
+/// completeness-floored tolerant list). Invoked by spec teardown + the e2e.sh recovery
 /// so an aborted seed can never leave test junk on the unit past the run.
 #[cfg(feature = "e2e")]
 #[tauri::command]
@@ -353,7 +353,10 @@ async fn e2e_clear_preset(
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         let mut s = Session::connect()?;
-        let list = s.list_my_presets_strict()?;
+        // Tolerant read (strict fails on back-to-back lean sessions — see
+        // replace_inplace_with): a truncated list leaves the slot absent → the
+        // guard below refuses (fail-closed).
+        let list = s.list_my_presets()?;
         let entry = list
             .get(slot as usize)
             .ok_or_else(|| format!("slot {slot} out of range"))?;

@@ -167,18 +167,23 @@ seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mi
   [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
 }
 
-seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 3 failed attempts
+seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed attempts
   local attempt
-  for attempt in 1 2 3; do
+  for attempt in 1 2 3 4; do
     log "seeding the scenario presets (attempt $attempt)…"
     if seed_scenario "$1"; then return 0; fi
-    log "seed attempt $attempt failed — resting 90 s (open lockout) before retry"
-    sleep 90
+    log "seed attempt $attempt failed — resting 120 s (open lockout) before retry"
+    sleep 120
   done
   return 1
 }
 
 log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
+# Initial quiet rest: a previous run that just ended (its recovery, or an aborted
+# seed) arms the device's open lockout, and a failed first attempt re-arms it —
+# back-to-back runs need the line quiet BEFORE the first open, not after a failure.
+log "resting the unit before the first seed…"
+sleep 60
 if ! seed_with_retry pre; then
   err "scenario seed failed after 3 attempts — aborting (nothing to recover: no server ran)"
   err "  → check nothing else holds the device (Pro Control, a stale server/app), rest a minute, rerun"
