@@ -53,41 +53,43 @@ in the same check.
   hash fires, a bright cab's harmonic top doesn't).
 - **washed** — post-stimulus tail-RMS rule (onset-aligned split).
 - **spiky** — dynamics-spread rule (clean chains only).
-- **resonant / boxy** — detection machinery ships, VERDICTS ship DISABLED
-  (`LOCALIZED_RULES_ENABLED = false`): three HW design rounds (raw capture
-  space → transfer space → Q-window + band corroboration) each moved the
-  boundary between a playable resonance and a normal chain's comb fine
-  structure, and the final round still missed the injected cocked wah (its
-  resonance is wide enough that the octave envelope tracks it) while firing
-  on a designated-clean preset — inverted utility, so the verdicts wait for
-  a controlled ground-truth round (a parametric-EQ schema dump enabling
-  exact height/Q injection). A wah-class defect still surfaces via the band
-  rules ("thin" + the mid local in the meter). The machinery below stays
-  live, unit-locked (via `localized_diags`), and recorded by the probe arms.
-  (localized, in TRANSFER space: `Psd::transfer_db` =
-  capture log-PSD − STIMULUS log-PSD, so the deterministic stimulus's own
-  spectral ridges cancel; then excess over a one-octave median envelope, wide
-  enough that a real cocked-wah resonance develops excess instead of being
-  tracked flat; peaks carried on `SoundProfile.peaks`): `resonant` = the
-  strongest 200 Hz–8 kHz peak ≥ 6.5 dB with **Q in [2, 16]** AND **band
-  corroboration** — the peak's OWN band must be hot in both consensus spaces
-  (local AND centered > `RESONANT_MIN_BAND_LOCAL_DB` = 2.0). Corroboration is
-  the decisive false-positive control: a real chain's transfer is full of
-  narrow high-Q comb fine structure (isolated lines Q 39…1098; dense forests
-  mimic ANY Q — shape-only detection false-fired resonant on up to 25/25
-  clean factory presets), but the fakes all sit in ≈0-local bands, while a
-  playable resonance carries real band heat (the injected cocked wah: Q≈6,
-  +15.7 dB mid local; `probe --doctor-inject --block ACD_CryBabyGCB95`).
-  Under the full gate the factory bank fires 2/25, both audible localized
-  bumps (a +5.5 dB 709 Hz honk, a corroborated 2.25 kHz ridge). Q is measured
+- **resonant / boxy** — ENABLED since the 2026-07-17 parametric-EQ
+  ground-truth round (`LOCALIZED_RULES_ENABLED = true`). Lineage: three
+  earlier shape-only HW rounds (raw capture space → transfer space →
+  Q-window + band corroboration) could not place gates, so the verdicts
+  first shipped disabled. The ground-truth round dumped the
+  `ACD_FiveBandParamEQ` schema (`filterN{frequency,gaindb,q}` are live
+  changeParameter controlIds, HW-verified: 1 kHz/+12 dB/Q8 in → 1008 Hz/q 7.5
+  measured; band 1 defaults to a high-pass — never use it for a peak), ran a
+  height×Q injection matrix (+6/+9/+12 dB × Q 2–14 at 400–5600 Hz) through a
+  real drives→'65 Deluxe+CabIR chain, and placed the gates against the
+  25-slot factory peak population. Detection runs in TRANSFER space
+  (`Psd::transfer_db` = capture log-PSD − STIMULUS log-PSD, stimulus ridges
+  cancel; excess over a one-octave median envelope; peaks on
+  `SoundProfile.peaks`). Gates: `resonant` = the strongest peak ≤ 4 kHz
+  (above ≈4 kHz the cab-IR comb forest owns the transfer — 55/75 factory
+  peaks, ungateable) with height ≥ 13.5 dB (factory in-range max: 12.6; the
+  envelope saturates measured excess near 20·log10(Q/2), so the floor
+  effectively targets Q ≳ 10 flagrant rings — feedback/parametric class),
+  measured Q in [2, 40] (the estimator INFLATES q for strong on-chain rings
+  — an injected Q14 flagrant ring measured h 24.2 / q 25.4; the ceiling only
+  guards the isolated comb-needle class at q 85–455), AND band corroboration
+  (the peak's OWN band hot in both consensus spaces, local AND centered >
+  `RESONANT_MIN_BAND_LOCAL_DB` = 2.0). `boxy` = a 300–500 Hz hump ≥ 7.5 dB
+  (a clean-site +12 dB Q8 hump measures 8.3; the factory bank has ZERO peaks
+  below 662 Hz) under the same Q ceiling + corroboration, winning over
+  resonant for the same peak. Scope honesty: a cocked WAH is a WIDE hump —
+  peak-space h ≈ 6.7 while its mid local reads +15.7 dB — so wahs surface
+  via the BAND rules (thin + the mid meter) by physics; the defects suite
+  pins this (`resonant_wah` must NOT fire resonant) plus calibrated
+  positives (`resonant_peq`: stacked 2×12 dB Q14 @ 2.6 kHz → resonant;
+  `boxy_peq`: stacked 2×12 dB Q8 @ 420 Hz → boxy; 7/7 HIT). Q is measured
   pessimistically as max(±20-bin parabola-fit bandwidth, above-floor run
   width) — a first-crossing −3 dB walk reads estimate noise, not bandwidth.
-  `boxy` = a 300–500 Hz hump ≥ 7 dB under the same Q ceiling + corroboration
-  (wins over resonant when the same peak is in-band). An octave-wide graphic-EQ
-  lift keeps Q < 2 and never reads resonant (HW-verified). Their Rx is a cut
-  on the log-nearest EQ-10 band naming the MEASURED frequency — generated
-  inline (not via `generate_rx`, whose key-only signature can't carry the
-  peak).
+  An octave-wide graphic-EQ lift keeps Q < 2 and never reads resonant
+  (HW-verified). Their Rx is a cut on the log-nearest EQ-10 band naming the
+  MEASURED frequency — generated inline (not via `generate_rx`, whose
+  key-only signature can't carry the peak).
 
 Thresholds are constants in `doctor.rs`, DUAL-keyed by **(Family,
 StimulusKind)**: families Guitar / Bass / **BassVi** (7-band layout with a

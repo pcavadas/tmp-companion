@@ -174,3 +174,35 @@ rehearsal-and-louder phenomenon, not a bedroom one. Left as an open data point:
 the base reads flat here but was reported boomy by ear; if a future SPL-anchored
 sweep still finds the base flat, the base-boom is environmental (room/other
 guitarist), not a preset defect.
+
+## 2026-07-17 — parametric-EQ ground-truth round (resonant/boxy ENABLED)
+
+**Schema** (`ACD_FiveBandParamEQ`, from the user bank's own presets + HW write-verify):
+per band N=1..5, `filterNfrequency` (Hz), `filterNgaindb` (dB), `filterNq`, `filterNtype`
+(2 = peak), `filterNbypass` — all live `changeParameter` controlIds (1 kHz/+12 dB/Q8 in →
+1008 Hz/q 7.5 measured). Band 1 defaults to a HIGH-PASS (setting its frequency collapsed
+the lows −16 dB and fired bright/thin); bands 2–4 default to active peaks.
+
+**Matrix** (`probe --doctor-inject … --block ACD_FiveBandParamEQ`, drives→'65 Deluxe+CabIR
+chain, list index 16): gains +6/+9/+12 dB × Q 2/4/8/12 at 700/2000/5600 Hz + a 400/1200 Hz
+boxy pass + a stacked 2×12 dB Q14 flagrant-ring probe. Findings:
+
+- **Measured q is site-dominated, not injection-recoverable** (Q2 and Q12 at the 700 Hz
+  site both read q ≈ 5–6); q's only honest job is excluding isolated comb needles
+  (q 85–455). The estimator also INFLATES q for strong rings (injected Q14 → q 25.4), so
+  the ceiling moved 16 → 40.
+- **Heights add in dB on structured sites** (700 Hz: 8.0 native + 8.3 injected → 16.3
+  measured) and **saturate on clean sites** near 20·log10(Q/2) (Q8 +12 dB → 8.3; Q9
+  synthetic ceiling ≈ 13 at any drive).
+- **The factory population below 4 kHz tops out at h = 12.6** (a synth preset's own
+  filter), and 55/75 factory peaks live ABOVE 4 kHz (comb forest, ungateable) → gates:
+  freq ≤ 4 kHz, resonant h ≥ 13.5, boxy (300–500 Hz, zero factory peaks in range)
+  h ≥ 7.5, q ∈ [2, 40], + band corroboration unchanged.
+- **The cocked wah is a band-space phenomenon by physics** (peak-space h ≈ 6.7, mid local
+  +15.7 dB) — pinned as the `resonant_wah` must-NOT-fire-resonant defects recipe.
+
+**Validation**: defects suite 7/7 HIT (control silent; muddy/lost/washed hit;
+`resonant_peq` stacked 2×12 dB Q14 @ 2.6 kHz → resonant, measured h 24.2; `boxy_peq`
+stacked 2×12 dB Q8 @ 420 Hz → boxy; wah → thin only). Factory silence holds by
+construction (no in-range factory peak reaches either floor at any q). The probed
+preset's stored bytes were sha-verified untouched across all ~20 injection runs.

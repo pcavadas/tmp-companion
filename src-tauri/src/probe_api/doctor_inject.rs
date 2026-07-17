@@ -61,12 +61,28 @@ pub(crate) fn measure(
         let tops: Vec<String> = read
             .peaks
             .iter()
-            .take(3)
+            .take(10)
             .map(|p| format!("{:.0}Hz h={:.1}dB q={:.1}", p.freq_hz, p.height_db, p.q))
             .collect();
         line += &format!("          peaks: {}\n", tops.join(" · "));
     }
     Ok((read, line))
+}
+
+/// The `dspUnitParameters` of the first node whose `FenderId` matches, from a live
+/// field-3 preset doc (searches both node groups).
+fn node_params<'a>(doc: &'a serde_json::Value, fender_id: &str) -> Option<&'a serde_json::Value> {
+    // guitarNodes/micNodes are OBJECTS keyed by group id (G1..G7 / M1..M4),
+    // each holding the node array.
+    ["guitarNodes", "micNodes"].iter().find_map(|grp| {
+        doc.pointer(&format!("/audioGraph/{grp}"))?
+            .as_object()?
+            .values()
+            .filter_map(|nodes| nodes.as_array())
+            .flatten()
+            .find(|n| n.pointer("/FenderId").and_then(|v| v.as_str()) == Some(fender_id))?
+            .pointer("/dspUnitParameters")
+    })
 }
 
 /// See the module doc. `gains` empty = the clean-insert control. `block`
@@ -131,9 +147,24 @@ pub fn probe_doctor_inject(
         params: gains.to_vec(),
     }];
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    drop(crate::commands::doctor::ops_session(
-        slot, &name, &ops, "inject",
-    )?);
+    let mut ops_s = crate::commands::doctor::ops_session(slot, &name, &ops, "inject")?;
+    // Schema/write-verification readout: the edit provokes a live field-3 push whose
+    // graph carries the freshly-inserted vehicle WITH its parameter values — print
+    // them, so an unmapped controlId shows up as an unchanged default instead of a
+    // silent no-op one has to infer from an unmoved after-capture.
+    let _ = ops_s.pump_collect(700);
+    match ops_s.current_preset_value() {
+        Ok(doc) => {
+            out += &format!(
+                "  vehicle params: {}\n",
+                node_params(&doc, fender_id)
+                    .map_or("node not found in live field-3 doc".into(), |p| p
+                        .to_string())
+            );
+        }
+        Err(e) => out += &format!("  vehicle params: (no live field-3 doc: {e})\n"),
+    }
+    drop(ops_s);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     // AFTER: the edit buffer, no reload (a load would discard the insert).

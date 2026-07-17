@@ -111,10 +111,12 @@ src-tauri/src/
                   (SoundProfile, incl. its fine-PSD `peaks`) → 13 diagnoses (band rules muddy/boomy/
                   harsh/lost/thin/buried fire only on the TWO-SPACE CONSENSUS — Theil–Sen tilt-split
                   local AND median-centered deviation vs the AUTHORED factory-median target; tilt
-                  dark/bright; fizzy/washed/spiky; localized resonant/boxy machinery off the TRANSFER's
+                  dark/bright; fizzy/washed/spiky; localized resonant/boxy off the TRANSFER's
                   (capture−stimulus, `Psd::transfer_db`) one-octave-median-envelope excess —
-                  verdicts SHIP DISABLED (`LOCALIZED_RULES_ENABLED=false`, pending a controlled
-                  ground-truth calibration round; see notes/doctor.md)) + graph-derived Rx prescriptions (EQ-10 notch
+                  ENABLED with matrix-calibrated gates (freq ≤ 4 kHz, h ≥ 13.5/7.5, q ∈ [2,40] +
+                  band corroboration; the `ACD_FiveBandParamEQ` height×Q injection round, defects
+                  suite 7/7 HIT incl. the wah must-NOT-fire-resonant physics guard; see
+                  notes/doctor.md)) + graph-derived Rx prescriptions (EQ-10 notch
                   at the MEASURED freq for resonant/boxy) + the scene-loudness consistency check +
                   the cut-through estimate (presence contrast vs the pinned factory distribution).
                   Device work lives in leveller::doctor_capture + commands/doctor.rs (doctor_check/

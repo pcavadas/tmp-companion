@@ -59,16 +59,24 @@ fn eq10_insert(group_id: &str, gains: &[(&str, f64)]) -> doctor::DoctorOp {
     }
 }
 
+/// An `ACD_FiveBandParamEQ` insert with explicit per-filter params — the
+/// controlIds (`filterNfrequency`/`filterNgaindb`/`filterNq`, HW-verified
+/// 2026-07-17: an injected 1 kHz/+12 dB/Q8 read back at 1008 Hz/q 7.5) let a
+/// recipe place an EXACT (freq, height, Q) resonance. Bands 2–4 default to
+/// active peaks; band 1 defaults to a high-pass (never use it for a peak).
+fn peq_insert(group_id: &str, params: &[(&str, f64)]) -> doctor::DoctorOp {
+    doctor::DoctorOp::InsertNode {
+        group_id: group_id.to_string(),
+        before_fender_id: None,
+        fender_id: "ACD_FiveBandParamEQ".to_string(),
+        params: params.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
+    }
+}
+
 /// The versioned recipe table (see the module doc for the design). `group_id`
 /// is the chain's last group — the same post-amp/cab anchor `--doctor-inject`
 /// uses — resolved once per slot by the runner (it needs the live graph) and
 /// threaded in here since the ops can't be `const`.
-///
-/// The resonant positive is a WAH at its default (cocked) position — the
-/// canonical playable resonance, needing zero documented controlIds. (A
-/// parametric-EQ variant was spec'd first but omitted: neither in-catalog
-/// parametric block's freq/gain/Q controlIds are documented in-tree, and
-/// inventing them risks hitting an unrelated real param on a live chain.)
 fn recipes(group_id: &str) -> Vec<DefectRecipe> {
     vec![
         DefectRecipe {
@@ -119,22 +127,51 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
                 fender_id: "ACD_CryBabyGCB95".to_string(),
                 params: Vec::new(),
             }],
-            // INFORMATIONAL while the localized verdicts ship disabled
-            // (`doctor::LOCALIZED_RULES_ENABLED` = false): this recipe is the
-            // ground-truth positive the next calibration round scores
-            // against. The wah also guts the low end (an honest co-fire:
-            // "thin") — only a mistaken WASHED read would be a violation.
+            // Physics regression guard (matrix round, 2026-07-17): a cocked
+            // wah is a WIDE hump — peak-space h ≈ 6.7 while its mid-band
+            // local reads +15.7 dB — so it must surface via the BAND rules
+            // (thin fires today, an honest co-fire), never as peak-space
+            // `resonant` (that would mean the octave-envelope discriminator
+            // regressed) and never as WASHED.
             must_fire: &[],
-            must_not_fire: &["washed"],
-            informational: true,
+            must_not_fire: &["washed", "resonant"],
+            informational: false,
         },
         DefectRecipe {
-            name: "boxy_probe",
-            rationale: "EQ-10 gain500hz=+12 dB — informational: a WIDE graphic-EQ band, not a narrow resonance, so it's unknown whether it trips the narrow-hump boxy rule at all (report what fires); but it must never read as the high-Q resonant rule.",
-            ops: vec![eq10_insert(group_id, &[("gain500hz", 12.0)])],
-            must_fire: &[],
-            must_not_fire: &["resonant"],
-            informational: true,
+            name: "resonant_peq",
+            rationale: "EQ-5 parametric: TWO stacked +12 dB Q14 peaks at 2.6 kHz — a flagrant narrow ring (the Q14 saturation ceiling ≈17 dB clears the 13.5 gate on any site; matrix-calibrated 2026-07-17). The calibrated resonant positive.",
+            ops: vec![peq_insert(
+                group_id,
+                &[
+                    ("filter3frequency", 2_600.0),
+                    ("filter3gaindb", 12.0),
+                    ("filter3q", 14.0),
+                    ("filter4frequency", 2_600.0),
+                    ("filter4gaindb", 12.0),
+                    ("filter4q", 14.0),
+                ],
+            )],
+            must_fire: &["resonant"],
+            must_not_fire: &["washed"],
+            informational: false,
+        },
+        DefectRecipe {
+            name: "boxy_peq",
+            rationale: "EQ-5 parametric: TWO stacked +12 dB Q8 peaks at 420 Hz — a clearly audible cardboard hump in the 300–500 Hz boxy range (single +12/Q8 measured 8.3 vs the 7.5 floor; stacking doubles the physical boost for cross-site margin).",
+            ops: vec![peq_insert(
+                group_id,
+                &[
+                    ("filter2frequency", 420.0),
+                    ("filter2gaindb", 12.0),
+                    ("filter2q", 8.0),
+                    ("filter3frequency", 420.0),
+                    ("filter3gaindb", 12.0),
+                    ("filter3q", 8.0),
+                ],
+            )],
+            must_fire: &["boxy"],
+            must_not_fire: &["resonant", "washed"],
+            informational: false,
         },
     ]
 }
@@ -398,11 +435,15 @@ mod tests {
         let violation = recipe_row(muddy, &clean_before, &fake_read(vec!["muddy", "boomy"]));
         assert_eq!(violation["status"], "VIOLATION");
 
-        let boxy_probe = rs.iter().find(|r| r.name == "boxy_probe").unwrap();
-        let info = recipe_row(boxy_probe, &clean_before, &fake_read(vec!["boxy"]));
-        assert_eq!(info["status"], "info");
-        let info_violation = recipe_row(boxy_probe, &clean_before, &fake_read(vec!["resonant"]));
-        assert_eq!(info_violation["status"], "VIOLATION");
+        let boxy_peq = rs.iter().find(|r| r.name == "boxy_peq").unwrap();
+        let hit = recipe_row(boxy_peq, &clean_before, &fake_read(vec!["boxy"]));
+        assert_eq!(hit["status"], "HIT");
+        let violation2 = recipe_row(
+            boxy_peq,
+            &clean_before,
+            &fake_read(vec!["resonant", "boxy"]),
+        );
+        assert_eq!(violation2["status"], "VIOLATION");
     }
 
     #[test]

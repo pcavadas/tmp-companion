@@ -350,3 +350,69 @@ fn build_showcase_fixture() {
         spec["songs"].as_array().unwrap().len(),
     );
 }
+
+/// GENERATOR (run explicitly, ignored otherwise): derive
+/// `e2e/fixtures/backup-fixture.bin` from `e2e/fixtures/scenario-presets.json`
+/// — the ONE source of truth for the scenario presets (the online seed imports
+/// the same JSONs). Keeps the two fixtures in sync mechanically instead of by
+/// discipline. Schema mirrors the shipped fixture (UserPresets with `isEmpty`;
+/// device userSlot = listIndex + 1). Run with:
+///   `cargo test build_scenario_fixture -- --ignored`
+/// Committed output, regenerated only when `scenario-presets.json` changes.
+#[test]
+#[ignore = "generator: writes backup-fixture.bin from scenario-presets.json"]
+fn build_scenario_fixture() {
+    let src = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/scenario-presets.json"
+    );
+    let spec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(src).expect("read scenario-presets.json"))
+            .expect("parse scenario-presets.json");
+    let presets = spec.as_array().expect("array of scenario presets");
+
+    let mut sql = String::from(
+        "CREATE TABLE UserPresets (id INTEGER PRIMARY KEY, slot INTEGER, isEmpty INTEGER, \
+         displayName TEXT, presetJson BLOB);",
+    );
+    for p in presets {
+        let slot = p["listIndex"].as_u64().expect("listIndex") + 1; // device userSlot
+        let name = p["name"].as_str().expect("name").replace('\'', "''");
+        let json = p["presetJson"]
+            .as_str()
+            .expect("presetJson")
+            .replace('\'', "''");
+        sql.push_str(&format!(
+            " INSERT INTO UserPresets VALUES ({slot}, {slot}, 0, '{name}', '{json}');"
+        ));
+    }
+    let archive = build_backup_archive(&sql);
+
+    // Round-trip through the real decoder before committing the bytes.
+    let decoded = read_backup_archive(&archive).expect("decode generated archive");
+    assert_eq!(decoded.presets.len(), presets.len(), "all presets decode");
+    let reference = decoded
+        .presets
+        .iter()
+        .find(|r| r.name == "E2E Reference")
+        .expect("Reference present");
+    assert!(
+        !reference.graph.stages.is_empty(),
+        "Reference graph has routed stages"
+    );
+    assert!(
+        !reference.footswitches.is_empty(),
+        "Reference keeps its block-acting footswitches"
+    );
+
+    let out = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/backup-fixture.bin"
+    );
+    std::fs::write(out, &archive).expect("write backup-fixture.bin");
+    eprintln!(
+        "build_scenario_fixture: wrote {} bytes ({} presets) → {out}",
+        archive.len(),
+        presets.len(),
+    );
+}

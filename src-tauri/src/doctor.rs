@@ -616,27 +616,52 @@ const PEAK_DETECT_FLOOR_DB: f64 = 3.0;
 /// envelope — see [`crate::psd::Psd::transfer_db`]: localization runs on
 /// capture−stimulus, where the stimulus's own spectral ridges cancel; raw
 /// capture-space detection false-fired `resonant` on 25/25 clean factory
-/// presets) for a peak in `RESONANT_SCAN_LO_HZ..RESONANT_SCAN_HI_HZ` to read
-/// as `resonant`. R8-calibrated (2026-07-16) against the cocked-wah HW probe
-/// (`--doctor-inject --block ACD_CryBabyGCB95`, the canonical real resonance:
-/// bump ≈7.5 dB, Q≈6) and the 25-slot factory bank (which shows NO clean
-/// peak inside the Q window below — see [`RESONANT_MAX_Q`]).
-pub const RESONANT_MIN_HEIGHT_DB: f64 = 6.5;
+/// presets) for a peak to read as `resonant`. MATRIX-CALIBRATED (HW
+/// 2026-07-17, `probe --doctor-inject --block ACD_FiveBandParamEQ` height×Q
+/// grid — gains +6/+9/+12 dB × Q 2/4/8/12 at 700/2000/5600 Hz — through a
+/// real drives→'65 Deluxe+CabIR chain, placed against the 25-slot factory
+/// peak population):
+/// - factory peaks below [`RESONANT_MAX_FREQ_HZ`] top out at h = 12.6 (a
+///   synth preset's own filter resonance; next: 10.9) — 13.5 clears the
+///   whole population with ≥ 0.9 dB margin (run-to-run peak σ ≈ 0.3 dB);
+/// - injected narrow resonances reach it from ≈ +9 dB boost up at responsive
+///   sites (G9/Q8 → 14.4, G12/Q4 → 14.7, G12/Q8 → 16.3 measured), so the
+///   rule catches parametric-EQ-class rings while staying silent on every
+///   factory preset by construction.
+///
+/// Site absorption is real: the same +12 dB injection measured 12.2 at a
+/// site whose envelope carried nearby structure — the rule is deliberately
+/// conservative (misses mild or absorbed rings) rather than false-firing.
+/// SATURATION makes the floor Q-selective: the one-octave median envelope
+/// rides a ring's own skirt, capping measured excess near 20·log10(Q/2)
+/// (Q9 ≈ 13 dB — observed on synthetic fixtures at any drive; Q14 ≈ 17), so
+/// a flat 13.5 floor + the Q ceiling means `resonant` effectively targets
+/// Q ≳ 10 flagrant rings (feedback/squeal class). Low-Q humps can't reach
+/// it standalone — deliberately, since the factory bank's own low-Q
+/// character bumps (q 4–15) measure up to 12.6 dB.
+pub const RESONANT_MIN_HEIGHT_DB: f64 = 13.5;
+/// Upper frequency cap for the `resonant` VERDICT (the scan stays wider so
+/// the probe arms keep recording the full picture): above ≈4 kHz the cab-IR
+/// comb forest owns the transfer — 55 of the 75 factory-bank peaks live
+/// there, at up to 16 dB and any apparent Q — so no (height, Q) gate can
+/// separate a real ring from chain fine structure in that region (HW
+/// 2026-07-17). Below the cap the factory population is sparse and short
+/// (see [`RESONANT_MIN_HEIGHT_DB`]).
+pub const RESONANT_MAX_FREQ_HZ: f64 = 4_000.0;
 /// Minimum quality factor (center / −3 dB width) — 2.0 admits real-world
 /// resonances (wah/cocked filter, Q 2–6) while an octave-wide +12 dB
 /// graphic-EQ band stays below (Q < 2; HW-verified it never reads resonant).
 pub const RESONANT_MIN_Q: f64 = 2.0;
-/// Maximum quality factor — one of two false-positive controls (HW,
-/// 2026-07-16 factory sweeps): a real chain's transfer is FULL of narrow
-/// high-Q fine structure (cab-IR comb, nonlinear residue) at up to 16 dB,
-/// while PLAYABLE resonances (the ones a player can hear ring and fix with
-/// an EQ cut) are wide — the injected wah measures Q≈6. Isolated comb LINES
-/// measure Q ≫ this ceiling; dense comb FORESTS however can mimic ANY Q at
-/// this estimator resolution (several lines within 3 dB read as one
-/// plateau — a shape-only rule false-fired 19/25 clean factory presets even
-/// with this ceiling), which is why the BAND CORROBORATION gate below is the
-/// second, load-bearing control. Shared by `boxy`.
-pub const RESONANT_MAX_Q: f64 = 16.0;
+/// Maximum quality factor — the isolated-comb-needle guard (single comb
+/// LINES measure q 85–455). MATRIX-RECALIBRATED (HW 2026-07-17): the
+/// estimator INFLATES measured q for strong on-chain rings (an injected Q8
+/// read q 23 at one site; a stacked Q14 flagrant ring measured h 24.2 but
+/// q 25.4 — a 16 ceiling rejected a true positive), and below
+/// [`RESONANT_MAX_FREQ_HZ`] the height floor alone already rejects the
+/// whole factory population at ANY q (max in-range h = 12.6), so the
+/// ceiling's only remaining job is the needle class — 40 clears observed
+/// inflation with margin while staying far under it. Shared by `boxy`.
+pub const RESONANT_MAX_Q: f64 = 40.0;
 /// BAND CORROBORATION — the decisive false-positive control for both
 /// localized rules: a peak only counts when ITS OWN band is hot in BOTH
 /// consensus spaces (tilt-split local AND median-centered deviation > this
@@ -650,16 +675,29 @@ pub const RESONANT_MAX_Q: f64 = 16.0;
 /// rules' own gates by design: the peak supplies the specificity.
 pub const RESONANT_MIN_BAND_LOCAL_DB: f64 = 2.0;
 
-/// Master switch for the localized `resonant`/`boxy` VERDICTS — `false` for
-/// this release (see [`localized_diags`]'s doc for the three-round HW
-/// evidence). The detection pipeline still runs (peaks are measured,
-/// recorded by the probe arms, and unit-locked) so the next calibration
-/// round starts from live machinery, not a rebuild.
-pub const LOCALIZED_RULES_ENABLED: bool = false;
+/// Master switch for the localized `resonant`/`boxy` VERDICTS — ENABLED
+/// since the 2026-07-17 parametric-EQ ground-truth round (the
+/// [`RESONANT_MIN_HEIGHT_DB`] matrix): the gates are now placed between a
+/// measured injected-resonance population and the measured factory peak
+/// population on the same amp+cab chain, which the three earlier
+/// (shape-only) rounds lacked. Scope honesty: peak-space `resonant` is for
+/// NARROW rings (parametric-EQ/feedback class); a cocked WAH is a WIDE hump
+/// the octave envelope correctly tracks (peak-space h ≈ 6.7 while its
+/// band-space mid local reads +15.7 dB) — wahs are the band rules' job, by
+/// physics, not a detector miss.
+pub const LOCALIZED_RULES_ENABLED: bool = true;
 /// Minimum height for a peak centered in 300–500 Hz to read as `boxy` (a
-/// narrower, more specific verdict than `muddy`'s whole-band buildup) — any Q
-/// counts. PROVISIONAL, see [`RESONANT_MIN_HEIGHT_DB`].
-pub const BOXY_MIN_HEIGHT_DB: f64 = 7.0;
+/// narrower, more specific verdict than `muddy`'s whole-band buildup).
+/// MATRIX-CALIBRATED (HW 2026-07-17, same grid as
+/// [`RESONANT_MIN_HEIGHT_DB`]): the 300–500 Hz range is a CLEAN site on this
+/// bank — the 25-slot factory population has ZERO peaks below 662 Hz — and a
+/// clean-site +12 dB Q8 parametric hump measures h = 8.3 (the one-octave
+/// median envelope absorbs ≈3.7 dB of skirt), so 7.5 catches the verified
+/// +12 dB hump with ≈0.8 dB margin while nothing in the factory population
+/// can reach it. A +9 dB hump (measured 6.0, and with an unstable q read)
+/// stays deliberately below — boxy is the "clearly audible cardboard hump"
+/// verdict, not a tone-character detector.
+pub const BOXY_MIN_HEIGHT_DB: f64 = 7.5;
 const BOXY_LO_HZ: f64 = 300.0;
 const BOXY_HI_HZ: f64 = 500.0;
 
@@ -2479,8 +2517,8 @@ fn apply_thresholds(
         );
     }
 
-    // Localized resonance — machinery HW-validated, verdicts gated OFF
-    // pending a controlled calibration round (see `localized_diags`'s doc).
+    // Localized resonance — matrix-calibrated and ENABLED (2026-07-17); see
+    // `localized_diags`'s doc for the calibration lineage.
     if LOCALIZED_RULES_ENABLED {
         out.extend(localized_diags(
             profile, metrics, instrument, nodes, &covered,
@@ -2490,19 +2528,22 @@ fn apply_thresholds(
 }
 
 /// The localized `resonant`/`boxy` diagnoses (see the gate consts around
-/// [`RESONANT_MIN_HEIGHT_DB`]). SHIPS DISABLED ([`LOCALIZED_RULES_ENABLED`]):
-/// three 2026-07-16 HW design rounds (raw capture space → transfer space →
-/// Q-window + band corroboration) each moved the boundary between a playable
-/// resonance and a normal chain's comb fine structure, but the final round
-/// still MISSED the canonical injected wah (its resonance is wide enough
-/// that the octave envelope tracks it) while firing on a designated-clean
-/// preset's mild 715 Hz concentration — inverted utility. The detection
-/// machinery (transfer peaks, Q estimator, notch Rx, probe arms, these
-/// tests) ships as the calibration foundation; the VERDICTS wait for a
-/// controlled ground-truth round (a parametric-EQ schema dump enabling
-/// exact height/Q defect injection). A wah-class defect still surfaces
-/// meanwhile via the band rules ("thin" + a +15.7 dB mid local in the
-/// meter).
+/// [`RESONANT_MIN_HEIGHT_DB`]). Calibration lineage: three 2026-07-16
+/// shape-only HW rounds (raw capture space → transfer space → Q-window +
+/// band corroboration) could not place gates — the boundary between a
+/// playable resonance and a normal chain's comb fine structure moved every
+/// round, so the verdicts shipped DISABLED. The 2026-07-17 parametric-EQ
+/// ground-truth round (`ACD_FiveBandParamEQ` schema dump → height×Q
+/// injection matrix through a real drives→'65 Deluxe+CabIR chain, placed
+/// against the 25-slot factory peak population) produced measurable
+/// separations, and the verdicts are ON with matrix-derived gates:
+/// frequency cap [`RESONANT_MAX_FREQ_HZ`] (the >4 kHz comb forest is
+/// ungateable), height floors [`RESONANT_MIN_HEIGHT_DB`]/
+/// [`BOXY_MIN_HEIGHT_DB`], the Q window, and band corroboration. Scope: a
+/// cocked WAH is a WIDE hump — peak-space h ≈ 6.7 while its mid-band local
+/// reads +15.7 dB — so wahs are (correctly) the band rules' finding, not
+/// this one's; `resonant` is the flagrant NARROW ring (parametric-EQ /
+/// feedback class).
 fn localized_diags(
     profile: &SoundProfile,
     metrics: &RuleMetrics,
@@ -2582,7 +2623,10 @@ fn localized_diags(
         .peaks
         .iter()
         .filter(|p| {
-            p.height_db >= RESONANT_MIN_HEIGHT_DB && p.q >= RESONANT_MIN_Q && p.q <= RESONANT_MAX_Q
+            p.freq_hz <= RESONANT_MAX_FREQ_HZ
+                && p.height_db >= RESONANT_MIN_HEIGHT_DB
+                && p.q >= RESONANT_MIN_Q
+                && p.q <= RESONANT_MAX_Q
         })
         .filter(corroborated)
         .max_by(|a, b| a.height_db.total_cmp(&b.height_db));
@@ -5089,22 +5133,36 @@ mod tests {
         .expect("finite loudness")
     }
 
+    /// The matrix round's "flagrant ring" test fixture: Q14 (saturation
+    /// ceiling ≈17 dB clears the 13.5 floor) at strong drive. One knob for
+    /// the next recalibration round.
+    fn flagrant_ring(freq_hz: f32) -> SoundProfile {
+        ringing_profile_q(freq_hz, 1.6, 14.0)
+    }
+
     #[test]
     fn oracle_resonant_fires_at_measured_freq_with_nearest_eq10_band() {
-        // A clean 2.6 kHz ring (noise bed 0.05, resonator drive 0.8, Q≈9) —
-        // measures h≈13 dB, Q≈10.8 (fit×run, see `peak_q`): past
-        // RESONANT_MIN_HEIGHT_DB(6.5), inside the [2, 16] Q window, and
-        // outside the 300–500 Hz boxy range. 2.6 kHz keeps the bin-quantized
-        // peak clear of the 2k/4k log-midpoint (≈2828 Hz): |ln(2630/2000)| ≈
-        // 0.27 < |ln(4000/2630)| ≈ 0.42, so the 2 kHz band wins decisively.
-        let p = ringing_profile(2_600.0, 0.8);
+        // A strong clean 2.6 kHz ring (noise bed 0.05, resonator drive 1.6,
+        // Q≈9): past RESONANT_MIN_HEIGHT_DB(13.5) — the matrix-calibrated
+        // "flagrant ring" floor — inside the [2, 16] Q window, under the
+        // 4 kHz cap, and outside the 300–500 Hz boxy range. 2.6 kHz keeps
+        // the bin-quantized peak clear of the 2k/4k log-midpoint (≈2828 Hz):
+        // |ln(2630/2000)| ≈ 0.27 < |ln(4000/2630)| ≈ 0.42, so the 2 kHz band
+        // wins decisively.
+        let p = flagrant_ring(2_600.0);
         let peak = p.peaks[0];
         let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         let diags = localized_for(&p, Some(&nodes));
         let d = diags
             .iter()
             .find(|d| d.key == "resonant")
-            .expect("resonant should fire");
+            .unwrap_or_else(|| {
+                panic!(
+                    "resonant should fire; peaks={:?} diags={:?}",
+                    p.peaks,
+                    keys(&diags)
+                )
+            });
         assert_eq!(
             d.label,
             format!("Rings at {}", measured_freq_label(peak.freq_hz))
@@ -5132,14 +5190,18 @@ mod tests {
 
     #[test]
     fn oracle_boxy_range_sine_fires_boxy_not_resonant() {
-        // Same shape, centered at 380 Hz — inside the 300–500 Hz boxy range and
-        // easily past both rules' height/Q gates, so `boxy` (the more specific
-        // verdict) must win and `resonant` must NOT also fire for this peak.
-        let p = ringing_profile(380.0, 0.8);
+        // Same shape, centered at 380 Hz — inside the 300–500 Hz boxy range
+        // and past the boxy gate. (It can no longer ALSO clear the resonant
+        // floor: at 380 Hz the Welch bin resolution (~5.9 Hz/bin) can't
+        // resolve a high-Q ring, and saturation caps a resolvable one below
+        // 13.5 — so the `claimed_by_boxy` suppression branch is
+        // belt-and-braces; the user-visible contract stays: boxy fires,
+        // resonant does not.)
+        let p = flagrant_ring(380.0);
         let peak = p.peaks[0];
         assert!(
-            peak.height_db >= RESONANT_MIN_HEIGHT_DB && peak.q >= RESONANT_MIN_Q,
-            "fixture must ALSO clear the resonant gate to prove the suppression: {peak:?}"
+            peak.height_db >= BOXY_MIN_HEIGHT_DB && peak.q <= RESONANT_MAX_Q,
+            "fixture must clear the boxy gate: {peak:?}"
         );
         let nodes = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         let diags = localized_for(&p, Some(&nodes));
@@ -5157,8 +5219,8 @@ mod tests {
     fn oracle_below_gate_peak_is_silent() {
         // A real but weak 2.6 kHz ring (drive 0.04) — `find_peaks` still
         // registers it (clears the 3 dB detection floor), but its height
-        // stays under RESONANT_MIN_HEIGHT_DB(6.5)/BOXY_MIN_HEIGHT_DB(7), so
-        // neither rule fires.
+        // stays under RESONANT_MIN_HEIGHT_DB(13.5)/BOXY_MIN_HEIGHT_DB(7.5),
+        // so neither rule fires.
         let p = ringing_profile(2_600.0, 0.04);
         let peaks = &p.peaks;
         assert!(!peaks.is_empty(), "fixture must register a candidate peak");
@@ -5181,14 +5243,11 @@ mod tests {
     }
 
     #[test]
-    fn shipped_diagnose_never_emits_localized_kinds_while_disabled() {
-        // The release gate (`LOCALIZED_RULES_ENABLED = false`): even a
-        // strongly-ringing capture must produce NO resonant/boxy through the
-        // shipped diagnose path — the machinery is exercised only via
-        // `localized_diags` (the oracle tests above).
-        // (Flipping `LOCALIZED_RULES_ENABLED` ships the verdicts — re-run the
-        // calibration round first; these assertions then need re-deriving.)
-        let p = ringing_profile(2_600.0, 0.8);
+    fn shipped_diagnose_emits_resonant_since_the_matrix_calibration() {
+        // `LOCALIZED_RULES_ENABLED = true` (the 2026-07-17 matrix round): a
+        // flagrant ring must reach the user through the SHIPPED diagnose
+        // path, not just the direct `localized_for` harness.
+        let p = flagrant_ring(2_600.0);
         let diags = diagnose_kind(
             &p,
             None,
@@ -5197,9 +5256,42 @@ mod tests {
             None,
             PlaybackOffsets::NONE,
         );
-        let keys = keys(&diags);
+        assert!(keys(&diags).contains(&"resonant"), "{:?}", keys(&diags));
+    }
+
+    #[test]
+    fn shipped_diagnose_emits_boxy_since_the_matrix_calibration() {
+        // boxy's own end-to-end proof through the shipped path (not just the
+        // localized_for harness) — symmetric with the resonant test above.
+        let p = flagrant_ring(380.0);
+        let diags = diagnose_kind(
+            &p,
+            None,
+            Family::Guitar,
+            StimulusKind::Synthetic,
+            None,
+            PlaybackOffsets::NONE,
+        );
+        assert!(keys(&diags).contains(&"boxy"), "{:?}", keys(&diags));
+    }
+
+    #[test]
+    fn resonant_never_fires_above_the_frequency_cap() {
+        // The same flagrant ring parked at 5.5 kHz — inside the scan range
+        // but past RESONANT_MAX_FREQ_HZ (the >4 kHz cab-comb forest is
+        // ungateable; 55 of 75 factory peaks live there): resonant must stay
+        // silent no matter how tall the peak reads.
+        let p = flagrant_ring(5_500.0);
+        assert!(
+            p.peaks
+                .iter()
+                .any(|pk| pk.freq_hz > RESONANT_MAX_FREQ_HZ
+                    && pk.height_db >= RESONANT_MIN_HEIGHT_DB),
+            "fixture must present an above-cap, above-floor peak: {:?}",
+            p.peaks
+        );
+        let keys = keys(&localized_for(&p, None));
         assert!(!keys.contains(&"resonant"), "{keys:?}");
-        assert!(!keys.contains(&"boxy"), "{keys:?}");
     }
 
     #[test]
@@ -5210,7 +5302,7 @@ mod tests {
         // every OTHER diag must be byte-identical, proving the localized rules
         // are a strict addition that never perturbs the pre-existing
         // band/tilt/washed/spiky/buried rules.
-        let p = ringing_profile(2_600.0, 0.8);
+        let p = flagrant_ring(2_600.0);
         let mut peakless = p.clone();
         peakless.peaks = Vec::new();
         let with_peaks = localized_for(&p, None);
