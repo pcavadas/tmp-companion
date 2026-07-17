@@ -183,7 +183,7 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 3 failed atte
 log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
 if ! seed_with_retry pre; then
   err "scenario seed failed after 3 attempts — aborting (nothing to recover: no server ran)"
-  trap - EXIT INT TERM
+  err "  → truncated reads / 0xe00002c5 here mean the unit is congested: power-cycle it, then rerun"
   exit 1
 fi
 

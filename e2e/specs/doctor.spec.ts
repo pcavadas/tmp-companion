@@ -10,11 +10,12 @@ import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
 // advisory, presetLevel preservation) are backend-validated in doctor.rs unit tests
 // and the probe/HW lane, not here.
 //
-// ONLINE flake note: `ensureScenario`'s seed is the first fresh HID open after the
-// server-start handshake and can hit the device's open LOCKOUT (0xe00002c5) even
-// through hid.rs's retry ladder — scripts/e2e.sh now rests 60 s before the first
-// spec, which improves the odds but does not fully cure it (HW-observed). On a
-// lockout failure, wait a minute or two of true quiet and rerun.
+// ONLINE seeding note: scripts/e2e.sh seeds the scenario via `probe --seed-scenario`
+// BEFORE the server's handshake (a post-handshake line serves truncated list reads +
+// 0xe00002c5 open lockouts for minutes — HW-observed); `ensureScenario` here is the
+// presence check + the fallback for direct playwright runs. If the runner's seed
+// fails all attempts with truncated reads/lockouts, the unit is congested from prior
+// cycling: power-cycle it, wait a minute, rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
     await clearScenario(page);
