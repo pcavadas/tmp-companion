@@ -61,11 +61,15 @@ pub(crate) fn replace_inplace_with(
     bytes: &[u8],
     verify: bool,
 ) -> Result<ReplaceOutcome, String> {
-    // Strict (completeness-validated) reads for both landing-detection lists: a
-    // tolerant tail-truncated read makes every slot past the cut look empty, so the
-    // post-import diff would "find" the landing at a garbage slot (the fail-closed
-    // confirm_active below catches it before damage, but the run still aborts).
-    let before = Session::connect()?.list_my_presets_strict()?;
+    // TOLERANT reads for both landing-detection lists — strict decodes only
+    // terminal-frame streams and fails/garbles on the interleaved responses that
+    // back-to-back lean sessions produce (HW-observed: tolerant 504/504 on a healthy
+    // device while strict truncated or returned nothing). Tail-truncation is SAFE
+    // here in both directions: a slot past the cut is ABSENT from the list (so it
+    // never enters `empty_before` — landing detection misses it and aborts, it can
+    // never mis-clear), and the fail-closed `confirm_active` below still gates the
+    // save before any damage.
+    let before = Session::connect()?.list_my_presets()?;
     let orig_name_before = before
         .iter()
         .find(|p| p.slot == orig_list_index)
@@ -95,7 +99,7 @@ pub(crate) fn replace_inplace_with(
     // Keying on the previously-empty set (not a name diff) means a flaky/partial
     // baseline list can't misidentify a *real* pre-existing preset as the scratch
     // and get it cleared in step 3.
-    let after_import = Session::connect()?.list_my_presets_strict()?;
+    let after_import = Session::connect()?.list_my_presets()?;
     let (scratch_slot, scratch_name) = after_import
         .iter()
         .find(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))
@@ -220,7 +224,10 @@ fn run_replace_inplace(orig_list_index: u32, bytes: &[u8], src: &str) -> Result<
 /// and the mutation address the *same* preset (the earlier guard bug checked the
 /// list index but cleared a same-numbered device slot = a different preset).
 pub(crate) fn guarded_clear(list_index: u32, expect_name: &str) -> Result<(), String> {
-    let list = Session::connect()?.list_my_presets_strict()?;
+    // Tolerant read: a tail-truncated list leaves the slot ABSENT → cur = None →
+    // the guard refuses (fail-closed). Strict fails outright on interleaved
+    // responses from back-to-back sessions (see replace_inplace_with).
+    let list = Session::connect()?.list_my_presets()?;
     let cur = list
         .iter()
         .find(|p| p.slot == list_index)

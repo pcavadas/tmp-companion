@@ -156,14 +156,12 @@ case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy level) ;; esac
 # (~90–150 s) + retries, and the seed self-repairs (sweeps stray imports from any
 # earlier aborted run) so retrying is pollution-safe.
 #
-# ORDER IS LOAD-BEARING: the FIRST seed runs BEFORE the server starts, so it is the
-# run's first device contact — HW-observed: a seed fired ~60 s after the server's
-# handshake flood OPENS fine but harvests a truncated list (209/504 records) and its
-# aborted session then arms the open lockout for the retries, while every probe
-# invocation with no recent handshake reads the full 504-entry bank. The server's own
-# handshake then snapshots the already-seeded presets, so no snapshot patch is needed
-# for the first spec; later (inter-spec) seeds POST `e2e_mark_seeded` (a no-HID
-# snapshot patch) so the specs' `ensureScenario` fallback finds the presets present.
+# ORDER: the FIRST seed runs BEFORE the server starts, so its many fresh connections
+# stay clear of the in-process open lockout (`0xe00002c5`) that aborted the original
+# in-spec seeds mid-import (stranding stray copies in the user's bank). The server's
+# own handshake then snapshots the already-seeded presets; later (inter-spec) seeds
+# POST `e2e_mark_seeded` (a no-HID snapshot patch) so the specs' `ensureScenario`
+# fallback finds the presets present.
 seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mid"
   "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 || return 1
   [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
@@ -183,7 +181,7 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 3 failed atte
 log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
 if ! seed_with_retry pre; then
   err "scenario seed failed after 3 attempts — aborting (nothing to recover: no server ran)"
-  err "  → truncated reads / 0xe00002c5 here mean the unit is congested: power-cycle it, then rerun"
+  err "  → check nothing else holds the device (Pro Control, a stale server/app), rest a minute, rerun"
   exit 1
 fi
 

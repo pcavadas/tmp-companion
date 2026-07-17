@@ -284,10 +284,10 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) {
 /// committed scenario presets (`e2e/fixtures/scenario-presets.json` — the SAME
 /// presetJsons baked into the offline backup fixture) at their list indices
 /// (400/401/402). The heavy lifting lives in `probe_api::seed_scenario` — shared with
-/// `probe --seed-scenario`, which the RUNNER prefers (fresh process per seed; device
-/// work from this long-lived process degrades, HW-observed as truncated list harvests
-/// + capricious opens). This command is the fallback for specs run without the runner,
-/// and the offline no-op (SimDevice presets are already present → per-preset skip).
+/// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
+/// before the server starts, dodges the in-process `0xe00002c5` open lockout that
+/// aborted in-spec seeds). This command is the fallback for specs run without the
+/// runner, and the offline no-op (SimDevice presets already present → per-preset skip).
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {

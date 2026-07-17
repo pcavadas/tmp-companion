@@ -1,10 +1,9 @@
 //! Online-e2e scenario seeding — sweep stray imports, then place the three committed
 //! scenario presets at their slots. Shared by `probe --seed-scenario` (a FRESH process
-//! per seed — the reliable path: device work from a long-lived bridge process degrades
-//! after its first connection, HW-observed as truncated list harvests (236 of 504
-//! entries) and capricious `0xe00002c5` opens, while fresh probe processes read the
-//! full bank every time) and by the `e2e_seed_scenario` bridge command (the in-process
-//! fallback for specs run without the runner).
+//! per seed, invoked by the runner BEFORE the bridge server starts — keeps the seed's
+//! many fresh connections clear of the in-process `0xe00002c5` open lockout that
+//! aborted the original in-spec seeds) and by the `e2e_seed_scenario` bridge command
+//! (the in-process fallback for specs run without the runner).
 
 use crate::backup;
 use crate::replace_inplace::replace_inplace_with;
@@ -79,15 +78,19 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
     sweep_on(&mut s, &list, &spec)
 }
 
-/// Strict list read + a hard completeness floor: the strict harvest can still FALL
-/// BACK to a truncated tolerant list (HW-observed: 236 of 504 entries on a degraded
-/// bridge-process session), and a partial view must never drive clears or imports —
-/// index 400 "missing" reads as out-of-range / every high slot reads as empty.
+/// TOLERANT list read + a hard completeness floor. Tolerant, not strict: the strict
+/// harvest decodes only terminal-frame streams and FAILS on the interleaved mid-flood
+/// responses back-to-back lean sessions produce (HW-observed on a healthy device:
+/// tolerant read 504/504 every time while strict returned "no PresetListResponse" or
+/// truncated 190–236-record fallbacks, and its re-arm retries left the line in a
+/// state that armed the open lockout for the following attempts). The floor is the
+/// actual safety: a partial view must never drive clears or imports — index 400
+/// "missing" reads as out-of-range / every high slot reads as empty.
 fn read_full_list(
     s: &mut Session,
     spec: &[ScenarioPreset],
 ) -> Result<Vec<session::PresetEntry>, String> {
-    let list = s.list_my_presets_strict()?;
+    let list = s.list_my_presets()?;
     let max_idx = spec.iter().map(|p| p.list_index).max().unwrap_or(0);
     if (list.len() as u32) <= max_idx {
         return Err(format!(

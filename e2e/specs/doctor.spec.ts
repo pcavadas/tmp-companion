@@ -11,11 +11,11 @@ import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
 // and the probe/HW lane, not here.
 //
 // ONLINE seeding note: scripts/e2e.sh seeds the scenario via `probe --seed-scenario`
-// BEFORE the server's handshake (a post-handshake line serves truncated list reads +
-// 0xe00002c5 open lockouts for minutes — HW-observed); `ensureScenario` here is the
-// presence check + the fallback for direct playwright runs. If the runner's seed
-// fails all attempts with truncated reads/lockouts, the unit is congested from prior
-// cycling: power-cycle it, wait a minute, rerun.
+// BEFORE the server starts (fresh-process seeding dodges the in-process 0xe00002c5
+// open lockout that aborted in-spec seeds); `ensureScenario` here is the presence
+// check + the fallback for direct playwright runs. If the runner's seed fails all
+// attempts, check nothing else holds the device (Pro Control, a stale server/app),
+// rest a minute, rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
     await clearScenario(page);
