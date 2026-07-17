@@ -129,11 +129,10 @@ pad's silence→signal edge makes onsets reliably confident on real chains, and
 `doctor_signal_start` shifts the body PSD past the pad. Dry-chain tails
 measure −21..−24 dB truer post-fix. The stimulus is profile-aware
 (`resolve_stimulus_with_capture`): a calibrated profile's Tier-2 DI capture is
-injected and diagnosed against the **CAPTURE threshold table** (a real DI
-shifts band balance systematically, HW: +8..12 dB Lows / −8..10 dB Highs);
-uncalibrated profiles use the synthetic topology WAV against the Synthetic
-table. The capture tables currently equal the synthetic ones, so verdicts read
-byte-identically until the DI sweep retunes capture space.
+injected verbatim and diagnosed against the SAME per-family threshold table as
+a synthetic stimulus (a real DI shifts band balance systematically, HW:
++8..12 dB Lows / −8..10 dB Highs, but `StimulusKind` no longer selects a
+distinct table — see above; only the fizzy flatness gate still branches on it).
 
 Capture choreography (`notes/perf.md`): consecutive **scene** sounds of the
 same preset skip the per-sound preset reload (`doctor_skip_load` — only when

@@ -235,12 +235,18 @@ fn run_recipe(
 /// Score `recipe` against `after`'s fired verdicts and build its JSON row.
 /// Pure (no device I/O) — unit-tested directly.
 fn recipe_row(recipe: &DefectRecipe, before: &DoctorRead, after: &DoctorRead) -> serde_json::Value {
+    let before_clean = before.verdicts.is_empty();
     let violation = recipe
         .must_not_fire
         .iter()
         .any(|k| after.verdicts.contains(k));
     let hit = recipe.must_fire.iter().all(|k| after.verdicts.contains(k));
-    let status = if violation {
+    // A dirty baseline (something already fired pre-injection) can't be attributed
+    // to the injected defect — a HIT or VIOLATION would be trivially explained by
+    // pre-existing state, not the injection, so it can't count as evidence either way.
+    let status = if !before_clean {
+        "UNRELIABLE"
+    } else if violation {
         "VIOLATION"
     } else if hit {
         "HIT"
@@ -252,7 +258,7 @@ fn recipe_row(recipe: &DefectRecipe, before: &DoctorRead, after: &DoctorRead) ->
         "rationale": recipe.rationale,
         "mustFire": recipe.must_fire,
         "mustNotFire": recipe.must_not_fire,
-        "beforeClean": before.verdicts.is_empty(),
+        "beforeClean": before_clean,
         "before": {
             "verdicts": before.verdicts,
             "tiltDbPerOct": before.tilt_slope,
@@ -298,7 +304,8 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
 
     let mut out = format!("doctor-defects slot {slot} ({name})\n");
     let mut rows: Vec<serde_json::Value> = Vec::new();
-    let (mut hits, mut misses, mut violations, mut errors) = (0u32, 0u32, 0u32, 0u32);
+    let (mut hits, mut misses, mut violations, mut unreliable, mut errors) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
 
     for recipe in recipes(&group_id) {
         out += &format!("\n[{}] {}\n", recipe.name, recipe.rationale);
@@ -311,6 +318,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
                     "HIT" => hits += 1,
                     "MISS" => misses += 1,
                     "VIOLATION" => violations += 1,
+                    "UNRELIABLE" => unreliable += 1,
                     _ => {}
                 }
                 out += &format!("  → {status}\n");
@@ -332,7 +340,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
     super::reamp_off_best_effort();
 
     out += &format!(
-        "\ndoctor-defects summary: {} recipe(s) — HIT={hits} MISS={misses} VIOLATION={violations} error={errors}\n",
+        "\ndoctor-defects summary: {} recipe(s) — HIT={hits} MISS={misses} VIOLATION={violations} UNRELIABLE={unreliable} error={errors}\n",
         rows.len()
     );
 
@@ -442,5 +450,23 @@ mod tests {
             &fake_read(vec!["resonant", "boxy"]),
         );
         assert_eq!(violation2["status"], "VIOLATION");
+    }
+
+    #[test]
+    fn a_dirty_baseline_reads_unreliable_never_hit_or_violation() {
+        let rs = recipes("G1");
+        let muddy = rs.iter().find(|r| r.name == "muddy").unwrap();
+        // "muddy" already fires BEFORE injection — a same after-capture can't be
+        // attributed to the recipe's own defect.
+        let dirty_before = fake_read(vec!["muddy"]);
+
+        let row = recipe_row(muddy, &dirty_before, &fake_read(vec!["muddy"]));
+        assert_eq!(row["status"], "UNRELIABLE");
+        assert_eq!(row["beforeClean"], false);
+
+        // Even a would-be VIOLATION (an unrelated must_not_fire verdict) is masked —
+        // the baseline itself is untrustworthy, not just the must_fire signal.
+        let row2 = recipe_row(muddy, &dirty_before, &fake_read(vec!["muddy", "boomy"]));
+        assert_eq!(row2["status"], "UNRELIABLE");
     }
 }
