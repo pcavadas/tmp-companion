@@ -4,7 +4,7 @@
 #
 #   scripts/e2e.sh                  # OFFLINE (SimDevice) — fast, default, no hardware (~1.5 min)
 #   scripts/e2e.sh offline copy     # OFFLINE, only the copy spec
-#   scripts/e2e.sh online           # ONLINE (real device) — songs, copy, level in turn (~9 min)
+#   scripts/e2e.sh online           # ONLINE (real device) — songs, copy, doctor, level in turn
 #   scripts/e2e.sh online level     # ONLINE, only the level spec
 #   scripts/e2e.sh online all       # ONLINE, the full set (= the default online set)
 #
@@ -48,7 +48,7 @@ for a in "$@"; do
 Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|all ...]
   (no args)        OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy     OFFLINE — only the copy spec
-  online           ONLINE  — songs, copy, level vs the real unit (~9 min; Pro Control closed)
+  online           ONLINE  — songs, copy, doctor, level vs the real unit (Pro Control closed)
   online level     ONLINE  — only the level spec
 USAGE
       exit 0 ;;
@@ -69,16 +69,22 @@ ensure_dist() { [ -f dist/index.html ] || { mkdir -p dist; printf '<!doctype htm
 # Build the e2e_server up front so the (potentially minutes-long, cold) compile is out of the
 # timed server-start path; its exit code is the build check.
 prebuild() {
-  log "building e2e_server (incremental)…"
-  cargo build -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server \
-    || { err "e2e_server build failed"; exit 1; }
+  log "building e2e_server + probe (incremental)…"
+  cargo build -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server --bin probe \
+    || { err "e2e_server/probe build failed"; exit 1; }
 }
+
+PROBE_BIN="src-tauri/target/debug/probe"
 
 kill_port() { lsof -ti "tcp:$1" 2>/dev/null | xargs kill 2>/dev/null || true; }
 
+bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the response body
+  curl -fsS -m "${2:-60}" -X POST "http://127.0.0.1:$PORT/invoke" \
+    -H 'content-type: application/json' -d "$1" 2>/dev/null
+}
+
 post() { # POST one /invoke command, best-effort (recovery must never fail the script)
-  curl -fsS -m 60 -X POST "http://127.0.0.1:$PORT/invoke" \
-    -H 'content-type: application/json' -d "$1" >/dev/null 2>&1 || true
+  bridge_post "$1" "${2:-60}" >/dev/null 2>&1 || true
 }
 
 recover_device() {
@@ -88,6 +94,10 @@ recover_device() {
   post '{"cmd":"e2e_clear_preset","args":{"slot":400,"expectName":"E2E Reference"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":401,"expectName":"E2E Target 1"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":402,"expectName":"E2E Target 2"}}'
+  # Sweep stray scenario imports an aborted seed stranded elsewhere in the bank
+  # (imports land at the first EMPTY slot anywhere; guarded, fail-closed). Long
+  # timeout: N strays × clear can exceed the default 60 s cap.
+  post '{"cmd":"e2e_clear_strays","args":{}}' 300
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
 }
 
@@ -135,13 +145,58 @@ if [ "$MODE" = offline ]; then
   exec bunx playwright test --config "$OFFLINE_CFG" "$@"
 fi
 
-# ── ONLINE: managed — handshake-verified start, per-spec runs, guaranteed recovery ──
+# ── ONLINE: managed — seed-first, handshake-verified start, per-spec runs, recovery ──
 trap cleanup EXIT INT TERM
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy level) ;; esac
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level) ;; esac
 
-log "ONLINE e2e (real device) — starting handshake-verified server on :$PORT"
+# Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
+# never from inside a spec: Playwright's per-test budget (300 s) can't absorb seed
+# (~90–150 s) + retries, and the seed self-repairs (sweeps stray imports from any
+# earlier aborted run) so retrying is pollution-safe.
+#
+# ORDER: the FIRST seed runs BEFORE the server starts, so its many fresh connections
+# stay clear of the in-process open lockout (`0xe00002c5`) that aborted the original
+# in-spec seeds mid-import (stranding stray copies in the user's bank). The server's
+# own handshake then snapshots the already-seeded presets; later (inter-spec) seeds
+# POST `e2e_mark_seeded` (a no-HID snapshot patch) so the specs' `ensureScenario`
+# fallback finds the presets present.
+seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mid"
+  "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 || return 1
+  [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
+}
+
+seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed attempts
+  local attempt
+  for attempt in 1 2 3 4; do
+    log "seeding the scenario presets (attempt $attempt)…"
+    if seed_scenario "$1"; then return 0; fi
+    if [ "$attempt" -lt 4 ]; then
+      log "seed attempt $attempt failed — resting 120 s (open lockout) before retry"
+      sleep 120
+    fi
+  done
+  return 1
+}
+
+log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
+# Initial quiet rest: a previous run that just ended (its recovery, or an aborted
+# seed) arms the device's open lockout, and a failed first attempt re-arms it —
+# back-to-back runs need the line quiet BEFORE the first open, not after a failure.
+log "resting the unit before the first seed…"
+sleep 60
+if ! seed_with_retry pre; then
+  err "scenario seed failed after 4 attempts — aborting (nothing to recover: no server ran)"
+  err "  → check nothing else holds the device (Pro Control, a stale server/app), rest a minute, rerun"
+  exit 1
+fi
+
+# Settle before the server's handshake: the device's list read lags its own writes,
+# and the handshake list feeds the startup snapshot.
+sleep 10
+
+log "starting handshake-verified server on :$PORT"
 : > "$SERVER_LOG"
 TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" \
   cargo run -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server \
@@ -149,21 +204,34 @@ TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" \
 SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true  # silence the shell's "Terminated" notice when cleanup kills it
 wait_server_ready
-log "device connected — snapshot seeded"
+# The presets are verifiably placed (the pre-server probe seed exited 0); patch the
+# snapshot in case the handshake's list read lagged the fresh writes. FAIL-LOUD:
+# a silently-failed patch would send the specs' ensureScenario fallback into the
+# lockout-prone in-process reseed this runner exists to avoid.
+if ! bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'; then
+  err "failed to patch the seeded presets into the startup snapshot — aborting"
+  exit 1
+fi
+log "device connected — snapshot includes the seeded presets"
 
 fail=0
 first=1
 for s in "${SPECS[@]}"; do
   if [ "$first" -eq 1 ]; then
-    # The server-start handshake arms the device's post-close open LOCKOUT (tens of
-    # seconds; hid.rs's own retries reset it instead of riding it out — HW-measured:
-    # a seed ~5 s after server-ready fails through 41 s of ladder retries, while a
-    # 60 s true quiet then opens in seconds). Rest BEFORE the first spec's seed.
-    log "resting the unit before the first spec (post-handshake open lockout)…"
+    # Rest between the server-start handshake and the first spec's own device work
+    # (the post-handshake line needs quiet before it serves reads reliably).
+    log "resting the unit before the first spec (post-handshake settle)…"
     sleep 60
   else
+    # Later specs need a fresh seed (each spec's teardown clears the scenario). Their
+    # seed runs minutes after the server handshake — outside the degraded window.
     log "resting the unit between specs…"
-    sleep 12
+    sleep 60
+    if ! seed_with_retry mid; then
+      err "inter-spec scenario seed failed after 4 attempts — aborting (device recovery runs on exit)"
+      fail=1
+      break
+    fi
   fi
   first=0
   log "running specs/$s.spec.ts (online)"

@@ -1,23 +1,47 @@
 // src/views/doctor/SoundRow.tsx — one checked sound as a dense, expandable triage
 // row: severity dot · name + FS/BASE tag · diagnosis chips (or "Sounds good" / an
-// error) · band sparkline · LUFS · caret. Clicking a problem row toggles its
-// expansion (open state threaded from the results page); the expanded region holds
-// the shared-block caption, then per-diagnosis: the explainer, the full BandMeter,
-// and the prescription card(s). Clear and errored rows are not expandable.
+// error) · band sparkline · LUFS · caret. Clicking a row toggles its expansion
+// (open state threaded from the results page); the expanded region holds the
+// shared-block caption, then per-diagnosis: the explainer, the full BandMeter, and
+// the prescription card(s), then the cut-through estimate + the Match-reference
+// picker/card. Only errored rows (no usable capture) are not expandable — a clean
+// row still expands (to pick it as a reference / show its cut-through read).
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
+import { Button } from "../../ui/primitives";
 import { BandMeter } from "./BandMeter";
 import { BandSpark } from "./BandSpark";
+import { CutThroughCard } from "./CutThroughCard";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { LevelIndicator } from "./LevelIndicator";
-import { PrescriptionCard } from "./PrescriptionCard";
-import { diagSevLabel, sevTone, soundSev, type Sev } from "./severity";
-import type { DoctorDiag, DoctorSoundResult } from "../../lib/types";
+import { MatchCard } from "./MatchCard";
+import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
+import { bandLayoutsMatch } from "./matchModel";
+import {
+  diagSevLabel,
+  isPossible,
+  possibleLabel,
+  sevTone,
+  sortedDiags,
+  soundSev,
+  type Sev,
+} from "./severity";
+import type {
+  DoctorDiag,
+  DoctorSoundResult,
+  FootswitchInfo,
+  GraphNode,
+} from "../../lib/types";
 
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
+
+/** Diagnosis-row header min-height (SevDot + serif label baseline) — off the
+ *  t.spaceN scale, so it's a role-named const shared with SceneConsistency's
+ *  identical row shape rather than a bare literal in each file. */
+export const ROW_MIN_HEIGHT = 38;
 
 // ---- severity dot ----------------------------------------------------------
 
@@ -96,8 +120,27 @@ export interface SoundRowProps {
   /** The nodes this footswitch sound's own switch toggles; undefined for
    *  Base/scene sounds (drives the "shared block" caption). */
   ownNodeIds?: string[];
+  /** The preset's full chain + block-acting footswitches (same data
+   *  `doctor_check` was given) — threaded into every prescription card so its
+   *  A/B captures under the diagnosed sound's own context, not the as-saved
+   *  base (`derived_force_bypass` needs the whole preset, not just this
+   *  sound's own blocks). */
+  nodes: GraphNode[];
+  footswitches: FootswitchInfo[];
+  /** The stimulus identity this sound was diagnosed with (setup-stage
+   *  instrument pick) — its prescription cards' A/B replays it. */
+  stimulus?: DoctorStimulus;
   open: boolean;
   onToggle: () => void;
+  /** This row's page-wide composite id (`${listIndex}|${sound.key}`) — how
+   *  the Match-reference picker identifies a sound across presets. */
+  id: string;
+  /** The page-wide picked Match-reference sound (any preset in the same
+   *  run), or null before one is picked. */
+  referenceSound: DoctorSoundResult | null;
+  referenceId: string | null;
+  onSetReference: (id: string) => void;
+  onClearReference: () => void;
 }
 
 export function SoundRow({
@@ -105,8 +148,16 @@ export function SoundRow({
   listIndex,
   presetName,
   ownNodeIds,
+  nodes,
+  footswitches,
+  stimulus,
   open,
   onToggle,
+  id,
+  referenceSound,
+  referenceId,
+  onSetReference,
+  onClearReference,
 }: SoundRowProps) {
   const { t } = useTheme();
   const hasDiags = sound.diags.length > 0;
@@ -114,21 +165,39 @@ export function SoundRow({
   const sev = soundSev(sound);
   const tone = sevTone(t, sev);
   const isTagged = sound.scene != null || sound.footswitch != null;
-  const hotBands = [...new Set(sound.diags.flatMap((d) => d.bands))];
+  // Worst-first, confident above "possible" — one order for the chips + panels.
+  const diags = sortedDiags(sound.diags);
+  const hotBands = [...new Set(diags.flatMap((d) => d.bands))];
   const shared = hasDiags && affectsSharedBlock(sound.diags, ownNodeIds);
   const lufsOk = Number.isFinite(sound.integratedLufs);
+  // A clean sound still expands — to show its cut-through read or let the
+  // player pick it as the Match reference. Only an errored capture (no
+  // usable balanceDb) stays flat/non-interactive.
+  const expandable = !isError;
+  const isReference = id === referenceId;
+  // A null cutThrough on a non-errored row marks a DEGENERATE capture (the
+  // presence/low contrast came out non-finite) — such a spectrum must neither
+  // serve as a Match reference nor receive generated EQ moves.
+  const hasMatchSpectrum = sound.cutThrough != null;
+  // Label-identity, not just count: Bass and Bass VI are both 7 bands, and a
+  // cross-layout pair must not offer a Match section that can't render.
+  const canMatch =
+    hasMatchSpectrum &&
+    referenceSound?.cutThrough != null &&
+    !isReference &&
+    bandLayoutsMatch(referenceSound, sound);
 
   return (
     <div style={{ borderTop: `0.5px solid ${t.hairline}` }}>
       <div
-        onClick={hasDiags ? onToggle : undefined}
+        onClick={expandable ? onToggle : undefined}
         style={{
           display: "flex",
           alignItems: "center",
           gap: t.space5,
-          minHeight: 38,
+          minHeight: ROW_MIN_HEIGHT,
           padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
-          cursor: hasDiags ? "pointer" : "default",
+          cursor: expandable ? "pointer" : "default",
           background: open ? t.rowSel : "transparent",
         }}
       >
@@ -185,16 +254,24 @@ export function SoundRow({
               {sound.error}
             </span>
           ) : hasDiags ? (
-            sound.diags.map((d) => (
+            diags.map((d) => (
               <span
                 key={d.key}
-                style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: t.space3,
+                }}
               >
-                <DiagnosisChip label={d.label} sev={d.sev} />
+                <DiagnosisChip
+                  label={possibleLabel(d)}
+                  sev={d.sev}
+                  possible={isPossible(d)}
+                />
                 <LevelIndicator
                   level={d.fromLevel}
                   sev={d.sev}
-                  finding={d.label}
+                  finding={possibleLabel(d)}
                   size="tiny"
                 />
               </span>
@@ -260,10 +337,10 @@ export function SoundRow({
             flexShrink: 0,
             display: "inline-flex",
             justifyContent: "center",
-            opacity: hasDiags ? 0.6 : 0,
+            opacity: expandable ? 0.6 : 0,
           }}
         >
-          {hasDiags && (
+          {expandable && (
             <span
               style={{
                 display: "inline-flex",
@@ -277,7 +354,7 @@ export function SoundRow({
         </span>
       </div>
 
-      {open && hasDiags && (
+      {open && expandable && (
         <div
           style={{
             padding: `${String(t.space1)}px ${String(t.space5)}px ${String(t.space7)}px ${String(t.space11)}px`,
@@ -286,6 +363,26 @@ export function SoundRow({
             gap: t.space6,
           }}
         >
+          <div style={{ display: "flex", alignItems: "center", gap: t.space4 }}>
+            {isReference ? (
+              <>
+                <Tag tone="accent">Reference</Tag>
+                <Button variant="ghost" small onClick={onClearReference}>
+                  Clear reference
+                </Button>
+              </>
+            ) : hasMatchSpectrum ? (
+              <Button
+                variant="ghost"
+                small
+                onClick={() => {
+                  onSetReference(id);
+                }}
+              >
+                Set as reference
+              </Button>
+            ) : null}
+          </div>
           {shared && (
             <div
               style={{
@@ -306,8 +403,9 @@ export function SoundRow({
               <span>{SHARED_CAPTION}</span>
             </div>
           )}
-          {sound.diags.map((diag) => {
+          {diags.map((diag) => {
             const dTone = sevTone(t, diag.sev);
+            const possible = isPossible(diag);
             return (
               <div
                 key={diag.key}
@@ -329,10 +427,10 @@ export function SoundRow({
                       fontFamily: t.sans,
                       fontSize: 13,
                       fontWeight: 600,
-                      color: dTone.fg,
+                      color: possible ? t.mutedInk : dTone.fg,
                     }}
                   >
-                    {diag.label}
+                    {possibleLabel(diag)}
                   </span>
                   <span
                     style={{
@@ -357,7 +455,7 @@ export function SoundRow({
                   <LevelIndicator
                     level={diag.fromLevel}
                     sev={diag.sev}
-                    finding={diag.label}
+                    finding={possibleLabel(diag)}
                     size="rich"
                   />
                 </div>
@@ -394,12 +492,29 @@ export function SoundRow({
                       rx={rx}
                       listIndex={listIndex}
                       presetName={presetName}
+                      soundScene={sound.scene}
+                      soundFootswitch={sound.footswitch}
+                      nodes={nodes}
+                      footswitches={footswitches}
+                      stimulus={stimulus}
                     />
                   ))}
                 </div>
               </div>
             );
           })}
+          {sound.cutThrough && <CutThroughCard cutThrough={sound.cutThrough} />}
+          {canMatch && (
+            <MatchCard
+              sound={sound}
+              reference={referenceSound}
+              listIndex={listIndex}
+              presetName={presetName}
+              nodes={nodes}
+              footswitches={footswitches}
+              stimulus={stimulus}
+            />
+          )}
         </div>
       )}
     </div>

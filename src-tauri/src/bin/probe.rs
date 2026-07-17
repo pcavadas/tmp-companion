@@ -49,6 +49,26 @@
 //!                                  band coverage, and (with --labels {"rule":[slots]}) DERIVE
 //!                                  proposed *_CAPTURE thresholds → a DETERMINISTIC JSON report.
 //!                                  READ-ONLY: loads + captures, never saves
+//!   probe --doctor-inject <slot> <gains_csv|none>   R5 defect-injection A/B (live EQ-10 insert,
+//!                                   never saves; loads the slot)
+//!   probe --doctor-defects <slot> [--out <report.json>]
+//!                                  Versioned KNOWN-DEFECT fixture sweep: injects a committed
+//!                                  table of named recipes (control/muddy/lost/washed/
+//!                                  resonant_wah/resonant_peq/boxy_peq)
+//!                                  one at a time into a clean preset's live edit buffer, checks
+//!                                  each after-capture's fired verdicts against the recipe's
+//!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION
+//!                                  table. Never saves; loads the slot; ends re-amp OFF.
+//!   probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
+//!                                  CAPTURE-WINDOW A/B evidence arm: per slot, captures the
+//!                                  oracle (full 6s stim + the pinned 2.5s oracle tail —
+//!                                  ORACLE_TAIL_MS, deliberately NOT the production
+//!                                  DOCTOR_TAIL_MS) vs a 3s-stim/1.5s-tail
+//!                                  and a 4s-stim/1.5s-tail variant, reports band-dB/tilt/tail
+//!                                  deltas + whether the fired-verdict set changed (the
+//!                                  re-baseline decision aid — never self-consistent).
+//!                                  LOADS the probed slots (LoadPreset via doctor_capture);
+//!                                  never saves; ends re-amp OFF
 //!   probe --stim-ab <slots_csv> <wavA> <wavB> [ref_level=0.5]
 //!                                  DEVICE A/B: measure_c per preset with two stimuli →
 //!                                  C/spread/ΔC table (playing-style sensitivity; capture
@@ -80,6 +100,25 @@
 //!
 //! Exits non-zero on failure so it can gate dev scripts.
 
+/// Look up a `--name value` CLI flag in `args`, by adjacent position (the
+/// value is the arg right after the flag). Shared by the doctor-calib-style
+/// subcommands, each of which parses several such flags.
+///
+/// A PRESENT flag with a missing value (flag is last, or immediately followed
+/// by another `--flag`) is a usage error, exit 2 — distinguishable from an
+/// absent flag (`None`), so a bare optional `--out` can never silently fall
+/// back to a default instead of what the user asked for.
+fn flag_arg(args: &[String], name: &str) -> Option<String> {
+    let j = args.iter().position(|a| a == name)?;
+    match args.get(j + 1) {
+        Some(v) if !v.starts_with("--") => Some(v.clone()),
+        _ => {
+            eprintln!("[probe] {name} requires a value");
+            std::process::exit(2);
+        }
+    }
+}
+
 /// Resolve an opspec argument: if it names an existing file, read its contents;
 /// otherwise treat it as a literal inline JSON string. Empty when absent.
 fn opspec_arg(arg: Option<&String>) -> String {
@@ -92,8 +131,29 @@ fn opspec_arg(arg: Option<&String>) -> String {
     }
 }
 
+/// Minimal stderr logger: the shared library modules (leveller floor guards,
+/// `audio::estimate_onset`, session retries) diagnose through `log::*`, which is
+/// silently DROPPED without an installed logger — in the app tauri-plugin-log
+/// owns it; in this CLI the diagnostics belong on stderr next to the eprintln
+/// status lines. No timestamps/levels-config — probe is an attended tool.
+struct StderrLog;
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if log::set_logger(&StderrLog).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
 
     if args.iter().any(|a| a == "--activegraph") {
         match tmp_companion_lib::probe_active_graph() {
@@ -146,6 +206,77 @@ fn main() {
     if args.iter().any(|a| a == "--device-backup") {
         eprintln!("[probe] device backup (BackupRequest → tar.lz4 stream → extract DB)…");
         match tmp_companion_lib::probe_device_backup() {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-inject") {
+        // --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]
+        // (R5 defect-injection A/B; --block overrides the EQ-10 insert vehicle —
+        // e.g. a wah at its default cocked position for a resonant positive.)
+        // Strict parsing: a typo'd slot or gain pair must not silently run a
+        // DIFFERENT experiment (slot 0 / an empty control injection) that still
+        // reports success — the same silent-wrong-arm class the calib matrix hit.
+        let usage = || -> ! {
+            eprintln!("usage: probe --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]");
+            std::process::exit(2);
+        };
+        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+            Some(s) => s,
+            None => usage(),
+        };
+        let gains: Vec<(String, f64)> = match args.get(i + 2).map(String::as_str) {
+            None | Some("none") => Vec::new(),
+            Some(csv) if !csv.starts_with("--") => csv
+                .split(',')
+                .map(|kv| {
+                    let Some((k, v)) = kv.split_once('=') else {
+                        eprintln!("[probe] malformed gain pair '{kv}' (expected controlId=dB)");
+                        usage();
+                    };
+                    match v.parse::<f64>() {
+                        Ok(val) if val.is_finite() => (k.to_string(), val),
+                        _ => {
+                            eprintln!("[probe] malformed gain value in '{kv}' (expected a finite dB number)");
+                            usage();
+                        }
+                    }
+                })
+                .collect(),
+            Some(_) => usage(),
+        };
+        let block = flag_arg(&args, "--block");
+        match tmp_companion_lib::probe_doctor_inject(slot, &gains, block.as_deref()) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-defects") {
+        // --doctor-defects <slot> [--out <report.json>]  (versioned defect-fixture sweep)
+        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+            Some(s) => s,
+            None => {
+                eprintln!("usage: probe --doctor-defects <slot> [--out <report.json>]");
+                std::process::exit(2);
+            }
+        };
+        let out = flag_arg(&args, "--out");
+        eprintln!("[probe] doctor-defects: slot {slot}…");
+        match tmp_companion_lib::probe_doctor_defects(slot, out.as_deref()) {
             Ok(report) => {
                 print!("{report}");
                 return;
@@ -706,6 +837,39 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--seed-scenario") {
+        // Online-e2e seeding in a FRESH process (device work from a long-lived
+        // process degrades — truncated list harvests + capricious opens); sweeps
+        // stray scenario imports first. The e2e runner calls this per spec.
+        eprintln!("[probe] seeding the e2e scenario presets (sweep + import)…");
+        match tmp_companion_lib::probe_seed_scenario() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--clear-strays") {
+        // Attended cleanup: sweep stray scenario imports (exact-name, wrong-slot
+        // matches only, off a completeness-floored list) without seeding.
+        eprintln!("[probe] sweeping stray e2e scenario imports…");
+        match tmp_companion_lib::probe_clear_strays() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.iter().any(|a| a == "--listall") {
         // Read-only: print every My Presets slot + name (full list, not just the
         // first 20). For auditing device state after a run.
@@ -1144,6 +1308,53 @@ fn main() {
         }
         eprintln!("[probe] exporting preset listEnum={list_enum} slot={slot}…");
         match tmp_companion_lib::probe_export_preset(list_enum, slot) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--factory-list") {
+        // --factory-list — print every Factory preset as `slot<TAB>name`.
+        eprintln!("[probe] listing Factory presets…");
+        match tmp_companion_lib::probe_factory_list() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--load-probe") {
+        // --load-probe <slot> <tabEnum> — raw loadPreset, SEND-ONLY (the TMP
+        // screen is the verification oracle). Both values pass through verbatim
+        // (experiment with 0-/1-based slots + unknown Factory tabEnums).
+        // Non-destructive (load only, no save).
+        let slot: u64 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u64::MAX);
+        let tab_enum: u64 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u64::MAX);
+        if slot == u64::MAX || tab_enum == u64::MAX {
+            eprintln!(
+                "usage: probe --load-probe <slot> <tabEnum>   (tabEnum 1 = UserPresets; Factory unknown)"
+            );
+            std::process::exit(2);
+        }
+        eprintln!("[probe] loadPreset slot={slot} tabEnum={tab_enum}…");
+        match tmp_companion_lib::probe_load_probe(slot, tab_enum) {
             Ok(r) => {
                 print!("{r}");
                 return;
@@ -1620,17 +1831,11 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--doctor-calib") {
         // --doctor-calib <slots_csv> --stim <wav> --family <guitar|bass|bass-vi>
         //                [--labels <rules.json>] --out <report.json>  (read-only sweep)
-        let flag = |name: &str| -> Option<String> {
-            args.iter()
-                .position(|a| a == name)
-                .and_then(|j| args.get(j + 1))
-                .cloned()
-        };
         let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
-        let stim = flag("--stim").unwrap_or_default();
-        let family = flag("--family").unwrap_or_default();
-        let out = flag("--out").unwrap_or_default();
-        let labels = flag("--labels");
+        let stim = flag_arg(&args, "--stim").unwrap_or_default();
+        let family = flag_arg(&args, "--family").unwrap_or_default();
+        let out = flag_arg(&args, "--out").unwrap_or_default();
+        let labels = flag_arg(&args, "--labels");
         let slots: Vec<u32> = match slots_csv
             .split(',')
             .map(|x| x.trim())
@@ -1654,6 +1859,84 @@ fn main() {
         );
         match tmp_companion_lib::probe_doctor_calib(&slots, &stim, &family, labels.as_deref(), &out)
         {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-calib-factory") {
+        // --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <..> --out <report.json>
+        // Loads each FACTORY preset (tabEnum=4) + captures AS-LOADED for reference derivation.
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let stim = flag_arg(&args, "--stim").unwrap_or_default();
+        let family = flag_arg(&args, "--family").unwrap_or_default();
+        let out = flag_arg(&args, "--out").unwrap_or_default();
+        let slots: Vec<u32> = match slots_csv
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) if !s.is_empty() && !stim.is_empty() && !family.is_empty() && !out.is_empty() => {
+                s
+            }
+            _ => {
+                eprintln!(
+                    "usage: probe --doctor-calib-factory <factory_slots_csv> --stim <wav> --family <guitar|bass|bass-vi> --out <report.json>"
+                );
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "[probe] doctor-calib-factory sweep over {} factory slot(s), family={family}, stim={stim}…",
+            slots.len()
+        );
+        match tmp_companion_lib::probe_doctor_calib_factory(&slots, &stim, &family, &out) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-window-ab") {
+        // --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>]
+        //                    [--out <report.json>]  (LOADS the probed slots, read-only otherwise)
+        let slots_csv = args.get(i + 1).cloned().unwrap_or_default();
+        let stim = flag_arg(&args, "--stim").unwrap_or_default();
+        let family = flag_arg(&args, "--family").unwrap_or_else(|| "guitar".to_string());
+        let out = flag_arg(&args, "--out");
+        let slots: Vec<u32> = match slots_csv
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .map(|x| x.parse::<u32>())
+            .collect::<Result<Vec<u32>, _>>()
+        {
+            Ok(s) if !s.is_empty() && !stim.is_empty() => s,
+            _ => {
+                eprintln!(
+                    "usage: probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]"
+                );
+                std::process::exit(2);
+            }
+        };
+        eprintln!(
+            "[probe] doctor-window-ab sweep over {} slot(s), family={family}, stim={stim}…",
+            slots.len()
+        );
+        match tmp_companion_lib::probe_doctor_window_ab(&slots, &stim, &family, out.as_deref()) {
             Ok(r) => {
                 print!("{r}");
                 return;

@@ -155,6 +155,22 @@ impl Capture {
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap_or((0, 0.0))
     }
+
+    /// Deterministic mono mixdown of the processed stereo pair (USB-Out 1/2 =
+    /// capture channels 0/1): the per-sample average. Kills the argmax-mono flip
+    /// `loudest_channel` has on stereo presets (L/R can trade loudest across
+    /// runs, flipping spectral verdicts). Channel 2 (dry instrument send) and
+    /// beyond are deliberately excluded. Falls back to channel 0 when the
+    /// capture is mono.
+    pub fn stereo_mix(&self) -> Vec<f32> {
+        if self.channels < 2 {
+            return self.channel(0);
+        }
+        self.interleaved
+            .chunks(self.channels)
+            .map(|f| (f.first().copied().unwrap_or(0.0) + f.get(1).copied().unwrap_or(0.0)) / 2.0)
+            .collect()
+    }
 }
 
 // ── Advisory live-LUFS sink ──────────────────────────────────────────────────
@@ -985,7 +1001,17 @@ const ONSET_MAX_LAG_MS: usize = 250;
 /// Envelope hop — sets the estimate's resolution (well inside the ±5 ms goal).
 const ONSET_HOP_MS: usize = 2;
 /// Normalized-correlation floor below which the estimate is not trusted.
-const ONSET_MIN_CORR: f64 = 0.5;
+/// HW-calibrated (2026-07-16, 15 captures × 5 presets): chains that preserve
+/// ANY envelope find the true ~32 ms latency with corr 0.24–0.48 (fuzz
+/// compression floors it near 0.24), while envelope-DESTROYING chains (reverse
+/// delay, shoegaze wash) sit ≤ 0.08 — 0.15 splits the clusters with margin
+/// both ways. The original 0.5 rejected every real capture.
+const ONSET_MIN_CORR: f64 = 0.15;
+/// Latency plausibility ceiling: the rig's true inject latency measured a tight
+/// 30–34 ms across every preset/run, while envelope-destroyed chains produced
+/// artifact lags of 190–222 ms (wash buildup correlating with the stimulus
+/// head). A best lag beyond this is an artifact regardless of its correlation.
+const ONSET_MAX_PLAUSIBLE_LAG_MS: usize = 120;
 
 /// Estimate where the played stimulus actually STARTS inside a capture (the
 /// capture begins at stream start, before the audio has propagated through
@@ -1045,9 +1071,17 @@ pub(crate) fn estimate_onset(stimulus: &[f32], capture: &[f32], rate: u32) -> (u
             best = (lag, corr);
         }
     }
-    if best.1 >= ONSET_MIN_CORR {
+    if best.1 >= ONSET_MIN_CORR && best.0 * ONSET_HOP_MS <= ONSET_MAX_PLAUSIBLE_LAG_MS {
         (best.0 * hop, true)
     } else {
+        // The diagnosing tell rides in this log: a best lag PINNED at the search
+        // ceiling means real latency exceeds ONSET_MAX_LAG_MS (raise the bound);
+        // a mid-range lag with low corr means the chain destroyed the envelope.
+        log::warn!(
+            "estimate_onset: not confident (best corr {:.3} vs {ONSET_MIN_CORR} at lag {} ms, plausible ≤ {ONSET_MAX_PLAUSIBLE_LAG_MS} ms)",
+            best.1,
+            best.0 * ONSET_HOP_MS
+        );
         (0, false)
     }
 }
@@ -1114,6 +1148,38 @@ mod onset_tests {
         assert!(!confident);
         assert_eq!(onset, 0);
     }
+
+    #[test]
+    fn implausibly_late_match_is_rejected_even_with_high_correlation() {
+        // A perfect envelope match at 200 ms — beyond any real inject latency
+        // (HW: 30–34 ms across every preset/run). The wash-artifact case: the
+        // lag plausibility ceiling must reject it no matter how well the
+        // buildup correlates with the stimulus head.
+        let stim = plucky(2.0);
+        let lag = (SR as usize) * 200 / 1000;
+        let mut cap = vec![0.0f32; lag];
+        cap.extend(stim.iter().copied());
+        cap.extend(std::iter::repeat_n(0.0f32, SR as usize / 2));
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(!confident, "200 ms lag must be implausible");
+        assert_eq!(onset, 0);
+    }
+
+    #[test]
+    fn heavily_compressed_envelope_still_confident_at_a_plausible_lag() {
+        // Fuzz-style crush: hard clipping flattens the envelope so the
+        // correlation lands well under the old 0.5 bar (HW measured 0.24 on a
+        // fuzz preset) — the recalibrated floor must still accept the true lag.
+        let stim = plucky(2.0);
+        let lag = (SR as usize) * 32 / 1000; // the measured rig latency
+        let mut cap = vec![0.0f32; lag];
+        cap.extend(stim.iter().map(|&x| (x * 40.0).tanh() * 0.3));
+        cap.extend(std::iter::repeat_n(0.0f32, SR as usize / 2));
+        let (onset, confident) = estimate_onset(&stim, &cap, SR);
+        assert!(confident);
+        let err = (onset as i64 - lag as i64).unsigned_abs() as usize;
+        assert!(err <= SR as usize * 5 / 1000, "onset {onset} vs lag {lag}");
+    }
 }
 
 #[cfg(test)]
@@ -1126,6 +1192,27 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * PI * freq * i as f32 / rate as f32).sin())
             .collect()
+    }
+
+    #[test]
+    fn stereo_mix_averages_the_processed_pair_and_excludes_dry() {
+        // 3-channel interleaved: ch0=[1,1], ch1=[0,0], ch2=[9,9] (dry send).
+        let cap = Capture {
+            interleaved: vec![1.0, 0.0, 9.0, 1.0, 0.0, 9.0],
+            channels: 3,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.stereo_mix(), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn stereo_mix_passes_through_mono() {
+        let cap = Capture {
+            interleaved: vec![0.25, -0.5, 0.75],
+            channels: 1,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.stereo_mix(), vec![0.25, -0.5, 0.75]);
     }
 
     #[test]

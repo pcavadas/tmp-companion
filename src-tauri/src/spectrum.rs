@@ -2,48 +2,29 @@
 //!
 //! MEASURE: the analysis runs on a re-amp capture (the device pass is deferred to the
 //! manual runbook under the read-only policy). The DSP here is pure + unit-tested on
-//! synthetic signals: coarse band energies (Goertzel), tonal flags, EQ-match band
+//! synthetic signals: coarse band energies (the shared windowed Welch PSD estimator,
+//! `crate::psd::welch_psd` — replaced the old 4-probe un-windowed Goertzel scan, which
+//! carried ~±2.5 dB variance and heavy HF spectral leakage), tonal flags, EQ-match band
 //! deltas (a *suggestion* applied via a block-parameter edit), and best-SIC ranking by
 //! spectral distance. Fixed coarse bands; EQ-match suggests (the user applies);
 //! best-SIC is a ranked suggestion.
 
 use serde::Serialize;
 
-/// Single-frequency power via Goertzel, normalised by length² (so a unit sine at the
-/// bin reads ~0.25 regardless of N).
-fn goertzel_power(signal: &[f32], rate: f32, freq: f32) -> f64 {
-    let n = signal.len();
-    if n == 0 || rate <= 0.0 {
-        return 0.0;
-    }
-    let k = (freq / rate * n as f32).round() as f64;
-    let w = 2.0 * std::f64::consts::PI * k / n as f64;
-    let coeff = 2.0 * w.cos();
-    let (mut s1, mut s2) = (0.0f64, 0.0);
-    for &x in signal {
-        let s0 = x as f64 + coeff * s1 - s2;
-        s2 = s1;
-        s1 = s0;
-    }
-    let power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
-    (power / (n as f64 * n as f64)).max(0.0)
-}
-
-/// Energy in each `(lo, hi)` band — the mean Goertzel power over a few log-spaced
-/// probe frequencies inside the band.
+/// Mean power DENSITY in each `(lo, hi)` band — one windowed Welch PSD estimate of
+/// `signal` (see the module doc for why this replaced the per-band Goertzel
+/// probes), with each band's integrated power normalized by its width. The
+/// normalization preserves the old per-probe-average semantics for UNEQUAL band
+/// widths: `tonal_flags`'s cross-band ratios would otherwise credit the 8 kHz-wide
+/// high band with bandwidth-proportional power a 190 Hz-wide low band can't match.
+/// The same-band consumers (`spectral_distance`/`eq_match_deltas`/`rank_sics`
+/// compare the SAME band across two signals) are invariant to the per-band
+/// constant either way.
 pub fn band_energies(signal: &[f32], rate: f32, bands: &[(f32, f32)]) -> Vec<f64> {
+    let psd = crate::psd::welch_psd(signal, rate);
     bands
         .iter()
-        .map(|&(lo, hi)| {
-            let probes = 4;
-            let mut sum = 0.0;
-            for i in 0..probes {
-                let frac = (i as f32 + 0.5) / probes as f32;
-                let f = lo * (hi / lo).powf(frac); // log-spaced within the band
-                sum += goertzel_power(signal, rate, f);
-            }
-            sum / probes as f64
-        })
+        .map(|&(lo, hi)| psd.band_power(lo, hi) / f64::from((hi - lo).max(1.0)))
         .collect()
 }
 

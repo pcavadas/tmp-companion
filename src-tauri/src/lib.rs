@@ -52,6 +52,7 @@ mod probe_api;
 mod profiles;
 #[allow(dead_code)]
 mod proto;
+mod psd;
 mod rename;
 mod replace_inplace;
 mod saved_blocks;

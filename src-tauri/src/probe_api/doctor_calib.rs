@@ -4,8 +4,10 @@
 //! through a REAL stimulus (a Tier-2 DI capture wav, `--stim`), measure every
 //! selected slot's Doctor `SoundProfile` + the pre-onset noise-floor metric + the
 //! stimulus band coverage, and — when a `--labels` ground-truth is supplied —
-//! DERIVE proposed `Thresholds` for the CAPTURE table (`doctor::*_CAPTURE`) that
-//! separate the labelled-positive slots from the clean ones per rule.
+//! DERIVE proposed `Thresholds` values. There is no separate CAPTURE table:
+//! `StimulusKind::Synthetic` and `StimulusKind::Capture` share one per-family
+//! `Thresholds` table, and this sweep's derived values inform the R5 attended
+//! recalibration of that shared table.
 //!
 //! Output is a DETERMINISTIC JSON report (no timestamps; the operator names the
 //! `--out` file) plus a human markdown summary on stdout. READ-ONLY on the unit:
@@ -100,24 +102,27 @@ fn propose_threshold(clean: &[f64], positive: &[f64]) -> (f64, Option<f64>) {
     )
 }
 
-/// Pre-onset noise-floor metric: `20·log10(rms(capture[..onset]) / rms(body))`
-/// dB — how far the leading (pre-signal) hiss sits under the stimulus body. `None`
-/// when the onset isn't confident or sits under 10 ms of samples (no meaningful
-/// pre-window to measure) or the body is silent. Pure.
+/// Pre-signal noise-floor metric: `20·log10(rms(capture[..signal_start]) /
+/// rms(body))` dB — how far the leading (pre-signal) hiss sits under the
+/// stimulus body. `body_end` is the raw onset + the padded stimulus length
+/// (where the played audio ends) — passed explicitly because `signal_start`
+/// is pad-SHIFTED, so `signal_start + stimulus_samples` would overshoot the
+/// body by one pad. `None` when the onset isn't confident or sits under 10 ms
+/// of samples (no meaningful pre-window) or the body is silent. Pure.
 fn noise_floor_db(
     samples: &[f32],
     rate: u32,
-    onset: usize,
+    signal_start: usize,
     confident: bool,
-    stimulus_samples: usize,
+    body_end: usize,
 ) -> Option<f64> {
     let min_onset = rate as usize / 100; // 10 ms
-    if !confident || onset < min_onset || onset > samples.len() {
+    if !confident || signal_start < min_onset || signal_start > samples.len() {
         return None;
     }
-    let body_end = onset.saturating_add(stimulus_samples).min(samples.len());
-    let pre = doctor::rms_f64(&samples[..onset]);
-    let body = doctor::rms_f64(&samples[onset..body_end]);
+    let body_end = body_end.min(samples.len());
+    let pre = doctor::rms_f64(&samples[..signal_start]);
+    let body = doctor::rms_f64(&samples[signal_start..body_end]);
     if body <= 0.0 {
         return None;
     }
@@ -137,28 +142,85 @@ fn stim_hash(samples: &[f32]) -> String {
     format!("{h:016x}")
 }
 
+/// One rule's metric value(s), keyed by rule name: `(tilt-space, centered-space)`.
+/// The two differ only for the CONSENSUS band rules (muddy/boomy/harsh/lost/
+/// buried — see `doctor::Thresholds`'s doc); for fizzy/washed/spiky (no centered
+/// gate exists) both fields carry the same single-space value, so every rule's
+/// derivation can go through the one code path below.
+type RuleMetric = (&'static str, f64, f64);
+
+/// A slot's rule metrics + its broadband tilt slope: `(slot, tilt_slope, rule_metrics)`.
+type SlotMetrics = (u32, Option<f64>, Vec<RuleMetric>);
+
 /// Per-slot rule metrics, in the SAME LHS space `doctor::diagnose` compares to
-/// each threshold (every rule is "metric > threshold"). `dev` mirrors diagnose:
-/// vs the cohort median, or the neighbour-expectation fallback when the sweep is
-/// under `MIN_COHORT`.
+/// each threshold (every rule is "metric > threshold"): the target-deviation
+/// tilt-split LOCAL ([`doctor::deviations`] / [`doctor::tilt_split`]) plus the
+/// R6 CONSENSUS [`doctor::centered_deviations`] value for the tonal rules, the
+/// self-difference for fizzy, and the time-domain metrics for washed/spiky.
+/// Also returns the broadband tilt slope (`tilt_split`'s discarded first value)
+/// so callers building a `tiltDbPerOct` report field don't re-run the same
+/// deviations+tilt_split pass.
 fn rule_metrics(
     profile: &doctor::SoundProfile,
+    coverage: &[bool],
     family: doctor::Family,
-    cohort: Option<&[f64]>,
-) -> Vec<(&'static str, f64)> {
-    let bal = doctor::balance(&profile.bands);
-    let dev = |i: usize| doctor::band_dev(&bal, cohort, i);
+) -> (Option<f64>, Vec<RuleMetric>) {
+    let bdb = doctor::band_db(&profile.bands);
+    let dev = doctor::deviations(&bdb, family);
+    // The row's own coverage, matching `diagnose_kind`'s call — thresholds must
+    // be derived in the SAME coverage-gated metric space the verdict path reads.
+    let (slope, locals) = doctor::tilt_split(&dev, family, Some(coverage));
+    let centered = doctor::centered_deviations(&dev, family);
     let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
-    vec![
-        ("muddy", dev(low_mids)),
-        ("boomy", dev(lows)),
-        ("harsh", dev(high_mids)),
-        ("fizzy", bal[air] - bal[highs]),
-        ("lost", -dev(mids)),
-        ("washed", profile.tail_ratio_db),
-        ("spiky", profile.spread_lu),
-        ("buried", -dev(lows)),
-    ]
+    let fizzy = bdb[air] - bdb[highs];
+    (
+        slope,
+        vec![
+            ("muddy", locals[low_mids], centered[low_mids]),
+            ("boomy", locals[lows], centered[lows]),
+            ("harsh", locals[high_mids], centered[high_mids]),
+            ("fizzy", fizzy, fizzy),
+            ("lost", -locals[mids], -centered[mids]),
+            ("washed", profile.tail_ratio_db, profile.tail_ratio_db),
+            ("spiky", profile.spread_lu, profile.spread_lu),
+            ("buried", -locals[lows], -centered[lows]),
+        ],
+    )
+}
+
+/// The engine's ACTUAL verdict keys for one measured row — recorded in the
+/// sweep JSON so a sanity/false-fire check reads real engine output, not a
+/// re-derivation (an earlier check silently read a MISSING `verdicts` key and
+/// concluded "0 fires" from vacuous data — never again).
+fn row_verdicts(
+    profile: &doctor::SoundProfile,
+    coverage: &[bool],
+    family: doctor::Family,
+) -> Vec<&'static str> {
+    doctor::diagnose_kind(
+        profile,
+        None,
+        family,
+        doctor::StimulusKind::Synthetic,
+        Some(coverage),
+        doctor::PlaybackOffsets::NONE,
+    )
+    .into_iter()
+    .map(|d| d.key)
+    .collect()
+}
+
+/// Top localized peaks (`SoundProfile::peaks`, height-sorted) as JSON — the
+/// resonant/boxy gate evidence per row.
+fn peaks_json(profile: &doctor::SoundProfile) -> serde_json::Value {
+    serde_json::Value::Array(
+        profile
+            .peaks
+            .iter()
+            .take(3)
+            .map(|p| serde_json::json!({ "freqHz": p.freq_hz, "heightDb": p.height_db, "q": p.q }))
+            .collect(),
+    )
 }
 
 /// One measured slot in the sweep.
@@ -169,6 +231,70 @@ struct Row {
     noise_floor_db: Option<f64>,
 }
 
+/// One capture's `SoundProfile` + its CAPTURED OUTPUT's own coverage (mirrors
+/// production's `output_coverage_with_body` gate — a stimulus-only coverage
+/// would read a preset-suppressed band as "covered" and put this sweep's
+/// metrics/verdicts in a different space than the shipped engine), off ONE
+/// shared post-onset body PSD. Shared by both sweeps below.
+fn profile_and_coverage(
+    samples: &[f32],
+    rate: u32,
+    stim: &[f32],
+    onset: usize,
+    confident: bool,
+    family: doctor::Family,
+) -> Result<(doctor::SoundProfile, Vec<bool>, usize), String> {
+    let signal_start = leveller::doctor_signal_start(onset, confident);
+    let body_psd = doctor::body_psd(samples, rate, signal_start);
+    let stim_psd = crate::psd::welch_psd(stim, rate as f32);
+    let profile = doctor::SoundProfile::from_capture_with_psd(
+        samples,
+        rate,
+        stim.len(),
+        onset,
+        family,
+        &body_psd,
+        Some(&stim_psd),
+    )?;
+    let coverage =
+        doctor::output_coverage_with_body(samples, rate, signal_start, family, &body_psd);
+    Ok((profile, coverage, signal_start))
+}
+
+/// `profile_and_coverage`, sweep-flavored: log + `None` on failure so callers
+/// `let … else { continue }` — one bad slot never ends a sweep, and no `?` can
+/// return past the sweep's re-amp OFF cleanup. `label` distinguishes the user
+/// and factory sweeps' log lines.
+#[allow(clippy::too_many_arguments)]
+fn profile_or_skip(
+    label: &str,
+    slot: u32,
+    samples: &[f32],
+    rate: u32,
+    stim: &[f32],
+    onset: usize,
+    confident: bool,
+    family: doctor::Family,
+) -> Option<(doctor::SoundProfile, Vec<bool>, usize)> {
+    match profile_and_coverage(samples, rate, stim, onset, confident, family) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[probe] {label}slot {slot}: profile failed: {e} (skipping)");
+            None
+        }
+    }
+}
+
+/// Requested-but-not-captured slots — recorded in the JSON and flagged
+/// INCOMPLETE on stdout so a biased subset never reads as complete evidence.
+fn skipped_slots(requested: &[u32], rows: &[Row]) -> Vec<u32> {
+    requested
+        .iter()
+        .copied()
+        .filter(|s| !rows.iter().any(|r| r.slot == *s))
+        .collect()
+}
+
 pub fn probe_doctor_calib(
     slots: &[u32],
     stim_path: &str,
@@ -176,45 +302,60 @@ pub fn probe_doctor_calib(
     labels_path: Option<&str>,
     out_path: &str,
 ) -> Result<String, String> {
-    // `from_topology` silently defaults unrecognized strings to Guitar — fine for
-    // `--doctor` (topology ids), but a typo'd `--family` here would sweep + derive
-    // `*_CAPTURE` thresholds under the wrong band layout. Fail loudly first.
-    if !matches!(
-        family_id.to_ascii_lowercase().as_str(),
-        "guitar" | "bass" | "bass-vi"
-    ) {
-        return Err(format!(
-            "unrecognized --family '{family_id}' (expected guitar|bass|bass-vi)"
-        ));
-    }
-    let family = doctor::Family::from_topology(family_id);
-    let stim = read_stimulus_48k(stim_path)?;
+    // A typo'd `--family` here would sweep + derive threshold values under the
+    // wrong band layout. Fail loudly first.
+    let family = super::parse_family_arg(family_id)?;
+    // Production Doctor window (3 s slice + the shorter tail): thresholds/targets
+    // must be derived in the SAME capture space `doctor_check` measures in.
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(stim_path)?);
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
+    // Fresh-connection re-amp OFF on every exit path (mid-sweep error included).
+    let _reamp_off = super::ReampOffGuard;
     let mut rows: Vec<Row> = Vec::new();
     for &slot in slots {
         // One field-8 slot read drives the base-sound force-bypass isolation
-        // (every on/off block off) — the same recipe as `probe --doctor`.
-        let fb: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot) {
+        // (every on/off block off) — the same recipe as `probe --doctor` —
+        // and, off the SAME read, the production tail (`doctor::doctor_tail_ms`,
+        // same policy `commands/doctor.rs` uses) for THIS slot's graph, so
+        // calibration evidence is gathered in production's capture space
+        // instead of a pinned literal.
+        let (fb, tail_ms): (Vec<(String, String, bool)>, u64) = match read_slot_preset_parsed(slot)
+        {
             Ok((preset, _, _)) => {
-                footswitch::all_onoff_blocks(preset.get("ftsw").unwrap_or(&serde_json::Value::Null))
-                    .into_iter()
-                    .map(|(g, n)| (g, n, true))
-                    .collect()
+                let fb = footswitch::all_onoff_blocks(
+                    preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
+                )
+                .into_iter()
+                .map(|(g, n)| (g, n, true))
+                .collect();
+                (
+                    fb,
+                    u64::from(super::doctor_inject::tail_ms_for_doc(&preset)),
+                )
             }
             Err(e) => {
-                eprintln!("[probe] slot {slot}: preset read failed ({e}) — no isolation");
-                Vec::new()
+                // Capturing WITHOUT isolation would let active on/off blocks
+                // contaminate the derived thresholds while the row still reads
+                // as valid evidence — skip; `skipped_slots` marks the sweep
+                // INCOMPLETE instead.
+                eprintln!("[probe] slot {slot}: preset read failed ({e}) — skipping");
+                continue;
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), false) {
+        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), tail_ms, false) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let profile =
-                    doctor::SoundProfile::from_capture(&samples, rate, stim.len(), onset, family)?;
-                let coverage = doctor::band_coverage(&stim, family);
-                let noise_floor_db = noise_floor_db(&samples, rate, onset, confident, stim.len());
+                let Some((profile, coverage, signal_start)) =
+                    profile_or_skip("", slot, &samples, rate, &stim, onset, confident, family)
+                else {
+                    continue;
+                };
+                // body_end pairs the RAW onset with the padded stim length (the
+                // pad cancels); the floor window ends at the pad-shifted start.
+                let noise_floor_db =
+                    noise_floor_db(&samples, rate, signal_start, confident, onset + stim.len());
                 rows.push(Row {
                     slot,
                     profile,
@@ -225,17 +366,10 @@ pub fn probe_doctor_calib(
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
         }
     }
-    // Belt-and-braces re-amp OFF even on a mid-sweep error.
-    let _ = session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
 
     if rows.is_empty() {
         return Err("no sound captured".to_string());
     }
-
-    let cohort: Option<Vec<f64>> = (rows.len() >= doctor::MIN_COHORT).then(|| {
-        let refs: Vec<&doctor::SoundProfile> = rows.iter().map(|r| &r.profile).collect();
-        doctor::cohort_median(&refs)
-    });
 
     // Ground-truth positive slot lists per rule (0-based list indices).
     let labels: std::collections::HashMap<String, Vec<u32>> = match labels_path {
@@ -246,15 +380,20 @@ pub fn probe_doctor_calib(
         None => std::collections::HashMap::new(),
     };
 
-    // Per-slot rule metrics (shared by the report rows and the derivation).
-    let metrics_by_slot: Vec<(u32, Vec<(&'static str, f64)>)> = rows
+    // Per-slot rule metrics + tilt slope (shared by the report rows and the
+    // derivation).
+    let metrics_by_slot: Vec<SlotMetrics> = rows
         .iter()
-        .map(|r| (r.slot, rule_metrics(&r.profile, family, cohort.as_deref())))
+        .map(|r| {
+            let (slope, metrics) = rule_metrics(&r.profile, &r.coverage, family);
+            (r.slot, slope, metrics)
+        })
         .collect();
 
     let report_rows: Vec<serde_json::Value> = rows
         .iter()
-        .map(|r| {
+        .zip(&metrics_by_slot)
+        .map(|(r, (_, slope, _))| {
             serde_json::json!({
                 "slot": r.slot,
                 "balanceDb": doctor::balance(&r.profile.bands),
@@ -263,62 +402,83 @@ pub fn probe_doctor_calib(
                 "noiseFloorDb": r.noise_floor_db,
                 "integratedLufs": r.profile.integrated_lufs,
                 "coverage": r.coverage,
+                "tiltDbPerOct": slope,
+                "verdicts": row_verdicts(&r.profile, &r.coverage, family),
+                "peaks": peaks_json(&r.profile),
             })
         })
         .collect();
 
-    // Per-rule derivation (only rules present in --labels).
+    // Per-rule derivation (only rules present in --labels), BOTH consensus
+    // spaces independently — tilt and centered each get their own clean/
+    // positive split + proposed threshold (R6: a band rule now fires only when
+    // BOTH spaces clear their own gate, see `doctor::Thresholds`'s doc).
     let mut derivations = serde_json::Map::new();
     let mut md = String::new();
     for rule in RULES {
         let Some(positives) = labels.get(rule) else {
             continue;
         };
-        let metric_of = |slot: u32| -> Option<f64> {
-            metrics_by_slot
+        let (mut clean_t, mut positive_t) = (Vec::new(), Vec::new());
+        let (mut clean_c, mut positive_c) = (Vec::new(), Vec::new());
+        for (slot, _slope, m) in &metrics_by_slot {
+            let (vt, vc) = m
                 .iter()
-                .find(|(s, _)| *s == slot)
-                .and_then(|(_, m)| m.iter().find(|(k, _)| *k == rule).map(|(_, v)| *v))
-        };
-        let (mut clean, mut positive) = (Vec::new(), Vec::new());
-        for (slot, m) in &metrics_by_slot {
-            let v = m
-                .iter()
-                .find(|(k, _)| *k == rule)
-                .map(|(_, v)| *v)
-                .unwrap_or(0.0);
+                .find(|(k, _, _)| *k == rule)
+                .map(|(_, vt, vc)| (*vt, *vc))
+                .unwrap_or((0.0, 0.0));
             if positives.contains(slot) {
-                positive.push(v);
+                positive_t.push(vt);
+                positive_c.push(vc);
             } else {
-                clean.push(v);
+                clean_t.push(vt);
+                clean_c.push(vc);
             }
         }
-        // Positive slots labelled but not captured this sweep are dropped by
-        // metric_of returning None — report them so the operator notices.
+        // Positive slots labelled but not captured this sweep — report them so
+        // the operator notices (every captured slot's metrics vec always
+        // carries all RULES, so "missing" means "not captured at all").
         let missing: Vec<u32> = positives
             .iter()
             .copied()
-            .filter(|s| metric_of(*s).is_none())
+            .filter(|s| !metrics_by_slot.iter().any(|(slot, _, _)| slot == s))
             .collect();
-        let (proposed, separation) = propose_threshold(&clean, &positive);
-        let (cmin, cmed, cp90, cmax) = stats(&clean).unwrap_or((0.0, 0.0, 0.0, 0.0));
-        derivations.insert(
-            rule.to_string(),
+        let (proposed_t, sep_t) = propose_threshold(&clean_t, &positive_t);
+        let (proposed_c, sep_c) = propose_threshold(&clean_c, &positive_c);
+        let (cmin_t, cmed_t, cp90_t, cmax_t) = stats(&clean_t).unwrap_or((0.0, 0.0, 0.0, 0.0));
+        let (cmin_c, cmed_c, cp90_c, cmax_c) = stats(&clean_c).unwrap_or((0.0, 0.0, 0.0, 0.0));
+        let space_json = |proposed: f64,
+                          separation: Option<f64>,
+                          positive: &[f64],
+                          (cmin, cmed, cp90, cmax): (f64, f64, f64, f64)| {
             serde_json::json!({
                 "cleanStats": { "min": cmin, "median": cmed, "p90": cp90, "max": cmax },
                 "positiveValues": positive,
                 "proposedThreshold": proposed,
                 "separationMargin": separation,
+            })
+        };
+        derivations.insert(
+            rule.to_string(),
+            serde_json::json!({
+                "tilt": space_json(proposed_t, sep_t, &positive_t, (cmin_t, cmed_t, cp90_t, cmax_t)),
+                "centered": space_json(proposed_c, sep_c, &positive_c, (cmin_c, cmed_c, cp90_c, cmax_c)),
                 "missingLabelledSlots": missing,
             }),
         );
         md += &format!(
-            "  {rule:<7} proposed={proposed:>8.3}  sep={}  clean[min/med/p90/max]={cmin:.2}/{cmed:.2}/{cp90:.2}/{cmax:.2}  pos={:?}\n",
-            separation.map_or("   n/a".to_string(), |s| format!("{s:>6.2}")),
-            positive.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(),
+            "  {rule:<7} tilt     proposed={proposed_t:>8.3}  sep={}  clean[min/med/p90/max]={cmin_t:.2}/{cmed_t:.2}/{cp90_t:.2}/{cmax_t:.2}  pos={:?}\n",
+            sep_t.map_or("   n/a".to_string(), |s| format!("{s:>6.2}")),
+            positive_t.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(),
+        );
+        md += &format!(
+            "  {rule:<7} centered proposed={proposed_c:>8.3}  sep={}  clean[min/med/p90/max]={cmin_c:.2}/{cmed_c:.2}/{cp90_c:.2}/{cmax_c:.2}  pos={:?}\n",
+            sep_c.map_or("   n/a".to_string(), |s| format!("{s:>6.2}")),
+            positive_c.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(),
         );
     }
 
+    let skipped = skipped_slots(slots, &rows);
     let report = serde_json::json!({
         "stimulus": {
             "path": stim_path,
@@ -329,12 +489,16 @@ pub fn probe_doctor_calib(
         "family": family_id,
         "bands": family.bands(),
         "bandLabels": family.labels(),
+        "skippedSlots": skipped,
         "captureParams": {
-            "doctorTailMs": leveller::DOCTOR_TAIL_MS,
+            // Per-slot now (`doctor::doctor_tail_ms` off each slot's own graph,
+            // 300 ms known-dry / 1500 ms wet-or-unknown) — no longer one fixed
+            // number, so this reports the policy, not a single capture value.
+            "doctorTailMsPolicy": "graph-derived per slot (doctor::doctor_tail_ms)",
             "refLevel": 0.5,
             "bandCoverageDb": doctor::BAND_COVERAGE_DB,
         },
-        "cohort": if cohort.is_some() { "median" } else { "absolute" },
+        "metric": "target-deviation-theil-sen",
         "rows": report_rows,
         "derivations": serde_json::Value::Object(derivations),
     });
@@ -342,12 +506,16 @@ pub fn probe_doctor_calib(
     std::fs::write(out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
 
     let mut out = format!(
-        "doctor-calib sweep ({family_id}, {} sounds, cohort={}) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | noise dB | spread\n",
+        "doctor-calib sweep ({family_id}, {} sounds, target-deviation) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | noise dB | spread\n",
         rows.len(),
-        if cohort.is_some() { "median" } else { "absolute" },
         stim_loud.integrated_lufs,
         stim_loud.spread_lu(),
     );
+    if !skipped.is_empty() {
+        out += &format!(
+            "  INCOMPLETE — requested slots {skipped:?} could not be captured; the derivations cover a subset\n"
+        );
+    }
     for r in &rows {
         out += &format!(
             "  {:>4} | {:>8.2} | {:>8.1} | {:>8} | {:>6.2}\n",
@@ -362,6 +530,140 @@ pub fn probe_doctor_calib(
     if !md.is_empty() {
         out += "  proposed CAPTURE thresholds (per labelled rule):\n";
         out += &md;
+    }
+    Ok(out)
+}
+
+/// FACTORY-bank variant for REFERENCE-curve derivation. Loads each factory preset
+/// (tabEnum = 4 `FactoryPresets`, 1-based `presetSlot` = list index + 1) on its own
+/// connection, then captures it AS-LOADED — its designed default tone, the intended
+/// "good tone" baseline — re-amped through the DI `stim`. No labels/derivation and
+/// no base force-bypass (unlike `probe_doctor_calib`): the per-slot `balanceDb` rows
+/// feed the offline per-band median → the per-topology reference curve. READ-ONLY:
+/// load + capture, never saves; ends re-amp OFF.
+pub fn probe_doctor_calib_factory(
+    factory_slots: &[u32],
+    stim_path: &str,
+    family_id: &str,
+    out_path: &str,
+) -> Result<String, String> {
+    let family = super::parse_family_arg(family_id)?;
+    // Production Doctor window (3 s slice + the shorter tail): thresholds/targets
+    // must be derived in the SAME capture space `doctor_check` measures in.
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(stim_path)?);
+    let stim_loud = lufs::measure_mono(&stim, 48_000)?;
+
+    // Fresh-connection re-amp OFF on every exit path (mid-sweep error included).
+    let _reamp_off = super::ReampOffGuard;
+    let mut rows: Vec<Row> = Vec::new();
+    for &slot in factory_slots {
+        // Load on its OWN connection (load + engage in one connection captures
+        // silence — see `doctor_capture_current`); FactoryPresets tab = 4, 1-based.
+        // Conservative default tail (wet/unknown) until the load's own graph
+        // resolves below.
+        let mut tail_ms = u64::from(leveller::DOCTOR_TAIL_MS);
+        {
+            match session::Session::connect() {
+                Ok(mut s) => {
+                    if let Err(e) = s.load_factory_preset(slot) {
+                        eprintln!("[probe] factory slot {slot}: load failed: {e} (skipping)");
+                        continue;
+                    }
+                    // `load_factory_preset` discards its own field-3 push
+                    // (fire-and-forget `transact_eager`) — pump once more to
+                    // harvest it, then resolve THIS preset's production tail
+                    // (`doctor::doctor_tail_ms`) so the capture below matches
+                    // the window `commands/doctor.rs` actually uses for it.
+                    let _ = s.pump_collect(700);
+                    match s.current_preset_value() {
+                        Ok(doc) => tail_ms = u64::from(super::doctor_inject::tail_ms_for_doc(&doc)),
+                        Err(e) => eprintln!(
+                            "[probe] factory slot {slot}: graph resolve failed ({e}) — falling back to the conservative {tail_ms}ms tail"
+                        ),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[probe] factory slot {slot}: connect failed: {e} (skipping)");
+                    continue;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        match leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail_ms) {
+            Ok((samples, rate)) => {
+                let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
+                let Some((profile, coverage, _)) = profile_or_skip(
+                    "factory ", slot, &samples, rate, &stim, onset, confident, family,
+                ) else {
+                    continue;
+                };
+                rows.push(Row {
+                    slot,
+                    profile,
+                    coverage,
+                    noise_floor_db: None,
+                });
+            }
+            Err(e) => eprintln!("[probe] factory slot {slot}: capture failed: {e} (skipping)"),
+        }
+    }
+
+    if rows.is_empty() {
+        return Err("no sound captured".to_string());
+    }
+
+    let report_rows: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let (slope, _metrics) = rule_metrics(&r.profile, &r.coverage, family);
+            serde_json::json!({
+                "slot": r.slot,
+                "balanceDb": doctor::balance(&r.profile.bands),
+                "tailRatioDb": r.profile.tail_ratio_db,
+                "spreadLu": r.profile.spread_lu,
+                "integratedLufs": r.profile.integrated_lufs,
+                "coverage": r.coverage,
+                "tiltDbPerOct": slope,
+                "verdicts": row_verdicts(&r.profile, &r.coverage, family),
+                "peaks": peaks_json(&r.profile),
+            })
+        })
+        .collect();
+
+    let skipped = skipped_slots(factory_slots, &rows);
+    let report = serde_json::json!({
+        "stimulus": {
+            "path": stim_path,
+            "hash": stim_hash(&stim),
+            "integratedLufs": stim_loud.integrated_lufs,
+            "spreadLu": stim_loud.spread_lu(),
+        },
+        "family": family_id,
+        "bands": family.bands(),
+        "bandLabels": family.labels(),
+        "source": "factory",
+        "rows": report_rows,
+        "skippedSlots": skipped,
+    });
+    let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
+
+    let mut out = format!(
+        "doctor-calib-factory sweep ({family_id}, {} sounds) → {out_path}\n  stim {stim_path} ({:.2} LUFS, spread {:.2} LU)\n  slot |     LUFS |  tail dB | spread\n",
+        rows.len(),
+        stim_loud.integrated_lufs,
+        stim_loud.spread_lu(),
+    );
+    if !skipped.is_empty() {
+        out += &format!(
+            "  INCOMPLETE — requested slots {skipped:?} could not be captured; the reference medians cover a subset\n"
+        );
+    }
+    for r in &rows {
+        out += &format!(
+            "  {:>4} | {:>8.2} | {:>8.1} | {:>6.2}\n",
+            r.slot, r.profile.integrated_lufs, r.profile.tail_ratio_db, r.profile.spread_lu,
+        );
     }
     Ok(out)
 }

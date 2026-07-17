@@ -350,3 +350,104 @@ fn build_showcase_fixture() {
         spec["songs"].as_array().unwrap().len(),
     );
 }
+
+/// GENERATOR (run explicitly, ignored otherwise): derive
+/// `e2e/fixtures/backup-fixture.bin` from `e2e/fixtures/scenario-presets.json`
+/// — the ONE source of truth for the scenario presets (the online seed imports
+/// the same JSONs). Keeps the two fixtures in sync mechanically instead of by
+/// discipline. Schema mirrors the shipped fixture (UserPresets with `isEmpty`;
+/// device userSlot = listIndex + 1). Run with:
+///   `cargo test build_scenario_fixture -- --ignored`
+/// Committed output, regenerated only when `scenario-presets.json` changes.
+/// `scenario-presets.json` → the UserPresets SQL script the scenario fixture
+/// archive is built from. Shared by the (ignored) generator and the non-ignored
+/// drift lock below, so the two can never diverge on construction.
+fn scenario_fixture_sql() -> (String, usize) {
+    let src = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/scenario-presets.json"
+    );
+    let spec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(src).expect("read scenario-presets.json"))
+            .expect("parse scenario-presets.json");
+    let presets = spec.as_array().expect("array of scenario presets");
+
+    let mut sql = String::from(
+        "CREATE TABLE UserPresets (id INTEGER PRIMARY KEY, slot INTEGER, isEmpty INTEGER, \
+         displayName TEXT, presetJson BLOB);",
+    );
+    for p in presets {
+        let slot = p["listIndex"].as_u64().expect("listIndex") + 1; // device userSlot
+        let name = p["name"].as_str().expect("name").replace('\'', "''");
+        let json = p["presetJson"]
+            .as_str()
+            .expect("presetJson")
+            .replace('\'', "''");
+        sql.push_str(&format!(
+            " INSERT INTO UserPresets VALUES ({slot}, {slot}, 0, '{name}', '{json}');"
+        ));
+    }
+    (sql, presets.len())
+}
+
+/// DRIFT LOCK (non-ignored, runs in CI): the committed `backup-fixture.bin` must
+/// stay in sync with `scenario-presets.json` — the offline specs read the former,
+/// the online seed imports the latter, and they must describe the SAME presets.
+/// Regenerates the archive in memory through the exact generator construction and
+/// compares the DECODED rows (content, not bytes — sqlite/tar/LZ4 output is not
+/// byte-stable across environments). On failure: rerun
+/// `cargo test build_scenario_fixture -- --ignored` and commit the result.
+#[test]
+fn scenario_fixture_matches_scenario_presets_json() {
+    let (sql, n) = scenario_fixture_sql();
+    let regenerated =
+        read_backup_archive(&build_backup_archive(&sql)).expect("decode regenerated archive");
+    let committed_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/backup-fixture.bin"
+    ))
+    .expect("read committed backup-fixture.bin");
+    let committed = read_backup_archive(&committed_bytes).expect("decode committed fixture");
+    assert_eq!(regenerated.presets.len(), n, "all scenario presets decode");
+    assert_eq!(
+        serde_json::to_value(&regenerated.presets).expect("serialize regenerated"),
+        serde_json::to_value(&committed.presets).expect("serialize committed"),
+        "backup-fixture.bin is out of sync with scenario-presets.json — rerun \
+         `cargo test build_scenario_fixture -- --ignored` and commit the regenerated fixture"
+    );
+}
+
+#[test]
+#[ignore = "generator: writes backup-fixture.bin from scenario-presets.json"]
+fn build_scenario_fixture() {
+    let (sql, n_presets) = scenario_fixture_sql();
+    let archive = build_backup_archive(&sql);
+
+    // Round-trip through the real decoder before committing the bytes.
+    let decoded = read_backup_archive(&archive).expect("decode generated archive");
+    assert_eq!(decoded.presets.len(), n_presets, "all presets decode");
+    let reference = decoded
+        .presets
+        .iter()
+        .find(|r| r.name == "E2E Reference")
+        .expect("Reference present");
+    assert!(
+        !reference.graph.stages.is_empty(),
+        "Reference graph has routed stages"
+    );
+    assert!(
+        !reference.footswitches.is_empty(),
+        "Reference keeps its block-acting footswitches"
+    );
+
+    let out = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/backup-fixture.bin"
+    );
+    std::fs::write(out, &archive).expect("write backup-fixture.bin");
+    eprintln!(
+        "build_scenario_fixture: wrote {} bytes ({} presets) → {out}",
+        archive.len(),
+        n_presets,
+    );
+}

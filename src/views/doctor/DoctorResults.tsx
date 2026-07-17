@@ -10,12 +10,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import { Tag } from "../../ui/Tag";
 import { Button, SegmentedControl } from "../../ui/primitives";
 import { doctorDiscard } from "../../lib/invoke";
 import { slotLabel } from "../../lib/format";
 import { StepRail } from "../overlays/WizardShell";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { PresetResultCard } from "./PresetResultCard";
+import type { DoctorStimulus } from "./PrescriptionCard";
 import { presetLookCount, presetWorstSev, sevRank } from "./severity";
 import {
   ApplyLockContext,
@@ -23,8 +25,10 @@ import {
   type ApplyLock,
 } from "./applyLock";
 import type {
+  ActiveGraph,
   DoctorCheckResult,
   DoctorPresetResult,
+  DoctorSoundResult,
   FootswitchInfo,
 } from "../../lib/types";
 
@@ -43,6 +47,13 @@ export interface DoctorResultsProps {
   /** 0-based list index → the preset's block-acting footswitches (their toggled
    *  nodes drive the "shared block" caption on FS-sound prescriptions). */
   footswitchInfo: Map<number, FootswitchInfo[]>;
+  /** 0-based list index → the preset's signal chain, from the SAME startup
+   *  backup scan as `footswitchInfo` — threaded into every prescription card
+   *  so its A/B captures under the diagnosed sound's own context. */
+  graphByIndex: Map<number, ActiveGraph>;
+  /** Sound key → the stimulus identity it was diagnosed with (the setup-stage
+   *  instrument pick) — the prescription cards' A/B replays it. */
+  stimulusByKey: Map<string, DoctorStimulus>;
   onCheckMore: () => void;
 }
 
@@ -50,17 +61,65 @@ export function DoctorResults({
   result,
   presetNames,
   footswitchInfo,
+  graphByIndex,
+  stimulusByKey,
   onCheckMore,
 }: DoctorResultsProps) {
   const { t } = useTheme();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<Filter>("look");
 
+  // The "Match reference" picker: ONE sound, page-wide (any preset in this
+  // run, not just its own preset) — every other sound offers to move its
+  // spectrum toward it. Keyed by the same `${listIndex}|${sound.key}`
+  // composite id the row-expansion state already uses.
+  const soundById = useMemo(() => {
+    const m = new Map<string, DoctorSoundResult>();
+    for (const p of result.presets) {
+      for (const s of p.sounds) {
+        m.set(`${String(p.listIndex)}|${s.key}`, s);
+      }
+    }
+    return m;
+  }, [result]);
+  const [referenceId, setReferenceId] = useState<string | null>(null);
+  const referenceSound = referenceId
+    ? (soundById.get(referenceId) ?? null)
+    : null;
+  const clearReference = useCallback(() => {
+    setReferenceId(null);
+  }, []);
+
   // ONE applied-but-unsaved prescription across the whole page — the device has
   // a single edit buffer, so a second card's apply (even in another preset)
   // would clobber the first card's live edit. Hence the lock lives here, not per
   // preset card.
   const [activeCard, setActiveCard] = useState<ActiveApplyCard | null>(null);
+
+  // An applied-but-unsaved edit sits in the DEVICE's edit buffer — leaving this
+  // page (unmount, or "Check other sounds" → flow.reset) must drop it, or the
+  // orphaned edit silently rides the next preset interaction. Fire-and-forget
+  // (the cancel-lane pattern); the ref is cleared first so the page's own
+  // unmount cleanup can't double-fire after the reset path already discarded.
+  const activeCardRef = useRef<ActiveApplyCard | null>(null);
+  useEffect(() => {
+    activeCardRef.current = activeCard;
+  }, [activeCard]);
+
+  // The single arbiter for "discard the device edit + drop the lock, but only
+  // if `id` is really still the holder" — reads/writes `activeCardRef`
+  // directly (not React state) so it's safe to call from BOTH this page's own
+  // unmount cleanup AND a PrescriptionCard's unmount cleanup without knowing
+  // which one runs first (React doesn't guarantee child-before-parent
+  // ordering when a whole subtree unmounts at once): the first call to fire
+  // wins, the second sees the ref already cleared and no-ops.
+  const discardIfMine = useCallback((id: string, listIndex: number) => {
+    if (activeCardRef.current?.id !== id) return;
+    activeCardRef.current = null;
+    void doctorDiscard(listIndex).catch(() => undefined);
+    setActiveCard((cur) => (cur?.id === id ? null : cur));
+  }, []);
+
   const lock = useMemo<ApplyLock>(
     () => ({
       activeCard,
@@ -70,26 +129,15 @@ export function DoctorResults({
       release: (id) => {
         setActiveCard((cur) => (cur?.id === id ? null : cur));
       },
+      discardIfMine,
     }),
-    [activeCard],
+    [activeCard, discardIfMine],
   );
 
-  // An applied-but-unsaved edit sits in the DEVICE's edit buffer — leaving this
-  // page (unmount, or "Check other sounds" → flow.reset) must drop it, or the
-  // orphaned edit silently rides the next preset interaction. Fire-and-forget
-  // (the cancel-lane pattern); the ref is cleared first so the unmount cleanup
-  // can't double-fire after the reset path already discarded.
-  const activeCardRef = useRef<ActiveApplyCard | null>(null);
-  useEffect(() => {
-    activeCardRef.current = activeCard;
-  }, [activeCard]);
   const discardActive = useCallback(() => {
     const cur = activeCardRef.current;
-    activeCardRef.current = null;
-    if (cur) {
-      void doctorDiscard(cur.listIndex).catch(() => undefined);
-    }
-  }, []);
+    if (cur) discardIfMine(cur.id, cur.listIndex);
+  }, [discardIfMine]);
   useEffect(() => {
     return discardActive; // unmount only (discardActive is stable)
   }, [discardActive]);
@@ -239,6 +287,23 @@ export function DoctorResults({
           )}
         </div>
 
+        {referenceSound && (
+          <div
+            style={{
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              gap: t.space4,
+              padding: `0 ${String(t.space10)}px ${String(t.space6)}px`,
+            }}
+          >
+            <Tag tone="accent">{`Reference: ${referenceSound.label}`}</Tag>
+            <Button variant="ghost" small onClick={clearReference}>
+              Clear
+            </Button>
+          </div>
+        )}
+
         <div
           style={{
             flex: 1,
@@ -259,8 +324,14 @@ export function DoctorResults({
                 `Slot ${slotLabel(preset.listIndex)}`
               }
               footswitchInfo={footswitchInfo}
+              graphByIndex={graphByIndex}
+              stimulusByKey={stimulusByKey}
               expanded={expanded}
               onToggleRow={toggleRow}
+              referenceSound={referenceSound}
+              referenceId={referenceId}
+              onSetReference={setReferenceId}
+              onClearReference={clearReference}
             />
           ))}
           {showFilter && filter === "look" && (

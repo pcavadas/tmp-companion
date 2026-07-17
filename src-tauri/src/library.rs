@@ -30,6 +30,12 @@ pub fn decode_preset_bytes(bytes: &[u8]) -> Result<String, String> {
         .map_err(|e| format!("decoded .preset is not valid UTF-8: {e}"))
 }
 
+/// A preset doc's identity uuid (`info.preset_id`) — the ONE home of that JSON
+/// walk, shared by the library ingest and the e2e stray-sweep ownership guard.
+pub(crate) fn preset_id_of(value: &Value) -> Option<&str> {
+    value.pointer("/info/preset_id").and_then(Value::as_str)
+}
+
 /// One `.preset` file ingested from the export folder, plus its reconciliation
 /// against the live device. `decoded_json` is the canonical full preset JSON;
 /// `list_index` is `Some` only once matched to a (uniquely-named) device slot.
@@ -149,10 +155,7 @@ fn ingest_file(path: &Path, categories: &CategoryMap) -> Result<LibraryRecord, S
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let preset_id = value
-        .pointer("/info/preset_id")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let preset_id = preset_id_of(&value).map(str::to_string);
     let facets = search::index_preset(&value, categories);
     Ok(LibraryRecord {
         file_path: path.to_path_buf(),

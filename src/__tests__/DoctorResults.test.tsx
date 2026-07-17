@@ -6,7 +6,7 @@
 // commands (apply/save/discard) are mocked.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -67,6 +67,7 @@ function fixture(): DoctorCheckResult {
               "Highs",
               "Air",
             ],
+            cutThrough: null,
             error: null,
           },
         ],
@@ -87,6 +88,7 @@ function fixture(): DoctorCheckResult {
                 key: "muddy",
                 label: "Muddy",
                 sev: "high",
+                severity: 4.2,
                 bands: [1],
                 detail: "+4.2 dB around 250 Hz",
                 fromLevel: "rehearsal",
@@ -129,6 +131,7 @@ function fixture(): DoctorCheckResult {
               "Highs",
               "Air",
             ],
+            cutThrough: null,
             error: null,
           },
           {
@@ -143,6 +146,7 @@ function fixture(): DoctorCheckResult {
                 key: "washed",
                 label: "Washed out",
                 sev: "med",
+                severity: 6,
                 bands: [],
                 detail: "tail 6 dB over dry",
                 fromLevel: "quiet",
@@ -177,6 +181,7 @@ function fixture(): DoctorCheckResult {
               "Highs",
               "Air",
             ],
+            cutThrough: null,
             error: null,
           },
         ],
@@ -221,6 +226,7 @@ function fixture(): DoctorCheckResult {
               "Highs",
               "Air",
             ],
+            cutThrough: null,
             error: "The capture came back silent — check the cable.",
           },
         ],
@@ -228,7 +234,6 @@ function fixture(): DoctorCheckResult {
       },
     ],
     stopped: false,
-    cohort: "absolute",
   };
 }
 
@@ -242,6 +247,8 @@ function renderResults(
         result={result}
         presetNames={NAMES}
         footswitchInfo={new Map()}
+        graphByIndex={new Map()}
+        stimulusByKey={new Map()}
         onCheckMore={onCheckMore}
       />
     </ThemeProvider>,
@@ -297,6 +304,7 @@ describe("DoctorResults — summary + cards", () => {
                 "Highs",
                 "Air",
               ],
+              cutThrough: null,
               error: null,
             },
           ],
@@ -304,7 +312,6 @@ describe("DoctorResults — summary + cards", () => {
         },
       ],
       stopped: false,
-      cohort: "absolute",
     };
     renderResults(clean);
     expect(screen.getByText("All 1 sound sounds good")).toBeInTheDocument();
@@ -444,6 +451,7 @@ describe("DoctorResults — healthy collapse", () => {
       key: "muddy",
       label: "Muddy",
       sev: "high",
+      severity: 4,
       bands: [1],
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
@@ -482,6 +490,7 @@ describe("DoctorResults — healthy collapse", () => {
                 "Highs",
                 "Air",
               ],
+              cutThrough: null,
               error: null,
             },
             {
@@ -503,6 +512,7 @@ describe("DoctorResults — healthy collapse", () => {
                 "Highs",
                 "Air",
               ],
+              cutThrough: null,
               error: null,
             },
           ],
@@ -510,7 +520,6 @@ describe("DoctorResults — healthy collapse", () => {
         },
       ],
       stopped: false,
-      cohort: "absolute",
     };
   }
 
@@ -566,8 +575,18 @@ describe("DoctorResults — prescription lifecycle", () => {
     expect(
       screen.getByText("Applied to the unit · not saved"),
     ).toBeInTheDocument();
+    // "Rhythm Crunch" (p1s0) is the BASE sound — scene/footswitch null, and the
+    // preset has no graph/footswitches wired in this fixture, so both arrive
+    // empty. The diagnosed context rides every apply, not just a subset.
     expect(doctorApply).toHaveBeenCalledWith(
-      expect.objectContaining({ listIndex: 1, name: "Muddy Rhythm" }),
+      expect.objectContaining({
+        listIndex: 1,
+        name: "Muddy Rhythm",
+        scene: null,
+        footswitch: null,
+        nodes: [],
+        footswitches: [],
+      }),
     );
 
     const save = screen.getByRole("button", { name: /save to preset/i });
@@ -579,7 +598,32 @@ describe("DoctorResults — prescription lifecycle", () => {
     await user.click(save);
 
     expect(await screen.findByText("Saved to the preset.")).toBeInTheDocument();
-    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm");
+    // The save re-applies the SAME ops the card applied (the structural-safety
+    // redesign: doctor_save never persists the live edit buffer).
+    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", [
+      { kind: "param", groupId: "g", nodeId: "n", param: "hpf", value: 90 },
+    ]);
+  });
+
+  it("applies a SCENE sound's fix under its own scene, not the base", async () => {
+    // "Lead Solo" (p1s1) is scene 0 of preset 1 — the A/B must recall that
+    // scene, not diagnose/audition the as-saved base.
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Lead Solo"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+
+    expect(doctorApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listIndex: 1,
+        name: "Muddy Rhythm",
+        scene: 0,
+        footswitch: null,
+      }),
+    );
   });
 
   it("discards an applied prescription back to draft", async () => {
@@ -673,6 +717,72 @@ describe("DoctorResults — prescription lifecycle", () => {
     expect(doctorDiscard).toHaveBeenCalledTimes(1);
   });
 
+  it("discards the applied-but-unsaved edit when its OWN row collapses (page stays mounted)", async () => {
+    // The card unmounts on its own (SoundRow renders the expanded region
+    // conditionally) well before the whole results page ever does — that
+    // must not strand the device edit or the sibling Apply lock.
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(screen.getByText("Lead Solo"));
+    await user.click(
+      screen.getAllByRole("button", { name: /apply to the unit/i })[0],
+    );
+    await screen.findByText("Listen & compare");
+    expect(doctorDiscard).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    ).toBeDisabled();
+
+    // Collapse the row holding the applied-but-unsaved edit.
+    await user.click(screen.getByText("Rhythm Crunch"));
+
+    expect(screen.queryByText("Listen & compare")).not.toBeInTheDocument();
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+    // ...and the sibling unlocks now that the lock is free.
+    expect(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    ).toBeEnabled();
+  });
+
+  it("discards an apply that's still in flight when its row collapses, and doesn't re-discard once it resolves", async () => {
+    let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
+    vi.mocked(doctorApply).mockImplementation(
+      () =>
+        new Promise<DoctorApplyResult>((res) => {
+          resolveApply = res;
+        }),
+    );
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+
+    // Collapse before doctorApply resolves — no PrescriptionCard is mounted
+    // to receive the eventual result. The lock was already acquired before
+    // the await, so the row's own unmount cleanup can (and does) discard
+    // right away, without waiting on the in-flight apply.
+    await user.click(screen.getByText("Rhythm Crunch"));
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+
+    // The apply landing afterward must not re-discard nor blow up on an
+    // unmounted component.
+    resolveApply({
+      beforeClip: "data:audio/wav;base64,AAAA",
+      afterClip: "data:audio/wav;base64,BBBB",
+    });
+    await waitFor(() => {
+      expect(doctorApply).toHaveBeenCalledTimes(1);
+    });
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+  });
+
   it("does not discard on leave when nothing is applied (or after a save)", async () => {
     const user = userEvent.setup();
     const { unmount } = renderResults();
@@ -702,6 +812,7 @@ describe("DoctorResults — shared-block caption", () => {
       key,
       label: key === "muddy" ? "Muddy" : "Harsh",
       sev: "high",
+      severity: 4,
       bands: [1],
       detail: "+4 dB around 250 Hz",
       fromLevel: "quiet",
@@ -736,12 +847,12 @@ describe("DoctorResults — shared-block caption", () => {
       tailRatioDb: 0,
       balanceDb: [-6, 4, -2, -8, -12, -18],
       bandLabels: ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"],
+      cutThrough: null,
       error: null,
     };
     return {
       presets: [{ listIndex: 0, sounds: [sound], sceneConsistency: null }],
       stopped: false,
-      cohort: "absolute",
     };
   }
 
@@ -763,6 +874,7 @@ describe("DoctorResults — shared-block caption", () => {
               parameter_id: null,
               value_a: null,
               value_b: null,
+              is_active: false,
             },
           ],
           level_params: [],
@@ -786,6 +898,8 @@ describe("DoctorResults — shared-block caption", () => {
           result={result}
           presetNames={new Map([[0, "Overdrive Rhythm"]])}
           footswitchInfo={fsInfo}
+          graphByIndex={new Map()}
+          stimulusByKey={new Map()}
           onCheckMore={() => undefined}
         />
       </ThemeProvider>,
@@ -818,6 +932,23 @@ describe("DoctorResults — shared-block caption", () => {
     await user.click(screen.getByText("Overdrive"));
     expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
   });
+
+  it("applies a FOOTSWITCH sound's fix under its own switch + the preset's footswitches", async () => {
+    const user = userEvent.setup();
+    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], 3));
+    await user.click(screen.getByText("Overdrive"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    expect(doctorApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listIndex: 0,
+        scene: null,
+        footswitch: 3,
+        footswitches: fsInfo.get(0),
+      }),
+    );
+  });
 });
 
 describe("DoctorResults — spiky (time-domain chain rx)", () => {
@@ -844,6 +975,7 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                   key: "spiky",
                   label: "Spiky",
                   sev: "med",
+                  severity: 5,
                   bands: [],
                   detail: "swings 5.0 LU between peaks and average",
                   fromLevel: "quiet",
@@ -898,6 +1030,7 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                 "Highs",
                 "Air",
               ],
+              cutThrough: null,
               error: null,
             },
           ],
@@ -905,7 +1038,6 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
         },
       ],
       stopped: false,
-      cohort: "absolute",
     };
   }
 
@@ -928,5 +1060,86 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
     expect(
       screen.getAllByRole("button", { name: /apply to the unit/i }),
     ).toHaveLength(1);
+  });
+});
+
+describe("DoctorResults — severity (possible verdicts)", () => {
+  beforeEach(resetMocks);
+
+  // One sound with two equal-sev-tint diagnoses so severity is the ONLY
+  // differentiator: a confidently-past-threshold finding (3.0) and a
+  // near-threshold one (0.4, below POSSIBLE_MAX_SEVERITY).
+  function severityFixture(): DoctorCheckResult {
+    const mk = (key: string, label: string, severity: number): DoctorDiag => ({
+      key,
+      label,
+      sev: "med",
+      severity,
+      bands: [],
+      detail: `${label} detail`,
+      fromLevel: "quiet",
+      explain: `${label} explanation.`,
+      rx: [
+        {
+          kind: "advisory",
+          title: `Fix ${label}`,
+          detail: "Advisory.",
+          cpuNote: "",
+          ops: [],
+        },
+      ],
+    });
+    return {
+      presets: [
+        {
+          listIndex: 0,
+          sounds: [
+            {
+              key: "p0",
+              listIndex: 0,
+              scene: null,
+              footswitch: null,
+              label: "Edge Rhythm",
+              tag: null,
+              // Deliberately possible-first in the source array — the UI must
+              // REORDER it below the confident one.
+              diags: [mk("fizzy", "Fizzy", 0.4), mk("harsh", "Harsh", 3.0)],
+              integratedLufs: -18,
+              tailRatioDb: 0,
+              balanceDb: [0, 0, 0, 0, 0, 0],
+              bandLabels: [
+                "Lows",
+                "Low-mids",
+                "Mids",
+                "High-mids",
+                "Highs",
+                "Air",
+              ],
+              cutThrough: null,
+              error: null,
+            },
+          ],
+          sceneConsistency: null,
+        },
+      ],
+      stopped: false,
+    };
+  }
+
+  it("mutes a low-severity finding as 'Possible …' and leaves a confident one plain", () => {
+    renderResults(severityFixture());
+    // Low severity (0.4 < POSSIBLE_MAX_SEVERITY) → the "possible" chip treatment.
+    expect(screen.getByText("Possible Fizzy")).toBeInTheDocument();
+    // High severity (3.0) → the plain label, no "Possible" prefix.
+    expect(screen.getByText("Harsh")).toBeInTheDocument();
+    expect(screen.queryByText("Possible Harsh")).not.toBeInTheDocument();
+  });
+
+  it("ranks the confident finding above the 'possible' one", () => {
+    const { container } = renderResults(severityFixture());
+    const text = container.textContent;
+    // Confident (Harsh) renders before possible (Fizzy) despite the source order.
+    expect(text.indexOf("Harsh")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("Harsh")).toBeLessThan(text.indexOf("Possible Fizzy"));
   });
 });

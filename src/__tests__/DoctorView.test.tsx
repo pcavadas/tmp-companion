@@ -127,7 +127,7 @@ function mockOnePreset(
             /* never resolves */
           });
         }
-        // Stream each sound active → done, then resolve the cohort result.
+        // Stream each sound active → done, then resolve the check result.
         a.items.forEach((it) => {
           a.onResult?.onmessage?.({
             key: it.key,
@@ -169,7 +169,6 @@ function mockOnePreset(
             },
           ],
           stopped: false,
-          cohort: "absolute",
         });
       }
       default:

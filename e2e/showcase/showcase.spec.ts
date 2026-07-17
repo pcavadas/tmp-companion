@@ -123,11 +123,10 @@ test.describe("Marketing screenshots", () => {
     await expect(page.locator('[title*="—"]').first()).toBeVisible(); // a model card
     await grab("catalog");
 
-    // ── Doctor: check three PLAIN presets (Base only → 3 sounds < MIN_COHORT, so the
-    // engine uses the absolute-fallback path). The backend injects curated SoundProfiles
-    // in showcase mode (doctor::showcase_profile), so the REAL diagnose engine renders
-    // genuine cards covering all six guitar diagnoses (lost/washed, muddy/boomy,
-    // harsh/fizzy) — the offline fake capture would otherwise read "All clear".
+    // ── Doctor: check three PLAIN presets (Base only). The backend injects curated
+    // SoundProfiles in showcase mode (doctor::showcase_profile), so the REAL diagnose
+    // engine renders genuine cards (lost/washed, dark/muddy, harsh/fizzy) — the offline
+    // fake capture would otherwise read "All clear".
     await page.getByRole("button", { name: "Doctor" }).click();
     const filter = page.getByPlaceholder(/Filter by name or slot/i);
     for (const name of ["Scooped Verse", "Tweed Warm", "Direct Acoustic"]) {

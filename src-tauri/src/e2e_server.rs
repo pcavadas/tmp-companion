@@ -17,6 +17,15 @@ pub(crate) fn e2e_online() -> bool {
     std::env::var("TMP_E2E_ONLINE").is_ok()
 }
 
+/// The scenario presets are known seeded-and-OWNERSHIP-VERIFIED for this server process:
+/// set by a successful seed (in-process `e2e_seed_scenario`, or the runner's fresh-process
+/// `probe --seed-scenario` via its `e2e_mark_seeded` POST) and invalidated by any scenario
+/// clear. Lets every `ensureScenario` call after the first skip the multi-second (and
+/// lockout-prone — the reason `scripts/e2e.sh` seeds out-of-process) in-process re-verify:
+/// nothing between specs can change scenario ownership without going through a clear.
+#[cfg(feature = "e2e")]
+static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// SHOWCASE mode (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): serves the curated
 /// `e2e/fixtures/showcase/` library AND lets `doctor_check` inject curated `SoundProfile`s
 /// (`doctor::showcase_profile`) so the Doctor Results page renders real diagnoses instead of
@@ -104,6 +113,8 @@ pub fn run_e2e_server() {
             remove_setlist_song,
             move_setlist_song,
             e2e_seed_scenario,
+            e2e_mark_seeded,
+            e2e_clear_strays,
             e2e_clear_preset,
             e2e_load_preset,
             e2e_reamp_off
@@ -267,75 +278,107 @@ fn e2e_seed_online_snapshot() -> Result<(), String> {
 /// the KNOWN write rather than a device re-read — `list_my_presets` lags its own writes
 /// (read-after-write propagation), so an immediate re-read installs a stale list.
 #[cfg(feature = "e2e")]
-fn e2e_patch_snapshot_slot(slot: u32, name: &str) {
+fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
     let Some(snap) = monitor::startup_snapshot() else {
-        return;
+        return false;
     };
     let mut presets = snap.presets;
-    if let Some(e) = presets.iter_mut().find(|p| p.slot == slot) {
-        e.name = name.to_string();
-    }
+    let Some(e) = presets.iter_mut().find(|p| p.slot == slot) else {
+        return false;
+    };
+    e.name = name.to_string();
     monitor::e2e_install_snapshot(snap.firmware, presets, snap.graph);
+    true
 }
 
-/// ONLINE-e2e DETERMINISTIC scratch setup: import the THREE committed scenario presets
-/// (`e2e/fixtures/scenario-presets.json` — the SAME presetJsons baked into the offline
-/// backup fixture) into their list indices (400/401/402). So both modes run the identical
-/// fixed presets, validated against known blocks, rather than a clone of whatever is on the
-/// unit. Each is placed in-place via [`replace_inplace_core`] (import → land → save to slot
-/// → clear the scratch landing, guarded). The target slots start EMPTY (the 400+ scratch
-/// zone); [`e2e_clear_preset`] returns them to empty. Idempotent at the spec layer
-/// (`ensureScenario` skips when they already exist — i.e. offline).
+/// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place the THREE
+/// committed scenario presets (`e2e/fixtures/scenario-presets.json` — the SAME
+/// presetJsons baked into the offline backup fixture) at their list indices
+/// (400/401/402). The heavy lifting lives in `probe_api::seed_scenario` — shared with
+/// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
+/// before the server starts, dodges the in-process `0xe00002c5` open lockout that
+/// aborted in-spec seeds). This command is the fallback for specs run without the
+/// runner, and the offline no-op (SimDevice presets already present → per-preset skip).
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
-    #[derive(serde::Deserialize)]
-    struct ScenarioPreset {
-        #[serde(rename = "listIndex")]
-        list_index: u32,
-        name: String,
-        #[serde(rename = "presetJson")]
-        preset_json: String,
+    use std::sync::atomic::Ordering;
+    if SCENARIO_VERIFIED.load(Ordering::SeqCst) {
+        // Already seeded + ownership-verified this run (runner seed or a prior
+        // call) and nothing has cleared since — skip the device re-verify.
+        return e2e_mark_seeded_snapshot();
     }
-    let path = std::env::var("TMP_E2E_SCENARIO_PRESETS").unwrap_or_else(|_| {
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../e2e/fixtures/scenario-presets.json"
-        )
-        .into()
-    });
-    let raw = std::fs::read(&path).map_err(|e| format!("scenario presets {path}: {e}"))?;
-    let presets: Vec<ScenarioPreset> =
-        serde_json::from_slice(&raw).map_err(|e| format!("parse scenario presets: {e}"))?;
     with_released_seize(state.session.clone(), move || {
-        for (i, p) in presets.iter().enumerate() {
-            // ponytail: real-TMP HID open-lockout recovery, plus a deliberate fresh-connect
-            // import. replace_inplace_core does its post-import "where did it land?" list read
-            // on a FRESH Session::connect() — a full handshake forces the device to
-            // re-enumerate the just-imported slot. A held single session is faster but its
-            // re-arm list read does NOT reflect a fresh import (read-after-write lag; the
-            // device only re-enumerates inside the recognized full handshake), so the scratch
-            // slot is invisible and seeding fails. So we keep the fresh-connect path and pay
-            // the open-lockout tax with an 8 s quiet gap between presets, which lets the
-            // device recover (offline SimDevice has no lockout, and the offline specs use the
-            // baked fixture, so this only bites online). ~92 s for three presets — fine for
-            // one-time e2e setup; correctness over the held-session speedup.
-            if i > 0 {
-                std::thread::sleep(std::time::Duration::from_secs(8));
-            }
-            // A `.preset` file is `xor_jld(compact JSON)`; `import_preset` adds the outer LZ4.
-            let bytes = backup::xor_jld(p.preset_json.as_bytes());
-            replace_inplace_core(p.list_index, &bytes)?;
-            e2e_patch_snapshot_slot(p.list_index, &p.name);
-        }
+        let o = probe_api::seed_scenario::seed_scenario_core()?;
+        e2e_patch_swept(&o.swept);
+        e2e_mark_seeded_snapshot()?;
+        SCENARIO_VERIFIED.store(true, Ordering::SeqCst);
         Ok(())
+    })
+    .await
+}
+
+/// Snapshot patch for slots the stray sweep freed — no device I/O.
+#[cfg(feature = "e2e")]
+fn e2e_patch_swept(swept: &[u32]) {
+    for slot in swept {
+        e2e_patch_snapshot_slot(*slot, "Empty");
+    }
+}
+
+/// Patch the startup snapshot so the UI's snapshot-backed preset list shows the three
+/// scenario presets at their slots — no device I/O. Called after any successful seed:
+/// in-process (above) or the runner's fresh-process `probe --seed-scenario` (which
+/// can't touch this process's snapshot, so the runner POSTs `e2e_mark_seeded` next).
+#[cfg(feature = "e2e")]
+fn e2e_mark_seeded_snapshot() -> Result<(), String> {
+    let mut missing = Vec::new();
+    for p in probe_api::seed_scenario::scenario_spec()? {
+        if !e2e_patch_snapshot_slot(p.list_index, &p.name) {
+            missing.push(p.list_index);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "startup snapshot doesn't cover scenario slot(s) {missing:?} — the UI preset \
+             list won't show the seeded names (likely a tail-truncated snapshot list)"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_mark_seeded() -> Result<(), String> {
+    e2e_mark_seeded_snapshot()?;
+    // The runner POSTs this only after its ownership-verified fresh-process
+    // `probe --seed-scenario` succeeded — the flag inherits that verification.
+    SCENARIO_VERIFIED.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+/// ONLINE-e2e recovery arm: sweep stray scenario imports out of the user's bank
+/// (fail-closed: only exact scenario-name matches at wrong slots, off a
+/// completeness-floored tolerant list). Invoked by spec teardown + the e2e.sh recovery
+/// so an aborted seed can never leave test junk on the unit past the run.
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
+    with_released_seize(state.session.clone(), move || {
+        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let swept = probe_api::seed_scenario::sweep_strays_core()?;
+        e2e_patch_swept(&swept);
+        Ok(swept.len())
     })
     .await
 }
 
 /// ONLINE-e2e scratch teardown: clear scratch slot `slot` (0-based list index), restoring
 /// the empty state. SAFETY: refuses unless the slot currently holds `expect_name` (read in
-/// the same session) — so a wrong index can never clear a real preset.
+/// the same session) — so a wrong index can never clear a real preset — and, ONLINE, also
+/// requires the seed's fixture content marker (a name is not ownership: a user preset
+/// coincidentally named "E2E Target 1" must never be cleared; fail-closed). Offline the
+/// marker check is skipped — SimDevice state is disposable and serves no field-8 bodies.
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_clear_preset(
@@ -345,7 +388,10 @@ async fn e2e_clear_preset(
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         let mut s = Session::connect()?;
-        let list = s.list_my_presets_strict()?;
+        // Tolerant read (strict fails on back-to-back lean sessions — see
+        // replace_inplace_with): a truncated list leaves the slot absent → the
+        // guard below refuses (fail-closed).
+        let list = s.list_my_presets()?;
         let entry = list
             .get(slot as usize)
             .ok_or_else(|| format!("slot {slot} out of range"))?;
@@ -355,6 +401,16 @@ async fn e2e_clear_preset(
                 entry.name
             ));
         }
+        if e2e_online() {
+            s.drain_until_quiet(250, 20)?;
+            if !probe_api::seed_scenario::slot_is_fixture_owned(&mut s, slot + 1) {
+                return Err(format!(
+                    "refusing to clear slot {slot}: '{expect_name}' matches by name but does \
+                     not carry the fixture content marker — not seed-owned"
+                ));
+            }
+        }
+        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         s.clear_user_preset(slot)?;
         e2e_patch_snapshot_slot(slot, "Empty");
         Ok(())

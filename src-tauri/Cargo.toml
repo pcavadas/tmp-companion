@@ -41,6 +41,7 @@ tauri-plugin-process = "2"
 # Both pure-Rust, no C dependency. SQLite itself is read via the system `sqlite3`.
 lz4_flex = "0.13"
 tar = "0.4"
+realfft = "3.5.0"
 
 # macOS-only: IOKit HID (exclusive device seize) is
 # reached by hand-declared `#[link(name = "IOKit", kind = "framework")]` externs

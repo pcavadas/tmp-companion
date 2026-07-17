@@ -3,10 +3,11 @@
 // nothing to apply). The apply path writes LIVE (unsaved) and the save is gated on
 // the backup acknowledgment, mirroring the Leveling / Copy save-disclaimer model.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
+import { doctorCard } from "./severity";
 import { Icon, type IconName } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Spinner } from "../../ui/Spinner";
@@ -25,8 +26,11 @@ import { useApplyLock } from "./applyLock";
 import type {
   DoctorApplyResult,
   DoctorChainPreview,
+  DoctorInputArg,
   DoctorRx,
   DoctorRxKind,
+  FootswitchInfo,
+  GraphNode,
 } from "../../lib/types";
 
 const KIND_ICON: Record<DoctorRxKind, IconName> = {
@@ -68,13 +72,45 @@ export interface PrescriptionCardProps {
   /** Scene-consistency prescriptions can't be applied by the wire (it rejects
    *  scene trims) — render with no Apply button regardless of kind. */
   scene?: boolean;
+  /** The diagnosed SOUND's own scene/footswitch (not the `scene` flag above)
+   *  + the preset's chain/footswitches — so the A/B captures under the SAME
+   *  context `doctor_check` diagnosed, not the as-saved base. Omitted (all
+   *  default to "no context") only by scene-consistency cards, which are
+   *  never applicable and so never call `doctorApply`/`doctorSave`. */
+  soundScene?: number | null;
+  soundFootswitch?: number | null;
+  nodes?: GraphNode[];
+  footswitches?: FootswitchInfo[];
+  /** The diagnosed sound's stimulus identity (instrument profile pick at
+   *  setup) — the A/B must replay the SAME stimulus the diagnosis used.
+   *  Omitted (→ default stimulus) only by scene-consistency cards. */
+  stimulus?: DoctorStimulus;
 }
+
+/** The stimulus identity a diagnosed sound was measured with — the run's own
+ *  `DoctorInputArg` fields, threaded into the apply job so the A/B audition
+ *  replays the diagnosis stimulus (topology sample or Tier-2 DI capture). */
+export type DoctorStimulus = Pick<
+  DoctorInputArg,
+  "topologyId" | "calibrationLufs" | "profileId"
+>;
+
+const DEFAULT_STIMULUS: DoctorStimulus = {
+  topologyId: null,
+  calibrationLufs: null,
+  profileId: null,
+};
 
 export function PrescriptionCard({
   rx,
   listIndex,
   presetName,
   scene = false,
+  soundScene = null,
+  soundFootswitch = null,
+  nodes = [],
+  footswitches = [],
+  stimulus = DEFAULT_STIMULUS,
 }: PrescriptionCardProps) {
   const { t } = useTheme();
   const [phase, setPhase] = useState<Phase>("draft");
@@ -82,6 +118,11 @@ export function PrescriptionCard({
   const [error, setError] = useState<string | null>(null);
   const [clips, setClips] = useState<DoctorApplyResult | null>(null);
   const [acked, setAcked] = useState(false);
+  // Snapshot of the exact ops sent to doctorApply — `rx` is a live prop and
+  // can be replaced (e.g. MatchCard recomputing on a new reference pick)
+  // while this card sits in "applied"; runSave must persist what was
+  // actually applied/auditioned, not whatever `rx.ops` reads at save time.
+  const [appliedOps, setAppliedOps] = useState<DoctorRx["ops"] | null>(null);
 
   // Global guard: every card targets the device's ONE edit buffer, so only one
   // card app-wide may hold an applied-but-unsaved edit at a time (see `applyLock`).
@@ -90,17 +131,34 @@ export function PrescriptionCard({
   const lockedByOther =
     lock.activeCard !== null && lock.activeCard.id !== cardId;
 
+  // The card itself can unmount while an edit sits applied-but-unsaved on the
+  // device (row collapse, or a Match-reference swap that stops rendering this
+  // card) — with no mounted UI left to Save/Discard, that would strand the
+  // device edit AND the app-wide lock. `discardIfMine` is a stable function
+  // (always the same reference, however `lock`'s wrapping object churns from
+  // OTHER cards' acquire/release) that no-ops unless THIS card still holds
+  // the lock, so calling it unconditionally on unmount is safe and needs no
+  // extra phase/ownership bookkeeping here.
+  const { discardIfMine } = lock;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    // Re-arm on every effect run: the cleanup below flips it false, and without
+    // this reset a dep change (new cardId/listIndex) would leave it permanently
+    // false, silently dropping every later async success/error state update.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      discardIfMine(cardId, listIndex);
+    };
+  }, [discardIfMine, cardId, listIndex]);
+
   // Only oneclick / chain non-scene prescriptions have an Apply path; advisory and
   // scene-consistency cards are static.
   const applicable = !scene && (rx.kind === "oneclick" || rx.kind === "chain");
 
-  const card: CSSProperties = {
-    flexShrink: 0,
-    border: `0.5px solid ${phase === "saved" ? t.good : t.hairlineStrong}`,
-    borderRadius: 10,
-    background: t.bg,
-    padding: t.space6,
-  };
+  const card: CSSProperties = doctorCard(t, {
+    border: phase === "saved" ? t.good : undefined,
+  });
 
   // Shared by the advisory / scene / shared-block caption lines below.
   const noteLine: CSSProperties = {
@@ -114,6 +172,9 @@ export function PrescriptionCard({
   async function runApply() {
     setBusy(true);
     setError(null);
+    // Snapshot rx.ops now — rx is a live prop and may be replaced (e.g.
+    // MatchCard recomputing on a new reference pick) before Save is clicked.
+    const ops = rx.ops;
     // Take the lock BEFORE the await: the device's edit buffer is dirty from the
     // moment the command starts, so a sibling Apply during the in-flight window
     // would clobber it. Released in the catch (a failed apply auto-restores).
@@ -122,17 +183,33 @@ export function PrescriptionCard({
       const res = await doctorApply({
         listIndex,
         name: presetName,
-        ops: rx.ops,
-        topologyId: null,
-        calibrationLufs: null,
+        ops,
+        topologyId: stimulus.topologyId,
+        calibrationLufs: stimulus.calibrationLufs,
+        profileId: stimulus.profileId,
+        scene: soundScene,
+        footswitch: soundFootswitch,
+        nodes,
+        footswitches,
       });
-      setClips(res);
-      setPhase("applied");
+      // If we unmounted while this was in flight (row collapsed, or the
+      // Match reference swapped away), the unmount cleanup above already
+      // fired `discardIfMine` — `lock.acquire` ran before the await, so
+      // ownership was already established for it to find and clean up,
+      // regardless of whether doctorApply itself had landed yet. Skip the
+      // local state updates here; there's no mounted UI left to show them.
+      if (mountedRef.current) {
+        setClips(res);
+        setAppliedOps(ops);
+        setPhase("applied");
+      }
     } catch (e) {
       lock.release(cardId);
-      setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
+      if (mountedRef.current) {
+        setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
+      }
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   }
 
@@ -143,6 +220,7 @@ export function PrescriptionCard({
       await doctorDiscard(listIndex);
       setPhase("draft");
       setClips(null);
+      setAppliedOps(null);
       setAcked(false);
       lock.release(cardId);
     } catch (e) {
@@ -153,10 +231,11 @@ export function PrescriptionCard({
   }
 
   async function runSave() {
+    if (appliedOps == null) return;
     setBusy(true);
     setError(null);
     try {
-      await doctorSave(listIndex, presetName);
+      await doctorSave(listIndex, presetName, appliedOps);
       setPhase("saved");
       lock.release(cardId);
     } catch (e) {

@@ -4,8 +4,11 @@
 //
 // Colors map 1:1 onto theme tokens EXCEPT the med soft tint (see MED_SOFT).
 
+import type { CSSProperties } from "react";
+
 import type { ThemeTokens } from "../../theme/tokens";
 import type {
+  DoctorDiag,
   DoctorPresetResult,
   DoctorSceneConsistency,
   DoctorSev,
@@ -45,6 +48,35 @@ const RANK: Record<Sev, number> = { ok: 0, med: 1, high: 2 };
 /** Sort key for worst-first ordering (high > med > ok). */
 export function sevRank(sev: Sev): number {
   return RANK[sev];
+}
+
+/** A fired card within this many units of its threshold (severity = margin past
+ *  threshold, in the rule's own dB/LU unit) is a near-threshold "possible"
+ *  verdict (muted, ranked lower). No backend confidence anymore — this is a
+ *  pure severity threshold. */
+export const POSSIBLE_MAX_SEVERITY = 1.0;
+
+/** True when a diagnosis is a low-severity "possible" verdict. */
+export function isPossible(diag: DoctorDiag): boolean {
+  return diag.severity < POSSIBLE_MAX_SEVERITY;
+}
+
+/** The label as shown in the UI: "Possible X" when `isPossible`, else the bare
+ *  label. The one place that builds this string — chip + expanded heading + the
+ *  LevelIndicator aria-label all route through it so the hedge is never dropped. */
+export function possibleLabel(diag: DoctorDiag): string {
+  return isPossible(diag) ? `Possible ${diag.label}` : diag.label;
+}
+
+/** A sound's diagnoses worst-first: severity tint (high before med) is the
+ *  primary key, raw severity magnitude (descending) the tiebreaker — so
+ *  confidently-past-threshold findings sort above near-threshold "possible"
+ *  ones. */
+export function sortedDiags(diags: DoctorDiag[]): DoctorDiag[] {
+  return [...diags].sort((a, b) => {
+    const r = sevRank(b.sev) - sevRank(a.sev);
+    return r !== 0 ? r : b.severity - a.severity;
+  });
 }
 
 /** A scene-loudness jump beyond this (dB) bumps the preset's worst severity to
@@ -98,4 +130,20 @@ export function presetLookCount(preset: DoctorPresetResult): number {
 /** The uppercase mono severity kicker shown in an expanded diagnosis panel. */
 export function diagSevLabel(sev: DoctorSev): string {
   return sev === "high" ? "Needs attention" : "Worth a look";
+}
+
+/** The Doctor detail-card chrome (PrescriptionCard / CutThroughCard /
+ * MatchCard) — one home for the border/radius/padding so the three cards
+ * can't drift; callers override only the tone (border/background). */
+export function doctorCard(
+  t: ThemeTokens,
+  tone?: { border?: string; background?: string },
+): CSSProperties {
+  return {
+    flexShrink: 0,
+    border: `0.5px solid ${tone?.border ?? t.hairlineStrong}`,
+    borderRadius: t.rLg,
+    background: tone?.background ?? t.bg,
+    padding: t.space6,
+  };
 }

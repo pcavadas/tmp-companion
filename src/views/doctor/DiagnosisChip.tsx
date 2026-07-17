@@ -7,11 +7,19 @@ import { useTheme } from "../../theme/ThemeContext";
 import { sevTone, type Sev } from "./severity";
 
 export interface DiagnosisChipProps {
+  /** Already possible-aware (see `severity.ts::possibleLabel`) — this component
+   *  renders it verbatim, it doesn't build the "Possible …" prefix itself. */
   label: string;
   sev: Sev;
+  /** A near-threshold, low-confidence verdict: rendered muted, hollow chip. */
+  possible?: boolean;
 }
 
-export function DiagnosisChip({ label, sev }: DiagnosisChipProps) {
+export function DiagnosisChip({
+  label,
+  sev,
+  possible = false,
+}: DiagnosisChipProps) {
   const { t } = useTheme();
   const tone = sevTone(t, sev);
   return (
@@ -20,9 +28,11 @@ export function DiagnosisChip({ label, sev }: DiagnosisChipProps) {
         fontFamily: t.sans,
         fontSize: 11,
         fontWeight: 500,
-        color: tone.fg,
-        background: tone.soft,
-        border: `0.5px solid ${tone.border}`,
+        // Possible = muted: drop the severity tint to a neutral, hollow chip so a
+        // near-threshold guess doesn't read as a firm finding.
+        color: possible ? t.mutedInk : tone.fg,
+        background: possible ? undefined : tone.soft,
+        border: `0.5px solid ${possible ? t.hairlineStrong : tone.border}`,
         borderRadius: 5,
         padding: `${String(t.space1)}px ${String(t.space3)}px`,
         whiteSpace: "nowrap",

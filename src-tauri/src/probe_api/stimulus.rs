@@ -188,12 +188,13 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
 /// entry (scene `None` = the BASE sound; `Some(wire index)` = one scene, the
 /// probe CSV's `slot:scene` form), capture the sound with the Doctor tail
 /// (`leveller::doctor_capture`), compute its band profile + time-domain metrics,
-/// then diagnose the whole cohort (median-relative when ≥ `doctor::MIN_COHORT`
-/// sounds) and print one JSON line per sound plus a human table — the headless
-/// iteration loop for tuning `doctor::Thresholds`. Read-only: loads + captures,
-/// NEVER saves; every capture path ends re-amp OFF.
+/// then diagnose each sound on its own measurements (the deterministic
+/// target-deviation metric) and print one JSON line per sound plus a human table —
+/// the headless iteration loop for tuning `doctor::Thresholds`. Read-only: loads +
+/// captures, NEVER saves; every capture path ends re-amp OFF.
 pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<String, String> {
-    let stim = read_stimulus_48k(&probe_stimulus_path(topology_id)?)?;
+    // Mirrors doctor_check's capture space: the production 3 s Doctor window.
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(topology_id)?)?);
     let instrument = doctor::Family::from_topology(
         topologies::by_id(topology_id)
             .map(|t| t.instrument)
@@ -205,7 +206,12 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
         Option<u32>,
         doctor::SoundProfile,
         Option<Vec<doctor::DoctorNode>>,
+        Vec<bool>,
     );
+    // Fresh-connection re-amp OFF on every exit path — this sweep previously
+    // had NO belt-and-braces cleanup at all (a mid-sweep failure left the
+    // device's re-amp state wherever the error found it).
+    let _reamp_off = super::ReampOffGuard;
     let mut sounds: Vec<Sound> = Vec::new();
     for &(slot, scene) in slots {
         // One field-8 slot read (quiet line, NO LoadPreset) drives BOTH the graph
@@ -239,7 +245,17 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
             ),
         }
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, scene, &fb, &stim, Some(0.5), false) {
+        // Calibration sweep: always the full tail (this is the reference recipe
+        // R4/R5 re-baseline against, not the app's per-sound dry-tail shortcut).
+        match leveller::doctor_capture(
+            slot,
+            scene,
+            &fb,
+            &stim,
+            Some(0.5),
+            u64::from(leveller::DOCTOR_TAIL_MS),
+            false,
+        ) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 if !confident {
@@ -247,14 +263,33 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                         "[probe] slot {slot}: onset not confidently found — un-aligned split"
                     );
                 }
-                let profile = doctor::SoundProfile::from_capture(
+                // Share ONE body PSD between the profile and the coverage gate
+                // (mirrors `analyze_capture` / production `doctor_check`) so this
+                // calibration sweep's printed verdicts match what the app would
+                // actually fire, instead of the gate-free `diagnose` shim.
+                let psd_onset = leveller::doctor_signal_start(onset, confident);
+                let body_psd = doctor::body_psd(&samples, rate, psd_onset);
+                let stim_psd = crate::psd::welch_psd(&stim, rate as f32);
+                // Skip-and-continue like the capture-failure arm below — a `?`
+                // here (e.g. one silent-inject slot) would discard the whole
+                // sweep, including every slot already captured.
+                match doctor::SoundProfile::from_capture_with_psd(
                     &samples,
                     rate,
                     stim.len(),
                     onset,
                     instrument,
-                )?;
-                sounds.push((slot, scene, profile, nodes));
+                    &body_psd,
+                    Some(&stim_psd),
+                ) {
+                    Ok(profile) => {
+                        let coverage = doctor::output_coverage_with_body(
+                            &samples, rate, psd_onset, instrument, &body_psd,
+                        );
+                        sounds.push((slot, scene, profile, nodes, coverage));
+                    }
+                    Err(e) => eprintln!("[probe] slot {slot}: profile failed: {e} (skipping)"),
+                }
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
         }
@@ -263,19 +298,20 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
         return Err("no sound captured".to_string());
     }
 
-    let cohort = (sounds.len() >= doctor::MIN_COHORT).then(|| {
-        let refs: Vec<&doctor::SoundProfile> = sounds.iter().map(|(_, _, p, _)| p).collect();
-        doctor::cohort_median(&refs)
-    });
-
     let mut out = format!(
-        "doctor sweep ({topology_id}, {} sounds, cohort={})\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
+        "doctor sweep ({topology_id}, {} sounds, target-deviation)\n  slot |     LUFS |  tail dB | balance dB ({}) | diagnoses\n",
         sounds.len(),
-        if cohort.is_some() { "median" } else { "absolute" },
         instrument.labels().join(" ")
     );
-    for (slot, scene, profile, nodes) in &sounds {
-        let diags = doctor::diagnose(profile, nodes.as_deref(), instrument, cohort.as_deref());
+    for (slot, scene, profile, nodes, coverage) in &sounds {
+        let diags = doctor::diagnose_kind(
+            profile,
+            nodes.as_deref(),
+            instrument,
+            doctor::StimulusKind::Synthetic,
+            Some(coverage),
+            doctor::PlaybackOffsets::NONE,
+        );
         let bal = doctor::balance(&profile.bands);
         let label = match scene {
             Some(s) => format!("{slot}:{s}"),
@@ -382,23 +418,47 @@ pub(crate) fn read_stimulus_calibrated_with_shortfall(
 ) -> Result<(Vec<f32>, Option<f32>), String> {
     let mut stim = read_stimulus_48k(path)?;
     let mut shortfall_lu = None;
+
+    // The gain to apply before the shared peak cap below: solved from the
+    // calibration target when the stimulus's own loudness is finite (a
+    // non-finite reading — e.g. a silent stimulus — means NO scaling at all,
+    // matching the old calibrated branch's short-circuit); `1.0` (a no-op
+    // multiply) when uncalibrated, so the cap-to-0.99 logic is the ONE shared
+    // path for both branches — the stimulus passes VERBATIM into the re-amp
+    // inject otherwise, which has NO limiter, so an explicit/env-var WAV (or,
+    // in principle, a stored Tier-2 capture, though `calibrate_profile`
+    // already clip-gates those at capture time) at/above full scale would
+    // clip the inject and corrupt the whole downstream measurement.
+    let mut gain: Option<f32> = Some(1.0);
     if let Some(target_lufs) = calibration_lufs {
         let stim_lufs = lufs::measure_mono(&stim, 48_000)?.integrated_lufs;
-        if stim_lufs.is_finite() {
-            let mut g = 10f32.powf((target_lufs - stim_lufs as f32) / 20.0);
-            let peak = stim.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-            if peak * g > 0.99 {
-                let shortfall = 20.0 * (peak * g / 0.99).log10();
-                log::warn!(
-                    "stimulus calibration capped: {path} cannot reach {target_lufs:.1} LUFS \
-                     without clipping — driving {shortfall:.1} LU softer"
-                );
-                shortfall_lu = Some(shortfall);
-                g = 0.99 / peak; // guard against clipping the injected signal
+        gain = stim_lufs
+            .is_finite()
+            .then(|| 10f32.powf((target_lufs - stim_lufs as f32) / 20.0));
+    }
+
+    if let Some(mut g) = gain {
+        let peak = stim.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        if peak * g > 0.99 {
+            match calibration_lufs {
+                Some(target_lufs) => {
+                    let shortfall = 20.0 * (peak * g / 0.99).log10();
+                    log::warn!(
+                        "stimulus calibration capped: {path} cannot reach {target_lufs:.1} LUFS \
+                         without clipping — driving {shortfall:.1} LU softer"
+                    );
+                    shortfall_lu = Some(shortfall);
+                }
+                None => {
+                    log::warn!(
+                        "stimulus inject peak {peak:.3} would clip the re-amp path — scaling to 0.99: {path}"
+                    );
+                }
             }
-            for s in &mut stim {
-                *s *= g;
-            }
+            g = 0.99 / peak; // guard against clipping the injected signal
+        }
+        for s in &mut stim {
+            *s *= g;
         }
     }
     Ok((stim, shortfall_lu))
@@ -456,6 +516,30 @@ pub(crate) fn capture_dry_di(secs: f32) -> Result<(Vec<f32>, f32), String> {
     Ok((mono, peak))
 }
 
+/// True clipping flat-tops the waveform — a RUN of consecutive samples pinned at
+/// full scale. A clean guitar pick attack is a sub-millisecond transient (one or
+/// two samples at the apex) that a device output meter's ballistics smooth away
+/// but a raw sample-peak catches, so a bare `peak >= 0.99` gate over-fires on hot
+/// transients (the DI tap is a bit-exact USB bus — no analog headroom to lose, so
+/// only genuine flat-topping corrupts a take). Flag a capture as clipped only when
+/// `MIN_CLIP_RUN` consecutive samples sit at/above `CLIP_LEVEL`.
+const CLIP_LEVEL: f32 = 0.999;
+const MIN_CLIP_RUN: usize = 4; // ≈83 µs @ 48 kHz — impossible for a clean transient apex
+pub(crate) fn is_clipped_capture(samples: &[f32]) -> bool {
+    let mut run = 0usize;
+    for &x in samples {
+        if x.abs() >= CLIP_LEVEL {
+            run += 1;
+            if run >= MIN_CLIP_RUN {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
 /// Capture the dry instrument (USB-Out 3) for `secs` while the user plays and
 /// save it as a 48 kHz mono f32 WAV — the real-DI side of `--stim-ab`. Reports
 /// peak (clip check — the dry tap has no limiter) and integrated LUFS.
@@ -467,7 +551,7 @@ pub fn probe_capture_wav(path: &str, secs: f32) -> Result<String, String> {
         "wrote {path}: {:.1}s  peak {:+.1} dBFS{}  integrated {lufs:.2} LUFS\n",
         mono.len() as f32 / 48_000.0,
         20.0 * peak.log10(),
-        if peak >= 0.99 {
+        if is_clipped_capture(&mono) {
             "  ⚠ CLIPPED — recapture softer"
         } else {
             ""
@@ -524,5 +608,78 @@ mod stimulus_shortfall_tests {
     fn uncalibrated_has_no_shortfall() {
         let (_, shortfall) = read_stimulus_calibrated_with_shortfall(&wav(), None).unwrap();
         assert_eq!(shortfall, None);
+    }
+}
+
+#[cfg(test)]
+mod di_inject_clip_guard_tests {
+    use super::{read_stimulus_calibrated_with_shortfall, write_wav_mono};
+
+    /// Write a tiny mono 48 kHz fixture WAV to the temp dir (reusing the same
+    /// `write_wav_mono` the production capture paths write with).
+    fn fixture(tag: &str, samples: &[f32]) -> String {
+        let path =
+            std::env::temp_dir().join(format!("tmp-stim-clip-{tag}-{}.wav", std::process::id()));
+        write_wav_mono(path.to_str().unwrap(), samples, 48_000).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn verbatim_full_scale_peak_gets_capped_and_shape_preserved() {
+        let samples = [0.5f32, -1.0, 0.25, 1.0, -0.1];
+        let path = fixture("full", &samples);
+        let (out, shortfall) = read_stimulus_calibrated_with_shortfall(&path, None).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(shortfall, None, "no calibration target → no shortfall");
+        let peak = out.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(peak <= 0.99 + 1e-4, "peak {peak} not capped at 0.99");
+        assert_eq!(out.len(), samples.len());
+        // Uniform scale-down: every sample's ratio to the original is identical.
+        let g = out[1] / samples[1];
+        assert!(g <= 1.0, "must never scale UP: g={g}");
+        for (o, s) in out.iter().zip(samples.iter()) {
+            assert!(
+                (o - s * g).abs() < 1e-6,
+                "ratio not preserved: {o} vs {s}*{g}"
+            );
+        }
+    }
+
+    #[test]
+    fn verbatim_safe_peak_is_bit_identical() {
+        let samples = [0.5f32, -0.3, 0.1, -0.5, 0.0];
+        let path = fixture("half", &samples);
+        let (out, shortfall) = read_stimulus_calibrated_with_shortfall(&path, None).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(shortfall, None);
+        assert_eq!(out, samples, "0.5 peak must pass through unscaled");
+    }
+}
+
+#[cfg(test)]
+mod clip_gate_tests {
+    use super::is_clipped_capture;
+
+    #[test]
+    fn isolated_transient_apexes_are_not_clipping() {
+        // A clean take: low sustained level with occasional single-sample full-scale
+        // pick-attack apexes — never a sustained flat top. The old `peak >= 0.99`
+        // gate rejected exactly this; the run-length gate must accept it.
+        let mut s = vec![0.2f32; 48_000];
+        for i in (0..s.len()).step_by(4000) {
+            s[i] = 1.0;
+        }
+        assert!(!is_clipped_capture(&s));
+    }
+
+    #[test]
+    fn sustained_flat_top_is_clipping() {
+        let mut s = vec![0.2f32; 48_000];
+        for x in s.iter_mut().skip(100).take(8) {
+            *x = 1.0; // 8 consecutive pinned samples = genuine overload
+        }
+        assert!(is_clipped_capture(&s));
     }
 }

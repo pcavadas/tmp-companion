@@ -84,10 +84,43 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
         tail_ratio_db: 0.0,
         balance_db: Vec::new(),
         band_labels: Vec::new(),
+        cut_through: None,
         error: None,
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["footswitch"], 0);
+    // cutThrough serializes as an explicit null (never an omitted key) when
+    // this sound has no estimate — errored sounds, degenerate ratios.
+    assert_eq!(v["cutThrough"], serde_json::Value::Null);
+}
+
+/// `DoctorSoundResult.cutThrough` carries the estimate's three fields
+/// verbatim, camelCase, when present.
+#[test]
+fn doctor_sound_result_cut_through_serializes_camel_case() {
+    let row = DoctorSoundResult {
+        key: "p4".to_string(),
+        list_index: 4,
+        scene: None,
+        footswitch: None,
+        label: "Base".to_string(),
+        tag: None,
+        diags: Vec::new(),
+        integrated_lufs: 0.0,
+        tail_ratio_db: 0.0,
+        balance_db: Vec::new(),
+        band_labels: Vec::new(),
+        cut_through: Some(doctor::CutThrough {
+            contrast_db: 12.5,
+            factory_percentile: Some(63.2),
+            advisory: false,
+        }),
+        error: None,
+    };
+    let v = serde_json::to_value(&row).unwrap();
+    assert_eq!(v["cutThrough"]["contrastDb"], 12.5);
+    assert_eq!(v["cutThrough"]["factoryPercentile"], 63.2);
+    assert_eq!(v["cutThrough"]["advisory"], false);
 }
 
 #[test]
@@ -178,6 +211,89 @@ fn doctor_force_bypass_null_ftsw_degrades_to_empty() {
     assert!(doctor_force_bypass(&null, &p, Some(0)).is_empty());
 }
 
+// ── derived_force_bypass: OFFLINE isolation, oracle-equivalent to doctor_force_bypass ──
+//
+// The isolation-delete's core proof: `derived_force_bypass` (walks the backup scan's
+// already-enumerated `FootswitchInfo` + `DoctorNode`s, no device read) must reproduce
+// `doctor_force_bypass` (walks the live field-8 `ftsw`/preset JSON) byte-for-byte, as
+// SETS, on the same data — for base and every footswitch sound.
+
+/// `doctor::DoctorNode`s built from a preset's SAVED bypass states — the test-side
+/// stand-in for what the frontend threads through as `DoctorInput.nodes` (sourced
+/// from the backup scan's `ActiveGraph.nodes`). Only `node_id` + `bypassed` drive
+/// the isolation derivation; the rest stay at defaults.
+fn nodes_from(preset: &serde_json::Value) -> Vec<doctor::DoctorNode> {
+    let mut out = Vec::new();
+    crate::audiograph::for_each_node(preset, |obj| {
+        let Some(nid) = obj.get("nodeId").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let bypassed = obj
+            .get("dspUnitParameters")
+            .and_then(|p| p.get("bypass"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        out.push(doctor::DoctorNode {
+            group_id: String::new(),
+            node_id: nid.to_string(),
+            model: nid.to_string(),
+            bypassed,
+            cab_sim_id: None,
+            cab_sim2_enabled: None,
+            params: std::collections::HashMap::new(),
+        });
+    });
+    out
+}
+
+/// 5 block-acting switches: 0 = normal (off in base, `isActive:false` — the HW
+/// correlation), 1 = saved-ENGAGED (preset-024 BD2 shape: ON in base with
+/// `isActive:true`), 2 = param-only (no on-off — must contribute nothing to the
+/// on-off derivation), 3 & 4 = SHARE one on-off node (the shared-node edge). A CAB
+/// node no switch touches stays in the graph (dedup/exclusion must never sweep it in).
+fn iso_ab_fixture() -> (serde_json::Value, Vec<footswitch::FootswitchInfo>) {
+    let preset = serde_json::json!({
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "DRV", "FenderId": "DRV", "dspUnitParameters": { "bypass": true } },
+            { "nodeId": "BD2", "FenderId": "BD2", "dspUnitParameters": { "bypass": false } },
+            { "nodeId": "MOD", "FenderId": "MOD", "dspUnitParameters": { "bypass": false, "gain": 0.4 } },
+            { "nodeId": "SHARE", "FenderId": "SHARE", "dspUnitParameters": { "bypass": true } },
+            { "nodeId": "CAB", "FenderId": "CAB", "dspUnitParameters": { "bypass": false } }
+        ]}, "micNodes": {} },
+        "ftsw": [
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "DRV" }], "isActive": false }],
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "BD2" }], "isActive": true }],
+            [{ "func": "param", "groupId": "G1", "nodeId": "MOD", "parameterId": "gain",
+               "valueA": 0.9, "valueB": 0.4, "isActive": false }],
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "SHARE" }], "isActive": false }],
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "SHARE" }], "isActive": false }],
+        ]
+    });
+    let infos = footswitch::enumerate_block_footswitches(&preset["ftsw"], &preset);
+    (preset, infos)
+}
+
+#[test]
+fn derived_force_bypass_matches_the_live_engine_on_every_sound() {
+    let (preset, infos) = iso_ab_fixture();
+    let nodes = nodes_from(&preset);
+    let ftsw = &preset["ftsw"];
+
+    // Base, then every block-acting switch (incl. the param-only switch 2, whose
+    // isolation is empty-own — same on both engines).
+    let cases: Vec<Option<u32>> = std::iter::once(None)
+        .chain(infos.iter().map(|fi| Some(fi.switch)))
+        .collect();
+    assert_eq!(cases.len(), 6, "base + 5 switches");
+    for case in cases {
+        let mut old = doctor_force_bypass(ftsw, &preset, case);
+        let mut derived = footswitch::derived_force_bypass(&infos, &saved_bypass_map(&nodes), case);
+        old.sort();
+        derived.sort();
+        assert_eq!(old, derived, "mismatch for footswitch={case:?}");
+    }
+}
+
 // --- consecutive-scene load skip (doctor_skip_load) ---
 
 fn prev(list_index: u32, wrote: bool) -> PrevSound {
@@ -219,24 +335,82 @@ fn floor_error_for_disarms_on_a_near_stationary_stimulus() {
 }
 
 // --- doctor_apply BEFORE-clip cache ---
+//
+// BEFORE_CACHE is a process-global static; cargo runs tests in parallel, so the
+// tests that mutate it must serialize on this lock or they stomp each other's
+// entries (a hard-to-spot cross-contamination — same pattern as
+// `e2e_server_tests::SERIAL`).
+static BEFORE_CACHE_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn before_cache_hits_only_the_exact_sound_and_stimulus() {
+    let _guard = crate::lock_ok(&BEFORE_CACHE_SERIAL);
     clear_doctor_before_cache();
-    let key: BeforeKey = (7, "Lead".into(), "/stim/tele.wav".into(), Some(0xC196_0000));
+    let key: BeforeKey = (
+        7,
+        "Lead".into(),
+        "/stim/tele.wav".into(),
+        Some(0xC196_0000),
+        None,
+        None,
+    );
     before_cache_put(key.clone(), "clip-a".into());
     assert_eq!(before_cache_get(&key), Some("clip-a".into()));
     // Any identity change misses: renamed preset, different stimulus, different cal.
     assert_eq!(
-        before_cache_get(&(7, "Lead 2".into(), "/stim/tele.wav".into(), key.3)),
+        before_cache_get(&(
+            7,
+            "Lead 2".into(),
+            "/stim/tele.wav".into(),
+            key.3,
+            key.4,
+            key.5
+        )),
         None
     );
     assert_eq!(
-        before_cache_get(&(7, "Lead".into(), "/stim/strat.wav".into(), key.3)),
+        before_cache_get(&(
+            7,
+            "Lead".into(),
+            "/stim/strat.wav".into(),
+            key.3,
+            key.4,
+            key.5
+        )),
         None
     );
     assert_eq!(
-        before_cache_get(&(7, "Lead".into(), "/stim/tele.wav".into(), None)),
+        before_cache_get(&(
+            7,
+            "Lead".into(),
+            "/stim/tele.wav".into(),
+            None,
+            key.4,
+            key.5
+        )),
+        None
+    );
+    // ...or a different scene/footswitch of the SAME preset.
+    assert_eq!(
+        before_cache_get(&(
+            7,
+            "Lead".into(),
+            "/stim/tele.wav".into(),
+            key.3,
+            Some(1),
+            key.5
+        )),
+        None
+    );
+    assert_eq!(
+        before_cache_get(&(
+            7,
+            "Lead".into(),
+            "/stim/tele.wav".into(),
+            key.3,
+            key.4,
+            Some(2)
+        )),
         None
     );
     // A save invalidates (clear_doctor_before_cache is what doctor_save calls).

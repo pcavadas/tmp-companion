@@ -115,6 +115,40 @@ pub fn probe_export_preset(list_enum: u32, slot: u32) -> Result<String, String> 
     ))
 }
 
+/// `probe --factory-list`: connect (the full handshake already requests the
+/// My/Factory/Cloud lists) and print every FACTORY preset as `slot<TAB>name`,
+/// one per line. Empty slots print as their device-supplied label (usually `--`)
+/// — not filtered, so the slot numbering stays 1:1 with the list index.
+/// Read-only: list harvest only, no LoadPreset.
+pub fn probe_factory_list() -> Result<String, String> {
+    let entries = Session::connect()?.list_factory_presets()?;
+    let mut out = String::new();
+    for e in &entries {
+        out.push_str(&format!("{}\t{}\n", e.slot, e.name));
+    }
+    out.push_str(&format!("({} factory presets)\n", entries.len()));
+    Ok(out)
+}
+
+/// `probe --load-probe <slot> <tabEnum>`: send a RAW `loadPreset(presetSlot=slot,
+/// tabEnum=tabEnum)` (both values passed VERBATIM — the human experiments with
+/// 0-/1-based slots and unknown Factory tabEnums). SEND-ONLY: the TMP's own
+/// screen is the verification oracle for which preset went active (a field-3
+/// name readback proved unreliable on a lean one-shot session and was removed).
+///
+/// Non-destructive: only LoadPreset (changes the active preset) — never saves.
+pub fn probe_load_probe(slot: u64, tab_enum: u64) -> Result<String, String> {
+    let mut s = Session::connect()?;
+    // Fire-and-forget via the SAME transact_eager path `session::load_preset` uses
+    // (HW-proven to change the active preset); both slot + tabEnum verbatim. The
+    // TMP's own screen is the oracle for which preset went active — the field-3
+    // name readback proved unreliable on a lean one-shot session.
+    s.load_preset_raw(slot, tab_enum)?;
+    Ok(format!(
+        "sent loadPreset slot={slot} tabEnum={tab_enum} — check the TMP screen for the active preset\n"
+    ))
+}
+
 /// Frame/marker forensics over a session's raw accumulated reports: frame
 /// counts by magic, plus plaintext-JSON marker counts in the concatenated
 /// frame bodies — the field-9 `presetJson` is PLAINTEXT (not LZ4), so its
@@ -284,7 +318,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     // ── Exp E: re-arm the burst window ON THE SAME CONNECTION by re-sending
     // connection_request (+ My Presets) before each read. If the device treats
     // connection_request as a session reset, a whole-library scan needs only
-    // ONE connection — no open/close churn (the congestion gotcha).
+    // ONE connection — no open/close churn (the open-lockout gotcha).
     out += "\n── Exp E: connection_request re-arm per read, ONE connection ──\n";
     {
         let t0 = std::time::Instant::now();

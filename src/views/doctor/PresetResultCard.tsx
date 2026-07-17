@@ -10,6 +10,7 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { SlotLabel } from "../../ui/SlotLabel";
 import { SevDot, SoundRow } from "./SoundRow";
+import type { DoctorStimulus } from "./PrescriptionCard";
 import { SceneConsistency } from "./SceneConsistency";
 import {
   presetLookCount,
@@ -19,6 +20,7 @@ import {
   soundSev,
 } from "./severity";
 import type {
+  ActiveGraph,
   DoctorPresetResult,
   DoctorSoundResult,
   FootswitchInfo,
@@ -28,9 +30,22 @@ export interface PresetResultCardProps {
   preset: DoctorPresetResult;
   presetName: string;
   footswitchInfo: Map<number, FootswitchInfo[]>;
+  /** 0-based list index → the preset's signal chain, from the SAME startup
+   *  backup scan as `footswitchInfo` — threaded into every prescription card
+   *  so its A/B captures under the diagnosed sound's own context. */
+  graphByIndex: Map<number, ActiveGraph>;
+  /** Sound key → the stimulus identity it was diagnosed with — threaded into
+   *  every prescription card so its A/B replays the diagnosis stimulus. */
+  stimulusByKey: Map<string, DoctorStimulus>;
   /** Open row ids, keyed `${listIndex}|${sound.key}` (and `|consistency`). */
   expanded: Set<string>;
   onToggleRow: (id: string) => void;
+  /** The page-wide picked Match-reference sound (any preset in the run), or
+   *  null before one is picked — see `DoctorResults`'s `soundById`. */
+  referenceSound: DoctorSoundResult | null;
+  referenceId: string | null;
+  onSetReference: (id: string) => void;
+  onClearReference: () => void;
 }
 
 /** The node ids a footswitch SOUND owns — the blocks its own switch toggles.
@@ -49,8 +64,14 @@ export function PresetResultCard({
   preset,
   presetName,
   footswitchInfo,
+  graphByIndex,
+  stimulusByKey,
   expanded,
   onToggleRow,
+  referenceSound,
+  referenceId,
+  onSetReference,
+  onClearReference,
 }: PresetResultCardProps) {
   const { t } = useTheme();
   const worst = presetWorstSev(preset);
@@ -72,6 +93,9 @@ export function PresetResultCard({
   );
   const visibleProblemRows = [...problems, ...errored];
 
+  const presetFootswitches = footswitchInfo.get(preset.listIndex);
+  const presetNodes = graphByIndex.get(preset.listIndex)?.nodes ?? [];
+
   const row = (sound: DoctorSoundResult) => {
     const id = `${String(preset.listIndex)}|${sound.key}`;
     return (
@@ -80,11 +104,19 @@ export function PresetResultCard({
         sound={sound}
         listIndex={preset.listIndex}
         presetName={presetName}
-        ownNodeIds={ownNodeIdsFor(sound, footswitchInfo.get(preset.listIndex))}
+        ownNodeIds={ownNodeIdsFor(sound, presetFootswitches)}
+        nodes={presetNodes}
+        footswitches={presetFootswitches ?? []}
+        stimulus={stimulusByKey.get(sound.key)}
         open={expanded.has(id)}
         onToggle={() => {
           onToggleRow(id);
         }}
+        id={id}
+        referenceSound={referenceSound}
+        referenceId={referenceId}
+        onSetReference={onSetReference}
+        onClearReference={onClearReference}
       />
     );
   };

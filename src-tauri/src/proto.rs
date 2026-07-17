@@ -1322,7 +1322,7 @@ const LIST_ENUM_MY_PRESETS: u64 = 1;
 /// harvest must check the response's `listEnum` (field 1) — else a truncated
 /// My-Presets reply lets a complete Factory reply win longest-complete-wins and the
 /// snapshot serves factory names as the user's presets (observed live: 249 factory
-/// records + firmware=None after a congested post-leveling reconnect). A missing
+/// records + firmware=None after a flooded post-leveling reconnect). A missing
 /// listEnum is treated as My Presets (lean sessions request only list 1).
 pub fn is_my_presets_list(resp_fields: &[(u32, Val)]) -> bool {
     first_varint(resp_fields, 1).unwrap_or(LIST_ENUM_MY_PRESETS) == LIST_ENUM_MY_PRESETS
@@ -2077,7 +2077,7 @@ mod tests {
     fn preset_list_records_strict_rejects_other_list_enums() {
         // The snapshot handshake requests THREE lists (My Presets=1, Factory=4,
         // Cloud=3) on one session; the harvest must never serve another list's
-        // records as My Presets (a congestion-truncated My-Presets reply once let
+        // records as My Presets (a flood-truncated My-Presets reply once let
         // the complete 249-record FACTORY reply win longest-complete-wins).
         // PresetListResponse.listEnum is field 1 (varint).
         let rec = |name: &str| len_delimited(2, &len_delimited(1, name.as_bytes()));

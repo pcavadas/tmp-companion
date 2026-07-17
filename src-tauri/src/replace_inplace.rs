@@ -46,6 +46,30 @@ pub(crate) fn replace_inplace_core(
     orig_list_index: u32,
     bytes: &[u8],
 ) -> Result<ReplaceOutcome, String> {
+    replace_inplace_with(orig_list_index, bytes, true)
+}
+
+/// `verify` = read the Song-1 bindings (before/after) + the post-save settle/re-read
+/// that fill the outcome's report fields. The e2e seed passes `false`: scratch slots
+/// carry no Song rows, and each verification read costs 1–4 fresh connections —
+/// every open is one more chance to land in the device's post-close open LOCKOUT
+/// (`0xe00002c5`, armed by aborted sessions and re-armed by each failed attempt),
+/// so the seed keeps its open count minimal.
+/// The write-safety chain (floored landing lists → `confirm_active` → guarded clear)
+/// is identical in both modes.
+pub(crate) fn replace_inplace_with(
+    orig_list_index: u32,
+    bytes: &[u8],
+    verify: bool,
+) -> Result<ReplaceOutcome, String> {
+    // TOLERANT reads for both landing-detection lists — strict decodes only
+    // terminal-frame streams and fails/garbles on the interleaved responses that
+    // back-to-back lean sessions produce (HW-observed: tolerant 504/504 on a healthy
+    // device while strict truncated or returned nothing). Tail-truncation is SAFE
+    // here in both directions: a slot past the cut is ABSENT from the list (so it
+    // never enters `empty_before` — landing detection misses it and aborts, it can
+    // never mis-clear), and the fail-closed `confirm_active` below still gates the
+    // save before any damage.
     let before = Session::connect()?.list_my_presets()?;
     let orig_name_before = before
         .iter()
@@ -63,7 +87,11 @@ pub(crate) fn replace_inplace_core(
         .filter(|p| session::is_empty_slot_name(&p.name))
         .map(|p| p.slot)
         .collect();
-    let songs_before = read_song_presets(1).unwrap_or_default();
+    let songs_before = if verify {
+        read_song_presets(1).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     // 1) Import — appends a scratch copy of the edited preset into an empty slot.
     Session::connect()?.import_preset(bytes)?;
@@ -98,7 +126,26 @@ pub(crate) fn replace_inplace_core(
             )
         })?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
+    drop(save_conn); // end the save's connection before guarded_clear opens the next one
     guarded_clear(scratch_slot, &scratch_name)?; // remove the scratch copy (guarded)
+
+    if !verify {
+        // Lean mode: the write is done (confirm_active gated the save; the clear was
+        // guarded) — skip the report reads. Fields the reads would fill stay empty.
+        return Ok(ReplaceOutcome {
+            orig_list_index,
+            scratch_slot,
+            scratch_name,
+            orig_name_before,
+            orig_name_after: None,
+            scratch_name_after: None,
+            edit_landed: true,
+            had_binding: false,
+            binding_preserved: false,
+            songs_before,
+            songs_after: Vec::new(),
+        });
+    }
 
     // 4) Re-read and confirm slot / Song-link survival. Settle first: clear/save are
     // fire-and-forget (no ACK); give the device a moment or the read returns pre-clear state.
@@ -179,6 +226,9 @@ fn run_replace_inplace(orig_list_index: u32, bytes: &[u8], src: &str) -> Result<
 /// and the mutation address the *same* preset (the earlier guard bug checked the
 /// list index but cleared a same-numbered device slot = a different preset).
 pub(crate) fn guarded_clear(list_index: u32, expect_name: &str) -> Result<(), String> {
+    // Tolerant read: a tail-truncated list leaves the slot ABSENT → cur = None →
+    // the guard refuses (fail-closed). Strict fails outright on interleaved
+    // responses from back-to-back sessions (see replace_inplace_with).
     let list = Session::connect()?.list_my_presets()?;
     let cur = list
         .iter()

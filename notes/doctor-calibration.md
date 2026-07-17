@@ -1,5 +1,20 @@
 # Doctor threshold calibration — 2026-07-03
 
+> **2026-07-16 addendum:** three things changed since this document's sweeps —
+> the numbers below are the historical record of the ORIGINAL recipe/metric.
+>
+> 1. **Window**: 3 s stimulus slice + 200 ms pad + graph-aware 1.5 s/0.3 s tail
+>    (HW-A/B'd vs the 6 s + 2.5 s oracle, `probe --doctor-window-ab`, 0 flips).
+> 2. **Onset**: corr floor 0.15 + a 120 ms lag plausibility ceiling + the pad's
+>    silence→signal edge FIXED the "onset detection fails even on the synthetic
+>    stimulus" weakness noted below — onsets now resolve confidently on all
+>    sweep presets, including wet ones (dry tails measure −21..−24 dB truer).
+> 3. **Metric**: deviation vs the AUTHORED factory-median target + Theil–Sen
+>    tilt split + the two-space consensus (see `notes/doctor.md`); gates were
+>    re-derived 2026-07-16 from the ±12 dB HW defect-injection matrix
+>    (`probe --doctor-inject`) + the 25-slot factory sanity band. The
+>    cohort-median machinery this document tuned against is deleted.
+
 Method: `probe --doctor <slots> <topology>` sweeps on the real unit (fw-current,
 read-only: loads + captures with the 2.5 s Doctor tail, never a save), then
 tuning `doctor::Thresholds` until the fired diagnoses matched the presets'
@@ -69,18 +84,40 @@ guitar-humbucker` and `--doctor 8,9 bass-singlecoil`.
   there is unreliable — sanity-check any firing preset's drive blocks against
   the real graph (Pro Control / the backup scan) before drawing threshold
   conclusions.
+- **Update (real-DI factory sweep, 2026-07):** on real Telecaster/ES-335 DI
+  captures the max observed `spread_lu` was ~1.88 vs the 4.0 gate, so `spiky` is
+  effectively **dead** (unreachable), not merely quiet — a retune should target the
+  real spread distribution, not chase the 4.0 gate. `washed`/tail was separately
+  fragile AT THE TIME of this sweep: its onset detection failed even on the
+  synthetic stimulus (a structural weakness, not DI-specific) — HISTORICAL; the
+  pad edge + recalibrated onset logic (point 2 at the top of this file) fixed
+  exactly this, and onsets now resolve confidently on all sweep presets.
 
 ## Capture-stimulus recalibration (pending the attended sweep)
 
-The Doctor now diagnoses a calibrated profile's DI capture in its own space:
-`StimulusKind::Capture` selects the `*_CAPTURE` threshold tables (currently
-byte-identical copies of the synthetic ones — PROVISIONAL) and cohorts are
-keyed `(Family, StimulusKind)` so synthetic and capture sounds never pool
-(the measured band-balance shift between stimuli — +8…12 dB lows / −8…10 dB
-highs — would otherwise reproduce false verdict flips). Band-confidence
+The Doctor diagnoses a calibrated profile's DI capture against the SAME
+per-family threshold table a synthetic stimulus uses — `Family::thresholds()`
+no longer branches on `StimulusKind` (only the fizzy flatness gate still
+does). Diagnosis is per-sound and deterministic (the deviation-vs-authored-target
+consensus metric never pools measurements across sounds); a real DI's measured
+band-balance shift (+8…12 dB lows / −8…10 dB highs) is absorbed as an
+honest tilt/deviation reading against the shared table rather than
+compensated by a separate table. Band-confidence
 gating skips any band-keyed rule whose primary band the stimulus never
 excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
 EBow-heavy) from verdicts in bands they never probed.
+
+**RESOLVED (2026-07-16) — the `balance()` dead-band contamination is
+structurally gone under the shipped metric.** The old bug: `balance()`
+subtracts the mean of ALL 6 bands, and in capture space the floor-riding
+Highs/Air dragged that mean, inflating the live bands ±3 dB preset-dependently
+(it flipped a real `muddy` in a 16-preset factory sweep). The shipped rule
+path has NO all-band mean anywhere: `deviations()` is raw `band_db − target`
+(level absorbed by the Theil–Sen intercept, which fits COVERED bands only),
+and `centered_deviations()` medians over the BODY bands (`lows..=highs`,
+excluding Air and the Bass VI Sub). `balance()` survives only for the wire's
+display `balanceDb` and the cut-through contrast (a ratio, where the mean
+cancels) — neither feeds a verdict threshold.
 
 The attended sweep derives the real capture thresholds:
 `probe --doctor-calib <slots_csv> --stim <capture.wav> --family <fam>
@@ -89,6 +126,10 @@ The attended sweep derives the real capture thresholds:
 separation margins, pre-onset noise floor, stimulus band coverage). Replace
 the `*_CAPTURE` consts in `doctor.rs` from that report; the pinned
 `thresholds_for(Synthetic)` test guards the synthetic tables against drift.
+
+Captures are **Float32 WAV** (fmt tag 65534 / `WAVE_FORMAT_EXTENSIBLE`) — Python's
+`wave` module rejects them (`unknown extended format`); parse the fmt/data chunks
+manually (or use a float-aware reader). Rust `hound` round-trips them.
 
 ## Playback level (Fletcher–Munson) threshold offsets — PROVISIONAL
 
@@ -134,3 +175,35 @@ rehearsal-and-louder phenomenon, not a bedroom one. Left as an open data point:
 the base reads flat here but was reported boomy by ear; if a future SPL-anchored
 sweep still finds the base flat, the base-boom is environmental (room/other
 guitarist), not a preset defect.
+
+## 2026-07-17 — parametric-EQ ground-truth round (resonant/boxy ENABLED)
+
+**Schema** (`ACD_FiveBandParamEQ`, from the user bank's own presets + HW write-verify):
+per band N=1..5, `filterNfrequency` (Hz), `filterNgaindb` (dB), `filterNq`, `filterNtype`
+(2 = peak), `filterNbypass` — all live `changeParameter` controlIds (1 kHz/+12 dB/Q8 in →
+1008 Hz/q 7.5 measured). Band 1 defaults to a HIGH-PASS (setting its frequency collapsed
+the lows −16 dB and fired bright/thin); bands 2–4 default to active peaks.
+
+**Matrix** (`probe --doctor-inject … --block ACD_FiveBandParamEQ`, drives→'65 Deluxe+CabIR
+chain, list index 16): gains +6/+9/+12 dB × Q 2/4/8/12 at 700/2000/5600 Hz + a 400/1200 Hz
+boxy pass + a stacked 2×12 dB Q14 flagrant-ring probe. Findings:
+
+- **Measured q is site-dominated, not injection-recoverable** (Q2 and Q12 at the 700 Hz
+  site both read q ≈ 5–6); q's only honest job is excluding isolated comb needles
+  (q 85–455). The estimator also INFLATES q for strong rings (injected Q14 → q 25.4), so
+  the ceiling moved 16 → 40.
+- **Heights add in dB on structured sites** (700 Hz: 8.0 native + 8.3 injected → 16.3
+  measured) and **saturate on clean sites** near 20·log10(Q/2) (Q8 +12 dB → 8.3; Q9
+  synthetic ceiling ≈ 13 at any drive).
+- **The factory population below 4 kHz tops out at h = 12.6** (a synth preset's own
+  filter), and 55/75 factory peaks live ABOVE 4 kHz (comb forest, ungateable) → gates:
+  freq ≤ 4 kHz, resonant h ≥ 13.5, boxy (300–500 Hz, zero factory peaks in range)
+  h ≥ 7.5, q ∈ [2, 40], + band corroboration unchanged.
+- **The cocked wah is a band-space phenomenon by physics** (peak-space h ≈ 6.7, mid local
+  +15.7 dB) — pinned as the `resonant_wah` must-NOT-fire-resonant defects recipe.
+
+**Validation**: defects suite 7/7 HIT (control silent; muddy/lost/washed hit;
+`resonant_peq` stacked 2×12 dB Q14 @ 2.6 kHz → resonant, measured h 24.2; `boxy_peq`
+stacked 2×12 dB Q8 @ 420 Hz → boxy; wah → thin only). Factory silence holds by
+construction (no in-range factory peak reaches either floor at any q). The probed
+preset's stored bytes were sha-verified untouched across all ~20 injection runs.

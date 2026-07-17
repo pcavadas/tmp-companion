@@ -5,6 +5,7 @@
 //! runbook (read-only policy) — the audit logic is tested against synthetic measures.
 //! Fixed rule set; it reports (no auto-fix).
 
+use crate::doctor::median;
 use serde::Serialize;
 
 /// One lint/audit finding for a preset.
@@ -21,19 +22,6 @@ pub struct AuditMeasure {
     pub list_index: u32,
     pub peak_dbfs: f64,
     pub loudness_lufs: f64,
-}
-
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.total_cmp(b)); // NaN-safe (a failed loudness measure won't panic)
-    let n = v.len();
-    if n == 0 {
-        return 0.0;
-    }
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
-    }
 }
 
 /// Audit re-amp measurements: flag clipping (`peak_dbfs >= 0`) and loudness outliers

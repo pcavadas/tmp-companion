@@ -10,14 +10,10 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { PrescriptionCard } from "./PrescriptionCard";
-import { SevDot } from "./SoundRow";
+import { ROW_MIN_HEIGHT, SevDot } from "./SoundRow";
 import { sceneConsistencySev, sevTone } from "./severity";
+import { signedDb } from "../../lib/format";
 import type { DoctorSceneConsistency } from "../../lib/types";
-
-/** Signed one-decimal dB with the real minus glyph (e.g. +6 → "+6.0", −3 → "−3.0"). */
-function signedDb(db: number): string {
-  return `${db < 0 ? "−" : "+"}${Math.abs(db).toFixed(1)}`;
-}
 
 export interface SceneConsistencyProps {
   sc: DoctorSceneConsistency;
@@ -47,7 +43,7 @@ export function SceneConsistency({
           display: "flex",
           alignItems: "center",
           gap: t.space5,
-          minHeight: 38,
+          minHeight: ROW_MIN_HEIGHT,
           padding: `${String(t.space3)}px ${String(t.space4)}px ${String(t.space3)}px ${String(t.space3)}px`,
           cursor: "pointer",
           background: open ? t.rowSel : "transparent",

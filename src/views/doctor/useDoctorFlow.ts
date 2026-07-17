@@ -1,8 +1,8 @@
 // src/views/doctor/useDoctorFlow.ts — the Doctor RUN orchestrator.
 //
 // Owns the run's live state (one streamed progress row per sound, keyed by the
-// selection key) and the cohort-relative DoctorCheckResult that rides the
-// command's return value. DoctorView owns the stage machine; this hook only
+// selection key) and the per-sound-deterministic DoctorCheckResult that rides
+// the command's return value. DoctorView owns the stage machine; this hook only
 // drives the single `doctor_check` call and exposes `buildItems` (turns the
 // list's chosen SetupOptions + the setup step's per-row instrument into the
 // wire DoctorInputArgs). Mirrors useLevelingFlow's structure, minus the
@@ -18,6 +18,7 @@ import type {
   DoctorCheckResult,
   Store,
   ActiveGraph,
+  FootswitchInfo,
 } from "../../lib/types";
 
 /** The Doctor wizard's 3-step rail, shared by the full-page Set up (current 0)
@@ -59,6 +60,10 @@ export interface UseDoctorFlowDeps {
    *  index — the source of each sound's `nodes` (chain passed verbatim so
    *  prescriptions target real blocks with no extra device read). */
   graphByIndex: Map<number, ActiveGraph>;
+  /** Per-preset block-acting footswitches from the SAME startup backup, keyed
+   *  by 0-based list index — the source of each sound's `footswitches` (drives
+   *  the backend's OFFLINE force-bypass isolation derivation, no device read). */
+  footswitchesByIndex: Map<number, FootswitchInfo[]>;
 }
 
 function countTerminal(
@@ -71,7 +76,11 @@ function countTerminal(
   }, 0);
 }
 
-export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
+export function useDoctorFlow({
+  store,
+  graphByIndex,
+  footswitchesByIndex,
+}: UseDoctorFlowDeps) {
   const [run, setRun] = useState<DoctorRunState>(EMPTY_RUN);
   const [result, setResult] = useState<DoctorCheckResult | null>(null);
   // Set only when the whole `doctor_check` command REJECTS (an IPC/backend
@@ -114,9 +123,10 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
           // Tier-2 DI capture as the verbatim stimulus + CAPTURE diagnosis space.
           profileId: profile?.id ?? null,
           nodes: graphByIndex.get(o.slot)?.nodes ?? [],
+          footswitches: footswitchesByIndex.get(o.slot) ?? [],
         };
       }),
-    [store, graphByIndex],
+    [store, graphByIndex, footswitchesByIndex],
   );
 
   // Unmounting mid-run (a tab switch) would orphan the backend check — fire the
@@ -132,7 +142,8 @@ export function useDoctorFlow({ store, graphByIndex }: UseDoctorFlowDeps) {
   );
 
   // Fire the ONE backend command for the whole run. Progress rows update per key
-  // as the stream lands; the cohort-relative diagnoses ride the resolved value.
+  // as the stream lands; the per-sound target-deviation diagnoses ride the resolved
+  // value (each verdict depends only on that sound, never on which others ran).
   // `restoreListIndex` = the pre-run active preset, reloaded when the run ends.
   const startRun = useCallback(
     (items: DoctorInputArg[], restoreListIndex: number | null) => {

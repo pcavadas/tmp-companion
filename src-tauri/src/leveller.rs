@@ -55,9 +55,76 @@ pub(crate) const RECONNECT_GAP_MS: u64 = 400;
 const CAPTURE_TAIL_MS: u64 = 800;
 /// Doctor-only capture tail: Doctor diagnostic captures (reverb/delay wash analysis)
 /// keep a longer post-stimulus tail than the leveling capture, whose 800 ms tail is
-/// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change. 2.5 s
-/// covers typical reverb/delay decay without doubling the leveling run time.
-pub const DOCTOR_TAIL_MS: u32 = 2500;
+/// HW-baselined and load-bearing (see `CAPTURE_TAIL_MS`) and must NOT change.
+/// 1.5 s (down from the original 2.5 s) was HW-A/B'd against the 6 s + 2.5 s
+/// full-capture oracle (`probe --doctor-window-ab`, 2026-07-16, 6 diverse presets
+/// incl. two wet ones): 0 verdict flips, Δtilt ≤ 0.08 dB/oct, band deltas within
+/// wash-preset run variance, `washed` still fires on both wet presets.
+pub const DOCTOR_TAIL_MS: u32 = 1500;
+/// Doctor stimulus window: diagnosis captures re-amp only the first 3 s of the
+/// stimulus ([`doctor_stim_slice`]) — the leveling window (full stimulus + its
+/// 800 ms tail) is UNTOUCHED per the capture-window lesson (a window change is a
+/// re-baseline, validated only against the full-capture oracle). Same
+/// `--doctor-window-ab` evidence as [`DOCTOR_TAIL_MS`]; the 4 s fallback showed
+/// no better fidelity. Spectral balance (not absolute loudness) is the Doctor's
+/// measurement, so the delay/reverb-buildup LUFS shift that forbids trimming the
+/// LEVELING window does not apply here.
+pub const DOCTOR_STIM_MS: usize = 3000;
+
+/// [`DOCTOR_STIM_MS`] at the device clock ([`RATE`]), in samples.
+pub fn doctor_stim_samples() -> usize {
+    (RATE as usize / 1000) * DOCTOR_STIM_MS
+}
+
+/// Silent preamble prepended to the Doctor stimulus: the true inject latency is
+/// only ~32 ms (HW, `audio::estimate_onset` across 15 captures), which leaves a
+/// pre-onset noise-floor window too short for a full Welch segment
+/// (`psd::SEG` = 8192 ≈ 171 ms) — the output-SNR coverage gate needs a stable
+/// floor estimate. 200 ms of played silence stretches the floor window to
+/// ~230 ms at the cost of 200 ms per capture. Spectrally neutral: LUFS gating
+/// drops silence, and the body PSD starts at [`doctor_signal_start`].
+pub const DOCTOR_PAD_MS: usize = 200;
+
+/// [`DOCTOR_PAD_MS`] at the device clock, in samples.
+pub fn doctor_pad_samples() -> usize {
+    (RATE as usize / 1000) * DOCTOR_PAD_MS
+}
+
+/// The Doctor's stimulus window: the first [`DOCTOR_STIM_MS`] of the source,
+/// behind [`DOCTOR_PAD_MS`] of leading silence — one home so capture, onset
+/// alignment, floor-guard spread, and `stimulus_samples` all agree on the same
+/// window. Takes the freshly-read buffer by value and edits in place (every
+/// caller owns a throwaway full read; a borrow form just forced a second
+/// allocation).
+pub fn doctor_stim_slice(mut stim: Vec<f32>) -> Vec<f32> {
+    stim.truncate(doctor_stim_samples());
+    stim.splice(0..0, std::iter::repeat_n(0.0, doctor_pad_samples()));
+    stim
+}
+
+/// Where the SIGNAL actually starts in a Doctor capture: the estimated onset is
+/// where the PADDED stimulus aligns (= the inject latency), so the played
+/// silence sits at `[onset, onset + pad)` and real signal begins after it. The
+/// body PSD and the coverage gate's floor/body split use THIS; the tail split
+/// keeps the raw `onset` (it adds the padded `stimulus_samples`, which already
+/// contains the pad). An unconfident onset keeps the legacy whole-buffer 0.
+pub fn doctor_signal_start(onset: usize, confident: bool) -> usize {
+    if confident {
+        onset + doctor_pad_samples()
+    } else {
+        0
+    }
+}
+
+/// Doctor capture tail for a chain WITHOUT a time effect (no reverb/delay node,
+/// [`crate::doctor::has_time_effect`]): a bare settle guard, not a wash window —
+/// `washed` cannot fire without a time-based block in the chain, so the full tail
+/// buys nothing there. Shrinking the tail also shrinks `tail_ratio_db`'s window
+/// (an empty/near-empty tail floors it at −80, `doctor::tail_energy_ratio`) and
+/// marginally shifts `spread_lu` on these dry captures — expected and harmless
+/// since `washed` is inapplicable by construction; the R4/R5 hardware sweeps
+/// re-baseline the OTHER thresholds against this shorter recipe.
+pub const DOCTOR_TAIL_DRY_MS: u32 = 300;
 // Scene mode (`SetNodeSceneEdit`) MUST be enabled before the value write, or the
 // write hits the BASE/global value and leaks across scenes (HW). But the settle must
 // stay SHORT: the device accepts the scene write only within ~700–750 ms of the
@@ -205,11 +272,16 @@ fn restore_after_unsaved_error<T>(
     if save && err != CANCELLED {
         return Err(err);
     }
-    match restore_saved_preset(slot) {
-        Ok(()) => Err(err),
-        Err(restore_err) => Err(format!(
-            "{err}; also failed to restore stored preset: {restore_err}"
-        )),
+    Err(append_restore_err(err, restore_saved_preset(slot)))
+}
+
+/// Fold a restore failure into a primary error — the ONE wording for the
+/// "primary error + edit-buffer restore failure" merge every restore-after-
+/// failure path shares (here, `probe_api::doctor_inject`/`doctor_defects`).
+pub(crate) fn append_restore_err(primary: String, restore: Result<(), String>) -> String {
+    match restore {
+        Ok(()) => primary,
+        Err(r) => format!("{primary}; also failed to restore stored preset: {r}"),
     }
 }
 
@@ -503,20 +575,27 @@ pub fn capture_samples(
 }
 
 /// Doctor-only MEASURE seam: like `capture_samples`, but optionally activates a scene
-/// first (0-based `scenes[]` wire index, `None` = base) and captures with the longer
-/// `DOCTOR_TAIL_MS` tail so reverb/delay wash is analyzable. Shares `capture_full_at`
+/// first (0-based `scenes[]` wire index, `None` = base) and captures with a
+/// caller-chosen tail (`tail_ms` below). Shares `capture_full_at`
 /// with the leveling capture path — the leveling window/timings are untouched.
 /// `ref_level`: `Some(0.5)` for the diagnosis run (measurement SNR); `None` for
 /// the apply A/B (capture at the preset's own level — never writes presetLevel,
 /// so a later `doctor_save` can't persist a reference level).
 /// `skip_load`: see `capture_full_at` — the Doctor's consecutive-scene chain skips
 /// the redundant per-sound preset reload (same preset, previous sound clean + Ok).
+/// `tail_ms`: the caller picks — `DOCTOR_TAIL_MS` for a chain that may wash, else
+/// the shorter `DOCTOR_TAIL_DRY_MS` (`doctor::has_time_effect` decides).
+/// Mixes down via `Capture::stereo_mix` (deterministic average of USB-Out 1/2),
+/// not the leveling path's argmax `loudest_channel` — on a stereo preset (ping-
+/// pong delay, hard-panned dual amps) the argmax can flip L/R across runs and
+/// flip spectral verdicts with it.
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     stimulus: &[f32],
     ref_level: Option<f32>,
+    tail_ms: u64,
     skip_load: bool,
 ) -> Result<(Vec<f32>, u32), String> {
     let cap = capture_full_at(
@@ -525,37 +604,51 @@ pub fn doctor_capture(
         force_bypass,
         stimulus,
         ref_level,
-        u64::from(DOCTOR_TAIL_MS),
+        tail_ms,
         skip_load,
     )?;
-    let (ch, _) = cap.loudest_channel();
-    Ok((cap.channel(ch), cap.sample_rate))
+    let sr = cap.sample_rate;
+    Ok((cap.stereo_mix(), sr))
 }
 
 /// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
 /// loading — a load would discard the unsaved `doctor_apply` prescription edit.
-/// Mirrors `capture_full_at` MINUS the load block: fresh-connect → optionally set
-/// the reference level BEFORE engaging → engage re-amp once → capture with the
-/// Doctor tail → guaranteed re-amp off → loudest channel. `ref_level` MUST match
+/// Delegates to `capture_full_at` with `skip_load: true` (its non-load branch is
+/// byte-for-byte this: fresh-connect → (when `scene` is `Some`) re-activate that
+/// 0-based `scenes[]` wire index on THIS connection → write `force_bypass`
+/// isolation → optionally set the reference level BEFORE engaging → engage
+/// re-amp once → capture with the Doctor tail → guaranteed re-amp off), plus
+/// the leading `RECONNECT_GAP_MS` gap `capture_full_at`'s own load branch would
+/// otherwise supply. Deterministic stereo mixdown (`Capture::stereo_mix`, not
+/// the leveling path's argmax `loudest_channel` — see `doctor_capture`'s doc
+/// for why). The scene recall + force-bypass writes land on the UNSAVED edit
+/// buffer ON PURPOSE: `doctor_save` never persists this live buffer (it
+/// rebuilds SAVED+ops from scratch, see `commands/doctor.rs::doctor_save`), so
+/// a forced bypass or scene recall made here can never leak into a save —
+/// `doctor_discard`'s reload clears them either way. `ref_level` MUST match
 /// the before-capture's so the A/B is level-fair (`doctor_apply` passes `None`
-/// to both: the preset's own level, never a presetLevel write).
+/// to both: the preset's own level, never a presetLevel write). `scene`/
+/// `force_bypass`/`tail_ms`: see `doctor_capture` — the AFTER capture must be
+/// taken under the SAME diagnosed context (scene + isolation) as the BEFORE.
 pub fn doctor_capture_current(
     stimulus: &[f32],
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
     ref_level: Option<f32>,
+    tail_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    let mut s = Session::connect_lean()?;
-    if let Some(ref_level) = ref_level {
-        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
-    }
-    let _ = s.set_reamp_mode(true)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
-    let cap = audio::reamp_capture(stimulus, RATE, u64::from(DOCTOR_TAIL_MS));
-    let _ = s.set_reamp_mode(false);
-    let cap = cap?;
-    let (ch, _) = cap.loudest_channel();
-    Ok((cap.channel(ch), cap.sample_rate))
+    let cap = capture_full_at(
+        0, // slot unused: skip_load
+        scene,
+        force_bypass,
+        stimulus,
+        ref_level,
+        tail_ms,
+        true,
+    )?;
+    let sr = cap.sample_rate;
+    Ok((cap.stereo_mix(), sr))
 }
 
 /// MEASURE seam for scene leveling: load `slot`, then for each scene in
@@ -1630,7 +1723,7 @@ pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<
                 .to_string();
                 // Confirm the set landed: the device ECHOES field 54 on success (checked first,
                 // before the read-back clears the buffer); the working-copy read-back corroborates
-                // (it can lag a heartbeat under post-measurement congestion). The first edit after
+                // (it can lag a heartbeat on a post-measurement flooded line). The first edit after
                 // a fresh load can be silently dropped, so retry the whole set+confirm once.
                 let mut confirmed = false;
                 let mut last_seen = Vec::new();
@@ -3238,6 +3331,19 @@ mod floor_guard_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_stim_slice_truncates_then_pads_with_leading_silence() {
+        let src = vec![0.7f32; doctor_stim_samples() * 2];
+        let prepared = doctor_stim_slice(src);
+        assert_eq!(prepared.len(), doctor_pad_samples() + doctor_stim_samples());
+        assert!(prepared[..doctor_pad_samples()].iter().all(|&s| s == 0.0));
+        assert!(prepared[doctor_pad_samples()..].iter().all(|&s| s == 0.7));
+        // Signal start accounting: confident onset = latency + the pad; an
+        // unconfident onset keeps the legacy whole-buffer 0.
+        assert_eq!(doctor_signal_start(1536, true), 1536 + doctor_pad_samples());
+        assert_eq!(doctor_signal_start(1536, false), 0);
+    }
 
     // A cancel flag already set at entry must bail at the PRE-MEASURE checkpoint —
     // before any `Session::connect`/device touch — so this runs with no hardware and

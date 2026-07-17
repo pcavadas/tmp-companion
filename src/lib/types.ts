@@ -36,6 +36,10 @@ export interface FootswitchFn {
   parameter_id: string | null;
   value_a: number | null;
   value_b: number | null;
+  /** The assignment's own `isActive` — for an on-off function, the CURRENT
+   *  engaged state at save time. Drives the Doctor's offline force-bypass
+   *  isolation derivation (no live preset read). */
+  is_active: boolean;
 }
 
 /** A continuous block parameter the leveler can target (`footswitch::LevelParamCandidate`). */
@@ -730,13 +734,17 @@ export interface DoctorInputArg {
   calibrationLufs: number | null;
   /** Instrument profile id (null when "none"): when it has a stored Tier-2 DI
    *  capture, the Doctor reads that WAV verbatim and diagnoses in CAPTURE
-   *  threshold/cohort space; else the synthetic topology sample. */
+   *  threshold space; else the synthetic topology sample. */
   profileId: string | null;
   nodes: GraphNode[];
+  /** The preset's block-acting footswitches (empty when none/unknown), off the
+   *  same backup-scan data as `nodes` — drives the backend's OFFLINE force-bypass
+   *  isolation derivation (no live preset read per sound). */
+  footswitches: FootswitchInfo[];
 }
 
 /** Streamed per-sound progress row (`lib::DoctorProgressItem`). Diagnoses ride
- * the command's return value (cohort-relative — computable only at the end). */
+ * the command's return value (assembled once every sound is measured). */
 export interface DoctorProgressItem {
   key: string;
   status: "active" | "done" | "error";
@@ -790,11 +798,26 @@ export interface DoctorDiag {
   key: string;
   label: string;
   sev: DoctorSev;
+  /** Magnitude past the fire threshold in the rule's natural unit (dB, or LU for
+   *  spiky) — `metric − threshold`, ≥ 0. `< 1.0` (below `POSSIBLE_MAX_SEVERITY`)
+   *  is a near-threshold "possible" verdict rendered muted. */
+  severity: number;
   bands: number[];
   detail: string;
   explain: string;
   rx: DoctorRx[];
   fromLevel: PlaybackLevel;
+}
+
+/** The "does this cut through the mix?" ESTIMATE (`doctor::CutThrough`) —
+ * a presence-contrast reading vs the measured 25-preset factory-bank
+ * distribution, not a diagnosis: it's not in `diags` and carries no `rx`.
+ * `factoryPercentile`/`advisory` are null/false outside Guitar (no bass
+ * factory anchor yet). */
+export interface CutThrough {
+  contrastDb: number;
+  factoryPercentile: number | null;
+  advisory: boolean;
 }
 
 export interface DoctorSoundResult {
@@ -814,6 +837,9 @@ export interface DoctorSoundResult {
    *  "Air") or 7 for bass-vi ("Sub" + the same six). `balanceDb.length` and
    *  `DoctorDiag.bands` indices both index this same layout. */
   bandLabels: string[];
+  /** Null when this sound's capture failed or the ratio was degenerate (e.g.
+   *  a silent capture). */
+  cutThrough: CutThrough | null;
   /** Set when this sound's capture failed (no diags then); the run continued. */
   error: string | null;
 }
@@ -842,8 +868,6 @@ export interface DoctorPresetResult {
 export interface DoctorCheckResult {
   presets: DoctorPresetResult[];
   stopped: boolean;
-  /** "median" (≥ 4 sounds measured) or "absolute" (small-run fallback). */
-  cohort: "median" | "absolute";
 }
 
 /** One prescription's apply job (`lib::DoctorApplyJob`, camelCase wire).
@@ -856,6 +880,24 @@ export interface DoctorApplyJob {
   ops: DoctorOp[];
   topologyId: string | null;
   calibrationLufs: number | null;
+  /** The diagnosed sound's instrument-profile id (null when "none") — a profile
+   *  with a stored Tier-2 DI capture auditions the A/B on that same capture,
+   *  mirroring `doctor_check`'s stimulus resolution. */
+  profileId: string | null;
+  /** The diagnosed sound's own scene (0-based `scenes[]` wire index) — null
+   *  for Base/footswitch. The A/B captures recall this scene so the player
+   *  auditions the fix in the state that was actually diagnosed. */
+  scene: number | null;
+  /** The diagnosed sound's own block-acting footswitch (0-based `ftsw`
+   *  index) — null for Base/scene. */
+  footswitch: number | null;
+  /** The preset's chain (same data threaded into `DoctorInputArg.nodes`) —
+   *  drives the backend's OFFLINE force-bypass isolation derivation for the
+   *  A/B captures, mirroring `doctor_check`'s isolation exactly. */
+  nodes: GraphNode[];
+  /** The preset's block-acting footswitches, paired with `nodes` for the
+   *  same isolation derivation. */
+  footswitches: FootswitchInfo[];
 }
 
 /** Result of a live (unsaved) prescription apply: before/after audition clips

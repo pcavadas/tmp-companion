@@ -86,8 +86,8 @@ pub(crate) fn resolve_stimulus_for_leveling<R: tauri::Runtime>(
 /// explicit path → the profile's stored Tier-2 DI capture → selected topology WAV
 /// → `TMP_LEVELLER_STIMULUS` env → the default bundled synthetic sample. The bool
 /// reports whether the profile's Tier-2 DI capture won (`true`) — the Doctor uses
-/// it to pick its threshold table + cohort key (a real DI shifts the measured
-/// band balance systematically).
+/// it to pick its threshold table (a real DI shifts the measured band balance
+/// systematically).
 pub(crate) fn resolve_stimulus_with_capture<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     explicit: Option<String>,
@@ -341,8 +341,9 @@ pub(crate) async fn restore_preset_level(
 pub(crate) struct CalibrateResult {
     /// Measured K-weighted loudness of the dry capture (stored on the profile).
     lufs: f32,
-    /// The dry tap (USB-Out 3, no limiter) hit 0 dBFS — the measurement is biased
-    /// LOW (clipped transients flatten the brightness K-weighting credits).
+    /// The dry tap (USB-Out 3, no limiter) FLAT-TOPPED at full scale (a sustained
+    /// run, not a lone pick transient — see `is_clipped_capture`) — the measurement
+    /// is biased LOW (clipped transients flatten the brightness K-weighting credits).
     clipped: bool,
     /// The topology stimulus cannot be scaled up to `lufs` without clipping (the
     /// 0.99 peak cap in `read_stimulus_calibrated_with_shortfall`): leveling will
@@ -433,7 +434,7 @@ pub(crate) async fn calibrate_profile(
 ) -> Result<CalibrateResult, String> {
     let app2 = app.clone();
     with_released_seize(state.session.clone(), move || {
-        let (mono, peak) = crate::probe_api::stimulus::capture_dry_di(secs)?;
+        let (mono, _peak) = crate::probe_api::stimulus::capture_dry_di(secs)?;
         // Reject a capture that's mostly silence (a valid capture becomes the stimulus,
         // so a few plucks + long gaps would inject a mostly-dead re-amp signal).
         if active_window_fraction(&mono, 48_000) < 0.5 {
@@ -449,7 +450,10 @@ pub(crate) async fn calibrate_profile(
         }
         let lufs = loudness.integrated_lufs as f32;
         let spread_lu = loudness.spread_lu();
-        let clipped = peak >= 0.99;
+        // Flat-top clip check, not a bare sample-peak: a lone hot pick transient is
+        // not clipping (see is_clipped_capture) — the old `peak >= 0.99` gate
+        // rejected good takes whose only "clip" was a sub-ms attack apex.
+        let clipped = crate::probe_api::stimulus::is_clipped_capture(&mono);
 
         // Store the capture (or clear a stale one on a clipped run) BEFORE persisting the
         // scalar — a WAV write failure fails the whole command so the scalar never lands
