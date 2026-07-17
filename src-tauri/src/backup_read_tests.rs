@@ -523,3 +523,44 @@ fn silence_hint_amp_zero_wins_over_exp_binding() {
             {"func":"param","paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
     assert_eq!(silence_hint(&v), Some("amp_zero"));
 }
+
+#[test]
+fn silence_hint_ignores_exp_binding_on_non_amp_node() {
+    // The bound groupId/nodeId resolves, but the node isn't an amp (e.g. an EQ block
+    // that happens to expose a same-named "outputLevel" param) — must not flag.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_FiveBandParamEQ",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_ignores_exp_binding_on_missing_node() {
+    // A stale binding pointing at a groupId/nodeId no longer present in the graph.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":false,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_GoneNow",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), None);
+}
+
+#[test]
+fn silence_hint_ignores_exp_binding_on_bypassed_amp() {
+    // The bound amp is bypassed — its outputLevel is inert, so a zero-end binding
+    // can't mute anything live.
+    let v = serde_json::json!({
+        "audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TweedDeluxe","nodeId":"ACD_TweedDeluxe",
+             "dspUnitParameters":{"bypass":true,"outputLevel":0.68}}]}},
+        "exp":{"exp1":[],"exp2":[
+            {"func":"param","groupId":"G1","nodeId":"ACD_TweedDeluxe",
+             "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
+    assert_eq!(silence_hint(&v), None);
+}

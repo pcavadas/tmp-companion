@@ -463,15 +463,51 @@ pub(crate) fn silence_hint(v: &serde_json::Value) -> Option<&'static str> {
             let param = b.get("paramId").and_then(|p| p.as_str()).unwrap_or("");
             // NaN-safe: a missing heel/toe compares false, never flags.
             let end = |k: &str| b.get(k).and_then(|x| x.as_f64()).unwrap_or(f64::NAN);
+            let group_id = b.get("groupId").and_then(|g| g.as_str()).unwrap_or("");
+            let node_id = b.get("nodeId").and_then(|n| n.as_str()).unwrap_or("");
             if is_param
                 && is_amp_output_level_param(param)
                 && (end("heel") <= EPS || end("toe") <= EPS)
+                && is_active_amp_node(v, group_id, node_id)
             {
                 return Some("exp_mute");
             }
         }
     }
     None
+}
+
+/// Resolve an expression-binding's `groupId`/`nodeId` against the graph and confirm
+/// it targets a present, non-bypassed amp — a stale binding, a missing target, or
+/// another block that merely exposes a same-named `outputLevel` param must NOT flag
+/// `exp_mute` (that would replace the routing fallback with misleading advice).
+fn is_active_amp_node(v: &serde_json::Value, group_id: &str, node_id: &str) -> bool {
+    if group_id.is_empty() || node_id.is_empty() {
+        return false;
+    }
+    for graph in ["guitarNodes", "micNodes"] {
+        let Some(nodes) = v
+            .get("audioGraph")
+            .and_then(|ag| ag.get(graph))
+            .and_then(|g| g.get(group_id))
+            .and_then(|a| a.as_array())
+        else {
+            continue;
+        };
+        for node in nodes {
+            if audiograph::node_id(node) != Some(node_id) {
+                continue;
+            }
+            let model = node.get("FenderId").and_then(|x| x.as_str()).unwrap_or("");
+            let bypassed = node
+                .get("dspUnitParameters")
+                .and_then(|p| p.get("bypass"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            return is_amp_model_id(model) && !bypassed;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
