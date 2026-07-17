@@ -69,10 +69,12 @@ ensure_dist() { [ -f dist/index.html ] || { mkdir -p dist; printf '<!doctype htm
 # Build the e2e_server up front so the (potentially minutes-long, cold) compile is out of the
 # timed server-start path; its exit code is the build check.
 prebuild() {
-  log "building e2e_server (incremental)…"
-  cargo build -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server \
-    || { err "e2e_server build failed"; exit 1; }
+  log "building e2e_server + probe (incremental)…"
+  cargo build -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server --bin probe \
+    || { err "e2e_server/probe build failed"; exit 1; }
 }
+
+PROBE_BIN="src-tauri/target/debug/probe"
 
 kill_port() { lsof -ti "tcp:$1" 2>/dev/null | xargs kill 2>/dev/null || true; }
 
@@ -159,14 +161,16 @@ disown "$SERVER_PID" 2>/dev/null || true  # silence the shell's "Terminated" not
 wait_server_ready
 log "device connected — snapshot seeded"
 
-# Seed the scenario presets from the RUNNER (not the spec): the seed is the first fresh
-# HID open after the server handshake and can hit the device's capricious open lockout —
-# a retry with a long quiet rest cures it, but Playwright's per-test budget (300 s) can't
-# absorb seed (~90–150 s) + retries. The seed self-repairs (sweeps stray imports from any
-# earlier aborted run) so retrying is pollution-safe; the specs' `ensureScenario` stays as
-# the idempotent fallback (it finds the presets present and skips).
+# Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
+# device work from the long-lived e2e_server process degrades (HW-observed: truncated
+# list harvests + capricious 0xe00002c5 opens) while fresh processes are reliable; and
+# Playwright's per-test budget (300 s) can't absorb seed (~90–150 s) + retries anyway.
+# The seed self-repairs (sweeps stray imports from any earlier aborted run), so
+# retrying is pollution-safe. On success, tell the server's snapshot (no device I/O) so
+# the specs' `ensureScenario` fallback finds the presets present and skips.
 seed_scenario() {
-  bridge_post '{"cmd":"e2e_seed_scenario","args":{}}' 420 | grep -q '"ok":true'
+  "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 \
+    && bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
 }
 
 fail=0
@@ -188,8 +192,8 @@ for s in "${SPECS[@]}"; do
   for attempt in 1 2 3; do
     log "seeding the scenario presets (attempt $attempt)…"
     if seed_scenario; then seeded=1; break; fi
-    log "seed attempt $attempt failed — resting 60 s (open lockout) before retry"
-    sleep 60
+    log "seed attempt $attempt failed — resting 90 s (open lockout) before retry"
+    sleep 90
   done
   if [ "$seeded" -ne 1 ]; then
     err "scenario seed failed after 3 attempts — aborting (device recovery runs on exit)"

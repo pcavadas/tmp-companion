@@ -827,6 +827,39 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--seed-scenario") {
+        // Online-e2e seeding in a FRESH process (device work from a long-lived
+        // process degrades — truncated list harvests + capricious opens); sweeps
+        // stray scenario imports first. The e2e runner calls this per spec.
+        eprintln!("[probe] seeding the e2e scenario presets (sweep + import)…");
+        match tmp_companion_lib::probe_seed_scenario() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--clear-strays") {
+        // Attended cleanup: sweep stray scenario imports (exact-name, wrong-slot
+        // matches only, off a completeness-floored list) without seeding.
+        eprintln!("[probe] sweeping stray e2e scenario imports…");
+        match tmp_companion_lib::probe_clear_strays() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.iter().any(|a| a == "--listall") {
         // Read-only: print every My Presets slot + name (full list, not just the
         // first 20). For auditing device state after a run.

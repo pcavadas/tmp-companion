@@ -46,6 +46,21 @@ pub(crate) fn replace_inplace_core(
     orig_list_index: u32,
     bytes: &[u8],
 ) -> Result<ReplaceOutcome, String> {
+    replace_inplace_with(orig_list_index, bytes, true)
+}
+
+/// `verify` = read the Song-1 bindings (before/after) + the post-save settle/re-read
+/// that fill the outcome's report fields. The e2e seed passes `false`: scratch slots
+/// carry no Song rows, and each verification read costs 1–4 fresh connections on a
+/// device whose open/close budget the seed must conserve (HW-observed: connection
+/// churn congests the unit into truncated list reads + `0xe00002c5` open lockouts).
+/// The write-safety chain (strict landing lists → `confirm_active` → guarded clear)
+/// is identical in both modes.
+pub(crate) fn replace_inplace_with(
+    orig_list_index: u32,
+    bytes: &[u8],
+    verify: bool,
+) -> Result<ReplaceOutcome, String> {
     // Strict (completeness-validated) reads for both landing-detection lists: a
     // tolerant tail-truncated read makes every slot past the cut look empty, so the
     // post-import diff would "find" the landing at a garbage slot (the fail-closed
@@ -67,7 +82,11 @@ pub(crate) fn replace_inplace_core(
         .filter(|p| session::is_empty_slot_name(&p.name))
         .map(|p| p.slot)
         .collect();
-    let songs_before = read_song_presets(1).unwrap_or_default();
+    let songs_before = if verify {
+        read_song_presets(1).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     // 1) Import — appends a scratch copy of the edited preset into an empty slot.
     Session::connect()?.import_preset(bytes)?;
@@ -103,6 +122,24 @@ pub(crate) fn replace_inplace_core(
         })?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
     guarded_clear(scratch_slot, &scratch_name)?; // remove the scratch copy (guarded)
+
+    if !verify {
+        // Lean mode: the write is done (confirm_active gated the save; the clear was
+        // guarded) — skip the report reads. Fields the reads would fill stay empty.
+        return Ok(ReplaceOutcome {
+            orig_list_index,
+            scratch_slot,
+            scratch_name,
+            orig_name_before,
+            orig_name_after: None,
+            scratch_name_after: None,
+            edit_landed: true,
+            had_binding: false,
+            binding_preserved: false,
+            songs_before,
+            songs_after: Vec::new(),
+        });
+    }
 
     // 4) Re-read and confirm slot / Song-link survival. Settle first: clear/save are
     // fire-and-forget (no ACK); give the device a moment or the read returns pre-clear state.
