@@ -84,8 +84,11 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             rationale: "clean-insert control: an all-zero-gain EQ-10 insert — proves the insert itself doesn't shift any verdict.",
             ops: vec![eq10_insert(group_id, &[])],
             must_fire: &[],
+            // Every verdict the engine can emit: the control's whole point is that
+            // a clean insert shifts NOTHING.
             must_not_fire: &[
-                "muddy", "boomy", "harsh", "lost", "thin", "resonant", "boxy", "washed",
+                "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "spiky",
+                "buried", "dark", "bright", "resonant", "boxy",
             ],
             informational: false,
         },
@@ -216,11 +219,22 @@ fn run_recipe(
     )?);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
-    let (after, line) = measure(
+    let after_res = measure(
         stim,
         "after",
         leveller::doctor_capture_current(stim, None, &[], Some(0.5), tail_ms),
-    )?;
+    );
+    // Restore BEFORE propagating an after-capture failure: a mid-table recipe's
+    // next `before` load self-heals the buffer, but the LAST recipe has no next
+    // load — its error must not strand the injected edit (best-effort here; the
+    // ?-path restore below still reports its own failure on the happy path).
+    let (after, line) = match after_res {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = leveller::restore_saved_preset(slot);
+            return Err(e);
+        }
+    };
     text += &line;
 
     leveller::restore_saved_preset(slot)?;

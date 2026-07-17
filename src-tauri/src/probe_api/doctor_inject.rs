@@ -168,16 +168,20 @@ pub fn probe_doctor_inject(
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     // AFTER: the edit buffer, no reload (a load would discard the insert).
-    let (_, after_line) = measure(
+    let after_res = measure(
         &stim,
         "after",
         leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail),
-    )?;
-    out += &after_line;
+    );
 
-    // Discard the injected defect + belt-and-braces re-amp OFF.
-    leveller::restore_saved_preset(slot)?;
+    // Discard the injected defect + belt-and-braces re-amp OFF — ALSO when the
+    // after-capture failed (the module doc's "and on any error" promise): the
+    // injected edit must never outlive the command.
+    let restore_res = leveller::restore_saved_preset(slot);
     super::reamp_off_best_effort();
+    let (_, after_line) = after_res?;
+    restore_res?;
+    out += &after_line;
     out += "  (edit buffer discarded — stored preset reloaded)\n";
     Ok(out)
 }

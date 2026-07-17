@@ -17,7 +17,8 @@ import { CutThroughCard } from "./CutThroughCard";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { LevelIndicator } from "./LevelIndicator";
 import { MatchCard } from "./MatchCard";
-import { PrescriptionCard } from "./PrescriptionCard";
+import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
+import { bandLayoutsMatch } from "./matchModel";
 import {
   diagSevLabel,
   isPossible,
@@ -121,6 +122,9 @@ export interface SoundRowProps {
    *  sound's own blocks). */
   nodes: GraphNode[];
   footswitches: FootswitchInfo[];
+  /** The stimulus identity this sound was diagnosed with (setup-stage
+   *  instrument pick) — its prescription cards' A/B replays it. */
+  stimulus?: DoctorStimulus;
   open: boolean;
   onToggle: () => void;
   /** This row's page-wide composite id (`${listIndex}|${sound.key}`) — how
@@ -141,6 +145,7 @@ export function SoundRow({
   ownNodeIds,
   nodes,
   footswitches,
+  stimulus,
   open,
   onToggle,
   id,
@@ -165,10 +170,12 @@ export function SoundRow({
   // usable balanceDb) stays flat/non-interactive.
   const expandable = !isError;
   const isReference = id === referenceId;
+  // Label-identity, not just count: Bass and Bass VI are both 7 bands, and a
+  // cross-layout pair must not offer a Match section that can't render.
   const canMatch =
     referenceSound != null &&
     !isReference &&
-    referenceSound.bandLabels.length === sound.bandLabels.length;
+    bandLayoutsMatch(referenceSound, sound);
 
   return (
     <div style={{ borderTop: `0.5px solid ${t.hairline}` }}>
@@ -475,6 +482,7 @@ export function SoundRow({
                       soundFootswitch={sound.footswitch}
                       nodes={nodes}
                       footswitches={footswitches}
+                      stimulus={stimulus}
                     />
                   ))}
                 </div>
@@ -490,6 +498,7 @@ export function SoundRow({
               presetName={presetName}
               nodes={nodes}
               footswitches={footswitches}
+              stimulus={stimulus}
             />
           )}
         </div>

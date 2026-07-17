@@ -26,6 +26,7 @@ import { useApplyLock } from "./applyLock";
 import type {
   DoctorApplyResult,
   DoctorChainPreview,
+  DoctorInputArg,
   DoctorRx,
   DoctorRxKind,
   FootswitchInfo,
@@ -80,7 +81,25 @@ export interface PrescriptionCardProps {
   soundFootswitch?: number | null;
   nodes?: GraphNode[];
   footswitches?: FootswitchInfo[];
+  /** The diagnosed sound's stimulus identity (instrument profile pick at
+   *  setup) — the A/B must replay the SAME stimulus the diagnosis used.
+   *  Omitted (→ default stimulus) only by scene-consistency cards. */
+  stimulus?: DoctorStimulus;
 }
+
+/** The stimulus identity a diagnosed sound was measured with — the run's own
+ *  `DoctorInputArg` fields, threaded into the apply job so the A/B audition
+ *  replays the diagnosis stimulus (topology sample or Tier-2 DI capture). */
+export type DoctorStimulus = Pick<
+  DoctorInputArg,
+  "topologyId" | "calibrationLufs" | "profileId"
+>;
+
+const DEFAULT_STIMULUS: DoctorStimulus = {
+  topologyId: null,
+  calibrationLufs: null,
+  profileId: null,
+};
 
 export function PrescriptionCard({
   rx,
@@ -91,6 +110,7 @@ export function PrescriptionCard({
   soundFootswitch = null,
   nodes = [],
   footswitches = [],
+  stimulus = DEFAULT_STIMULUS,
 }: PrescriptionCardProps) {
   const { t } = useTheme();
   const [phase, setPhase] = useState<Phase>("draft");
@@ -135,8 +155,9 @@ export function PrescriptionCard({
         listIndex,
         name: presetName,
         ops: rx.ops,
-        topologyId: null,
-        calibrationLufs: null,
+        topologyId: stimulus.topologyId,
+        calibrationLufs: stimulus.calibrationLufs,
+        profileId: stimulus.profileId,
         scene: soundScene,
         footswitch: soundFootswitch,
         nodes,

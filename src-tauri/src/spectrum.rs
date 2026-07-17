@@ -11,15 +11,21 @@
 
 use serde::Serialize;
 
-/// Energy in each `(lo, hi)` band — [`crate::psd::Psd::band_powers`] off ONE windowed
-/// Welch PSD estimate of `signal` (see the module doc for why this replaced the
-/// per-band Goertzel probes). Every consumer here compares energies RELATIVELY —
-/// `tonal_flags`'s ratios, `spectral_distance`/`eq_match_deltas`'s dB differences,
-/// `rank_sics`'s distance ordering — so the switch from Goertzel's ad hoc
-/// `power/N²` units to the PSD's true signal-power-per-Hz units changes no
-/// downstream behavior.
+/// Mean power DENSITY in each `(lo, hi)` band — one windowed Welch PSD estimate of
+/// `signal` (see the module doc for why this replaced the per-band Goertzel
+/// probes), with each band's integrated power normalized by its width. The
+/// normalization preserves the old per-probe-average semantics for UNEQUAL band
+/// widths: `tonal_flags`'s cross-band ratios would otherwise credit the 8 kHz-wide
+/// high band with bandwidth-proportional power a 190 Hz-wide low band can't match.
+/// The same-band consumers (`spectral_distance`/`eq_match_deltas`/`rank_sics`
+/// compare the SAME band across two signals) are invariant to the per-band
+/// constant either way.
 pub fn band_energies(signal: &[f32], rate: f32, bands: &[(f32, f32)]) -> Vec<f64> {
-    crate::psd::welch_psd(signal, rate).band_powers(bands)
+    let psd = crate::psd::welch_psd(signal, rate);
+    bands
+        .iter()
+        .map(|&(lo, hi)| psd.band_power(lo, hi) / f64::from((hi - lo).max(1.0)))
+        .collect()
 }
 
 /// The default coarse bands: low / low-mid / high-mid / high (Hz).

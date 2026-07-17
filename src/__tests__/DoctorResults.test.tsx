@@ -248,6 +248,7 @@ function renderResults(
         presetNames={NAMES}
         footswitchInfo={new Map()}
         graphByIndex={new Map()}
+        stimulusByKey={new Map()}
         onCheckMore={onCheckMore}
       />
     </ThemeProvider>,
@@ -832,6 +833,7 @@ describe("DoctorResults — shared-block caption", () => {
           presetNames={new Map([[0, "Overdrive Rhythm"]])}
           footswitchInfo={fsInfo}
           graphByIndex={new Map()}
+          stimulusByKey={new Map()}
           onCheckMore={() => undefined}
         />
       </ThemeProvider>,

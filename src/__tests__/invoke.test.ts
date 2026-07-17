@@ -231,6 +231,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
       ops,
       topologyId: null,
       calibrationLufs: null,
+      profileId: null,
       scene: null,
       footswitch: null,
       nodes: [],

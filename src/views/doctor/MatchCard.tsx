@@ -9,9 +9,10 @@
 import { useTheme } from "../../theme/ThemeContext";
 import { signedDb } from "../../lib/format";
 import { cpuForBid } from "../../models/cpu";
-import { PrescriptionCard } from "./PrescriptionCard";
+import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
 import { doctorCard } from "./severity";
 import {
+  bandLayoutsMatch,
   eqBandLabel,
   eqMovesFor,
   lastGuitarGroup,
@@ -38,6 +39,9 @@ export interface MatchCardProps {
   presetName: string;
   nodes: GraphNode[];
   footswitches: FootswitchInfo[];
+  /** The diagnosed sound's stimulus identity — threaded into the synthetic
+   *  prescription's A/B audition. */
+  stimulus?: DoctorStimulus;
 }
 
 export function MatchCard({
@@ -47,8 +51,13 @@ export function MatchCard({
   presetName,
   nodes,
   footswitches,
+  stimulus,
 }: MatchCardProps) {
   const { t } = useTheme();
+  // Belt at the pairing site (the offer gate is `SoundRow.canMatch`, same
+  // predicate): index-paired moves on mismatched layouts would be wrong.
+  if (!bandLayoutsMatch(reference, sound)) return null;
+
   const deltas = matchDeltas(reference.balanceDb, sound.balanceDb);
   const moves = eqMovesFor(deltas, sound.bandLabels);
   const residualLarge = matchResidualLarge(deltas);
@@ -88,7 +97,7 @@ export function MatchCard({
           <div
             style={{
               fontFamily: t.mono,
-              fontSize: 12.5,
+              fontSize: t.fsControl,
               color: t.mutedInk,
               marginTop: t.space2,
             }}
@@ -132,6 +141,7 @@ export function MatchCard({
         soundFootswitch={sound.footswitch}
         nodes={nodes}
         footswitches={footswitches}
+        stimulus={stimulus}
       />
       {residualLine}
     </div>

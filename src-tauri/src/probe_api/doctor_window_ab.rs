@@ -109,6 +109,15 @@ pub fn probe_doctor_window_ab(
     // layout — fail loudly first (mirrors --doctor-calib).
     let family = super::parse_family_arg(family_id)?;
     let stim = read_stimulus_calibrated(stim_path, None)?;
+    // A shorter source would make `min` silently collapse the oracle onto the
+    // 3 s variant — identical captures, meaningless zero deltas.
+    const ORACLE_STIM_SAMPLES: usize = 6 * 48_000;
+    if stim.len() < ORACLE_STIM_SAMPLES {
+        return Err(format!(
+            "doctor-window-ab needs a ≥6 s stimulus for the oracle window (got {:.1} s)",
+            stim.len() as f64 / 48_000.0
+        ));
+    }
     // Variant b TRACKS the production window (re-running this arm re-validates
     // whatever ships); the oracle tail (`ORACLE_TAIL_MS`) and the 4 s fallback
     // are deliberately PINNED literals — the oracle must never drift with the

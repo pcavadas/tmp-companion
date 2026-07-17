@@ -17,6 +17,7 @@ import { slotLabel } from "../../lib/format";
 import { StepRail } from "../overlays/WizardShell";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { PresetResultCard } from "./PresetResultCard";
+import type { DoctorStimulus } from "./PrescriptionCard";
 import { presetLookCount, presetWorstSev, sevRank } from "./severity";
 import {
   ApplyLockContext,
@@ -50,6 +51,9 @@ export interface DoctorResultsProps {
    *  backup scan as `footswitchInfo` — threaded into every prescription card
    *  so its A/B captures under the diagnosed sound's own context. */
   graphByIndex: Map<number, ActiveGraph>;
+  /** Sound key → the stimulus identity it was diagnosed with (the setup-stage
+   *  instrument pick) — the prescription cards' A/B replays it. */
+  stimulusByKey: Map<string, DoctorStimulus>;
   onCheckMore: () => void;
 }
 
@@ -58,6 +62,7 @@ export function DoctorResults({
   presetNames,
   footswitchInfo,
   graphByIndex,
+  stimulusByKey,
   onCheckMore,
 }: DoctorResultsProps) {
   const { t } = useTheme();
@@ -306,6 +311,7 @@ export function DoctorResults({
               }
               footswitchInfo={footswitchInfo}
               graphByIndex={graphByIndex}
+              stimulusByKey={stimulusByKey}
               expanded={expanded}
               onToggleRow={toggleRow}
               referenceSound={referenceSound}

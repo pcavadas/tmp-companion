@@ -10,6 +10,7 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { SlotLabel } from "../../ui/SlotLabel";
 import { SevDot, SoundRow } from "./SoundRow";
+import type { DoctorStimulus } from "./PrescriptionCard";
 import { SceneConsistency } from "./SceneConsistency";
 import {
   presetLookCount,
@@ -33,6 +34,9 @@ export interface PresetResultCardProps {
    *  backup scan as `footswitchInfo` — threaded into every prescription card
    *  so its A/B captures under the diagnosed sound's own context. */
   graphByIndex: Map<number, ActiveGraph>;
+  /** Sound key → the stimulus identity it was diagnosed with — threaded into
+   *  every prescription card so its A/B replays the diagnosis stimulus. */
+  stimulusByKey: Map<string, DoctorStimulus>;
   /** Open row ids, keyed `${listIndex}|${sound.key}` (and `|consistency`). */
   expanded: Set<string>;
   onToggleRow: (id: string) => void;
@@ -61,6 +65,7 @@ export function PresetResultCard({
   presetName,
   footswitchInfo,
   graphByIndex,
+  stimulusByKey,
   expanded,
   onToggleRow,
   referenceSound,
@@ -102,6 +107,7 @@ export function PresetResultCard({
         ownNodeIds={ownNodeIdsFor(sound, presetFootswitches)}
         nodes={presetNodes}
         footswitches={presetFootswitches ?? []}
+        stimulus={stimulusByKey.get(sound.key)}
         open={expanded.has(id)}
         onToggle={() => {
           onToggleRow(id);

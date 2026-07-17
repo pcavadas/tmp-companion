@@ -1605,6 +1605,13 @@ impl Session {
         Ok(())
     }
 
+    /// Load a FACTORY preset (tab enum 4) by **0-based list index** — this method
+    /// owns the 1-based device-slot translation, like [`Self::load_preset`] does
+    /// for My Presets, so callers never apply `+ 1` themselves.
+    pub fn load_factory_preset(&mut self, list_index: u32) -> Result<(), String> {
+        self.load_preset_raw(u64::from(list_index) + 1, 4)
+    }
+
     /// Set re-amp mode via the Global Settings path. Returns the echoed
     /// `SettingsMessage.reampModeActive` value if the device reports it.
     pub fn set_reamp_mode(&mut self, active: bool) -> Result<Option<bool>, String> {

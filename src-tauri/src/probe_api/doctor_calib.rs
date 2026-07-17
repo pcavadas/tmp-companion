@@ -162,11 +162,14 @@ type SlotMetrics = (u32, Option<f64>, Vec<RuleMetric>);
 /// deviations+tilt_split pass.
 fn rule_metrics(
     profile: &doctor::SoundProfile,
+    coverage: &[bool],
     family: doctor::Family,
 ) -> (Option<f64>, Vec<RuleMetric>) {
     let bdb = doctor::band_db(&profile.bands);
     let dev = doctor::deviations(&bdb, family);
-    let (slope, locals) = doctor::tilt_split(&dev, family, None);
+    // The row's own coverage, matching `diagnose_kind`'s call — thresholds must
+    // be derived in the SAME coverage-gated metric space the verdict path reads.
+    let (slope, locals) = doctor::tilt_split(&dev, family, Some(coverage));
     let centered = doctor::centered_deviations(&dev, family);
     let (lows, low_mids, mids, high_mids, highs, air) = family.semantic_bands();
     let fizzy = bdb[air] - bdb[highs];
@@ -315,7 +318,7 @@ pub fn probe_doctor_calib(
     let metrics_by_slot: Vec<SlotMetrics> = rows
         .iter()
         .map(|r| {
-            let (slope, metrics) = rule_metrics(&r.profile, family);
+            let (slope, metrics) = rule_metrics(&r.profile, &r.coverage, family);
             (r.slot, slope, metrics)
         })
         .collect();
@@ -480,7 +483,7 @@ pub fn probe_doctor_calib_factory(
         {
             match session::Session::connect() {
                 Ok(mut s) => {
-                    if let Err(e) = s.load_preset_raw(u64::from(slot) + 1, 4) {
+                    if let Err(e) = s.load_factory_preset(slot) {
                         eprintln!("[probe] factory slot {slot}: load failed: {e} (skipping)");
                         continue;
                     }
@@ -525,7 +528,7 @@ pub fn probe_doctor_calib_factory(
     let report_rows: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
-            let (slope, _metrics) = rule_metrics(&r.profile, family);
+            let (slope, _metrics) = rule_metrics(&r.profile, &r.coverage, family);
             serde_json::json!({
                 "slot": r.slot,
                 "balanceDb": doctor::balance(&r.profile.bands),

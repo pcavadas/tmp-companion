@@ -27,6 +27,7 @@ import { DoctorSelect } from "./DoctorSelect";
 import { DoctorSetup } from "./DoctorSetup";
 import { DoctorRun } from "./DoctorRun";
 import { DoctorResults } from "./DoctorResults";
+import type { DoctorStimulus } from "./PrescriptionCard";
 import type { PickOption } from "../overlays/Pick";
 
 type Stage = "select" | "setup" | "run" | "results";
@@ -159,12 +160,26 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   }
 
   if (stage === "results" && flow.result) {
+    // Each diagnosed sound's stimulus identity (the setup-stage instrument
+    // pick), off the run's own input items — the prescription cards replay it
+    // in their A/B auditions.
+    const stimulusByKey = new Map<string, DoctorStimulus>(
+      flow.run.items.map((it) => [
+        it.key,
+        {
+          topologyId: it.topologyId,
+          calibrationLufs: it.calibrationLufs,
+          profileId: it.profileId,
+        },
+      ]),
+    );
     return (
       <DoctorResults
         result={flow.result}
         presetNames={presetNames}
         footswitchInfo={footswitchInfo}
         graphByIndex={graphByIndex}
+        stimulusByKey={stimulusByKey}
         onCheckMore={handleCheckMore}
       />
     );

@@ -880,6 +880,10 @@ export interface DoctorApplyJob {
   ops: DoctorOp[];
   topologyId: string | null;
   calibrationLufs: number | null;
+  /** The diagnosed sound's instrument-profile id (null when "none") — a profile
+   *  with a stored Tier-2 DI capture auditions the A/B on that same capture,
+   *  mirroring `doctor_check`'s stimulus resolution. */
+  profileId: string | null;
   /** The diagnosed sound's own scene (0-based `scenes[]` wire index) — null
    *  for Base/footswitch. The A/B captures recall this scene so the player
    *  auditions the fix in the state that was actually diagnosed. */

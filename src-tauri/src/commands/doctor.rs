@@ -608,6 +608,12 @@ pub struct DoctorApplyJob {
     pub ops: Vec<doctor::DoctorOp>,
     pub topology_id: Option<String>,
     pub calibration_lufs: Option<f32>,
+    /// The diagnosed sound's instrument-profile id (null when "none") — the A/B
+    /// must replay the SAME stimulus the diagnosis used, so a profile with a
+    /// stored Tier-2 DI capture auditions on that capture (verbatim, calibration
+    /// scaling disabled), not the topology sample.
+    #[serde(default)]
+    pub profile_id: Option<String>,
     /// The diagnosed sound's own scene (0-based `scenes[]` wire index), when it
     /// was a scene sound — `None` for Base/footswitch. The A/B captures recall
     /// this scene so the player auditions the fix in the state that was
@@ -782,16 +788,26 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
     state: State<'_, AppState>,
     job: DoctorApplyJob,
 ) -> Result<DoctorApplyResult, String> {
-    let stim_path = resolve_stimulus(&app, None, job.topology_id.clone())?;
+    // Same stimulus SOURCE as the diagnosis: a profile's stored Tier-2 DI
+    // capture when present (injected verbatim — calibration scaling off, the
+    // `doctor_check` rule), else the topology sample with its scalar.
+    let (stim_path, from_capture) = resolve_stimulus_with_capture(
+        &app,
+        None,
+        job.topology_id.clone(),
+        job.profile_id.as_deref(),
+    )?;
     with_released_seize(state.session.clone(), move || {
+        let calibration = if from_capture {
+            None
+        } else {
+            job.calibration_lufs
+        };
         // Local WAV read, before the run closure: a stimulus failure has touched
         // no device state, so it must not pay the run-end backstop connection.
         // Same 3 s Doctor window as the diagnosis captures — the A/B clips must
         // be measured (and heard) over the space the verdicts were made in.
-        let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(
-            &stim_path,
-            job.calibration_lufs,
-        )?);
+        let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(&stim_path, calibration)?);
         let run = || -> Result<DoctorApplyResult, String> {
             // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
             // policy `doctor_check` uses, now shared (its own preset-read cache: a
@@ -831,7 +847,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                 job.list_index,
                 job.name.clone(),
                 stim_path.clone(),
-                job.calibration_lufs.map(f32::to_bits),
+                calibration.map(f32::to_bits),
                 job.scene,
                 job.footswitch,
             );

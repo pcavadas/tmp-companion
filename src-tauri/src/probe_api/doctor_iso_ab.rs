@@ -54,6 +54,7 @@ pub fn probe_doctor_iso_ab() -> Result<String, String> {
 
     let mut sounds = 0usize;
     let mut diffs = 0usize;
+    let mut skips = 0usize;
     let mut report = String::new();
 
     for row in &result.presets {
@@ -69,6 +70,7 @@ pub fn probe_doctor_iso_ab() -> Result<String, String> {
         let live_preset = match read_slot_preset_parsed(list_index) {
             Ok((p, _, _)) => p,
             Err(e) => {
+                skips += 1;
                 report += &format!(
                     "  slot {} ({:?}): SKIP — live preset read failed: {e}\n",
                     row.slot, row.name
@@ -109,6 +111,11 @@ pub fn probe_doctor_iso_ab() -> Result<String, String> {
         }
     }
 
-    report += &format!("iso-ab: {sounds} sounds, {diffs} diffs\n");
+    report += &format!("iso-ab: {sounds} sounds, {diffs} diffs, {skips} skipped\n");
+    // A skipped preset carries no evidence — "0 diffs" must never read as a
+    // complete pass when part of the library couldn't be compared.
+    if skips > 0 {
+        report += "iso-ab: INCOMPLETE — some presets could not be read; rerun before trusting equivalence\n";
+    }
     Ok(report)
 }

@@ -172,8 +172,10 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed atte
   for attempt in 1 2 3 4; do
     log "seeding the scenario presets (attempt $attempt)…"
     if seed_scenario "$1"; then return 0; fi
-    log "seed attempt $attempt failed — resting 120 s (open lockout) before retry"
-    sleep 120
+    if [ "$attempt" -lt 4 ]; then
+      log "seed attempt $attempt failed — resting 120 s (open lockout) before retry"
+      sleep 120
+    fi
   done
   return 1
 }
@@ -185,7 +187,7 @@ log "ONLINE e2e (real device) — seeding the scenario presets before the server
 log "resting the unit before the first seed…"
 sleep 60
 if ! seed_with_retry pre; then
-  err "scenario seed failed after 3 attempts — aborting (nothing to recover: no server ran)"
+  err "scenario seed failed after 4 attempts — aborting (nothing to recover: no server ran)"
   err "  → check nothing else holds the device (Pro Control, a stale server/app), rest a minute, rerun"
   exit 1
 fi
@@ -203,8 +205,13 @@ SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true  # silence the shell's "Terminated" notice when cleanup kills it
 wait_server_ready
 # The presets are verifiably placed (the pre-server probe seed exited 0); patch the
-# snapshot unconditionally in case the handshake's list read lagged the fresh writes.
-post '{"cmd":"e2e_mark_seeded","args":{}}' 30
+# snapshot in case the handshake's list read lagged the fresh writes. FAIL-LOUD:
+# a silently-failed patch would send the specs' ensureScenario fallback into the
+# lockout-prone in-process reseed this runner exists to avoid.
+if ! bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'; then
+  err "failed to patch the seeded presets into the startup snapshot — aborting"
+  exit 1
+fi
 log "device connected — snapshot includes the seeded presets"
 
 fail=0
@@ -221,7 +228,7 @@ for s in "${SPECS[@]}"; do
     log "resting the unit between specs…"
     sleep 60
     if ! seed_with_retry mid; then
-      err "inter-spec scenario seed failed after 3 attempts — aborting (device recovery runs on exit)"
+      err "inter-spec scenario seed failed after 4 attempts — aborting (device recovery runs on exit)"
       fail=1
       break
     fi

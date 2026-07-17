@@ -48,33 +48,68 @@ fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Ve
         .collect()
 }
 
-/// Clear every stray on the GIVEN session. The guard is the completeness-floored
-/// list taken seconds before on the SAME connection, in the same list-index address
-/// space as the clears; a per-stray fresh reconnect would be safer-looking but each
-/// extra open is another chance to land in the post-close open lockout. Settles after
-/// the last clear so a follow-up list read reflects the freed slots (clears are
+/// The fixture `info.preset_id` values carried by the committed scenario presets —
+/// the seed-owned ownership marker the stray sweep requires before clearing a slot.
+/// Pure.
+fn spec_preset_ids(spec: &[ScenarioPreset]) -> Vec<String> {
+    spec.iter()
+        .filter_map(|p| {
+            let v: serde_json::Value = serde_json::from_str(&p.preset_json).ok()?;
+            crate::library::preset_id_of(&v).map(str::to_string)
+        })
+        .collect()
+}
+
+/// Clear every stray on the GIVEN session. Two guards, both in the same list-index
+/// address space as the clears: (1) the completeness-floored list taken seconds
+/// before on the SAME connection classifies the candidates; (2) a per-candidate
+/// field-8 read must find a FIXTURE `preset_id` in the slot before it is cleared —
+/// a display name is not an ownership marker, so a real user preset that happens to
+/// be named "E2E Reference" (its own uuid) is skipped, never deleted. A candidate
+/// whose read fails or mismatches is left untouched (fail-closed) and reported.
+/// A per-stray fresh reconnect would be safer-looking but each extra open is
+/// another chance to land in the post-close open lockout. Settles after the last
+/// clear so a follow-up list read reflects the freed slots (clears are
 /// fire-and-forget and the device's list lags its own writes).
 fn sweep_on(
     s: &mut Session,
     list: &[session::PresetEntry],
     spec: &[ScenarioPreset],
 ) -> Result<Vec<u32>, String> {
-    let strays = scenario_strays(list, spec);
-    for (slot, _) in &strays {
-        s.clear_user_preset(*slot)?;
+    let fixture_ids = spec_preset_ids(spec);
+    let mut swept = Vec::new();
+    for (slot, name) in scenario_strays(list, spec) {
+        // The field-8 partial always contains the leading `info` block, so a
+        // plain substring probe is truncation-proof; parsing isn't needed.
+        let owned = match s.read_slot_preset_json(slot + 1) {
+            Ok(Some(bytes)) => {
+                let body = String::from_utf8_lossy(&bytes);
+                fixture_ids.iter().any(|id| body.contains(id.as_str()))
+            }
+            Ok(None) | Err(_) => false,
+        };
+        if !owned {
+            eprintln!(
+                "[seed] slot {slot} ({name:?}) matches a scenario name but not the \
+                 fixture preset_id — leaving it untouched"
+            );
+            continue;
+        }
+        s.clear_user_preset(slot)?;
+        swept.push(slot);
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    if !strays.is_empty() {
+    if !swept.is_empty() {
         std::thread::sleep(std::time::Duration::from_millis(1_500));
     }
-    Ok(strays.into_iter().map(|(slot, _)| slot).collect())
+    Ok(swept)
 }
 
 /// Standalone stray sweep (one fresh session): the teardown/recovery arm.
 pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
     let spec = scenario_spec()?;
     let mut s = Session::connect()?;
-    let list = read_full_list(&mut s, &spec)?;
+    let list = read_full_list(&mut s)?;
     sweep_on(&mut s, &list, &spec)
 }
 
@@ -85,17 +120,19 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
 /// truncated 190–236-record fallbacks, and its re-arm retries left the line in a
 /// state that armed the open lockout for the following attempts). The floor is the
 /// actual safety: a partial view must never drive clears or imports — index 400
-/// "missing" reads as out-of-range / every high slot reads as empty.
-fn read_full_list(
-    s: &mut Session,
-    spec: &[ScenarioPreset],
-) -> Result<Vec<session::PresetEntry>, String> {
+/// "missing" reads as out-of-range / every high slot reads as empty, and a
+/// tail-truncated list would hide strays above the cut from the sweep. Truncation
+/// is tail-only (present entries keep correct slots — `preset_entries` derives
+/// each slot from its index), so a full-bank length check IS the completeness
+/// check.
+const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45 My-Presets bank; fail-loud if a fw rev resizes it
+
+fn read_full_list(s: &mut Session) -> Result<Vec<session::PresetEntry>, String> {
     let list = s.list_my_presets()?;
-    let max_idx = spec.iter().map(|p| p.list_index).max().unwrap_or(0);
-    if (list.len() as u32) <= max_idx {
+    if list.len() < MY_PRESETS_BANK_SIZE {
         return Err(format!(
-            "preset list read truncated ({} entries, need > {max_idx}) — refusing to \
-             seed on a partial view of the bank",
+            "preset list read truncated ({} of {MY_PRESETS_BANK_SIZE} entries) — refusing \
+             to seed on a partial view of the bank",
             list.len()
         ));
     }
@@ -113,7 +150,7 @@ pub(crate) struct SeedOutcome {
 pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
     let spec = scenario_spec()?;
     let mut s = Session::connect()?;
-    let list = read_full_list(&mut s, &spec)?;
+    let list = read_full_list(&mut s)?;
     let swept = sweep_on(&mut s, &list, &spec)?;
     drop(s);
 

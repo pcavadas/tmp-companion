@@ -230,17 +230,36 @@ fn main() {
         // --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]
         // (R5 defect-injection A/B; --block overrides the EQ-10 insert vehicle —
         // e.g. a wah at its default cocked position for a resonant positive.)
-        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        // Strict parsing: a typo'd slot or gain pair must not silently run a
+        // DIFFERENT experiment (slot 0 / an empty control injection) that still
+        // reports success — the same silent-wrong-arm class the calib matrix hit.
+        let usage = || -> ! {
+            eprintln!("usage: probe --doctor-inject <slot> <gains_csv|none> [--block <fender_id>]");
+            std::process::exit(2);
+        };
+        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+            Some(s) => s,
+            None => usage(),
+        };
         let gains: Vec<(String, f64)> = match args.get(i + 2).map(String::as_str) {
             None | Some("none") => Vec::new(),
             Some(csv) if !csv.starts_with("--") => csv
                 .split(',')
-                .filter_map(|kv| {
-                    let (k, v) = kv.split_once('=')?;
-                    Some((k.to_string(), v.parse().ok()?))
+                .map(|kv| {
+                    let Some((k, v)) = kv.split_once('=') else {
+                        eprintln!("[probe] malformed gain pair '{kv}' (expected controlId=dB)");
+                        usage();
+                    };
+                    match v.parse::<f64>() {
+                        Ok(val) if val.is_finite() => (k.to_string(), val),
+                        _ => {
+                            eprintln!("[probe] malformed gain value in '{kv}' (expected a finite dB number)");
+                            usage();
+                        }
+                    }
                 })
                 .collect(),
-            Some(_) => Vec::new(),
+            Some(_) => usage(),
         };
         let block = flag_arg(&args, "--block");
         match tmp_companion_lib::probe_doctor_inject(slot, &gains, block.as_deref()) {

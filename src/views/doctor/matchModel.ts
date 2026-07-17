@@ -40,6 +40,24 @@ const EQ10_BANDS: [number, string][] = [
 const MAX_GAIN_DB = 6;
 const DROP_BELOW_DB = 1.5;
 
+/** True when two sounds share an IDENTICAL band layout (same labels, same
+ *  order) with coherent balance arrays — the precondition for every
+ *  index-paired computation below. Equal COUNT is not enough: Bass and
+ *  Bass VI are both 7 bands with different meanings per index. The one gate
+ *  both the Match-reference offer (`SoundRow.canMatch`) and the pairing
+ *  itself (`MatchCard`) share, so they can never disagree. */
+export function bandLayoutsMatch(
+  ref: { bandLabels: string[]; balanceDb: number[] },
+  sound: { bandLabels: string[]; balanceDb: number[] },
+): boolean {
+  return (
+    ref.bandLabels.length === sound.bandLabels.length &&
+    ref.balanceDb.length === ref.bandLabels.length &&
+    sound.balanceDb.length === sound.bandLabels.length &&
+    ref.bandLabels.every((label, i) => label === sound.bandLabels[i])
+  );
+}
+
 /** Per-band delta (ref − sound) toward the reference. Both inputs are
  *  mean-removed balanceDb, so absolute level cancels by construction — this
  *  is a pure spectral-SHAPE comparison. */
