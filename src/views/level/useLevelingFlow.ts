@@ -48,6 +48,7 @@ import type {
   Store,
   Profile,
   LevelBlock,
+  SilenceHint,
 } from "../../lib/types";
 
 // AMP model ids (the catalog's amp categories) — the amp's outputLevel knob is the
@@ -171,6 +172,9 @@ export interface UseLevelingFlowDeps {
   /** Per-preset block roster (fender_ids) from the SAME backup read, keyed by
    *  0-based list index — drives the envelope-follower verify-by-ear cause. */
   blocksByIndex: Map<number, string[]>;
+  /** Per-preset silence hint from the SAME backup read, keyed by 0-based list index —
+   *  refines the offbranch row status (stamped on each RunItem at build). */
+  silenceHintByIndex: Map<number, SilenceHint>;
   targetLufsByName: (name: string | null) => number;
   /** Drop just the given selection keys (BUG-4: prune the keys a run actually leveled,
    *  accumulating across re-level rounds, so un-run sounds stay selected). */
@@ -185,6 +189,7 @@ export function useLevelingFlow({
   footswitchInfo,
   ampCandidates,
   blocksByIndex,
+  silenceHintByIndex,
   targetLufsByName,
   deselectKeys,
   refresh,
@@ -558,12 +563,13 @@ export function useLevelingFlow({
   const onSetupStart = useCallback(
     (choices: SetupChoice[]) => {
       if (choices.length === 0) return;
-      const items = choices.map((c) =>
-        optionToRunItem(c.option, c.instId, c.targetName),
-      );
+      const items = choices.map((c) => ({
+        ...optionToRunItem(c.option, c.instId, c.targetName),
+        silenceHint: silenceHintByIndex.get(c.option.slot),
+      }));
       void runLeveling(items);
     },
-    [runLeveling],
+    [runLeveling, silenceHintByIndex],
   );
 
   // Run "Stop" → halt the run in place; levels already written stay saved. Do NOT close

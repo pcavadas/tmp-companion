@@ -26,7 +26,7 @@ import { RunRow } from "../../ui/RunRow";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { fmtLufs } from "../../lib/format";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
-import type { RunItem } from "../level/leveling";
+import { offbranchStatus, type RunItem } from "../level/leveling";
 
 export interface RunBodyProps {
   items: RunItem[];
@@ -75,7 +75,7 @@ export function RunBody({
 
   const resultText = (it: RunItem): string => {
     if (it.outcome === "clamped") return `clamped · ${fmtLufs(it.value)}`;
-    if (it.outcome === "offbranch") return "not on USB 1/2";
+    if (it.outcome === "offbranch") return offbranchStatus(it.silenceHint);
     if (it.outcome === "skipped") return "skipped · read failed";
     return `done · ${fmtLufs(it.value)}`;
   };

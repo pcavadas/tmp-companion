@@ -1,7 +1,8 @@
 //! Decode a device backup archive into preset/scene/song data.
 
 use crate::{
-    audiograph, decode_preset_scenes, filter_amp_candidates, footswitch, session, LevelBlockArg,
+    audiograph, decode_preset_scenes, filter_amp_candidates, footswitch, is_amp_model_id,
+    is_amp_output_level_param, session, LevelBlockArg,
 };
 use serde::Serialize;
 
@@ -47,6 +48,9 @@ pub struct BackupPresetRow {
     /// params, parsed from the same `presetJson` — drives the footswitch picker +
     /// preset-list tags for the WHOLE library with no extra device read. Empty otherwise.
     pub footswitches: Vec<footswitch::FootswitchInfo>,
+    /// JSON-visible cause of a silent leveling capture ([`silence_hint`]), refining the
+    /// generic "not on USB 1/2" verdict in the Level flow. `None` = no static cause.
+    pub silence_hint: Option<&'static str>,
 }
 
 /// One block in a backup preset's audioGraph roster (see [`BackupPresetRow::blocks`]).
@@ -386,6 +390,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             blocks,
             graph,
             footswitches,
+            silence_hint: parsed_graph.as_ref().and_then(silence_hint),
         });
     }
     let scene_mode = format!("parsed scenes from presetJson ({parsed} ok, {failed} unparseable)");
@@ -401,6 +406,72 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         setlists,
         setlist_songs,
     })
+}
+
+/// Layer-1 static pre-flight for the "not on USB 1/2" clamp: the JSON-visible cause of
+/// a silent leveling capture, or `None` when the preset shows none (a silent capture
+/// then really is output routing on the unit).
+///
+/// - `"amp_zero"` — every ACTIVE (non-bypassed) amp's `outputLevel` is saved at ~0.
+///   `outputLevel`=0 is deep digital silence on the real TMP, so nothing reaches the
+///   USB 1/2 capture regardless of routing (HW-verified: a zeroed-amp preset measures
+///   the −120 silent sentinel).
+/// - `"exp_mute"` — an expression-pedal binding drives an amp `outputLevel` with ~0 at
+///   one end: a physical pedal parked there mutes the preset live even though the
+///   SAVED value is healthy (the HW-confirmed field case — a pedal-less unit levels
+///   the same preset perfectly). Conditional, hence outranked by `amp_zero`.
+///
+/// Amp identity/param via the same predicates the scene leveller uses
+/// (`is_amp_model_id` / `is_amp_output_level_param`).
+// ponytail: misses a zeroed amp in SERIES with a live one (all-active-zero rule);
+// refine to lane-aware if a real preset ever hits it.
+pub(crate) fn silence_hint(v: &serde_json::Value) -> Option<&'static str> {
+    const EPS: f64 = 1e-3;
+    let mut active = 0usize;
+    let mut zeroed = 0usize;
+    audiograph::for_each_node(v, |node| {
+        let model = node.get("FenderId").and_then(|x| x.as_str()).unwrap_or("");
+        if !is_amp_model_id(model) {
+            return;
+        }
+        let params = node.get("dspUnitParameters");
+        let bypassed = params
+            .and_then(|p| p.get("bypass"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        if bypassed {
+            return; // a bypassed amp passes signal flat — its outputLevel is inert
+        }
+        active += 1;
+        let out = params
+            .and_then(|p| p.get("outputLevel"))
+            .and_then(|x| x.as_f64());
+        if matches!(out, Some(f) if f <= EPS) {
+            zeroed += 1;
+        }
+    });
+    if active > 0 && zeroed == active {
+        return Some("amp_zero");
+    }
+    for pedal in ["exp1", "exp2"] {
+        let entries = v
+            .get("exp")
+            .and_then(|e| e.get(pedal))
+            .and_then(|a| a.as_array());
+        for b in entries.into_iter().flatten() {
+            let is_param = b.get("func").and_then(|f| f.as_str()) == Some("param");
+            let param = b.get("paramId").and_then(|p| p.as_str()).unwrap_or("");
+            // NaN-safe: a missing heel/toe compares false, never flags.
+            let end = |k: &str| b.get(k).and_then(|x| x.as_f64()).unwrap_or(f64::NAN);
+            if is_param
+                && is_amp_output_level_param(param)
+                && (end("heel") <= EPS || end("toe") <= EPS)
+            {
+                return Some("exp_mute");
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { fmtLufs } from "../../lib/format";
 import { restorePresetLevel } from "../../lib/invoke";
-import type { RunItem } from "../level/leveling";
+import { offbranchStatus, type RunItem } from "../level/leveling";
 
 /** True-peak clip threshold (dBTP): a Base row's PREDICTED true peak above this
  *  earns the "may clip" caveat (estimate, from `leveller::predicted_true_peak_dbtp`,
@@ -161,7 +161,7 @@ function ResultRow({ it, restore }: ResultRowProps) {
   if (it.outcome === "offbranch") {
     icon = <Icon name="x" size={13} stroke={t.warn} strokeWidth={2} />;
     statusColor = t.warn;
-    status = "not on USB 1/2";
+    status = offbranchStatus(it.silenceHint);
   } else if (it.outcome === "clamped") {
     icon = (
       <Icon name="warn-tri" size={13} stroke={t.sevWarn} strokeWidth={1.7} />
@@ -334,6 +334,11 @@ export function SummaryBody({
       : undefined;
   const anyRestorable = items.some(restorable);
   const offbr = items.filter((it) => it.outcome === "offbranch");
+  // Cause split (backup-scan silence hint): each class gets its own action banner —
+  // "route it" advice on a zeroed amp / parked exp pedal would be wrong.
+  const offbrAmpZero = offbr.filter((it) => it.silenceHint === "amp_zero");
+  const offbrExpMute = offbr.filter((it) => it.silenceHint === "exp_mute");
+  const offbrRouting = offbr.filter((it) => it.silenceHint == null);
   const clamped = items.filter((it) => it.outcome === "clamped"); // HEADROOM clamps only
   const leveled = items.filter((it) => it.outcome === "done");
   const skipped = items.filter((it) => it.outcome === "skipped");
@@ -366,13 +371,13 @@ export function SummaryBody({
   // Action-first sub-tally — only the classes that need a next step.
   const bits: string[] = [];
   if (stopped) bits.push("stopped");
-  if (offbr.length) bits.push(`${String(offbr.length)} need routing`);
+  if (offbr.length) bits.push(`${String(offbr.length)} silent`);
   if (clamped.length) bits.push(`${String(clamped.length)} clamped`);
   if (skipped.length) bits.push(`${String(skipped.length)} skipped`);
 
   // Result groups, ordered by the action they need (routing first, leveled/skipped last).
   const groups: { label: string; color: string; rows: RunItem[] }[] = [
-    { label: "Needs routing", color: t.warn, rows: offbr },
+    { label: "No signal", color: t.warn, rows: offbr },
     { label: "Clamped", color: t.sevWarn, rows: clamped },
     { label: "Leveled", color: t.good, rows: leveled },
     { label: "Skipped", color: t.faint, rows: skipped },
@@ -441,21 +446,59 @@ export function SummaryBody({
             gap: t.space4,
           }}
         >
-          {offbr.length > 0 && (
-            <Banner
-              icon="x"
-              size={15}
-              strokeWidth={2}
-              color={t.warn}
-              bg={t.warnSoft}
-              border="rgba(167,70,31,0.28)"
-              title="Needs routing on the unit"
-            >
-              Route {offbr.length === 1 ? "it" : "them"} to{" "}
-              <strong style={{ color: t.ink }}>USB&nbsp;1/2</strong> on the
-              unit, or set the level by ear. Re-leveling won’t help.
-            </Banner>
-          )}
+          {(
+            [
+              {
+                title: "Amp output at zero",
+                rows: offbrAmpZero,
+                body: (
+                  <>
+                    The amp’s output level is saved at{" "}
+                    <strong style={{ color: t.ink }}>0</strong> — raise it on
+                    the unit, then re-level.
+                  </>
+                ),
+              },
+              {
+                title: "Expression pedal may be muting",
+                rows: offbrExpMute,
+                body: (
+                  <>
+                    A pedal controls the amp’s output with zero at one end —
+                    park it at the{" "}
+                    <strong style={{ color: t.ink }}>other end</strong>, then
+                    re-level.
+                  </>
+                ),
+              },
+              {
+                title: "Needs routing on the unit",
+                rows: offbrRouting,
+                body: (
+                  <>
+                    Route {offbrRouting.length === 1 ? "it" : "them"} to{" "}
+                    <strong style={{ color: t.ink }}>USB&nbsp;1/2</strong> on
+                    the unit, or set the level by ear. Re-leveling won’t help.
+                  </>
+                ),
+              },
+            ] as const
+          )
+            .filter((b) => b.rows.length > 0)
+            .map((b) => (
+              <Banner
+                key={b.title}
+                icon="x"
+                size={15}
+                strokeWidth={2}
+                color={t.warn}
+                bg={t.warnSoft}
+                border="rgba(167,70,31,0.28)"
+                title={b.title}
+              >
+                {b.body}
+              </Banner>
+            ))}
           {clamped.length > 0 && (
             <Banner
               icon="warn-tri"

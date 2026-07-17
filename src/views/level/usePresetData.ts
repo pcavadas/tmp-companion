@@ -273,6 +273,7 @@ export function usePresetData(connected: boolean) {
     footswitchInfo,
     ampCandidates: lib.ampCandidates,
     blocksByIndex: lib.blocksByIndex,
+    silenceHintByIndex: lib.silenceHintByIndex,
     /** Per-preset signal graph from the startup backup, keyed by 0-based list index —
      *  the source for each row's real CPU readout. */
     graphByIndex: lib.graphByIndex,
