@@ -104,6 +104,7 @@ pub fn run_e2e_server() {
             remove_setlist_song,
             move_setlist_song,
             e2e_seed_scenario,
+            e2e_clear_strays,
             e2e_clear_preset,
             e2e_load_preset,
             e2e_reamp_off
@@ -287,16 +288,20 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) {
 /// zone); [`e2e_clear_preset`] returns them to empty. Idempotent at the spec layer
 /// (`ensureScenario` skips when they already exist — i.e. offline).
 #[cfg(feature = "e2e")]
-#[tauri::command]
-async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
-    #[derive(serde::Deserialize)]
-    struct ScenarioPreset {
-        #[serde(rename = "listIndex")]
-        list_index: u32,
-        name: String,
-        #[serde(rename = "presetJson")]
-        preset_json: String,
-    }
+#[derive(serde::Deserialize)]
+struct ScenarioPreset {
+    #[serde(rename = "listIndex")]
+    list_index: u32,
+    name: String,
+    #[serde(rename = "presetJson")]
+    preset_json: String,
+}
+
+/// The committed scenario-preset spec (`e2e/fixtures/scenario-presets.json`, overridable
+/// via `TMP_E2E_SCENARIO_PRESETS`) — the one source of truth for the seed, the presence
+/// check, and the stray sweep.
+#[cfg(feature = "e2e")]
+fn scenario_spec() -> Result<Vec<ScenarioPreset>, String> {
     let path = std::env::var("TMP_E2E_SCENARIO_PRESETS").unwrap_or_else(|_| {
         concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -305,9 +310,72 @@ async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
         .into()
     });
     let raw = std::fs::read(&path).map_err(|e| format!("scenario presets {path}: {e}"))?;
-    let presets: Vec<ScenarioPreset> =
-        serde_json::from_slice(&raw).map_err(|e| format!("parse scenario presets: {e}"))?;
+    serde_json::from_slice(&raw).map_err(|e| format!("parse scenario presets: {e}"))
+}
+
+/// Entries holding a scenario NAME at the wrong slot — leftovers of a seed aborted
+/// between its import and its guarded scratch-clear (the import lands at the first
+/// EMPTY slot, so each aborted run strands one copy in the user's bank; HW-observed:
+/// 13 stray "E2E Reference" copies accumulated at list indices 27–39 across failed
+/// runs, and the duplicates then broke the next seed's landing detection). Pure.
+#[cfg(feature = "e2e")]
+fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Vec<(u32, String)> {
+    list.iter()
+        .filter(|e| {
+            spec.iter()
+                .any(|p| e.name == p.name && e.slot != p.list_index)
+        })
+        .map(|e| (e.slot, e.name.clone()))
+        .collect()
+}
+
+/// Sweep every stray scenario import on ONE held session: strict list read → clear
+/// each stray → done. The guard is the completeness-validated list taken seconds
+/// before on the SAME connection, in the same list-index address space as the clears
+/// (nothing else can interleave — the device-op lock is held); a per-stray fresh
+/// reconnect would be safer-looking but is exactly the rapid open/close churn that
+/// congests the device and feeds the open lockout this sweep exists to repair.
+/// Returns (list, swept): callers reuse the read for their presence checks.
+#[cfg(feature = "e2e")]
+fn sweep_scenario_strays(
+    spec: &[ScenarioPreset],
+) -> Result<(Vec<session::PresetEntry>, usize), String> {
+    let mut s = Session::connect()?;
+    let list = s.list_my_presets_strict()?;
+    let strays = scenario_strays(&list, spec);
+    for (slot, _) in &strays {
+        s.clear_user_preset(*slot)?;
+        e2e_patch_snapshot_slot(*slot, "Empty");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    if !strays.is_empty() {
+        eprintln!(
+            "e2e_server: swept {} stray scenario import(s)",
+            strays.len()
+        );
+    }
+    Ok((list, strays.len()))
+}
+
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
+    let presets = scenario_spec()?;
     with_released_seize(state.session.clone(), move || {
+        // Self-repair FIRST: an earlier seed aborted mid-flight (the HID open lockout
+        // bites between the import and its scratch-clear) strands scenario copies in
+        // the user's bank AND breaks this seed's landing detection (duplicate names +
+        // list read-after-write lag), so every seed sweeps strays before importing.
+        let (list, _swept) = sweep_scenario_strays(&presets)?;
+        // Presence short-circuit: all three already in place (a runner-side seed ran
+        // before this spec's ensureScenario fallback) → nothing to import.
+        let present = presets.iter().all(|p| {
+            list.iter()
+                .any(|e| e.slot == p.list_index && e.name == p.name)
+        });
+        if present {
+            return Ok(());
+        }
         for (i, p) in presets.iter().enumerate() {
             // ponytail: real-TMP HID open-lockout recovery, plus a deliberate fresh-connect
             // import. replace_inplace_core does its post-import "where did it land?" list read
@@ -329,6 +397,19 @@ async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
             e2e_patch_snapshot_slot(p.list_index, &p.name);
         }
         Ok(())
+    })
+    .await
+}
+
+/// ONLINE-e2e recovery arm: sweep stray scenario imports out of the user's bank (guarded
+/// per slot, fail-closed). Invoked by spec teardown + the e2e.sh recovery so an aborted
+/// seed can never leave test junk on the unit past the run. Returns the swept count.
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
+    let presets = scenario_spec()?;
+    with_released_seize(state.session.clone(), move || {
+        sweep_scenario_strays(&presets).map(|(_, swept)| swept)
     })
     .await
 }

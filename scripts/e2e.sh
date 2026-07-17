@@ -76,9 +76,13 @@ prebuild() {
 
 kill_port() { lsof -ti "tcp:$1" 2>/dev/null | xargs kill 2>/dev/null || true; }
 
+bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the response body
+  curl -fsS -m "${2:-60}" -X POST "http://127.0.0.1:$PORT/invoke" \
+    -H 'content-type: application/json' -d "$1" 2>/dev/null
+}
+
 post() { # POST one /invoke command, best-effort (recovery must never fail the script)
-  curl -fsS -m 60 -X POST "http://127.0.0.1:$PORT/invoke" \
-    -H 'content-type: application/json' -d "$1" >/dev/null 2>&1 || true
+  bridge_post "$1" "${2:-60}" >/dev/null 2>&1 || true
 }
 
 recover_device() {
@@ -88,6 +92,10 @@ recover_device() {
   post '{"cmd":"e2e_clear_preset","args":{"slot":400,"expectName":"E2E Reference"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":401,"expectName":"E2E Target 1"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":402,"expectName":"E2E Target 2"}}'
+  # Sweep stray scenario imports an aborted seed stranded elsewhere in the bank
+  # (imports land at the first EMPTY slot anywhere; guarded, fail-closed). Long
+  # timeout: N strays × clear can exceed the default 60 s cap.
+  post '{"cmd":"e2e_clear_strays","args":{}}' 300
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
 }
 
@@ -151,6 +159,16 @@ disown "$SERVER_PID" 2>/dev/null || true  # silence the shell's "Terminated" not
 wait_server_ready
 log "device connected — snapshot seeded"
 
+# Seed the scenario presets from the RUNNER (not the spec): the seed is the first fresh
+# HID open after the server handshake and can hit the device's capricious open lockout —
+# a retry with a long quiet rest cures it, but Playwright's per-test budget (300 s) can't
+# absorb seed (~90–150 s) + retries. The seed self-repairs (sweeps stray imports from any
+# earlier aborted run) so retrying is pollution-safe; the specs' `ensureScenario` stays as
+# the idempotent fallback (it finds the presets present and skips).
+seed_scenario() {
+  bridge_post '{"cmd":"e2e_seed_scenario","args":{}}' 420 | grep -q '"ok":true'
+}
+
 fail=0
 first=1
 for s in "${SPECS[@]}"; do
@@ -166,6 +184,18 @@ for s in "${SPECS[@]}"; do
     sleep 12
   fi
   first=0
+  seeded=0
+  for attempt in 1 2 3; do
+    log "seeding the scenario presets (attempt $attempt)…"
+    if seed_scenario; then seeded=1; break; fi
+    log "seed attempt $attempt failed — resting 60 s (open lockout) before retry"
+    sleep 60
+  done
+  if [ "$seeded" -ne 1 ]; then
+    err "scenario seed failed after 3 attempts — aborting (device recovery runs on exit)"
+    fail=1
+    break
+  fi
   log "running specs/$s.spec.ts (online)"
   # No outer timeout: Playwright's own 300 s/test governs; a short wrapper would kill it mid-run.
   if bunx playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts"; then

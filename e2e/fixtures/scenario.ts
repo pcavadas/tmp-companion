@@ -27,9 +27,14 @@ export async function invoke(
   page: Page,
   cmd: string,
   args: Record<string, unknown> = {},
+  timeoutMs?: number,
 ): Promise<unknown> {
   const res = await page.request.post(`${SERVER}/invoke`, {
     data: { cmd, args },
+    // Playwright's 30 s default stands for ordinary commands (a hang should fail
+    // fast); only the seed/teardown callers pass a long timeout — their online
+    // sweep + imports legitimately run minutes.
+    timeout: timeoutMs,
   });
   const env = (await res.json()) as {
     ok: boolean;
@@ -51,7 +56,9 @@ export async function ensureScenario(page: Page): Promise<void> {
   const bySlot = new Map(list.map((p) => [p.slot, p.name]));
   const present = SCENARIO.every((s) => bySlot.get(s.slot) === s.name);
   if (present) return; // offline: baked into the fixture + snapshot
-  await invoke(page, "e2e_seed_scenario"); // online: import the deterministic presets
+  // Online: import the deterministic presets — the seed sweeps strays + imports over
+  // minutes, so it gets a long request timeout (ordinary commands keep the default).
+  await invoke(page, "e2e_seed_scenario", {}, 240_000);
 }
 
 /** End-of-scenario teardown: clear any scenario slot we wrote (net-zero) and leave the unit
@@ -60,14 +67,18 @@ export async function ensureScenario(page: Page): Promise<void> {
 export async function clearScenario(page: Page): Promise<void> {
   // Every step is best-effort: offline the fixture resets per test (these commands aren't
   // present), and online a partial-failure must not mask the test's own result.
+  // Teardown clears/sweeps can run long online — give them the long timeout too.
   const quiet = (cmd: string, args?: Record<string, unknown>): Promise<void> =>
-    invoke(page, cmd, args).then(
+    invoke(page, cmd, args, 240_000).then(
       () => undefined,
       () => undefined,
     );
   for (const s of SCENARIO) {
     await quiet("e2e_clear_preset", { slot: s.slot, expectName: s.name });
   }
+  // Sweep any stray scenario imports an aborted seed stranded in the user's bank
+  // (imports land at the FIRST EMPTY slot anywhere; guarded per slot, fail-closed).
+  await quiet("e2e_clear_strays");
   await quiet("e2e_load_preset", { slot: 0 }); // recall preset 001 — leave a known preset
   // Disengage re-amp so a Level run killed mid-capture can't leave the unit input-muted (the
   // latch is device-side; the command is a no-op offline).

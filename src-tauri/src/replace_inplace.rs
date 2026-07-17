@@ -46,7 +46,11 @@ pub(crate) fn replace_inplace_core(
     orig_list_index: u32,
     bytes: &[u8],
 ) -> Result<ReplaceOutcome, String> {
-    let before = Session::connect()?.list_my_presets()?;
+    // Strict (completeness-validated) reads for both landing-detection lists: a
+    // tolerant tail-truncated read makes every slot past the cut look empty, so the
+    // post-import diff would "find" the landing at a garbage slot (the fail-closed
+    // confirm_active below catches it before damage, but the run still aborts).
+    let before = Session::connect()?.list_my_presets_strict()?;
     let orig_name_before = before
         .iter()
         .find(|p| p.slot == orig_list_index)
@@ -72,7 +76,7 @@ pub(crate) fn replace_inplace_core(
     // Keying on the previously-empty set (not a name diff) means a flaky/partial
     // baseline list can't misidentify a *real* pre-existing preset as the scratch
     // and get it cleared in step 3.
-    let after_import = Session::connect()?.list_my_presets()?;
+    let after_import = Session::connect()?.list_my_presets_strict()?;
     let (scratch_slot, scratch_name) = after_import
         .iter()
         .find(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))
@@ -179,7 +183,7 @@ fn run_replace_inplace(orig_list_index: u32, bytes: &[u8], src: &str) -> Result<
 /// and the mutation address the *same* preset (the earlier guard bug checked the
 /// list index but cleared a same-numbered device slot = a different preset).
 pub(crate) fn guarded_clear(list_index: u32, expect_name: &str) -> Result<(), String> {
-    let list = Session::connect()?.list_my_presets()?;
+    let list = Session::connect()?.list_my_presets_strict()?;
     let cur = list
         .iter()
         .find(|p| p.slot == list_index)
