@@ -1,5 +1,10 @@
 import { test, expect } from "../fixtures/test";
-import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
+import {
+  SCENARIO,
+  clearScenario,
+  ensureScenario,
+  reampOff,
+} from "../fixtures/scenario";
 
 // Level scenarios — run identically offline (fake re-amp) and online (real re-amp).
 // SCENARIO[0] "E2E Reference" has BOTH footswitch scenes AND block-acting footswitches
@@ -7,8 +12,19 @@ import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
 // Loudness accuracy is the device's job; these prove the multi-preset, per-preset-target
 // flow AND the base+scene+footswitch flow end to end through the real backend.
 test.describe("Level — plain presets + a scenes-and-footswitches preset", () => {
+  // Between tests: SAFETY only (re-amp off, so an aborted capture can't strand the
+  // unit input-muted for the next test). Slot cleanup happens ONCE in afterAll —
+  // clearing between tests would force the next test's ensureScenario down the flaky
+  // in-process re-seed (the runner seeds once per spec FILE; HW-observed: test 1
+  // passed, its clear forced test 2's re-seed into the 0xe00002c5 open lockout).
   test.afterEach(async ({ page }) => {
+    await reampOff(page);
+  });
+
+  test.afterAll(async ({ browser }) => {
+    const page = await browser.newPage();
     await clearScenario(page);
+    await page.close();
   });
 
   test("levels two PLAIN presets to different targets, end to end", async ({

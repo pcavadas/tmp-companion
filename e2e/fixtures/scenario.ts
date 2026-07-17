@@ -61,6 +61,15 @@ export async function ensureScenario(page: Page): Promise<void> {
   await invoke(page, "e2e_seed_scenario", {}, 240_000);
 }
 
+/** Best-effort re-amp disengage — the between-tests safety (a test aborted mid-capture
+ *  must not leave the unit input-muted for the next one). No-op offline. */
+export async function reampOff(page: Page): Promise<void> {
+  await invoke(page, "e2e_reamp_off", {}, 240_000).then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 /** End-of-scenario teardown: clear any scenario slot we wrote (net-zero) and leave the unit
  *  on preset 001 (list index 0). Best-effort — the backend guard refuses any slot not holding
  *  the scenario name, so a real preset is never cleared. */
