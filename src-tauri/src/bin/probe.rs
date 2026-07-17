@@ -57,15 +57,8 @@
 //!                                  resonant_wah/resonant_peq/boxy_peq)
 //!                                  one at a time into a clean preset's live edit buffer, checks
 //!                                  each after-capture's fired verdicts against the recipe's
-//!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION/info
+//!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION
 //!                                  table. Never saves; loads the slot; ends re-amp OFF.
-//!   probe --doctor-iso-ab           A/B: the OFFLINE `derived_force_bypass` isolation list
-//!                                  (backup-scan data, no device read) vs the LIVE
-//!                                  `doctor_force_bypass` list (a field-8 preset read), for
-//!                                  every library preset's base + block-acting footswitch
-//!                                  sounds. PASS/DIFF per sound + a summary line.
-//!                                  NON-DESTRUCTIVE: one device backup + per-preset field-8
-//!                                  reads, no LoadPreset/save
 //!   probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
 //!                                  CAPTURE-WINDOW A/B evidence arm: per slot, captures the
 //!                                  oracle (full 6s stim + the pinned 2.5s oracle tail —
@@ -204,20 +197,6 @@ fn main() {
     if args.iter().any(|a| a == "--device-backup") {
         eprintln!("[probe] device backup (BackupRequest → tar.lz4 stream → extract DB)…");
         match tmp_companion_lib::probe_device_backup() {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if args.iter().any(|a| a == "--doctor-iso-ab") {
-        eprintln!("[probe] doctor-iso-ab: derived (offline) vs live (field-8) force-bypass A/B…");
-        match tmp_companion_lib::probe_doctor_iso_ab() {
             Ok(report) => {
                 print!("{report}");
                 return;

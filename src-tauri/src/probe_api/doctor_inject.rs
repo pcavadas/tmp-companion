@@ -119,13 +119,7 @@ pub fn probe_doctor_inject(
 
     // Insert the EQ at the END of the chain (the LAST guitar node's group,
     // appended) — the same anchor the Doctor's own Rx inserts use (post-amp/
-    // cab, never pre-drive). An earlier matrix run anchored at G1 (the pedal
-    // group, pre-amp) instead; on this preset's single-group chain the
-    // placement made no measurable difference to the injected defect's
-    // readback, so it isn't why that run under- or over-fired — the actual
-    // cause was gates calibrated against healthy-population variance without
-    // a real defect signal, fixed by widening the injected defects to ±12 dB
-    // and adding the tilt/centered consensus metric (see `Thresholds`'s doc).
+    // cab, never pre-drive).
     let (last_group, name) = {
         let (preset, _, _) = crate::read_slot_preset_parsed(slot)?;
         let group = crate::session::extract_active_graph(&preset, None)

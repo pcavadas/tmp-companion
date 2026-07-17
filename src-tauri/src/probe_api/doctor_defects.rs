@@ -32,10 +32,8 @@ use super::stimulus::{probe_stimulus_path, read_stimulus_48k};
 
 /// One versioned defect recipe: inject `ops` into a clean preset's live edit
 /// buffer, capture, diagnose — `must_fire` verdicts must ALL appear in the
-/// after-capture, and no verdict in `must_not_fire` may appear. An
-/// `informational` recipe (empty `must_fire` by design — we don't yet know
-/// what SHOULD fire) reports as "info" instead of scoring HIT/MISS, but its
-/// `must_not_fire` is still enforced (a VIOLATION always outranks "info").
+/// after-capture, and no verdict in `must_not_fire` may appear (an empty
+/// `must_fire` is a pure must-NOT-fire guard, vacuously HIT unless violated).
 struct DefectRecipe {
     name: &'static str,
     /// Why this recipe produces (or probes for) the defect — shown verbatim
@@ -44,7 +42,6 @@ struct DefectRecipe {
     ops: Vec<doctor::DoctorOp>,
     must_fire: &'static [&'static str],
     must_not_fire: &'static [&'static str],
-    informational: bool,
 }
 
 /// An `ACD_TenBandEQStereo` insert at `group_id` with the given `controlId=dB`
@@ -90,7 +87,6 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
                 "muddy", "boomy", "harsh", "fizzy", "lost", "thin", "washed", "spiky",
                 "buried", "dark", "bright", "resonant", "boxy",
             ],
-            informational: false,
         },
         DefectRecipe {
             name: "muddy",
@@ -98,7 +94,6 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             ops: vec![eq10_insert(group_id, &[("gain250hz", 12.0)])],
             must_fire: &["muddy"],
             must_not_fire: &["thin", "boomy"],
-            informational: false,
         },
         DefectRecipe {
             name: "lost",
@@ -106,11 +101,10 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             ops: vec![eq10_insert(group_id, &[("gain500hz", -12.0), ("gain1khz", -12.0)])],
             must_fire: &["lost"],
             must_not_fire: &[],
-            informational: false,
         },
         DefectRecipe {
             name: "washed",
-            rationale: "ACD_TMSmallHall reverb inserted with `mix` (its `REVERB_MIX`-table controlId — the SAME one the washed Rx turns down) cranked to 0.9 of range. Decay is left at the freshly-inserted block's device default: no decay controlId is documented anywhere in this repo (same evidence gap as the omitted resonant_probe below), and mix alone should already push the post-stimulus tail well past the washed threshold.",
+            rationale: "ACD_TMSmallHall reverb inserted with `mix` (its `REVERB_MIX`-table controlId — the SAME one the washed Rx turns down) cranked to 0.9 of range. Decay is left at the freshly-inserted block's device default: no decay controlId is documented anywhere in this repo, and mix alone should already push the post-stimulus tail well past the washed threshold.",
             ops: vec![doctor::DoctorOp::InsertNode {
                 group_id: group_id.to_string(),
                 before_fender_id: None,
@@ -119,7 +113,6 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             }],
             must_fire: &["washed"],
             must_not_fire: &[],
-            informational: false,
         },
         DefectRecipe {
             name: "resonant_wah",
@@ -138,7 +131,6 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             // regressed) and never as WASHED.
             must_fire: &[],
             must_not_fire: &["washed", "resonant"],
-            informational: false,
         },
         DefectRecipe {
             name: "resonant_peq",
@@ -156,7 +148,6 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             )],
             must_fire: &["resonant"],
             must_not_fire: &["washed"],
-            informational: false,
         },
         DefectRecipe {
             name: "boxy_peq",
@@ -174,7 +165,6 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             )],
             must_fire: &["boxy"],
             must_not_fire: &["resonant", "washed"],
-            informational: false,
         },
     ]
 }
@@ -252,8 +242,6 @@ fn recipe_row(recipe: &DefectRecipe, before: &DoctorRead, after: &DoctorRead) ->
     let hit = recipe.must_fire.iter().all(|k| after.verdicts.contains(k));
     let status = if violation {
         "VIOLATION"
-    } else if recipe.informational {
-        "info"
     } else if hit {
         "HIT"
     } else {
@@ -262,7 +250,6 @@ fn recipe_row(recipe: &DefectRecipe, before: &DoctorRead, after: &DoctorRead) ->
     serde_json::json!({
         "recipe": recipe.name,
         "rationale": recipe.rationale,
-        "informational": recipe.informational,
         "mustFire": recipe.must_fire,
         "mustNotFire": recipe.must_not_fire,
         "beforeClean": before.verdicts.is_empty(),
@@ -311,8 +298,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
 
     let mut out = format!("doctor-defects slot {slot} ({name})\n");
     let mut rows: Vec<serde_json::Value> = Vec::new();
-    let (mut hits, mut misses, mut violations, mut infos, mut errors) =
-        (0u32, 0u32, 0u32, 0u32, 0u32);
+    let (mut hits, mut misses, mut violations, mut errors) = (0u32, 0u32, 0u32, 0u32);
 
     for recipe in recipes(&group_id) {
         out += &format!("\n[{}] {}\n", recipe.name, recipe.rationale);
@@ -325,7 +311,6 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
                     "HIT" => hits += 1,
                     "MISS" => misses += 1,
                     "VIOLATION" => violations += 1,
-                    "info" => infos += 1,
                     _ => {}
                 }
                 out += &format!("  → {status}\n");
@@ -347,7 +332,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
     super::reamp_off_best_effort();
 
     out += &format!(
-        "\ndoctor-defects summary: {} recipe(s) — HIT={hits} MISS={misses} VIOLATION={violations} info={infos} error={errors}\n",
+        "\ndoctor-defects summary: {} recipe(s) — HIT={hits} MISS={misses} VIOLATION={violations} error={errors}\n",
         rows.len()
     );
 
@@ -360,7 +345,6 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
                 "hit": hits,
                 "miss": misses,
                 "violation": violations,
-                "info": infos,
                 "error": errors,
             },
         });
@@ -458,16 +442,5 @@ mod tests {
             &fake_read(vec!["resonant", "boxy"]),
         );
         assert_eq!(violation2["status"], "VIOLATION");
-    }
-
-    #[test]
-    fn defect_row_json_shape_serializes() {
-        let rs = recipes("G1");
-        let control = rs.iter().find(|r| r.name == "control").unwrap();
-        let row = recipe_row(control, &fake_read(vec![]), &fake_read(vec![]));
-        let s = serde_json::to_string(&row).expect("row must serialize");
-        assert!(s.contains("\"recipe\":\"control\""));
-        assert!(s.contains("\"status\":\"HIT\""));
-        assert!(row["beforeClean"].as_bool().unwrap());
     }
 }

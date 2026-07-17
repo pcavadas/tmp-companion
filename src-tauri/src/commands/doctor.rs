@@ -22,10 +22,9 @@ pub struct DoctorInput {
     pub calibration_lufs: Option<f32>,
     /// Instrument profile id: when it has a stored Tier-2 DI capture, that WAV is
     /// the stimulus (read VERBATIM, calibration scaling off) and the sound is
-    /// diagnosed as `StimulusKind::Capture` — ONE shared threshold table per
-    /// family (`thresholds_for` ignores the kind); Capture differs only through
-    /// the capture-only `fizzy` flatness gate. `None`/capture-less → the
-    /// synthetic topology sample (the pinned default).
+    /// diagnosed as `StimulusKind::Capture` (one shared threshold table; the
+    /// kind only gates fizzy flatness). `None`/capture-less → the synthetic
+    /// topology sample (the pinned default).
     #[serde(default)]
     pub profile_id: Option<String>,
     #[serde(default)]
@@ -265,11 +264,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
     }
     DOCTOR_CANCEL.store(false, SeqCst);
     // Resolve stimulus paths up front (needs the app handle; the closure below
-    // runs on the blocking pool). The `from_capture` bool → the sound's
-    // `StimulusKind`: one shared threshold table per family either way
-    // (`thresholds_for` ignores the kind); a real Tier-2 DI capture differs
-    // only through verbatim injection (no calibration scaling, below) and the
-    // capture-only `fizzy` flatness gate.
+    // runs on the blocking pool). `from_capture` → `StimulusKind::Capture`:
+    // verbatim injection (no calibration scaling, below) + the capture-only
+    // fizzy flatness gate; the threshold table is shared either way.
     let resolved: Vec<(DoctorInput, String, doctor::StimulusKind)> = items
         .into_iter()
         .map(|it| {
@@ -740,19 +737,11 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
 /// calls `save_current_preset` on it (save must stay the LAST op on that
 /// connection). On ANY op failure the live session is dropped (freeing the
 /// seize) BEFORE `restore_saved_preset` reconnects to discard the partial
-/// edit, and an error naming `verb` ("apply"/"save") is returned — the exact
-/// text both callers relied on before this extraction.
+/// edit, and an error naming `verb` ("apply"/"save") is returned.
 ///
-/// `pub(crate)`, not `pub`: deliberately the ONE shared live-edit seam
-/// (connect → confirm → `begin_live_edit` → ops, restore-on-failure) reused
-/// across layers — the command layer (`doctor_apply`/`doctor_save`) AND
-/// `probe --doctor-inject` (`probe_api::doctor_inject`) both call it directly.
-/// That cross-layer call is acceptable only because this function touches
-/// nothing but `Session`/`leveller` — no Tauri state, no command-layer
-/// concerns — so a probe caller reaching into `commands::doctor` costs
-/// nothing extra. A SECOND such cross-layer caller should prompt moving this
-/// out of `commands::doctor` into a shared module instead of normalizing the
-/// reach-in.
+/// `pub(crate)`: shared with `probe --doctor-inject` (touches only
+/// `Session`/`leveller`, no Tauri state); move out of `commands::` if a third
+/// caller appears.
 pub(crate) fn ops_session(
     list_index: u32,
     expect_name: &str,
@@ -813,17 +802,9 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(&stim_path, calibration)?);
         let run = || -> Result<DoctorApplyResult, String> {
             // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
-            // policy `doctor_check` uses, now shared (its own preset-read cache: a
-            // single apply has no cross-sound cache to share). NOTE this differs
-            // from the pre-extraction behavior: empty `nodes` (no graph passed) on
-            // a base/footswitch sound now falls back to a live field-8 read
-            // (previously degraded straight to no isolation) — the point of
-            // sharing one policy is that the apply A/B can never observe a
-            // different bypass state than what `doctor_check` diagnosed. A scene
-            // sound's `job.footswitch` is already `None` by construction (a
-            // diagnosed sound is exactly one of base/scene/footswitch) — the base
-            // isolation this derives is the same baseline `doctor_check` measured
-            // the scene against. Inside `run` (unlike the stimulus read): its
+            // policy `doctor_check` uses (one policy so the A/B can never observe
+            // a different bypass state than the diagnosis; empty `nodes` falls
+            // back to the live field-8 read). Inside `run` (unlike the stimulus read): its
             // empty-graph fallback is a live device read the backstop must cover.
             let fb = resolve_sound_isolation(
                 &job.nodes,

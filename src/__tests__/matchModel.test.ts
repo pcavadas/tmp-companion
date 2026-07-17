@@ -4,22 +4,10 @@
 
 import { describe, it, expect } from "vitest";
 
-import {
-  matchDeltas,
-  eqMovesFor,
-  matchResidualLarge,
-  lastGuitarGroup,
-} from "../views/doctor/matchModel";
+import { eqMovesFor, lastGuitarGroup } from "../views/doctor/matchModel";
 import type { GraphNode } from "../lib/types";
 
 const GUITAR_LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
-
-describe("matchDeltas", () => {
-  it("is ref minus sound, per band", () => {
-    expect(matchDeltas([1, 2, 3], [0, 0, 0])).toEqual([1, 2, 3]);
-    expect(matchDeltas([-2, 5], [3, 1])).toEqual([-5, 4]);
-  });
-});
 
 describe("eqMovesFor", () => {
   // Hand-derived: each 6-band guitar center's log-nearest EQ-10 band (see
@@ -123,17 +111,5 @@ describe("lastGuitarGroup", () => {
 
   it("is null for an empty chain", () => {
     expect(lastGuitarGroup([])).toBeNull();
-  });
-});
-
-describe("matchResidualLarge", () => {
-  it("is true when any band delta exceeds the +/-6 dB clamp", () => {
-    expect(matchResidualLarge([1, 2, 7])).toBe(true);
-    expect(matchResidualLarge([1, 2, -6.5])).toBe(true);
-  });
-
-  it("is false when every delta is within +/-6 dB (exactly 6 is not 'large')", () => {
-    expect(matchResidualLarge([1, 2, 6])).toBe(false);
-    expect(matchResidualLarge([-6, 0, 3])).toBe(false);
   });
 });

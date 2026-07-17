@@ -91,13 +91,12 @@ in the same check.
   MEASURED frequency — generated inline (not via `generate_rx`, whose
   key-only signature can't carry the peak).
 
-Thresholds are constants in `doctor.rs`, DUAL-keyed by **(Family,
-StimulusKind)**: families Guitar / Bass / **BassVi** (7-band layout with a
-(30,60) Sub band — measured and displayed only, no rule keys on it yet), ×
-Synthetic / Capture stimulus spaces. The synthetic tables are HW-calibrated
-(`notes/doctor-calibration.md`); the `*_CAPTURE` tables are provisional copies
-pending the attended `probe --doctor-calib` DI sweep. Recalibration edits
-values there and nowhere else. A rule whose primary band was never excited is
+Thresholds are constants in `doctor.rs`, ONE table per family — Guitar /
+Bass / **BassVi** (7-band layout with a (30,60) Sub band — measured and
+displayed only, no rule keys on it yet); `StimulusKind` no longer selects a
+table (Capture differs only via the fizzy flatness gate). The tables are
+HW-calibrated (`notes/doctor-calibration.md`); recalibration edits values
+there and nowhere else. A rule whose primary band was never excited is
 skipped — **coverage keys on the CAPTURED OUTPUT's own SNR**
 (`output_coverage_with_body`: band power vs the pre-onset noise floor +
 `OUTPUT_SNR_MARGIN_DB`), not the input stimulus, so amp-created HF
@@ -197,12 +196,14 @@ the preset's worst severity.
   also HW-verifies EQ-10 band controlIds — a wrong id shows as the defect not
   appearing).
 - `probe --doctor-defects <slot> [--out r.json]` — the VERSIONED defect-recipe
-  sweep (control / muddy / lost / washed / boxy-probe): each recipe's ops
-  inject live, hit/miss/violation table against `must_fire`/`must_not_fire`.
-  The recipe table in `doctor_defects.rs` is the fixture set.
-- `probe --doctor-window-ab` / `--doctor-iso-ab` / `--doctor-calib` — window
-  re-baseline vs the pinned 6 s oracle · isolation-derivation equivalence ·
-  threshold-space sweeps.
+  sweep (control / muddy / lost / washed / resonant_wah / resonant_peq /
+  boxy_peq): each recipe's ops inject live, HIT/MISS/VIOLATION table against
+  `must_fire`/`must_not_fire`. The recipe table in `doctor_defects.rs` is the
+  fixture set.
+- `probe --doctor-window-ab` / `--doctor-calib` — window re-baseline vs the
+  pinned 6 s oracle · threshold-space sweeps. (The one-shot `--doctor-iso-ab`
+  equivalence arm was retired once the offline/live isolation equivalence got
+  its hardware-free pin in `commands/doctor_tests.rs`.)
 
 ## Scene consistency
 

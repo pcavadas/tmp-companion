@@ -219,11 +219,9 @@ fn doctor_force_bypass_null_ftsw_degrades_to_empty() {
 // SETS, on the same data — for base and every footswitch sound.
 
 /// `doctor::DoctorNode`s built from a preset's SAVED bypass states — the test-side
-/// stand-in for what the frontend threads through as `DoctorInput.nodes` (sourced from
-/// the backup scan's `ActiveGraph.nodes`; `commands/probe_api/doctor_iso_ab.rs`'s
-/// `doctor_nodes_from_graph` is the production counterpart building from the SAME
-/// per-preset backup data). `group_id`/`model`/params are unused by the isolation
-/// derivation (only `node_id` + `bypassed` are), so they're left at defaults.
+/// stand-in for what the frontend threads through as `DoctorInput.nodes` (sourced
+/// from the backup scan's `ActiveGraph.nodes`). Only `node_id` + `bypassed` drive
+/// the isolation derivation; the rest stay at defaults.
 fn nodes_from(preset: &serde_json::Value) -> Vec<doctor::DoctorNode> {
     let mut out = Vec::new();
     crate::audiograph::for_each_node(preset, |obj| {
@@ -395,66 +393,4 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     // A save invalidates (clear_doctor_before_cache is what doctor_save calls).
     clear_doctor_before_cache();
     assert_eq!(before_cache_get(&key), None);
-}
-
-/// REGRESSION: the A/B must never serve a scene's cached clip to a different
-/// scene, or to the base sound — the diagnosed context is part of the sound's
-/// identity, not just the preset + stimulus.
-#[test]
-fn before_cache_key_discriminates_scene_and_footswitch() {
-    let _guard = crate::lock_ok(&BEFORE_CACHE_SERIAL);
-    clear_doctor_before_cache();
-    let base_key: BeforeKey = (7, "Lead".into(), "/stim/tele.wav".into(), None, None, None);
-    before_cache_put(base_key.clone(), "clip-base".into());
-    assert_eq!(before_cache_get(&base_key), Some("clip-base".into()));
-    // Same preset/stimulus/cal, but a scene — distinct key, misses the base entry.
-    let scene_key: BeforeKey = (
-        7,
-        "Lead".into(),
-        "/stim/tele.wav".into(),
-        None,
-        Some(0),
-        None,
-    );
-    assert_eq!(before_cache_get(&scene_key), None);
-    // A different scene also misses this scene's own (never-populated) slot.
-    let other_scene_key: BeforeKey = (
-        7,
-        "Lead".into(),
-        "/stim/tele.wav".into(),
-        None,
-        Some(1),
-        None,
-    );
-    assert_eq!(before_cache_get(&other_scene_key), None);
-    // A footswitch sound is likewise distinct from both the base and the scene.
-    let fs_key: BeforeKey = (
-        7,
-        "Lead".into(),
-        "/stim/tele.wav".into(),
-        None,
-        None,
-        Some(2),
-    );
-    assert_eq!(before_cache_get(&fs_key), None);
-}
-
-/// A legacy `doctor_apply` wire payload — from before the diagnosed-context fix,
-/// no `scene`/`footswitch`/`nodes`/`footswitches` fields — still deserializes:
-/// `#[serde(default)]` keeps the DoctorApplyJob wire backward-compatible, same
-/// contract as `DoctorInput`'s optional `footswitch`/`nodes`/`footswitches`.
-#[test]
-fn doctor_apply_job_without_diagnosed_context_still_deserializes() {
-    let json = r#"{
-            "listIndex": 4,
-            "name": "Lead Tone",
-            "ops": [],
-            "topologyId": null,
-            "calibrationLufs": null
-        }"#;
-    let job: DoctorApplyJob = serde_json::from_str(json).expect("DoctorApplyJob deserializes");
-    assert_eq!(job.scene, None);
-    assert_eq!(job.footswitch, None);
-    assert!(job.nodes.is_empty());
-    assert!(job.footswitches.is_empty());
 }

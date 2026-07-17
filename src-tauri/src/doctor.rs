@@ -142,32 +142,16 @@ pub struct Thresholds {
     pub buried_centered_db: f64,
 }
 
-/// Calibrated 2026-07-16 (R5, `probe --doctor-calib-factory`) against the same
-/// 25-preset flagship factory-bank sweep that derived [`GUITAR_TARGET`]: every
-/// band-rule gate is the healthy-population max plus the R4 repeatability
-/// margin (3σ ≈ 1.2 dB for the band rules; tilt σ ≈ 0.05 dB/oct).
-/// `wash_tail_db` sits in the NEW aligned-tail space (R4's onset fix moved dry
-/// tails from ≈−19 to ≈−40 dB). Set to −10.0 by the R8 ground-truth injection
-/// (`probe --doctor-defects` / `--doctor-inject --block ACD_TMSmallHall`): a
-/// verified 90%-wet reverb measures tail −7.9…−8.1 dB (mix writes confirmed
-/// landing — mix 0.2 → −34.2), so the earlier −4.0 gate missed unambiguous
-/// wash; the final factory sweep's wet cluster sits −6.2…−8.1 with the
-/// wettest at −2.7 and the next-driest preset at −15.5, leaving ≥5 dB of
-/// clearance below the gate and ≥11 dB above the dry population (−21…−44). `spiky_spread_lu` is reachable only on Capture stimuli (the
-/// synthetic-stimulus max observed across the sweep was 1.17 LU) — pending
-/// the Tier-2 DI sweep.
-///
-/// R5 (2026-07-16, `probe --doctor-inject` HW defect injection): the tilt-space
-/// band-rule gates below (`muddy_db`/`boomy_db`/`harsh_db`/`lost_db`/`thin_db`)
-/// are LOWERED to their joint-calibration values now that they fire only in
-/// CONSENSUS with the new `*_centered_db` gates (see [`Thresholds`]'s doc) —
-/// on their own these looser values would over-fire; paired with the centered
-/// gate, 3/3 injected single-band defects landed the right rule, the injected
-/// false "thin" the old tilt-only metric produced on a skirted muddy defect is
-/// vetoed, and the 25-preset factory bank fires on exactly 5 interpretable
-/// presets. `buried_db` stays `INFINITY` (bass-only); its centered pair mirrors
-/// that (see `BASS`/`GUITAR` split below — `buried_centered_db` is likewise
-/// inert here).
+/// Calibrated 2026-07-16 (R5, `probe --doctor-calib-factory`, the 25-preset
+/// flagship factory sweep that also derived [`GUITAR_TARGET`]): each band gate
+/// = healthy-population max + the R4 repeatability margin (3σ ≈ 1.2 dB for the
+/// band rules; tilt σ ≈ 0.05 dB/oct). `wash_tail_db = −10.0` is ground-truth
+/// (a verified 90%-wet reverb measures ≈−8 dB; the dry population sits
+/// −21…−44) in the R4 aligned-tail space. `spiky_spread_lu` is reachable only
+/// on Capture stimuli — pending the Tier-2 DI sweep. The tilt-space gates are
+/// deliberately loose: they fire only in CONSENSUS with `*_centered_db` (see
+/// [`Thresholds`]'s doc); `buried_db` stays `INFINITY` (bass-only). The full
+/// derivation story lives in `notes/doctor-calibration.md`.
 pub const GUITAR: Thresholds = Thresholds {
     muddy_db: 2.0,
     boomy_db: 2.5,
@@ -301,17 +285,9 @@ pub enum Family {
 pub type Instrument = Family;
 
 impl Family {
-    /// The synthetic-stimulus thresholds (the HW-calibrated default). Kept for
-    /// callers that don't distinguish stimulus kind (scene consistency, whose
-    /// `scene_delta_db` is identical in both tables).
+    /// The per-family threshold table — ONE table regardless of stimulus kind
+    /// (Capture differs only via the fizzy flatness gate, see `StimulusKind`).
     pub fn thresholds(self) -> &'static Thresholds {
-        self.thresholds_for(StimulusKind::Synthetic)
-    }
-    /// The threshold table for a stimulus kind: ONE table per family — `kind`
-    /// no longer selects a different table (see the `StimulusKind` doc); it
-    /// stays a parameter so call sites read the same regardless of which
-    /// stimulus produced the sound.
-    pub fn thresholds_for(self, _kind: StimulusKind) -> &'static Thresholds {
         match self {
             Family::Guitar => &GUITAR,
             Family::Bass => &BASS,
@@ -940,13 +916,9 @@ fn factory_percentile(contrast_db: f64) -> f64 {
 /// hash, not cut-through) and Bass VI's Sub band sit in NEITHER group and are
 /// excluded from the ratio entirely.
 ///
-/// PROVENANCE (supervisor-locked 2026-07-16): the original plan compared a
-/// preset's presence energy against an INVENTED "typical dense mix masker"
-/// spectrum — a number nobody measured, and nobody could audit. That was
-/// dropped in favor of anchoring against [`FACTORY_CONTRAST_DB`], the
-/// MEASURED contrast distribution of the same 25-preset flagship factory-bank
-/// sweep the diagnosis thresholds are calibrated against — a real reference
-/// population beats an authored constant.
+/// Anchored against [`FACTORY_CONTRAST_DB`] — the MEASURED contrast
+/// distribution of the 25-preset flagship factory sweep — never an authored
+/// "typical mix masker" constant (unauditable).
 ///
 /// Guitar-only anchor for now: `factory_percentile`/`advisory` are
 /// `None`/`false` for Bass/Bass VI (no bass factory sweep yet, see
@@ -1963,7 +1935,7 @@ fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
 
 /// Generate the prescriptions for one diagnosis against the ACTUAL preset
 /// graph. Prescriptions whose insert fails the firmware caps are dropped.
-pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode], _instrument: Instrument) -> Vec<Rx> {
+pub fn generate_rx(diag_key: &str, nodes: &[DoctorNode]) -> Vec<Rx> {
     let facts = graph_facts(nodes);
     match diag_key {
         "muddy" => {
@@ -2191,10 +2163,6 @@ pub fn diagnose(
 /// level.
 struct RuleMetrics {
     bdb: Vec<f64>,
-    // Kept alongside `locals`/`centered` (both derived from it) though
-    // `apply_thresholds` itself only reads `bdb` directly (the fizzy rule).
-    #[allow(dead_code)]
-    dev: Vec<f64>,
     slope: Option<f64>,
     locals: Vec<f64>,
     centered: Vec<f64>,
@@ -2225,7 +2193,6 @@ fn compute_rule_metrics(
     let facts = nodes.map(graph_facts);
     RuleMetrics {
         bdb,
-        dev,
         slope,
         locals,
         centered,
@@ -2283,7 +2250,7 @@ fn apply_thresholds(
     coverage: Option<&[bool]>,
     offsets: PlaybackOffsets,
 ) -> Vec<Diag> {
-    let t = instrument.thresholds_for(kind);
+    let t = instrument.thresholds();
     // A rule keyed on band `i` fires only when the coverage source excited it.
     let covered = |i: usize| band_covered(coverage, i);
     let bdb = &metrics.bdb;
@@ -2301,9 +2268,7 @@ fn apply_thresholds(
                     bands: Vec<usize>,
                     detail: String,
                     explain: &'static str| {
-        let rx = nodes
-            .map(|n| generate_rx(key, n, instrument))
-            .unwrap_or_default();
+        let rx = nodes.map(|n| generate_rx(key, n)).unwrap_or_default();
         out.push(Diag {
             key,
             label,
@@ -3082,20 +3047,14 @@ mod tests {
         assert!((got[2] - (-120.0)).abs() < 1e-9);
     }
 
+    /// The one load-bearing curve contract: length must match the family's band
+    /// layout (`deviations` zips them — a mismatch silently truncates). Values
+    /// are calibration-owned and deliberately NOT pinned (they churn per sweep).
     #[test]
-    fn target_curve_length_and_values_pinned() {
-        assert_eq!(target_curve(Family::Guitar).len(), 6);
-        assert_eq!(target_curve(Family::Bass).len(), 6);
-        assert_eq!(target_curve(Family::BassVi).len(), 7);
-        assert_eq!(target_curve(Family::Guitar)[0], -5.0);
-        assert_eq!(target_curve(Family::Bass)[0], 1.5);
-        assert_eq!(target_curve(Family::BassVi)[0], -18.0); // Sub
-                                                            // Deliberately DIFFERENT authored opinions per family, not a shared flat
-                                                            // baseline (the old provisional-zero target).
-        assert_ne!(
-            target_curve(Family::Guitar)[1],
-            target_curve(Family::Bass)[1]
-        );
+    fn target_curve_matches_band_layout() {
+        for fam in [Family::Guitar, Family::Bass, Family::BassVi] {
+            assert_eq!(target_curve(fam).len(), fam.bands().len());
+        }
     }
 
     #[test]
@@ -3715,7 +3674,7 @@ mod tests {
     #[test]
     fn fizzy_targets_existing_cab_lpf() {
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let rx = generate_rx("fizzy", &p, Instrument::Guitar);
+        let rx = generate_rx("fizzy", &p);
         assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].kind, RxKind::OneClick);
         assert_eq!(rx[0].cpu_note, "no CPU change");
@@ -3741,7 +3700,7 @@ mod tests {
             &["ACD_HiwattDR103CanModCabIR"],
             &["ACD_HiwattDR103CanModCabIR"],
         );
-        let rx = generate_rx("fizzy", &p, Instrument::Guitar);
+        let rx = generate_rx("fizzy", &p);
         assert_eq!(rx.len(), 1);
         match &rx[0].ops[0] {
             DoctorOp::Param { node_id, param, .. } => {
@@ -3755,7 +3714,7 @@ mod tests {
     #[test]
     fn boomy_without_cab_inserts_highlowpass() {
         let p = chain(&["ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("boomy", &p, Instrument::Guitar);
+        let rx = generate_rx("boomy", &p);
         assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].title, "Add a low cut at 90 Hz");
         match &rx[0].ops[0] {
@@ -3774,7 +3733,7 @@ mod tests {
         // No cab and no front group (empty graph) → cut_move yields nothing, so
         // the flagged problem must still carry an advisory rather than zero cards.
         for key in ["boomy", "fizzy"] {
-            let rx = generate_rx(key, &[], Instrument::Guitar);
+            let rx = generate_rx(key, &[]);
             assert_eq!(rx.len(), 1, "{key} should fall back to one advisory");
             assert_eq!(rx[0].kind, RxKind::Advisory);
         }
@@ -3783,7 +3742,7 @@ mod tests {
     #[test]
     fn muddy_reuses_existing_eq10_else_inserts() {
         let with_eq = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
-        let rx = generate_rx("muddy", &with_eq, Instrument::Guitar);
+        let rx = generate_rx("muddy", &with_eq);
         assert_eq!(rx[0].kind, RxKind::OneClick, "existing EQ → param write");
         match &rx[0].ops[0] {
             DoctorOp::Param { param, value, .. } => {
@@ -3794,7 +3753,7 @@ mod tests {
         }
 
         let without = chain(&["ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("muddy", &without, Instrument::Guitar);
+        let rx = generate_rx("muddy", &without);
         assert_eq!(rx[0].kind, RxKind::Chain, "no EQ → insert with preview");
         assert!(rx[0].chain.is_some());
         match &rx[0].ops[0] {
@@ -3815,7 +3774,7 @@ mod tests {
             &["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_MustangSevenBandEq"],
             &[],
         );
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         assert!(
             rx.iter().all(|r| r.kind != RxKind::Chain),
             "must not insert a second EQ"
@@ -3840,8 +3799,7 @@ mod tests {
         // Amp · cab · delay, no EQ → the inserted EQ-10 anchors right AFTER the
         // cab (before the delay), not at the chain's tail.
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_SpaceEcho"], &[]);
-        let (fid, before) =
-            eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert rx");
+        let (fid, before) = eq_insert(&generate_rx("muddy", &p)).expect("insert rx");
         assert_eq!(fid, "ACD_TenBandEQStereo");
         assert_eq!(
             before.as_deref(),
@@ -3886,7 +3844,7 @@ mod tests {
         for eq in OTHER_EQ_IDS {
             let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", eq], &[]);
             for key in ["muddy", "harsh"] {
-                let rx = generate_rx(key, &p, Instrument::Guitar);
+                let rx = generate_rx(key, &p);
                 assert!(
                     inserts_nothing(&rx),
                     "{key} must not insert a 2nd EQ when {eq} is present"
@@ -3909,7 +3867,7 @@ mod tests {
             ["ACD_TenBandEQStereo", "ACD_MustangSevenBandEq"],
         ] {
             let p = chain(&["ACD_TweedDeluxe", order[0], order[1]], &[]);
-            let rx = generate_rx("muddy", &p, Instrument::Guitar);
+            let rx = generate_rx("muddy", &p);
             assert!(rx.iter().any(|r| r.kind == RxKind::OneClick), "{order:?}");
             assert!(inserts_nothing(&rx), "{order:?}");
         }
@@ -3925,8 +3883,7 @@ mod tests {
             &[],
         );
         p[2].bypassed = true;
-        let (fid, _) = eq_insert(&generate_rx("muddy", &p, Instrument::Guitar))
-            .expect("bypassed EQ ignored → insert");
+        let (fid, _) = eq_insert(&generate_rx("muddy", &p)).expect("bypassed EQ ignored → insert");
         assert_eq!(fid, "ACD_TenBandEQStereo");
     }
 
@@ -3935,7 +3892,7 @@ mod tests {
         // ACD_Freqout substring-contains "eq" but is a feedback pedal — with a
         // cab present the muddy fix must INSERT an EQ, never mistake it for one.
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_Freqout"], &[]);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         assert!(eq_insert(&rx).is_some(), "Freqout is not an EQ → insert");
     }
 
@@ -3943,8 +3900,7 @@ mod tests {
     fn eq_insert_appends_when_the_cab_ends_its_group() {
         // Amp · cab (cab last) → append after the cab (before None, same spot).
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let (fid, before) =
-            eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert");
+        let (fid, before) = eq_insert(&generate_rx("muddy", &p)).expect("insert");
         assert_eq!(fid, "ACD_TenBandEQStereo");
         assert_eq!(before, None, "cab last in group → append");
     }
@@ -3954,7 +3910,7 @@ mod tests {
         // A CabIR amp carries the cab on the amp node (cab_sim_id present); the
         // EQ still anchors right after it, before the following block.
         let p = chain(&["ACD_TweedDeluxe", "ACD_SpaceEcho"], &["ACD_TweedDeluxe"]);
-        let (_, before) = eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert");
+        let (_, before) = eq_insert(&generate_rx("muddy", &p)).expect("insert");
         assert_eq!(before.as_deref(), Some("ACD_SpaceEcho"));
     }
 
@@ -3962,7 +3918,7 @@ mod tests {
     fn eq_insert_without_a_cab_falls_back_to_the_front_group() {
         // No cab anywhere → insert in the front guitar group, appended.
         let p = chain(&["ACD_TubeScreamer", "ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         let chain_rx = rx.iter().find(|r| r.kind == RxKind::Chain).expect("insert");
         match &chain_rx.ops[0] {
             DoctorOp::InsertNode {
@@ -3992,7 +3948,7 @@ mod tests {
             cab_sim2_enabled: None,
             params: HashMap::new(),
         });
-        let (_, before) = eq_insert(&generate_rx("muddy", &p, Instrument::Guitar)).expect("insert");
+        let (_, before) = eq_insert(&generate_rx("muddy", &p)).expect("insert");
         assert_eq!(before, None, "cross-group anchor must not be used");
     }
 
@@ -4001,7 +3957,7 @@ mod tests {
         // The preview the UI renders must place the +added EQ tile right after
         // the cab, not at the tail — the visible half of the placement fix.
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS", "ACD_SpaceEcho"], &[]);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         let preview = rx
             .iter()
             .find(|r| r.kind == RxKind::Chain)
@@ -4022,14 +3978,14 @@ mod tests {
         // muddy → the 250 Hz band at −3; harsh → the 1k + 2k bands at −2. Fresh
         // insert, so the values are absolute.
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let muddy = generate_rx("muddy", &p, Instrument::Guitar);
+        let muddy = generate_rx("muddy", &p);
         match &muddy.iter().find(|r| r.kind == RxKind::Chain).unwrap().ops[0] {
             DoctorOp::InsertNode { params, .. } => {
                 assert_eq!(params, &vec![("gain250hz".to_string(), -3.0)]);
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
-        let harsh = generate_rx("harsh", &p, Instrument::Guitar);
+        let harsh = generate_rx("harsh", &p);
         match &harsh.iter().find(|r| r.kind == RxKind::Chain).unwrap().ops[0] {
             DoctorOp::InsertNode { params, .. } => {
                 assert!(params.contains(&("gain1khz".to_string(), -2.0)));
@@ -4060,7 +4016,7 @@ mod tests {
             ],
             &["ACD_TweedDeluxe"],
         );
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         assert!(inserts_nothing(&rx), "must not stack a 2nd EQ");
         assert!(rx
             .iter()
@@ -4071,7 +4027,7 @@ mod tests {
     fn washed_targets_reverb_mix_param_per_model() {
         let mut plate = chain(&["ACD_TMLargePlate"], &[]);
         plate[0].params.insert("wetdrymix".into(), 0.6);
-        let rx = generate_rx("washed", &plate, Instrument::Guitar);
+        let rx = generate_rx("washed", &plate);
         match &rx[0].ops[0] {
             DoctorOp::Param { param, value, .. } => {
                 assert_eq!(param, "wetdrymix", "TMLargePlate mixes via wetdrymix");
@@ -4081,7 +4037,7 @@ mod tests {
         }
         // Dwell-style spring: no mix param → advisory, never a wrong write.
         let spring = chain(&["ACD_Spring65"], &[]);
-        let rx = generate_rx("washed", &spring, Instrument::Guitar);
+        let rx = generate_rx("washed", &spring);
         assert_eq!(rx[0].kind, RxKind::Advisory);
         assert!(rx[0].ops.is_empty());
     }
@@ -4090,25 +4046,25 @@ mod tests {
     fn washed_mix_set_only_when_known_and_high() {
         // Unknown current mix → advisory (a blind 0.25 write could RAISE it).
         let unknown = chain(&["ACD_TMLargeRoom"], &[]);
-        let rx = generate_rx("washed", &unknown, Instrument::Guitar);
+        let rx = generate_rx("washed", &unknown);
         assert_eq!(rx[0].kind, RxKind::Advisory);
         assert!(rx[0].ops.is_empty());
         // Known but already ≤ 0.25 → the wash is delay-driven, keep the advisory.
         let mut low = chain(&["ACD_TMLargeRoom"], &[]);
         low[0].params.insert("mix".into(), 0.2);
-        let rx = generate_rx("washed", &low, Instrument::Guitar);
+        let rx = generate_rx("washed", &low);
         assert_eq!(rx[0].kind, RxKind::Advisory);
         // Known high mix → the one-click cut to 25%.
         let mut high = chain(&["ACD_TMLargeRoom"], &[]);
         high[0].params.insert("mix".into(), 0.6);
-        let rx = generate_rx("washed", &high, Instrument::Guitar);
+        let rx = generate_rx("washed", &high);
         assert_eq!(rx[0].kind, RxKind::OneClick);
     }
 
     #[test]
     fn lost_comp_inserts_at_front_of_chain() {
         let p = chain(&["ACD_TubeScreamer", "ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        let rx = generate_rx("lost", &p);
         let chain = rx
             .iter()
             .find(|r| r.kind == RxKind::Chain)
@@ -4132,7 +4088,7 @@ mod tests {
         // Known band value → relative cut on top of it, relative title kept.
         let mut p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
         p[1].params.insert("gain250hz".into(), 2.0);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         assert_eq!(rx[0].title, "Cut 3 dB around 300 Hz on your EQ");
         match &rx[0].ops[0] {
             DoctorOp::Param { value, .. } => assert!((value - (-1.0)).abs() < 1e-9),
@@ -4140,7 +4096,7 @@ mod tests {
         }
         // Clamped to the band range: −11 current − 3 → floor −12.
         p[1].params.insert("gain250hz".into(), -11.0);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         match &rx[0].ops[0] {
             DoctorOp::Param { value, .. } => {
                 assert!((value - (-EQ10_BAND_RANGE_DB)).abs() < 1e-9);
@@ -4149,7 +4105,7 @@ mod tests {
         }
         // Unknown current value → absolute write + the absolute-truth title.
         let p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         assert_eq!(rx[0].title, "Set the 250 Hz band to -3 dB");
         match &rx[0].ops[0] {
             DoctorOp::Param { value, .. } => assert!((value + 3.0).abs() < f64::EPSILON),
@@ -4161,7 +4117,7 @@ mod tests {
     fn harsh_cuts_the_detection_band() {
         // Detection is band 3 (1–3 kHz) → the cut rides gain1khz + gain2khz.
         let p = chain(&["ACD_TweedDeluxe", "ACD_TenBandEQStereo"], &[]);
-        let rx = generate_rx("harsh", &p, Instrument::Guitar);
+        let rx = generate_rx("harsh", &p);
         let eq = rx
             .iter()
             .find(|r| r.kind == RxKind::OneClick)
@@ -4181,14 +4137,14 @@ mod tests {
     fn comp_moves_are_graph_aware() {
         // Active comp already in the chain → sustain advisory, never an insert.
         let mut p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        let rx = generate_rx("lost", &p);
         assert!(rx
             .iter()
             .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
         assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
         // Bypassed comp → "switch it back on" advisory.
         p[0].bypassed = true;
-        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        let rx = generate_rx("lost", &p);
         assert!(rx
             .iter()
             .any(|r| r.title == "Switch your compressor back on"));
@@ -4196,13 +4152,13 @@ mod tests {
         // Active wins over bypassed (order-independent).
         let mut p = chain(&["ACD_CS3", "ACD_Sustain", "ACD_TweedDeluxe"], &[]);
         p[0].bypassed = true;
-        let rx = generate_rx("lost", &p, Instrument::Guitar);
+        let rx = generate_rx("lost", &p);
         assert!(rx
             .iter()
             .any(|r| r.title.contains("sustain on the compressor")));
         // Buried takes the same comp-aware path.
         let p = chain(&["ACD_DynaComp", "ACD_ModernBassOverdrive"], &[]);
-        let rx = generate_rx("buried", &p, Instrument::Bass);
+        let rx = generate_rx("buried", &p);
         assert!(rx
             .iter()
             .any(|r| r.kind == RxKind::Advisory && r.title.contains("sustain")));
@@ -4238,7 +4194,7 @@ mod tests {
             &["ACD_TweedDeluxe", "ACD_TMSmallHall"],
             &["ACD_TweedDeluxe"],
         );
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         let chain_rx: Vec<&Rx> = rx.iter().filter(|r| r.kind == RxKind::Chain).collect();
         assert_eq!(chain_rx.len(), 1);
         assert_eq!(chain_rx[0].ops.len(), 1);
@@ -4265,7 +4221,7 @@ mod tests {
     #[test]
     fn spiky_comp_appends_when_cab_ends_group() {
         let assert_appends_in_g1 = |nodes: &[DoctorNode]| {
-            let rx = generate_rx("spiky", nodes, Instrument::Guitar);
+            let rx = generate_rx("spiky", nodes);
             let chain_rx = rx
                 .iter()
                 .find(|r| r.kind == RxKind::Chain)
@@ -4328,7 +4284,7 @@ mod tests {
                 params: HashMap::new(),
             },
         ];
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         let chain_rx = rx
             .iter()
             .find(|r| r.kind == RxKind::Chain)
@@ -4348,7 +4304,7 @@ mod tests {
         // [delay, cab]: compressing after the cab would still sit after the
         // delay's wet tail — bail to advisory-only rather than pump it.
         let p = chain(&["ACD_SpaceEcho", "ACD_CabSimTMS"], &[]);
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         assert!(!rx.iter().any(|r| r.kind == RxKind::Chain));
         assert!(rx.iter().all(|r| r.kind == RxKind::Advisory));
 
@@ -4356,7 +4312,7 @@ mod tests {
         // insert still fires normally.
         let mut p = chain(&["ACD_SpaceEcho", "ACD_CabSimTMS"], &[]);
         p[0].bypassed = true;
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         assert!(rx.iter().any(|r| r.kind == RxKind::Chain));
     }
 
@@ -4366,7 +4322,7 @@ mod tests {
         // Every case also carries the leading "Tame the swings at the source"
         // advisory, so assert Chain-rx absence rather than an exact count.
         let p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         assert!(rx
             .iter()
             .any(|r| r.kind == RxKind::Advisory && r.title.contains("compression")));
@@ -4375,7 +4331,7 @@ mod tests {
         // Bypassed comp → "switch it back on" advisory.
         let mut p = chain(&["ACD_DynaComp", "ACD_TweedDeluxe"], &[]);
         p[0].bypassed = true;
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         assert!(rx
             .iter()
             .any(|r| r.title == "Switch your compressor back on"));
@@ -4383,7 +4339,7 @@ mod tests {
 
         // No comp, no cab → advisory-only, empty ops.
         let p = chain(&["ACD_TweedDeluxe"], &[]);
-        let rx = generate_rx("spiky", &p, Instrument::Guitar);
+        let rx = generate_rx("spiky", &p);
         assert!(!rx.is_empty());
         assert!(rx.iter().all(|r| r.kind == RxKind::Advisory));
         assert!(rx.iter().all(|r| r.ops.is_empty()));
@@ -4394,7 +4350,7 @@ mod tests {
         // The substring trap: ACD_Freqout contains "eq" but is a feedback
         // pedal — exact-id matching must never treat it as an EQ carrier.
         let p = chain(&["ACD_Freqout"], &[]);
-        let rx = generate_rx("muddy", &p, Instrument::Guitar);
+        let rx = generate_rx("muddy", &p);
         for r in &rx {
             for op in &r.ops {
                 if let DoctorOp::Param { node_id, .. } = op {
@@ -4637,42 +4593,6 @@ mod tests {
     }
 
     // ── stimulus-kind thresholds + band-confidence gating ──
-
-    fn assert_same_thresholds(a: &Thresholds, b: &Thresholds) {
-        assert_eq!(a.muddy_db, b.muddy_db);
-        assert_eq!(a.boomy_db, b.boomy_db);
-        assert_eq!(a.harsh_db, b.harsh_db);
-        assert_eq!(a.fizzy_db, b.fizzy_db);
-        assert_eq!(a.lost_db, b.lost_db);
-        assert_eq!(a.wash_tail_db, b.wash_tail_db);
-        assert_eq!(a.buried_lows_db, b.buried_lows_db);
-        assert_eq!(a.spiky_spread_lu, b.spiky_spread_lu);
-        assert_eq!(a.scene_delta_db, b.scene_delta_db);
-        assert_eq!(a.tilt_db_per_oct, b.tilt_db_per_oct);
-        assert_eq!(a.thin_db, b.thin_db);
-        assert_eq!(a.muddy_centered_db, b.muddy_centered_db);
-        assert_eq!(a.boomy_centered_db, b.boomy_centered_db);
-        assert_eq!(a.harsh_centered_db, b.harsh_centered_db);
-        assert_eq!(a.lost_centered_db, b.lost_centered_db);
-        assert_eq!(a.thin_centered_db, b.thin_centered_db);
-        assert_eq!(a.buried_centered_db, b.buried_centered_db);
-    }
-
-    #[test]
-    fn thresholds_for_matches_pinned_consts_regardless_of_kind() {
-        // ONE table per family now — `kind` no longer selects a different table
-        // (the `*_CAPTURE` consts are gone), so both kinds must read identically
-        // to the pinned HW-calibrated consts.
-        for (fam, pinned) in [
-            (Family::Guitar, &GUITAR),
-            (Family::Bass, &BASS),
-            (Family::BassVi, &BASS_VI),
-        ] {
-            assert_same_thresholds(fam.thresholds_for(StimulusKind::Synthetic), pinned);
-            assert_same_thresholds(fam.thresholds_for(StimulusKind::Capture), pinned);
-            assert_same_thresholds(fam.thresholds(), pinned); // thresholds() alias
-        }
-    }
 
     #[test]
     fn band_gate_suppresses_rule_when_primary_band_uncovered() {
@@ -4965,13 +4885,13 @@ mod tests {
     fn boomy_cab_hpf_is_value_aware() {
         // Unknown current hpf → blind write, honest "Set…" title (may raise OR lower).
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let rx = generate_rx("boomy", &p, Instrument::Guitar);
+        let rx = generate_rx("boomy", &p);
         assert_eq!(rx[0].kind, RxKind::OneClick);
         assert_eq!(rx[0].title, "Set the cab's low cut to 90 Hz");
         // Known + on the WRONG side (below 90) → the directional one-click at 90.
         let mut low = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         low[1].params.insert("hpf".into(), 40.0);
-        let rx = generate_rx("boomy", &low, Instrument::Guitar);
+        let rx = generate_rx("boomy", &low);
         assert_eq!(rx[0].kind, RxKind::OneClick);
         assert_eq!(rx[0].title, "Raise the cab's low cut to 90 Hz");
         match &rx[0].ops[0] {
@@ -4984,7 +4904,7 @@ mod tests {
         // Known + already AT/PAST 90 → the one-click would LOWER it; skip → advisory.
         let mut high = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         high[1].params.insert("hpf".into(), 120.0);
-        let rx = generate_rx("boomy", &high, Instrument::Guitar);
+        let rx = generate_rx("boomy", &high);
         assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].kind, RxKind::Advisory);
     }
@@ -4993,13 +4913,13 @@ mod tests {
     fn fizzy_cab_lpf_is_value_aware() {
         // Unknown current lpf → blind write, honest "Set…" title.
         let p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
-        let rx = generate_rx("fizzy", &p, Instrument::Guitar);
+        let rx = generate_rx("fizzy", &p);
         assert_eq!(rx[0].kind, RxKind::OneClick);
         assert_eq!(rx[0].title, "Set the cab's high cut to 8 kHz");
         // Known + on the WRONG side (above 8 kHz) → the directional one-click at 8000.
         let mut hi = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         hi[1].params.insert("lpf".into(), 12000.0);
-        let rx = generate_rx("fizzy", &hi, Instrument::Guitar);
+        let rx = generate_rx("fizzy", &hi);
         assert_eq!(rx[0].title, "Lower the cab's high cut to tame the fizz");
         match &rx[0].ops[0] {
             DoctorOp::Param { param, value, .. } => {
@@ -5011,7 +4931,7 @@ mod tests {
         // Known + already AT/PAST 8 kHz (below) → the one-click would RAISE it; skip.
         let mut lo = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         lo[1].params.insert("lpf".into(), 6000.0);
-        let rx = generate_rx("fizzy", &lo, Instrument::Guitar);
+        let rx = generate_rx("fizzy", &lo);
         assert_eq!(rx.len(), 1);
         assert_eq!(rx[0].kind, RxKind::Advisory);
     }
@@ -5495,9 +5415,9 @@ mod tests {
             .map(DoctorNode::from_graph_node)
             .collect();
         assert!(!nodes.is_empty(), "fixture graph decodes");
-        let rx = generate_rx("fizzy", &nodes, Instrument::Guitar);
+        let rx = generate_rx("fizzy", &nodes);
         assert!(!rx.is_empty());
-        let rx = generate_rx("lost", &nodes, Instrument::Guitar);
+        let rx = generate_rx("lost", &nodes);
         assert!(rx.iter().any(|r| r.kind == RxKind::Chain));
     }
 
