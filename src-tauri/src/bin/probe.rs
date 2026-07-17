@@ -104,15 +104,19 @@
 /// value is the arg right after the flag). Shared by the doctor-calib-style
 /// subcommands, each of which parses several such flags.
 ///
-/// A missing value (flag is last, or immediately followed by another `--flag`)
-/// yields `None` rather than swallowing the next flag's name as this flag's
-/// value — callers already treat `None`/empty as "not provided".
+/// A PRESENT flag with a missing value (flag is last, or immediately followed
+/// by another `--flag`) is a usage error, exit 2 — distinguishable from an
+/// absent flag (`None`), so a bare optional `--out` can never silently fall
+/// back to a default instead of what the user asked for.
 fn flag_arg(args: &[String], name: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == name)
-        .and_then(|j| args.get(j + 1))
-        .filter(|v| !v.starts_with("--"))
-        .cloned()
+    let j = args.iter().position(|a| a == name)?;
+    match args.get(j + 1) {
+        Some(v) if !v.starts_with("--") => Some(v.clone()),
+        _ => {
+            eprintln!("[probe] {name} requires a value");
+            std::process::exit(2);
+        }
+    }
 }
 
 /// Resolve an opspec argument: if it names an existing file, read its contents;

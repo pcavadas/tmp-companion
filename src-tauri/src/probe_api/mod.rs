@@ -44,10 +44,29 @@ pub(crate) fn parse_family_arg(family_id: &str) -> Result<crate::doctor::Family,
 
 /// Belt-and-braces: leave the unit re-amp OFF even after a mid-sweep capture
 /// error — every doctor-calib-style probe sweep ends on this, on a fresh
-/// connection, best-effort (a failure here is not itself surfaced).
+/// connection. Best-effort (never masks the sweep's own result) but LOUD: a
+/// failed OFF strands the unit input-muted, so it must be visible.
 pub(crate) fn reamp_off_best_effort() {
-    let _ =
-        crate::session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    if let Err(e) =
+        crate::session::Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()))
+    {
+        eprintln!(
+            "[probe] WARNING: fresh-connection re-amp OFF failed ({e}) — the unit may be \
+             stuck input-muted; recover with `probe --reamp-off`"
+        );
+    }
+}
+
+/// RAII form of [`reamp_off_best_effort`]: runs it on scope exit — early `?`,
+/// `continue`-skipped sweep rows, normal return, even panic unwind — so no
+/// future early return can strand the unit re-amp-engaged. Construct it after
+/// the pure-local setup (stim load etc.), before the first device-touching
+/// call, so a local failure never churns a device connection.
+pub(crate) struct ReampOffGuard;
+impl Drop for ReampOffGuard {
+    fn drop(&mut self) {
+        reamp_off_best_effort();
+    }
 }
 
 pub use doctor_calib::*;

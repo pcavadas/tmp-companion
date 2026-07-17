@@ -158,16 +158,29 @@ pub fn probe_doctor_window_ab(
     let mut skipped: Vec<u32> = Vec::new();
 
     for &slot in slots {
-        eprintln!("[probe] doctor-window-ab: slot {slot} — oracle (full stim)…");
-        let oracle = match capture_variant(slot, oracle_stim, ORACLE_TAIL_MS, family, false) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[probe] slot {slot}: oracle capture failed: {e} (skipping slot)");
-                skipped.push(slot);
-                continue;
+        // Each capture sleeps the reconnect gap BEFORE its result is matched, so
+        // a failed capture (which has already churned the device) paces the next
+        // connection exactly like a successful one instead of cascading failures
+        // across the remaining slots. One shape for all three variants.
+        let mut settle_or_skip = |label: &str, res: Result<Capture, String>| -> Option<Capture> {
+            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+            match res {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("[probe] slot {slot}: {label} capture failed: {e} (skipping slot)");
+                    skipped.push(slot);
+                    None
+                }
             }
         };
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+
+        eprintln!("[probe] doctor-window-ab: slot {slot} — oracle (full stim)…");
+        let Some(oracle) = settle_or_skip(
+            "oracle",
+            capture_variant(slot, oracle_stim, ORACLE_TAIL_MS, family, false),
+        ) else {
+            continue;
+        };
 
         let prod_tail_ms = match crate::read_slot_preset_parsed(slot) {
             Ok((preset, _, _)) => {
@@ -189,26 +202,20 @@ pub fn probe_doctor_window_ab(
         eprintln!(
             "[probe] doctor-window-ab: slot {slot} — production 3 s stim (padded) + {prod_tail_ms} ms tail…"
         );
-        let b = match capture_variant(slot, &prod_stim, prod_tail_ms, family, true) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[probe] slot {slot}: 3s capture failed: {e} (skipping slot)");
-                skipped.push(slot);
-                continue;
-            }
+        let Some(b) = settle_or_skip(
+            "3s",
+            capture_variant(slot, &prod_stim, prod_tail_ms, family, true),
+        ) else {
+            continue;
         };
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         eprintln!("[probe] doctor-window-ab: slot {slot} — 4 s stim + 1.5 s tail…");
-        let c = match capture_variant(slot, &stim[..four_s], SHORT_TAIL_MS, family, false) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[probe] slot {slot}: 4s capture failed: {e} (skipping slot)");
-                skipped.push(slot);
-                continue;
-            }
+        let Some(c) = settle_or_skip(
+            "4s",
+            capture_variant(slot, &stim[..four_s], SHORT_TAIL_MS, family, false),
+        ) else {
+            continue;
         };
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         let band_delta = |x: &Capture| -> Vec<f64> {
             oracle

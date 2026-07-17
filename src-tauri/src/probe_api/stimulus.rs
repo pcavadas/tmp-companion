@@ -208,6 +208,10 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
         Option<Vec<doctor::DoctorNode>>,
         Vec<bool>,
     );
+    // Fresh-connection re-amp OFF on every exit path — this sweep previously
+    // had NO belt-and-braces cleanup at all (a mid-sweep failure left the
+    // device's re-amp state wherever the error found it).
+    let _reamp_off = super::ReampOffGuard;
     let mut sounds: Vec<Sound> = Vec::new();
     for &(slot, scene) in slots {
         // One field-8 slot read (quiet line, NO LoadPreset) drives BOTH the graph
@@ -266,7 +270,10 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                 let psd_onset = leveller::doctor_signal_start(onset, confident);
                 let body_psd = doctor::body_psd(&samples, rate, psd_onset);
                 let stim_psd = crate::psd::welch_psd(&stim, rate as f32);
-                let profile = doctor::SoundProfile::from_capture_with_psd(
+                // Skip-and-continue like the capture-failure arm below — a `?`
+                // here (e.g. one silent-inject slot) would discard the whole
+                // sweep, including every slot already captured.
+                match doctor::SoundProfile::from_capture_with_psd(
                     &samples,
                     rate,
                     stim.len(),
@@ -274,11 +281,15 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                     instrument,
                     &body_psd,
                     Some(&stim_psd),
-                )?;
-                let coverage = doctor::output_coverage_with_body(
-                    &samples, rate, psd_onset, instrument, &body_psd,
-                );
-                sounds.push((slot, scene, profile, nodes, coverage));
+                ) {
+                    Ok(profile) => {
+                        let coverage = doctor::output_coverage_with_body(
+                            &samples, rate, psd_onset, instrument, &body_psd,
+                        );
+                        sounds.push((slot, scene, profile, nodes, coverage));
+                    }
+                    Err(e) => eprintln!("[probe] slot {slot}: profile failed: {e} (skipping)"),
+                }
             }
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
         }

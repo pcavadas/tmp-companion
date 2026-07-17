@@ -61,8 +61,10 @@ fn is_fixture_body(bytes: &[u8]) -> bool {
 }
 
 /// Field-8-read `device_slot` (1-based) and require a fixture marker — the one
-/// ownership probe the sweep and the target classification share.
-fn slot_is_fixture_owned(s: &mut Session, device_slot: u32) -> bool {
+/// ownership probe the sweep, the target classification, and the e2e clear
+/// guard share. Callers must be on a QUIET line (`drain_until_quiet` first) —
+/// a field-8 read fired mid-flood is dropped device-side.
+pub(crate) fn slot_is_fixture_owned(s: &mut Session, device_slot: u32) -> bool {
     matches!(s.read_slot_preset_json(device_slot), Ok(Some(bytes)) if is_fixture_body(&bytes))
 }
 
@@ -110,19 +112,20 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
     sweep_on(&mut s, &list, &spec)
 }
 
-/// TOLERANT list read + a full-bank completeness floor. Tolerant because the
-/// strict harvest fails on interleaved back-to-back-session responses (see the
-/// CLAUDE.md 0xe00002c5 entry); the floor is the real safety — a partial view
-/// must never drive clears or imports, and truncation is tail-only, so a
-/// length check IS the completeness check.
+/// TOLERANT list read + an EXACT-bank-size gate. Tolerant because the strict
+/// harvest fails on interleaved back-to-back-session responses (see the
+/// CLAUDE.md 0xe00002c5 entry); the size gate is the real safety — a partial
+/// view must never drive clears or imports (truncation is tail-only, so a
+/// length check IS the completeness check), and a LARGER bank means a fw rev
+/// moved the slot layout out from under our destructive slot assumptions.
 const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45; fail-loud if a fw rev resizes the bank
 
 fn read_full_list(s: &mut Session) -> Result<Vec<session::PresetEntry>, String> {
     let list = s.list_my_presets()?;
-    if list.len() < MY_PRESETS_BANK_SIZE {
+    if list.len() != MY_PRESETS_BANK_SIZE {
         return Err(format!(
-            "preset list read truncated ({} of {MY_PRESETS_BANK_SIZE} entries) — refusing \
-             to seed on a partial view of the bank",
+            "preset list size {} != the expected {MY_PRESETS_BANK_SIZE} (truncated read, or a \
+             fw rev resized the bank) — refusing to seed on an unexpected bank shape",
             list.len()
         ));
     }

@@ -142,6 +142,10 @@ export function PrescriptionCard({
   const { discardIfMine } = lock;
   const mountedRef = useRef(true);
   useEffect(() => {
+    // Re-arm on every effect run: the cleanup below flips it false, and without
+    // this reset a dep change (new cardId/listIndex) would leave it permanently
+    // false, silently dropping every later async success/error state update.
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       discardIfMine(cardId, listIndex);

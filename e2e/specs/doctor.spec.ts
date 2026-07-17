@@ -12,10 +12,12 @@ import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
 //
 // ONLINE seeding note: scripts/e2e.sh seeds the scenario via `probe --seed-scenario`
 // BEFORE the server starts (fresh-process seeding dodges the in-process 0xe00002c5
-// open lockout that aborted in-spec seeds); `ensureScenario` here is the presence
-// check + the fallback for direct playwright runs. If the runner's seed fails all
-// attempts, check nothing else holds the device (Pro Control, a stale server/app),
-// rest a minute, rerun.
+// open lockout that aborted in-spec seeds) and POSTs `e2e_mark_seeded`, which arms the
+// server's verified-seed flag; `ensureScenario` here always calls `e2e_seed_scenario`
+// online, which fast-no-ops on that flag and only pays the full ownership-verified
+// in-process seed on direct playwright runs (or after a clear). If the runner's seed
+// fails all attempts, check nothing else holds the device (Pro Control, a stale
+// server/app), rest a minute, rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
     await clearScenario(page);

@@ -229,8 +229,12 @@ fn run_recipe(
     let (after, line) = match after_res {
         Ok(v) => v,
         Err(e) => {
-            let _ = leveller::restore_saved_preset(slot);
-            return Err(e);
+            // The capture error stays primary, but a restore failure here means
+            // the injected edit may still be live — append it, never drop it.
+            return Err(leveller::append_restore_err(
+                e,
+                leveller::restore_saved_preset(slot),
+            ));
         }
     };
     text += &line;
@@ -295,6 +299,9 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
     // stable across every recipe since each one restores the stored preset
     // before the next injects (each recipe's AFTER capture re-resolves its
     // own tail off the edited graph — see `run_recipe`'s doc).
+    // Fresh-connection re-amp OFF on EVERY exit path from here down (the
+    // drop-guard form of the old sweep-tail call).
+    let _reamp_off = super::ReampOffGuard;
     let (group_id, name, before_tail) = last_guitar_group_anchor(slot)?;
     let before_tail = u64::from(before_tail);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
@@ -332,9 +339,15 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
 
     // Belt-and-braces: whatever the last recipe left behind (a failed
     // after-capture can leave an injected edit buffer, see `run_recipe`'s
-    // doc), restore the stored preset and leave re-amp OFF.
-    let _ = leveller::restore_saved_preset(slot);
-    super::reamp_off_best_effort();
+    // doc), restore the stored preset (re-amp OFF is the fn-top drop guard).
+    // A restore failure is surfaced in the report — the sweep's rows are still
+    // valid evidence, but the operator must know the edit buffer may be dirty.
+    if let Err(e) = leveller::restore_saved_preset(slot) {
+        out += &format!(
+            "\n!!! WARNING: final edit-buffer restore failed ({e}) — slot {slot}'s live edit \
+             buffer may still hold the last injected defect; reload the preset to discard !!!\n"
+        );
+    }
 
     out += &format!(
         "\ndoctor-defects summary: {} recipe(s) — HIT={hits} MISS={misses} VIOLATION={violations} UNRELIABLE={unreliable} error={errors}\n",

@@ -272,11 +272,16 @@ fn restore_after_unsaved_error<T>(
     if save && err != CANCELLED {
         return Err(err);
     }
-    match restore_saved_preset(slot) {
-        Ok(()) => Err(err),
-        Err(restore_err) => Err(format!(
-            "{err}; also failed to restore stored preset: {restore_err}"
-        )),
+    Err(append_restore_err(err, restore_saved_preset(slot)))
+}
+
+/// Fold a restore failure into a primary error — the ONE wording for the
+/// "primary error + edit-buffer restore failure" merge every restore-after-
+/// failure path shares (here, `probe_api::doctor_inject`/`doctor_defects`).
+pub(crate) fn append_restore_err(primary: String, restore: Result<(), String>) -> String {
+    match restore {
+        Ok(()) => primary,
+        Err(r) => format!("{primary}; also failed to restore stored preset: {r}"),
     }
 }
 

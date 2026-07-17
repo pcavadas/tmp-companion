@@ -359,9 +359,10 @@ fn build_showcase_fixture() {
 /// device userSlot = listIndex + 1). Run with:
 ///   `cargo test build_scenario_fixture -- --ignored`
 /// Committed output, regenerated only when `scenario-presets.json` changes.
-#[test]
-#[ignore = "generator: writes backup-fixture.bin from scenario-presets.json"]
-fn build_scenario_fixture() {
+/// `scenario-presets.json` → the UserPresets SQL script the scenario fixture
+/// archive is built from. Shared by the (ignored) generator and the non-ignored
+/// drift lock below, so the two can never diverge on construction.
+fn scenario_fixture_sql() -> (String, usize) {
     let src = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../e2e/fixtures/scenario-presets.json"
@@ -386,11 +387,45 @@ fn build_scenario_fixture() {
             " INSERT INTO UserPresets VALUES ({slot}, {slot}, 0, '{name}', '{json}');"
         ));
     }
+    (sql, presets.len())
+}
+
+/// DRIFT LOCK (non-ignored, runs in CI): the committed `backup-fixture.bin` must
+/// stay in sync with `scenario-presets.json` — the offline specs read the former,
+/// the online seed imports the latter, and they must describe the SAME presets.
+/// Regenerates the archive in memory through the exact generator construction and
+/// compares the DECODED rows (content, not bytes — sqlite/tar/LZ4 output is not
+/// byte-stable across environments). On failure: rerun
+/// `cargo test build_scenario_fixture -- --ignored` and commit the result.
+#[test]
+fn scenario_fixture_matches_scenario_presets_json() {
+    let (sql, n) = scenario_fixture_sql();
+    let regenerated =
+        read_backup_archive(&build_backup_archive(&sql)).expect("decode regenerated archive");
+    let committed_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/backup-fixture.bin"
+    ))
+    .expect("read committed backup-fixture.bin");
+    let committed = read_backup_archive(&committed_bytes).expect("decode committed fixture");
+    assert_eq!(regenerated.presets.len(), n, "all scenario presets decode");
+    assert_eq!(
+        serde_json::to_value(&regenerated.presets).expect("serialize regenerated"),
+        serde_json::to_value(&committed.presets).expect("serialize committed"),
+        "backup-fixture.bin is out of sync with scenario-presets.json — rerun \
+         `cargo test build_scenario_fixture -- --ignored` and commit the regenerated fixture"
+    );
+}
+
+#[test]
+#[ignore = "generator: writes backup-fixture.bin from scenario-presets.json"]
+fn build_scenario_fixture() {
+    let (sql, n_presets) = scenario_fixture_sql();
     let archive = build_backup_archive(&sql);
 
     // Round-trip through the real decoder before committing the bytes.
     let decoded = read_backup_archive(&archive).expect("decode generated archive");
-    assert_eq!(decoded.presets.len(), presets.len(), "all presets decode");
+    assert_eq!(decoded.presets.len(), n_presets, "all presets decode");
     let reference = decoded
         .presets
         .iter()
@@ -413,6 +448,6 @@ fn build_scenario_fixture() {
     eprintln!(
         "build_scenario_fixture: wrote {} bytes ({} presets) → {out}",
         archive.len(),
-        presets.len(),
+        n_presets,
     );
 }

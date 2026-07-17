@@ -31,7 +31,7 @@ export function DiagnosisChip({
         // Possible = muted: drop the severity tint to a neutral, hollow chip so a
         // near-threshold guess doesn't read as a firm finding.
         color: possible ? t.mutedInk : tone.fg,
-        background: possible ? "transparent" : tone.soft,
+        background: possible ? undefined : tone.soft,
         border: `0.5px solid ${possible ? t.hairlineStrong : tone.border}`,
         borderRadius: 5,
         padding: `${String(t.space1)}px ${String(t.space3)}px`,

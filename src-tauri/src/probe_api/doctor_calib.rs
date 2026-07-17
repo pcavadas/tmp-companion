@@ -261,6 +261,30 @@ fn profile_and_coverage(
     Ok((profile, coverage, signal_start))
 }
 
+/// `profile_and_coverage`, sweep-flavored: log + `None` on failure so callers
+/// `let … else { continue }` — one bad slot never ends a sweep, and no `?` can
+/// return past the sweep's re-amp OFF cleanup. `label` distinguishes the user
+/// and factory sweeps' log lines.
+#[allow(clippy::too_many_arguments)]
+fn profile_or_skip(
+    label: &str,
+    slot: u32,
+    samples: &[f32],
+    rate: u32,
+    stim: &[f32],
+    onset: usize,
+    confident: bool,
+    family: doctor::Family,
+) -> Option<(doctor::SoundProfile, Vec<bool>, usize)> {
+    match profile_and_coverage(samples, rate, stim, onset, confident, family) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("[probe] {label}slot {slot}: profile failed: {e} (skipping)");
+            None
+        }
+    }
+}
+
 /// Requested-but-not-captured slots — recorded in the JSON and flagged
 /// INCOMPLETE on stdout so a biased subset never reads as complete evidence.
 fn skipped_slots(requested: &[u32], rows: &[Row]) -> Vec<u32> {
@@ -286,6 +310,8 @@ pub fn probe_doctor_calib(
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(stim_path)?);
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
+    // Fresh-connection re-amp OFF on every exit path (mid-sweep error included).
+    let _reamp_off = super::ReampOffGuard;
     let mut rows: Vec<Row> = Vec::new();
     for &slot in slots {
         // One field-8 slot read drives the base-sound force-bypass isolation
@@ -309,16 +335,23 @@ pub fn probe_doctor_calib(
                 )
             }
             Err(e) => {
-                eprintln!("[probe] slot {slot}: preset read failed ({e}) — no isolation");
-                (Vec::new(), u64::from(leveller::DOCTOR_TAIL_MS))
+                // Capturing WITHOUT isolation would let active on/off blocks
+                // contaminate the derived thresholds while the row still reads
+                // as valid evidence — skip; `skipped_slots` marks the sweep
+                // INCOMPLETE instead.
+                eprintln!("[probe] slot {slot}: preset read failed ({e}) — skipping");
+                continue;
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), tail_ms, false) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let (profile, coverage, signal_start) =
-                    profile_and_coverage(&samples, rate, &stim, onset, confident, family)?;
+                let Some((profile, coverage, signal_start)) =
+                    profile_or_skip("", slot, &samples, rate, &stim, onset, confident, family)
+                else {
+                    continue;
+                };
                 // body_end pairs the RAW onset with the padded stim length (the
                 // pad cancels); the floor window ends at the pad-shifted start.
                 let noise_floor_db =
@@ -333,8 +366,6 @@ pub fn probe_doctor_calib(
             Err(e) => eprintln!("[probe] slot {slot}: capture failed: {e} (skipping)"),
         }
     }
-    // Belt-and-braces re-amp OFF even on a mid-sweep error.
-    super::reamp_off_best_effort();
 
     if rows.is_empty() {
         return Err("no sound captured".to_string());
@@ -522,6 +553,8 @@ pub fn probe_doctor_calib_factory(
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(stim_path)?);
     let stim_loud = lufs::measure_mono(&stim, 48_000)?;
 
+    // Fresh-connection re-amp OFF on every exit path (mid-sweep error included).
+    let _reamp_off = super::ReampOffGuard;
     let mut rows: Vec<Row> = Vec::new();
     for &slot in factory_slots {
         // Load on its OWN connection (load + engage in one connection captures
@@ -559,8 +592,11 @@ pub fn probe_doctor_calib_factory(
         match leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail_ms) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let (profile, coverage, _) =
-                    profile_and_coverage(&samples, rate, &stim, onset, confident, family)?;
+                let Some((profile, coverage, _)) = profile_or_skip(
+                    "factory ", slot, &samples, rate, &stim, onset, confident, family,
+                ) else {
+                    continue;
+                };
                 rows.push(Row {
                     slot,
                     profile,
@@ -571,8 +607,6 @@ pub fn probe_doctor_calib_factory(
             Err(e) => eprintln!("[probe] factory slot {slot}: capture failed: {e} (skipping)"),
         }
     }
-    // Belt-and-braces re-amp OFF even on a mid-sweep error.
-    super::reamp_off_best_effort();
 
     if rows.is_empty() {
         return Err("no sound captured".to_string());

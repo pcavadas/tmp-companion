@@ -149,6 +149,9 @@ pub fn probe_doctor_inject(
     )?)?);
 
     let fender_id = block.unwrap_or("ACD_TenBandEQStereo");
+    // Fresh-connection re-amp OFF on EVERY exit path from here down (early `?`,
+    // normal return, even unwind) — the drop-guard form of the sweep-tail call.
+    let _reamp_off = super::ReampOffGuard;
     let mut out = format!(
         "doctor-inject slot {slot} block {fender_id} gains {:?}\n",
         gains
@@ -218,14 +221,18 @@ pub fn probe_doctor_inject(
         leveller::doctor_capture_current(&stim, None, &[], Some(0.5), after_tail),
     );
 
-    // Discard the injected defect + belt-and-braces re-amp OFF — ALSO when the
-    // after-capture failed (the module doc's "and on any error" promise): the
-    // injected edit must never outlive the command.
+    // Discard the injected defect ALSO when the after-capture failed (the module
+    // doc's "and on any error" promise): the injected edit must never outlive the
+    // command — and a restore failure is REPORTED, never dropped behind the
+    // capture error.
     let restore_res = leveller::restore_saved_preset(slot);
-    super::reamp_off_best_effort();
-    let (_, after_line) = after_res?;
-    restore_res?;
-    out += &after_line;
-    out += "  (edit buffer discarded — stored preset reloaded)\n";
-    Ok(out)
+    match (after_res, restore_res) {
+        (Ok((_, after_line)), Ok(())) => {
+            out += &after_line;
+            out += "  (edit buffer discarded — stored preset reloaded)\n";
+            Ok(out)
+        }
+        (Ok(_), Err(r)) => Err(format!("edit-buffer restore failed: {r}")),
+        (Err(e), restore) => Err(leveller::append_restore_err(e, restore)),
+    }
 }

@@ -49,15 +49,24 @@ export async function listPresets(page: Page): Promise<Preset[]> {
   return (await invoke(page, "list_presets")) as Preset[];
 }
 
-/** Ensure the three scenario presets exist at 400/401/402. Idempotent: present (offline
- *  fixture) → no-op; absent (online) → import the SAME committed presetJsons. */
+/** Ensure the three scenario presets exist at 400/401/402. Offline: baked into the
+ *  fixture + snapshot, so a name check suffices (SimDevice state is disposable).
+ *  ONLINE: always route through the ownership-verified seed — it verifies every
+ *  occupied target by fixture CONTENT MARKER (not name; a user preset coincidentally
+ *  named "E2E Target 1" fails the seed loudly instead of being blessed and later
+ *  saved-over / cleared), imports only what's missing, and fast-no-ops when the
+ *  server's verified-seed flag is armed (the runner's `e2e_mark_seeded` POST after its
+ *  fresh-process seed, or a prior verified call this run) — so per-spec calls don't
+ *  re-pay the multi-second, lockout-prone in-process device verify. */
 export async function ensureScenario(page: Page): Promise<void> {
-  const list = await listPresets(page);
-  const bySlot = new Map(list.map((p) => [p.slot, p.name]));
-  const present = SCENARIO.every((s) => bySlot.get(s.slot) === s.name);
-  if (present) return; // offline: baked into the fixture + snapshot
-  // Online: import the deterministic presets — the seed sweeps strays + imports over
-  // minutes, so it gets a long request timeout (ordinary commands keep the default).
+  if (!process.env.TMP_E2E_ONLINE) {
+    const list = await listPresets(page);
+    const bySlot = new Map(list.map((p) => [p.slot, p.name]));
+    const present = SCENARIO.every((s) => bySlot.get(s.slot) === s.name);
+    if (present) return;
+  }
+  // The seed sweeps strays + imports over minutes, so it gets a long request
+  // timeout (ordinary commands keep the default).
   await invoke(page, "e2e_seed_scenario", {}, 240_000);
 }
 

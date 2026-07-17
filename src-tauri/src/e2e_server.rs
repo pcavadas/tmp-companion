@@ -17,6 +17,15 @@ pub(crate) fn e2e_online() -> bool {
     std::env::var("TMP_E2E_ONLINE").is_ok()
 }
 
+/// The scenario presets are known seeded-and-OWNERSHIP-VERIFIED for this server process:
+/// set by a successful seed (in-process `e2e_seed_scenario`, or the runner's fresh-process
+/// `probe --seed-scenario` via its `e2e_mark_seeded` POST) and invalidated by any scenario
+/// clear. Lets every `ensureScenario` call after the first skip the multi-second (and
+/// lockout-prone — the reason `scripts/e2e.sh` seeds out-of-process) in-process re-verify:
+/// nothing between specs can change scenario ownership without going through a clear.
+#[cfg(feature = "e2e")]
+static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// SHOWCASE mode (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): serves the curated
 /// `e2e/fixtures/showcase/` library AND lets `doctor_check` inject curated `SoundProfile`s
 /// (`doctor::showcase_profile`) so the Doctor Results page renders real diagnoses instead of
@@ -293,10 +302,17 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if SCENARIO_VERIFIED.load(Ordering::SeqCst) {
+        // Already seeded + ownership-verified this run (runner seed or a prior
+        // call) and nothing has cleared since — skip the device re-verify.
+        return e2e_mark_seeded_snapshot();
+    }
     with_released_seize(state.session.clone(), move || {
         let o = probe_api::seed_scenario::seed_scenario_core()?;
         e2e_patch_swept(&o.swept);
         e2e_mark_seeded_snapshot()?;
+        SCENARIO_VERIFIED.store(true, Ordering::SeqCst);
         Ok(())
     })
     .await
@@ -334,7 +350,11 @@ fn e2e_mark_seeded_snapshot() -> Result<(), String> {
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_mark_seeded() -> Result<(), String> {
-    e2e_mark_seeded_snapshot()
+    e2e_mark_seeded_snapshot()?;
+    // The runner POSTs this only after its ownership-verified fresh-process
+    // `probe --seed-scenario` succeeded — the flag inherits that verification.
+    SCENARIO_VERIFIED.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 /// ONLINE-e2e recovery arm: sweep stray scenario imports out of the user's bank
@@ -345,6 +365,7 @@ async fn e2e_mark_seeded() -> Result<(), String> {
 #[tauri::command]
 async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
     with_released_seize(state.session.clone(), move || {
+        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         let swept = probe_api::seed_scenario::sweep_strays_core()?;
         e2e_patch_swept(&swept);
         Ok(swept.len())
@@ -354,7 +375,10 @@ async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
 
 /// ONLINE-e2e scratch teardown: clear scratch slot `slot` (0-based list index), restoring
 /// the empty state. SAFETY: refuses unless the slot currently holds `expect_name` (read in
-/// the same session) — so a wrong index can never clear a real preset.
+/// the same session) — so a wrong index can never clear a real preset — and, ONLINE, also
+/// requires the seed's fixture content marker (a name is not ownership: a user preset
+/// coincidentally named "E2E Target 1" must never be cleared; fail-closed). Offline the
+/// marker check is skipped — SimDevice state is disposable and serves no field-8 bodies.
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_clear_preset(
@@ -377,6 +401,16 @@ async fn e2e_clear_preset(
                 entry.name
             ));
         }
+        if e2e_online() {
+            s.drain_until_quiet(250, 20)?;
+            if !probe_api::seed_scenario::slot_is_fixture_owned(&mut s, slot + 1) {
+                return Err(format!(
+                    "refusing to clear slot {slot}: '{expect_name}' matches by name but does \
+                     not carry the fixture content marker — not seed-owned"
+                ));
+            }
+        }
+        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         s.clear_user_preset(slot)?;
         e2e_patch_snapshot_slot(slot, "Empty");
         Ok(())
