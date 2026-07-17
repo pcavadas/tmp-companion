@@ -130,6 +130,10 @@ pub fn probe_doctor_window_ab(
     // production constants, and 4 s has no production counterpart.
     let prod_stim = leveller::doctor_stim_slice(stim.clone());
     let four_s = stim.len().min(4 * 48_000);
+    // Cap the oracle to exactly 6 s too — a longer --stim source (e.g. a Tier-2
+    // capture) would otherwise let the oracle capture on more signal than the b/c
+    // variants, shifting tail placement and invalidating the delta comparison.
+    let oracle_stim = &stim[..ORACLE_STIM_SAMPLES];
 
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut out = format!(
@@ -144,7 +148,7 @@ pub fn probe_doctor_window_ab(
 
     for &slot in slots {
         eprintln!("[probe] doctor-window-ab: slot {slot} — oracle (full stim)…");
-        let oracle = match capture_variant(slot, &stim, ORACLE_TAIL_MS, family, false) {
+        let oracle = match capture_variant(slot, oracle_stim, ORACLE_TAIL_MS, family, false) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[probe] slot {slot}: oracle capture failed: {e} (skipping slot)");

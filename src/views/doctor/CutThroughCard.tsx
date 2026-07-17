@@ -61,5 +61,3 @@ export function CutThroughCard({ cutThrough }: CutThroughCardProps) {
     </div>
   );
 }
-
-export default CutThroughCard;

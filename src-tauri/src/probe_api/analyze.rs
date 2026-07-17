@@ -71,12 +71,16 @@ pub(crate) fn analyze_capture(
     let band_db = doctor::band_db(&profile.bands);
     let deviations = doctor::deviations(&band_db, family);
     let (tilt_slope, locals) = doctor::tilt_split(&deviations, family, None);
+    // The CAPTURED OUTPUT's own coverage (mirrors `commands/doctor.rs`'s production
+    // gate) — without it, low-energy bands skip the 30 dB confidence gate and can
+    // false-fire.
+    let coverage = doctor::output_coverage_with_body(samples, rate, psd_onset, family, &body_psd);
     let verdicts: Vec<&'static str> = doctor::diagnose_kind(
         &profile,
         None,
         family,
         doctor::StimulusKind::Synthetic,
-        None,
+        Some(&coverage),
         doctor::PlaybackOffsets::NONE,
     )
     .into_iter()

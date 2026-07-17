@@ -126,6 +126,7 @@ pub(crate) fn replace_inplace_with(
             )
         })?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
+    drop(save_conn); // end the save's connection before guarded_clear opens the next one
     guarded_clear(scratch_slot, &scratch_name)?; // remove the scratch copy (guarded)
 
     if !verify {

@@ -269,15 +269,17 @@ fn e2e_seed_online_snapshot() -> Result<(), String> {
 /// the KNOWN write rather than a device re-read — `list_my_presets` lags its own writes
 /// (read-after-write propagation), so an immediate re-read installs a stale list.
 #[cfg(feature = "e2e")]
-fn e2e_patch_snapshot_slot(slot: u32, name: &str) {
+fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
     let Some(snap) = monitor::startup_snapshot() else {
-        return;
+        return false;
     };
     let mut presets = snap.presets;
-    if let Some(e) = presets.iter_mut().find(|p| p.slot == slot) {
-        e.name = name.to_string();
-    }
+    let Some(e) = presets.iter_mut().find(|p| p.slot == slot) else {
+        return false;
+    };
+    e.name = name.to_string();
     monitor::e2e_install_snapshot(snap.firmware, presets, snap.graph);
+    true
 }
 
 /// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place the THREE
@@ -314,8 +316,17 @@ fn e2e_patch_swept(swept: &[u32]) {
 /// can't touch this process's snapshot, so the runner POSTs `e2e_mark_seeded` next).
 #[cfg(feature = "e2e")]
 fn e2e_mark_seeded_snapshot() -> Result<(), String> {
+    let mut missing = Vec::new();
     for p in probe_api::seed_scenario::scenario_spec()? {
-        e2e_patch_snapshot_slot(p.list_index, &p.name);
+        if !e2e_patch_snapshot_slot(p.list_index, &p.name) {
+            missing.push(p.list_index);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "startup snapshot doesn't cover scenario slot(s) {missing:?} — the UI preset \
+             list won't show the seeded names (likely a tail-truncated snapshot list)"
+        ));
     }
     Ok(())
 }
