@@ -145,13 +145,53 @@ if [ "$MODE" = offline ]; then
   exec bunx playwright test --config "$OFFLINE_CFG" "$@"
 fi
 
-# ── ONLINE: managed — handshake-verified start, per-spec runs, guaranteed recovery ──
+# ── ONLINE: managed — seed-first, handshake-verified start, per-spec runs, recovery ──
 trap cleanup EXIT INT TERM
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
 case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy level) ;; esac
 
-log "ONLINE e2e (real device) — starting handshake-verified server on :$PORT"
+# Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
+# never from inside a spec: Playwright's per-test budget (300 s) can't absorb seed
+# (~90–150 s) + retries, and the seed self-repairs (sweeps stray imports from any
+# earlier aborted run) so retrying is pollution-safe.
+#
+# ORDER IS LOAD-BEARING: the FIRST seed runs BEFORE the server starts, so it is the
+# run's first device contact — HW-observed: a seed fired ~60 s after the server's
+# handshake flood OPENS fine but harvests a truncated list (209/504 records) and its
+# aborted session then arms the open lockout for the retries, while every probe
+# invocation with no recent handshake reads the full 504-entry bank. The server's own
+# handshake then snapshots the already-seeded presets, so no snapshot patch is needed
+# for the first spec; later (inter-spec) seeds POST `e2e_mark_seeded` (a no-HID
+# snapshot patch) so the specs' `ensureScenario` fallback finds the presets present.
+seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mid"
+  "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 || return 1
+  [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
+}
+
+seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 3 failed attempts
+  local attempt
+  for attempt in 1 2 3; do
+    log "seeding the scenario presets (attempt $attempt)…"
+    if seed_scenario "$1"; then return 0; fi
+    log "seed attempt $attempt failed — resting 90 s (open lockout) before retry"
+    sleep 90
+  done
+  return 1
+}
+
+log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
+if ! seed_with_retry pre; then
+  err "scenario seed failed after 3 attempts — aborting (nothing to recover: no server ran)"
+  trap - EXIT INT TERM
+  exit 1
+fi
+
+# Settle before the server's handshake: the device's list read lags its own writes,
+# and the handshake list feeds the startup snapshot.
+sleep 10
+
+log "starting handshake-verified server on :$PORT"
 : > "$SERVER_LOG"
 TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" \
   cargo run -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server \
@@ -159,47 +199,31 @@ TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" \
 SERVER_PID=$!
 disown "$SERVER_PID" 2>/dev/null || true  # silence the shell's "Terminated" notice when cleanup kills it
 wait_server_ready
-log "device connected — snapshot seeded"
-
-# Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
-# device work from the long-lived e2e_server process degrades (HW-observed: truncated
-# list harvests + capricious 0xe00002c5 opens) while fresh processes are reliable; and
-# Playwright's per-test budget (300 s) can't absorb seed (~90–150 s) + retries anyway.
-# The seed self-repairs (sweeps stray imports from any earlier aborted run), so
-# retrying is pollution-safe. On success, tell the server's snapshot (no device I/O) so
-# the specs' `ensureScenario` fallback finds the presets present and skips.
-seed_scenario() {
-  "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 \
-    && bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
-}
+# The presets are verifiably placed (the pre-server probe seed exited 0); patch the
+# snapshot unconditionally in case the handshake's list read lagged the fresh writes.
+post '{"cmd":"e2e_mark_seeded","args":{}}' 30
+log "device connected — snapshot includes the seeded presets"
 
 fail=0
 first=1
 for s in "${SPECS[@]}"; do
   if [ "$first" -eq 1 ]; then
-    # The server-start handshake arms the device's post-close open LOCKOUT (tens of
-    # seconds; hid.rs's own retries reset it instead of riding it out — HW-measured:
-    # a seed ~5 s after server-ready fails through 41 s of ladder retries, while a
-    # 60 s true quiet then opens in seconds). Rest BEFORE the first spec's seed.
-    log "resting the unit before the first spec (post-handshake open lockout)…"
+    # Rest between the server-start handshake and the first spec's own device work
+    # (the post-handshake line needs quiet before it serves reads reliably).
+    log "resting the unit before the first spec (post-handshake settle)…"
     sleep 60
   else
+    # Later specs need a fresh seed (each spec's teardown clears the scenario). Their
+    # seed runs minutes after the server handshake — outside the degraded window.
     log "resting the unit between specs…"
-    sleep 12
+    sleep 60
+    if ! seed_with_retry mid; then
+      err "inter-spec scenario seed failed after 3 attempts — aborting (device recovery runs on exit)"
+      fail=1
+      break
+    fi
   fi
   first=0
-  seeded=0
-  for attempt in 1 2 3; do
-    log "seeding the scenario presets (attempt $attempt)…"
-    if seed_scenario; then seeded=1; break; fi
-    log "seed attempt $attempt failed — resting 90 s (open lockout) before retry"
-    sleep 90
-  done
-  if [ "$seeded" -ne 1 ]; then
-    err "scenario seed failed after 3 attempts — aborting (device recovery runs on exit)"
-    fail=1
-    break
-  fi
   log "running specs/$s.spec.ts (online)"
   # No outer timeout: Playwright's own 300 s/test governs; a short wrapper would kill it mid-run.
   if bunx playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts"; then
