@@ -1,0 +1,13 @@
+{
+  "_comment": "Hand-authored C table for the offline physics-faithful capture model (src-tauri/src/sim_device.rs::e2e_capture). Per-slot base + per-scene C = the sound's max-reachable LUFS at presetLevel=1.0 with outputLevel at its stored value; the model shifts by 20*log10(presetLevel) and a scene-relative outputLevel term. Stored knob values are NOT here — they are derived from scenario-presets.json (never duplicated). C values are chosen so the shipped default targets (-26/-24/-22) solve cleanly on these presets. Keys are 0-based LIST INDICES (device userSlot = index+1).",
+  "slots": {
+    "400": {
+      "base": -18.0,
+      "scenes": [-19.0, -17.0],
+      "routedNode": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR"
+    },
+    "401": { "base": -16.0 },
+    "402": { "base": -16.0 }
+  },
+  "default": -18.0
+}

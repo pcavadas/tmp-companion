@@ -15,7 +15,7 @@ pub(crate) struct ScenarioPreset {
     pub list_index: u32,
     pub name: String,
     #[serde(rename = "presetJson")]
-    preset_json: String,
+    pub(crate) preset_json: String,
 }
 
 /// The committed scenario-preset spec (`e2e/fixtures/scenario-presets.json`,

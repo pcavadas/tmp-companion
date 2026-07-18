@@ -155,13 +155,17 @@ fn offline_copy_journey_through_real_backend() {
 
 /// The Level journey's measure→solve→apply path runs end-to-end OFFLINE: the device
 /// goes through the `SimDevice` factory and the re-amp capture through the
-/// `--features e2e` audio fake (`audio::reamp_capture` returns the stimulus), so the
-/// leveler produces a finite `C` / final level with no hardware. Proves the audio
-/// seam the UI Level run depends on; loudness fidelity stays the online tier's job.
+/// `--features e2e` physics-faithful capture model (`audio::reamp_capture` → the
+/// SimDevice's `e2e_capture`), so the leveler measures the modeled loudness and solves a
+/// finite `C` / final level with no hardware. Proves the audio seam AND the physics
+/// wire-in: slot 0 is unlisted in the sidecar → the flat default `C = -18`, so the solved
+/// `constant_c` lands there (a `set_live` regression that skipped the model would read the
+/// passthrough stimulus's own loudness instead and fail this).
 #[test]
 fn offline_level_preset_runs_against_the_fake_audio() {
     let _serial = serial();
     let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim); // drive the physics-faithful capture model
     let sim_for_factory = sim.clone();
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim_for_factory.clone())));
 
@@ -186,7 +190,11 @@ fn offline_level_preset_runs_against_the_fake_audio() {
         r.measured_lufs.is_finite(),
         "measured a finite loudness: {r:?}"
     );
-    // Dry run — the fake recorded a level set but no save.
+    // The physics wire-in ran: an unlisted slot solves to the sidecar's flat default C.
+    assert!(
+        (r.constant_c - (-18.0)).abs() < 0.5,
+        "the physics model produced the default C=-18 (not a passthrough loudness): {r:?}"
+    );
     let ev = sim.events();
     assert!(
         ev.iter()

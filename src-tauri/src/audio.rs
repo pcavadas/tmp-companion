@@ -362,14 +362,11 @@ pub fn reamp_capture(
 ) -> Result<Capture, String> {
     #[cfg(feature = "e2e")]
     if !crate::e2e_online() {
-        // Offline: "capture" the stimulus as one deterministic channel so the leveler
-        // solves a finite C / level and the UI journey completes (loudness fidelity is the
-        // online tier's job). `tail_ms` unused — the stimulus IS the capture.
-        return Ok(Capture {
-            interleaved: stimulus_mono.to_vec(),
-            channels: 1,
-            sample_rate,
-        });
+        // Offline: drive the physics-faithful capture model (the real loudness law +
+        // a scene-relative outputLevel term), reading the installed SimDevice's DSP
+        // state, so the offline suite is a genuine loudness oracle. `tail_ms` unused
+        // (the model is deterministic, no decay tail to integrate).
+        return Ok(crate::sim_device::e2e_capture(stimulus_mono, sample_rate));
     }
     reamp_capture_real(stimulus_mono, sample_rate, tail_ms)
 }
