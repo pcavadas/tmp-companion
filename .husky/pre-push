@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+# Verification gates: a push must never land a red tree. On a stale/missing
+# stamp this RUNS the scoped gates (so a normal push just pays the cost once);
+# a red gate aborts the push with the failing gate's output.
+bash scripts/gates.sh --check >/dev/null 2>&1 || bash scripts/gates.sh
