@@ -187,17 +187,27 @@ run_gate() { # <label> <cmd...>
   fi
 }
 
-if [ "$want_shell" -eq 1 ] && command -v shellcheck >/dev/null 2>&1; then
-  # Filter out deleted files so shellcheck doesn't fail on "No such file or directory"
-  sh_files=""
-  for f in $(printf '%s\n' "$changed" | grep -E '\.sh$' || true); do
-    if [ -f "$f" ]; then
-      sh_files="$sh_files $f"
+# <newline-separated paths> — run one file per line through shellcheck; a
+# `while read` loop (not `for f in $(...)`) so a path with a space or glob
+# char is preserved verbatim, not word-split/globbed.
+shellcheck_files() {
+  local rc=0 f
+  while IFS= read -r f; do
+    if [ -z "$f" ] || [ ! -f "$f" ]; then
+      continue
     fi
-  done
-  if [ -n "$sh_files" ]; then
-    # shellcheck disable=SC2086
-    run_gate "shellcheck" shellcheck $sh_files
+    shellcheck "$f" || rc=1
+  done <<SHFILES
+$1
+SHFILES
+  return "$rc"
+}
+
+if [ "$want_shell" -eq 1 ] && command -v shellcheck >/dev/null 2>&1; then
+  # Filter out deleted files (below) so shellcheck doesn't fail on "No such file or directory"
+  sh_files_list="$(printf '%s\n' "$changed" | grep -E '\.sh$' || true)"
+  if [ -n "$sh_files_list" ]; then
+    run_gate "shellcheck" shellcheck_files "$sh_files_list"
   fi
 fi
 
