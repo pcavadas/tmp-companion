@@ -141,8 +141,8 @@ pub(crate) fn resolve_footswitch_job(
 /// base preset; jobs run sequentially. Mirrors `level_scenes_apply_batched`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn level_footswitches_apply(
-    app: tauri::AppHandle,
+pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     slot: u32,
     jobs: Vec<FootswitchLevelJob>,
@@ -244,6 +244,8 @@ pub(crate) async fn level_footswitches_apply(
                         r
                     })
                     .ok_or_else(|| "shared bake produced no result".to_string()),
+                // Bake has no cheap re-run marker (the block's param value is `Some` from the
+                // factory too), so it always solves — no idempotency probe (`current` = None).
                 footswitch::FsLevelPlan::Bake {
                     engaged,
                     clear_stale,
@@ -254,6 +256,7 @@ pub(crate) async fn level_footswitches_apply(
                     &stim,
                     job.target_lufs + offset,
                     "baked",
+                    None,
                 )
                 .inspect(|r| {
                     if save && r.clamp_reason.is_none() {
@@ -273,27 +276,43 @@ pub(crate) async fn level_footswitches_apply(
                 footswitch::FsLevelPlan::Assign { engaged } => {
                     match resolve_footswitch_job(&ftsw, &preset, job) {
                         Err(e) => Err(e),
-                        Ok((value_b, spec)) => leveller::measure_footswitch(
-                            job.switch,
-                            lev,
-                            engaged,
-                            &stim,
-                            job.target_lufs + offset,
-                            "assigned",
-                        )
-                        .inspect(|r| {
-                            if save && r.clamp_reason.is_none() {
-                                pending.push((
-                                    idx,
-                                    leveller::FsPendingWrite {
-                                        switch: job.switch,
-                                        lev: lev_owned(),
-                                        write: leveller::FsWrite::Assign { value_b, spec },
-                                        value: r.final_value,
-                                    },
-                                ));
-                            }
-                        }),
+                        Ok((value_b, spec)) => {
+                            // Re-run anchor: a prior assign's stored valueA (None = fresh).
+                            let current = footswitch::existing_param_fn_value_a(
+                                &ftsw,
+                                job.switch,
+                                &job.lev_node_id,
+                                &job.lev_parameter_id,
+                            )
+                            .map(|v| v as f32);
+                            leveller::measure_footswitch(
+                                job.switch,
+                                lev,
+                                engaged,
+                                &stim,
+                                job.target_lufs + offset,
+                                "assigned",
+                                current,
+                            )
+                            // Skip the write when the leveler left the value unchanged — its
+                            // `final_value == current` is the idempotency signal (no wire field).
+                            .inspect(|r| {
+                                if save
+                                    && r.clamp_reason.is_none()
+                                    && Some(r.final_value) != current
+                                {
+                                    pending.push((
+                                        idx,
+                                        leveller::FsPendingWrite {
+                                            switch: job.switch,
+                                            lev: lev_owned(),
+                                            write: leveller::FsWrite::Assign { value_b, spec },
+                                            value: r.final_value,
+                                        },
+                                    ));
+                                }
+                            })
+                        }
                     }
                 }
             };

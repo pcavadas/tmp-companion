@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 // Shared scenario setup for the dual-mode specs. The three working presets live at slots
 // 400/401/402 (the high scratch zone, clear of the user's real presets) and are the SAME
@@ -87,6 +87,51 @@ const quiet = (
  *  must not leave the unit input-muted for the next one). No-op offline. */
 export const reampOff = (page: Page): Promise<void> =>
   quiet(page, "e2e_reamp_off");
+
+/** The process-global session::REAMP_*_COUNT engage/disengage counters off the bridge.
+ *  Cumulative across the server process — capture a baseline at test start and diff it
+ *  (see `expectReampBalanced`) so an earlier surplus OFF can't mask a later unpaired ON. */
+export async function reampCounters(
+  page: Page,
+): Promise<{ on: number; off: number }> {
+  const res = await page.request.get(`${SERVER}/reamp/counters`);
+  return (await res.json()) as { on: number; off: number };
+}
+
+/** Standing re-amp-OFF safety gate (PR #81 class): THIS TEST must have disengaged re-amp at
+ *  least as often as it engaged, checked BEFORE the spec's own reampOff teardown rescue —
+ *  so a run that strands the unit re-amp-engaged (input-muted) fails HERE, not masked by the
+ *  teardown. Asserts on the per-test DELTA vs `baseline` (grab it with `reampCounters` before
+ *  the run) — the counters are cumulative, so a cross-test surplus OFF must not credit a later
+ *  unpaired engage. `offDelta >= onDelta` is the invariant (each capture pairs engage+disengage
+ *  and every leveling/doctor lane adds a guaranteed final OFF, so a balanced run is off > on). */
+export async function expectReampBalanced(
+  page: Page,
+  baseline: { on: number; off: number },
+): Promise<void> {
+  const { on, off } = await reampCounters(page);
+  const onDelta = on - baseline.on;
+  const offDelta = off - baseline.off;
+  expect(
+    offDelta,
+    `re-amp OFF delta (${String(offDelta)}) must be >= ON delta (${String(onDelta)}) this test — a shortfall means the run left the unit re-amp-engaged`,
+  ).toBeGreaterThanOrEqual(onDelta);
+}
+
+/** The SimDevice's ordered event log (offline only — online returns []). Used by the
+ *  offline events-equality oracle to prove two identical runs write the same sequence. */
+export async function simEvents(page: Page): Promise<unknown[]> {
+  const res = await page.request.get(`${SERVER}/sim/events`);
+  return (await res.json()) as unknown[];
+}
+
+/** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE:
+ *  the Playwright process does not inherit TMP_E2E_ONLINE, so a mode-split spec must ask the
+ *  server, not process.env. */
+export async function isOnline(page: Page): Promise<boolean> {
+  const res = await page.request.get(`${SERVER}/health`);
+  return ((await res.json()) as { online?: boolean }).online === true;
+}
 
 /** End-of-scenario teardown: clear any scenario slot we wrote (net-zero) and leave the unit
  *  on preset 001 (list index 0). Best-effort — the backend guard refuses any slot not holding

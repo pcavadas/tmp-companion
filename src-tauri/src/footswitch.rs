@@ -458,6 +458,24 @@ pub fn existing_param_fn_index(
         .map(|(i, _)| i as u32)
 }
 
+/// The stored engaged value (`valueA`) of switch `switch`'s existing `param` function on
+/// `(node_id, param)`, if one exists — the re-run idempotency anchor (the value a prior
+/// leveling run wrote). `None` for a fresh assign (no such function yet).
+pub fn existing_param_fn_value_a(
+    ftsw: &Value,
+    switch: u32,
+    node_id: &str,
+    param: &str,
+) -> Option<f64> {
+    let i = existing_param_fn_index(ftsw, switch, node_id, param)?;
+    ftsw.as_array()?
+        .get(switch as usize)?
+        .as_array()?
+        .get(i as usize)?
+        .get("valueA")
+        .and_then(Value::as_f64)
+}
+
 /// One leveling job's key for planning (the device-independent fields the decision needs).
 pub struct FsJobKey<'a> {
     pub switch: u32,

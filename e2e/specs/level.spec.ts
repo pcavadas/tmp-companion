@@ -3,6 +3,8 @@ import {
   SCENARIO,
   clearScenario,
   ensureScenario,
+  expectReampBalanced,
+  reampCounters,
   reampOff,
 } from "../fixtures/scenario";
 
@@ -31,6 +33,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     page,
   }) => {
     await ensureScenario(page);
+    const reampBase = await reampCounters(page);
 
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
@@ -77,6 +80,10 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
       timeout: 240_000,
     });
+
+    // Standing safety gate: the app disengaged re-amp at least as often as it engaged,
+    // checked BEFORE the afterEach reampOff rescue (so a stranded engage fails here).
+    await expectReampBalanced(page, reampBase);
   });
 
   // The mandatory "both scenes and footswitches" case: E2E Reference carries a Base, 2
@@ -91,6 +98,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     page,
   }) => {
     await ensureScenario(page);
+    const reampBase = await reampCounters(page);
 
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
@@ -130,5 +138,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({ timeout: 240_000 });
+
+    await expectReampBalanced(page, reampBase);
   });
 });

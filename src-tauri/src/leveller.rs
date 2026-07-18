@@ -1474,11 +1474,28 @@ pub(crate) fn measure_fs_at(
     engage_measure_disengage(&mut s, stimulus)
 }
 
+/// Is the switch's engaged loudness already at target (within `KNOB_TOL_LU`, not clamped)?
+/// The footswitch mirror of `scene_at_target` / `level_unchanged` — same acceptance band,
+/// so a re-run leaves an in-tolerance switch untouched instead of re-solving and
+/// re-randomizing it (the idempotency gap PR #74 deferred). `clamped` is always `false`
+/// here (the probe measures a real value at `cur`), but the param matches `scene_at_target`
+/// for parity and testability.
+fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
+    scene_at_target(measured, target, clamped)
+}
+
 /// Measurement/solve phase of ONE footswitch job — no write, no save, no reload.
 /// CALLER CONTRACT: the preset is already current (load it once per batch), and the
 /// caller discards the sweep pollution afterwards (the batch write session's reload,
 /// or a plain reload on the dry/no-signal paths). Returns the un-persisted result
 /// (`saved:false`, `verify_lufs:None`); `final_value` is the solved value.
+///
+/// `current_value` = the switch's currently-configured engaged value (a live-read prior
+/// `valueA` on the Assign re-run path). When `Some`, the leveler probes it FIRST: if the
+/// engaged loudness there is already at target it returns `final_value == current_value`
+/// verbatim so the caller writes nothing — the re-run idempotency skip (mirrors the base
+/// `level_unchanged` / scene `scene_at_target` skips). `None` (fresh assign, Bake, probe
+/// seams) always solves.
 pub fn measure_footswitch(
     switch: u32,
     lev: (&str, &str, &str),
@@ -1486,6 +1503,7 @@ pub fn measure_footswitch(
     stimulus: &[f32],
     target_lufs: f64,
     method: &str,
+    current_value: Option<f32>,
 ) -> Result<FootswitchLevelResult, String> {
     // Send the forced engaged-bypass list only on the FIRST successful capture:
     // working-copy edits persist across HID disconnect/reconnect (HW-proven, fw
@@ -1513,6 +1531,40 @@ pub fn measure_footswitch(
     let reamp_off = || {
         let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
     };
+
+    // Idempotency probe: if the switch's currently-configured engaged value already hits
+    // target, leave it untouched (a re-run must not re-solve + re-randomize an in-tolerance
+    // switch). Reuses `measure_at` (so a success arms the isolation-once optimization for the
+    // seeds); a NO_SIGNAL / floor / transient error falls through to the seed pass, which
+    // owns the routing-clamp verdict. `current_value` is None for fresh assigns / probe seams.
+    if let Some(cur) = current_value {
+        match require_live(|| measure_at(cur), stimulus) {
+            Ok(l) if switch_at_target(l.integrated_lufs, target_lufs, false) => {
+                reamp_off();
+                // Skip signal: `final_value` == the caller's current value verbatim, so the
+                // caller detects the no-op by `final_value == current` and writes nothing
+                // (the footswitch mirror of the scene lane's off-wire `writes: 0`).
+                return Ok(FootswitchLevelResult {
+                    switch,
+                    measured_lufs: l.integrated_lufs,
+                    final_value: cur,
+                    target_lufs,
+                    predicted_lufs: l.integrated_lufs,
+                    clamped: false,
+                    clamp_reason: None,
+                    saved: false,
+                    verify_lufs: None,
+                    iterations: 1,
+                    dynamic_spread_lu: Some(l.spread_lu()),
+                    method: method.into(),
+                });
+            }
+            // In-tolerance-but-not-a-skip falls through to the seed pass; a probe error
+            // must disengage re-amp first (the seed pass re-engages on a fresh connection).
+            Ok(_) => {}
+            Err(_) => reamp_off(),
+        }
+    }
 
     // Seed two real points and run a bounded generic secant.
     let (v_lo, v_hi) = (0.25f32, 0.75f32);
@@ -1642,7 +1694,17 @@ pub fn level_footswitch(
         FsWrite::Bake { .. } => "baked",
         FsWrite::Assign { .. } => "assigned",
     };
-    let result = measure_footswitch(switch, lev, engaged_bypass, stimulus, target_lufs, method)?;
+    // Single-switch probe seam: always solve fresh (no idempotency probe) — the batched
+    // command owns the re-run skip.
+    let result = measure_footswitch(
+        switch,
+        lev,
+        engaged_bypass,
+        stimulus,
+        target_lufs,
+        method,
+        None,
+    )?;
     if result.clamp_reason.is_some() {
         // No-signal routing clamp: nothing to write — discard the sweep pollution.
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
@@ -3918,6 +3980,24 @@ mod tests {
         assert!(
             !super::scene_at_target(-22.0, -22.0, true),
             "clamped must still report"
+        );
+    }
+
+    // switch_at_target is the footswitch mirror of scene_at_target — the re-run
+    // idempotency band (the PR #74 follow-up gap). Same KNOB_TOL_LU acceptance.
+    #[test]
+    fn switch_at_target_accepts_within_knob_tol() {
+        assert!(
+            super::switch_at_target(-24.0, -24.29, false),
+            "0.29 LU off, unclamped → skip the re-solve"
+        );
+    }
+
+    #[test]
+    fn switch_at_target_rejects_just_outside_knob_tol() {
+        assert!(
+            !super::switch_at_target(-24.0, -24.31, false),
+            "0.31 LU off → must re-level"
         );
     }
 
