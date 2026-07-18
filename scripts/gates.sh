@@ -188,7 +188,13 @@ run_gate() { # <label> <cmd...>
 }
 
 if [ "$want_shell" -eq 1 ] && command -v shellcheck >/dev/null 2>&1; then
-  sh_files="$(printf '%s\n' "$changed" | grep -E '\.sh$' || true)"
+  # Filter out deleted files so shellcheck doesn't fail on "No such file or directory"
+  sh_files=""
+  for f in $(printf '%s\n' "$changed" | grep -E '\.sh$' || true); do
+    if [ -f "$f" ]; then
+      sh_files="$sh_files $f"
+    fi
+  done
   if [ -n "$sh_files" ]; then
     # shellcheck disable=SC2086
     run_gate "shellcheck" shellcheck $sh_files

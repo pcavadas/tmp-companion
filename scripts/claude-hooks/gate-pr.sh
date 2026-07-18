@@ -42,6 +42,7 @@ fi
 # gates.sh: working tree vs merge-base (origin/main, else local main) + untracked
 # — so a NEW untracked device-facing file can't dodge the online requirement.
 device_re='src-tauri/src/leveller\.rs|src-tauri/src/session\.rs|src-tauri/src/audio\.rs|src-tauri/src/commands/level_|src-tauri/src/commands/doctor'
+# shellcheck disable=SC2015  # deliberate best-effort: any failure here must fall through to `true`, never abort the hook under set -e
 changed="$(cd "$repo" && {
   b="$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)"
   if [ -n "$b" ]; then git diff --name-only "$b"; fi

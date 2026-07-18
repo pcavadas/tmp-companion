@@ -1,3 +1,4 @@
+#!/bin/sh
 set -e
 # Verification gates: a push must never land a red tree. On a stale/missing
 # stamp this RUNS the scoped gates (so a normal push just pays the cost once);
