@@ -19,3 +19,4 @@
 - [ ] Only touched-file formatting (no repo-wide `cargo fmt` / prettier reflow)
 - [ ] No lint escape hatches in `src/` (`any` / `@ts-ignore` / non-null `!` / `eslint-disable`)
 - [ ] No new dependency, or it clears the health + 7-day cooldown bars (see CONTRIBUTING.md)
+- [ ] New invariant → new gate (spec/test added in this PR)
