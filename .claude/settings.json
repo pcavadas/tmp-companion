@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PROJECT_DIR}/scripts/claude-hooks/block-bypass.sh\""
+          },
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PROJECT_DIR}/scripts/claude-hooks/gate-pr.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
