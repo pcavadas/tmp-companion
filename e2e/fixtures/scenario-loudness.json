@@ -6,8 +6,17 @@
       "scenes": [-19.0, -17.0],
       "routedNode": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR"
     },
-    "401": { "base": -16.0 },
-    "402": { "base": -16.0 }
+    "401": {
+      "_comment": "Ceiling -23: solvable at Crunch/Rhythm (-24/-26, quieter) but CLAMPS at Lead (-22, louder than the ceiling) — the re-level-clamped loop (level-defaults.spec.ts): level at Lead → clamp, re-level at Crunch → resolves to done.",
+      "base": -23.0
+    },
+    "402": { "base": -16.0 },
+    "403": {
+      "_comment": "E2E Realistic (gtrParallel1). Base C=-28 → CLAMPS at any shipped default target (-26/-24/-22 are all louder than -28), the first-session mass-clamp reality on the presetLevel path (fully faithful). 4 scenes solvable via amp outputLevel (C above the targets). FS1 (BRANCH B) is off-branch: offbranchSwitchNode silences it when engaged.",
+      "base": -28.0,
+      "scenes": [-22.0, -16.0, -18.0, -17.0],
+      "offbranchSwitchNode": "ACD_TubeScreamer"
+    }
   },
   "default": -18.0
 }

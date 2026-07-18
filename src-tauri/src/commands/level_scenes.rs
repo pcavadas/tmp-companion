@@ -241,8 +241,8 @@ pub(crate) async fn level_scenes_apply(
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn level_scenes_apply_batched(
-    app: tauri::AppHandle,
+pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     slot: u32,
     jobs: Vec<SceneLevelJobArg>,

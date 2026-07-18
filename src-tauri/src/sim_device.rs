@@ -181,9 +181,15 @@ impl Default for SimState {
             reject_at: None,
             songs: vec!["Opening Set".into(), "Encore".into()],
             setlists: vec!["Saturday Night".into()],
-            preset_json: r#"{"audioGraph":{"guitarNodes":{"G1":[
-                {"FenderId":"ACD_Twin57","nodeId":"n1"},
-                {"FenderId":"ACD_ChorusCE2","nodeId":"n2"}
+            // A recognized amp (with an `outputLevel` control) + one effect, under a known
+            // routing template — so offline scene-leveling's `list_level_blocks` discovery
+            // finds a levelable amp candidate. The physics model reads the WRITTEN outputLevel
+            // node-agnostically (there is one amp per sound in the fixtures), so scene rows
+            // converge against this default amp regardless of the scenario's real trunk node
+            // (the deferred graph-echo fidelity fix — see the FIDELITY CEILING note).
+            preset_json: r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+                {"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false,"outputLevel":0.5}},
+                {"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}
             ]}}}"#
                 .to_string(),
             current_slot: 0,
@@ -307,10 +313,9 @@ impl SimDevice {
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
             // post-load push the `blockcaps` guard reads as the pre-edit roster
             // (`Session::current_preset_value`). May exceed one HID frame, so chunk it.
+            let json = load_echo_json(&st, slot0);
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
-            reports.extend(frame_multi(&current_preset_data_changed(
-                st.preset_json.as_bytes(),
-            )));
+            reports.extend(frame_multi(&current_preset_data_changed(&json)));
             return reports;
         }
         if let Some(rn) = proto::first_bytes(&f, F_REPLACE_NODE) {
@@ -379,7 +384,14 @@ impl SimDevice {
         if let Some(ls) = proto::first_bytes(&f, F_LOAD_SCENE) {
             // LoadScene{ sceneSlot(1) } — the 0-based scenes[] wire index.
             st.current_scene = Some(proto::first_varint(&proto::parse(ls), 1).unwrap_or(0) as u32);
-            return Vec::new();
+            // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
+            // classify each scene's routing (the real device pushes the scene graph on a scene
+            // CHANGE). The sim carries one graph, and the physics model reads the written
+            // `outputLevel` node-agnostically, so re-serving the same graph per scene is enough
+            // for the amp pick to resolve — without it, the pre-pass harvests nothing and every
+            // scene fails to classify ("read failed"). Only scene-leveling sends `loadScene`.
+            let json = load_echo_json(&st, st.current_slot);
+            return frame_multi(&current_preset_data_changed(&json));
         }
         if let Some(cp) = proto::first_bytes(&f, F_CHANGE_PARAMETER) {
             // changeParameter{ group(1), node(2), param(3), floatVal(5) | boolVal(7) }.
@@ -492,18 +504,24 @@ pub fn live_events() -> Vec<SimEvent> {
 // measured LUFS lands exactly at the modeled value. Scaling changes only LEVEL, never the
 // spectrum, so the Doctor's spectral diagnosis is unaffected.
 //
-// FIDELITY CEILING (scene-outputLevel CLAMP verdicts — a PR3 decision, not faithful yet):
-// `loadPreset` echoes a CONSTANT default graph for every slot (see the load handler), so
-// offline amp discovery always finds that graph's amp, and the leveller writes `outputLevel`
-// to it — a DIFFERENT node than the scenario's stored amp. The node-AGNOSTIC written-side
-// match + the leveller's closed-loop verify still converge the MEASURED LUFS (the
-// default-graph knob factor cancels), so solvable-row values are faithful. But the scene
-// CLAMP classification is solved against the default-graph knob, unrelated to the sidecar C
-// or the scenario's stored knob — so a scene-outputLevel "clamped-at-max" outcome is NOT
-// faithfully authorable via the sidecar. PR3 must therefore author every CLAMP outcome on
-// the base/presetLevel path (which clamps directly on C at LEVEL_MAX — fully faithful), and
-// list scene-outputLevel headroom in the plan's "what offline-green does NOT prove". The
-// faithful fix (echo each slot's real graph so written==stored) is deferred to PR3.
+// GRAPH ECHO (the PR3 faithful fix — `load_echo_json` + `scenario_json_for`): `loadPreset` and
+// `loadScene` echo each SCENARIO slot's REAL presetJson as `currentPresetDataChanged`(3), so
+// offline scene-leveling's prepass classifies each scene against the SAME amp node the
+// backup-derived candidates name (`written == stored` → faithful convergence AND a correct amp
+// pick for the parallel/split templates). Without it the prepass doc (a constant default graph)
+// didn't contain the backup candidate's amp, so `build_scene_jobs` failed to match and every
+// scene read-failed. Any non-scenario slot (and all non-e2e builds) still uses the default graph.
+//
+// FIDELITY DECISIONS (PR3):
+//  • The "clamped-at-max" outcome is authored on Base (presetLevel → C clamp at LEVEL_MAX,
+//    fully faithful); a scene-outputLevel CLAMP verdict is still NOT faithfully authorable
+//    (the closed-loop verify converges regardless of the sidecar clamp) → base-path only.
+//  • `SlotLoudness::offbranch_switch_node` (see its `model_lufs` check for the WHY) is the
+//    ONLINE footswitch-off-branch mechanism; OFFLINE the footswitch lane needs an unmodeled
+//    field-8 read (out of PR3 scope), so offline the off-branch is instead a SCENE saved with
+//    the amp output at zero → no-authority silence (same "no signal on USB 1/2" verdict).
+// What offline-green STILL does NOT prove: a scene-outputLevel CLAMP verdict, offline FOOTSWITCH
+// leveling (field-8), and parallel-lane summation (joint-k) — all online-only classes.
 
 /// Arm the currently-installed fake so `slot`'s NEXT capture returns silence once (the
 /// `POST /sim/fault` bridge endpoint). No-op when no fake is installed (online).
@@ -581,6 +599,18 @@ fn model_lufs(
     // Off-branch: the routed amp forced bypassed → muted sound → silence.
     if let Some(node) = entry.and_then(|e| e.routed_node.as_ref()) {
         if st.bypass_writes.get(node).copied().unwrap_or(false) {
+            return None;
+        }
+    }
+    // Off-branch FOOTSWITCH (a switch whose toggled block sits on a MUTED parallel
+    // branch): silence when that block is ENGAGED (bypass=false). Distinct from
+    // `routed_node` (silences when BYPASSED): the block is force-ON only while THAT
+    // footswitch is under its own isolated measurement — Base + other-switch isolation
+    // force every on-off block OFF (bypass=true), so those sounds stay measurable. This
+    // makes exactly one footswitch off-branch in a whole-preset run without silencing Base
+    // — the current model can't express that via `routed_node` (Base bypasses everything).
+    if let Some(node) = entry.and_then(|e| e.offbranch_switch_node.as_ref()) {
+        if st.bypass_writes.get(node).copied() == Some(false) {
             return None;
         }
     }
@@ -662,6 +692,12 @@ struct SlotLoudness {
     /// (only presets with an off-branch case set it).
     #[serde(default)]
     routed_node: Option<String>,
+    /// The **nodeId** of a block-acting footswitch's toggled block that sits on a MUTED
+    /// parallel branch: engaging it (bypass=false — which happens only while that switch is
+    /// under its own isolated measurement) routes to a dead branch → silence → the
+    /// leveller's off-branch verdict. See the `model_lufs` off-branch checks. Optional.
+    #[serde(default)]
+    offbranch_switch_node: Option<String>,
 }
 
 #[cfg(feature = "e2e")]
@@ -784,6 +820,39 @@ fn node_output_level(node: &serde_json::Value) -> Option<f32> {
         .and_then(|d| d.get("outputLevel"))
         .and_then(serde_json::Value::as_f64)
         .map(|v| v as f32)
+}
+
+/// The field-3 graph a `loadPreset`/`loadScene` echoes for slot `slot0`. For a SCENARIO slot
+/// (e2e) it echoes that slot's REAL presetJson so offline scene-leveling's prepass classifies
+/// against the same amp node the backup-derived candidates name (written==stored → faithful
+/// convergence + a correct amp pick for the parallel/split templates); any other slot (and all
+/// non-e2e builds) uses the shared default two-node graph (`with_preset_json` overrides it).
+fn load_echo_json(st: &SimState, slot0: u32) -> Vec<u8> {
+    #[cfg(feature = "e2e")]
+    if let Some(j) = scenario_json_for(slot0) {
+        return j.as_bytes().to_vec();
+    }
+    let _ = slot0;
+    st.preset_json.as_bytes().to_vec()
+}
+
+/// The committed scenario preset JSON for a 0-based list index, cached (the seed module owns
+/// the one reader of `scenario-presets.json`, so the echoed graph can't drift from the seed /
+/// backup fixture). `None` for a non-scenario slot → the caller uses the default graph.
+#[cfg(feature = "e2e")]
+fn scenario_json_for(slot0: u32) -> Option<&'static str> {
+    static MAP: std::sync::OnceLock<HashMap<u32, String>> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        crate::probe_api::seed_scenario::scenario_spec()
+            .map(|v| {
+                v.into_iter()
+                    .map(|p| (p.list_index, p.preset_json))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+    .get(&slot0)
+    .map(String::as_str)
 }
 
 /// Build a `songListResponse`(11→3) / `setlistListResponse`(12→3): records (field 2) each
@@ -936,6 +1005,7 @@ mod physics_tests {
                 base,
                 scenes,
                 routed_node: routed.map(str::to_string),
+                offbranch_switch_node: None,
             },
         );
         Sidecar {
@@ -1038,6 +1108,39 @@ mod physics_tests {
         assert!(
             model_lufs(&st, &sc, &stored).is_some(),
             "un-bypassed, the sound is measurable"
+        );
+    }
+
+    // An off-branch FOOTSWITCH block is silent ONLY when engaged (bypass=false, its own
+    // isolated measurement); forced OFF (bypass=true, as a Base/sibling isolation) it does
+    // NOT silence the sound — so Base stays measurable while that one switch is off-branch.
+    #[test]
+    fn offbranch_switch_node_silences_only_when_engaged() {
+        let mut sc = one_slot(403, -18.0, vec![], None);
+        sc.slots.get_mut("403").expect("slot").offbranch_switch_node =
+            Some("ACD_TubeScreamer".into());
+        let stored = std::collections::HashMap::new();
+        let with_bypass = |byp: Option<bool>| {
+            let mut st = SimState {
+                current_slot: 403,
+                ..Default::default()
+            };
+            if let Some(b) = byp {
+                st.bypass_writes.insert("ACD_TubeScreamer".into(), b);
+            }
+            model_lufs(&st, &sc, &stored)
+        };
+        assert!(
+            with_bypass(Some(false)).is_none(),
+            "engaged (bypass=false) → the off-branch switch measures silence"
+        );
+        assert!(
+            with_bypass(Some(true)).is_some(),
+            "forced OFF (bypass=true) → NOT silenced (Base/sibling isolation stays measurable)"
+        );
+        assert!(
+            with_bypass(None).is_some(),
+            "no write for that node → measurable"
         );
     }
 

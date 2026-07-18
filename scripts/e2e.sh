@@ -96,6 +96,7 @@ recover_device() {
   post '{"cmd":"e2e_clear_preset","args":{"slot":400,"expectName":"E2E Reference"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":401,"expectName":"E2E Target 1"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":402,"expectName":"E2E Target 2"}}'
+  post '{"cmd":"e2e_clear_preset","args":{"slot":403,"expectName":"E2E Realistic"}}'
   # Sweep stray scenario imports an aborted seed stranded elsewhere in the bank
   # (imports land at the first EMPTY slot anywhere; guarded, fail-closed). Long
   # timeout: N strays × clear can exceed the default 60 s cap.

@@ -515,6 +515,12 @@ export function useLevelingFlow({
           group.map((g, k) => [g.sceneSlot, { item: g, idx: i + k }]),
         );
         const resolveScene = batchResolve(byScene, causeOf);
+        // ponytail: per-scene outcomes arrive via the Channel (`onResult`), NOT the returned
+        // Promise value (deliberately discarded — the returned LevelResult[] carries no scene_slot,
+        // so it can't be reconciled by scene without a backend contract change). Consequence: the
+        // offline e2e HTTP bridge no-ops the Channel, so scene rows there resolve to "skipped"
+        // (their physics is gated at the command level instead — see level-defaults.spec.ts). If a
+        // dropped-stream-item-online hardening is ever needed, add scene_slot to the return + reconcile here.
         try {
           await levelScenesApplyBatched(
             {
