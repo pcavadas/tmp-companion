@@ -20,6 +20,13 @@ fn backup_preset_scenes_parse_names_and_fs_tags() {
 /// `read_backup_archive` decodes. Shared by the two backup-decode tests and the
 /// showcase-fixture generator (a per-call counter keeps parallel temp dirs distinct).
 fn build_backup_archive(sql: &str) -> Vec<u8> {
+    build_backup_archive_with_settings(sql, None)
+}
+
+/// Same recipe as [`build_backup_archive`], with an optional extra `settingsBackup`
+/// tar entry (the device's settings.json) so the settings-capture path can be
+/// exercised without duplicating the whole sqlite→tar→lz4 pipeline.
+fn build_backup_archive_with_settings(sql: &str, settings_json: Option<&[u8]>) -> Vec<u8> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
@@ -55,6 +62,19 @@ fn build_backup_archive(sql: &str) -> Vec<u8> {
                 std::io::Cursor::new(&db_bytes),
             )
             .expect("tar append");
+        if let Some(settings) = settings_json {
+            let mut sheader = tar::Header::new_gnu();
+            sheader.set_size(settings.len() as u64);
+            sheader.set_mode(0o644);
+            sheader.set_cksum();
+            builder
+                .append_data(
+                    &mut sheader,
+                    "settingsBackup",
+                    std::io::Cursor::new(settings),
+                )
+                .expect("tar append settings");
+        }
         builder.finish().expect("tar finish");
     }
     let mut archive = Vec::new();
@@ -208,6 +228,36 @@ fn backup_carries_songs_setlists_membership() {
             },
         ],
     );
+}
+
+/// The archive's `settingsBackup` entry (the device's settings.json) round-trips
+/// into `BackupReadResult::settings_bytes` — the capture the command layer persists
+/// to `<app_config_dir>/support/device-settings.json` for a later support bundle.
+#[test]
+fn backup_carries_settings_bytes_when_present() {
+    let settings_json = br#"{"foo":"bar"}"#;
+    let archive = build_backup_archive_with_settings(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT);",
+        Some(settings_json),
+    );
+    let result = read_backup_archive(&archive).expect("decode archive");
+    assert_eq!(result.settings_bytes.as_deref(), Some(&settings_json[..]));
+    assert!(
+        result.members.iter().any(|(p, _)| p == "settingsBackup"),
+        "settingsBackup should be listed among the archive members"
+    );
+}
+
+/// An archive WITHOUT a `settingsBackup` entry (e.g. the e2e fixture) decodes fine
+/// and leaves `settings_bytes` `None` — the existing behavior this change must not
+/// disturb.
+#[test]
+fn backup_settings_bytes_none_without_settings_entry() {
+    let archive = build_backup_archive(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT);",
+    );
+    let result = read_backup_archive(&archive).expect("decode archive");
+    assert_eq!(result.settings_bytes, None);
 }
 
 /// GENERATOR (not a gate — `#[ignore]`): expand the curated, non-personal

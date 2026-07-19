@@ -114,6 +114,13 @@ pub struct BackupReadResult {
     /// `SetlistSongs` membership (which songs are in each setlist, in order). Empty when
     /// the DB has no `SetlistSongs` table.
     pub setlist_songs: Vec<BackupSetlistSong>,
+    /// Raw bytes of the archive's `settingsBackup` entry (the device's `settings.json`),
+    /// for a later "support bundle" export — `#[serde(skip)]`'d so it never crosses the
+    /// Tauri IPC to the frontend (no use there, and it's ~100 KB). The command layer
+    /// (`commands::presets::read_library_via_backup`) persists it to disk and clears
+    /// this field before returning. `None` when the archive has no such entry.
+    #[serde(skip)]
+    pub settings_bytes: Option<Vec<u8>>,
 }
 
 impl BackupReadResult {
@@ -169,6 +176,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
     // entries by role, not path).
     let mut members: Vec<(String, u64)> = Vec::new();
     let mut db_bytes: Option<Vec<u8>> = None;
+    let mut settings_bytes: Option<Vec<u8>> = None;
     let mut ar = tar::Archive::new(std::io::Cursor::new(&tar_bytes));
     for entry in ar.entries().map_err(|e| format!("tar read: {e}"))? {
         let mut e = entry.map_err(|e| format!("tar entry: {e}"))?;
@@ -181,6 +189,11 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             e.read_to_end(&mut buf)
                 .map_err(|e| format!("tar extract db: {e}"))?;
             db_bytes = Some(buf);
+        } else if path == "settingsBackup" {
+            let mut buf = Vec::with_capacity(e.size() as usize);
+            e.read_to_end(&mut buf)
+                .map_err(|e| format!("tar extract settings: {e}"))?;
+            settings_bytes = Some(buf);
         }
         members.push((path, e.size())); // move (read above happens first)
     }
@@ -406,6 +419,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         songs,
         setlists,
         setlist_songs,
+        settings_bytes,
     })
 }
 
