@@ -22,7 +22,10 @@ cmd="$(printf '%s' "$input" | python3 -c 'import json,sys; print(json.load(sys.s
 
 if [ -z "$cmd" ]; then exit 0; fi
 
-if ! printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+pr[[:space:]]+(create|merge)'; then
+# Match `gh … pr create|merge` even with global options between `gh` and `pr`
+# (e.g. `gh --repo owner/repo pr create`) — the `([^[:space:]]+[[:space:]]+)*`
+# consumes any intervening flag tokens before the `pr` subcommand.
+if ! printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+([^[:space:]]+[[:space:]]+)*pr[[:space:]]+(create|merge)'; then
   exit 0
 fi
 
@@ -41,7 +44,7 @@ fi
 # Device-facing diff → also require a fresh online stamp. Scope mirrors
 # gates.sh: working tree vs merge-base (origin/main, else local main) + untracked
 # — so a NEW untracked device-facing file can't dodge the online requirement.
-device_re='src-tauri/src/leveller\.rs|src-tauri/src/session\.rs|src-tauri/src/audio\.rs|src-tauri/src/commands/level_|src-tauri/src/commands/doctor'
+device_re='src-tauri/src/leveller\.rs|src-tauri/src/footswitch\.rs|src-tauri/src/session\.rs|src-tauri/src/audio\.rs|src-tauri/src/commands/level_|src-tauri/src/commands/doctor'
 # shellcheck disable=SC2015  # deliberate best-effort: any failure here must fall through to `true`, never abort the hook under set -e
 changed="$(cd "$repo" && {
   b="$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)"

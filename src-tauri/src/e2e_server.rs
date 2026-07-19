@@ -93,6 +93,7 @@ pub fn run_e2e_server() {
             get_store,
             set_auto_install_updates,
             level_preset,
+            level_footswitches_apply,
             doctor_check,
             cancel_doctor_check,
             doctor_apply,
@@ -160,6 +161,7 @@ fn e2e_install_offline_fake() {
         return;
     }
     let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim); // expose its event log to /sim/events
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
     // The 3 scenario presets at slots 400/401/402 — same slots the online tier seeds by
     // cloning, and the same presets baked into the backup fixture, so one set of specs
@@ -513,7 +515,27 @@ fn e2e_route(
         return ("200 OK", Vec::new());
     }
     match (method, path) {
-        ("GET", "/health") => ("200 OK", b"{\"ok\":true}".to_vec()),
+        // `online` is AUTHORITATIVE for mode-split specs: the Playwright process does NOT
+        // inherit TMP_E2E_ONLINE (only the server subprocess does), so specs read it here,
+        // never from process.env. (e2e.sh's readiness curl only checks the 200, not the body.)
+        ("GET", "/health") => (
+            "200 OK",
+            serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),
+        ),
+        // Verification-harness read endpoints (see e2e/specs/level-rerun.spec.ts).
+        ("GET", "/reamp/counters") => {
+            use std::sync::atomic::Ordering;
+            let on = crate::session::REAMP_ON_COUNT.load(Ordering::Relaxed);
+            let off = crate::session::REAMP_OFF_COUNT.load(Ordering::Relaxed);
+            (
+                "200 OK",
+                serde_json::to_vec(&json!({ "on": on, "off": off })).unwrap_or_default(),
+            )
+        }
+        ("GET", "/sim/events") => (
+            "200 OK",
+            serde_json::to_vec(&crate::sim_device::live_events()).unwrap_or_default(),
+        ),
         ("POST", "/sim/reset") => {
             // ONLINE: the real device IS the state — re-installing the offline fake (a
             // SimDevice factory) would clobber it, so the reset is a no-op online.

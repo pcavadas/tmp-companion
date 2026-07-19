@@ -83,10 +83,12 @@ bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the respo
     -H 'content-type: application/json' -d "$1" 2>/dev/null
 }
 
+# shellcheck disable=SC2329  # invoked transitively from the trap handler (cleanup → recover_device → post), which shellcheck doesn't statically trace
 post() { # POST one /invoke command, best-effort (recovery must never fail the script)
   bridge_post "$1" "${2:-60}" >/dev/null 2>&1 || true
 }
 
+# shellcheck disable=SC2329  # invoked from the trap handler (cleanup), not statically traced
 recover_device() {
   curl -fsS -m 5 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 || return 0  # server gone, nothing to do
   log "recovering device — reamp-off + guarded scratch-clear + recall 001"
@@ -101,6 +103,7 @@ recover_device() {
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
 }
 
+# shellcheck disable=SC2329  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
 cleanup() { # ONLINE only (offline execs Playwright, which owns teardown + has no device)
   local code=$?
   trap - EXIT INT TERM
@@ -113,8 +116,7 @@ cleanup() { # ONLINE only (offline execs Playwright, which owns teardown + has n
 # Wait until the managed ONLINE server prints its ready line AND answers /health, surfacing a
 # device-handshake failure with an actionable hint. (Build failures are already caught by prebuild.)
 wait_server_ready() {
-  local i
-  for i in $(seq 1 240); do
+  for _ in $(seq 1 240); do
     handshake_err=$(grep "device handshake failed" "$SERVER_LOG" 2>/dev/null | tail -1 || true)
     if [ -n "$handshake_err" ]; then
       err "$handshake_err"
@@ -149,7 +151,7 @@ fi
 trap cleanup EXIT INT TERM
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level) ;; esac
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level level-rerun) ;; esac
 
 # Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
 # never from inside a spec: Playwright's per-test budget (300 s) can't absorb seed
@@ -243,5 +245,5 @@ for s in "${SPECS[@]}"; do
   fi
 done
 
-[ "$fail" -eq 0 ] && log "all online specs passed" || err "one or more online specs failed"
+if [ "$fail" -eq 0 ]; then log "all online specs passed"; else err "one or more online specs failed"; fi
 exit "$fail"

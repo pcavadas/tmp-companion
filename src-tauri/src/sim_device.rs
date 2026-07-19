@@ -64,6 +64,7 @@ const F_PRESET_LEVEL_CHANGED: u32 = 77;
 
 /// One device-visible action the fake observed, in order.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "e2e", derive(serde::Serialize))]
 pub enum SimEvent {
     /// `loadPreset` — the **0-based** list index (the fake echoes `PresetLoaded`).
     Loaded(u32),
@@ -190,7 +191,7 @@ impl SimDevice {
     }
 
     /// The ordered list of device actions observed so far.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "e2e"))]
     pub fn events(&self) -> Vec<SimEvent> {
         self.state.lock().expect("sim lock").events.clone()
     }
@@ -346,6 +347,30 @@ impl SimDevice {
         }
         Vec::new()
     }
+}
+
+/// Offline-e2e handle to the CURRENTLY-installed fake so the bridge's `/sim/events`
+/// endpoint can read its event log (the SimDevice is otherwise reachable only from inside
+/// the transport-factory closure). Set by `e2e_install_offline_fake` — re-set on every
+/// `/sim/reset`, which installs a fresh device with an empty log. Online never installs the
+/// fake, so this stays `None` and `live_events()` returns `[]`.
+#[cfg(feature = "e2e")]
+static LIVE: Mutex<Option<SimDevice>> = Mutex::new(None);
+
+/// Record the installed fake as the live handle for `/sim/events`.
+#[cfg(feature = "e2e")]
+pub fn set_live(dev: &SimDevice) {
+    *LIVE.lock().expect("sim live lock") = Some(dev.clone());
+}
+
+/// The current fake's ordered event log (empty when no fake is installed).
+#[cfg(feature = "e2e")]
+pub fn live_events() -> Vec<SimEvent> {
+    LIVE.lock()
+        .expect("sim live lock")
+        .as_ref()
+        .map(SimDevice::events)
+        .unwrap_or_default()
 }
 
 /// Build a `songListResponse`(11→3) / `setlistListResponse`(12→3): records (field 2) each

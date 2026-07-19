@@ -458,6 +458,24 @@ pub fn existing_param_fn_index(
         .map(|(i, _)| i as u32)
 }
 
+/// The stored engaged value (`valueA`) of switch `switch`'s existing `param` function on
+/// `(node_id, param)`, if one exists — the re-run idempotency anchor (the value a prior
+/// leveling run wrote). `None` for a fresh assign (no such function yet).
+pub fn existing_param_fn_value_a(
+    ftsw: &Value,
+    switch: u32,
+    node_id: &str,
+    param: &str,
+) -> Option<f64> {
+    let i = existing_param_fn_index(ftsw, switch, node_id, param)?;
+    ftsw.as_array()?
+        .get(switch as usize)?
+        .as_array()?
+        .get(i as usize)?
+        .get("valueA")
+        .and_then(Value::as_f64)
+}
+
 /// One leveling job's key for planning (the device-independent fields the decision needs).
 pub struct FsJobKey<'a> {
     pub switch: u32,
@@ -649,6 +667,24 @@ mod tests {
             serde_json::json!({ "exp1": { "func": "volume" }, "toe": serde_json::Value::Null });
         apply_exp(&mut p, exp.clone()).unwrap();
         assert_eq!(p["exp"], exp);
+    }
+
+    // The re-run idempotency anchor: the stored valueA of an existing param function.
+    // (No-index cases collapse into one `?` branch — one probe suffices; the finder's
+    // own match rules are `existing_param_fn_index`'s contract, not this one's.)
+    #[test]
+    fn existing_param_fn_value_a_anchor_contract() {
+        let pf = |value_a: Value| serde_json::json!({ "func": "param", "nodeId": "amp1", "parameterId": "outputLevel", "valueA": value_a });
+        let ftsw = serde_json::json!([
+            [pf(0.42.into())],
+            [{ "func": "param", "nodeId": "amp1", "parameterId": "outputLevel" }],
+            [pf("loud".into())],
+        ]);
+        let anchor = |sw| existing_param_fn_value_a(&ftsw, sw, "amp1", "outputLevel");
+        assert_eq!(anchor(0), Some(0.42), "found → the stored engaged value");
+        assert_eq!(anchor(3), None, "no existing function (fresh assign)");
+        assert_eq!(anchor(1), None, "function present but valueA missing");
+        assert_eq!(anchor(2), None, "non-numeric valueA");
     }
 
     // AC — flag assignments that can't bind (scene out of range).

@@ -11,10 +11,20 @@
 //! NOT a per-request counter: incrementing per request makes the device go silent
 //! after the preset lists. Setters and heartbeats omit `batchStatus` entirely.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use serde::Serialize;
 
 use crate::hid::{Hid, HidTransport};
 use crate::proto::{self, Val};
+
+/// Re-amp engage/disengage counters (ALWAYS compiled — the e2e verification harness
+/// reads them over the bridge, offline AND online, to assert every leveling/doctor run
+/// disengages at least as often as it engages). Incremented at the top of
+/// [`Session::set_reamp_mode`] by flag, so `OFF >= ON` proves the app-side
+/// `reamp_off_guaranteed` backstop ran and isn't being masked by a spec teardown rescue.
+pub static REAMP_ON_COUNT: AtomicU32 = AtomicU32::new(0);
+pub static REAMP_OFF_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Offline UI e2e seam (compiled only under `--features e2e`): a process-global factory
 /// that yields the [`HidTransport`] every device open uses, so a Playwright run can drive
@@ -1623,6 +1633,11 @@ impl Session {
     /// Set re-amp mode via the Global Settings path. Returns the echoed
     /// `SettingsMessage.reampModeActive` value if the device reports it.
     pub fn set_reamp_mode(&mut self, active: bool) -> Result<Option<bool>, String> {
+        if active {
+            REAMP_ON_COUNT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            REAMP_OFF_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
         self.raw.clear();
         self.send_and_collect(&proto::set_reamp_mode(active), 400)?;
         Ok(self.streams().iter().find_map(|s| {

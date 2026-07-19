@@ -1,5 +1,12 @@
 import { test, expect } from "../fixtures/test";
-import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
+import {
+  SCENARIO,
+  clearScenario,
+  ensureScenario,
+  expectReampBalanced,
+  reampCounters,
+  reampOff,
+} from "../fixtures/scenario";
 
 // Doctor journey — runs identically offline (fake re-amp: the "capture" is the raw
 // stimulus, so every sound measures finite and identical) and online (real re-amp
@@ -20,6 +27,9 @@ import { SCENARIO, clearScenario, ensureScenario } from "../fixtures/scenario";
 // server/app), rest a minute, rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
+    // Re-amp OFF rescue FIRST — a mid-test failure before the balance gate must not strand
+    // the unit input-muted (clearScenario's own reampOff is last, after minutes of clears).
+    await reampOff(page);
     await clearScenario(page);
   });
 
@@ -27,6 +37,7 @@ test.describe("Doctor — select, check, results", () => {
     page,
   }) => {
     await ensureScenario(page);
+    const reampBase = await reampCounters(page);
 
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
@@ -73,5 +84,9 @@ test.describe("Doctor — select, check, results", () => {
     await expect(
       page.getByText("Cut-through (estimated)").first(),
     ).toBeVisible();
+
+    // Standing re-amp-OFF safety gate — the doctor capture path must disengage re-amp
+    // at least as often as it engages (checked before any teardown rescue).
+    await expectReampBalanced(page, reampBase);
   });
 });
