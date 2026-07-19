@@ -669,6 +669,24 @@ mod tests {
         assert_eq!(p["exp"], exp);
     }
 
+    // The re-run idempotency anchor: the stored valueA of an existing param function.
+    // (No-index cases collapse into one `?` branch — one probe suffices; the finder's
+    // own match rules are `existing_param_fn_index`'s contract, not this one's.)
+    #[test]
+    fn existing_param_fn_value_a_anchor_contract() {
+        let pf = |value_a: Value| serde_json::json!({ "func": "param", "nodeId": "amp1", "parameterId": "outputLevel", "valueA": value_a });
+        let ftsw = serde_json::json!([
+            [pf(0.42.into())],
+            [{ "func": "param", "nodeId": "amp1", "parameterId": "outputLevel" }],
+            [pf("loud".into())],
+        ]);
+        let anchor = |sw| existing_param_fn_value_a(&ftsw, sw, "amp1", "outputLevel");
+        assert_eq!(anchor(0), Some(0.42), "found → the stored engaged value");
+        assert_eq!(anchor(3), None, "no existing function (fresh assign)");
+        assert_eq!(anchor(1), None, "function present but valueA missing");
+        assert_eq!(anchor(2), None, "non-numeric valueA");
+    }
+
     // AC — flag assignments that can't bind (scene out of range).
 
     // Live-sync FS tags: sceneSlot → switch index. Inactive bindings still tag
