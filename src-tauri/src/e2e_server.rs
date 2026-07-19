@@ -536,6 +536,24 @@ fn e2e_route(
             "200 OK",
             serde_json::to_vec(&crate::sim_device::live_events()).unwrap_or_default(),
         ),
+        // Capture-fault injection (PR3 spec 4): arm slot N's NEXT offline capture to
+        // return silence once (→ the leveller's no-signal path). Body: {"slot": N}.
+        // No-op online (no fake installed).
+        ("POST", "/sim/fault") => {
+            let slot = serde_json::from_slice::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("slot").and_then(serde_json::Value::as_u64));
+            match slot {
+                Some(n) => {
+                    crate::sim_device::arm_capture_fault(n as u32);
+                    ("200 OK", b"{\"ok\":true}".to_vec())
+                }
+                None => (
+                    "400 Bad Request",
+                    b"{\"ok\":false,\"error\":\"missing slot\"}".to_vec(),
+                ),
+            }
+        }
         ("POST", "/sim/reset") => {
             // ONLINE: the real device IS the state — re-installing the offline fake (a
             // SimDevice factory) would clobber it, so the reset is a no-op online.
