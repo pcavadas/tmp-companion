@@ -172,4 +172,62 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await expectReampBalanced(page, reampBase);
   });
+
+  // (d) Reachable-common-target fallback (QUIET-preset clamp class): a 2-preset run where 403's
+  // Base clamps because its ceiling (−28) sits below every shipped default target, while 401
+  // (ceiling −23) levels fine at −26. The Summary names the measured ceiling and offers
+  // "Re-level to a reachable target", which derives min(ceiling) − headroom = −29 from the
+  // ALREADY-measured ceilings (zero re-capture) and re-levels EVERY base to it → the once-clamped
+  // 403 lands done and both presets sit at one common loudness (no on-stage jump). Base-only
+  // (scene outcomes stream via the Channel the offline bridge no-ops); the offset-space derivation
+  // is Rust-unit-gated (`common_reachable_target_is_min_of_offset_adjusted_ceilings`).
+  test("reachable-common-target fallback: clamped base re-levels to a reachable common target", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: the ceilings are sidecar-authored",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await openLevel(page);
+
+    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    for (const p of [SCENARIO[3], SCENARIO[1]]) {
+      // 403 (ceiling −28), 401 (ceiling −23)
+      await filter.fill(p.name);
+      await page.getByTitle("Select preset to level").first().click();
+    }
+    await filter.fill("");
+
+    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await page.getByRole("button", { name: /Level \d+ sound/ }).click(); // default Rhythm −26
+    await expect(
+      page.getByRole("button", { name: /^(Done|Accept)$/ }),
+    ).toBeVisible({ timeout: 240_000 });
+
+    // 403's Base clamped at its ceiling — the banner NAMES the measured ceiling.
+    await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
+    await expect(page.getByText(/ceiling [−-]28\.\d LUFS/)).toBeVisible();
+
+    // The fallback re-levels every measured sound to the reachable common target (−29).
+    await page
+      .getByRole("button", { name: /Re-level to a reachable target/ })
+      .click();
+    // Wait for the re-run to actually START (the RunBody replaces the summary) so the
+    // asserts below don't race the stale pre-fallback summary, then for it to FINISH
+    // (auto-advance back to a summary with Done/Accept).
+    await expect(page.getByText(/Step \d+ of \d+/)).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      page.getByRole("button", { name: /^(Done|Accept)$/ }),
+    ).toBeVisible({ timeout: 240_000 });
+    // No clamp remains, and both bases landed near the derived common target (−29).
+    await expect(page.getByText(/Clamped .* already maxed/)).toHaveCount(0);
+    await expect(page.getByText(/[−-]29\.\d LUFS/).first()).toBeVisible();
+
+    await expectReampBalanced(page, reampBase);
+  });
 });

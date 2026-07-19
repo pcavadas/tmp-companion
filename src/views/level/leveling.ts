@@ -330,7 +330,28 @@ export interface RunItem {
   /** The preset's backup-scan silence hint, stamped at item build — refines the
    *  offbranch row status (see `offbranchStatus`). */
   silenceHint?: SilenceHint;
+  /** The sound's MEASURED raw ceiling (max-reachable LUFS), set on Base rows from the
+   *  result's `constant_c`. Feeds the reachable-common-target derivation (a clamped row's
+   *  ceiling is its measured `value` instead — it sits at max). Undefined until measured. */
+  ceilingLufs?: number | null;
+  /** Set by the reachable-common-target fallback: an explicit numeric target that OVERRIDES
+   *  `targetLufsByName(targetName)` in the run loop's dispatch (pre-offset; the runner adds
+   *  the playback offset). Normal runs never set it. */
+  targetOverrideLufs?: number;
+  /** Set by the reachable-common-target fallback for a row it does NOT re-level (off-branch,
+   *  no ceiling): the run loop leaves the row's existing outcome untouched so it stays
+   *  visible/counted in the Summary without wasting a re-capture on a signal-less sound. */
+  skipRelevel?: boolean;
 }
+
+/** A finished row's MEASURED raw ceiling for the reachable-common-target derivation, or null
+ *  when unknown. A CLAMPED row sits at max, so its measured `value` IS its ceiling; a done
+ *  row's ceiling is `ceilingLufs` (Base rows carry `constant_c`; done scene/footswitch rows
+ *  have none → excluded, their true ceiling is ≥ their reached target so they don't bind). */
+export const ceilingOf = (it: RunItem): number | null => {
+  const c = it.outcome === "clamped" ? it.value : it.ceilingLufs;
+  return c != null && Number.isFinite(c) ? c : null;
+};
 
 /** The offbranch ("silent capture") row status, refined by the preset's JSON-visible
  *  cause when the backup scan found one. Rendered verbatim in RunBody + SummaryBody. */

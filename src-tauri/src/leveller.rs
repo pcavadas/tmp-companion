@@ -701,6 +701,18 @@ pub fn common_target(cs: &[f64], headroom_lu: f64) -> Option<f64> {
         .map(|min_c| min_c - headroom_lu)
 }
 
+/// The reachable common target for a run whose ceilings were ALREADY measured — the same
+/// `min(C − offset) − headroom` math as [`level_setlist`]'s pass-1→target step, but reusing
+/// the run's measured `C` values (zero re-capture). Each `ceilings` entry is
+/// `(c_lufs, offset_lu)`: the raw measured ceiling and that sound's per-instrument
+/// Fletcher–Munson playback offset. The returned target is in PRE-offset space (the runner
+/// adds `offset` back), so an entry leveled `offset` hotter still fits under its `C` — exactly
+/// [`common_target`] on the offset-adjusted ceilings. `None` when no ceiling is finite.
+pub fn common_reachable_target(ceilings: &[(f64, f64)], headroom_lu: f64) -> Option<f64> {
+    let cs: Vec<f64> = ceilings.iter().map(|(c, offset)| c - offset).collect();
+    common_target(&cs, headroom_lu)
+}
+
 /// Amp `outputLevel` a redistribution-compensated knob must stay above — never write a
 /// compensating value toward deep digital silence (`outputLevel = 0` reads as silence).
 pub const REDIST_MIN_KNOB: f32 = 0.05;
@@ -3760,6 +3772,49 @@ mod tests {
         assert_eq!(redistribute_delta_db(0.5, 0.0, 0.5), 0.0);
         // pl at ceiling (1.0) → no headroom → 0 (the quiet class PR6 owns).
         assert_eq!(redistribute_delta_db(1.0, 3.0, 0.5), 0.0);
+    }
+
+    #[test]
+    fn common_reachable_target_is_min_of_offset_adjusted_ceilings() {
+        use super::{common_reachable_target, common_target};
+        // Guitar-only (offset 0): pure min − headroom, identical to `common_target`.
+        let g = [(-28.0, 0.0), (-23.0, 0.0)];
+        assert_eq!(
+            common_reachable_target(&g, 1.0),
+            common_target(&[-28.0, -23.0], 1.0),
+        );
+        assert_eq!(common_reachable_target(&g, 1.0), Some(-29.0)); // min(-28,-23) − 1
+
+        // OFFSET ROUND-TRIP (the offset double-application guard — invisible on guitar):
+        // a bass ceiling C=-24 with a +1.5 LU playback offset constrains at C−offset=-25.5.
+        // A quieter guitar ceiling C=-28 (offset 0) still binds the min → target -29. The
+        // runner ADDS the offset back, so the bass's EFFECTIVE target is -29 + 1.5 = -27.5,
+        // which sits UNDER its raw ceiling -24 → reachable (offset applied EXACTLY once).
+        let mixed = [(-28.0, 0.0), (-24.0, 1.5)];
+        let t = common_reachable_target(&mixed, 1.0).expect("finite");
+        assert!((t - -29.0).abs() < 1e-9, "t={t}");
+        for &(c, offset) in &mixed {
+            assert!(
+                t + offset <= c + 1e-9,
+                "effective target {} must fit under ceiling {c} (offset {offset})",
+                t + offset,
+            );
+        }
+
+        // When the BASS's offset-adjusted ceiling is the lowest, IT binds: C=-24 offset 3.0
+        // → -27 constrains vs a guitar -26 offset 0 → min(-27,-26) − 1 = -28.
+        assert_eq!(
+            common_reachable_target(&[(-26.0, 0.0), (-24.0, 3.0)], 1.0),
+            Some(-28.0)
+        );
+
+        // Non-finite ceilings (a silent capture) are ignored; all-non-finite → None.
+        assert_eq!(
+            common_reachable_target(&[(f64::NAN, 0.0), (-22.0, 0.0)], 1.0),
+            Some(-23.0)
+        );
+        assert_eq!(common_reachable_target(&[(f64::NAN, 0.0)], 1.0), None);
+        assert_eq!(common_reachable_target(&[], 1.0), None);
     }
 
     // ── joint-k (parallel-merged) solve ──────────────────────────────────────

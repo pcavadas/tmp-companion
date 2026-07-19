@@ -21,7 +21,7 @@ import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { fmtLufs } from "../../lib/format";
 import { restorePresetLevel } from "../../lib/invoke";
-import { offbranchStatus, type RunItem } from "../level/leveling";
+import { ceilingOf, offbranchStatus, type RunItem } from "../level/leveling";
 
 /** True-peak clip threshold (dBTP): a Base row's PREDICTED true peak above this
  *  earns the "may clip" caveat (estimate, from `leveller::predicted_true_peak_dbtp`,
@@ -299,12 +299,21 @@ export interface RedistributionActions {
   undo: () => void;
 }
 
+/** Reachable-common-target actions (quiet-preset clamp fallback), threaded from
+ *  `useLevelingFlow`. `plan` is true when re-leveling to a reachable common target would help
+ *  (a clamp exists with a measured ceiling to derive from); `run` applies it. */
+export interface CommonTargetActions {
+  plan: (items: RunItem[]) => boolean;
+  run: (items: RunItem[]) => void;
+}
+
 export interface SummaryBodyProps {
   items: RunItem[];
   stopped: boolean;
   onAccept: () => void;
   onRelevel: (clamped: RunItem[]) => void;
   redistribution?: RedistributionActions;
+  commonTarget?: CommonTargetActions;
 }
 
 export function SummaryBody({
@@ -313,6 +322,7 @@ export function SummaryBody({
   onAccept,
   onRelevel,
   redistribution,
+  commonTarget,
 }: SummaryBodyProps) {
   const { t } = useTheme();
   // "Restore original" progress per row. Restores run one at a time (every
@@ -355,6 +365,16 @@ export function SummaryBody({
   // What a gain-budget redistribution would rewrite (loud-preset class, single-amp) — null
   // when it doesn't apply (multi-amp, no headroom, or nothing clamped).
   const redistPlan = redistribution?.plan(items) ?? null;
+  // Whether the reachable-common-target fallback (quiet-preset class) can help these clamps.
+  const commonPlan = commonTarget?.plan(items) ?? false;
+  // The lowest measured ceiling among the clamped sounds — named verbatim in the clamp banner
+  // so the user sees WHY the target was unreachable (a clamped sound sits at max, value = C).
+  const clampedCeilings = clamped.flatMap((it) => {
+    const c = ceilingOf(it);
+    return c != null ? [c] : [];
+  });
+  const clampedCeiling =
+    clampedCeilings.length > 0 ? Math.min(...clampedCeilings) : null;
   const leveled = items.filter((it) => it.outcome === "done");
   const skipped = items.filter((it) => it.outcome === "skipped");
   const notrun = items.filter((it) => it.outcome == null); // only on a stopped run
@@ -522,9 +542,14 @@ export function SummaryBody({
               border="rgba(176,125,28,0.3)"
               title="Clamped — already maxed"
             >
+              Already as loud as the preset allows
+              {clampedCeiling != null
+                ? ` — ceiling ${fmtLufs(clampedCeiling)} LUFS`
+                : ""}
+              .{" "}
               {redistPlan ? (
                 <>
-                  These scenes are maxed but the preset has headroom to spare.{" "}
+                  But the preset has headroom to spare.{" "}
                   <strong style={{ color: t.ink }}>
                     Give clamped scenes headroom
                   </strong>{" "}
@@ -537,11 +562,16 @@ export function SummaryBody({
                   so they reach target — non-clamped sounds stay put. Or lower
                   the target and re-level.
                 </>
-              ) : (
+              ) : commonTarget && commonPlan ? (
                 <>
-                  Already as loud as the preset allows. Lower the target and
-                  re-level, or keep as-is.
+                  <strong style={{ color: t.ink }}>
+                    Re-level everything to a reachable common target
+                  </strong>{" "}
+                  brings every sound to one loudness the quietest can reach — no
+                  on-stage jump. Or lower the target and re-level.
                 </>
+              ) : (
+                <>Lower the target and re-level, or keep as-is.</>
               )}
             </Banner>
           )}
@@ -662,6 +692,18 @@ export function SummaryBody({
                 style={{ height: 32, padding: `0 ${String(t.space6)}px` }}
               >
                 Give clamped scenes headroom
+              </Button>
+            )}
+            {commonPlan && commonTarget && (
+              <Button
+                variant="ghost"
+                small
+                onClick={() => {
+                  commonTarget.run(items);
+                }}
+                style={{ height: 32, padding: `0 ${String(t.space6)}px` }}
+              >
+                Re-level to a reachable target
               </Button>
             )}
             {clamped.length > 0 && (

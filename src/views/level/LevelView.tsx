@@ -368,6 +368,7 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
           onAccept={flow.onAccept}
           onRelevel={flow.onRelevel}
           redistribution={flow.redistribution}
+          commonTarget={flow.commonTarget}
           onRebalanceChange={flow.setRebalance}
         />
       )}

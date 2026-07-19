@@ -739,6 +739,40 @@ pub(crate) async fn level_setlist(
     })
     .await
 }
+/// One already-measured ceiling from a finished run, for [`common_reachable_target`]: the
+/// sound's raw ceiling `c_lufs` + the topology that decides its playback offset.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CeilingArg {
+    c_lufs: f64,
+    topology_id: Option<String>,
+}
+
+/// Derive the reachable common target for a finished run's already-measured ceilings —
+/// `min(C − offset) − headroom`, the quiet-preset clamp fallback (PR6). PURE (no device I/O,
+/// no seize): reuses the run's measured `C` values, so nothing is re-captured. Each ceiling's
+/// per-instrument playback offset is resolved via [`playback_offset_for`] (single source of
+/// truth for the Fletcher–Munson offset), then the target is solved in offset-adjusted space
+/// (same as `level_setlist`). The frontend re-levels every sound to this target; the runners
+/// add each offset back. Errors when no ceiling is finite (an all-silent run has none).
+#[tauri::command]
+pub(crate) async fn common_reachable_target<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    ceilings: Vec<CeilingArg>,
+) -> Result<f64, String> {
+    let pairs: Vec<(f64, f64)> = ceilings
+        .iter()
+        .map(|c| {
+            (
+                c.c_lufs,
+                playback_offset_for(&app, c.topology_id.as_deref()),
+            )
+        })
+        .collect();
+    leveller::common_reachable_target(&pairs, SETLIST_HEADROOM_LU)
+        .ok_or_else(|| "no reachable ceilings to derive a common target from".to_string())
+}
+
 /// Measure each scene's ceiling loudness (re-amp + `loadScene` per scene)
 /// and return the per-scene gain offsets to a common target (MEASURE — drives the
 /// device; HW-pending). Supersedes hand-entered C values when hardware is present.
