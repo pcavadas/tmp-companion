@@ -127,7 +127,8 @@ pub fn run() {
             cancel_bulk_replace,
             copy_apply,
             cancel_copy_apply,
-            save_support_bundle
+            save_support_bundle,
+            build_support_bundle
         ])
         // Native macOS menu. Setting a menu replaces the default, so the standard
         // App / Edit / Window submenus are rebuilt explicitly (Edit is load-bearing
