@@ -37,3 +37,5 @@ pub(crate) mod settings;
 pub(crate) mod setlists;
 #[macro_use]
 pub(crate) mod songs;
+#[macro_use]
+pub(crate) mod support;

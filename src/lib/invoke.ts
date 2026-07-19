@@ -41,6 +41,7 @@ import type {
   DoctorApplyJob,
   DoctorApplyResult,
   DoctorOp,
+  SupportBundleResult,
 } from "./types";
 
 // isTauri lives in ./log (the dependency-free end of the invoke→log edge — a
@@ -335,6 +336,16 @@ export const calibrateProfile = (
 export const listPickupTopologies = (): Promise<TopologyInfo[]> =>
   invoke("list_pickup_topologies");
 
+/** Settings — write a diagnostics bundle (recent logs, device settings, app info,
+ * + the opt-in preset) to a .tar in ~/Downloads; returns its path. All args
+ * nullable; every text member is home-path-scrubbed backend-side. */
+export const saveSupportBundle = (
+  firmware: string | null,
+  presetJson: string | null,
+  presetName: string | null,
+): Promise<SupportBundleResult> =>
+  invoke("save_support_bundle", { firmware, presetJson, presetName });
+
 // ─── LevelView — active preset + songs + slot ops ──────────────────────────────
 
 /** LevelView — the active (currently-loaded) preset's signal graph (live read). */
@@ -489,6 +500,7 @@ export const cmd = {
   setAutoInstallUpdates,
   calibrateProfile,
   listPickupTopologies,
+  saveSupportBundle,
   // LevelView — active preset + songs
   readActivePreset,
   currentGraph,

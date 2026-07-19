@@ -312,7 +312,11 @@ function AppShell() {
               )}
               {tab === "catalog" && <CatalogView />}
               {tab === "settings" && (
-                <SettingsView connected={connected} updater={updater} />
+                <SettingsView
+                  connected={connected}
+                  updater={updater}
+                  firmware={firmware}
+                />
               )}
             </>
           )}

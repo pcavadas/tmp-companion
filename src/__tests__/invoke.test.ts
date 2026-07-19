@@ -44,6 +44,7 @@ import {
   levelFootswitchesApply,
   cancelFootswitchLeveling,
   calibrateProfile,
+  saveSupportBundle,
   readSetlists,
   listSetlistSongs,
   removeSong,
@@ -124,6 +125,15 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
   it("set_auto_install_updates uses on", async () => {
     await setAutoInstallUpdates(true);
     expectCall("set_auto_install_updates", { on: true });
+  });
+
+  it("save_support_bundle uses firmware/presetJson/presetName", async () => {
+    await saveSupportBundle("1.8.45", '{"graph":1}', "My Preset");
+    expectCall("save_support_bundle", {
+      firmware: "1.8.45",
+      presetJson: '{"graph":1}',
+      presetName: "My Preset",
+    });
   });
 
   it("level_scenes_apply_batched passes scene jobs with a progress channel", async () => {
@@ -433,10 +443,10 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 35 contract commands", () => {
+  it("cmd exposes exactly the 36 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(35);
+    expect(Object.keys(cmd).length).toBe(36);
   });
 });
 

@@ -106,7 +106,7 @@ pub use bootstrap::run;
 pub use commands::{bulk_replace::*, copy_apply::*, level_scenes::*};
 pub(crate) use commands::{
     device::*, doctor::*, edit_tools::*, held_edit::*, level_footswitch::*, level_preset::*,
-    library::*, media::*, migration::*, presets::*, setlists::*, settings::*, songs::*,
+    library::*, media::*, migration::*, presets::*, setlists::*, settings::*, songs::*, support::*,
 };
 
 /// Lock a state mutex, recovering the guard if a previous holder panicked and poisoned it
