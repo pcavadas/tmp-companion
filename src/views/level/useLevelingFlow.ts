@@ -560,11 +560,7 @@ export function useLevelingFlow({
       // ignored, so a fully-completed run still auto-advances instead of mislabeling.
       const stopped = isCancelled();
       runningRef.current = false;
-      try {
-        await refresh();
-      } catch {
-        /* re-read is best-effort */
-      }
+      await refresh(); // non-throwing: runLoad catches into the error phase
       publish(total, true, stopped);
     },
     [profileById, targetLufsByName, refresh, ampCandidates, blocksByIndex],
@@ -670,15 +666,17 @@ export function useLevelingFlow({
       if (slots.length === 0) return;
       const work = items.map((it) => ({ ...it }));
       const total = work.length;
+      cancelRef.current = false;
+      const isCancelled = () => cancelRef.current; // getter defeats the always-false narrowing
       setStage("run");
-      const publish = (idx: number, done: boolean) => {
+      const publish = (idx: number, done: boolean, stopped = false) => {
         setRun({
           items: [...work],
           currentIndex: idx,
           total,
           done,
-          stopped: false,
-          stopping: false,
+          stopped,
+          stopping: isCancelled() && !done,
         });
       };
       publish(0, false);
@@ -745,10 +743,13 @@ export function useLevelingFlow({
           // Redistribution aborted (a compensating write didn't land): nothing persisted for
           // this preset — leave its rows as the run left them.
         }
+        // ponytail: per-PRESET cancel ceiling — redistributeHeadroom has no backend cancel
+        // lane, so Stop lets the in-flight preset finish and halts before the next one.
+        if (isCancelled()) break;
       }
       setRedistUndo((m) => new Map([...m, ...newUndo]));
-      publish(total, true);
-      await refresh();
+      publish(total, true, isCancelled());
+      await refresh(); // non-throwing: runLoad catches into the error phase
       setStage("summary");
     },
     [

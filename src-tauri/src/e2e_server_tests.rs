@@ -495,6 +495,16 @@ fn redistribute_400_gives_the_clamped_scene_headroom() {
         prev.iter().filter(|k| k["sceneSlot"].is_number()).count() >= 2,
         "both scene overlays are recorded for Restore: {res}"
     );
+    // The other half of the atomicity contract: exactly ONE deferred save persisted it all.
+    assert_eq!(
+        sim.events()
+            .iter()
+            .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
+            .count(),
+        1,
+        "exactly one deferred save persists the redistribution: {:?}",
+        sim.events()
+    );
 }
 
 /// Redistribution ATOMICITY: a capture fault (one sound reads silence) makes that
@@ -563,6 +573,19 @@ fn redistribute_aborts_and_saves_nothing_on_a_dropped_capture() {
             .any(|e| matches!(e, crate::sim_device::SimEvent::Saved(_))),
         "an aborted redistribution saves NOTHING: {:?}",
         sim.events()
+    );
+    // And the working copy is discarded: the abort reloads the stored preset AFTER the last
+    // live write, so nothing unsaved can linger on the unit.
+    let events = sim.events();
+    let last_write = events
+        .iter()
+        .rposition(|e| matches!(e, crate::sim_device::SimEvent::PresetLevel(_)));
+    let last_reload = events
+        .iter()
+        .rposition(|e| matches!(e, crate::sim_device::SimEvent::Loaded(400)));
+    assert!(
+        matches!((last_write, last_reload), (Some(w), Some(l)) if l > w),
+        "the abort's discard-reload follows the last live write: {events:?}"
     );
 }
 

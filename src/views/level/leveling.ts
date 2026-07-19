@@ -30,8 +30,8 @@ import { shortFallback } from "../../models/blockArt";
 
 /** The wire scene slot the device uses for a preset's BASE (a constant, NOT a `scenes[]`
  *  index — mirrors `session::BASE_SCENE_SLOT`). Redistribution levels the base amp at this
- *  slot alongside the FS scenes. */
-export const BASE_SCENE_SLOT = 8;
+ *  slot alongside the FS scenes. Re-exported from the wire mirror so the value can't drift. */
+export { BASE_SCENE_SLOT } from "../../lib/types";
 
 /** The Base scene key for a preset slot (selecting the whole preset includes it). */
 export const baseKey = (slot: number): string => `p${String(slot)}`;
