@@ -35,8 +35,9 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   a red gate aborts the push with the failing gate's own output.
 - `scripts/claude-hooks/gate-pr.sh` (a `PreToolUse(Bash)` hook) blocks `gh pr create`/`gh pr merge`
   on a stale/missing green stamp, and additionally requires a fresh **online** stamp
-  (`--check-online`) when the diff touches a device-facing path (`leveller.rs`/`session.rs`/
-  `audio.rs`/`commands/level_*`/`commands/doctor.rs`).
+  (`--check-online`) when the diff touches a device-facing path (`leveller.rs`/`footswitch.rs`/
+  `session.rs`/`audio.rs`/`commands/level_*`/`commands/doctor.rs` — `gate-pr.sh`'s `device_re`
+  is the authoritative list; keep this line in sync with it).
 - `scripts/claude-hooks/block-bypass.sh` blocks `--no-verify`/`HUSKY=0`/`core.hooksPath` on any
   `git commit`/`git push` — there is no sanctioned bypass; fix the red gate instead.
 - CI (`ci.yml`) stays the remote authority; these are the local/agent layer that keeps a red tree
