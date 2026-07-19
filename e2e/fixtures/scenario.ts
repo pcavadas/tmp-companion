@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 
-// Shared scenario setup for the dual-mode specs. The three working presets live at slots
-// 400/401/402 (the high scratch zone, clear of the user's real presets) and are the SAME
+// Shared scenario setup for the dual-mode specs. The working presets live at slots
+// 400-403 (the high scratch zone, clear of the user's real presets) and are the SAME
 // fixed presets in both modes (deterministic — same blocks every run, validated against).
 // OFFLINE they are baked into the backup fixture + the startup snapshot, so `ensureScenario`
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
@@ -15,12 +15,14 @@ export interface Preset {
 }
 
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
-// (401/402/403), so a slot-numbered name would read off-by-one in the backup view. The
-// Reference is the Copy source; Target 1/2 are the edited presets.
+// (401/402/403/404), so a slot-numbered name would read off-by-one in the backup view. The
+// Reference is the Copy source; Target 1/2 are the edited presets; Realistic (gtrParallel1,
+// scenes + an off-branch footswitch) is the physics-spec fixture (level-defaults.spec.ts).
 export const SCENARIO: Preset[] = [
   { slot: 400, name: "E2E Reference" },
   { slot: 401, name: "E2E Target 1" },
   { slot: 402, name: "E2E Target 2" },
+  { slot: 403, name: "E2E Realistic" },
 ];
 
 export async function invoke(
@@ -123,6 +125,16 @@ export async function expectReampBalanced(
 export async function simEvents(page: Page): Promise<unknown[]> {
   const res = await page.request.get(`${SERVER}/sim/events`);
   return (await res.json()) as unknown[];
+}
+
+/** Arm slot `slot`'s NEXT offline capture to return silence once (POST /sim/fault) — the
+ *  leveller's no-signal path. Offline only (no-op online, no fake installed). Used to
+ *  inject a mid-run item failure (level-defaults.spec.ts). */
+export async function armCaptureFault(page: Page, slot: number): Promise<void> {
+  const res = await page.request.post(`${SERVER}/sim/fault`, {
+    data: { slot },
+  });
+  expect(res.ok(), "POST /sim/fault").toBeTruthy();
 }
 
 /** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE:

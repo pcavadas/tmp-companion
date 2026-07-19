@@ -93,6 +93,9 @@ pub fn run_e2e_server() {
             get_store,
             set_auto_install_updates,
             level_preset,
+            list_level_blocks,
+            level_scenes_apply_batched,
+            cancel_scene_leveling,
             level_footswitches_apply,
             doctor_check,
             cancel_doctor_check,
@@ -163,7 +166,7 @@ fn e2e_install_offline_fake() {
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim); // expose its event log to /sim/events
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
-    // The 3 scenario presets at slots 400/401/402 — same slots the online tier seeds by
+    // The 4 scenario presets at slots 400-403 — same slots the online tier seeds by
     // cloning, and the same presets baked into the backup fixture, so one set of specs
     // runs in both modes. `ensureScenario` finds them present offline and skips seeding.
     let presets = vec![
@@ -178,6 +181,10 @@ fn e2e_install_offline_fake() {
         session::PresetEntry {
             slot: 402,
             name: "E2E Target 2".into(),
+        },
+        session::PresetEntry {
+            slot: 403,
+            name: "E2E Realistic".into(),
         },
     ];
     MONITOR_ENABLED.store(true, SeqCst);

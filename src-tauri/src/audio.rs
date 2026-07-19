@@ -806,6 +806,19 @@ pub fn replay_measure(
 /// the longest window `recent_capture` is asked for, with margin.
 const LIVE_RING_SECS: usize = 8;
 
+/// Append `data` to the capture ring, trimming the FRONT so the buffer never exceeds
+/// `cap` samples. The OOM guard behind the `LiveReamp` ring: unbounded capture growth
+/// (multi-channel 48 kHz × minutes × dozens of rows) once locked up the whole machine.
+/// Extracted from the realtime input callback so the invariant is unit-testable without
+/// CoreAudio hardware. `VecDeque` so the trim is a head-pointer advance, not a re-base.
+fn ring_append(buf: &mut std::collections::VecDeque<f32>, data: &[f32], cap: usize) {
+    buf.extend(data.iter().copied());
+    if buf.len() > cap {
+        let excess = buf.len() - cap;
+        buf.drain(..excess);
+    }
+}
+
 /// A continuously-running re-amp stream. Unlike [`reamp_capture`], this loops the
 /// stimulus forever and lets the caller measure recent capture windows after live
 /// parameter changes without rebuilding CoreAudio streams.
@@ -875,11 +888,7 @@ impl LiveReamp {
                 in_cfg.config(),
                 move |data: &[f32], _| {
                     if let Ok(mut buf) = cap_cb.lock() {
-                        buf.extend(data.iter().copied());
-                        if buf.len() > cap_samples {
-                            let excess = buf.len() - cap_samples;
-                            buf.drain(..excess);
-                        }
+                        ring_append(&mut buf, data, cap_samples);
                     }
                 },
                 err,
@@ -1189,6 +1198,43 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * PI * freq * i as f32 / rate as f32).sin())
             .collect()
+    }
+
+    // The "locked up my machine" gate: the LiveReamp capture ring stays bounded at
+    // `cap` samples no matter how much sustained input is pushed (unbounded growth once
+    // OOM'd the whole Mac). Feeds many chunks totalling far more than `cap` and asserts
+    // the length never exceeds it, and that the RETAINED tail is the most recent samples.
+    #[test]
+    fn ring_append_stays_bounded_under_sustained_pushes() {
+        let cap = 1000usize;
+        let mut buf = std::collections::VecDeque::<f32>::new();
+        let mut n = 0f32;
+        for _ in 0..500 {
+            let chunk: Vec<f32> = (0..64)
+                .map(|_| {
+                    n += 1.0;
+                    n
+                })
+                .collect();
+            ring_append(&mut buf, &chunk, cap);
+            assert!(
+                buf.len() <= cap,
+                "ring exceeded its cap: {} > {cap}",
+                buf.len()
+            );
+        }
+        // 500×64 = 32000 pushed, cap 1000 → the tail is the LAST 1000 (…, 31999, 32000).
+        assert_eq!(buf.len(), cap);
+        assert_eq!(
+            buf.back().copied(),
+            Some(32000.0),
+            "keeps the newest sample"
+        );
+        assert_eq!(
+            buf.front().copied(),
+            Some(32000.0 - cap as f32 + 1.0),
+            "front is exactly `cap` samples back — older history trimmed"
+        );
     }
 
     #[test]
