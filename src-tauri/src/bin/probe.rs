@@ -2428,6 +2428,40 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--redistribute") {
+        // --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (PR5; SAVES — scratch)
+        let list_index: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let target: f64 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        let topology = args.get(i + 3).cloned().unwrap_or_default();
+        let worst: f64 = args
+            .get(i + 4)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        if list_index == u32::MAX || target.is_nan() || topology.is_empty() || worst.is_nan() {
+            eprintln!(
+                "usage: probe --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (SAVES — point at a scratch preset)"
+            );
+            std::process::exit(2);
+        }
+        eprintln!("[probe] redistribute idx={list_index} target={target} topology={topology} worstDeficit={worst}…");
+        match tmp_companion_lib::probe_redistribute(list_index, target, topology, worst) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // --scene-knob-authority <listIndex> <sceneSlot> <topology> : measure whether the
     // active amp outputLevel moves the scene's loudness (global vs scene-edit). No save.
     if let Some(i) = args.iter().position(|a| a == "--scene-knob-authority") {

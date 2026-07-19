@@ -473,10 +473,12 @@ mod imp {
                         Ok(())
                     }
                 };
+                // ALL outbound sends chunk when needed: a body ≤ MAX_BODY is one 0x35 frame
+                // (identical to the old `make_envelope`), a larger one splits into the
+                // 0x33/0x34/0x35 multi-packet frames the device accepts (symmetric with
+                // inbound). Without this a long-FenderId `changeParameter` (e.g. a 40-char
+                // reverb+cab amp id + "outputLevel") overflowed a single report and PANICKED.
                 let set_report = |body: &[u8]| -> Result<(), String> {
-                    set_report_raw(&proto::make_envelope(body))
-                };
-                let set_report_chunked = |body: &[u8]| -> Result<(), String> {
                     for pkt in proto::make_chunked_envelopes(body) {
                         set_report_raw(&pkt)?;
                     }
@@ -501,7 +503,7 @@ mod imp {
                             pump(ms as f64 / 1000.0);
                             let _ = reply.send(Ok(drain()));
                         }
-                        Cmd::TransactChunked(body, ms, reply) => match set_report_chunked(&body) {
+                        Cmd::TransactChunked(body, ms, reply) => match set_report(&body) {
                             Ok(()) => {
                                 pump(ms as f64 / 1000.0);
                                 let _ = reply.send(Ok(drain()));

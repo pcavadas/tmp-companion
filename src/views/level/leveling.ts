@@ -28,6 +28,11 @@ import { shortFallback } from "../../models/blockArt";
 
 // ── selection scene-key helpers (shared by the list + the flow) ─────────────
 
+/** The wire scene slot the device uses for a preset's BASE (a constant, NOT a `scenes[]`
+ *  index — mirrors `session::BASE_SCENE_SLOT`). Redistribution levels the base amp at this
+ *  slot alongside the FS scenes. */
+export const BASE_SCENE_SLOT = 8;
+
 /** The Base scene key for a preset slot (selecting the whole preset includes it). */
 export const baseKey = (slot: number): string => `p${String(slot)}`;
 /** The key for the i-th (0-based) footswitch scene of a preset slot. */

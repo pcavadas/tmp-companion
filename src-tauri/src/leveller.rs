@@ -701,6 +701,48 @@ pub fn common_target(cs: &[f64], headroom_lu: f64) -> Option<f64> {
         .map(|min_c| min_c - headroom_lu)
 }
 
+/// Amp `outputLevel` a redistribution-compensated knob must stay above — never write a
+/// compensating value toward deep digital silence (`outputLevel = 0` reads as silence).
+pub const REDIST_MIN_KNOB: f32 = 0.05;
+
+/// A hair of extra headroom (dB) added to the redistribution delta beyond the worst clamped
+/// scene's deficit, so that scene reaches target with its `outputLevel` a touch BELOW max
+/// (genuinely re-solvable → "done") instead of pinned exactly at 1.0 (an edge clamp any
+/// measurement jitter tips back over). Capped by the presetLevel headroom / down-room like
+/// the deficit itself, so it never over-raises past what the budget allows.
+pub const REDIST_HEADROOM_MARGIN_DB: f64 = 1.0;
+
+/// The gain-budget redistribution delta (dB, ≥ 0): raise `presetLevel` by this and
+/// compensate the base amp + non-clamped scene overlays DOWN by this, so clamped scenes
+/// gain headroom while non-clamped sounds stay on target (net-neutral). = the min of:
+///  - `worst_clamped_deficit_db` — the loudest-short clamped scene's `target − achieved`
+///    (enough to rescue the worst; lesser-clamped scenes were shorter, so all are rescued);
+///  - `presetLevel` headroom `−20·log10(pl)` — can't push `pl` past 1.0;
+///  - the down-room before the LOWEST compensated knob would hit [`REDIST_MIN_KNOB`]
+///    (`20·log10(min_knob / REDIST_MIN_KNOB)`), so no compensation writes toward silence.
+///
+/// Returns 0 (⇒ don't offer / no-op) when there's no clamp, no `pl` headroom, or a
+/// compensated knob already sits at/below the floor.
+pub fn redistribute_delta_db(
+    preset_level: f32,
+    worst_clamped_deficit_db: f64,
+    min_compensated_knob: f32,
+) -> f64 {
+    if worst_clamped_deficit_db <= 0.0 {
+        return 0.0; // no clamp → nothing to redistribute
+    }
+    let pl_headroom = -20.0 * (preset_level.clamp(1e-6, 1.0) as f64).log10();
+    let down_room = if min_compensated_knob > REDIST_MIN_KNOB {
+        20.0 * (min_compensated_knob as f64 / REDIST_MIN_KNOB as f64).log10()
+    } else {
+        0.0
+    };
+    (worst_clamped_deficit_db + REDIST_HEADROOM_MARGIN_DB)
+        .min(pl_headroom)
+        .min(down_room)
+        .max(0.0)
+}
+
 /// Solve the `presetLevel` that hits `target_lufs` given `C`. Returns
 /// `(final_level clamped 0..1, clamped, predicted_lufs)`.
 pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
@@ -853,6 +895,57 @@ pub fn restore_preset_level(slot: u32, level: f32, expected_name: &str) -> Resul
         ..Default::default()
     };
     apply_level(slot, &[], &LevelKnob::PresetLevel, level, opts, true).map(|_| ())
+}
+
+/// One recorded pre-redistribution knob to write back on Restore. `scene_slot` `None` = the
+/// base amp (plain `changeParameter`); `Some(i)` = the i-th FS scene overlay (scene-edit).
+pub struct PrevKnobWrite {
+    pub group_id: String,
+    pub node_id: String,
+    pub scene_slot: Option<u32>,
+    pub value: f32,
+}
+
+/// Restore a redistribution: write `preset_level` + every recorded amp `outputLevel` back on
+/// ONE live-edit session (base scene recalled before the save — the empty-graph-corruption
+/// guard), name-guarded. The reverse of `redistribute_clamped_headroom`'s persisted write —
+/// pure writes, NO measurement. `set_knob` does the scene-edit for an overlay knob and a plain
+/// write for the base. Slot-keyed destructive write ⇒ a non-destructive name read guards it
+/// first, so a drifted list fails loudly instead of restoring onto a different preset.
+pub fn restore_redistribution(
+    slot: u32,
+    preset_level: f32,
+    knobs: &[PrevKnobWrite],
+    expected_name: &str,
+) -> Result<(), String> {
+    {
+        let mut s = Session::connect()?;
+        let list = s.list_my_presets()?;
+        verify_slot_name(&list, slot, expected_name)?;
+    }
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let mut s = Session::connect()?;
+    s.begin_live_edit()?;
+    s.load_preset(slot)?;
+    for _ in 0..8 {
+        let _ = s.heartbeat();
+        let _ = s.pump_collect(150);
+    }
+    s.set_preset_level(preset_level)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    for k in knobs {
+        let knob = LevelKnob::Block {
+            group_id: k.group_id.clone(),
+            node_id: k.node_id.clone(),
+            parameter_id: "outputLevel".to_string(),
+            scene_slot: k.scene_slot,
+        };
+        set_knob(&mut s, &knob, k.value)?;
+        let _ = s.heartbeat();
+    }
+    s.load_scene(crate::session::BASE_SCENE_SLOT)?;
+    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    s.save_current_preset(slot)
 }
 
 /// Is the solved `final_level` the same as the preset's already-saved `previous`
@@ -2271,6 +2364,142 @@ pub fn level_scenes_oneshot(
     )
 }
 
+/// Post-save spot-verify tolerance (LU): a compensated sound re-measured at the PERSISTED
+/// new presetLevel that lands more than this off target is the wrong-pl-solve tell (a
+/// per-scene jointk solved against a stale pl — self-consistent at solve time, wrong after
+/// the save re-establishes the real pl). Advisory: the save already happened, so this
+/// warns + flags for the UI's Restore, it doesn't undo.
+pub(crate) const REDIST_POST_VERIFY_TOL_LU: f64 = 1.5;
+
+/// Gain-budget redistribution runner (loud-preset clamp class, single-amp v1). Raises
+/// `presetLevel` to `new_preset_level` (UNSAVED) FIRST — a pure linear multiplier, so every
+/// clamped scene inherits the rise as headroom — then re-levels EVERY sound in `jobs`
+/// (base at slot 8 + all FS scenes) back to its target at the new pl via `jointk_one_scene`
+/// (defer). A still-clamped scene stays at `outputLevel = 1.0` (jointk reports it clamped, no
+/// write); every other sound drops its `outputLevel` to hold target (no overshoot — re-leveling
+/// is uniform, so a lesser-clamped scene that now overshoots is compensated too). ATOMICITY:
+/// if any sound's compensating write FAILS (error / no-authority off-branch), the redistribution
+/// is partial → reload to discard, save NOTHING. Otherwise ONE `saveCurrentPreset` (base recall)
+/// persists the new pl + every compensated `outputLevel` together, then a post-save AUDIO
+/// spot-verify re-measures one compensated sound at the persisted pl (the only check at the real
+/// pl — jointk's own verify is self-consistent at solve-time and misses a wrong-pl solve).
+///
+/// CALLER CONTRACT (mirrors `level_scenes_oneshot`): the preset is already current (the caller
+/// ran `prepass_scene_docs`), and `jobs`' knobs carry each sound's pre-raise `current` value.
+pub fn redistribute_clamped_headroom(
+    slot: u32,
+    new_preset_level: f32,
+    jobs: &[SceneJob],
+    stimulus: &[f32],
+    restore_scene: Option<u32>,
+    mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<Vec<BatchedSceneOutcome>, String> {
+    if cancelled() {
+        return Err(CANCELLED.to_string());
+    }
+    // Raise presetLevel FIRST, UNSAVED. `measure_scene_asis` (the jointk measure) connects
+    // LEAN — no `load_preset` — so this working-copy value survives every scene's fresh
+    // re-amp connect (HW: unsaved writes persist across reconnects).
+    {
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        let mut s = Session::connect()?;
+        s.set_preset_level(new_preset_level)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+
+    let mut outcomes = Vec::with_capacity(jobs.len());
+    let mut stopped = false;
+    for job in jobs {
+        if cancelled() {
+            stopped = true;
+            break;
+        }
+        on_scene(job.scene_slot, None);
+        let t0 = std::time::Instant::now();
+        if let Some(reason) = &job.skip {
+            let o = failed_scene_outcome(
+                job.scene_slot,
+                job.target_lufs,
+                reason.clone(),
+                t0.elapsed().as_millis(),
+            );
+            on_scene(job.scene_slot, Some(&o));
+            outcomes.push(o);
+            continue;
+        }
+        let result = jointk_one_scene(slot, job, stimulus, job.target_lufs, true, true);
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        let o = match result {
+            Ok(s) => {
+                solved_scene_outcome(job.scene_slot, job.target_lufs, s, t0.elapsed().as_millis())
+            }
+            Err(e) if e == CANCELLED => {
+                stopped = true;
+                break;
+            }
+            Err(e) => {
+                failed_scene_outcome(job.scene_slot, job.target_lufs, e, t0.elapsed().as_millis())
+            }
+        };
+        on_scene(job.scene_slot, Some(&o));
+        outcomes.push(o);
+    }
+    // Guaranteed fresh re-amp OFF (an interrupted capture can strand it engaged).
+    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+
+    // ATOMICITY: a cancel or ANY failed/off-branch compensating write leaves a PARTIAL
+    // redistribution — reload the stored preset to discard the unsaved pl + writes, persist
+    // nothing. (A jointk-reported headroom clamp on a still-clamped scene is EXPECTED and
+    // not a failure; an ERROR or a no-authority `clamp_reason` is.)
+    let partial = outcomes
+        .iter()
+        .any(|o| o.failure.is_some() || o.clamp_reason.is_some());
+    if stopped || partial {
+        let _ = restore_saved_preset(slot);
+        return Err(if stopped {
+            CANCELLED.to_string()
+        } else {
+            "redistribution aborted: a compensating write did not land — nothing saved".to_string()
+        });
+    }
+
+    // ONE save — new pl + every compensated outputLevel together, base scene recalled.
+    save_deferred_scene_writes(slot, restore_scene)?;
+
+    // Post-save AUDIO spot-verify at the PERSISTED pl (the wrong-pl-solve guard). Pick a
+    // compensated sound that actually moved (writes > 0); re-measure it as-is. Advisory —
+    // the save already landed, so a miss WARNS (the UI offers Restore), never re-writes.
+    if let Some(check) = outcomes
+        .iter()
+        .find(|o| o.writes > 0 && o.final_lufs.is_some())
+    {
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        match require_live(|| measure_scene_asis(check.scene_slot, stimulus), stimulus) {
+            Ok(l) => {
+                let err = (l.integrated_lufs - check.target_lufs).abs();
+                if err > REDIST_POST_VERIFY_TOL_LU {
+                    log::warn!(
+                        "redistribute slot={slot}: post-save spot-verify scene {} read {:.2} LUFS \
+                         vs target {:.2} (Δ{:.2} > {REDIST_POST_VERIFY_TOL_LU}) — possible wrong-pl \
+                         solve; Restore is available",
+                        check.scene_slot, l.integrated_lufs, check.target_lufs, err
+                    );
+                } else {
+                    log::info!(
+                        "redistribute slot={slot}: post-save spot-verify scene {} on target ({:.2} LUFS)",
+                        check.scene_slot, l.integrated_lufs
+                    );
+                }
+            }
+            Err(e) => log::warn!("redistribute slot={slot}: post-save spot-verify skipped ({e})"),
+        }
+        // The post-verify capture disengages re-amp itself; the command's run-end
+        // `reamp_off_guaranteed` is the fresh-connection backstop, so no extra OFF here.
+    }
+    Ok(outcomes)
+}
+
 /// The ONE scene-batch scaffold shared by [`level_scenes_oneshot`] and
 /// [`level_scenes_rebalance`] — only the per-job `solve` differs. Owning the loop in
 /// one place matters beyond dedup: the loop has a SINGLE EXIT so the deferred-save
@@ -2570,10 +2799,14 @@ fn jointk_one_scene(
         }
         _ => (v0.unwrap_or(achieved), levels, None, 1 + retry_writes),
     };
-    // Report clamped if a specific reason fired, the open-loop solve clamped, or the verified
-    // best still can't reach target (knob out of headroom / chain limits below target).
-    let clamped =
-        clamped || clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
+    // Report clamped from the FINAL point, NOT the open-loop's initial want: a specific reason
+    // fired, or the verified best still can't reach target (knob out of headroom / chain limits
+    // below target). The open-loop `clamped` flag is deliberately DROPPED here — a scene whose
+    // first solve wanted `outputLevel > 1.0` but whose verify+correct then landed a valid point
+    // within `KNOB_TOL_LU` HAS reached target (it just started far below), so it is "done", not
+    // clamped. Keying the flag on `clamped ||` over-reported those as clamped (a stale edge flag,
+    // exactly the redistribution's once-clamped-now-rescued scenes).
+    let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
     Ok(SceneSolve {
         lufs: best_lufs,
         levels: best_levels,
@@ -3012,7 +3245,7 @@ fn rebalance_one_scene(
     ];
     let JointK {
         levels,
-        clamped,
+        clamped: _, // the FINAL point decides clamped (see below), not the open-loop want
         achieved,
         k_eff,
     } = solve_joint_k_at(&balanced_knobs, target_lufs, combined.integrated_lufs)?;
@@ -3054,8 +3287,9 @@ fn rebalance_one_scene(
         }
         _ => (v0.unwrap_or(achieved), levels, None, 0),
     };
-    let clamped =
-        clamped || clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
+    // Clamped from the FINAL point, not the open-loop want (see `jointk_one_scene`): a
+    // verify+correct that landed within tolerance means the lane reached target — "done".
+    let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
     Ok(SceneSolve {
         lufs: best_lufs,
         levels: best_levels,
@@ -3508,6 +3742,24 @@ mod tests {
         assert!(clamped2);
         assert_eq!(lvl2, 1.0);
         assert!((predicted2 - c).abs() < 1e-9, "predicted2={predicted2}");
+    }
+
+    #[test]
+    fn redistribute_delta_is_min_of_deficit_headroom_and_downroom() {
+        use super::redistribute_delta_db;
+        // pl=0.5 → 6.02 dB headroom; min knob 0.5 → 20 dB down-room; deficit 3 + 1 margin = 4
+        // (deficit-bound, well under headroom/down-room).
+        assert!((redistribute_delta_db(0.5, 3.0, 0.5) - 4.0).abs() < 1e-9);
+        // pl=0.9 → 0.915 dB headroom binds (deficit+margin=4, but no room to raise past ceiling).
+        assert!((redistribute_delta_db(0.9, 3.0, 0.5) - 0.9151).abs() < 1e-3);
+        // min knob 0.06 → 20·log10(0.06/0.05)=1.584 dB down-room binds.
+        assert!((redistribute_delta_db(0.5, 3.0, 0.06) - 1.5836).abs() < 1e-3);
+        // A knob already at/below the floor → no room → 0 (don't offer).
+        assert_eq!(redistribute_delta_db(0.5, 3.0, 0.05), 0.0);
+        // No clamp deficit → 0 (the margin never fires without a real deficit).
+        assert_eq!(redistribute_delta_db(0.5, 0.0, 0.5), 0.0);
+        // pl at ceiling (1.0) → no headroom → 0 (the quiet class PR6 owns).
+        assert_eq!(redistribute_delta_db(1.0, 3.0, 0.5), 0.0);
     }
 
     // ── joint-k (parallel-merged) solve ──────────────────────────────────────

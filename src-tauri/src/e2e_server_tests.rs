@@ -403,6 +403,169 @@ fn level_defaults_403_scenes_solve_and_offbranch() {
     }
 }
 
+/// Gain-budget redistribution (PR5) end-to-end through the real command against the offline
+/// physics: slot 400 (E2E Reference) is the loud class — Base C=-18 solves, scene 0 C=-30
+/// clamps. `redistribute_headroom` raises presetLevel by the solved delta and re-levels the
+/// base amp + BOTH scenes back to −26, so the previously-clamped scene 0 reaches target (done,
+/// not clamped) and every sound lands near −26 — AND it records the pre-values (presetLevel +
+/// touched knobs) for the Summary's Restore. This is the offline half of "clamped run →
+/// redistribute → all done"; the base-scene skip + save-persistence idempotency are online
+/// (the sim models no field-8 read-back / saved-state reload, same limit as `level-rerun`).
+#[test]
+fn redistribute_400_gives_the_clamped_scene_headroom() {
+    let _serial = serial();
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+        (
+            "TMP_E2E_BACKUP_FIXTURE",
+            "/../e2e/fixtures/backup-fixture.bin",
+        ),
+        (
+            "TMP_E2E_STIMULUS",
+            "/resources/samples/guitar-humbucker.wav",
+        ),
+    ]);
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![redistribute_headroom])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let amp = serde_json::json!([{
+        "groupId": "G1", "nodeId": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR",
+        "parameterId": "outputLevel", "value": 0.5
+    }]);
+    // Base (wire slot 8) + scene 0 (the clamped one) + scene 1, all to −26. `worstClampedDeficitDb`
+    // = scene 0's deficit at presetLevel 0.32 (≈5.9); 6.0 is enough to fully rescue it.
+    let jobs = serde_json::json!([
+        {"sceneSlot": 8, "targetLufs": -26.0},
+        {"sceneSlot": 0, "targetLufs": -26.0},
+        {"sceneSlot": 1, "targetLufs": -26.0}
+    ]);
+    let res = invoke(
+        &webview,
+        "redistribute_headroom",
+        serde_json::json!({
+            "slot": 400, "jobs": jobs, "candidates": amp, "worstClampedDeficitDb": 6.0,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("redistribute_headroom");
+    let results = res["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 3, "one result per sound: {res}");
+    for r in results {
+        let lufs = r["measured_lufs"].as_f64().expect("lufs");
+        assert!(
+            (lufs + 26.0).abs() < 1.0,
+            "every sound (incl. the once-clamped scene 0) reaches −26: {r}"
+        );
+        assert_eq!(
+            r["clamped"],
+            serde_json::json!(false),
+            "no clamp remains: {r}"
+        );
+    }
+    // presetLevel was raised by a positive delta, and the pre-values are recorded for Restore.
+    let delta = res["deltaDb"].as_f64().expect("deltaDb");
+    assert!(delta > 0.0, "a positive redistribution delta: {res}");
+    assert!(
+        res["newPresetLevel"].as_f64().unwrap() > res["previousPresetLevel"].as_f64().unwrap(),
+        "presetLevel rose: {res}"
+    );
+    let prev = res["previousKnobs"].as_array().expect("previousKnobs");
+    assert!(
+        prev.iter().any(|k| k["sceneSlot"].is_null()),
+        "the base amp knob (sceneSlot null) is recorded for Restore: {res}"
+    );
+    assert!(
+        prev.iter().filter(|k| k["sceneSlot"].is_number()).count() >= 2,
+        "both scene overlays are recorded for Restore: {res}"
+    );
+}
+
+/// Redistribution ATOMICITY: a capture fault (one sound reads silence) makes that
+/// compensating solve fail, so the whole redistribution is a PARTIAL — it aborts PRE-save,
+/// reloads to discard the raise, and persists NOTHING (no `saveCurrentPreset`). The command
+/// returns an error; the fake records zero `Saved` events.
+#[test]
+fn redistribute_aborts_and_saves_nothing_on_a_dropped_capture() {
+    let _serial = serial();
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+        (
+            "TMP_E2E_BACKUP_FIXTURE",
+            "/../e2e/fixtures/backup-fixture.bin",
+        ),
+        (
+            "TMP_E2E_STIMULUS",
+            "/resources/samples/guitar-humbucker.wav",
+        ),
+    ]);
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    // Fault the NEXT capture for slot 400 → the first compensating solve fails.
+    crate::sim_device::arm_capture_fault(400);
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![redistribute_headroom])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let amp = serde_json::json!([{
+        "groupId": "G1", "nodeId": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR",
+        "parameterId": "outputLevel", "value": 0.5
+    }]);
+    let jobs = serde_json::json!([
+        {"sceneSlot": 8, "targetLufs": -26.0},
+        {"sceneSlot": 0, "targetLufs": -26.0}
+    ]);
+    let res = invoke(
+        &webview,
+        "redistribute_headroom",
+        serde_json::json!({
+            "slot": 400, "jobs": jobs, "candidates": amp, "worstClampedDeficitDb": 6.0,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    );
+    assert!(
+        res.is_err(),
+        "a faulted redistribution must return an error: {res:?}"
+    );
+    assert!(
+        !sim.events()
+            .iter()
+            .any(|e| matches!(e, crate::sim_device::SimEvent::Saved(_))),
+        "an aborted redistribution saves NOTHING: {:?}",
+        sim.events()
+    );
+}
+
 /// Instrument-profile stimulus resolution + re-level smoke: a profile-driven level run resolves
 /// its stimulus (the `profile_id` with no stored DI capture must fall back to the topology
 /// stimulus, not crash) and a repeated run re-levels without a stale-candidate crash or a panic.
