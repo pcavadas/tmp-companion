@@ -29,6 +29,7 @@ import {
   restorePresetLevel,
   redistributeHeadroom,
   restoreRedistribution,
+  commonReachableTarget,
   levelScenesApplyBatched,
   cancelSceneLeveling,
   cancelPresetLeveling,
@@ -220,6 +221,19 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     });
   });
 
+  it("common_reachable_target passes the measured ceilings", async () => {
+    await commonReachableTarget([
+      { cLufs: -28, topologyId: null },
+      { cLufs: -23, topologyId: "bass-active" },
+    ]);
+    expectCall("common_reachable_target", {
+      ceilings: [
+        { cLufs: -28, topologyId: null },
+        { cLufs: -23, topologyId: "bass-active" },
+      ],
+    });
+  });
+
   it("cancel_preset_leveling invokes the cooperative cancel command", async () => {
     await cancelPresetLeveling();
     expectCall("cancel_preset_leveling", undefined);
@@ -408,9 +422,9 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 34 contract commands", () => {
+  it("cmd exposes exactly the 35 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(34);
+    expect(Object.keys(cmd).length).toBe(35);
   });
 });

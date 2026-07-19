@@ -74,6 +74,7 @@ pub fn run() {
             level_scenes_apply_batched,
             redistribute_headroom,
             restore_redistribution,
+            common_reachable_target,
             cancel_scene_leveling,
             doctor_check,
             cancel_doctor_check,

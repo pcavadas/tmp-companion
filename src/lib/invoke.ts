@@ -188,6 +188,20 @@ export const restoreRedistribution = (
 ): Promise<void> =>
   invoke("restore_redistribution", { slot, presetLevel, knobs, expectedName });
 
+/** One already-measured ceiling for `commonReachableTarget` (mirrors `commands::CeilingArg`):
+ * the sound's raw ceiling LUFS + the topology deciding its playback offset. */
+export interface CeilingArg {
+  cLufs: number;
+  topologyId: string | null;
+}
+
+/** Derive the reachable common target for a finished run's ALREADY-measured ceilings —
+ * `min(C − offset) − headroom`, the quiet-preset clamp fallback. Pure (no device I/O); the
+ * frontend then re-levels every sound to this target via the existing runners. */
+export const commonReachableTarget = (
+  ceilings: CeilingArg[],
+): Promise<number> => invoke("common_reachable_target", { ceilings });
+
 /** One streamed footswitch-leveling row (`lib::FootswitchLevelProgressItem`). */
 export interface FootswitchLevelProgressItem {
   switch: number;
@@ -449,6 +463,7 @@ export const cmd = {
   restorePresetLevel,
   redistributeHeadroom,
   restoreRedistribution,
+  commonReachableTarget,
   // Profiles + store
   getStore,
   saveProfiles,

@@ -27,6 +27,8 @@ import {
   cancelFootswitchLeveling,
   redistributeHeadroom,
   restoreRedistribution,
+  commonReachableTarget,
+  type CeilingArg,
   type PreviousKnob,
 } from "../../lib/invoke";
 import { onLevelingLufs } from "../../lib/liveEvents";
@@ -35,6 +37,7 @@ import { resolveDeviceId } from "../../models/blockArt";
 import {
   BASE_SCENE_SLOT,
   buildLevelJob,
+  ceilingOf,
   chosenFrom,
   DYNAMIC_SPREAD_LU,
   optionToRunItem,
@@ -388,11 +391,25 @@ export function useLevelingFlow({
         }
       };
 
+      // A row's effective target: the reachable-common-target override when set, else its
+      // named target. Used at every dispatch site so the fallback re-levels everything to
+      // one target while a normal run keeps each row's named pick.
+      const targetOf = (x: RunItem) =>
+        x.targetOverrideLufs ?? targetLufsByName(x.targetName);
+
       for (let i = 0; i < total;) {
         if (isCancelled()) break;
         const it = work[i];
+        // The common-target fallback marks signal-less rows `skipRelevel` — leave their
+        // existing outcome as-is (no wasted re-capture) but keep them visible/counted.
+        if (it.skipRelevel) {
+          it.status = "result";
+          publish(i + 1, false, false);
+          i += 1;
+          continue;
+        }
         const profile = profileById(it.instId);
-        const targetLufs = targetLufsByName(it.targetName);
+        const targetLufs = targetOf(it);
         const causeOf = causeFor(it.slot);
 
         if (it.isBase || (it.footswitch == null && it.sceneSlot == null)) {
@@ -405,6 +422,7 @@ export function useLevelingFlow({
               );
               it.outcome = outcomeOf(res);
               it.value = valueOf(res);
+              it.ceilingLufs = res.constant_c;
               it.spreadLu = res.dynamic_spread_lu;
               it.previousLevel = res.previous_level;
               it.truePeakDbtp = res.true_peak_dbtp;
@@ -432,6 +450,7 @@ export function useLevelingFlow({
           let end = i + 1;
           while (
             end < total &&
+            !work[end].skipRelevel &&
             work[end].footswitch != null &&
             work[end].slot === it.slot &&
             work[end].instId === it.instId
@@ -459,7 +478,7 @@ export function useLevelingFlow({
                           levGroupId: g.footswitch.levGroupId,
                           levNodeId: g.footswitch.levNodeId,
                           levParameterId: g.footswitch.levParameterId,
-                          targetLufs: targetLufsByName(g.targetName),
+                          targetLufs: targetOf(g),
                         },
                       ]
                     : [],
@@ -491,6 +510,7 @@ export function useLevelingFlow({
         let end = i + 1;
         while (
           end < total &&
+          !work[end].skipRelevel &&
           isSceneItem(work[end]) &&
           work[end].slot === it.slot &&
           work[end].instId === it.instId
@@ -533,7 +553,7 @@ export function useLevelingFlow({
               slot: it.slot,
               jobs: group.map((g) => ({
                 sceneSlot: g.sceneSlot ?? 0,
-                targetLufs: targetLufsByName(g.targetName),
+                targetLufs: targetOf(g),
               })),
               candidates: cands,
               save: true,
@@ -775,6 +795,60 @@ export function useLevelingFlow({
     await refresh();
   }, [redistUndo, refresh]);
 
+  // ── Reachable common target (quiet-preset clamp fallback, PR6) ───────────────────────
+  // Can the finished run's clamps be fixed by lowering everything to a REACHABLE common
+  // target? True when a sound clamped (a quiet preset whose ceiling sits below every shipped
+  // target even at max, or a louder preset clamped against a too-loud target) and at least
+  // one measured ceiling exists to derive `min(ceiling) − headroom` from. The banner renders
+  // the binding ceiling itself; this only gates the offer.
+  const commonTargetPlan = useCallback(
+    (items: RunItem[]): boolean =>
+      items.some((it) => it.outcome === "clamped") &&
+      items.some((it) => ceilingOf(it) != null),
+    [],
+  );
+
+  // Summary "Re-level everything to a reachable common target" → derive the target from the
+  // ALREADY-measured ceilings (backend, offset-adjusted; zero re-capture) and re-level every
+  // measured sound to it via the existing run loop. Signal-less rows are excluded from the
+  // re-capture but kept visible (`skipRelevel`). Idempotent: the ceilings are intrinsic, so a
+  // repeat derives the same target and the base unchanged-skip makes the re-level a no-op.
+  const relevelToCommonTarget = useCallback(
+    async (items: RunItem[]) => {
+      const ceilings: CeilingArg[] = items.flatMap((it) => {
+        const c = ceilingOf(it);
+        return c != null
+          ? [
+              {
+                cLufs: c,
+                topologyId: profileById(it.instId)?.topology_id ?? null,
+              },
+            ]
+          : [];
+      });
+      if (ceilings.length === 0) return;
+      let target: number;
+      try {
+        target = await commonReachableTarget(ceilings);
+      } catch {
+        return; // no reachable ceilings — leave the summary as-is
+      }
+      const work = items.map((it) =>
+        ceilingOf(it) != null
+          ? {
+              ...it,
+              targetOverrideLufs: target,
+              status: "queued" as const,
+              outcome: undefined,
+              value: undefined,
+            }
+          : { ...it, skipRelevel: true },
+      );
+      await runLeveling(work);
+    },
+    [profileById, runLeveling],
+  );
+
   // Summary "Accept" / "Done" → close, deselecting just the leveled sounds.
   const onAccept = closeFlow;
 
@@ -806,6 +880,11 @@ export function useLevelingFlow({
       run: redistribute,
       undoCount: redistUndo.size,
       undo: undoRedistribute,
+    },
+    // Reachable common target (quiet-preset clamp fallback).
+    commonTarget: {
+      plan: commonTargetPlan,
+      run: relevelToCommonTarget,
     },
   };
 }

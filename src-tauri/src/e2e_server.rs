@@ -95,6 +95,7 @@ pub fn run_e2e_server() {
             level_preset,
             list_level_blocks,
             level_scenes_apply_batched,
+            common_reachable_target,
             cancel_scene_leveling,
             level_footswitches_apply,
             doctor_check,

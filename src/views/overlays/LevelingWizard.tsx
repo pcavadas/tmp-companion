@@ -13,7 +13,11 @@ import { LevelSetupPage } from "./LevelSetupPage";
 import { stageToStep, type Stage } from "./wizardContext";
 import { SetupBody } from "./SetupBody";
 import { RunBody } from "./RunBody";
-import { SummaryBody, type RedistributionActions } from "./SummaryBody";
+import {
+  SummaryBody,
+  type RedistributionActions,
+  type CommonTargetActions,
+} from "./SummaryBody";
 import type { PickOption } from "./Pick";
 import type { SetupOption, SetupChoice, RunItem } from "../level/leveling";
 
@@ -47,6 +51,7 @@ export interface LevelingWizardProps {
   onAccept: () => void;
   onRelevel: (clamped: RunItem[]) => void;
   redistribution?: RedistributionActions;
+  commonTarget?: CommonTargetActions;
   onRebalanceChange?: (on: boolean) => void;
 }
 
@@ -75,6 +80,7 @@ export function LevelingWizard({
   onAccept,
   onRelevel,
   redistribution,
+  commonTarget,
   onRebalanceChange,
 }: LevelingWizardProps) {
   // CONFIGURE phase → full-page page that replaces the Level body.
@@ -125,6 +131,7 @@ export function LevelingWizard({
           onAccept={onAccept}
           onRelevel={onRelevel}
           redistribution={redistribution}
+          commonTarget={commonTarget}
         />
       )}
     </WizardShell>

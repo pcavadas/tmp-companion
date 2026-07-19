@@ -589,6 +589,47 @@ fn redistribute_aborts_and_saves_nothing_on_a_dropped_capture() {
     );
 }
 
+/// Reachable-common-target derivation (PR6) through the real command: given a finished run's
+/// ALREADY-measured ceilings, `common_reachable_target` returns `min(C − offset) − headroom`
+/// (guitar offset 0 → `min(C) − 1`). This is the quiet-preset clamp fallback's target, and it
+/// re-captures NOTHING — the frontend re-levels every sound to this value via the run loop. The
+/// offset-space + min math is unit-gated in `leveller`; this pins the command wiring.
+#[test]
+fn common_reachable_target_returns_min_ceiling_minus_headroom() {
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![common_reachable_target])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let res = invoke(
+        &webview,
+        "common_reachable_target",
+        serde_json::json!({
+            "ceilings": [
+                { "cLufs": -28.0, "topologyId": null },
+                { "cLufs": -23.0, "topologyId": "guitar-humbucker" }
+            ]
+        }),
+    )
+    .expect("common_reachable_target");
+    let t = res.as_f64().expect("target f64");
+    assert!(
+        (t - -29.0).abs() < 1e-9,
+        "min(-28,-23) − 1 headroom = -29: {t}"
+    );
+
+    // No finite ceiling → an error (an all-silent run has nothing to derive from).
+    let err = invoke(
+        &webview,
+        "common_reachable_target",
+        serde_json::json!({ "ceilings": [] }),
+    );
+    assert!(err.is_err(), "empty ceilings must error: {err:?}");
+}
+
 /// Instrument-profile stimulus resolution + re-level smoke: a profile-driven level run resolves
 /// its stimulus (the `profile_id` with no stored DI capture must fall back to the topology
 /// stimulus, not crash) and a repeated run re-levels without a stale-candidate crash or a panic.
