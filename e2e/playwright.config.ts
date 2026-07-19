@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Ports default to 7600/1421 but scripts/e2e.sh derives a per-worktree pair (exported as
+// TMP_E2E_PORT / TMP_E2E_VITE_PORT) so parallel runs in sibling worktrees don't collide.
+const PORT = process.env.TMP_E2E_PORT ?? "7600";
+const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
+
 // SOTA dual-mode e2e: the same specs drive the REAL React UI in Chromium against the
 // real Rust backend. Offline (here) fakes only the USB transport (SimDevice) + the
 // startup snapshot via the windowless `e2e_server`. Online (Slice 2) points the bridge
@@ -17,7 +22,7 @@ export default defineConfig({
   // the online config already does (it uses 300 s); SimDevice is fast, so 120 s is ample.
   timeout: 120_000,
   use: {
-    baseURL: "http://localhost:1421",
+    baseURL: `http://localhost:${VITE}`,
     trace: "on-first-retry",
   },
   projects: [{ name: "offline", use: { ...devices["Desktop Chrome"] } }],
@@ -25,14 +30,14 @@ export default defineConfig({
   webServer: [
     {
       command: "bun run dev",
-      url: "http://localhost:1421",
+      url: `http://localhost:${VITE}`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
     {
       command:
         "cargo run --manifest-path ../src-tauri/Cargo.toml --features e2e --bin e2e_server",
-      url: "http://127.0.0.1:7600/health",
+      url: `http://127.0.0.1:${PORT}/health`,
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,
     },

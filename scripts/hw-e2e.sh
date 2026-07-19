@@ -24,6 +24,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_TAURI="$(cd "$SCRIPT_DIR/../src-tauri" && pwd)"
 cd "$SRC_TAURI" || exit 1
 
+# Serialize the ONE Tone Master Pro across sessions/worktrees (same machine-global lock the
+# online e2e runner uses) — wait if a sibling run holds it, release on exit.
+# shellcheck source=scripts/device-lock.sh disable=SC1091
+. "$SCRIPT_DIR/device-lock.sh"
+device_lock_acquire "$SCRIPT_DIR (hw-e2e)" || exit 1
+trap device_lock_release EXIT INT TERM
+
 # Tunables (override via env). Defaults are the dev unit's; see header.
 LEVEL_SLOT="${LEVEL_SLOT:-0}"
 LEVEL_TARGET="${LEVEL_TARGET:--30}"

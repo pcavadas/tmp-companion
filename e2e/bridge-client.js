@@ -10,7 +10,9 @@
 // callback), and `plugin:*` invokes (event/log) resolve locally so the app never errors
 // on a feature this offline tier doesn't bridge.
 (() => {
-  const PORT = 7600; // matches playwright.config.ts webServer + TMP_E2E_PORT
+  // `__E2E_PORT__` is injected by fixtures/test.ts from TMP_E2E_PORT (per-worktree bridge
+  // port); falls back to 7600, matching the Playwright configs' + e2e_server's default.
+  const PORT = window.__E2E_PORT__ || 7600;
   const BASE = `http://127.0.0.1:${PORT}`;
   const SERIALIZE_KEY = "__TAURI_TO_IPC_KEY__"; // @tauri-apps/api SERIALIZE_TO_IPC_FN
 
