@@ -633,6 +633,72 @@ pub fn probe_jointk_scenes(
     Ok(out)
 }
 
+/// HW driver for the gain-budget redistribution (PR5,
+/// `probe --redistribute <listIndex> <target> <topology> <worstDeficitDb>`): build the whole
+/// preset's Base (wire slot 8) + every FS scene as jobs, raise `presetLevel` by the solved
+/// delta, and re-level every sound to `target` via `redistribute_clamped_headroom` — printing
+/// each sound's measured LUFS + clamp + writes. Point at a SCRATCH preset: it SAVES.
+pub fn probe_redistribute(
+    list_index: u32,
+    target: f64,
+    topology_id: String,
+    worst_deficit_db: f64,
+) -> Result<String, String> {
+    use std::time::Duration;
+    if !target.is_finite() || !worst_deficit_db.is_finite() {
+        return Err("target + worst-deficit must be finite".to_string());
+    }
+    let stim = read_stimulus_calibrated(&probe_stimulus_path(&topology_id)?, None)?;
+    let scenes = read_preset_scenes_fresh(list_index)?;
+    let candidates = load_and_filter_amp_candidates(list_index)?;
+    // Base (wire slot 8) + every FS scene (0..N).
+    let mut slots: Vec<u32> = vec![session::BASE_SCENE_SLOT];
+    slots.extend(0..scenes.scenes.len() as u32);
+    std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
+    std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    let jobs = build_scene_jobs(&slots, &candidates, &docs, target)?;
+    let pl = docs
+        .iter()
+        .find_map(|(_, d)| d.as_ref().and_then(crate::audiograph::preset_level))
+        .ok_or("could not read the preset's presetLevel")? as f32;
+    let min_knob = jobs
+        .iter()
+        .flat_map(|j| j.knobs.iter().map(|k| k.current))
+        .fold(f32::INFINITY, f32::min);
+    let delta = leveller::redistribute_delta_db(pl, worst_deficit_db, min_knob);
+    let new_pl = (f64::from(pl) * 10f64.powf(delta / 20.0)).min(1.0) as f32;
+    let mut out = format!(
+        "=== redistribute idx {list_index} · target {target} · presetLevel {pl:.4}→{new_pl:.4} · delta {delta:.2} dB · minKnob {min_knob:.3} · scenes {} ===\n",
+        scenes.scenes.len()
+    );
+    match leveller::redistribute_clamped_headroom(
+        list_index,
+        new_pl,
+        &jobs,
+        &stim,
+        restore_scene,
+        |_, _| {},
+        || false,
+    ) {
+        Ok(outcomes) => {
+            for o in &outcomes {
+                out += &format!(
+                    "  scene {} → {:.2} LUFS · clamped={} · writes={} · {}\n",
+                    o.scene_slot,
+                    o.final_lufs.unwrap_or(f64::NAN),
+                    o.clamped,
+                    o.writes,
+                    o.failure.as_deref().unwrap_or("ok"),
+                );
+            }
+        }
+        Err(e) => out += &format!("  REDISTRIBUTE FAILED/ABORTED: {e}\n"),
+    }
+    leveller::reamp_off_guaranteed("probe_redistribute");
+    Ok(out)
+}
+
 /// HW semantics probe for the deferred single-save scene flow
 /// (`probe --defer-scenes <listIndex> <groupId> <nodeId> <scene:value,…>`):
 /// write several scenes' `outputLevel` UNSAVED (each on its own fresh connection,

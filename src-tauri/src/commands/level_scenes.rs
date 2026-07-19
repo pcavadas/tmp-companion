@@ -329,32 +329,8 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     j.scene_slot
                 ));
             }
-            let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| match done {
-                None => {
-                    let _ = on_result.send(SceneLevelProgressItem {
-                        scene_slot: scene,
-                        status: "active".to_string(),
-                        result: None,
-                        message: None,
-                    });
-                }
-                Some(o) => {
-                    let item = match &o.failure {
-                        None => SceneLevelProgressItem {
-                            scene_slot: scene,
-                            status: "done".to_string(),
-                            result: Some(outcome_to_level_result(slot, save_run, o)),
-                            message: None,
-                        },
-                        Some(e) => SceneLevelProgressItem {
-                            scene_slot: scene,
-                            status: "error".to_string(),
-                            result: None,
-                            message: Some(e.clone()),
-                        },
-                    };
-                    let _ = on_result.send(item);
-                }
+            let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| {
+                let _ = on_result.send(scene_progress_item(slot, save_run, scene, done));
             };
             let cancelled = || SCENE_LEVEL_CANCEL.load(SeqCst);
             // `rebalance` (opt-in) equalizes a path-MERGE scene's two lanes before joint-k;
@@ -411,6 +387,40 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     .await
 }
 
+/// Build the streamed progress row for one scene step — `None` = the step just STARTED
+/// (spinner), `Some(outcome)` = it finished (a `done` result or an `error` message). Shared
+/// by `level_scenes_apply_batched` + `redistribute_headroom` so their per-row wire shape can't
+/// drift.
+fn scene_progress_item(
+    slot: u32,
+    save: bool,
+    scene: u32,
+    done: Option<&leveller::BatchedSceneOutcome>,
+) -> SceneLevelProgressItem {
+    match done {
+        None => SceneLevelProgressItem {
+            scene_slot: scene,
+            status: "active".to_string(),
+            result: None,
+            message: None,
+        },
+        Some(o) => match &o.failure {
+            None => SceneLevelProgressItem {
+                scene_slot: scene,
+                status: "done".to_string(),
+                result: Some(outcome_to_level_result(slot, save, o)),
+                message: None,
+            },
+            Some(e) => SceneLevelProgressItem {
+                scene_slot: scene,
+                status: "error".to_string(),
+                result: None,
+                message: Some(e.clone()),
+            },
+        },
+    }
+}
+
 /// Map a [`leveller::BatchedSceneOutcome`] onto the frontend's `LevelResult`
 /// contract (the batched runner's outcome is per-scene; `verify_lufs` carries
 /// the final measured window).
@@ -442,6 +452,223 @@ fn outcome_to_level_result(
         // path in `level_preset` estimates it).
         true_peak_dbtp: None,
     }
+}
+
+// ───────────────────────── Gain-budget redistribution (PR5) ─────────────────────────
+
+/// One touched knob's PRE-redistribution value — the Restore anchor. `scene_slot` `None` =
+/// the base amp (plain write); `Some(i)` = the i-th FS scene overlay (scene-edit write).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreviousKnob {
+    group_id: String,
+    node_id: String,
+    scene_slot: Option<u32>,
+    value: f32,
+}
+
+/// Result of a redistribution: the per-sound outcomes + the values it rewrote, recorded for
+/// the Summary's one-click Restore (presetLevel + every touched amp `outputLevel`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RedistributeResult {
+    results: Vec<leveller::LevelResult>,
+    previous_preset_level: f32,
+    previous_knobs: Vec<PreviousKnob>,
+    delta_db: f64,
+    new_preset_level: f32,
+}
+
+/// Give clamped scenes headroom by redistributing the gain budget (loud-preset class,
+/// single-amp v1): raise `presetLevel` by `delta` and re-level the base amp + every scene
+/// back to target, so clamped scenes gain headroom while non-clamped sounds stay on target.
+/// `jobs` are the WHOLE preset's sounds — base (`session::BASE_SCENE_SLOT`) + every FS scene —
+/// each with its OWN target. `worst_clamped_deficit_db` (from the run: max `target − achieved`
+/// over the clamped scenes) drives `delta` together with the preset's read-back presetLevel
+/// headroom and the down-room before the lowest compensated knob hits the silence floor.
+/// Opt-in (the Summary action) + reversible (returns the recorded previous values).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    slot: u32,
+    jobs: Vec<SceneLevelJobArg>,
+    candidates: Vec<LevelBlockArg>,
+    worst_clamped_deficit_db: f64,
+    topology_id: Option<String>,
+    calibration_lufs: Option<f32>,
+    profile_id: Option<String>,
+    on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
+) -> Result<RedistributeResult, String> {
+    if !candidates
+        .iter()
+        .any(|c| is_amp_output_level_param(&c.parameter_id))
+    {
+        return Err("redistribution needs at least one amp outputLevel candidate".to_string());
+    }
+    if jobs.is_empty() {
+        return Err("no sounds to redistribute".to_string());
+    }
+    if !worst_clamped_deficit_db.is_finite() || worst_clamped_deficit_db <= 0.0 {
+        return Err("redistribution needs a positive clamped-scene deficit".to_string());
+    }
+    SCENE_LEVEL_CANCEL.store(false, SeqCst);
+    let offset = playback_offset_for(&app, topology_id.as_deref());
+    let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
+        &app,
+        None,
+        topology_id,
+        profile_id.as_deref(),
+        calibration_lufs,
+    )?;
+    let app_evt = app.clone();
+    with_released_seize(state.session.clone(), move || {
+        let _lufs = LiveLufsGuard::install(app_evt);
+        let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
+        let scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
+
+        // Prepass: ONE rich session loads the preset + harvests each sound's live doc (the
+        // pre-raise presetLevel + per-sound current outputLevel). No re-amp yet.
+        let (docs, restore_scene) = prepass_scene_docs_via(slot, &scene_slots, false)?;
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        let base_target = jobs[0].target_lufs + offset;
+        let mut scene_jobs = build_scene_jobs(&scene_slots, &candidates, &docs, base_target)?;
+        // Stamp each job with its OWN (offset-adjusted) target.
+        for sj in scene_jobs.iter_mut() {
+            let arg = jobs
+                .iter()
+                .find(|j| j.scene_slot == sj.scene_slot)
+                .ok_or_else(|| format!("built job slot {} has no wire target", sj.scene_slot))?;
+            if !arg.target_lufs.is_finite() {
+                return Err(format!("scene slot {} has a non-finite target", arg.scene_slot));
+            }
+            sj.target_lufs = arg.target_lufs + offset;
+        }
+        // Reverse-check (mirrors `level_scenes_apply_batched`): a requested sound that produced
+        // NO job is a silent drop — fail loudly rather than redistribute a partial sound set.
+        if let Some(j) = jobs
+            .iter()
+            .find(|j| !scene_jobs.iter().any(|sj| sj.scene_slot == j.scene_slot))
+        {
+            return Err(format!(
+                "requested sound slot {} produced no redistribution job",
+                j.scene_slot
+            ));
+        }
+
+        // Read the pre-raise presetLevel from the prepass docs (any sound's audioGraph).
+        let preset_level = docs
+            .iter()
+            .find_map(|(_, d)| d.as_ref().and_then(audiograph::preset_level))
+            .ok_or_else(|| "could not read the preset's current presetLevel".to_string())?
+            as f32;
+        // Record the previous values (pl + every touched knob) BEFORE any write — the Restore
+        // anchor. `current` on each job knob is the sound's pre-raise outputLevel.
+        let previous_knobs: Vec<PreviousKnob> = scene_jobs
+            .iter()
+            .flat_map(|sj| {
+                sj.knobs.iter().filter_map(|kt| match &kt.knob {
+                    leveller::LevelKnob::Block {
+                        group_id,
+                        node_id,
+                        scene_slot,
+                        ..
+                    } => Some(PreviousKnob {
+                        group_id: group_id.clone(),
+                        node_id: node_id.clone(),
+                        scene_slot: *scene_slot,
+                        value: kt.current,
+                    }),
+                    leveller::LevelKnob::PresetLevel => None,
+                })
+            })
+            .collect();
+        // delta = min(worst clamped deficit, presetLevel headroom, down-room before the
+        // lowest compensated knob hits the floor).
+        let min_knob = scene_jobs
+            .iter()
+            .flat_map(|sj| sj.knobs.iter().map(|kt| kt.current))
+            .fold(f32::INFINITY, f32::min);
+        let delta_db = leveller::redistribute_delta_db(preset_level, worst_clamped_deficit_db, min_knob);
+        if delta_db <= 1e-3 {
+            return Err(
+                "no headroom to redistribute (presetLevel already near max, or a knob at the floor) \
+                 — try re-leveling to a lower common target instead"
+                    .to_string(),
+            );
+        }
+        let new_preset_level = (f64::from(preset_level) * 10f64.powf(delta_db / 20.0)).min(1.0) as f32;
+
+        let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| {
+            let _ = on_result.send(scene_progress_item(slot, true, scene, done));
+        };
+        let cancelled = || SCENE_LEVEL_CANCEL.load(SeqCst);
+        let outcome = leveller::redistribute_clamped_headroom(
+            slot,
+            new_preset_level,
+            &scene_jobs,
+            &stim,
+            restore_scene,
+            on_scene,
+            cancelled,
+        );
+        let result = match outcome {
+            Ok(outcomes) => Ok(RedistributeResult {
+                results: outcomes
+                    .iter()
+                    .filter(|o| o.failure.is_none())
+                    .map(|o| outcome_to_level_result(slot, true, o))
+                    .collect(),
+                previous_preset_level: preset_level,
+                previous_knobs,
+                delta_db,
+                new_preset_level,
+            }),
+            Err(e) if e == leveller::CANCELLED => {
+                let _ = on_result.send(SceneLevelProgressItem {
+                    scene_slot: session::BASE_SCENE_SLOT,
+                    status: "cancelled".to_string(),
+                    result: None,
+                    message: Some(e.clone()),
+                });
+                Err(e)
+            }
+            Err(e) => Err(e),
+        };
+        leveller::reamp_off_guaranteed("redistribute_headroom");
+        result
+    })
+    .await
+}
+
+/// One-click Restore for a redistribution: write the recorded pre-redistribution values
+/// (presetLevel + every touched amp `outputLevel`) back and save — the reverse of the atomic
+/// write, on ONE session (base recall before save). Name-guarded (the run recorded the slot's
+/// display name); a drifted list fails loudly rather than restoring onto a different preset.
+#[tauri::command]
+pub(crate) async fn restore_redistribution(
+    state: State<'_, AppState>,
+    slot: u32,
+    preset_level: f32,
+    knobs: Vec<PreviousKnob>,
+    expected_name: String,
+) -> Result<(), String> {
+    with_released_seize(state.session.clone(), move || {
+        let writes: Vec<leveller::PrevKnobWrite> = knobs
+            .iter()
+            .map(|k| leveller::PrevKnobWrite {
+                group_id: k.group_id.clone(),
+                node_id: k.node_id.clone(),
+                scene_slot: k.scene_slot,
+                value: k.value,
+            })
+            .collect();
+        let r = leveller::restore_redistribution(slot, preset_level, &writes, &expected_name);
+        leveller::reamp_off_guaranteed("restore_redistribution");
+        r
+    })
+    .await
 }
 
 /// Headroom (LU) below the quietest-capable preset's ceiling when auto-picking

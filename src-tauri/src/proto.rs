@@ -1848,6 +1848,30 @@ mod tests {
     }
 
     #[test]
+    fn long_fenderid_change_parameter_chunks_without_panic() {
+        // A 40-char reverb+cab amp id (real HW: ACD_DeluxeReverb65BlondeVibratoNoFxCabIR)
+        // + "outputLevel" overflows a single 60-byte report — it must SPLIT into the
+        // 0x33/0x34/0x35 frames the device accepts, never panic (the redistribution +
+        // scene-leveling `changeParameter` write path depends on this).
+        let body = change_parameter(
+            "G1",
+            "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR",
+            "outputLevel",
+            0.3,
+        );
+        assert!(
+            body.len() > MAX_BODY,
+            "expected a multi-frame body, got {}",
+            body.len()
+        );
+        let frames = make_chunked_envelopes(&body); // must not panic
+        assert!(frames.len() > 1);
+        assert_eq!(frames[0][0], MAGIC_IN_START);
+        assert_eq!(frames[frames.len() - 1][0], MAGIC_OUT);
+        assert_eq!(reassemble_out_frames(&frames), body); // split loses nothing
+    }
+
+    #[test]
     fn lz4_stored_roundtrips_through_decompress() {
         for n in [0usize, 1, 14, 15, 16, 60, 270, 5000] {
             let data: Vec<u8> = (0..n).map(|i| (i * 7 % 256) as u8).collect();

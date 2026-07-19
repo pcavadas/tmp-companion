@@ -2,8 +2,9 @@
   "_comment": "Hand-authored C table for the offline physics-faithful capture model (src-tauri/src/sim_device.rs::e2e_capture). Per-slot base + per-scene C = the sound's max-reachable LUFS at presetLevel=1.0 with outputLevel at its stored value; the model shifts by 20*log10(presetLevel) and a scene-relative outputLevel term. Stored knob values are NOT here — they are derived from scenario-presets.json (never duplicated). C values are chosen so the shipped default targets (-26/-24/-22) solve cleanly on these presets. Keys are 0-based LIST INDICES (device userSlot = index+1).",
   "slots": {
     "400": {
+      "_comment": "E2E Reference — the REDISTRIBUTION loud class (single-amp): base C=-18 SOLVES below presetLevel 1.0 at every default target (headroom to spare), but scene 0 C=-30 (stored outputLevel 0.4, so max reach ~-31.9 at presetLevel 0.32) CLAMPS at any default target. A whole-preset run therefore leaves Base done + scene 0 clamped → the Summary offers 'Give clamped scenes headroom'. scene 1 C=-17 solves.",
       "base": -18.0,
-      "scenes": [-19.0, -17.0],
+      "scenes": [-30.0, -17.0],
       "routedNode": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR"
     },
     "401": {

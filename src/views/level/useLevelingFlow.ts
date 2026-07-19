@@ -25,11 +25,15 @@ import {
   cancelSceneLeveling,
   levelFootswitchesApply,
   cancelFootswitchLeveling,
+  redistributeHeadroom,
+  restoreRedistribution,
+  type PreviousKnob,
 } from "../../lib/invoke";
 import { onLevelingLufs } from "../../lib/liveEvents";
 import { MODELS } from "../../models/catalog";
 import { resolveDeviceId } from "../../models/blockArt";
 import {
+  BASE_SCENE_SLOT,
   buildLevelJob,
   chosenFrom,
   DYNAMIC_SPREAD_LU,
@@ -136,6 +140,11 @@ const byEarCause = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
     : r.verify_by_ear
       ? "rebalance"
       : undefined;
+
+/** A run row that levels via amp `outputLevel` in scene mode — not Base (`presetLevel`), not
+ *  a block-acting footswitch. The run loop batches these; redistribution compensates them. */
+const isSceneItem = (it: RunItem): boolean =>
+  !it.isBase && it.footswitch == null && it.sceneSlot != null;
 
 /** The run's live state, published by the run loop and read by RunBody/SummaryBody. */
 export interface RunState {
@@ -316,9 +325,6 @@ export function useLevelingFlow({
       setStage("run");
       publish(0, false, false);
 
-      // A scene row (not Base, not a footswitch) — batchable into one backend call.
-      const isSceneItem = (x: RunItem) =>
-        !x.isBase && x.footswitch == null && x.sceneSlot != null;
       // Envelope-follower presets get the "envelope" cause over any result-derived
       // one: the effect tracks the stimulus envelope, so the measurement itself is
       // suspect no matter how clean the numbers look.
@@ -554,11 +560,7 @@ export function useLevelingFlow({
       // ignored, so a fully-completed run still auto-advances instead of mislabeling.
       const stopped = isCancelled();
       runningRef.current = false;
-      try {
-        await refresh();
-      } catch {
-        /* re-read is best-effort */
-      }
+      await refresh(); // non-throwing: runLoad catches into the error phase
       publish(total, true, stopped);
     },
     [profileById, targetLufsByName, refresh, ampCandidates, blocksByIndex],
@@ -610,6 +612,169 @@ export function useLevelingFlow({
     setStage("setup");
   }, []);
 
+  // ── Gain-budget redistribution (loud-preset clamp class, single-amp v1) ──────────────
+  // Per-preset recorded pre-redistribution values (the one-click Restore anchor), keyed by
+  // 0-based slot.
+  const [redistUndo, setRedistUndo] = useState<
+    Map<number, { presetLevel: number; knobs: PreviousKnob[]; name: string }>
+  >(new Map());
+
+  // Which presets in a finished run can be redistributed: a SINGLE-amp preset whose Base was
+  // leveled and did NOT clamp (presetLevel < 1.0 ⇒ headroom) with ≥1 headroom-clamped scene.
+  // Multi-amp presets are excluded in v1 (compensating one amp would drift the others).
+  const redistributablePresets = useCallback(
+    (items: RunItem[]): number[] =>
+      [...new Set(items.map((it) => it.slot))].filter((slot) => {
+        const group = items.filter((it) => it.slot === slot);
+        const base = group.find((it) => it.isBase);
+        const clamps = group.filter(
+          (it) => isSceneItem(it) && it.outcome === "clamped",
+        );
+        const nodes = new Set(
+          (ampCandidates.get(slot) ?? [])
+            .filter((a) => a.parameterId === "outputLevel")
+            .map((a) => a.nodeId),
+        );
+        return (
+          base?.outcome === "done" && clamps.length > 0 && nodes.size === 1
+        );
+      }),
+    [ampCandidates],
+  );
+
+  // What a redistribution would rewrite (for the Summary's opt-in enumeration), or null when
+  // it doesn't apply. `scenes` counts the FS scenes compensated across the affected presets;
+  // the base amp + presetLevel of each are always rewritten too.
+  const redistributePlan = useCallback(
+    (items: RunItem[]): { presets: number; scenes: number } | null => {
+      const slots = redistributablePresets(items);
+      if (slots.length === 0) return null;
+      const scenes = items.filter(
+        (it) => slots.includes(it.slot) && isSceneItem(it),
+      ).length;
+      return { presets: slots.length, scenes };
+    },
+    [redistributablePresets],
+  );
+
+  // Summary "Give clamped scenes headroom" → for each redistributable preset, raise
+  // presetLevel and re-level the base amp + every scene back to target (the backend streams
+  // per-sound progress; the run stage shows it). Records the pre-values for Restore.
+  const redistribute = useCallback(
+    async (items: RunItem[]) => {
+      const slots = redistributablePresets(items);
+      if (slots.length === 0) return;
+      const work = items.map((it) => ({ ...it }));
+      const total = work.length;
+      cancelRef.current = false;
+      const isCancelled = () => cancelRef.current; // getter defeats the always-false narrowing
+      setStage("run");
+      const publish = (idx: number, done: boolean, stopped = false) => {
+        setRun({
+          items: [...work],
+          currentIndex: idx,
+          total,
+          done,
+          stopped,
+          stopping: isCancelled() && !done,
+        });
+      };
+      publish(0, false);
+      const newUndo: [
+        number,
+        { presetLevel: number; knobs: PreviousKnob[]; name: string },
+      ][] = [];
+      for (const slot of slots) {
+        const group = work.filter((it) => it.slot === slot);
+        const base = group.find((it) => it.isBase);
+        if (!base) continue;
+        const scenes = group.filter(isSceneItem);
+        const profile = profileById(base.instId);
+        const bySound = new Map<number, RunItem>([[BASE_SCENE_SLOT, base]]);
+        for (const s of scenes)
+          if (s.sceneSlot != null) bySound.set(s.sceneSlot, s);
+        const jobs = [...bySound].map(([sceneSlot, it]) => ({
+          sceneSlot,
+          targetLufs: targetLufsByName(it.targetName),
+        }));
+        const worst = Math.max(
+          ...scenes
+            .filter((s) => s.outcome === "clamped")
+            .map(
+              (s) => targetLufsByName(s.targetName) - (s.value ?? -Infinity),
+            ),
+        );
+        try {
+          const res = await redistributeHeadroom(
+            {
+              slot,
+              jobs,
+              candidates: ampCandidates.get(slot) ?? [],
+              worstClampedDeficitDb: worst,
+              topologyId: profile?.topology_id ?? null,
+              calibrationLufs: profile?.calibration_lufs ?? null,
+              profileId: profile?.id ?? null,
+            },
+            (item) => {
+              const target = bySound.get(item.sceneSlot);
+              if (!target) return;
+              if (item.status === "active") {
+                target.status = "active";
+              } else if (item.status === "done" && item.result) {
+                target.outcome = outcomeOf(item.result);
+                target.value = valueOf(item.result);
+                target.status = "result";
+              } else if (item.status === "error") {
+                target.outcome = "skipped";
+                target.status = "result";
+              }
+              publish(work.indexOf(target), false);
+            },
+          );
+          newUndo.push([
+            slot,
+            {
+              presetLevel: res.previousPresetLevel,
+              knobs: res.previousKnobs,
+              name: base.presetName,
+            },
+          ]);
+        } catch {
+          // Redistribution aborted (a compensating write didn't land): nothing persisted for
+          // this preset — leave its rows as the run left them.
+        }
+        // ponytail: per-PRESET cancel ceiling — redistributeHeadroom has no backend cancel
+        // lane, so Stop lets the in-flight preset finish and halts before the next one.
+        if (isCancelled()) break;
+      }
+      setRedistUndo((m) => new Map([...m, ...newUndo]));
+      publish(total, true, isCancelled());
+      await refresh(); // non-throwing: runLoad catches into the error phase
+      setStage("summary");
+    },
+    [
+      redistributablePresets,
+      profileById,
+      targetLufsByName,
+      ampCandidates,
+      refresh,
+    ],
+  );
+
+  // Undo every redistribution this Summary applied (writes the recorded pre-values back).
+  const undoRedistribute = useCallback(async () => {
+    const entries = [...redistUndo];
+    for (const [slot, rec] of entries) {
+      try {
+        await restoreRedistribution(slot, rec.presetLevel, rec.knobs, rec.name);
+      } catch {
+        /* a drifted slot fails the name guard — leave it, the user is told */
+      }
+    }
+    setRedistUndo(new Map());
+    await refresh();
+  }, [redistUndo, refresh]);
+
   // Summary "Accept" / "Done" → close, deselecting just the leveled sounds.
   const onAccept = closeFlow;
 
@@ -635,5 +800,12 @@ export function useLevelingFlow({
     onRelevel,
     onAccept,
     setRebalance,
+    // Gain-budget redistribution (loud-preset clamp class, single-amp v1).
+    redistribution: {
+      plan: redistributePlan,
+      run: redistribute,
+      undoCount: redistUndo.size,
+      undo: undoRedistribute,
+    },
   };
 }

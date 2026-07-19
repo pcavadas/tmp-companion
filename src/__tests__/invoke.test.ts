@@ -27,6 +27,8 @@ import {
   listPresets,
   levelPreset,
   restorePresetLevel,
+  redistributeHeadroom,
+  restoreRedistribution,
   levelScenesApplyBatched,
   cancelSceneLeveling,
   cancelPresetLeveling,
@@ -170,6 +172,52 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
   it("cancel_scene_leveling invokes the cooperative cancel command", async () => {
     await cancelSceneLeveling();
     expectCall("cancel_scene_leveling", undefined);
+  });
+
+  it("redistribute_headroom passes jobs + deficit + a progress channel", async () => {
+    const onResult = vi.fn(() => {
+      /* no-op */
+    });
+    await redistributeHeadroom(
+      {
+        slot: 7,
+        jobs: [
+          { sceneSlot: 8, targetLufs: -24 },
+          { sceneSlot: 0, targetLufs: -24 },
+        ],
+        candidates: [
+          {
+            groupId: "G1",
+            nodeId: "amp",
+            parameterId: "outputLevel",
+            value: 1,
+          },
+        ],
+        worstClampedDeficitDb: 3,
+        topologyId: null,
+        calibrationLufs: null,
+        profileId: null,
+      },
+      onResult,
+    );
+    const [name, args] = invokeMock.mock.calls[0];
+    expect(name).toBe("redistribute_headroom");
+    expect(args).toMatchObject({ slot: 7, worstClampedDeficitDb: 3 });
+  });
+
+  it("restore_redistribution writes the recorded values back", async () => {
+    await restoreRedistribution(
+      7,
+      0.32,
+      [{ groupId: "G1", nodeId: "amp", sceneSlot: null, value: 0.5 }],
+      "My Preset",
+    );
+    expectCall("restore_redistribution", {
+      slot: 7,
+      presetLevel: 0.32,
+      knobs: [{ groupId: "G1", nodeId: "amp", sceneSlot: null, value: 0.5 }],
+      expectedName: "My Preset",
+    });
   });
 
   it("cancel_preset_leveling invokes the cooperative cancel command", async () => {
@@ -360,9 +408,9 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 32 contract commands", () => {
+  it("cmd exposes exactly the 34 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(32);
+    expect(Object.keys(cmd).length).toBe(34);
   });
 });

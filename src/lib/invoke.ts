@@ -139,6 +139,55 @@ export const levelScenesApplyBatched = (
 export const cancelSceneLeveling = (): Promise<void> =>
   invoke("cancel_scene_leveling");
 
+/** One knob's PRE-redistribution value — the Restore anchor. `sceneSlot` null = the base
+ * amp (plain write); a number = that FS scene's overlay. Mirrors `commands::PreviousKnob`. */
+export interface PreviousKnob {
+  groupId: string;
+  nodeId: string;
+  sceneSlot: number | null;
+  value: number;
+}
+
+/** Result of a gain-budget redistribution (mirrors `commands::RedistributeResult`): the
+ * per-sound outcomes + the values rewritten (recorded for one-click Restore). */
+export interface RedistributeResult {
+  results: LevelResult[];
+  previousPresetLevel: number;
+  previousKnobs: PreviousKnob[];
+  deltaDb: number;
+  newPresetLevel: number;
+}
+
+/** Give a preset's clamped scenes headroom: raise presetLevel by `delta` and re-level the
+ * base amp + every scene back to target (loud-preset class, single-amp only). Streams a row
+ * per sound over the channel; returns the outcomes + the recorded previous values. */
+export const redistributeHeadroom = (
+  args: {
+    slot: number;
+    jobs: { sceneSlot: number; targetLufs: number }[];
+    candidates: LevelBlockCandidate[];
+    worstClampedDeficitDb: number;
+    topologyId: string | null;
+    calibrationLufs: number | null;
+    profileId: string | null;
+  },
+  onResult: (item: SceneLevelProgressItem) => void,
+): Promise<RedistributeResult> => {
+  const channel = new Channel<SceneLevelProgressItem>();
+  channel.onmessage = onResult;
+  return invoke("redistribute_headroom", { ...args, onResult: channel });
+};
+
+/** Undo a redistribution: write the recorded presetLevel + every touched amp outputLevel
+ * back and save (slot-drift guarded by `expectedName`). */
+export const restoreRedistribution = (
+  slot: number,
+  presetLevel: number,
+  knobs: PreviousKnob[],
+  expectedName: string,
+): Promise<void> =>
+  invoke("restore_redistribution", { slot, presetLevel, knobs, expectedName });
+
 /** One streamed footswitch-leveling row (`lib::FootswitchLevelProgressItem`). */
 export interface FootswitchLevelProgressItem {
   switch: number;
@@ -398,6 +447,8 @@ export const cmd = {
   listLevelBlocks,
   levelPreset,
   restorePresetLevel,
+  redistributeHeadroom,
+  restoreRedistribution,
   // Profiles + store
   getStore,
   saveProfiles,

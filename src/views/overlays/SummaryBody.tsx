@@ -289,11 +289,22 @@ function ResultRow({ it, restore }: ResultRowProps) {
   );
 }
 
+/** Gain-budget redistribution actions (loud-preset clamp class, single-amp v1), threaded
+ *  from `useLevelingFlow`. `plan` returns what a redistribution would rewrite (or null when
+ *  it doesn't apply); `run` applies it; `undo` reverts every one this Summary applied. */
+export interface RedistributionActions {
+  plan: (items: RunItem[]) => { presets: number; scenes: number } | null;
+  run: (items: RunItem[]) => void;
+  undoCount: number;
+  undo: () => void;
+}
+
 export interface SummaryBodyProps {
   items: RunItem[];
   stopped: boolean;
   onAccept: () => void;
   onRelevel: (clamped: RunItem[]) => void;
+  redistribution?: RedistributionActions;
 }
 
 export function SummaryBody({
@@ -301,6 +312,7 @@ export function SummaryBody({
   stopped,
   onAccept,
   onRelevel,
+  redistribution,
 }: SummaryBodyProps) {
   const { t } = useTheme();
   // "Restore original" progress per row. Restores run one at a time (every
@@ -340,6 +352,9 @@ export function SummaryBody({
   const offbrExpMute = offbr.filter((it) => it.silenceHint === "exp_mute");
   const offbrRouting = offbr.filter((it) => it.silenceHint == null);
   const clamped = items.filter((it) => it.outcome === "clamped"); // HEADROOM clamps only
+  // What a gain-budget redistribution would rewrite (loud-preset class, single-amp) — null
+  // when it doesn't apply (multi-amp, no headroom, or nothing clamped).
+  const redistPlan = redistribution?.plan(items) ?? null;
   const leveled = items.filter((it) => it.outcome === "done");
   const skipped = items.filter((it) => it.outcome === "skipped");
   const notrun = items.filter((it) => it.outcome == null); // only on a stopped run
@@ -507,8 +522,27 @@ export function SummaryBody({
               border="rgba(176,125,28,0.3)"
               title="Clamped — already maxed"
             >
-              Already as loud as the preset allows. Lower the target and
-              re-level, or keep as-is.
+              {redistPlan ? (
+                <>
+                  These scenes are maxed but the preset has headroom to spare.{" "}
+                  <strong style={{ color: t.ink }}>
+                    Give clamped scenes headroom
+                  </strong>{" "}
+                  rewrites the preset level, the base amp, and{" "}
+                  {redistPlan.scenes} scene
+                  {redistPlan.scenes === 1 ? "" : "s"}
+                  {redistPlan.presets > 1
+                    ? ` across ${String(redistPlan.presets)} presets`
+                    : ""}{" "}
+                  so they reach target — non-clamped sounds stay put. Or lower
+                  the target and re-level.
+                </>
+              ) : (
+                <>
+                  Already as loud as the preset allows. Lower the target and
+                  re-level, or keep as-is.
+                </>
+              )}
             </Banner>
           )}
         </div>
@@ -601,9 +635,35 @@ export function SummaryBody({
       </div>
 
       <WizardFooter
-        left={<span />}
+        left={
+          redistribution && redistribution.undoCount > 0 ? (
+            <Button
+              variant="ghost"
+              small
+              icon="refresh"
+              onClick={redistribution.undo}
+              style={{ height: 32, padding: `0 ${String(t.space5)}px` }}
+            >
+              Undo redistribution
+            </Button>
+          ) : (
+            <span />
+          )
+        }
         right={
           <>
+            {redistPlan && redistribution && (
+              <Button
+                variant="ghost"
+                small
+                onClick={() => {
+                  redistribution.run(items);
+                }}
+                style={{ height: 32, padding: `0 ${String(t.space6)}px` }}
+              >
+                Give clamped scenes headroom
+              </Button>
+            )}
             {clamped.length > 0 && (
               <Button
                 variant="ghost"

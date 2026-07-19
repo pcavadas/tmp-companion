@@ -1429,6 +1429,40 @@ fn main() {
         }
     }
 
+    if let Some(i) = args
+        .iter()
+        .position(|a| a == "--redistribute-persist-check")
+    {
+        // --redistribute-persist-check <scratchSlot> <expectedName>
+        // PR5 go/no-go: do presetLevel + base amp outputLevel + scene overlay all
+        // persist through ONE save? Point at a prepared scratch preset with an amp +
+        // ≥1 scene (e.g. E2E Reference at 400 after --seed-scenario). 0-based list index;
+        // name-guarded; restores the slot afterward.
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let expected_name = args.get(i + 2).cloned();
+        let Some(expected_name) =
+            expected_name.filter(|n| !n.starts_with("--") && slot != u32::MAX)
+        else {
+            eprintln!(
+                "usage: probe --redistribute-persist-check <scratchSlot> <expectedName>  (0-based list index; the scratch preset needs an amp + ≥1 scene)"
+            );
+            std::process::exit(2);
+        };
+        match tmp_companion_lib::probe_redistribute_persist_check(slot, &expected_name) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--clear") {
         // --clear <listIndex> <expect-name>  — clears only if the slot reads
         // expect-name. 0-BASED list index (what `--import`'s diff prints), NOT the
@@ -2383,6 +2417,40 @@ fn main() {
             save,
             overrides,
         ) {
+            Ok(r) => {
+                println!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--redistribute") {
+        // --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (PR5; SAVES — scratch)
+        let list_index: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let target: f64 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        let topology = args.get(i + 3).cloned().unwrap_or_default();
+        let worst: f64 = args
+            .get(i + 4)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f64::NAN);
+        if list_index == u32::MAX || target.is_nan() || topology.is_empty() || worst.is_nan() {
+            eprintln!(
+                "usage: probe --redistribute <listIndex> <target> <topology> <worstDeficitDb>  (SAVES — point at a scratch preset)"
+            );
+            std::process::exit(2);
+        }
+        eprintln!("[probe] redistribute idx={list_index} target={target} topology={topology} worstDeficit={worst}…");
+        match tmp_companion_lib::probe_redistribute(list_index, target, topology, worst) {
             Ok(r) => {
                 println!("{r}");
                 return;
