@@ -95,7 +95,7 @@ pub(crate) async fn read_preset_scenes(
         match result {
             Ok(Some(json)) => return decode_preset_scenes(&json),
             Ok(None) => {
-                log::warn!("read_preset_scenes: monitor lane returned no data; falling back")
+                log::info!("read_preset_scenes: monitor lane returned no data; falling back")
             }
             Err(e) => return Err(e),
         }

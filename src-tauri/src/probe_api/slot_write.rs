@@ -88,7 +88,7 @@ pub fn probe_reamp_off() -> Result<(), String> {
 pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
     match discover_blocks_rich(slot) {
         Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
-        Ok(_) => log::warn!("rich block discovery for slot={slot}: loaded but no level blocks"),
+        Ok(_) => log::info!("rich block discovery for slot={slot}: loaded but no level blocks"),
         Err(e) => log::warn!("rich block discovery for slot={slot}: {e}"),
     }
     // Fallback for older firmware where the field-78 discovery handshake works.

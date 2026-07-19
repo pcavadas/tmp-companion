@@ -237,23 +237,31 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
     )?;
 
     let total_rows = run_sql("SELECT count(*) AS n FROM UserPresets")
+        .inspect_err(|e| log::warn!("backup read: total_rows count query failed: {e}"))
         .ok()
         .and_then(|v| v.as_array()?.first()?.get("n")?.as_i64())
         .unwrap_or(-1);
 
-    // Song→preset bindings from the SAME DB (no extra device read). `.ok()` so a
-    // fixture/older DB without the `Songs`/`SongPresets` tables degrades to [] rather
-    // than failing the whole backup read.
-    let song_presets: Vec<SongPresetBinding> = run_sql(
+    // The song→preset bindings + the Songs/Setlists tabs all read from the SAME
+    // backup DB (no live device reads). Each degrades to [] rather than failing the
+    // whole backup read on a query failure — logged (by `label`) so a fixture /
+    // older DB lacking a table is diagnosable.
+    let rows_of = |label: &str, sql: &str| -> Vec<serde_json::Value> {
+        run_sql(sql)
+            .inspect_err(|e| log::warn!("backup read: {label} query failed: {e}"))
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+    };
+
+    let song_presets: Vec<SongPresetBinding> = rows_of(
+        "song_presets",
         "SELECT s.slot AS song_slot, up.slot AS preset_slot \
          FROM SongPresets sp \
          JOIN Songs s        ON sp.Songs_id = s.id \
          JOIN UserPresets up ON sp.UserPresets_id = up.id \
          ORDER BY s.slot, sp.slot",
     )
-    .ok()
-    .and_then(|v| v.as_array().cloned())
-    .unwrap_or_default()
     .iter()
     .filter_map(|r| {
         Some(SongPresetBinding {
@@ -262,35 +270,27 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         })
     })
     .collect();
-
-    // The Songs/Setlists tabs read from the SAME backup (no live device reads). Each
-    // `.ok()` so a fixture / older DB lacking a table degrades to [] rather than failing
-    // the whole backup read.
-    let rows_of = |sql: &str| -> Vec<serde_json::Value> {
-        run_sql(sql)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default()
-    };
-    let songs: Vec<session::SongRecord> =
-        rows_of("SELECT slot, name, notes, bpmActive, bpm FROM Songs ORDER BY slot")
-            .iter()
-            .filter_map(|r| {
-                Some(session::SongRecord {
-                    slot: r.get("slot")?.as_i64()? as u32,
-                    name: r.get("name")?.as_str()?.to_string(),
-                    notes: r
-                        .get("notes")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    bpm: r.get("bpm").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
-                    bpm_active: r.get("bpmActive").and_then(|v| v.as_i64()).unwrap_or(0) != 0,
-                })
-            })
-            .collect();
+    let songs: Vec<session::SongRecord> = rows_of(
+        "songs",
+        "SELECT slot, name, notes, bpmActive, bpm FROM Songs ORDER BY slot",
+    )
+    .iter()
+    .filter_map(|r| {
+        Some(session::SongRecord {
+            slot: r.get("slot")?.as_i64()? as u32,
+            name: r.get("name")?.as_str()?.to_string(),
+            notes: r
+                .get("notes")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            bpm: r.get("bpm").and_then(|v| v.as_i64()).unwrap_or(0) as u32,
+            bpm_active: r.get("bpmActive").and_then(|v| v.as_i64()).unwrap_or(0) != 0,
+        })
+    })
+    .collect();
     let setlists: Vec<session::SetlistRecord> =
-        rows_of("SELECT slot, name FROM Setlists ORDER BY slot")
+        rows_of("setlists", "SELECT slot, name FROM Setlists ORDER BY slot")
             .iter()
             .filter_map(|r| {
                 Some(session::SetlistRecord {
@@ -300,6 +300,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             })
             .collect();
     let setlist_songs: Vec<BackupSetlistSong> = rows_of(
+        "setlist_songs",
         "SELECT sl.slot AS setlist_slot, s.slot AS song_slot, ss.slot AS position \
          FROM SetlistSongs ss \
          JOIN Setlists sl ON ss.Setlists_id = sl.id \

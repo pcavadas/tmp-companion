@@ -8,8 +8,11 @@
 // (job/op/spec/recipe/filter/edit/store) are snake_case and modelled by the types
 // in ./types. Do NOT "fix" either casing.
 
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
+import type { InvokeArgs } from "@tauri-apps/api/core";
 
+import { actionableError } from "./connectError";
+import { logError } from "./log";
 import type {
   AppInfo,
   PresetEntry,
@@ -40,14 +43,28 @@ import type {
   DoctorOp,
 } from "./types";
 
+// isTauri lives in ./log (the dependency-free end of the invoke→log edge — a
+// definition here would close an invoke⇄log module cycle, the TDZ-crash class);
+// re-exported so callers keep importing it from the wrappers module.
+export { isTauri } from "./log";
+
 /**
- * True when running inside Tauri's WKWebView (the global injected by the
- * runtime). Screens may use this to render a "not in app" notice during a plain
- * `vite` browser session; the wrappers themselves always call `invoke`
- * (`invoke` rejects gracefully off-host).
+ * The ONE call path every wrapper below goes through, so a backend command
+ * rejection always reaches the on-disk log (`logError`) before it propagates —
+ * otherwise a rejection a caller doesn't `.catch()` vanishes with nothing but an
+ * in-memory stack trace. Rethrows unchanged so callers see the exact same
+ * rejection bare `invoke` would have produced.
  */
-export function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
+  return tauriInvoke<T>(cmd, args).catch((e: unknown) => {
+    // The 3 s auto-connect poll rejects BY DESIGN while no unit is present —
+    // error-logging that class (~1 line/3 s, forever, while unplugged) would
+    // churn the size-capped log and evict the diagnostics a bug report needs,
+    // so the connect gate classes `connectError` already recognizes stay quiet.
+    if (cmd !== "connect_device" || actionableError(String(e)) !== null)
+      logError(`invoke(${cmd}) failed: ${String(e)}`);
+    throw e;
+  });
 }
 
 // ─── Connection + app ─────────────────────────────────────────────────────────

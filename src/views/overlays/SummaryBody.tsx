@@ -339,8 +339,8 @@ export function SummaryBody({
       .then(() => {
         setRestoreState((s) => ({ ...s, [it.key]: "done" }));
       })
-      .catch((e: unknown) => {
-        console.warn("restore_preset_level failed", e);
+      .catch(() => {
+        // Already on disk via the central invoke-failure logger.
         setRestoreState((s) => ({ ...s, [it.key]: "failed" }));
       });
   };

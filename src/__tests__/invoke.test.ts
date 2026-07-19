@@ -6,6 +6,7 @@
 // the keys MUST stay camelCase at the JS boundary).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { error as pluginError } from "@tauri-apps/plugin-log";
 
 // Mock the Tauri core invoke so no real IPC happens. The mock fn is typed with
 // the same `(cmd, args?)` shape as Tauri's `invoke`, so spreading into it and
@@ -18,6 +19,13 @@ vi.mock("@tauri-apps/api/core", () => ({
   Channel: class MockChannel {
     onmessage: ((message: unknown) => void) | null = null;
   },
+}));
+
+// log.ts imports @tauri-apps/plugin-log directly; stub it so the invoke-failure
+// logging path (below) is observable without a real WKWebView plugin bridge.
+vi.mock("@tauri-apps/plugin-log", () => ({
+  error: vi.fn(() => Promise.resolve()),
+  warn: vi.fn(() => Promise.resolve()),
 }));
 
 import {
@@ -57,8 +65,11 @@ import type {
 } from "../lib/invoke";
 import type { LevelJob } from "../lib/types";
 
+const pluginErrorMock = vi.mocked(pluginError);
+
 beforeEach(() => {
   invokeMock.mockClear();
+  pluginErrorMock.mockClear();
 });
 
 /** Assert the most recent invoke call used `name` and exactly the given arg keys
@@ -426,5 +437,51 @@ describe("cmd namespace mirrors the named exports", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
     expect(Object.keys(cmd).length).toBe(35);
+  });
+});
+
+describe("invoke-failure logging", () => {
+  it("logs a rejected invoke via the plugin log and still rethrows", async () => {
+    const win = window as unknown as Record<string, unknown>;
+    win.__TAURI_INTERNALS__ = {};
+    invokeMock.mockRejectedValueOnce(new Error("boom"));
+    try {
+      await expect(listPresets()).rejects.toThrow("boom");
+      expect(pluginErrorMock).toHaveBeenCalledWith(
+        expect.stringContaining("invoke(list_presets) failed"),
+      );
+    } finally {
+      delete win.__TAURI_INTERNALS__;
+    }
+  });
+
+  it("stays quiet on the designed connect-poll rejection (no TMP found)", async () => {
+    // The 3 s auto-connect retry rejects with "no TMP found" while nothing is
+    // plugged in — logging it would churn the size-capped log file forever.
+    const win = window as unknown as Record<string, unknown>;
+    win.__TAURI_INTERNALS__ = {};
+    invokeMock.mockRejectedValueOnce(new Error("no TMP found"));
+    try {
+      await expect(connectDevice()).rejects.toThrow("no TMP found");
+      expect(pluginErrorMock).not.toHaveBeenCalled();
+    } finally {
+      delete win.__TAURI_INTERNALS__;
+    }
+  });
+
+  it("still logs an actionable connect failure (close Pro Control)", async () => {
+    const win = window as unknown as Record<string, unknown>;
+    win.__TAURI_INTERNALS__ = {};
+    invokeMock.mockRejectedValueOnce(
+      new Error("IOHIDDeviceOpen failed: close Fender Pro Control"),
+    );
+    try {
+      await expect(connectDevice()).rejects.toThrow("IOHIDDeviceOpen");
+      expect(pluginErrorMock).toHaveBeenCalledWith(
+        expect.stringContaining("invoke(connect_device) failed"),
+      );
+    } finally {
+      delete win.__TAURI_INTERNALS__;
+    }
   });
 });
