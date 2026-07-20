@@ -26,6 +26,13 @@ updates:
       # plugin ships eslint-10 support, then bump both together by hand.
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
+      # typescript 7 moved the TS internals @typescript-eslint/typescript-estree
+      # reads (ts.ScriptKind.Cjs) -> eslint crashes on startup before parsing a
+      # file, so `bun run lint` fails while `vite build` still passes (PR #98).
+      # typescript-eslint 8 is the latest release and has no TS 7 support. Hold
+      # the major until it ships, then bump both together by hand.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       frontend-minor-patch:
         applies-to: version-updates
