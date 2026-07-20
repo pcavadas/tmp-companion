@@ -1002,7 +1002,11 @@ pub fn level_preset(
                 // `measure_c` already set `presetLevel`/forced bypasses on the live device;
                 // discard that before returning (this is an Ok result, so
                 // `restore_after_unsaved_error` below never runs for it).
-                let _ = restore_saved_preset(slot);
+                if let Err(e) = restore_saved_preset(slot) {
+                    log::warn!(
+                        "restore_saved_preset failed after no-signal measure (slot {slot}): {e}"
+                    );
+                }
                 return Ok(LevelResult {
                     slot,
                     ref_level,
@@ -1814,7 +1818,9 @@ pub fn level_footswitch(
         // No-signal routing clamp: nothing to write — discard the sweep pollution.
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         if let Ok(mut s) = Session::connect_lean() {
-            let _ = s.load_preset(slot);
+            if let Err(e) = s.load_preset(slot) {
+                log::warn!("footswitch no-signal reload failed (slot {slot}): {e}");
+            }
         }
         return Ok(result);
     }
@@ -1837,14 +1843,18 @@ pub fn level_footswitch(
                 .ok()
                 .map(|l| l.integrated_lufs);
             let mut s = Session::connect_lean()?; // discard the verify pollution
-            let _ = s.load_preset(slot);
+            if let Err(e) = s.load_preset(slot) {
+                log::warn!("footswitch verify reload failed (slot {slot}): {e}");
+            }
         }
     } else {
         let mut s = Session::connect_lean()?; // dry: discard the measurement pollution
-        let _ = s.load_preset(slot);
+        if let Err(e) = s.load_preset(slot) {
+            log::warn!("footswitch dry-run reload failed (slot {slot}): {e}");
+        }
     }
     // Final guarantee (verify re-amps; never leave the unit input-muted).
-    let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
+    reamp_off_guaranteed("level_footswitch");
     Ok(result)
 }
 
@@ -2458,7 +2468,7 @@ pub fn redistribute_clamped_headroom(
         outcomes.push(o);
     }
     // Guaranteed fresh re-amp OFF (an interrupted capture can strand it engaged).
-    let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    reamp_off_guaranteed("redistribute");
 
     // ATOMICITY: a cancel or ANY failed/off-branch compensating write leaves a PARTIAL
     // redistribution — reload the stored preset to discard the unsaved pl + writes, persist
@@ -2468,7 +2478,11 @@ pub fn redistribute_clamped_headroom(
         .iter()
         .any(|o| o.failure.is_some() || o.clamp_reason.is_some());
     if stopped || partial {
-        let _ = restore_saved_preset(slot);
+        if let Err(e) = restore_saved_preset(slot) {
+            log::warn!(
+                "restore_saved_preset failed after aborted redistribution (slot {slot}): {e}"
+            );
+        }
         return Err(if stopped {
             CANCELLED.to_string()
         } else {
@@ -2582,7 +2596,12 @@ fn run_scene_jobs(
     // Fired on the stopped path too, so already-reported scenes are never lost.
     if save && attempted {
         if stopped {
-            let _ = save_deferred_scene_writes(slot, restore_scene);
+            // The callee already warns internally on its own first failure; this
+            // catches the case where its retry ALSO failed (cancelled path only —
+            // the non-cancelled `?` below still surfaces a hard error to the caller).
+            if let Err(e) = save_deferred_scene_writes(slot, restore_scene) {
+                log::warn!("save_deferred_scene_writes failed on cancel (slot {slot}): {e}");
+            }
         } else {
             save_deferred_scene_writes(slot, restore_scene)?;
         }

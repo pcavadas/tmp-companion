@@ -184,9 +184,9 @@ export async function ensureLibraryScan(): Promise<void> {
       setlists,
       setlistSongs,
     });
-  } catch (e) {
-    // Non-fatal: scene details stay unknown; whole-preset ticks degrade to Base-only.
-    console.warn("library backup scene read failed:", e);
+  } catch {
+    // Non-fatal: scene details stay unknown; whole-preset ticks degrade to
+    // Base-only. Already on disk via the central invoke-failure logger.
   } finally {
     // Only the CURRENT scan settles. A reset (detach) already cleared state + the
     // listener; settling `ready` here would strand a stale scan and double-free the

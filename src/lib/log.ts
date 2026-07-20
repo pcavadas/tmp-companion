@@ -9,7 +9,18 @@
 
 import { error as pluginError } from "@tauri-apps/plugin-log";
 
-import { isTauri } from "./invoke";
+/**
+ * True when running inside Tauri's WKWebView (the global injected by the
+ * runtime). Screens may use this to render a "not in app" notice during a plain
+ * `vite` browser session; the wrappers themselves always call `invoke`
+ * (`invoke` rejects gracefully off-host). Defined HERE (not in ./invoke, its
+ * historical home — it stays re-exported from there) so the invoke→log import
+ * edge is one-directional: a definition in ./invoke would close an invoke⇄log
+ * module cycle, the module-init TDZ-crash class.
+ */
+export function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
 
 /** Persist an error to the dev console and the on-disk Tauri log (when in-app). */
 export function logError(msg: string): void {

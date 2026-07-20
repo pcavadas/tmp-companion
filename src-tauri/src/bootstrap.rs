@@ -25,6 +25,12 @@ pub fn run() {
                     tauri_plugin_log::TargetKind::Stdout,
                 ))
                 .level(log::LevelFilter::Info)
+                // Cap the on-disk log file so it can't grow unbounded across a long
+                // uptime; keep a few rotated backups. Rotation is checked at init, so
+                // this also retroactively caps a previous version's already-uncapped
+                // log the next time the app starts.
+                .max_file_size(2 * 1024 * 1024)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .build(),
         )
         // In-app auto-update (checks the GitHub latest.json endpoint) + the process
