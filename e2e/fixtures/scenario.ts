@@ -7,7 +7,8 @@ import { expect, type Page } from "@playwright/test";
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
 // committed presetJsons (`e2e_seed_scenario` → `scenario-presets.json`). `clearScenario`
 // returns the unit to net-zero.
-const SERVER = "http://127.0.0.1:7600";
+// Per-worktree bridge port (scripts/e2e.sh exports TMP_E2E_PORT); default 7600.
+const SERVER = `http://127.0.0.1:${process.env.TMP_E2E_PORT ?? "7600"}`;
 
 export interface Preset {
   name: string;

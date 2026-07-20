@@ -1790,72 +1790,88 @@ pub fn level_footswitch(
     save: bool,
     verify: bool,
 ) -> Result<FootswitchLevelResult, String> {
-    // Load the preset in its own connection (re-amp latch workaround), then measure on
-    // fresh connections (the preset stays current across reconnects).
-    {
-        let mut s = Session::connect_lean()?;
-        s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
-    }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-
-    let method = match write {
-        FsWrite::Bake { .. } => "baked",
-        FsWrite::Assign { .. } => "assigned",
-    };
-    // Single-switch probe seam: always solve fresh (no idempotency probe) — the batched
-    // command owns the re-run skip.
-    let result = measure_footswitch(
-        switch,
-        lev,
-        engaged_bypass,
-        stimulus,
-        target_lufs,
-        method,
-        None,
-    )?;
-    if result.clamp_reason.is_some() {
-        // No-signal routing clamp: nothing to write — discard the sweep pollution.
+    let body = || -> Result<FootswitchLevelResult, String> {
+        // Load the preset in its own connection (re-amp latch workaround), then measure on
+        // fresh connections (the preset stays current across reconnects).
+        {
+            let mut s = Session::connect_lean()?;
+            s.load_preset(slot)?;
+            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+        }
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-        if let Ok(mut s) = Session::connect_lean() {
-            if let Err(e) = s.load_preset(slot) {
-                log::warn!("footswitch no-signal reload failed (slot {slot}): {e}");
-            }
-        }
-        return Ok(result);
-    }
-    let mut result = result;
 
-    // ── Write (save only): the batch writer reloads (discarding the sweep pollution),
-    //    writes, and persists with ONE save; the dry path just reloads ──
-    if save {
-        let pending = [FsPendingWrite {
+        let method = match write {
+            FsWrite::Bake { .. } => "baked",
+            FsWrite::Assign { .. } => "assigned",
+        };
+        // Single-switch probe seam: always solve fresh (no idempotency probe) — the batched
+        // command owns the re-run skip.
+        let result = measure_footswitch(
             switch,
-            lev: (lev.0.into(), lev.1.into(), lev.2.into()),
-            write: write.clone(),
-            value: result.final_value,
-        }];
-        write_footswitch_values(slot, &pending)?;
-        result.saved = true;
-        if verify {
+            lev,
+            engaged_bypass,
+            stimulus,
+            target_lufs,
+            method,
+            None,
+        )?;
+        if result.clamp_reason.is_some() {
+            // No-signal routing clamp: nothing to write — discard the sweep pollution.
             std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-            result.verify_lufs = measure_fs_at(lev, engaged_bypass, stimulus, result.final_value)
-                .ok()
-                .map(|l| l.integrated_lufs);
-            let mut s = Session::connect_lean()?; // discard the verify pollution
-            if let Err(e) = s.load_preset(slot) {
-                log::warn!("footswitch verify reload failed (slot {slot}): {e}");
+            if let Ok(mut s) = Session::connect_lean() {
+                if let Err(e) = s.load_preset(slot) {
+                    log::warn!("footswitch no-signal reload failed (slot {slot}): {e}");
+                }
+            }
+            return Ok(result);
+        }
+        let mut result = result;
+
+        // ── Write (save only): the batch writer reloads (discarding the sweep pollution),
+        //    writes, and persists with ONE save; the dry path just reloads ──
+        if save {
+            let pending = [FsPendingWrite {
+                switch,
+                lev: (lev.0.into(), lev.1.into(), lev.2.into()),
+                write: write.clone(),
+                value: result.final_value,
+            }];
+            write_footswitch_values(slot, &pending)?;
+            result.saved = true;
+            if verify {
+                std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+                result.verify_lufs =
+                    measure_fs_at(lev, engaged_bypass, stimulus, result.final_value)
+                        .ok()
+                        .map(|l| l.integrated_lufs);
+                // Cleanup reload only — a failure must not fail the already-saved result.
+                match Session::connect_lean() {
+                    Ok(mut s) => {
+                        if let Err(e) = s.load_preset(slot) {
+                            log::warn!("footswitch verify reload failed (slot {slot}): {e}");
+                        }
+                    }
+                    Err(e) => log::warn!("footswitch verify reload skipped (slot {slot}): {e}"),
+                }
+            }
+        } else {
+            // Dry: discard the measurement pollution (cleanup only, same rule as above).
+            match Session::connect_lean() {
+                Ok(mut s) => {
+                    if let Err(e) = s.load_preset(slot) {
+                        log::warn!("footswitch dry-run reload failed (slot {slot}): {e}");
+                    }
+                }
+                Err(e) => log::warn!("footswitch dry-run reload skipped (slot {slot}): {e}"),
             }
         }
-    } else {
-        let mut s = Session::connect_lean()?; // dry: discard the measurement pollution
-        if let Err(e) = s.load_preset(slot) {
-            log::warn!("footswitch dry-run reload failed (slot {slot}): {e}");
-        }
-    }
-    // Final guarantee (verify re-amps; never leave the unit input-muted).
+        Ok(result)
+    };
+    let out = body();
+    // Final guarantee on EVERY exit — measure errors and the no-signal clamp return
+    // included (verify re-amps; never leave the unit input-muted).
     reamp_off_guaranteed("level_footswitch");
-    Ok(result)
+    out
 }
 
 /// Write every pending footswitch value on ONE live-edit session and persist with ONE
