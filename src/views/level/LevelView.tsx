@@ -47,9 +47,16 @@ export interface LevelViewProps {
   connected: boolean;
   onScan?: () => void;
   initialGraph?: ActiveGraph | null;
+  /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
+  onCalibrate?: () => void;
 }
 
-export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
+export function LevelView({
+  connected,
+  onScan,
+  initialGraph,
+  onCalibrate,
+}: LevelViewProps) {
   const { t } = useTheme();
 
   const {
@@ -370,6 +377,7 @@ export function LevelView({ connected, onScan, initialGraph }: LevelViewProps) {
           redistribution={flow.redistribution}
           commonTarget={flow.commonTarget}
           onRebalanceChange={flow.setRebalance}
+          onCalibrate={onCalibrate}
         />
       )}
 

@@ -53,6 +53,8 @@ export interface LevelingWizardProps {
   redistribution?: RedistributionActions;
   commonTarget?: CommonTargetActions;
   onRebalanceChange?: (on: boolean) => void;
+  /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
+  onCalibrate?: () => void;
 }
 
 export function LevelingWizard({
@@ -82,6 +84,7 @@ export function LevelingWizard({
   redistribution,
   commonTarget,
   onRebalanceChange,
+  onCalibrate,
 }: LevelingWizardProps) {
   // CONFIGURE phase → full-page page that replaces the Level body.
   if (stage === "setup") {
@@ -98,6 +101,7 @@ export function LevelingWizard({
           onCancel={onCancel}
           onStart={onStart}
           onRebalanceChange={onRebalanceChange}
+          onCalibrate={onCalibrate}
         />
       </LevelSetupPage>
     );

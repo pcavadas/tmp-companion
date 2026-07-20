@@ -33,6 +33,7 @@ import { CopyView } from "./views/copy";
 import { SongsView } from "./views/songs";
 import { CatalogView } from "./views/CatalogView";
 import { SettingsView } from "./views/settings";
+import type { CategoryId } from "./views/settings";
 import { FirmwareGate } from "./views/FirmwareGate";
 import { firmwareGateActive, firmwareSupported } from "./lib/firmware";
 import { connectDevice, currentGraph, isTauri } from "./lib/invoke";
@@ -80,6 +81,21 @@ function AppShell() {
   );
 
   const [tab, setTab] = useState<Tab>("level");
+  // Settings category to seed on the NEXT Settings mount — set by the Level tab's
+  // "calibrate" cue (jump to Instruments); null = plain entry, defaults to
+  // "targets". A manual tab click always clears it (below) so a later ordinary
+  // Settings visit doesn't inherit a stale Instruments jump.
+  const [settingsCategory, setSettingsCategory] = useState<
+    CategoryId | undefined
+  >(undefined);
+  const selectTab = useCallback((next: Tab) => {
+    setSettingsCategory(undefined);
+    setTab(next);
+  }, []);
+  const onCalibrate = useCallback(() => {
+    setSettingsCategory("instruments");
+    setTab("settings");
+  }, []);
   const [status, setStatus] = useState<ConnStatus>("connecting");
   // Firmware the connected unit reported during the handshake (connect_device
   // resolves with it). Never cached across a disconnect — no unit, no version.
@@ -245,7 +261,7 @@ function AppShell() {
         position: "relative",
       }}
     >
-      <TabBar tab={tab} onSelect={setTab} statusNode={statusNode} />
+      <TabBar tab={tab} onSelect={selectTab} statusNode={statusNode} />
 
       {/* Actionable connect error (e.g. "close Pro Control") — red alert. */}
       {connectError && (
@@ -295,6 +311,7 @@ function AppShell() {
                   connected={connected}
                   onScan={retry}
                   initialGraph={initialGraph}
+                  onCalibrate={onCalibrate}
                 />
               )}
               {tab === "doctor" && (
@@ -316,6 +333,7 @@ function AppShell() {
                   connected={connected}
                   updater={updater}
                   firmware={firmware}
+                  initialCategory={settingsCategory}
                 />
               )}
             </>

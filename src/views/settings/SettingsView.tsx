@@ -126,7 +126,7 @@ function EmptyHint({ children }: EmptyHintProps) {
 // persisted, defaults to "targets").
 // ===========================================================================
 
-type CategoryId = "targets" | "instruments" | "playback" | "about";
+export type CategoryId = "targets" | "instruments" | "playback" | "about";
 
 interface Category {
   id: CategoryId;
@@ -166,18 +166,23 @@ const CATEGORIES: Category[] = [
 // SettingsView — the page body (rendered under the App's nav).
 // ===========================================================================
 
-interface SettingsViewProps {
+export interface SettingsViewProps {
   connected: boolean;
   updater: UpdaterApi;
   /** Connected unit's firmware version (null while disconnected) — rides into the
    *  support bundle's meta.json. */
   firmware: string | null;
+  /** Category to land on for this mount (e.g. the Level tab's "calibrate" cue
+   *  jumping here) — read once at mount, not synced on later prop changes;
+   *  omit for a plain tab entry, which defaults to "targets". */
+  initialCategory?: CategoryId;
 }
 
 export function SettingsView({
   connected,
   updater,
   firmware,
+  initialCategory,
 }: SettingsViewProps) {
   const { t } = useTheme();
 
@@ -188,7 +193,7 @@ export function SettingsView({
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   // Which category the detail pane shows — local UI state, not persisted.
-  const [cat, setCat] = useState<CategoryId>("targets");
+  const [cat, setCat] = useState<CategoryId>(initialCategory ?? "targets");
   // uid of a freshly added target → opens it directly in rename mode.
   const [justAdded, setJustAdded] = useState<string | null>(null);
   // Monotonic counter for transient target uids + drag source.

@@ -37,17 +37,24 @@ import type { SetupOption, SetupChoice } from "../level/leveling";
 
 export type { SetupChoice };
 
-/** The "calibrate" word — an inviting next-step cue, never a button. Dotted terracotta
- *  underline that solidifies on hover. The pointer + title point the way to calibration;
- *  it carries no nav itself (no dead reload). */
-// ponytail: hint-only cue. To make it actually jump to Settings → Instruments, thread an
-// onCalibrate callback from App down through LevelView/LevelingWizard and call it here.
-function CalibrateCue({ children }: { children: ReactNode }) {
+/** The "calibrate" word — an inviting next-step cue. Dotted terracotta underline
+ *  that solidifies on hover; clicking jumps to Settings → Instruments (`onCalibrate`,
+ *  threaded from App down through LevelView/LevelingWizard). Click-only app, so no
+ *  keyboard handler — the click IS the affordance. Intentional detour: it unmounts
+ *  LevelView and discards any in-progress wizard setup. */
+function CalibrateCue({
+  children,
+  onCalibrate,
+}: {
+  children: ReactNode;
+  onCalibrate?: () => void;
+}) {
   const { t } = useTheme();
   const [hover, setHover] = useState(false);
   return (
     <span
       title="Calibrate instruments in Settings"
+      onClick={onCalibrate}
       onMouseEnter={() => {
         setHover(true);
       }}
@@ -72,7 +79,13 @@ function CalibrateCue({ children }: { children: ReactNode }) {
 /** Quiet good → better → best caption beneath the apply-to-all instrument picker.
  *  `cal` removes the element entirely (no reserved height) so the list below reclaims
  *  the space. Not a warning — muted body with a single accent cue on "calibrate". */
-function InstrumentNudge({ state }: { state: "none" | "uncal" | "cal" }) {
+function InstrumentNudge({
+  state,
+  onCalibrate,
+}: {
+  state: "none" | "uncal" | "cal";
+  onCalibrate?: () => void;
+}) {
   const { t } = useTheme();
   if (state === "cal") return null;
   return (
@@ -89,12 +102,13 @@ function InstrumentNudge({ state }: { state: "none" | "uncal" | "cal" }) {
       {state === "none" ? (
         <span>
           Set an instrument for better results —{" "}
-          <CalibrateCue>calibrate</CalibrateCue> it for the best.
+          <CalibrateCue onCalibrate={onCalibrate}>calibrate</CalibrateCue> it
+          for the best.
         </span>
       ) : (
         <span>
-          <CalibrateCue>Calibrate</CalibrateCue> this instrument for the best
-          results.
+          <CalibrateCue onCalibrate={onCalibrate}>Calibrate</CalibrateCue> this
+          instrument for the best results.
         </span>
       )}
     </div>
@@ -180,6 +194,8 @@ export interface SetupBodyProps {
   /** Opt-in: equalize a path-MERGE preset's two parallel-amp lanes before leveling.
    * A no-op on series / single-amp / split-output presets. */
   onRebalanceChange?: (on: boolean) => void;
+  /** Jump to Settings → Instruments (the "calibrate" cue in the instrument nudge). */
+  onCalibrate?: () => void;
 }
 
 export function SetupBody({
@@ -193,6 +209,7 @@ export function SetupBody({
   onCancel,
   onStart,
   onRebalanceChange,
+  onCalibrate,
 }: SetupBodyProps) {
   const { t } = useTheme();
   const s = useStyles();
@@ -382,7 +399,10 @@ export function SetupBody({
             onChange={applyBulkTarget}
           />
         </div>
-        <InstrumentNudge state={instCalState(bulkInst, instrumentOptions)} />
+        <InstrumentNudge
+          state={instCalState(bulkInst, instrumentOptions)}
+          onCalibrate={onCalibrate}
+        />
       </ApplyToBar>
 
       {/* every sound that will be leveled — set any row directly, or tick for bulk */}
