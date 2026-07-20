@@ -3,8 +3,8 @@ use crate::*;
 
 #[derive(Serialize)]
 pub(crate) struct AppInfo {
-    name: String,
-    version: String,
+    pub(crate) name: String,
+    pub(crate) version: String,
 }
 
 /// Frontend handshake on mount — confirms the backend is reachable.

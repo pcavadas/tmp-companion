@@ -20,6 +20,11 @@ export interface AppInfo {
   version: string;
 }
 
+/** Result of `save_support_bundle` (mirrors commands::support::SupportBundleResult). */
+export interface SupportBundleResult {
+  path: string;
+}
+
 /** One device "My Presets" row (mirrors lib::PresetEntry). `slot` is the
  * 0-based list index shown in the UI. */
 export interface PresetEntry {

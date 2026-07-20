@@ -55,6 +55,7 @@ import { InstrumentRow } from "./InstrumentRow";
 import { InstrumentForm } from "./InstrumentForm";
 import { PlaybackLevelSection } from "./PlaybackLevelSection";
 import { AppUpdatesSection } from "./AppUpdatesSection";
+import { SupportSection } from "./SupportSection";
 
 // The wire target is name-only ({name, lufs}); the UI carries a transient `uid`
 // so React keys, drag-reorder, and the auto-rename of a freshly added row stay
@@ -168,9 +169,16 @@ const CATEGORIES: Category[] = [
 interface SettingsViewProps {
   connected: boolean;
   updater: UpdaterApi;
+  /** Connected unit's firmware version (null while disconnected) — rides into the
+   *  support bundle's meta.json. */
+  firmware: string | null;
 }
 
-export function SettingsView({ connected, updater }: SettingsViewProps) {
+export function SettingsView({
+  connected,
+  updater,
+  firmware,
+}: SettingsViewProps) {
   const { t } = useTheme();
 
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -643,6 +651,7 @@ export function SettingsView({ connected, updater }: SettingsViewProps) {
             {cat === "about" && (
               <div style={{ maxWidth: 560 }}>
                 <AppUpdatesSection updater={updater} />
+                <SupportSection connected={connected} firmware={firmware} />
               </div>
             )}
           </div>
