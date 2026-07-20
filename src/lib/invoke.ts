@@ -346,6 +346,15 @@ export const saveSupportBundle = (
 ): Promise<SupportBundleResult> =>
   invoke("save_support_bundle", { firmware, presetJson, presetName });
 
+/** Settings — same bundle as `saveSupportBundle`, returned as raw bytes (no
+ * Downloads write) for an in-app "send report" attach. */
+export const buildSupportBundle = (
+  firmware: string | null,
+  presetJson: string | null,
+  presetName: string | null,
+): Promise<ArrayBuffer> =>
+  invoke("build_support_bundle", { firmware, presetJson, presetName });
+
 // ─── LevelView — active preset + songs + slot ops ──────────────────────────────
 
 /** LevelView — the active (currently-loaded) preset's signal graph (live read). */
@@ -501,6 +510,7 @@ export const cmd = {
   calibrateProfile,
   listPickupTopologies,
   saveSupportBundle,
+  buildSupportBundle,
   // LevelView — active preset + songs
   readActivePreset,
   currentGraph,

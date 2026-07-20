@@ -34,6 +34,23 @@ pub(crate) async fn save_support_bundle<R: tauri::Runtime>(
     .map_err(|e| format!("bundle task join: {e}"))?
 }
 
+/// Same bundle as `save_support_bundle`, but returned in-memory (raw bytes) for
+/// the frontend to attach to an outbound bug-report POST — nothing is written to
+/// disk here. The frontend falls back to `save_support_bundle` when sending fails.
+#[tauri::command]
+pub(crate) async fn build_support_bundle<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    firmware: Option<String>,
+    preset_json: Option<String>,
+    preset_name: Option<String>,
+) -> Result<tauri::ipc::Response, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        build_bundle_bytes(&app, firmware, preset_json, preset_name).map(tauri::ipc::Response::new)
+    })
+    .await
+    .map_err(|e| format!("bundle task join: {e}"))?
+}
+
 fn build_bundle<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     firmware: Option<String>,
@@ -42,10 +59,7 @@ fn build_bundle<R: tauri::Runtime>(
 ) -> Result<SupportBundleResult, String> {
     use tauri::Manager;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("system clock before epoch: {e}"))?
-        .as_secs();
+    let now = bundle_now()?;
     let (stamp, iso) = fmt_utc(now);
 
     let download = app
@@ -54,12 +68,75 @@ fn build_bundle<R: tauri::Runtime>(
         .map_err(|e| format!("resolve download dir: {e}"))?;
     let out_path = download.join(format!("tmp-companion-report-{stamp}.tar"));
 
+    let file = std::fs::File::create(&out_path).map_err(|e| format!("create bundle: {e}"))?;
+    let mut builder = tar::Builder::new(file);
+    append_bundle_members(
+        app,
+        &mut builder,
+        firmware,
+        preset_json,
+        preset_name,
+        now,
+        &iso,
+    )?;
+    builder
+        .finish()
+        .map_err(|e| format!("finalize bundle: {e}"))?;
+
+    Ok(SupportBundleResult {
+        path: out_path.to_string_lossy().into_owned(),
+    })
+}
+
+/// Same member set as `build_bundle`, into an in-memory tar rather than a file.
+fn build_bundle_bytes<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    firmware: Option<String>,
+    preset_json: Option<String>,
+    preset_name: Option<String>,
+) -> Result<Vec<u8>, String> {
+    let now = bundle_now()?;
+    let (_, iso) = fmt_utc(now);
+
+    let mut builder = tar::Builder::new(Vec::new());
+    append_bundle_members(
+        app,
+        &mut builder,
+        firmware,
+        preset_json,
+        preset_name,
+        now,
+        &iso,
+    )?;
+    builder
+        .into_inner()
+        .map_err(|e| format!("finalize bundle: {e}"))
+}
+
+fn bundle_now() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("system clock before epoch: {e}"))
+        .map(|d| d.as_secs())
+}
+
+/// Append every bundle member (logs / device-settings.json / meta.json / the
+/// opt-in preset graph) to `builder`, shared by the file-writing and in-memory
+/// bundle builds.
+fn append_bundle_members<R: tauri::Runtime, W: std::io::Write>(
+    app: &tauri::AppHandle<R>,
+    builder: &mut tar::Builder<W>,
+    firmware: Option<String>,
+    preset_json: Option<String>,
+    preset_name: Option<String>,
+    now: u64,
+    iso: &str,
+) -> Result<(), String> {
+    use tauri::Manager;
+
     // Everything text-y gets this stripped → `~`. Empty when HOME is unset (scrub
     // then no-ops, tested).
     let home = std::env::var("HOME").unwrap_or_default();
-
-    let file = std::fs::File::create(&out_path).map_err(|e| format!("create bundle: {e}"))?;
-    let mut builder = tar::Builder::new(file);
 
     // logs/<name> — every *.log in the app log dir, tail-capped + scrubbed.
     if let Ok(log_dir) = app.path().app_log_dir() {
@@ -74,7 +151,7 @@ fn build_bundle<R: tauri::Runtime>(
                 };
                 let capped = tail_cap(&bytes, LOG_TAIL_CAP);
                 let name = p.file_name().and_then(|x| x.to_str()).unwrap_or("log.log");
-                append_scrubbed(&mut builder, &format!("logs/{name}"), capped, &home, now)?;
+                append_scrubbed(builder, &format!("logs/{name}"), capped, &home, now)?;
             }
         }
     }
@@ -83,7 +160,7 @@ fn build_bundle<R: tauri::Runtime>(
     if let Ok(dir) = profiles::app_config_dir(app) {
         let ds = dir.join("support").join("device-settings.json");
         if let Ok(bytes) = std::fs::read(&ds) {
-            append_scrubbed(&mut builder, "device-settings.json", &bytes, &home, now)?;
+            append_scrubbed(builder, "device-settings.json", &bytes, &home, now)?;
         }
     }
 
@@ -100,22 +177,16 @@ fn build_bundle<R: tauri::Runtime>(
         "preset_name": preset_name,
     });
     let meta_str = serde_json::to_string_pretty(&meta).map_err(|e| format!("encode meta: {e}"))?;
-    append_scrubbed(&mut builder, "meta.json", meta_str.as_bytes(), &home, now)?;
+    append_scrubbed(builder, "meta.json", meta_str.as_bytes(), &home, now)?;
 
     // preset-graph.json — only when a preset was picked. Named for what it IS: the
     // app's PARSED signal-chain graph (the shared scan store's ActiveGraph), not the
     // device's raw presetJson — a triager must not mistake it for ground truth.
     if let Some(pj) = preset_json {
-        append_scrubbed(&mut builder, "preset-graph.json", pj.as_bytes(), &home, now)?;
+        append_scrubbed(builder, "preset-graph.json", pj.as_bytes(), &home, now)?;
     }
 
-    builder
-        .finish()
-        .map_err(|e| format!("finalize bundle: {e}"))?;
-
-    Ok(SupportBundleResult {
-        path: out_path.to_string_lossy().into_owned(),
-    })
+    Ok(())
 }
 
 /// Scrub the home path out of one text member, then append it.
