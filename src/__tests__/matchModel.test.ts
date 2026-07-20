@@ -4,7 +4,12 @@
 
 import { describe, it, expect } from "vitest";
 
-import { eqMovesFor, lastGuitarGroup } from "../views/doctor/matchModel";
+import {
+  eq10ReuseOps,
+  eqMovesFor,
+  existingEq10,
+  lastGuitarGroup,
+} from "../views/doctor/matchModel";
 import type { GraphNode } from "../lib/types";
 
 const GUITAR_LABELS = ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"];
@@ -65,17 +70,104 @@ describe("eqMovesFor", () => {
       { controlId: "gain62hz", gainDb: 5 },
     ]);
   });
+
+  it("skips the bass-vi Sub band entirely (no known center), leaving Lows undiluted", () => {
+    // Sub has no entry in BAND_CENTER_HZ (deleted — its own log-nearest EQ-10
+    // band is gain31hz, HW-unverified/no-op-prone), so it never joins the
+    // sums/counts map at all — it does NOT get averaged into Lows' gain62hz
+    // move, which would happen if Sub's delta (10, wildly different from
+    // Lows' 3) were silently folded in. Distinct deltas make that provable:
+    // if Sub were included, the result would differ from the plain 3.
+    expect(eqMovesFor([10, 3], ["Sub", "Lows"])).toEqual([
+      { controlId: "gain62hz", gainDb: 3 },
+    ]);
+  });
 });
 
-function node(groupId: string, nodeId: string, model: string): GraphNode {
+function node(
+  groupId: string,
+  nodeId: string,
+  model: string,
+  overrides: Partial<GraphNode> = {},
+): GraphNode {
   return {
     group_id: groupId,
     node_id: nodeId,
     model,
     bypassed: false,
     params: {},
+    ...overrides,
   };
 }
+
+const EQ10 = "ACD_TenBandEQStereo";
+
+describe("existingEq10", () => {
+  it("finds a non-bypassed EQ-10", () => {
+    const eq = node("G1", "eq1", EQ10, { params: { gain62hz: 4 } });
+    expect(existingEq10([node("G1", "amp1", "ACD_TweedDeluxe"), eq])).toBe(eq);
+  });
+
+  it("ignores a bypassed EQ-10", () => {
+    const nodes = [
+      node("G1", "amp1", "ACD_TweedDeluxe"),
+      node("G1", "eq1", EQ10, { bypassed: true }),
+    ];
+    expect(existingEq10(nodes)).toBeNull();
+  });
+
+  it("ignores other models", () => {
+    const nodes = [
+      node("G1", "amp1", "ACD_TweedDeluxe"),
+      node("G1", "cab1", "ACD_CabSimTMS"),
+    ];
+    expect(existingEq10(nodes)).toBeNull();
+  });
+
+  it("is null when there's no EQ-10 at all", () => {
+    expect(existingEq10([])).toBeNull();
+  });
+
+  it("picks the LAST non-bypassed EQ-10 when several exist (mirrors doctor.rs's graph_facts, which has no is_none() guard on f.eq10)", () => {
+    const last = node("G2", "eq2", EQ10);
+    const nodes = [node("G1", "eq1", EQ10), last];
+    expect(existingEq10(nodes)).toBe(last);
+  });
+});
+
+describe("eq10ReuseOps", () => {
+  it("clamps current + move to +/-12 dB", () => {
+    const eq = node("G1", "eq1", EQ10, { params: { gain62hz: 10 } });
+    const ops = eq10ReuseOps(eq, [{ controlId: "gain62hz", gainDb: 6 }]);
+    expect(ops).toEqual([
+      {
+        kind: "param",
+        groupId: "G1",
+        nodeId: "eq1",
+        param: "gain62hz",
+        value: 12,
+      },
+    ]);
+  });
+
+  it("clamps on the negative side too", () => {
+    const eq = node("G1", "eq1", EQ10, { params: { gain62hz: -10 } });
+    const ops = eq10ReuseOps(eq, [{ controlId: "gain62hz", gainDb: -6 }]);
+    expect(ops[0]).toMatchObject({ value: -12 });
+  });
+
+  it("treats a missing current param as 0", () => {
+    const eq = node("G1", "eq1", EQ10, { params: {} });
+    const ops = eq10ReuseOps(eq, [{ controlId: "gain250hz", gainDb: 3 }]);
+    expect(ops[0]).toMatchObject({ param: "gain250hz", value: 3 });
+  });
+
+  it("carries the EQ node's own group_id/node_id", () => {
+    const eq = node("G3", "eqNode9", EQ10, { params: { gain1khz: 0 } });
+    const ops = eq10ReuseOps(eq, [{ controlId: "gain1khz", gainDb: 2 }]);
+    expect(ops[0]).toMatchObject({ groupId: "G3", nodeId: "eqNode9" });
+  });
+});
 
 describe("lastGuitarGroup", () => {
   it("is the guitar group when it's the chain tail", () => {

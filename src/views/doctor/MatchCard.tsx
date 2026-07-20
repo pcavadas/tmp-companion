@@ -13,8 +13,11 @@ import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
 import { doctorCard } from "./severity";
 import {
   bandLayoutsMatch,
+  eq10ReuseOps,
   eqBandLabel,
   eqMovesFor,
+  EQ10_STEREO,
+  existingEq10,
   lastGuitarGroup,
   matchDeltas,
   matchResidualLarge,
@@ -26,8 +29,6 @@ import type {
   FootswitchInfo,
   GraphNode,
 } from "../../lib/types";
-
-const EQ10_STEREO = "ACD_TenBandEQStereo";
 
 const RESIDUAL_LINE =
   "Big spectral gap — an EQ can only get partway; a different cab/amp choice may be the honest fix.";
@@ -110,21 +111,34 @@ export function MatchCard({
     );
   }
 
-  const cost = cpuForBid(EQ10_STEREO);
-  const cpuNote = cost == null ? "" : `+${cost.toFixed(1)}% CPU`;
-
-  const ops: DoctorOp[] = [
-    {
-      kind: "insert_node",
-      groupId,
-      beforeFenderId: null,
-      fenderId: EQ10_STEREO,
-      params: moves.map((m): [string, number] => [m.controlId, m.gainDb]),
-    },
-  ];
+  // Reuse an existing non-bypassed EQ-10 (a value-aware param move, no CPU
+  // change) rather than stacking a second one — mirrors doctor.rs's `eq_move`
+  // reuse branch. Only falls back to inserting when the chain has none.
+  const reuseEq = existingEq10(nodes);
+  let ops: DoctorOp[];
+  let kind: DoctorRx["kind"];
+  let cpuNote: string;
+  if (reuseEq) {
+    ops = eq10ReuseOps(reuseEq, moves);
+    kind = "oneclick";
+    cpuNote = "no CPU change";
+  } else {
+    ops = [
+      {
+        kind: "insert_node",
+        groupId,
+        beforeFenderId: null,
+        fenderId: EQ10_STEREO,
+        params: moves.map((m): [string, number] => [m.controlId, m.gainDb]),
+      },
+    ];
+    kind = "chain";
+    const cost = cpuForBid(EQ10_STEREO);
+    cpuNote = cost == null ? "" : `+${cost.toFixed(1)}% CPU`;
+  }
 
   const rx: DoctorRx = {
-    kind: "chain",
+    kind,
     title: "Match reference",
     detail: `Moves ${sound.label} toward ${reference.label}: ${movesLine}.`,
     cpuNote,
