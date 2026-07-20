@@ -45,10 +45,12 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
 
 ## 3. Traps that produce a false result
 
-- **Stale `:7600` = false-green OR false-online** (CLAUDE.md's "stale-fake-online trap").
+- **Stale bridge server = false-green OR false-online** (CLAUDE.md's "stale-fake-online trap").
   `scripts/e2e.sh` kills the port before every run, but a direct `bunx playwright test` invocation
-  can hit a leftover WRONG-mode server via `reuseExistingServer: true`. `lsof -ti tcp:7600 | xargs
-kill` first, always.
+  can hit a leftover WRONG-mode server via `reuseExistingServer: true`. Kill the REAL port first,
+  always — in a worktree that's the per-worktree DERIVED port (`TMP_E2E_PORT`, offset off 7600
+  since the port-isolation PR), not necessarily 7600; check `$TMP_E2E_PORT` or the e2e.sh log
+  line before killing a hardcoded port.
 - **Fresh worktree needs deps before checks, not just before dev.** `bun install` (node_modules
   is gitignored) before `bunx tsc --noEmit`/`bun run test`; `bun run build` (or stub
   `dist/index.html`) before any `cargo` gate — `generate_context!` panics without `./dist`.

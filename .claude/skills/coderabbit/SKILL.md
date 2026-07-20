@@ -47,6 +47,11 @@ gh pr view <n> --json reviews,reviewThreads   # formal reviews + threads on the 
 
 0 formal reviews + 0 threads after a "finished" ack = the review never ran.
 
+Corollary for watchers: after a fix push, `reviewDecision` STAYS `CHANGES_REQUESTED` — a push
+dismisses approvals (`dismiss_stale_reviews_on_push`) but NOT a request-changes review, which
+stands until a new review supersedes it. Key "has the re-review happened?" on a NEW review with
+`submittedAt` after the push, never on the decision flipping.
+
 ## Recovery ladder (for a main-targeted, non-draft, same-repo PR with no review on its head)
 
 1. Walkthrough says "Review limit reached … next review available in N minutes" → wait until
@@ -65,6 +70,10 @@ gh pr view <n> --json reviews,reviewThreads   # formal reviews + threads on the 
   main-targeted PR spends a review attempt — never push cosmetically).
 - A finding that is wrong or deliberately not applicable gets ONE factual reply on its thread
   citing file:line — never a fake-fix to appease the bot, and no further argument on that thread.
+  When replying after a fix push, match threads by the stable thread id — never by `(path, line)`,
+  since line numbers shift with the push and the miss is silent. Comment BODY is a fallback only
+  after confirming it's unique among the PR's threads (duplicate findings can share near-identical
+  bodies, which would reply to the wrong thread).
   Include `@coderabbitai` in the reply when you want the bot to actually engage with the rebuttal
   (it answers contextually and can concede); a plain reply is only a note for the next review
   pass and human readers.
@@ -94,7 +103,9 @@ gh pr view <n> --json reviews,reviewThreads   # formal reviews + threads on the 
 
 Spends a review: every push to a main-targeted PR, every retarget-to-main, every manual review
 command. Refills slowly (~a few/hour, throttling toward ~1/hour under sustained multi-PR
-activity).
+activity) — and the quoted "next review available in N minutes" window itself inflates with
+same-day spend, so never assume attempt N's window applies to attempt N+1 (a four-PR cascade
+saw 42/33/27/59-minute windows).
 
 Free: **draft PRs are skipped entirely** (`auto_review.drafts` default) — iterate in draft, mark
 ready when settled; pushes to stacked descendants whose base is NOT main (auto-review fires only

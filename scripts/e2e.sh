@@ -31,7 +31,21 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
-PORT=7600
+# Per-worktree port isolation: parallel e2e runs in sibling worktrees otherwise fight over
+# the one bridge (:7600) + vite (:1421) port — each suite's stale-kill answering/killing the
+# other's server (a nondeterministic false-fail class). Derive a stable per-worktree offset
+# from the worktree path so each tree gets its own port pair; override with TMP_E2E_PORT /
+# TMP_E2E_VITE_PORT. Exported so the Playwright configs, vite, and the Rust e2e_server all read
+# the same values (they default to 7600/1421 when unset, preserving a bare `bunx playwright`).
+# ponytail: cksum%200 — a collision between two of the handful of real worktrees merely shares
+# ports (today's status quo); widen the modulus only if that ever bites.
+PORT_OFFSET=$(( $(printf '%s' "$REPO" | cksum | cut -d' ' -f1) % 200 ))
+PORT="${TMP_E2E_PORT:-$((7600 + PORT_OFFSET))}"
+VITE_PORT="${TMP_E2E_VITE_PORT:-$((1421 + PORT_OFFSET))}"
+export TMP_E2E_PORT="$PORT" TMP_E2E_VITE_PORT="$VITE_PORT"
+# shellcheck source=scripts/device-lock.sh disable=SC1091
+. "$REPO/scripts/device-lock.sh"
+
 OFFLINE_CFG="e2e/playwright.config.ts"
 ONLINE_CFG="e2e/playwright.online.config.ts"
 MANIFEST="src-tauri/Cargo.toml"
@@ -116,6 +130,7 @@ cleanup() { # ONLINE only (offline execs Playwright, which owns teardown + has n
   recover_device                          # guarded-clear is fail-closed: never touches a real preset
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   kill_port "$PORT"                       # cargo run spawns the binary as a child — kill by port too
+  device_lock_release                     # release the machine-global device lock (online only)
   exit "$code"
 }
 
@@ -155,6 +170,13 @@ fi
 
 # ── ONLINE: managed — seed-first, handshake-verified start, per-spec runs, recovery ──
 trap cleanup EXIT INT TERM
+
+# Serialize the ONE device across sessions/worktrees before any device work (seed/handshake).
+# Held elsewhere → wait (polls, honours a stale/dead owner); ~30 min ceiling then abort.
+if ! device_lock_acquire "$REPO"; then
+  err "could not acquire the device lock — another online/hw run is holding the unit"
+  exit 1
+fi
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
 case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level level-rerun) ;; esac
