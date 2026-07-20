@@ -27,9 +27,13 @@ function isReportIdBody(v: unknown): v is { reportId: number } {
   );
 }
 
+/** Bound the whole request — a hung Worker must fall back, not freeze Send. */
+const SEND_TIMEOUT_MS = 15_000;
+
 /** POST the report; `{ ok: false }` on ANY failure (no endpoint configured,
- * network error, non-200, or an unexpected response body) — the caller falls
- * back to a local save on any non-`ok` outcome, so this never throws. */
+ * network error, timeout, non-200, or an unexpected response body) — the
+ * caller falls back to a local save on any non-`ok` outcome, so this never
+ * throws. */
 export async function sendReport({
   description,
   meta,
@@ -50,6 +54,7 @@ export async function sendReport({
       method: "POST",
       headers: { "x-report-token": REPORT_TOKEN },
       body: form,
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
     if (!res.ok) return { ok: false };
     const body: unknown = await res.json();

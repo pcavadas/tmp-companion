@@ -13,4 +13,4 @@ export const REPORT_ENDPOINT =
 // secret (the GitHub token) lives server-side in the Worker. Don't "protect"
 // this with a CI-injected env var thinking that hides it.
 export const REPORT_TOKEN =
-  "bcc532b444496074a64063ec533f12e6f93d674338566235" as string;
+  "bcc532b444496074a64063ec533f12e6f93d674338566235" as string; // gitleaks:allow — public speed-bump token, not a secret (see NB above)
