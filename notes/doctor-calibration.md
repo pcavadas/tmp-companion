@@ -107,6 +107,12 @@ gating skips any band-keyed rule whose primary band the stimulus never
 excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
 EBow-heavy) from verdicts in bands they never probed.
 
+**STATUS (2026-07-20):** the `probe --doctor-calib` confirmation sweep against
+a real Tier-2 DI capture is still PENDING an attended session — no profile has
+a stored capture yet (`captures/<profile_id>.wav` is empty; all profiles are
+uncalibrated), so the sweep above hasn't run. The `*_CAPTURE` consts stay
+provisional (equal to the synthetic tables) until it does.
+
 **RESOLVED (2026-07-16) — the `balance()` dead-band contamination is
 structurally gone under the shipped metric.** The old bug: `balance()`
 subtracts the mean of ALL 6 bands, and in capture space the floor-riding
