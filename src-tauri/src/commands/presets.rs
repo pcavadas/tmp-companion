@@ -336,6 +336,11 @@ pub(crate) async fn read_library_via_backup<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
 ) -> Result<BackupReadResult, String> {
+    // Resolved BEFORE the `app` handle is moved into the progress-emit closure below
+    // (only the `PathBuf` needs to travel in) — best-effort, `None` (logged) when the
+    // config dir can't be resolved.
+    let settings_path = device_settings_path(&app);
+
     // Offline e2e: decode a built fixture blob (LZ4-frame(tar(normalDb.db3)), the exact
     // device shape) through the SAME `read_backup_archive` path instead of streaming the
     // bulk backup over USB — faking that multi-chunk wire stream buys no fidelity the
@@ -343,7 +348,9 @@ pub(crate) async fn read_library_via_backup<R: tauri::Runtime>(
     #[cfg(feature = "e2e")]
     if let Ok(path) = std::env::var("TMP_E2E_BACKUP_FIXTURE") {
         let blob = std::fs::read(&path).map_err(|e| format!("e2e backup fixture {path}: {e}"))?;
-        return read_backup_archive(&blob);
+        let mut result = read_backup_archive(&blob)?;
+        persist_device_settings(settings_path.as_deref(), &mut result);
+        return Ok(result);
     }
     use tauri::Emitter;
     with_released_seize(state.session.clone(), move || {
@@ -352,9 +359,50 @@ pub(crate) async fn read_library_via_backup<R: tauri::Runtime>(
             let _ = app.emit("tmp://backup-progress", p);
         })?;
         drop(s); // release the HID seize before host-side decode
-        read_backup_archive(&blob)
+        let mut result = read_backup_archive(&blob)?;
+        persist_device_settings(settings_path.as_deref(), &mut result);
+        Ok(result)
     })
     .await
+}
+
+/// `<app_config_dir>/support/device-settings.json` — where a backup read's captured
+/// `settingsBackup` bytes ([`BackupReadResult::settings_bytes`]) land for a future
+/// "support bundle" export. `None` (logged) when the config dir can't be resolved;
+/// never fails the backup read.
+fn device_settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<std::path::PathBuf> {
+    match profiles::app_config_dir(app) {
+        Ok(dir) => Some(dir.join("support").join("device-settings.json")),
+        Err(e) => {
+            log::warn!("read_library_via_backup: could not resolve app config dir for device-settings.json: {e}");
+            None
+        }
+    }
+}
+
+/// Write `result.settings_bytes` (if present) to `path` (temp file + rename — mirrors
+/// `profiles::store_capture`'s atomic-write pattern), then clear the field so it never
+/// lingers past this call. Best-effort on both counts (no `path`, or a write failure):
+/// logged, never fails the backup read.
+fn persist_device_settings(path: Option<&std::path::Path>, result: &mut BackupReadResult) {
+    let Some(bytes) = result.settings_bytes.take() else {
+        return;
+    };
+    let Some(path) = path else { return };
+    let write = || -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        }
+        let tmp = path.with_extension("json.part");
+        std::fs::write(&tmp, &bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+    };
+    if let Err(e) = write() {
+        log::warn!("read_library_via_backup: could not persist device-settings.json: {e}");
+    }
 }
 
 /// List the user's saved blocks (`RequestAllBlockPresets` → `AllBlockPresetsResponse`).
