@@ -132,6 +132,15 @@ export function diagSevLabel(sev: DoctorSev): string {
   return sev === "high" ? "Needs attention" : "Worth a look";
 }
 
+/** The kicker actually shown beside a diagnosis: a "possible" near-threshold
+ *  high-sev finding (muted "Possible X" chip) reads as "Worth a look" too —
+ *  a bold "NEEDS ATTENTION" kicker next to a hedged, muted label was
+ *  self-contradictory. Only a confidently-past-threshold finding earns the
+ *  bold "Needs attention" kicker. */
+export function diagKicker(diag: DoctorDiag): string {
+  return isPossible(diag) ? "Worth a look" : diagSevLabel(diag.sev);
+}
+
 /** The Doctor detail-card chrome (PrescriptionCard / CutThroughCard /
  * MatchCard) — one home for the border/radius/padding so the three cards
  * can't drift; callers override only the tone (border/background). */

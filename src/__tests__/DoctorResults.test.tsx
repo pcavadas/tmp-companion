@@ -273,10 +273,70 @@ describe("DoctorResults — summary + cards", () => {
   it("summarizes worst-first with the right counts", () => {
     renderResults();
     expect(screen.getByText("1 of 3 presets need a look")).toBeInTheDocument();
-    // n-of-total flagged, singular "needs attention" clause.
+    // n-of-total flagged, then the scene-jump clause (the fixture's +6 dB jump
+    // is its own preset's ONLY finding besides the sound diag), then the
+    // needs-attention count folding in that high-severity scene jump (the
+    // sound-level "Muddy" high diag + the scene jump = 2).
     expect(
-      screen.getByText(/2 of 4 sounds flagged · 1 needs attention/),
+      screen.getByText(
+        /2 of 4 sounds flagged · level jumps in 1 preset · 2 need attention/,
+      ),
     ).toBeInTheDocument();
+  });
+
+  it("counts a scene-consistency-only preset without an '0 of' subtitle lie", () => {
+    // A preset with a BIG scene jump but no sound-level diags at all: the old
+    // subtitle only walked sounds[].diags, so soundsFlagged/needAttention both
+    // read 0 while the title (presetLookCount, which DOES see sceneConsistency)
+    // said "1 preset needs a look" — a self-contradictory "0 of N flagged".
+    const sceneOnly: DoctorCheckResult = {
+      presets: [
+        {
+          listIndex: 0,
+          sounds: [
+            {
+              key: "p0",
+              listIndex: 0,
+              scene: null,
+              footswitch: null,
+              label: "Clean Base",
+              tag: null,
+              diags: [],
+              integratedLufs: -20,
+              tailRatioDb: 0,
+              balanceDb: [],
+              bandLabels: [
+                "Lows",
+                "Low-mids",
+                "Mids",
+                "High-mids",
+                "Highs",
+                "Air",
+              ],
+              cutThrough: null,
+              error: null,
+            },
+          ],
+          sceneConsistency: {
+            rows: [
+              { name: "Base", tag: "BASE", deltaDb: 0, isRef: true },
+              { name: "Crunch", tag: "FS1", deltaDb: 7, isRef: false },
+            ],
+            worstName: "Crunch",
+            worstDeltaDb: 7,
+            rx: [],
+          },
+        },
+      ],
+      stopped: false,
+    };
+    renderResults(sceneOnly);
+    expect(screen.getByText("1 of 1 presets need a look")).toBeInTheDocument();
+    const subtitle = screen.getByText(/level jumps in 1 preset/);
+    expect(subtitle.textContent).not.toMatch(/0 of/);
+    // The +7 dB jump is > the 5 dB high-severity cutoff, so it also counts
+    // toward "need attention".
+    expect(subtitle.textContent).toMatch(/1 needs attention/);
   });
 
   it("shows an all-clear summary + no filter when nothing is flagged", () => {
