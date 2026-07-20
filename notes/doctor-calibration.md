@@ -115,8 +115,8 @@ synthetic is large (Tele: ~+13 dB Lows / +23 Mids / −21 Highs / −31 Air). On
 the one LINEAR preset in the set the anchor is EXACT — the subtracted
 correction matched the measured capture skew to ≤0.1 dB in every band (near
 verdict parity). On the 4 DRIVEN presets the chain compresses spectral
-contrast (transmits only ~~half the Mids skew), so the full-subtraction anchor
-OVER-corrects (~~+11 dB at Mids → spurious `lost` on both DI stimuli). Verdict:
+contrast (transmits only \~half the Mids skew), so the full-subtraction anchor
+OVER-corrects (\~+11 dB at Mids → spurious `lost` on both DI stimuli). Verdict:
 capture-space diagnosis stays PROVISIONAL — anchoring is necessary and exact
 for clean chains but not sufficient for driven ones; future work is a damped
 anchor (subtract α·skew, α<1, drive-aware) or capture-cohort thresholds from a
