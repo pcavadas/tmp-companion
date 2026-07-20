@@ -5,7 +5,7 @@
 // wraps the result in a synthetic `DoctorRx` and reuses PrescriptionCard's
 // existing apply/save/discard flow.
 
-import type { GraphNode } from "../../lib/types";
+import type { DoctorOp, GraphNode } from "../../lib/types";
 
 /** Geometric band centers (Hz) — sqrt(lo*hi) per band, VERIFIED against
  *  `src-tauri/src/doctor.rs`'s `BANDS_6`/`BANDS_7` (via `Family::bands()` +
@@ -13,7 +13,13 @@ import type { GraphNode } from "../../lib/types";
  *  (`DoctorSoundResult.bandLabels`), not index, so it's layout-order-proof;
  *  keep in lockstep with the Rust table if it ever changes. */
 export const BAND_CENTER_HZ: Partial<Record<string, number>> = {
-  Sub: Math.sqrt(30 * 60), // bass-vi only (BANDS_7[0], 30..60 Hz)
+  // Sub (bass-vi only, ~42 Hz) is deliberately EXCLUDED: its own log-nearest
+  // EQ-10 band is `gain31hz` (verified — NOT gain62hz, despite Lows' nearby
+  // ~85 Hz center landing there), and gain31hz is HW-unverified/no-op-prone
+  // (doctor.rs ~:1686-1691's EQ10_BANDS comment). So Sub is skipped entirely
+  // (eqMovesFor already no-ops on a band with no known center) rather than
+  // mapped to a band we can't confirm actually moves — a deliberate
+  // divergence from the Rust EQ10_BANDS mirror.
   Lows: Math.sqrt(60 * 120),
   "Low-mids": Math.sqrt(120 * 400),
   Mids: Math.sqrt(400 * 1000),
@@ -39,6 +45,53 @@ const EQ10_BANDS: [number, string][] = [
 
 const MAX_GAIN_DB = 6;
 const DROP_BELOW_DB = 1.5;
+
+/** The stock stereo EQ-10 block — never the Mono variant (absent from the
+ *  product profile). Mirrors `doctor.rs`'s `EQ10_STEREO`. */
+export const EQ10_STEREO = "ACD_TenBandEQStereo";
+
+/** EQ-10 band gain range (dB) — mirrors `doctor.rs`'s `EQ10_BAND_RANGE_DB`
+ *  (±12 is the graphic-EQ standard; the band controlIds' fw schema is the
+ *  source to re-derive from if a rev differs). */
+export const EQ10_BAND_RANGE_DB = 12;
+
+/** An existing, drivable EQ-10 already in the chain, or null when none — the
+ *  reuse-vs-insert gate for the Match-reference fix (mirrors `doctor.rs`'s
+ *  `eq_move`/`graph_facts`, which reuse `facts.eq10` instead of stacking a
+ *  second EQ-10). A bypassed EQ-10 doesn't count (`graph_facts`'s loop
+ *  `continue`s past a bypassed node before it ever reaches the EQ-10 check).
+ *  When SEVERAL non-bypassed EQ-10s exist, `graph_facts` has no `is_none()`
+ *  guard on `f.eq10` (unlike `f.cab`/`f.reverb_mix`) — it overwrites on every
+ *  match, so the LAST one in node order wins; mirrored here for parity. */
+export function existingEq10(nodes: GraphNode[]): GraphNode | null {
+  let found: GraphNode | null = null;
+  for (const n of nodes) {
+    if (!n.bypassed && n.model === EQ10_STEREO) found = n;
+  }
+  return found;
+}
+
+/** Reuse-branch ops for an existing EQ-10: per move, `current + gainDb`
+ *  clamped to +/-`EQ10_BAND_RANGE_DB`, missing current value treated as 0 —
+ *  mirrors `doctor.rs`'s `eq_move` reuse branch (the `known` case; a fresh
+ *  reuse always writes relative-to-current, so there's no separate "unknown
+ *  current value" branch to mirror here). */
+export function eq10ReuseOps(eq: GraphNode, moves: EqMove[]): DoctorOp[] {
+  return moves.map((m) => {
+    const current = eq.params[m.controlId] ?? 0;
+    const value = Math.max(
+      -EQ10_BAND_RANGE_DB,
+      Math.min(EQ10_BAND_RANGE_DB, current + m.gainDb),
+    );
+    return {
+      kind: "param",
+      groupId: eq.group_id,
+      nodeId: eq.node_id,
+      param: m.controlId,
+      value,
+    };
+  });
+}
 
 /** True when two sounds share an IDENTICAL band layout (same labels, same
  *  order) with coherent balance arrays — the precondition for every
