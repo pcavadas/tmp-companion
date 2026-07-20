@@ -20,7 +20,7 @@ import { MatchCard } from "./MatchCard";
 import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
 import { bandLayoutsMatch } from "./matchModel";
 import {
-  diagSevLabel,
+  diagKicker,
   isPossible,
   possibleLabel,
   sevTone,
@@ -438,10 +438,10 @@ export function SoundRow({
                       fontSize: 8.5,
                       letterSpacing: "0.08em",
                       textTransform: "uppercase",
-                      color: dTone.fg,
+                      color: possible ? t.mutedInk : dTone.fg,
                     }}
                   >
-                    {diagSevLabel(diag.sev)}
+                    {diagKicker(diag)}
                   </span>
                   <span
                     style={{

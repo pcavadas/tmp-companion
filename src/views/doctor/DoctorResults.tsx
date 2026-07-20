@@ -18,7 +18,12 @@ import { StepRail } from "../overlays/WizardShell";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { PresetResultCard } from "./PresetResultCard";
 import type { DoctorStimulus } from "./PrescriptionCard";
-import { presetLookCount, presetWorstSev, sevRank } from "./severity";
+import {
+  presetLookCount,
+  presetWorstSev,
+  sceneConsistencySev,
+  sevRank,
+} from "./severity";
 import {
   ApplyLockContext,
   type ActiveApplyCard,
@@ -167,11 +172,22 @@ export function DoctorResults({
     (a, p) => a + p.sounds.filter((s) => s.diags.length > 0).length,
     0,
   );
-  const needAttention = result.presets.reduce(
-    (a, p) =>
-      a + p.sounds.filter((s) => s.diags.some((d) => d.sev === "high")).length,
-    0,
-  );
+  // Presets whose ONLY finding is a scene-loudness jump (no sound diags) still
+  // need surfacing — the subtitle's "N of M sounds flagged" clause can't see
+  // them (sceneConsistency is a sibling of sounds, not a sound diag).
+  const sceneFlagged = result.presets.filter(
+    (p) => p.sceneConsistency != null,
+  ).length;
+  const needAttention = result.presets.reduce((a, p) => {
+    const soundHigh = p.sounds.filter((s) =>
+      s.diags.some((d) => d.sev === "high"),
+    ).length;
+    const sceneHigh =
+      p.sceneConsistency && sceneConsistencySev(p.sceneConsistency) === "high"
+        ? 1
+        : 0;
+    return a + soundHigh + sceneHigh;
+  }, 0);
 
   // Worst-first: higher severity first, ties broken by slot ascending.
   const sorted = [...result.presets].sort((a, b) => {
@@ -194,7 +210,13 @@ export function DoctorResults({
   if (allClear) {
     subtitle = "Nothing to fix — Doctor didn't find any tone problems.";
   } else {
-    subtitle = `Worst first · ${String(soundsFlagged)} of ${String(totalSounds)} sound${totalSounds === 1 ? "" : "s"} flagged`;
+    subtitle = "Worst first";
+    if (soundsFlagged > 0) {
+      subtitle += ` · ${String(soundsFlagged)} of ${String(totalSounds)} sound${totalSounds === 1 ? "" : "s"} flagged`;
+    }
+    if (sceneFlagged > 0) {
+      subtitle += ` · level jumps in ${String(sceneFlagged)} preset${sceneFlagged === 1 ? "" : "s"}`;
+    }
     if (needAttention > 0) {
       subtitle += ` · ${String(needAttention)} need${needAttention === 1 ? "s" : ""} attention`;
     }
