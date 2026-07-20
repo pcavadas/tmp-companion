@@ -790,7 +790,11 @@ fn stim_ref(family: Family) -> Option<&'static [f64]> {
 /// unchanged when `stim_bands` is `None` (curated fixtures — the constructor
 /// leaves it unset), when `stim_ref` is `None` (bass/bass-vi), or on a length
 /// surprise (`zip` stops at the shorter — guitar is always 6).
-fn anchor_deviations(dev: Vec<f64>, stim_bands: Option<&[f64]>, family: Family) -> Vec<f64> {
+pub(crate) fn anchor_deviations(
+    dev: Vec<f64>,
+    stim_bands: Option<&[f64]>,
+    family: Family,
+) -> Vec<f64> {
     let (Some(bands), Some(reference)) = (stim_bands, stim_ref(family)) else {
         return dev;
     };

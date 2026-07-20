@@ -167,6 +167,9 @@ fn rule_metrics(
 ) -> (Option<f64>, Vec<RuleMetric>) {
     let bdb = doctor::band_db(&profile.bands);
     let dev = doctor::deviations(&bdb, family);
+    // Same stimulus-transfer anchor `compute_rule_metrics` applies — keeps this
+    // threshold-derivation metric in lockstep with the engine's verdict space.
+    let dev = doctor::anchor_deviations(dev, profile.stim_bands.as_deref(), family);
     // The row's own coverage, matching `diagnose_kind`'s call — thresholds must
     // be derived in the SAME coverage-gated metric space the verdict path reads.
     let (slope, locals) = doctor::tilt_split(&dev, family, Some(coverage));
