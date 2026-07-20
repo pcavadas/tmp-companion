@@ -35,3 +35,17 @@ On the real unit a block's `nodeId` **equals** its FenderId (model id) — there
 ## Backup / restore
 
 Pre-edit backups capture the original preset; restore re-imports it in place. Saving permanently alters a preset, so every write path that persists is opt-in.
+
+## Preset-schema fidelity (the "newer firmware revision" banner)
+
+The unit shows **"this preset was created using a newer firmware revision"** for a preset whose
+JSON is MISSING top-level keys every real preset carries — reproduced 2026-07-19 on the e2e
+scenario fixtures with `info.version` (`5.0`) and every block's `since` matching the connected
+firmware, yet the banner still fired because the hand-built fixtures lack `ftswStates`,
+`lastLoadedScene`, and `presetFootswitchColorActive`/`Inactive` (the plain Targets even lack
+`scenes`). The firmware evidently treats an incomplete key set as "foreign/newer" in this
+reproduced case; this doesn't establish that a version-field mismatch can never also trigger it —
+that's untested here.
+Any write/import path that composes preset JSON (rather than round-tripping a real preset) must
+carry the FULL top-level key set of a real export; the reference set is any real `.preset` decode.
+The 4 e2e fixtures still have this gap (cosmetic offline — SimDevice doesn't check).

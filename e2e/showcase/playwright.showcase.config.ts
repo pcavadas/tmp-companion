@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Ports default to 7600/1421; scripts/e2e.sh exports a per-worktree pair (TMP_E2E_PORT /
+// TMP_E2E_VITE_PORT) — read it here too so a showcase run coexists with a sibling gate run.
+const PORT = process.env.TMP_E2E_PORT ?? "7600";
+const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
+
 // Marketing-screenshot tour (NOT a test gate). Boots the SAME offline e2e harness as
 // playwright.config.ts, but with TMP_E2E_SHOWCASE=1 so the backend serves the curated,
 // non-personal `e2e/fixtures/showcase/` library, and at the app's native 900×680 window
@@ -12,7 +17,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:1421",
+    baseURL: `http://localhost:${VITE}`,
   },
   // viewport + scale go in the PROJECT use, AFTER the devices spread — otherwise
   // `devices["Desktop Chrome"]`'s 1280×720 (16:9) overrides them and the capture no
@@ -33,7 +38,7 @@ export default defineConfig({
   webServer: [
     {
       command: "bun run dev",
-      url: "http://localhost:1421",
+      url: `http://localhost:${VITE}`,
       reuseExistingServer: true,
       timeout: 120_000,
     },
@@ -42,7 +47,7 @@ export default defineConfig({
       // two levels up — NOT `../src-tauri` like the gate config (which lives in `e2e/`).
       command:
         "cargo run --manifest-path ../../src-tauri/Cargo.toml --features e2e --bin e2e_server",
-      url: "http://127.0.0.1:7600/health",
+      url: `http://127.0.0.1:${PORT}/health`,
       reuseExistingServer: false,
       timeout: 180_000,
       env: { TMP_E2E_SHOWCASE: "1" },
