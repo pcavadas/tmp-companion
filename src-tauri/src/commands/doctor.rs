@@ -403,7 +403,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 // the stimulus's spectral ridges can't read as chain
                 // resonances. Cheap (~ms) next to the ~5 s capture.
                 let stim_psd = crate::psd::welch_psd(stim, rate as f32);
-                let profile = doctor::SoundProfile::from_capture_with_psd(
+                let mut profile = doctor::SoundProfile::from_capture_with_psd(
                     &samples,
                     rate,
                     stim.len(),
@@ -412,6 +412,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     &body_psd,
                     Some(&stim_psd),
                 )?;
+                // The re-amp stimulus's own band powers — the stimulus-transfer
+                // anchor `compute_rule_metrics` subtracts so a non-humbucker
+                // stimulus (single-coil, DI capture) can't skew the tilt/band
+                // verdicts. THE ONLY production write of this field.
+                profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
                 // The CAPTURED OUTPUT's own band coverage (family layout) — gates on
                 // what the device actually produced, not what the input stimulus
                 // carried, so amp-created HF (fizz/harsh distortion) isn't gated out

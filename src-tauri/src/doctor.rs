@@ -369,6 +369,16 @@ pub struct SoundProfile {
     /// serialization — a diagnosis input, not a report measurement.
     #[serde(skip)]
     pub peaks: Vec<crate::psd::SpectralPeak>,
+    /// Raw linear band powers of the RE-AMP STIMULUS for this capture (family
+    /// band layout), set ONLY on the production/probe-calib capture paths
+    /// (`commands/doctor.rs`, `probe_api/doctor_calib.rs`). `None` on the
+    /// `from_capture_with_psd` constructor and every hand-built/curated
+    /// fixture — a `None` means zero anchoring, keeping the HW-pinned fixtures
+    /// byte-identical. Drives the stimulus-transfer re-anchoring in
+    /// [`compute_rule_metrics`] (see [`anchor_deviations`]). Skipped in
+    /// serialization — a diagnosis input, not a report measurement.
+    #[serde(skip)]
+    pub stim_bands: Option<Vec<f64>>,
 }
 
 impl SoundProfile {
@@ -426,6 +436,10 @@ impl SoundProfile {
                     )
                 })
                 .unwrap_or_default(),
+            // Left None here — populated ONLY on the production/probe-calib
+            // paths (see the field doc). A constructor default of None keeps
+            // every HW-pinned fixture at zero anchoring / byte-identical.
+            stim_bands: None,
         })
     }
 }
@@ -524,6 +538,7 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
         tail_ratio_db: tail,
         air_flatness: 0.5,
         peaks: Vec::new(),
+        stim_bands: None,
     }
 }
 
@@ -707,6 +722,32 @@ const GUITAR_TARGET: [f64; 6] = [-5.0, -2.0, -5.0, 13.0, 13.5, -14.5];
 const BASS_TARGET: [f64; 6] = [1.5, 6.5, 9.5, 5.0, 1.5, -24.0];
 const BASS_VI_TARGET: [f64; 7] = [-18.0, 1.5, 2.0, -5.0, 14.0, 15.0, -9.0];
 
+/// The humbucker synthetic stimulus's OWN per-band level (`band_db` space,
+/// guitar layout) — the reference [`GUITAR_TARGET`] was derived through. The
+/// stimulus-transfer anchor ([`anchor_deviations`]) subtracts each capture's
+/// stimulus deviation FROM this reference, so a humbucker capture (the
+/// majority topology, and the one the factory sweep used) gets exactly zero
+/// correction while a single-coil / DI stimulus's differing spectral shape no
+/// longer skews the tilt/band verdicts.
+///
+/// Derived once from `resources/samples/guitar-humbucker.wav` through the EXACT
+/// runtime capture path (`read_stimulus_calibrated(_, None)` →
+/// `leveller::doctor_stim_slice` → `psd::welch_psd` → `.band_powers` →
+/// `band_db`), printed verbatim by the `#[ignore]` `print_guitar_stim_ref`
+/// test. The slice length sets the Welch resolution, so the runtime slicing is
+/// load-bearing — a bare full-file welch gives a different shape. `{:?}`
+/// (shortest round-trippable f64) so the runtime recompute is bit-identical and
+/// the humbucker correction is exactly 0; `stim_ref_matches_committed_wav`
+/// guards against `gen_samples` regen drift.
+const GUITAR_STIM_REF: [f64; 6] = [
+    -43.966380408069206,
+    -42.32926787561062,
+    -49.74813365041292,
+    -26.625639842835717,
+    -24.725860853333863,
+    -32.997969517289086,
+];
+
 /// The authored target curve for a family (length = its band count) — see
 /// [`GUITAR_TARGET`].
 pub fn target_curve(family: Family) -> &'static [f64] {
@@ -727,6 +768,42 @@ pub fn target_curve(family: Family) -> &'static [f64] {
 pub fn deviations(band_db: &[f64], family: Family) -> Vec<f64> {
     let target = target_curve(family);
     band_db.iter().zip(target).map(|(&d, &t)| d - t).collect()
+}
+
+/// The stimulus's OWN band-dB reference for a family — the shape its authored
+/// target curve was derived through. `Some` for Guitar only: the bass/bass-vi
+/// factory sweeps' reference stimulus is undocumented, so anchoring them would
+/// subtract an unknown, and their targets are already provisional single/two-
+/// preset anchors. `None` disables anchoring (unchanged deviations).
+fn stim_ref(family: Family) -> Option<&'static [f64]> {
+    match family {
+        Family::Guitar => Some(&GUITAR_STIM_REF),
+        Family::Bass | Family::BassVi => None,
+    }
+}
+
+/// Re-anchor a deviation vector to the capture's OWN stimulus transfer:
+/// `new_dev[i] = dev[i] − (band_db(stim_bands)[i] − stim_ref[i])`. When the
+/// runtime stimulus IS the reference (guitar-humbucker.wav) the correction is
+/// exactly 0 (byte-identical verdicts); a differing stimulus's spectral skew is
+/// cancelled instead of leaking into the tilt/band rules. Returns `dev`
+/// unchanged when `stim_bands` is `None` (curated fixtures — the constructor
+/// leaves it unset), when `stim_ref` is `None` (bass/bass-vi), or on a length
+/// surprise (`zip` stops at the shorter — guitar is always 6).
+pub(crate) fn anchor_deviations(
+    dev: Vec<f64>,
+    stim_bands: Option<&[f64]>,
+    family: Family,
+) -> Vec<f64> {
+    let (Some(bands), Some(reference)) = (stim_bands, stim_ref(family)) else {
+        return dev;
+    };
+    let stim_db = band_db(bands);
+    dev.into_iter()
+        .zip(stim_db)
+        .zip(reference)
+        .map(|((d, s), &r)| d - (s - r))
+        .collect()
 }
 
 /// The one shared median: `xs` (sorted internally) — the middle value for an
@@ -2184,6 +2261,12 @@ fn compute_rule_metrics(
 ) -> RuleMetrics {
     let bdb = band_db(&profile.bands);
     let dev = deviations(&bdb, instrument);
+    // Re-anchor to the capture's OWN stimulus transfer (guitar-only) so a
+    // non-humbucker stimulus's spectral skew doesn't leak into the tilt/band
+    // verdicts. Exactly 0 when the stimulus IS guitar-humbucker.wav; a no-op
+    // when `stim_bands` is unset (curated fixtures) or the family has no
+    // reference. This single subtraction re-anchors ALL band rules + tilt.
+    let dev = anchor_deviations(dev, profile.stim_bands.as_deref(), instrument);
     let (slope, locals) = tilt_split(&dev, instrument, coverage);
     let centered = centered_deviations(&dev, instrument);
     let facts = nodes.map(graph_facts);
@@ -2908,6 +2991,7 @@ mod cut_through_tests {
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
+            stim_bands: None,
         }
     }
 
@@ -2923,6 +3007,7 @@ mod cut_through_tests {
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
+            stim_bands: None,
         };
         let ct = cut_through(&p, Family::Guitar).expect("finite ratio");
         let want = 10.0 * (4.0f64 / 3.0).log10();
@@ -3029,6 +3114,7 @@ mod tests {
             tail_ratio_db: -40.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
+            stim_bands: None,
         }
     }
 
@@ -3103,6 +3189,7 @@ mod tests {
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
+            stim_bands: None,
         }
     }
 
@@ -3111,6 +3198,106 @@ mod tests {
         for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
             assert!((g - w).abs() <= tol, "local[{i}]: got {g}, want {w}");
         }
+    }
+
+    /// A committed stimulus WAV's guitar-layout band powers via the EXACT
+    /// runtime path (`read_stimulus_calibrated(_, None)` →
+    /// `doctor_stim_slice` → `welch_psd` → `band_powers`) — the linear vector
+    /// production stores in `SoundProfile::stim_bands`. `stem` = the file stem
+    /// under resources/samples (e.g. "guitar-humbucker").
+    fn runtime_stim_bands(stem: &str) -> Vec<f64> {
+        let path = format!(
+            "{}/resources/samples/{stem}.wav",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = crate::read_stimulus_calibrated(&path, None).expect("read stimulus");
+        let stim = crate::leveller::doctor_stim_slice(raw);
+        // 48 kHz: the committed WAVs match the device clock (read_stimulus_48k),
+        // the same rate production feeds welch_psd for the stimulus PSD.
+        crate::psd::welch_psd(&stim, 48_000.0).band_powers(Family::Guitar.bands())
+    }
+
+    /// Prints `GUITAR_STIM_REF` from the committed humbucker WAV via the runtime
+    /// path. `{:?}` (shortest round-trippable f64) so the runtime recompute is
+    /// bit-identical → zero humbucker correction. Re-run + paste on a
+    /// `gen_samples` regen: `cargo test --lib print_guitar_stim_ref --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_guitar_stim_ref() {
+        let bdb = band_db(&runtime_stim_bands("guitar-humbucker"));
+        println!("GUITAR_STIM_REF = {bdb:?}");
+    }
+
+    #[test]
+    fn stim_ref_matches_committed_wav() {
+        let bdb = band_db(&runtime_stim_bands("guitar-humbucker"));
+        assert_eq!(bdb.len(), GUITAR_STIM_REF.len());
+        for (i, (&got, &want)) in bdb.iter().zip(&GUITAR_STIM_REF).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-3,
+                "band {i}: wav {got}, const {want} — regen drift, re-run print_guitar_stim_ref"
+            );
+        }
+    }
+
+    #[test]
+    fn guitar_humbucker_correction_is_flat() {
+        let stim_bands = runtime_stim_bands("guitar-humbucker");
+        // The correction the anchor subtracts is `band_db(stim_bands) − REF`.
+        // For the reference stimulus it is exactly 0 in every band.
+        let corr: Vec<f64> = band_db(&stim_bands)
+            .iter()
+            .zip(&GUITAR_STIM_REF)
+            .map(|(&s, &r)| s - r)
+            .collect();
+        let (lo, hi) = corr
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &c| (lo.min(c), hi.max(c)));
+        assert!(hi - lo < 1e-6, "humbucker correction not flat: {corr:?}");
+
+        // A humbucker-stimulus diagnosis is verdict-identical with vs without
+        // the anchor engaged.
+        let bdb: Vec<f64> = GUITAR_TARGET.iter().map(|t| t + 8.0).collect();
+        let mut anchored = oracle_profile(&bdb);
+        anchored.stim_bands = Some(stim_bands);
+        let plain = oracle_profile(&bdb);
+        assert_eq!(
+            keys(&diagnose(&anchored, None, Family::Guitar)),
+            keys(&diagnose(&plain, None, Family::Guitar)),
+        );
+    }
+
+    #[test]
+    fn single_coil_stim_reduces_bright_skew() {
+        // A well-voiced preset (bands exactly ON GUITAR_TARGET) measured
+        // THROUGH the single-coil stimulus: its band_db reads the target PLUS
+        // the single-coil-vs-humbucker stimulus skew (`S − REF`). The anchor
+        // must subtract that skew back out, driving the tilt to 0.
+        let s = band_db(&runtime_stim_bands("guitar-singlecoil"));
+        let skew: Vec<f64> = s
+            .iter()
+            .zip(&GUITAR_STIM_REF)
+            .map(|(&s, &r)| s - r)
+            .collect();
+        let bdb: Vec<f64> = GUITAR_TARGET
+            .iter()
+            .zip(&skew)
+            .map(|(&t, &k)| t + k)
+            .collect();
+
+        let dev = deviations(&bdb, Family::Guitar);
+        let (uncorrected, _) = tilt_split(&dev, Family::Guitar, None);
+        let stim_bands = runtime_stim_bands("guitar-singlecoil");
+        let anchored = anchor_deviations(dev, Some(&stim_bands), Family::Guitar);
+        let (corrected, _) = tilt_split(&anchored, Family::Guitar, None);
+
+        let u = uncorrected.expect("uncorrected slope").abs();
+        let c = corrected.expect("corrected slope").abs();
+        assert!(
+            c < u,
+            "anchoring must shrink the stimulus-induced tilt: |corrected| {c} !< |uncorrected| {u}"
+        );
     }
 
     #[test]
@@ -4641,6 +4828,7 @@ mod tests {
             tail_ratio_db: -40.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
+            stim_bands: None,
         };
         let diags = diagnose(&p, None, Family::BassVi);
         assert!(

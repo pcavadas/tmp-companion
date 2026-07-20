@@ -167,6 +167,9 @@ fn rule_metrics(
 ) -> (Option<f64>, Vec<RuleMetric>) {
     let bdb = doctor::band_db(&profile.bands);
     let dev = doctor::deviations(&bdb, family);
+    // Same stimulus-transfer anchor `compute_rule_metrics` applies — keeps this
+    // threshold-derivation metric in lockstep with the engine's verdict space.
+    let dev = doctor::anchor_deviations(dev, profile.stim_bands.as_deref(), family);
     // The row's own coverage, matching `diagnose_kind`'s call — thresholds must
     // be derived in the SAME coverage-gated metric space the verdict path reads.
     let (slope, locals) = doctor::tilt_split(&dev, family, Some(coverage));
@@ -247,7 +250,7 @@ fn profile_and_coverage(
     let signal_start = leveller::doctor_signal_start(onset, confident);
     let body_psd = doctor::body_psd(samples, rate, signal_start);
     let stim_psd = crate::psd::welch_psd(stim, rate as f32);
-    let profile = doctor::SoundProfile::from_capture_with_psd(
+    let mut profile = doctor::SoundProfile::from_capture_with_psd(
         samples,
         rate,
         stim.len(),
@@ -256,6 +259,10 @@ fn profile_and_coverage(
         &body_psd,
         Some(&stim_psd),
     )?;
+    // Mirror production's stimulus-transfer anchor (shared by both
+    // --doctor-calib and --doctor-calib-factory) so the sweep derives
+    // thresholds/targets in the same anchored space the engine diagnoses in.
+    profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
     let coverage =
         doctor::output_coverage_with_body(samples, rate, signal_start, family, &body_psd);
     Ok((profile, coverage, signal_start))
