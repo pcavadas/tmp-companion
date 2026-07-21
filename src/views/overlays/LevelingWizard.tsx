@@ -5,8 +5,12 @@
 // Stage → step: setup 0 (Set up) · run 1 (Level) · summary 2.
 // CONFIGURE phase (setup) renders FULL-PAGE (LevelSetupPage, replaces the Level body);
 // WRITE phase (run/summary) stays a centered MODAL (WizardShell) — a device write is
-// correctly blocking. Backdrop click closes every modal stage EXCEPT run (never abort a
-// device operation).
+// correctly blocking. Neither Run nor Summary can be dismissed by a stray backdrop
+// click: Run because it must never abort an in-progress device operation, and Summary
+// because it can carry actionable follow-ups (Re-level clamped…, Give clamped scenes
+// headroom) that a stray click would otherwise silently discard with no confirmation —
+// SummaryBody's primary Accept/Done button is unconditional across every branch, so the
+// footer is always a reachable way out.
 
 import { WizardShell } from "./WizardShell";
 import { LevelSetupPage } from "./LevelSetupPage";
@@ -107,12 +111,11 @@ export function LevelingWizard({
     );
   }
 
-  // WRITE phase → centered modal (a device write is correctly blocking).
+  // WRITE phase → centered modal (a device write is correctly blocking). Run and
+  // Summary are both reached only here (setup returns early above) — neither takes
+  // an onBackdrop, so the scrim is inert on both; see the file header for why.
   return (
-    <WizardShell
-      current={stageToStep(stage)}
-      onBackdrop={stage === "run" ? undefined : onCancel}
-    >
+    <WizardShell current={stageToStep(stage)}>
       {stage === "run" && (
         <RunBody
           items={runItems}
