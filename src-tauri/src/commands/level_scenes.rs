@@ -301,7 +301,14 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
             // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
             let base_target = jobs[0].target_lufs + offset;
-            let mut scene_jobs = build_scene_jobs(&scene_slots, &candidates, &docs, base_target)?;
+            let saved = crate::probe_api::scene_jobs::saved_structure_fallback(slot, &docs);
+            let mut scene_jobs = build_scene_jobs(
+                &scene_slots,
+                &candidates,
+                &docs,
+                base_target,
+                saved.as_ref(),
+            )?;
             // Error on ANY slot mismatch between the built jobs and the wire jobs — a silent
             // default (especially NaN, which `.min(k_cap)` would collapse to the cap and slam
             // the amp) must never reach a solve.
@@ -533,7 +540,9 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
         let (docs, restore_scene) = prepass_scene_docs_via(slot, &scene_slots, false)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let base_target = jobs[0].target_lufs + offset;
-        let mut scene_jobs = build_scene_jobs(&scene_slots, &candidates, &docs, base_target)?;
+        let saved = crate::probe_api::scene_jobs::saved_structure_fallback(slot, &docs);
+        let mut scene_jobs =
+            build_scene_jobs(&scene_slots, &candidates, &docs, base_target, saved.as_ref())?;
         // Stamp each job with its OWN (offset-adjusted) target.
         for sj in scene_jobs.iter_mut() {
             let arg = jobs

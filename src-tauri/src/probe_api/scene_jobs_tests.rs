@@ -63,7 +63,7 @@ fn scene_jobs_prefer_active_amp_output_level_over_preamp_volume() {
         },
     ];
 
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     let leveller::LevelKnob::Block { parameter_id, .. } = &jobs[0].knobs[0].knob else {
         panic!("expected block knob");
     };
@@ -94,7 +94,7 @@ fn scene_jobs_reject_preamp_volume_as_level_control() {
 
     // The Hiwatt is an active amp but its only candidate is a preamp volume, not
     // outputLevel → the scene is skipped with a reason, not leveled on the wrong knob.
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap_err();
     assert!(err.contains("outputLevel"), "got: {err}");
 }
 
@@ -129,7 +129,7 @@ fn scene_jobs_parallel_merged_picks_both_lane_amps() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -168,7 +168,7 @@ fn scene_jobs_post_merge_amp_is_single_master() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert_eq!(jobs[0].knobs.len(), 1);
 }
 
@@ -188,7 +188,7 @@ fn scene_jobs_skip_when_template_unknown() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap_err();
     assert!(err.contains("routing"), "got: {err}");
 }
 
@@ -209,7 +209,7 @@ fn scene_jobs_skip_mic_only_no_guitar_amp() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert!(
         jobs[0].skip.as_deref().unwrap_or("").contains("guitar amp"),
         "got: {:?}",
@@ -249,7 +249,7 @@ fn scene_jobs_split_output_joint_ks_both_output_lanes() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -284,6 +284,7 @@ fn scene_jobs_per_scene_skip_does_not_abort() {
         &candidates,
         &[(0, Some(bypassed)), (1, Some(active))],
         -23.0,
+        None,
     )
     .unwrap();
     assert_eq!(jobs.len(), 2);
@@ -413,4 +414,63 @@ fn scene_docs_restore_scene_none_when_absent() {
     p.as_object_mut().unwrap().remove("lastLoadedScene");
     let (_, restore) = scene_docs_from_saved(&p, &[session::BASE_SCENE_SLOT]).unwrap();
     assert_eq!(restore, None);
+}
+
+// ── saved-structure fallback (the oversized-audioGraph class) ───────────────────────────
+// A preset whose audioGraph overruns the device's lean field-3 push (~3.4 KB fixed cut)
+// loses `audioGraph.template` in EVERY live scene doc, which used to hard-fail the whole
+// preset ("some presets just never scene-level" — the JFF LP Hiwatt user report). The
+// field-8 saved JSON still carries the template (it sits at the end of audioGraph, well
+// inside the ~17 KB field-8 partial), so build_scene_jobs accepts it as the routing
+// STRUCTURE while knob values keep coming from the live docs.
+#[test]
+fn scene_jobs_saved_fallback_supplies_missing_template() {
+    // Live doc: amp + knob survive the cut, template does not.
+    let doc = serde_json::json!({
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+              "dspUnitParameters": { "bypass": false, "outputLevel": 0.5 } }
+        ] } }
+    });
+    // Field-8 saved JSON: complete graph including the template.
+    let saved = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+              "dspUnitParameters": { "bypass": false, "outputLevel": 0.5 } }
+        ] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 0.5,
+    }];
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, Some(&saved)).unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert!(jobs[0].skip.is_none(), "skip reason: {:?}", jobs[0].skip);
+    assert_eq!(jobs[0].knobs.len(), 1);
+}
+
+// A fallback that is ITSELF template-less (e.g. a truncated field-8 read) must not rescue
+// classification — same honest hard error as before the fallback existed.
+#[test]
+fn scene_jobs_saved_fallback_without_template_still_errors() {
+    let doc = serde_json::json!({
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+              "dspUnitParameters": { "bypass": false, "outputLevel": 0.5 } }
+        ] } }
+    });
+    let saved = serde_json::json!({
+        "audioGraph": { "guitarNodes": { "G1": [] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 0.5,
+    }];
+    let err =
+        build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, Some(&saved)).unwrap_err();
+    assert!(err.contains("routing"), "got: {err}");
 }

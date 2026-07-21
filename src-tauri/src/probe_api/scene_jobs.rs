@@ -312,11 +312,20 @@ pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 /// safely level (unknown/incomplete routing, mic/dual-input, split-output pending the
 /// routing read, an amp lane with no outputLevel knob, tangled multi-split) becomes an
 /// `Err` for that scene — never a silent single-amp fallback.
+///
+/// `saved_fallback` = the slot's field-8 saved preset JSON, used ONLY for the routing
+/// STRUCTURE when no live doc carries a complete `audioGraph.template`: a preset with a
+/// large audioGraph (many blocks) overruns the device's lean field-3 push (~3.4 KB fixed
+/// cut) in EVERY scene doc, so classification failed for the whole preset ("some presets
+/// just never scene-level"). Routing is scene-invariant and the prepass `load_preset`
+/// materialized exactly the saved preset, so the saved base graph is authoritative for
+/// template + lane membership. Knob VALUES still come from the live per-scene docs.
 pub(crate) fn build_scene_jobs(
     scene_slots: &[u32],
     candidates: &[LevelBlockArg],
     docs: &[(u32, Option<serde_json::Value>)],
     target_lufs: f64,
+    saved_fallback: Option<&serde_json::Value>,
 ) -> Result<Vec<leveller::SceneJob>, String> {
     if !candidates
         .iter()
@@ -324,11 +333,17 @@ pub(crate) fn build_scene_jobs(
     {
         return Err("per-scene leveling needs an amp outputLevel control".to_string());
     }
-    let structure = structure_graph(docs).ok_or_else(|| {
-        "no complete routing read (template missing from every scene doc) — \
+    let structure = structure_graph(docs)
+        .or_else(|| {
+            saved_fallback
+                .map(|v| session::extract_active_graph(v, None))
+                .filter(|g| session::is_known_routing_template(g.template.as_deref()))
+        })
+        .ok_or_else(|| {
+            "no complete routing read (template missing from every scene doc) — \
          can't classify scene routing safely"
-            .to_string()
-    })?;
+                .to_string()
+        })?;
     // Preset-wide un-levelable routing (unknown template / mic / split-output) is a hard
     // error — the whole preset can't be scene-leveled. Per-SCENE issues below become skip
     // jobs so one bad scene doesn't abort the batch.
@@ -387,6 +402,39 @@ pub(crate) fn build_scene_jobs(
         })
         .collect();
     Ok(jobs)
+}
+
+/// The routing-STRUCTURE fallback fetch for [`build_scene_jobs`]'s `saved_fallback`:
+/// fires ONLY when no live doc carries a complete `audioGraph.template` (the
+/// oversized-audioGraph class — the lean field-3 push is a fixed ~3.4 KB cut, HW-measured
+/// on fw 1.8.45, and a big graph overruns it in every scene doc). Reads the slot's
+/// field-8 saved JSON on a fresh session (the prepass session just closed, so the
+/// HW reconnect gap is honored first). A failed read returns `None` — the caller then
+/// fails with the same honest "can't classify" error as before this fallback existed.
+pub(crate) fn saved_structure_fallback(
+    list_index: u32,
+    docs: &[(u32, Option<serde_json::Value>)],
+) -> Option<serde_json::Value> {
+    if structure_graph(docs).is_some() {
+        return None;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    match crate::commands::level_footswitch::read_slot_preset_parsed(list_index) {
+        Ok((preset, _, _)) => {
+            log::info!(
+                "scene jobs slot {list_index}: live docs missed audioGraph.template — \
+                 using the field-8 saved graph for routing structure"
+            );
+            Some(preset)
+        }
+        Err(e) => {
+            log::warn!(
+                "scene jobs slot {list_index}: template missing from live docs and the \
+                 field-8 fallback read failed ({e})"
+            );
+            None
+        }
+    }
 }
 
 /// Un-engaged pre-pass for the app's batched scene leveling: ONE rich session

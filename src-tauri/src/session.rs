@@ -74,10 +74,13 @@ fn open_transport() -> Result<Box<dyn HidTransport>, String> {
     Ok(Box::new(Hid::open()?))
 }
 
-/// One entry in the device's "My Presets" list. `slot` is the position used by
-/// `LoadPreset.presetSlot`; `name` is the display name. NOTE: the list-index →
-/// presetSlot mapping (0- vs 1-based) is confirmed on real hardware in M3 by
-/// loading a slot and reading back the current-preset info.
+/// One entry in the device's "My Presets" list. `slot` is the **0-based list
+/// index** (what `Session::load_preset` and friends take — they add the +1 for
+/// the device's 1-based `userSlot` wire fields); `name` is the display name.
+/// NOTE: the list-index → userSlot mapping is confirmed on real hardware in M3
+/// by loading a slot and reading back the current-preset info. Do NOT print
+/// this field labeled "slot" without the index/userSlot distinction — that
+/// ambiguity once steered a probe run at the wrong preset.
 #[derive(Debug, Clone, Serialize)]
 pub struct PresetEntry {
     pub slot: u32,

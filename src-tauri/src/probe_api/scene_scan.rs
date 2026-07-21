@@ -38,7 +38,7 @@ pub fn probe_level_scenes_oneshot(
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, target_lufs)?;
+    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, target_lufs, None)?;
     // NO SAVE — restores the stored preset after measuring.
     let outcomes = if rebalance {
         leveller::level_scenes_rebalance(list_index, &jobs, &stim, false, None, |_, _| {}, || false)
@@ -103,6 +103,7 @@ pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<S
         &candidates,
         &docs,
         KNOB_ONLY_PROBE_TARGET_LUFS,
+        None,
     )?;
     for j in &jobs {
         if let Some(reason) = &j.skip {

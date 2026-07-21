@@ -184,7 +184,7 @@ pub fn probe_import_preset(path: &str) -> Result<String, String> {
     let changed: Vec<String> = after
         .iter()
         .filter(|p| !before_pairs.contains(&(p.slot, p.name.clone())))
-        .map(|p| format!("slot {} = {:?}", p.slot, p.name))
+        .map(|p| format!("idx {} (device slot {}) = {:?}", p.slot, p.slot + 1, p.name))
         .collect();
     let resp_str = match resp {
         Some((le, slot)) => format!("importPresetResponse: listEnum={le} presetSlot={slot}"),
