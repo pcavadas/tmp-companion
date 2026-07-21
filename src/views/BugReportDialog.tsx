@@ -14,15 +14,17 @@ import { useState, useSyncExternalStore } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
 import { Dialog, DialogHeader, DialogBody, DialogFooter } from "../ui/Dialog";
-import { AlertBanner, Button, MenuItem } from "../ui/primitives";
-import { Menu } from "../ui/Menu";
+import { AlertBanner, Button } from "../ui/primitives";
 import { Icon } from "../ui/Icon";
+import { Pick } from "./overlays/Pick";
 import { plainInput } from "../theme/tokens";
 import { saveSupportBundle, buildSupportBundle } from "../lib/invoke";
 import { errMsg } from "../lib/format";
 import { subscribeLibraryScan, getLibraryScan } from "./level/libraryScan";
 import { sendReport, type SendReportOutcome } from "./sendReport";
 import { REPORT_ENDPOINT } from "../lib/reportEndpoint";
+
+const NO_PRESET_ID = "none";
 
 interface BugReportDialogProps {
   connected: boolean;
@@ -40,7 +42,6 @@ export function BugReportDialog({
   const lib = useSyncExternalStore(subscribeLibraryScan, getLibraryScan);
 
   const [pickedSlot, setPickedSlot] = useState<number | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState<"save" | "send" | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -202,43 +203,22 @@ export function BugReportDialog({
               Include a preset
             </span>
             {hasPresets ? (
-              <span style={{ position: "relative" }}>
-                <Button
-                  variant="ghost"
-                  small
-                  onClick={() => {
-                    setMenuOpen((o) => !o);
-                  }}
-                >
-                  {pickedPreset?.name ?? "No preset"}
-                </Button>
-                {menuOpen && (
-                  <Menu
-                    onClose={() => {
-                      setMenuOpen(false);
-                    }}
-                    minWidth={200}
-                  >
-                    <MenuItem
-                      label="No preset"
-                      onClick={() => {
-                        setPickedSlot(null);
-                        setMenuOpen(false);
-                      }}
-                    />
-                    {lib.presets.map((p) => (
-                      <MenuItem
-                        key={p.slot}
-                        label={p.name}
-                        onClick={() => {
-                          setPickedSlot(p.slot);
-                          setMenuOpen(false);
-                        }}
-                      />
-                    ))}
-                  </Menu>
-                )}
-              </span>
+              // Portals through DialogCardCtx (every <Dialog> provides it) so the
+              // dropdown never clips past the scrolling DialogBody — the same
+              // mechanism the leveling wizard's Set-up step uses.
+              <Pick
+                value={pickedSlot == null ? NO_PRESET_ID : String(pickedSlot)}
+                options={[
+                  { id: NO_PRESET_ID, label: "No preset" },
+                  ...lib.presets.map((p) => ({
+                    id: String(p.slot),
+                    label: p.name,
+                  })),
+                ]}
+                onChange={(id) => {
+                  setPickedSlot(id === NO_PRESET_ID ? null : Number(id));
+                }}
+              />
             ) : (
               <span
                 title="Connect the Tone Master Pro to include a preset"
