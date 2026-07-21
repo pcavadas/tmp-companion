@@ -31,8 +31,8 @@ export const DIALOG_PAD_X = 22;
 const VIEWPORT_CAP = "calc(100vh - 32px)";
 
 export interface DialogProps {
-  /** Backdrop click + Escape. Pass undefined to make the backdrop inert (e.g. a run in
-   *  progress that must not be dismissed by a stray click). */
+  /** Backdrop click (click-only app — no Escape shortcut). Pass undefined to make the
+   *  backdrop inert (e.g. a run in progress that must not be dismissed by a stray click). */
   onClose?: () => void;
   /** Width step. Default "sm". */
   size?: DialogSize;
@@ -55,17 +55,6 @@ export function Dialog({
 }: DialogProps) {
   const { t } = useTheme();
   const cardRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!onClose) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
 
   // Move focus into the dialog on open and restore it to the prior element on close.
   useEffect(() => {
