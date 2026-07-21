@@ -1,4 +1,4 @@
-// src/__tests__/DoctorRun.test.tsx — the Check run screen's stop/done footer
+// src/__tests__/DoctorRunFooter.test.tsx — the Check run screen's stop/done footer
 // contract. Regression-guards the two bugs the run-parity fix addresses: (1) a
 // stopped run must show "Check stopped" (not get stuck on "Stopping…" — the
 // bug a naive verbatim copy of Leveling's stopping flag would have shipped,
