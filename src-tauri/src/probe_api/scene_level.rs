@@ -197,7 +197,7 @@ pub fn probe_level_preset_scenes(
         let name = scenes.scenes[slot as usize].clone();
         let target = resolve(&name);
         // active amp for this scene (first un-bypassed amp outputLevel)
-        let knob = match build_scene_jobs(&[slot], &candidates, &docs, target)
+        let knob = match build_scene_jobs(&[slot], &candidates, &docs, target, None)
             .ok()
             .and_then(|j| j.into_iter().next())
             .and_then(|j| j.knobs.into_iter().next())
@@ -346,6 +346,7 @@ pub fn probe_scene_knob_authority(
         &candidates,
         &docs,
         KNOB_ONLY_PROBE_TARGET_LUFS,
+        None,
     )?;
     let knob = job
         .into_iter()
@@ -414,6 +415,7 @@ pub fn probe_mute_floor(
         &candidates,
         &docs,
         KNOB_ONLY_PROBE_TARGET_LUFS,
+        None,
     )?
     .into_iter()
     .next()
@@ -590,7 +592,8 @@ pub fn probe_jointk_scenes(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let jobs = match build_scene_jobs(&slots, &candidates, &docs, target) {
+        let saved = super::scene_jobs::saved_structure_fallback(list_index, &docs);
+        let jobs = match build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref()) {
             Ok(j) => j,
             Err(e) => {
                 out += &format!("group target {target:.1} slots {slots:?} [BUILD FAIL: {e}]\n");
@@ -657,7 +660,8 @@ pub fn probe_redistribute(
     std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
     std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let jobs = build_scene_jobs(&slots, &candidates, &docs, target)?;
+    let saved = super::scene_jobs::saved_structure_fallback(list_index, &docs);
+    let jobs = build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref())?;
     let pl = docs
         .iter()
         .find_map(|(_, d)| d.as_ref().and_then(crate::audiograph::preset_level))

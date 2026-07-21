@@ -149,6 +149,20 @@ impl log::Log for StderrLog {
     fn flush(&self) {}
 }
 
+/// `Name=Target` tail-args parser for the scene-leveling arms. Out-of-range `from`
+/// (every optional arg omitted) is an empty list, NOT a panic — `args[from..]` sliced
+/// past the end aborted `--level-preset-scenes <idx> <target> <topology>` (no save arg).
+fn parse_target_overrides(args: &[String], from: usize) -> Vec<(String, f64)> {
+    args.get(from..)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|a| {
+            let (n, t) = a.split_once('=')?;
+            Some((n.to_string(), t.parse::<f64>().ok()?))
+        })
+        .collect()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if log::set_logger(&StderrLog).is_ok() {
@@ -877,7 +891,7 @@ fn main() {
             Ok(presets) => {
                 println!("[probe --listall] {} entries:", presets.len());
                 for p in &presets {
-                    println!("  slot {:>3}  {}", p.slot, p.name);
+                    println!("  idx {:>3} · slot {:>3}  {}", p.slot, p.slot + 1, p.name);
                 }
                 return;
             }
@@ -2233,13 +2247,7 @@ fn main() {
             eprintln!("usage: probe --level-preset-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
             std::process::exit(2);
         }
-        let overrides: Vec<(String, f64)> = args[i + 5..]
-            .iter()
-            .filter_map(|a| {
-                let (n, t) = a.split_once('=')?;
-                Some((n.to_string(), t.parse::<f64>().ok()?))
-            })
-            .collect();
+        let overrides = parse_target_overrides(&args, i + 5);
         eprintln!(
             "[probe] level-preset-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
         );
@@ -2400,13 +2408,7 @@ fn main() {
             eprintln!("usage: probe --jointk-scenes <listIndex> <defaultTarget> <topology> <save:0|1> [Name=Target ...]");
             std::process::exit(2);
         }
-        let overrides: Vec<(String, f64)> = args[i + 5..]
-            .iter()
-            .filter_map(|a| {
-                let (n, t) = a.split_once('=')?;
-                Some((n.to_string(), t.parse::<f64>().ok()?))
-            })
-            .collect();
+        let overrides = parse_target_overrides(&args, i + 5);
         eprintln!(
             "[probe] jointk-scenes list_index={list_index} default={default_target} topology={topology} save={save} overrides={overrides:?}…"
         );
@@ -2630,7 +2632,7 @@ fn main() {
         Ok(presets) => {
             println!("[probe] OK — {} presets in My Presets:", presets.len());
             for p in presets.iter().take(20) {
-                println!("  slot {:>3}  {}", p.slot, p.name);
+                println!("  idx {:>3} · slot {:>3}  {}", p.slot, p.slot + 1, p.name);
             }
             if presets.len() > 20 {
                 println!("  … and {} more", presets.len() - 20);
@@ -2644,5 +2646,31 @@ fn main() {
             eprintln!("[probe] FAILED: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_target_overrides;
+
+    // The regression that aborted the probe arm: `from` past the end of `args` must be
+    // an empty override list, not a slice panic.
+    #[test]
+    fn overrides_from_past_end_is_empty() {
+        let args: Vec<String> = vec!["--level-preset-scenes".into(), "26".into()];
+        assert!(parse_target_overrides(&args, 7).is_empty());
+    }
+
+    #[test]
+    fn overrides_parse_name_target_pairs_and_skip_junk() {
+        let args: Vec<String> = ["a", "Clean=-23.5", "junk", "Base=-20"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = parse_target_overrides(&args, 1);
+        assert_eq!(
+            got,
+            vec![("Clean".to_string(), -23.5), ("Base".to_string(), -20.0)]
+        );
     }
 }
