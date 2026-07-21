@@ -134,8 +134,9 @@ pub fn run() {
         // App / Edit / Window submenus are rebuilt explicitly (Edit is load-bearing
         // — copy/paste in the rename fields ride its predefined items). The
         // non-affiliation notice lives in the standard "About TMP Companion" panel
-        // via AboutMetadata; the leveling explainer is in-app (Level tab), so there
-        // is no custom Help submenu.
+        // via AboutMetadata; the leveling explainer is in-app (Level tab). Help
+        // carries one item, "Report a Bug…", which just emits tmp://open-bug-report
+        // for the frontend to open its own dialog (see on_menu_event below).
         .menu(|handle| {
             use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
             let about = AboutMetadataBuilder::new()
@@ -184,9 +185,18 @@ pub fn run() {
                 .fullscreen()
                 .close_window()
                 .build()?;
+            let help = SubmenuBuilder::new(handle, "Help")
+                .text("report_bug", "Report a Bug…")
+                .build()?;
             MenuBuilder::new(handle)
-                .items(&[&app_menu, &edit, &window])
+                .items(&[&app_menu, &edit, &window, &help])
                 .build()
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == "report_bug" {
+                use tauri::Emitter;
+                let _ = app.emit("tmp://open-bug-report", ());
+            }
         })
         .setup(|app| {
             // Confirms the logger is live (and gives the log file a deterministic

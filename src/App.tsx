@@ -27,6 +27,7 @@ import { AlertBanner } from "./ui/primitives";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { DeviceStatus } from "./ui/DeviceStatus";
 import { Disclaimer } from "./views/Disclaimer";
+import { BugReportDialog } from "./views/BugReportDialog";
 import { LevelView } from "./views/level";
 import { DoctorView } from "./views/doctor";
 import { CopyView } from "./views/copy";
@@ -195,6 +196,20 @@ function AppShell() {
     };
   }, [attempt]);
 
+  // ── Help → "Report a Bug…" (native menu item, bootstrap.rs) ───────────────
+  const [bugReportOpen, setBugReportOpen] = useState(false);
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlisten = listen("tmp://open-bug-report", () => {
+      setBugReportOpen(true);
+    });
+    return () => {
+      void unlisten.then((f) => {
+        f();
+      });
+    };
+  }, []);
+
   // Manual retry (from the gate button) — forces another attempt immediately.
   const retry = useCallback(() => {
     setStatus("connecting");
@@ -230,6 +245,20 @@ function AppShell() {
     <DeviceStatus connected={connected} firmwareVersion={firmware} />
   );
 
+  // The bug-report dialog is a Help-menu-native affordance — it must mount
+  // regardless of the disclaimer gate, else a click on the disclaimer screen
+  // sets bugReportOpen with nothing rendered and the dialog surprise-opens
+  // the instant the disclaimer is accepted.
+  const bugReportDialog = bugReportOpen && (
+    <BugReportDialog
+      connected={connected}
+      firmware={firmware}
+      onClose={() => {
+        setBugReportOpen(false);
+      }}
+    />
+  );
+
   if (!disclaimerOk) {
     return (
       <div
@@ -244,6 +273,7 @@ function AppShell() {
         }}
       >
         <Disclaimer onAccept={acceptDisclaimer} />
+        {bugReportDialog}
       </div>
     );
   }
@@ -332,7 +362,6 @@ function AppShell() {
                 <SettingsView
                   connected={connected}
                   updater={updater}
-                  firmware={firmware}
                   initialCategory={settingsCategory}
                 />
               )}
@@ -343,6 +372,8 @@ function AppShell() {
 
       {/* Auto-update surface — the phase-driven toast/modal, above everything. */}
       <UpdateOverlay u={updater} />
+
+      {bugReportDialog}
     </div>
   );
 }
