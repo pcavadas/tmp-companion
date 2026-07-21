@@ -21,6 +21,14 @@ permissions:
   issues: write
   pull-requests: write
 
+# Keep husky's git hooks OFF this runner: `bun install` (prepare → husky) wires
+# .husky/pre-push into the checkout, so semantic-release's `git push --tags`
+# re-ran the LOCAL gate suite here and died — every tag push failed since the
+# hook landed (#84). ci.yml on the PR is the authoritative gate; HUSKY=0 makes
+# the prepare install a no-op so pushes from this job stay hook-free.
+env:
+  HUSKY: "0"
+
 jobs:
   release:
     runs-on: macos-14 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
