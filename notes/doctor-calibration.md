@@ -107,6 +107,24 @@ gating skips any band-keyed rule whose primary band the stimulus never
 excited (≥30 dB under its loudest band), protecting sparse takes (e.g.
 EBow-heavy) from verdicts in bands they never probed.
 
+**STATUS (2026-07-20) — DI confirmation sweep RAN (unattended; 11 calibrated
+profiles with stored captures existed all along):** `probe --doctor-calib`
+over 5 guitar presets × {synthetic humbucker, Telecaster-bridge DI,
+ES-335-bridge DI} on the stim-anchoring build. Raw DI band-shape skew vs
+synthetic is large (Tele: ~+13 dB Lows / +23 Mids / −21 Highs / −31 Air). On
+the one LINEAR preset in the set the anchor is EXACT — the subtracted
+correction matched the measured capture skew to ≤0.1 dB in every band (near
+verdict parity). On the 4 DRIVEN presets the chain compresses spectral
+contrast (transmits only \~half the Mids skew), so the full-subtraction anchor
+OVER-corrects (\~+11 dB at Mids → spurious `lost` on both DI stimuli). Verdict:
+this unattended replay is EXPLORATORY evidence only, not a threshold-derivation
+dataset — capture-space thresholds are re-derived only from an attended sweep;
+capture-space diagnosis stays PROVISIONAL — anchoring is necessary and exact
+for clean chains but not sufficient for driven ones; future work is a damped
+anchor (subtract α·skew, α<1, drive-aware) or capture-cohort thresholds from a
+wider sweep. (Sweep-side note: the calib report's `rule_metrics`/`tiltDbPerOct`
+bypassed the anchor — fix landing on the stim-anchoring branch.)
+
 **RESOLVED (2026-07-16) — the `balance()` dead-band contamination is
 structurally gone under the shipped metric.** The old bug: `balance()`
 subtracts the mean of ALL 6 bands, and in capture space the floor-riding

@@ -3185,10 +3185,13 @@ fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
 /// scenes (series / single / split-output) fall through to the plain joint-k (`jointk_one_scene`).
 /// Same signature + outcome shape as `level_scenes_oneshot`, so the command path swaps in.
 ///
-/// NOTE (HW-UNVALIDATED): muting a lane via `outputLevel`=0 assumes 0 is true silence and
-/// that the write lands on the per-scene overlay (not the base). Validate `probe --rebalance`
-/// before trusting the equal-solo balance; the final combined joint-k still hits the target
-/// either way. Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
+/// HW-validated (2026-07-20, preset "Bass Dual Amps", 2-amp merge): `probe --rebalance-scenes`
+/// Base @ −26 achieved −25.79 (+0.21, level 0.91); @ −23 honest clamp at −25.16/level 1.0.
+/// `probe --mute-floor` confirmed the muting assumption: both lanes muted = digital silence
+/// (ideal mute, zero bleed → trustworthy equal-solo balance; lane solos −31.3/−24.6), and
+/// `probe --mute-floor` correctly refuses a single-amp split-output preset ("needs a 2-amp
+/// merged parallel scene") — the leveller itself falls back to `jointk_one_scene` there.
+/// Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
 pub fn level_scenes_rebalance(
     slot: u32,
     jobs: &[SceneJob],
