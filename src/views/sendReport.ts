@@ -1,9 +1,9 @@
 // sendReport.ts — POSTs a bug report (description + identity meta + the tar
 // bundle) to the maintainer's Cloudflare Worker. Pure aside from `fetch`, so
-// it's unit-testable with fetch mocked; SupportSection owns all UI state and
+// it's unit-testable with fetch mocked; BugReportDialog owns all UI state and
 // the local-save fallback on a non-`ok` outcome.
 
-import { REPORT_ENDPOINT, REPORT_TOKEN } from "../../lib/reportEndpoint";
+import { REPORT_ENDPOINT, REPORT_TOKEN } from "../lib/reportEndpoint";
 
 /** Outer meta lets the Worker index a report without untarring; app/version
  * already ride inside the bundle's meta.json, so only firmware travels here. */

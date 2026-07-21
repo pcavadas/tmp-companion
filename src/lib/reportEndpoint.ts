@@ -3,7 +3,7 @@
 // Values come from the maintainer's `wrangler deploy` output (the Worker URL)
 // and its SHARED_TOKEN secret. An empty REPORT_ENDPOINT means sending is
 // treated as unavailable: the Send block is hidden and only the local-save
-// flow renders (see sendReport.ts / SupportSection.tsx), so the UI stays
+// flow renders (see sendReport.ts / BugReportDialog.tsx), so the UI stays
 // shippable if the endpoint is ever retired.
 
 export const REPORT_ENDPOINT =

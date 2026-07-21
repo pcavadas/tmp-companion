@@ -55,7 +55,6 @@ import { InstrumentRow } from "./InstrumentRow";
 import { InstrumentForm } from "./InstrumentForm";
 import { PlaybackLevelSection } from "./PlaybackLevelSection";
 import { AppUpdatesSection } from "./AppUpdatesSection";
-import { SupportSection } from "./SupportSection";
 
 // The wire target is name-only ({name, lufs}); the UI carries a transient `uid`
 // so React keys, drag-reorder, and the auto-rename of a freshly added row stay
@@ -169,9 +168,6 @@ const CATEGORIES: Category[] = [
 export interface SettingsViewProps {
   connected: boolean;
   updater: UpdaterApi;
-  /** Connected unit's firmware version (null while disconnected) — rides into the
-   *  support bundle's meta.json. */
-  firmware: string | null;
   /** Category to land on for this mount (e.g. the Level tab's "calibrate" cue
    *  jumping here) — read once at mount, not synced on later prop changes;
    *  omit for a plain tab entry, which defaults to "targets". */
@@ -181,7 +177,6 @@ export interface SettingsViewProps {
 export function SettingsView({
   connected,
   updater,
-  firmware,
   initialCategory,
 }: SettingsViewProps) {
   const { t } = useTheme();
@@ -656,7 +651,6 @@ export function SettingsView({
             {cat === "about" && (
               <div style={{ maxWidth: 560 }}>
                 <AppUpdatesSection updater={updater} />
-                <SupportSection connected={connected} firmware={firmware} />
               </div>
             )}
           </div>

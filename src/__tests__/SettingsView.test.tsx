@@ -69,11 +69,7 @@ function makeStubUpdater(): UpdaterApi {
 function renderView() {
   render(
     <ThemeProvider>
-      <SettingsView
-        connected={false}
-        updater={makeStubUpdater()}
-        firmware={null}
-      />
+      <SettingsView connected={false} updater={makeStubUpdater()} />
     </ThemeProvider>,
   );
 }
