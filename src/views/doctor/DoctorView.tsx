@@ -227,6 +227,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
           total={flow.run.total}
           done={flow.run.done}
           stopped={flow.run.stopped}
+          stopping={flow.run.stopping}
           instName={instNameForKey}
           onStop={flow.stopRun}
           onComplete={() => {

@@ -4,8 +4,11 @@
 // a per-sound status here; this renders the determinate progress + per-sound rows.
 // The run is READ-ONLY on the unit (a short test tone through each sound), so its
 // scrim is inert (never dismiss a device operation with a stray click). On a natural
-// finish it auto-advances to Results; a manual Stop is confirm-gated and keeps every
-// already-checked sound's result.
+// finish it auto-advances to Results, showing a static "done" marker in the footer
+// (no CTA competing with the auto-advance) — a manual Stop is confirm-gated, flips
+// the footer to "finishing current item…" immediately (the in-flight ~9s capture
+// still finishes), and shows a clickable "See results" once it lands. Mirrors
+// RunBody.tsx's stopping/done footer states.
 
 import { useEffect, useState } from "react";
 
@@ -36,6 +39,10 @@ export interface DoctorRunProps {
   total: number;
   done: boolean;
   stopped: boolean;
+  /** Stop requested; the in-flight sound is winding down (no row is truly
+   *  idle yet). Drives the "Stopping…" feedback so the user isn't left
+   *  staring at a "listening…" spinner with no acknowledgment. */
+  stopping: boolean;
   /** key → instrument display name (null when None — no chip). */
   instName: (key: string) => string | null;
   /** Stop the run (cancels the check; already-checked sounds keep results). */
@@ -51,6 +58,7 @@ export function DoctorRun({
   total,
   done,
   stopped,
+  stopping,
   instName,
   onStop,
   onComplete,
@@ -99,6 +107,7 @@ export function DoctorRun({
   const secsLeft = estimateSecsLeft(total - currentIndex, avgMs, now - last);
 
   const headerTitle = (): string => {
+    if (stopping) return "Stopping…";
     if (stopped) return "Check stopped";
     if (done) return "Check complete";
     return "Checking your sounds…";
@@ -221,7 +230,7 @@ export function DoctorRun({
         })}
       </div>
 
-      {confirm ? (
+      {confirm && !done ? (
         <ConfirmBar
           message="Stop the check? Checked sounds keep their results."
           onCancel={() => {
@@ -236,9 +245,9 @@ export function DoctorRun({
         <WizardFooter
           left={<span />}
           right={
-            // Read-only check: "See results" and Close would do the same thing,
-            // so both Stopped-early and Complete show one primary "See results".
-            done ? (
+            stopped ? (
+              // A manual stop landed — "See results" and Close would do the
+              // same thing, so this is the one clickable CTA.
               <Button
                 variant="primary"
                 small
@@ -247,6 +256,37 @@ export function DoctorRun({
               >
                 See results
               </Button>
+            ) : done ? (
+              // Natural finish — a static marker, not a button: useAutoAdvance
+              // is already navigating to Results a beat later, so a live CTA
+              // here would just be a flash that does the same thing on its own.
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: t.space4,
+                  fontFamily: t.mono,
+                  fontSize: 10.5,
+                  letterSpacing: "0.04em",
+                  color: t.mutedInk,
+                }}
+              >
+                <Icon name="check" size={13} stroke={t.good} strokeWidth={2} />
+                done
+              </span>
+            ) : stopping ? (
+              // Stop already requested — show the wind-down state, not a
+              // second Stop button.
+              <span
+                style={{
+                  fontFamily: t.mono,
+                  fontSize: 10.5,
+                  letterSpacing: "0.04em",
+                  color: t.mutedInk,
+                }}
+              >
+                finishing current item…
+              </span>
             ) : (
               <Button
                 variant="ghost"

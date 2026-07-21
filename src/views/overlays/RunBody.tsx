@@ -234,7 +234,7 @@ export function RunBody({
         })}
       </div>
 
-      {confirm ? (
+      {confirm && !done ? (
         <ConfirmBar
           message="Stop leveling? Progress so far stays saved."
           onCancel={() => {
