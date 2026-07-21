@@ -82,6 +82,8 @@ export function BugReportDialog({
     setBusy("save");
     setError(null);
     setSavedPath(null);
+    setReportId(null);
+    setSendFallbackPath(null);
     try {
       setSavedPath(await localSave());
     } catch (e) {
@@ -96,6 +98,7 @@ export function BugReportDialog({
     setError(null);
     setReportId(null);
     setSendFallbackPath(null);
+    setSavedPath(null);
     try {
       let outcome: SendReportOutcome = { ok: false };
       try {
@@ -241,6 +244,7 @@ export function BugReportDialog({
                 setDescription(e.target.value);
               }}
               placeholder="What happened? What did you expect?"
+              aria-label="What happened? What did you expect?"
               rows={4}
               style={plainInput(t, {
                 border: `0.5px solid ${t.hairlineStrong}`,

@@ -149,4 +149,33 @@ describe("BugReportDialog", () => {
     );
     expect(screen.getByRole("alert")).toHaveTextContent(path);
   });
+
+  it("a later save clears a prior send's report-ID message", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ reportId: 42 }),
+      }),
+    );
+    const path = "/Users/x/Downloads/tmp-companion-report-20260719-120000.tar";
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(new ArrayBuffer(8)) // send()'s build_support_bundle
+      .mockResolvedValueOnce({ path }); // save()'s save_support_bundle
+    renderDialog(false);
+
+    await user.type(
+      screen.getByPlaceholderText(/what happened/i),
+      "The level meter froze.",
+    );
+    await user.click(screen.getByRole("button", { name: /send report/i }));
+    expect(await screen.findByText(/Report #42 sent/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /save bundle/i }));
+    expect(
+      await screen.findByText(`Bundle saved to ${path}.`),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Report #42 sent/i)).not.toBeInTheDocument();
+  });
 });
