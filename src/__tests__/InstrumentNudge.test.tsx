@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupBody } from "../views/overlays/SetupBody";
@@ -31,7 +32,7 @@ const instrumentOptions: PickOption[] = [
 
 const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 
-function renderSetup(defaultInst: string) {
+function renderSetup(defaultInst: string, onCalibrate?: () => void) {
   return render(
     <ThemeProvider>
       <SetupBody
@@ -44,6 +45,7 @@ function renderSetup(defaultInst: string) {
         defaultTarget="Rhythm"
         onCancel={vi.fn()}
         onStart={vi.fn()}
+        onCalibrate={onCalibrate}
       />
     </ThemeProvider>,
   );
@@ -90,5 +92,22 @@ describe("InstrumentNudge rendering", () => {
     expect(screen.queryByText("calibrate")).toBeNull();
     expect(screen.queryByText("Calibrate")).toBeNull();
     expect(screen.queryByText(/for the best/)).toBeNull();
+  });
+});
+
+describe("CalibrateCue navigation", () => {
+  it("clicking the cue calls onCalibrate", async () => {
+    const user = userEvent.setup();
+    const onCalibrate = vi.fn();
+    renderSetup("tele", onCalibrate);
+    await user.click(screen.getByText("Calibrate"));
+    expect(onCalibrate).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders fine with no onCalibrate wired (optional prop)", async () => {
+    const user = userEvent.setup();
+    renderSetup("tele");
+    await user.click(screen.getByText("Calibrate"));
+    // no throw — a plain hint with no nav wired is a valid render.
   });
 });
