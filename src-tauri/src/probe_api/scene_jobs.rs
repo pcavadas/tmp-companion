@@ -315,8 +315,10 @@ pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 ///
 /// `saved_fallback` = the slot's field-8 saved preset JSON, used ONLY for the routing
 /// STRUCTURE when no live doc carries a complete `audioGraph.template`: a preset with a
-/// large audioGraph (many blocks) overruns the device's lean field-3 push (~3.4 KB fixed
-/// cut) in EVERY scene doc, so classification failed for the whole preset ("some presets
+/// large audioGraph (many blocks) overruns the device's LEAN-session field-3 push (~3.4 KB
+/// observed; a dense healthy session can deliver the full doc, but the prepass sessions
+/// empirically get the lean push) in EVERY scene doc, so classification failed for the
+/// whole preset ("some presets
 /// just never scene-level"). Routing is scene-invariant and the prepass `load_preset`
 /// materialized exactly the saved preset, so the saved base graph is authoritative for
 /// template + lane membership. Knob VALUES still come from the live per-scene docs.
@@ -406,8 +408,9 @@ pub(crate) fn build_scene_jobs(
 
 /// The routing-STRUCTURE fallback fetch for [`build_scene_jobs`]'s `saved_fallback`:
 /// fires ONLY when no live doc carries a complete `audioGraph.template` (the
-/// oversized-audioGraph class — the lean field-3 push is a fixed ~3.4 KB cut, HW-measured
-/// on fw 1.8.45, and a big graph overruns it in every scene doc). Reads the slot's
+/// oversized-audioGraph class — the LEAN-session field-3 push truncates at ~3.4 KB
+/// (HW-observed on fw 1.8.45; a dense session can push the full doc, but the prepass
+/// sessions empirically get the lean cut), and a big graph overruns it in every scene doc). Reads the slot's
 /// field-8 saved JSON on a fresh session (the prepass session just closed, so the
 /// HW reconnect gap is honored first). A failed read returns `None` — the caller then
 /// fails with the same honest "can't classify" error as before this fallback existed.

@@ -417,7 +417,8 @@ fn scene_docs_restore_scene_none_when_absent() {
 }
 
 // ── saved-structure fallback (the oversized-audioGraph class) ───────────────────────────
-// A preset whose audioGraph overruns the device's lean field-3 push (~3.4 KB fixed cut)
+// A preset whose audioGraph overruns the device's lean-session field-3 push (~3.4 KB
+// observed; the prepass sessions empirically get the lean cut)
 // loses `audioGraph.template` in EVERY live scene doc, which used to hard-fail the whole
 // preset ("some presets just never scene-level" — the JFF LP Hiwatt user report). The
 // field-8 saved JSON still carries the template (it sits at the end of audioGraph, well
