@@ -411,8 +411,12 @@ pub(crate) fn build_scene_jobs(
 /// oversized-audioGraph class — the LEAN-session field-3 push truncates at ~3.4 KB
 /// (HW-observed on fw 1.8.45; a dense session can push the full doc, but the prepass
 /// sessions empirically get the lean cut), and a big graph overruns it in every scene doc). Reads the slot's
-/// field-8 saved JSON on a fresh session (the prepass session just closed, so the
-/// HW reconnect gap is honored first). A failed read returns `None` — the caller then
+/// field-8 saved JSON on a fresh session — every call site already sleeps `RECONNECT_GAP_MS`
+/// right before calling this (the prepass session it just closed), so this function does NOT
+/// sleep again before its own read: doing so doubled the gap to 800 ms, landing right at the
+/// edge of the documented HID open-lockout window instead of safely under it. It sleeps ONCE,
+/// AFTER its own read, so the runner that opens next (`build_scene_jobs` is pure CPU) still
+/// gets a properly-spaced session boundary. A failed read returns `None` — the caller then
 /// fails with the same honest "can't classify" error as before this fallback existed.
 pub(crate) fn saved_structure_fallback(
     list_index: u32,
@@ -421,8 +425,7 @@ pub(crate) fn saved_structure_fallback(
     if structure_graph(docs).is_some() {
         return None;
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    match crate::commands::level_footswitch::read_slot_preset_parsed(list_index) {
+    let result = match crate::commands::level_footswitch::read_slot_preset_parsed(list_index) {
         Ok((preset, _, _)) => {
             log::info!(
                 "scene jobs slot {list_index}: live docs missed audioGraph.template — \
@@ -437,7 +440,9 @@ pub(crate) fn saved_structure_fallback(
             );
             None
         }
-    }
+    };
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    result
 }
 
 /// Un-engaged pre-pass for the app's batched scene leveling: ONE rich session
