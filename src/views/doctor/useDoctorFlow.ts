@@ -43,6 +43,9 @@ export interface DoctorRunState {
   total: number;
   done: boolean;
   stopped: boolean;
+  /** Stop requested; the in-flight check is still winding down (no row is
+   *  truly idle yet). Mirrors useLevelingFlow's RunState.stopping. */
+  stopping: boolean;
 }
 
 const EMPTY_RUN: DoctorRunState = {
@@ -52,6 +55,7 @@ const EMPTY_RUN: DoctorRunState = {
   total: 0,
   done: false,
   stopped: false,
+  stopping: false,
 };
 
 export interface UseDoctorFlowDeps {
@@ -160,6 +164,7 @@ export function useDoctorFlow({
         total: items.length,
         done: false,
         stopped: false,
+        stopping: false,
       });
 
       void doctorCheck(items, restoreListIndex, (p) => {
@@ -178,6 +183,7 @@ export function useDoctorFlow({
             ...prev,
             done: true,
             stopped: res.stopped,
+            stopping: false,
             currentIndex: prev.total,
           }));
         })
@@ -186,7 +192,12 @@ export function useDoctorFlow({
           // status). Record the error so the results stage surfaces a failure
           // notice rather than looking like an intentional Stop with no results.
           setError(e instanceof Error ? e.message : String(e));
-          setRun((prev) => ({ ...prev, done: true, stopped: true }));
+          setRun((prev) => ({
+            ...prev,
+            done: true,
+            stopped: true,
+            stopping: false,
+          }));
         })
         .finally(() => {
           runningRef.current = false;
@@ -197,8 +208,13 @@ export function useDoctorFlow({
 
   // Stop the in-flight check — already-checked sounds keep their results. The
   // backend resolves `doctor_check` with `stopped: true`, so the run lands
-  // done+stopped through the same path.
+  // done+stopped through the same path. `stopping` flips immediately so the
+  // UI can acknowledge the request before the in-flight ~9s capture winds
+  // down (mirrors useLevelingFlow's onRunCancel); the terminal `.then`/
+  // `.catch` above clear it — Doctor is ONE backend command for the whole
+  // run (no per-item publish loop to recompute it automatically).
   const stopRun = useCallback(() => {
+    setRun((r) => ({ ...r, stopping: true }));
     void cancelDoctorCheck();
   }, []);
 
