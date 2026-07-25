@@ -413,10 +413,14 @@ async fn e2e_clear_preset(
         }
         if e2e_online() {
             s.drain_until_quiet(250, 20)?;
-            if !probe_api::seed_scenario::slot_is_fixture_owned(&mut s, slot + 1) {
+            // Manifest OR content marker: a fixture a spec has levelled+saved has lost
+            // its injected markers (the device rewrites the body on save), and a
+            // marker-only check would refuse to clean up the harness's OWN preset —
+            // stranding it and blocking the next run's seed.
+            if !probe_api::seed_scenario::slot_is_fixture_owned_named(&mut s, slot, &expect_name) {
                 return Err(format!(
-                    "refusing to clear slot {slot}: '{expect_name}' matches by name but does \
-                     not carry the fixture content marker — not seed-owned"
+                    "refusing to clear slot {slot}: '{expect_name}' matches by name but this \
+                     harness has no record of seeding it — not seed-owned"
                 ));
             }
         }

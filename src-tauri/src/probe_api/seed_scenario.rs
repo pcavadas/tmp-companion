@@ -60,10 +60,87 @@ fn is_fixture_body(bytes: &[u8]) -> bool {
     FIXTURE_MARKERS.iter().any(|m| body.contains(m))
 }
 
-/// Field-8-read `device_slot` (1-based) and require a fixture marker — the one
-/// ownership probe the sweep, the target classification, and the e2e clear
-/// guard share. Callers must be on a QUIET line (`drain_until_quiet` first) —
-/// a field-8 read fired mid-flood is dropped device-side.
+// ── Seed manifest: the ownership signal that survives a spec's save ──────────
+//
+// A CONTENT marker cannot carry ownership on its own. `info.source_id` and the
+// `e2e00000-` scene uuids are fixture-INJECTED fields: the device rewrites the
+// preset body on `saveCurrentPreset`, dropping the unknown `source_id` and
+// regenerating scene uuids. So the moment a spec legitimately writes and saves a
+// fixture — `level.spec.ts` levels and saves "E2E Reference" at slot 400 — that
+// fixture reads as un-owned forever after. Both guards then refuse it: the
+// re-seed won't overwrite it AND teardown's guarded clear won't clean it, so it
+// strands and hard-blocks every later run at the seed step.
+//
+// HW-isolated 2026-07-25 (fw 1.8.45): seed → seed skips cleanly (`imported slots
+// []`, markers intact through IMPORT), while seed → level.spec.ts → seed refuses
+// on slot 400 ONLY — the single fixture the specs save. 401/402/403 stay owned.
+//
+// The fix is provenance recorded by the WRITER at import time. Machine-local file,
+// keyed slot → name; ownership is manifest-hit AND current-name match, so a slot
+// whose name has since changed is NOT blessed (still fail-closed). Residual risk
+// is unchanged from the pre-marker world: a user preset placed at a scratch slot
+// under the exact fixture name after a harness run. The scratch zone is documented
+// as harness-owned, so that is an accepted, named trade.
+
+/// Where the seed records what it placed. Env-overridable so tests never touch the
+/// real one; defaults alongside the runner's own logs (`scripts/e2e.sh` `LOG_DIR`).
+fn manifest_path() -> std::path::PathBuf {
+    std::env::var("TMP_E2E_SEED_MANIFEST")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()))
+                .join("tmp-companion-e2e")
+                .join("seeded-slots.json")
+        })
+}
+
+/// Merge `placed` (0-based list index → name) into the manifest. Best-effort: a
+/// manifest we fail to write only costs the NEXT run a manual clear — it must never
+/// fail a seed that already landed on the device.
+fn record_seeded(placed: &[(u32, String)]) {
+    if placed.is_empty() {
+        return;
+    }
+    let path = manifest_path();
+    let mut map = read_manifest();
+    for (slot, name) in placed {
+        map.insert(slot.to_string(), name.clone());
+    }
+    let ok = path
+        .parent()
+        .is_none_or(|d| std::fs::create_dir_all(d).is_ok())
+        && serde_json::to_vec(&map).is_ok_and(|b| std::fs::write(&path, b).is_ok());
+    if !ok {
+        eprintln!("[seed] could not record the seed manifest at {path:?} — a fixture saved by a spec may need a manual clear");
+    }
+}
+
+fn read_manifest() -> std::collections::BTreeMap<String, String> {
+    std::fs::read(manifest_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Did THIS machine's harness seed `list_index` under `name`? Pure given the file.
+fn manifest_owns(list_index: u32, name: &str) -> bool {
+    read_manifest()
+        .get(&list_index.to_string())
+        .is_some_and(|n| n == name)
+}
+
+/// Ownership probe shared by the sweep, the target classification, and the e2e
+/// clear guard: the seed manifest (survives a spec's save) OR the fixture content
+/// marker (covers a fixture seeded before this manifest existed, and any run whose
+/// manifest was wiped). `list_index` is 0-BASED — the same space as the clears it
+/// gates; the field-8 read takes `list_index + 1`. Callers must be on a QUIET line
+/// (`drain_until_quiet` first) — a read fired mid-flood is dropped device-side.
+pub(crate) fn slot_is_fixture_owned_named(s: &mut Session, list_index: u32, name: &str) -> bool {
+    manifest_owns(list_index, name) || slot_is_fixture_owned(s, list_index + 1)
+}
+
+/// Content-marker-only probe (`device_slot` is 1-BASED). Prefer
+/// [`slot_is_fixture_owned_named`] — this alone misses a fixture a spec has saved.
 pub(crate) fn slot_is_fixture_owned(s: &mut Session, device_slot: u32) -> bool {
     matches!(s.read_slot_preset_json(device_slot), Ok(Some(bytes)) if is_fixture_body(&bytes))
 }
@@ -86,7 +163,7 @@ fn sweep_on(
     s.drain_until_quiet(250, 20)?;
     let mut swept = Vec::new();
     for (slot, name) in strays {
-        let owned = slot_is_fixture_owned(s, slot + 1);
+        let owned = slot_is_fixture_owned_named(s, slot, &name);
         if !owned {
             eprintln!(
                 "[seed] slot {slot} ({name:?}) matches a scenario name but not a \
@@ -161,15 +238,33 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
             continue;
         }
         let e = entry.expect("occupied entries exist in the floored list");
-        let owned = e.name == p.name && slot_is_fixture_owned(&mut s, p.list_index + 1);
-        if !owned {
-            return Err(format!(
-                "target slot {} is occupied by {:?} and does not carry a fixture \
-                 content marker — refusing to seed over it (move that preset, then rerun)",
-                p.list_index, e.name
-            ));
+        let name_ok = e.name == p.name;
+        // PRISTINE: the body still carries the injected marker, so no spec has saved
+        // over it — byte-identical to what we would import. Skip (the old fast path).
+        let pristine = name_ok && slot_is_fixture_owned(&mut s, p.list_index + 1);
+        if pristine {
+            // Record it even though we're not importing: a verified fixture in place IS
+            // ours, and this is the only chance to say so while the marker is still
+            // readable. Without this, a slot seeded by an OLDER build (or by a run whose
+            // manifest was wiped) is skipped here, never recorded, and strands the first
+            // time a spec saves it — the exact bug, just one run later.
+            record_seeded(&[(p.list_index, p.name.clone())]);
+            continue;
         }
-        // Verified fixture already in place — nothing to redo for this slot.
+        // OURS BUT DIRTY: we seeded this slot, and the marker is gone — a spec levelled
+        // and saved it. Re-seed so the next spec gets a pristine fixture instead of the
+        // previous run's leftovers. This is the "clear at the start" arm; without it a
+        // manifest hit would silently bless stale, modified content.
+        if name_ok && manifest_owns(p.list_index, &p.name) {
+            to_seed.push(p);
+            continue;
+        }
+        return Err(format!(
+            "target slot {} is occupied by {:?}, which this harness did not seed \
+             (no manifest entry, no fixture content marker) — refusing to seed over it \
+             (move that preset, then rerun)",
+            p.list_index, e.name
+        ));
     }
     drop(s);
 
@@ -196,7 +291,9 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
         let still_safe = match &entry {
             None => true,
             Some(name) if session::is_empty_slot_name(name) => true,
-            Some(name) if *name == p.name => slot_is_fixture_owned(&mut s, p.list_index + 1),
+            Some(name) if *name == p.name => {
+                slot_is_fixture_owned_named(&mut s, p.list_index, name)
+            }
             Some(_) => false,
         };
         drop(s);
@@ -212,6 +309,9 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
         // rows, and the seed must conserve the device's open/close budget.
         let bytes = backup::xor_jld(p.preset_json.as_bytes());
         replace_inplace_with(p.list_index, &bytes, false)?;
+        // Record BEFORE anything can save over it — this is the ownership signal
+        // teardown will need once a spec has rewritten the body.
+        record_seeded(&[(p.list_index, p.name.clone())]);
         seeded.push(p.list_index);
     }
     Ok(SeedOutcome { swept, seeded })
@@ -237,6 +337,41 @@ pub fn probe_clear_strays() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stranding bug (HW 2026-07-25): once `level.spec.ts` levels and SAVES
+    /// "E2E Reference", the device rewrites the body and the fixture's injected
+    /// markers are gone — so a content-only ownership probe reports un-owned, the
+    /// re-seed refuses to overwrite it AND teardown refuses to clear it, and every
+    /// later online run dies at the seed step. The manifest is what survives that
+    /// save, so it must bless the slot with NO readable marker in the body at all.
+    /// Name-keyed, so a slot whose name has since changed stays fail-closed.
+    #[test]
+    fn manifest_owns_a_fixture_whose_body_no_longer_carries_a_marker() {
+        let dir =
+            std::env::temp_dir().join(format!("tmp-companion-seedmanifest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("seeded-slots.json");
+        std::env::set_var("TMP_E2E_SEED_MANIFEST", &path);
+        let _ = std::fs::remove_file(&path);
+
+        // Nothing recorded yet → not owned (a pre-seed run must never bless a slot).
+        assert!(!manifest_owns(400, "E2E Reference"));
+
+        record_seeded(&[(400, "E2E Reference".to_string())]);
+
+        // Owned by provenance alone — this is the case a body-marker probe misses.
+        assert!(manifest_owns(400, "E2E Reference"));
+        // A saved body really has lost its markers: the content probe says no.
+        assert!(!is_fixture_body(
+            br#"{"info":{"preset_id":"9f2c-device-generated"}}"#
+        ));
+        // Fail-closed on the axes that matter: wrong slot, and a renamed occupant.
+        assert!(!manifest_owns(401, "E2E Reference"));
+        assert!(!manifest_owns(400, "My Own Preset"));
+
+        std::env::remove_var("TMP_E2E_SEED_MANIFEST");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The stray classifier flags scenario names at the WRONG slot only — the
     /// legitimate scenario slots and real user presets are never candidates (the HW
