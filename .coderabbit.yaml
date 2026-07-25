@@ -17,13 +17,11 @@ reviews:
     base_branches:
       - main
 
-  # Generated + lockfile noise. A catalog-pipeline regen or a dep bump otherwise
-  # spends the review budget on hundreds of KB nothing human wrote.
-  path_filters:
-    - "!src/models/tmp-model-guide.json"
-    - "!src/**/*.generated.ts"
-    - "!bun.lock"
-    - "!src-tauri/Cargo.lock"
+  # NB: no path_filters here on purpose. Excluding the generated catalog JSON and the
+  # lockfiles is tempting for review budget, but an ALL-NEGATIONS list is only safe if
+  # CodeRabbit reads it as include-all-then-exclude; if it reads as include-nothing it
+  # silently disables review repo-wide. Nobody has complained about review budget, so
+  # the risk buys nothing. Add exclusions only alongside a positive pattern ("src/**").
 
   # Whole-PR pass. path_instructions below are per-hunk and can only judge lines the
   # diff ADDS; this one judges what the diff FAILED to add — the actual shipped-bug
