@@ -962,6 +962,51 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--set-scene-param") {
+        // --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>
+        // Pure WRITE (no measurement, no re-amp): set one block param and save. A
+        // numeric sceneSlot writes that scene's overlay (recall + Scene Edit); "base"
+        // writes the base/global value.
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let scene = match args.get(i + 2).map(String::as_str) {
+            Some("base") => Some(None),
+            Some(s) => s.parse::<u32>().ok().map(Some),
+            None => None,
+        };
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let node = args.get(i + 4).cloned().unwrap_or_default();
+        let param = args.get(i + 5).cloned().unwrap_or_default();
+        let value: f32 = args
+            .get(i + 6)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f32::NAN);
+        if slot == u32::MAX
+            || scene.is_none()
+            || group.is_empty()
+            || node.is_empty()
+            || param.is_empty()
+            || value.is_nan()
+        {
+            eprintln!("usage: probe --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>");
+            std::process::exit(2);
+        }
+        // Outer Option = "arg present and parseable"; inner = None for base, Some(n) for scene n.
+        let scene = scene.flatten();
+        match tmp_companion_lib::probe_set_scene_param(slot, scene, &group, &node, &param, value) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--levelblock") {
         // --levelblock <slot> <target_lufs> <groupId> <nodeId> <parameterId>  (stimulus via env)
         let slot: u32 = args

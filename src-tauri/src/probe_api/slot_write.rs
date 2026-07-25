@@ -3,6 +3,7 @@
 use super::songs::read_song_presets;
 use crate::bulk_cmd;
 use crate::bulkrun;
+use crate::leveller;
 use crate::library;
 use crate::proto;
 use crate::session;
@@ -773,4 +774,55 @@ fn restore_scratch(
         base_ol,
         scene_ol,
     )
+}
+
+/// Write ONE block parameter to a preset and persist it (`probe --set-scene-param`) —
+/// the repair seam for a preset whose scene overlay drifted. Routes through the
+/// leveller's own [`leveller::apply_level`] write path, so `scene = Some(n)` gets the
+/// supported per-scene treatment (scene recall → per-block Scene Edit →
+/// `changeParameter`) and `scene = None` writes the base/global value. `verify: false`,
+/// so no stimulus is read and re-amp is never engaged — this is a pure write.
+///
+/// TWO HW OBSERVATIONS from this arm's first use (fw 1.8.45, preset 028), recorded here
+/// because they are UNRECONCILED with existing docs — do not treat either as settled:
+/// (a) two consecutive single-param scene writes each appeared to snap the whole node's
+/// scene overlay back to its BASE values before applying the written param, which if
+/// confirmed on an AMP node would mean per-scene leveling discards that scene's other
+/// amp settings; this CONTRADICTS `notes/leveling.md` ("enabling scene mode is harmless
+/// in itself") and `leveller::set_knobs`, which blames a re-`load_scene` between per-knob
+/// writes instead. (b) `changeParameter` appears to carry a NORMALISED value: a written
+/// `tapTimeBPM` of 120.0 read back as 0.2599872. Both need a dedicated test on a scratch
+/// preset before any doc or product change is made on their basis.
+///
+/// ponytail: single-param, [0,1]-only. Both limits are the diagnostic's, not the
+/// device's — widen it (multi-param targets, real-unit encoding) only if a repair
+/// actually needs it.
+pub fn probe_set_scene_param(
+    slot: u32,
+    scene: Option<u32>,
+    group: &str,
+    node: &str,
+    param: &str,
+    value: f32,
+) -> Result<String, String> {
+    let knob = leveller::LevelKnob::Block {
+        group_id: group.to_string(),
+        node_id: node.to_string(),
+        parameter_id: param.to_string(),
+        scene_slot: scene,
+    };
+    let opts = leveller::LevelOptions {
+        save: true,
+        verify: false,
+        ..Default::default()
+    };
+    let (saved, _) = leveller::apply_level(slot, &[], &knob, value, opts, true)?;
+    Ok(format!(
+        "[probe --set-scene-param] slot {} · scene {} · {group}/{node}.{param} = {value:.4}  ⇒  {}\n",
+        slot + 1,
+        scene
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "base(global)".to_string()),
+        if saved { "SAVED" } else { "NOT SAVED" },
+    ))
 }
