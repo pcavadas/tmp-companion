@@ -22,8 +22,8 @@ from the changed one:
 Reading a hunk in isolation cannot catch any of these. So when a diff touches one
 stage, branch, or case, name its siblings and compare. The sets that keep drifting:
 
-- `views/overlays/{SetupBody,RunBody,SummaryBody}` — the wizard stages
-- `views/doctor/DoctorRun` vs `views/overlays/RunBody` — two run screens, one contract
+- `src/views/overlays/{SetupBody,RunBody,SummaryBody}` — the wizard stages
+- `src/views/doctor/DoctorRun` vs `src/views/overlays/RunBody` — two run screens, one contract
 - any `useXxxFlow` state machine — a flag added to one case must be consumed by all
 
 Report the gap citing both paths, and say which sibling has it. If the siblings agree,

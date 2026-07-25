@@ -42,7 +42,7 @@ reviews:
           For this PR:
           1. Name the siblings of every changed unit — the other stages of the same wizard, the other
              cases of the same state machine, the other branch of the same conditional, the other view
-             rendering the same flow (e.g. views/doctor/DoctorRun vs views/overlays/RunBody, or
+             rendering the same flow (e.g. src/views/doctor/DoctorRun vs src/views/overlays/RunBody, or
              SetupBody / RunBody / SummaryBody).
           2. For each guard, confirmation gate, cancel path, loading / stopping / error state, or
              cleanup present in a sibling but MISSING from the changed code, report it as a finding
