@@ -305,6 +305,99 @@ pub(crate) fn classify_scene_knobs(
 /// any finite value serves.
 pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 
+/// Cap on [`leveller::SceneJob::repair`]'s float params (excludes `bypass`, which always
+/// survives): the repair writes ride the SAME ~700 ms post-`loadScene` acceptance window
+/// as the leveled knob itself (HW-bisected, `probe --bisect-scene`), so an unbounded diff
+/// risks silently dropping writes past the cliff instead of repairing anything. A partial
+/// repair (the top-K most-divergent) is strictly better than none. UNLIKE the settle
+/// constants it shares a budget with, `3` is an asserted starting point, not itself
+/// HW-bisected — no `probe` recipe yet measures how many extra writes actually fit in the
+/// window under real load. Revisit if the B1 hardware check (a scratch preset with a
+/// multi-param scene overlay) shows either headroom to raise it or drops even at 3.
+const SCENE_REPAIR_MAX_PARAMS: usize = 3;
+
+/// `group_id`/`node_id`'s `dspUnitParameters` object in `doc` (`audioGraph.guitarNodes`
+/// only — leveling is guitar-chain only). Matches by `nodeId` (see `audiograph::node_id`).
+fn node_dsp_params<'a>(
+    doc: &'a serde_json::Value,
+    group_id: &str,
+    node_id: &str,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    crate::scenes::guitar_node(doc, group_id, node_id)?
+        .get("dspUnitParameters")?
+        .as_object()
+}
+
+/// Params on `group_id`/`node_id` that diverge between this scene's materialized doc and
+/// base, excluding `leveled_param` — the repair diff `SetNodeSceneEdit(node, true)`'s reseed
+/// (HW 3-cell isolation matrix, `probe_api/slot_write.rs`) makes necessary. `bypass` (bool,
+/// 0.0/1.0-encoded — see `leveller`'s `set_knob_value_only` dispatch) always survives; the
+/// remaining float params are capped at [`SCENE_REPAIR_MAX_PARAMS`] most-divergent by `|Δ|`,
+/// anything past the cap named in a `log::warn` and dropped. A node missing from either doc
+/// (truncated read) yields no repair for that node — never a partial/wrong guess.
+fn scene_repair_diff(
+    scene_doc: &serde_json::Value,
+    base_doc: &serde_json::Value,
+    group_id: &str,
+    node_id: &str,
+    leveled_param: &str,
+    scene_slot: u32,
+) -> Vec<(leveller::LevelKnob, f32)> {
+    let Some(scene_params) = node_dsp_params(scene_doc, group_id, node_id) else {
+        return Vec::new();
+    };
+    let Some(base_params) = node_dsp_params(base_doc, group_id, node_id) else {
+        return Vec::new();
+    };
+    let knob = |parameter_id: &str| leveller::LevelKnob::Block {
+        group_id: group_id.to_string(),
+        node_id: node_id.to_string(),
+        parameter_id: parameter_id.to_string(),
+        scene_slot: Some(scene_slot),
+    };
+    let mut bypass = None;
+    let mut floats: Vec<(&str, f32, f64)> = Vec::new(); // (param, value, |Δ|)
+    for (pname, sval) in scene_params {
+        if pname == leveled_param {
+            continue;
+        }
+        let Some(bval) = base_params.get(pname) else {
+            continue; // base has no such key — nothing to have been reseeded FROM
+        };
+        if pname == "bypass" {
+            if let (Some(s), Some(b)) = (sval.as_bool(), bval.as_bool()) {
+                if s != b {
+                    bypass = Some((knob("bypass"), if s { 1.0 } else { 0.0 }));
+                }
+            }
+        } else if let (Some(s), Some(b)) = (sval.as_f64(), bval.as_f64()) {
+            if (s - b).abs() > 1e-6 {
+                floats.push((pname, s as f32, (s - b).abs()));
+            }
+        }
+    }
+    floats.sort_by(|a, b| b.2.total_cmp(&a.2));
+    if floats.len() > SCENE_REPAIR_MAX_PARAMS {
+        let dropped: Vec<&str> = floats[SCENE_REPAIR_MAX_PARAMS..]
+            .iter()
+            .map(|(p, ..)| *p)
+            .collect();
+        log::warn!(
+            "scene repair: {group_id}/{node_id} scene {scene_slot} dropped {} diverging \
+             param(s) past the top-{SCENE_REPAIR_MAX_PARAMS} cap: {}",
+            dropped.len(),
+            dropped.join(", ")
+        );
+    }
+    let mut out: Vec<(leveller::LevelKnob, f32)> = floats
+        .into_iter()
+        .take(SCENE_REPAIR_MAX_PARAMS)
+        .map(|(pname, val, _)| (knob(pname), val))
+        .collect();
+    out.extend(bypass);
+    out
+}
+
 /// Build per-scene [`leveller::SceneJob`]s from the pre-pass docs, ROUTING-AWARE:
 /// classify each scene's amp set by position in the route graph (series=last amp;
 /// parallel-merged=one amp per lane → joint-k) via [`classify_scene_knobs`], taking
@@ -350,6 +443,10 @@ pub(crate) fn build_scene_jobs(
     // error — the whole preset can't be scene-leveled. Per-SCENE issues below become skip
     // jobs so one bad scene doesn't abort the batch.
     check_levelable_routing(&structure)?;
+    let base_doc = docs
+        .iter()
+        .find(|(s2, _)| *s2 >= session::BASE_SCENE_SLOT)
+        .and_then(|(_, d)| d.as_ref());
     let jobs = scene_slots
         .iter()
         .map(|scene| {
@@ -365,6 +462,25 @@ pub(crate) fn build_scene_jobs(
             };
             match classify_scene_knobs(&structure, &doc, candidates) {
                 Ok((triples, kind)) => {
+                    // Repair diff BEFORE `knobs` consumes `triples` — base itself never
+                    // needs one (`set_knobs` never enables Scene Edit for a base-only
+                    // target, so there's nothing to reseed).
+                    let repair: Vec<(leveller::LevelKnob, f32)> = match (scene_slot, base_doc) {
+                        (Some(s), Some(base_doc)) => triples
+                            .iter()
+                            .flat_map(|(group_id, node_id, _)| {
+                                scene_repair_diff(
+                                    &doc,
+                                    base_doc,
+                                    group_id,
+                                    node_id,
+                                    "outputLevel",
+                                    s,
+                                )
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
                     let knobs = triples
                         .into_iter()
                         .map(|(group_id, node_id, current)| {
@@ -391,6 +507,7 @@ pub(crate) fn build_scene_jobs(
                         knobs,
                         skip: None,
                         rebalanceable,
+                        repair,
                     }
                 }
                 Err(reason) => leveller::SceneJob {
@@ -399,6 +516,7 @@ pub(crate) fn build_scene_jobs(
                     knobs: Vec::new(),
                     skip: Some(reason),
                     rebalanceable: false,
+                    repair: Vec::new(),
                 },
             }
         })

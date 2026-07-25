@@ -312,6 +312,19 @@ impl SimDevice {
         self.state.lock().expect("sim lock").songs.clone()
     }
 
+    /// The value last written to `node`'s `bypass` via `changeParameter`'s BOOL path
+    /// (`ChangeParameter.boolVal`), or `None` if never written. Node-keyed only (matches
+    /// `bypass_writes`) — the sim's bypass model isn't scene-scoped.
+    #[cfg(test)]
+    pub fn bypass_write(&self, node: &str) -> Option<bool> {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .bypass_writes
+            .get(node)
+            .copied()
+    }
+
     /// Parse one request body and produce the device's framed reply reports.
     fn handle(&self, body: &[u8]) -> Vec<Vec<u8>> {
         let top = proto::parse(body);

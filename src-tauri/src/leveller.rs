@@ -1454,6 +1454,26 @@ fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<
             s.set_preset_level(value)?;
             Ok(())
         }
+        // `bypass` is a distinct wire message (`ChangeParameter.boolVal`, field 7) from
+        // every other block param (a plain float field) — see `Session::change_parameter`
+        // vs `change_parameter_bool`. A `SceneJob::repair` bypass entry rides the same
+        // `(LevelKnob, f32)` shape as every other repair param (0.0/1.0 encoding), so the
+        // dispatch lives here rather than widening `LevelKnob`. NOT the same shape as
+        // `capture_on_session`/`measure_knob_at`/`measure_fs_at`'s typed
+        // `&[(String, String, bool)]` force-bypass side channels — deliberately: those
+        // write BEFORE a separate connect/engage sequence, outside `set_knobs` entirely,
+        // while a repair bypass must ride INSIDE the same `set_knobs` batch as its node's
+        // leveled knob (same dedup, same scene-edit enable, same ~700 ms window) —
+        // widening `set_knobs`'s `targets: &[(&LevelKnob, f32)]` signature to carry a
+        // second, differently-typed side channel was the tradeoff the plan ruled out.
+        LevelKnob::Block {
+            group_id,
+            node_id,
+            parameter_id,
+            ..
+        } if parameter_id == "bypass" => {
+            s.change_parameter_bool(group_id, node_id, parameter_id, value != 0.0)
+        }
         LevelKnob::Block {
             group_id,
             node_id,
@@ -1507,6 +1527,10 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
     if let Some(scene) = scene {
         s.load_scene(scene)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+        // Dedupe by (group_id, node_id): a repair target adds MORE entries for the SAME
+        // node as its leveled knob, and re-enabling Scene Edit on an already-enabled node
+        // would itself re-trigger the reseed (HW 3-cell matrix) — not cosmetic.
+        let mut enabled: Vec<(&str, &str)> = Vec::new();
         for (k, _) in targets {
             if let LevelKnob::Block {
                 group_id,
@@ -1515,7 +1539,11 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
                 ..
             } = k
             {
-                s.set_node_scene_edit(group_id, node_id, true)?;
+                let key = (group_id.as_str(), node_id.as_str());
+                if !enabled.contains(&key) {
+                    s.set_node_scene_edit(group_id, node_id, true)?;
+                    enabled.push(key);
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
@@ -2323,6 +2351,21 @@ pub struct SceneJob {
     /// output) — the rebalance flow may adjust the lanes' mix. False for series, single
     /// amp, and split-OUTPUT scenes (separate physical outs have no shared mix).
     pub rebalanceable: bool,
+    /// Other params on the knob(s)' own node(s) that diverge between this scene's
+    /// materialized doc and base — repaired by an extra write RIGHT AFTER the leveled
+    /// knob, on every apply, because `SetNodeSceneEdit(node, true)` RESEEDS that node's
+    /// ENTIRE scene overlay from base (HW 3-cell isolation matrix, `probe_api/slot_write.rs`),
+    /// silently wiping any other already-scene-edited param on the same node — not just a
+    /// leak-by-order race. `build_scene_jobs` computes this from the scene vs. base doc,
+    /// excluding the param being leveled, capped at `SCENE_REPAIR_MAX_PARAMS` most-divergent
+    /// (a `log::warn` names anything dropped past the cap — the ~700 ms post-`loadScene`
+    /// write window bounds how much a single connection can safely carry). A `"bypass"`
+    /// entry (encoded 0.0/1.0) always survives the cap — see `set_knob_value_only`'s bool
+    /// dispatch — since the reseed's HW-proven scope is per-node, not per-param-type, and a
+    /// redundant correct-value bypass write is harmless where a dropped one is not. Empty
+    /// for a base-only job (`scene_slot: None` targets recall base, never enable Scene
+    /// Edit, so there is nothing to reseed).
+    pub repair: Vec<(LevelKnob, f32)>,
 }
 
 impl SceneJob {
@@ -2340,6 +2383,12 @@ impl SceneJob {
                 n.len()
             )),
         }
+    }
+
+    /// `repair` as borrowed `(&LevelKnob, f32)` pairs, ready to pass alongside the job's
+    /// own leveled knob refs into `apply_first_verified`/`correct_iter`.
+    fn repair_refs(&self) -> Vec<(&LevelKnob, f32)> {
+        self.repair.iter().map(|(k, v)| (k, *v)).collect()
     }
 }
 
@@ -2964,12 +3013,14 @@ fn jointk_one_scene(
     };
     let base: Vec<f32> = job.knobs.iter().map(|kt| kt.current).collect();
     let knob_refs: Vec<&LevelKnob> = job.knobs.iter().map(|kt| &kt.knob).collect();
+    let repair_refs = job.repair_refs();
     let expected_db = 20.0 * k_eff.max(1e-9).log10();
     let (v0, retry_writes) = apply_first_verified(
         slot,
         stimulus,
         &knob_refs,
         &levels,
+        &repair_refs,
         opts,
         expected_db,
         measured,
@@ -2986,6 +3037,7 @@ fn jointk_one_scene(
                 v0,
                 target_lufs,
                 defer,
+                &repair_refs,
             )?;
             (
                 c.lufs,
@@ -3020,6 +3072,27 @@ fn jointk_one_scene(
 /// 2 dB move. Below it a flat response is ambiguous with noise, so no retry fires.
 const SUSPECT_DROP_MIN_DB: f64 = 2.0;
 
+/// One `set_knobs` batch's targets: the job's own leveled knobs at `levels`, plus its
+/// scene's repair entries (other diverging params the reseed would otherwise wipe —
+/// `SceneJob::repair`'s doc) — appended, never merged into `levels` itself, which
+/// `correct_iter` scales by the correction factor and repair values must not ride.
+/// Shared by `apply_first_verified` and `correct_iter`'s `apply` closure, both of which
+/// call this on every device write (a secant iteration re-triggers the reseed just like
+/// the first apply, so repair must be resent every time, not just once).
+fn merge_repair_targets<'a>(
+    knobs: &[&'a LevelKnob],
+    levels: &[f32],
+    repair: &[(&'a LevelKnob, f32)],
+) -> Vec<(&'a LevelKnob, f32)> {
+    knobs
+        .iter()
+        .copied()
+        .zip(levels)
+        .map(|(k, &v)| (k, v))
+        .chain(repair.iter().copied())
+        .collect()
+}
+
 /// First verified apply with a ONE-SHOT dropped-write retry (scene paths). The device can
 /// silently drop a scene write (the ~700 ms post-`loadScene` acceptance window, HW
 /// `probe --bisect-scene`); without the retry a single drop reads as a flat response →
@@ -3028,21 +3101,18 @@ const SUSPECT_DROP_MIN_DB: f64 = 2.0;
 /// recall + write + verify — disambiguates: a drop lands on the retry; a genuine
 /// no-authority amp stays flat and takes the honest clamp downstream. Returns
 /// `(verify_lufs, retry_writes)`.
+#[allow(clippy::too_many_arguments)]
 fn apply_first_verified(
     slot: u32,
     stimulus: &[f32],
     knobs: &[&LevelKnob],
     levels: &[f32],
+    repair: &[(&LevelKnob, f32)],
     opts: LevelOptions,
     expected_db: f64,
     baseline_lufs: f64,
 ) -> Result<(Option<f64>, u32), String> {
-    let targets: Vec<(&LevelKnob, f32)> = knobs
-        .iter()
-        .copied()
-        .zip(levels)
-        .map(|(k, &v)| (k, v))
-        .collect();
+    let targets = merge_repair_targets(knobs, levels, repair);
     let v0 = apply_levels(slot, stimulus, &targets, opts, false)?.1;
     match v0 {
         Some(v)
@@ -3089,6 +3159,7 @@ fn correct_iter(
     v0: f64,
     target: f64,
     defer: bool,
+    repair: &[(&LevelKnob, f32)],
 ) -> Result<Correction, String> {
     let max_base = base
         .iter()
@@ -3107,12 +3178,7 @@ fn correct_iter(
             defer,
             ..Default::default()
         };
-        let targets: Vec<(&LevelKnob, f32)> = knobs
-            .iter()
-            .copied()
-            .zip(levels)
-            .map(|(k, &v)| (k, v))
-            .collect();
+        let targets = merge_repair_targets(knobs, levels, repair);
         Ok(apply_levels(slot, stimulus, &targets, opts, false)?.1)
     };
 
@@ -3460,12 +3526,14 @@ fn rebalance_one_scene(
     };
     let knob_refs = [&a.knob, &b.knob];
     let base = [la_bal, lb_bal];
+    let repair_refs = job.repair_refs();
     let expected_db = 20.0 * k_eff.max(1e-9).log10();
     let (v0, retry_writes) = apply_first_verified(
         slot,
         stimulus,
         &knob_refs,
         &levels,
+        &repair_refs,
         opts,
         expected_db,
         combined.integrated_lufs,
@@ -3482,6 +3550,7 @@ fn rebalance_one_scene(
                 v0,
                 target_lufs,
                 defer,
+                &repair_refs,
             )?;
             (c.lufs, c.levels, c.clamp_reason, c.writes)
         }
@@ -4641,5 +4710,128 @@ mod tests {
         assert!(ev.iter().any(
             |e| matches!(e, crate::sim_device::SimEvent::ChangeParameter { node, .. } if node == "amp2")
         ));
+    }
+
+    // B1: `SetNodeSceneEdit(node, true)` reseeds a node's ENTIRE scene overlay from base
+    // (HW 3-cell isolation matrix, `probe_api/slot_write.rs`), so leveling ONE param on a
+    // node must not silently wipe another already-scene-edited param on the SAME node. A
+    // `SceneJob::repair` entry riding alongside the leveled knob in the same `set_knobs`
+    // batch is the fix — it lands AFTER the (deduped) enable, same as the leveled knob.
+    #[test]
+    fn set_knobs_repair_entry_survives_the_scene_edit_reseed() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(0).expect("load_preset");
+        // Base gain = 0.7; scene 2 already carries its own scene-edited gain = 0.4.
+        s.load_scene(crate::session::BASE_SCENE_SLOT)
+            .expect("recall base");
+        s.change_parameter("G1", "amp", "gain", 0.7)
+            .expect("write base gain");
+        s.load_scene(2).expect("recall scene 2");
+        s.set_node_scene_edit("G1", "amp", true)
+            .expect("enable scene edit");
+        s.change_parameter("G1", "amp", "gain", 0.4)
+            .expect("write scene gain");
+
+        // Level a DIFFERENT param on the SAME node in scene 2 — the write that would
+        // normally re-enable Scene Edit and reseed "gain" back to base's 0.7 — paired
+        // with a repair entry for "gain" so it survives at 0.4.
+        let level_knob = LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "outputLevel".into(),
+            scene_slot: Some(2),
+        };
+        let repair_knob = LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "gain".into(),
+            scene_slot: Some(2),
+        };
+        set_knobs(&mut s, &[(&level_knob, 0.9), (&repair_knob, 0.4)]).expect("set_knobs");
+
+        let ev = sim.events();
+        let last_gain = ev.iter().rev().find_map(|e| match e {
+            crate::sim_device::SimEvent::ChangeParameter {
+                scene: 2,
+                group,
+                node,
+                param,
+                value,
+            } if group == "G1" && node == "amp" && param == "gain" => Some(*value),
+            _ => None,
+        });
+        assert_eq!(
+            last_gain,
+            Some(0.4),
+            "the repair entry must survive the scene-edit reseed, not revert to base's 0.7: {ev:?}"
+        );
+    }
+
+    // Two repair entries on the SAME node must not each re-enable Scene Edit — that would
+    // itself re-trigger the reseed inside the very batch meant to repair it.
+    #[test]
+    fn set_knobs_dedupes_scene_edit_enable_across_repair_targets_on_one_node() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(0).expect("load_preset");
+        let level_knob = LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "outputLevel".into(),
+            scene_slot: Some(2),
+        };
+        let gain_knob = LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "gain".into(),
+            scene_slot: Some(2),
+        };
+        let tone_knob = LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "tone".into(),
+            scene_slot: Some(2),
+        };
+        set_knobs(
+            &mut s,
+            &[(&level_knob, 0.9), (&gain_knob, 0.4), (&tone_knob, 0.5)],
+        )
+        .expect("set_knobs");
+        let ev = sim.events();
+        let enables = ev
+            .iter()
+            .filter(|e| {
+                matches!(e, crate::sim_device::SimEvent::SceneEdit { group, node, enable }
+                    if group == "G1" && node == "amp" && *enable)
+            })
+            .count();
+        assert_eq!(
+            enables, 1,
+            "three targets on ONE node must share a single enable, not one each: {ev:?}"
+        );
+    }
+
+    // A `"bypass"` repair entry (0.0/1.0-encoded) must route through `change_parameter_bool`
+    // — the WIRE message is different (`ChangeParameter.boolVal`, field 7) from every other
+    // block param, so smuggling it through the float `change_parameter` call would set the
+    // wrong field and silently fail to write bypass at all.
+    #[test]
+    fn set_knob_value_only_routes_bypass_through_the_bool_wire_call() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(0).expect("load_preset");
+        let bypass_knob = LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "bypass".into(),
+            scene_slot: None,
+        };
+        set_knob(&mut s, &bypass_knob, 1.0).expect("set_knob");
+        assert_eq!(
+            sim.bypass_write("amp"),
+            Some(true),
+            "a bypass repair value must land as a BOOL write, not a float dspUnitParameters one"
+        );
     }
 }

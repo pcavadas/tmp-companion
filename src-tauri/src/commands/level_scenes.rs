@@ -279,7 +279,15 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
-        let scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
+        let mut scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
+        // Force-append base so `build_scene_jobs` always has a base doc to diff a scene's
+        // OTHER params against (the scene-edit-enable reseed repair, `SceneJob::repair`) —
+        // stripped back out below (before the wire-job match) when the user never asked to
+        // level base itself.
+        let base_requested = scene_slots.contains(&session::BASE_SCENE_SLOT);
+        if !base_requested {
+            scene_slots.push(session::BASE_SCENE_SLOT);
+        }
         let run_batched = |save_run: bool| -> Result<Vec<leveller::BatchedSceneOutcome>, String> {
             // Un-engaged pre-pass (scene docs → jobs), then the ONE-SHOT runner:
             // amp `outputLevel` is linear in dB, so each scene is measured once at a
@@ -309,6 +317,9 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 base_target,
                 saved.as_ref(),
             )?;
+            if !base_requested {
+                scene_jobs.retain(|sj| sj.scene_slot != session::BASE_SCENE_SLOT);
+            }
             // Error on ANY slot mismatch between the built jobs and the wire jobs — a silent
             // default (especially NaN, which `.min(k_cap)` would collapse to the cap and slam
             // the amp) must never reach a solve.
