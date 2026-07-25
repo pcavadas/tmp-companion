@@ -2,7 +2,7 @@
 //
 // Revealed under a PresetRow when its caret is expanded. Grid `34px 1fr`, height 38,
 // indented to align under the preset name. The whole row toggles that one scene key.
-//   • Base child: tag BASE (muted), name "Base", sub "main preset sound".
+//   • Base child: tag BASE (muted), name "Base Preset", sub "main preset sound".
 //   • FS child:   tag FS{n} (terracotta), name = scene name, sub "footswitch scene".
 
 import { useTheme } from "../../theme/ThemeContext";
