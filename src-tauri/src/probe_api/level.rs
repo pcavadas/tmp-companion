@@ -97,22 +97,10 @@ pub fn probe_measure_current_lufs(
 ) -> Result<String, String> {
     let stim_path = probe_stimulus_path(topology_id)?;
     let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
-    if let Some(slot) = slot {
-        {
-            let mut s = Session::connect()?;
-            s.load_preset(slot)?;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(800));
-    }
-    let measure = || -> Result<lufs::Loudness, String> {
-        let mut s = Session::connect()?;
-        if let Some(scene) = scene_slot {
-            s.load_scene(scene)?;
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        leveller::engage_measure_disengage(&mut s, &stim)
-    };
-    let loud = leveller::require_live(measure, &stim)?;
+    let loud = leveller::require_live(
+        || leveller::capture_loudness_asis(slot, scene_slot, &stim),
+        &stim,
+    )?;
     Ok(format!(
         "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}",
         slot.map(|s| s.to_string())

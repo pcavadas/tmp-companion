@@ -560,6 +560,33 @@ pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio
     )
 }
 
+/// HW-probe MEASURE seam: the captured loudness of `slot` (or of the CURRENT
+/// preset when `slot` is `None`) at its OWN stored level, optionally after
+/// recalling the 0-based `scenes[]` wire index `scene`.
+///
+/// Delegates to `capture_full_at` so a diagnostic arm exercises the EXACT
+/// production choreography (lean handshakes + the HW-validated settles) rather
+/// than a parallel copy of it. `probe --measure-scene` used to hand-roll its own
+/// — two back-to-back FULL `Session::connect()` handshakes with an early engage —
+/// which drops `set_reamp_mode(true)` and yields silent captures that read as
+/// device flakiness (the "no signal captured" class in `notes/leveling.md`).
+pub fn capture_loudness_asis(
+    slot: Option<u32>,
+    scene: Option<u32>,
+    stimulus: &[f32],
+) -> Result<lufs::Loudness, String> {
+    let cap = capture_full_at(
+        slot.unwrap_or(0), // unused when skip_load
+        scene,
+        &[],
+        stimulus,
+        None,
+        CAPTURE_TAIL_MS,
+        slot.is_none(),
+    );
+    loudest_loudness(cap)
+}
+
 /// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the
 /// `stimulus` at `ref_level`, and return the loudest captured channel's raw samples +
 /// rate (for FFT / band analysis). Mirrors the validated `measure_c` + `measure_knob_at`
