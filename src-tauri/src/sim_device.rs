@@ -34,7 +34,7 @@ use crate::proto;
 /// scene — that is why the offline capture model's `outputLevel` term reads back only the
 /// override written for the scene being measured (a scene with no override measures its
 /// stored knob → a 0 LU shift, the locked convention).
-const SCENE_BASE: i64 = -1;
+pub(crate) const SCENE_BASE: i64 = -1;
 
 /// FenderMessageTMS field carrying a `PresetMessage`.
 const TMS_PRESET: u32 = 2;

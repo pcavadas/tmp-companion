@@ -660,7 +660,7 @@ describe("DoctorResults — prescription lifecycle", () => {
     expect(await screen.findByText("Saved to the preset.")).toBeInTheDocument();
     // The save re-applies the SAME ops the card applied (the structural-safety
     // redesign: doctor_save never persists the live edit buffer).
-    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", [
+    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", null, [
       { kind: "param", groupId: "g", nodeId: "n", param: "hpf", value: 90 },
     ]);
   });
@@ -684,6 +684,16 @@ describe("DoctorResults — prescription lifecycle", () => {
         footswitch: null,
       }),
     );
+
+    // The save must recall the SAME scene, not omit it — omitting it would let
+    // doctor_save's rebuild-from-scratch land the ops in whatever scene the
+    // preset's saved lastLoadedScene happens to be, not the diagnosed scene 0.
+    await user.click(screen.getByText("I've backed up with Pro Control"));
+    await user.click(screen.getByRole("button", { name: /save to preset/i }));
+    expect(await screen.findByText("Saved to the preset.")).toBeInTheDocument();
+    expect(doctorSave).toHaveBeenCalledWith(1, "Muddy Rhythm", 0, [
+      { kind: "param", groupId: "g", nodeId: "verb", param: "mix", value: 25 },
+    ]);
   });
 
   it("discards an applied prescription back to draft", async () => {

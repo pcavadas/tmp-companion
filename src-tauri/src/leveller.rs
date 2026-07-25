@@ -525,7 +525,27 @@ fn capture_full_at(
         s.load_scene(scene)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
-    // Force-bypass isolation AFTER the scene recall, BEFORE the presetLevel set +
+    capture_on_session(&mut s, force_bypass, stimulus, ref_level, tail_ms)
+}
+
+/// Force-bypass isolation → optional reference level → engage → `reamp_capture` →
+/// guaranteed re-amp off, on an ALREADY-OPEN session. Does NOT load a preset or
+/// recall a scene — the caller does that first, if at all, since re-`load_scene`ing
+/// between writes reverts the prior write's unsaved value (`set_knobs`'s doc); this
+/// seam exists precisely so a caller that has ALREADY applied unsaved edits on `s`
+/// (Doctor's `ops_session`) can capture them without a further recall silently
+/// discarding them. Shared tail of `capture_full_at` (which recalls the scene,
+/// then calls this) and `doctor_capture_on_session` (used by
+/// `commands::doctor::doctor_apply`'s step (c), on the session step (b) just
+/// wrote to).
+pub(crate) fn capture_on_session(
+    s: &mut Session,
+    force_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+    tail_ms: u64,
+) -> Result<audio::Capture, String> {
+    // Force-bypass isolation AFTER any scene recall, BEFORE the presetLevel set +
     // engage (the `measure_knob_at` ordering): a scene load would re-assert the
     // scene's own bypass state, so isolation must land after it.
     for (g, n, byp) in force_bypass {
@@ -534,7 +554,7 @@ fn capture_full_at(
     // `None` = capture at the preset's OWN stored level (Doctor's apply A/B),
     // leaving the edit buffer's presetLevel untouched.
     if let Some(ref_level) = ref_level {
-        set_knob(&mut s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
+        set_knob(s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
     let _ = s.set_reamp_mode(true)?;
@@ -625,7 +645,7 @@ pub fn doctor_capture(
     tail_ms: u64,
     skip_load: bool,
 ) -> Result<(Vec<f32>, u32), String> {
-    let cap = capture_full_at(
+    Ok(to_stereo(capture_full_at(
         slot,
         scene,
         force_bypass,
@@ -633,9 +653,16 @@ pub fn doctor_capture(
         ref_level,
         tail_ms,
         skip_load,
-    )?;
+    )?))
+}
+
+/// Deterministic stereo mixdown (`Capture::stereo_mix` — average of USB-Out 1/2,
+/// not the leveling path's argmax `loudest_channel`, which can flip L/R across
+/// runs on a stereo preset and flip spectral verdicts with it) — the shared tail
+/// of every Doctor capture seam.
+fn to_stereo(cap: audio::Capture) -> (Vec<f32>, u32) {
     let sr = cap.sample_rate;
-    Ok((cap.stereo_mix(), sr))
+    (cap.stereo_mix(), sr)
 }
 
 /// Doctor A/B AFTER-clip seam: capture the CURRENT live edit-buffer state WITHOUT
@@ -665,7 +692,7 @@ pub fn doctor_capture_current(
     tail_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-    let cap = capture_full_at(
+    Ok(to_stereo(capture_full_at(
         0, // slot unused: skip_load
         scene,
         force_bypass,
@@ -673,9 +700,29 @@ pub fn doctor_capture_current(
         ref_level,
         tail_ms,
         true,
-    )?;
-    let sr = cap.sample_rate;
-    Ok((cap.stereo_mix(), sr))
+    )?))
+}
+
+/// Doctor A/B AFTER-clip seam on an ALREADY-OPEN session — no load, no scene
+/// recall. Used ONLY by `doctor_apply`'s step (c), which must capture on the
+/// SAME session `ops_session` just applied the prescription ops to: a fresh
+/// reconnect (what `doctor_capture_current` does) would recall the scene again,
+/// reverting those unsaved ops before this capture ever ran and silently
+/// rendering an identical AFTER clip. Stereo mixdown: see `to_stereo`.
+pub fn doctor_capture_on_session(
+    s: &mut Session,
+    force_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+    tail_ms: u64,
+) -> Result<(Vec<f32>, u32), String> {
+    Ok(to_stereo(capture_on_session(
+        s,
+        force_bypass,
+        stimulus,
+        ref_level,
+        tail_ms,
+    )?))
 }
 
 /// MEASURE seam for scene leveling: load `slot`, then for each scene in

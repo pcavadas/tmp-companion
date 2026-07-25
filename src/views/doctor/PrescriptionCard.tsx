@@ -235,7 +235,7 @@ export function PrescriptionCard({
     setBusy(true);
     setError(null);
     try {
-      await doctorSave(listIndex, presetName, appliedOps);
+      await doctorSave(listIndex, presetName, soundScene, appliedOps);
       setPhase("saved");
       lock.release(cardId);
     } catch (e) {

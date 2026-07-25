@@ -333,8 +333,13 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     await doctorApply(job);
     expectCall("doctor_apply", { job });
     invokeMock.mockClear();
-    await doctorSave(3, "Synth", ops);
-    expectCall("doctor_save", { listIndex: 3, expectName: "Synth", ops });
+    await doctorSave(3, "Synth", 2, ops);
+    expectCall("doctor_save", {
+      listIndex: 3,
+      expectName: "Synth",
+      scene: 2,
+      ops,
+    });
     invokeMock.mockClear();
     await doctorDiscard(3);
     expectCall("doctor_discard", { listIndex: 3 });

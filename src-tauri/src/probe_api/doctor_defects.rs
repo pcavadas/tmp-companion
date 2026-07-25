@@ -209,7 +209,8 @@ fn run_recipe(
     }
 
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let mut ops_s = crate::commands::doctor::ops_session(slot, preset_name, &recipe.ops, "inject")?;
+    let mut ops_s =
+        crate::commands::doctor::ops_session(slot, preset_name, None, &recipe.ops, "inject")?;
     let _ = ops_s.pump_collect(700);
     let after_tail_ms = ops_s
         .current_preset_value()
