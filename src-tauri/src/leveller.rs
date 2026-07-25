@@ -2020,6 +2020,19 @@ pub fn level_footswitch(
 /// lets it lapse; HW `probe --repro-chunked`). Each write keeps its confirm gate
 /// (field-54 echo / read-back, retry-once, never save on `presetError`); ANY
 /// unconfirmed write aborts BEFORE the save, so nothing half-applied persists.
+///
+/// KNOWN GAP (deliberately NOT fixed here, unlike `set_knob`/`set_knobs`/
+/// `capture_full_at`): `FsWrite::Bake`'s writes are base-context `changeParameter`
+/// calls with no preceding `load_scene`, so they're exposed to the same
+/// leaks-to-`lastLoadedScene` bug those seams fix. A single `load_scene
+/// (BASE_SCENE_SLOT)` before the `pending` loop would close it — BUT `pending`
+/// can carry several confirm-gated writes (`FsWrite::Assign`'s own retry-once
+/// already costs up to 2×(set + 3×200 ms poll) ≈ 1.8 s for ONE item), and the
+/// device silently drops a scene write past ~700 ms after `loadScene`
+/// (`SETTLE_AFTER_SCENE_EDIT_MS`'s doc). Adding the recall without first
+/// HW-bisecting the batch's real elapsed time risks a WORSE regression: later
+/// items in a multi-switch batch silently failing to land instead of the
+/// current wrong-scene bug. Land the recall in its own HW-verified commit.
 pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<(), String> {
     if pending.is_empty() {
         return Ok(());
