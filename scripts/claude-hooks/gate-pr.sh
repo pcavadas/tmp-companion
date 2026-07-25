@@ -8,8 +8,12 @@
 #     fresh ONLINE stamp (the online e2e lane must have run)
 # Exit 2 = block + show stderr to Claude.
 #
-# Reads the tool-call JSON on stdin. bash 3.2-safe. Resolves the repo via
-# CLAUDE_PROJECT_DIR (set by Claude Code) so it works from root or a worktree.
+# Reads the tool-call JSON on stdin. bash 3.2-safe. Resolves the repo from the
+# INVOKING cwd's git top level, because gates.sh stamps are per-worktree: in a
+# worktree session CLAUDE_PROJECT_DIR still points at the MAIN checkout, so
+# using it checked a tree that wasn't the one being PR'd — a green worktree got
+# blocked by the main checkout's missing stamp. CLAUDE_PROJECT_DIR stays the
+# fallback for a hook fired from outside any repo.
 
 set -euo pipefail
 
@@ -29,7 +33,8 @@ if ! printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+([^[:space:]]+[[:space:]]+)*pr
   exit 0
 fi
 
-repo="${CLAUDE_PROJECT_DIR:-.}"
+repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$repo" ] || repo="${CLAUDE_PROJECT_DIR:-.}"
 gates="$repo/scripts/gates.sh"
 if [ ! -x "$gates" ]; then
   # Not our repo / gates not installed — don't block.
