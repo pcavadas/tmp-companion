@@ -1660,6 +1660,7 @@ pub struct FootswitchWriteSpec {
     pub custom_label: String,
     pub link_group: u32,
     pub is_active: bool,
+    pub switch_type: u32,
 }
 
 /// How `level_footswitch` persists the solved value.
@@ -2059,7 +2060,7 @@ pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<
                     "func": "param", "groupId": group, "nodeId": node, "parameterId": param,
                     "valueA": p.value, "valueB": value_b, "valueType": 2,
                     "colorA": spec.color_a, "colorB": spec.color_b,
-                    "customLabel": spec.custom_label, "switchType": 0,
+                    "customLabel": spec.custom_label, "switchType": spec.switch_type,
                     "isActive": spec.is_active, "linkGroup": spec.link_group
                 })
                 .to_string();
