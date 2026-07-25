@@ -77,10 +77,17 @@ fn is_fixture_body(bytes: &[u8]) -> bool {
 //
 // The fix is provenance recorded by the WRITER at import time. Machine-local file,
 // keyed slot → name; ownership is manifest-hit AND current-name match, so a slot
-// whose name has since changed is NOT blessed (still fail-closed). Residual risk
-// is unchanged from the pre-marker world: a user preset placed at a scratch slot
-// under the exact fixture name after a harness run. The scratch zone is documented
-// as harness-owned, so that is an accepted, named trade.
+// whose name has since changed is NOT blessed (still fail-closed).
+//
+// The claim is a LEASE, not a deed: `forget_seeded` drops it the moment the fixture
+// is verifiably cleared, so it never outlives what it describes. That matters — an
+// immortal claim would bless whatever occupies a scratch slot next (e.g. a Pro
+// Control backup restore putting a levelled, marker-free fixture back), letting the
+// harness overwrite and delete content the marker-only guard used to protect. With
+// the lease, ownership is claimed and released inside exactly the window the harness
+// genuinely owns the slot, and the residual risk really is the pre-marker one: a
+// preset placed at a scratch slot, under the exact fixture name, WHILE a run holds
+// the lease. The scratch zone is documented as harness-owned — an accepted trade.
 
 /// Where the seed records what it placed. Env-overridable so tests never touch the
 /// real one; defaults alongside the runner's own logs (`scripts/e2e.sh` `LOG_DIR`).
@@ -94,24 +101,41 @@ fn manifest_path() -> std::path::PathBuf {
         })
 }
 
-/// Merge `placed` (0-based list index → name) into the manifest. Best-effort: a
-/// manifest we fail to write only costs the NEXT run a manual clear — it must never
-/// fail a seed that already landed on the device.
-fn record_seeded(placed: &[(u32, String)]) {
-    if placed.is_empty() {
-        return;
-    }
-    let path = manifest_path();
+/// Claim `list_index` (0-based) under `name`. Best-effort: a manifest we fail to write
+/// only costs the NEXT run a manual clear — it must never fail a seed that already
+/// landed on the device.
+fn record_seeded(list_index: u32, name: &str) {
     let mut map = read_manifest();
-    for (slot, name) in placed {
-        map.insert(slot.to_string(), name.clone());
+    map.insert(list_index.to_string(), name.to_string());
+    write_manifest(&map);
+}
+
+/// Release the claim on `list_index` — called ONLY after a VERIFIED successful clear.
+/// The claim is a LEASE, not a deed: it must not outlive the fixture it describes.
+/// Left immortal, a stale entry would bless whatever later occupies a scratch slot —
+/// e.g. a Pro Control backup restore putting a levelled (marker-free) fixture back —
+/// and the harness would then overwrite and delete content the marker-only guard used
+/// to protect. Pruning only on SUCCESS matters: dropping the claim before/despite a
+/// failed clear would strand the slot with neither manifest nor marker, which is the
+/// original bug.
+// Its one production caller (`e2e_server::e2e_clear_preset`) is behind `--features e2e`,
+// so a plain lib build sees no user; the unit test below is the other caller.
+#[allow(dead_code)]
+pub(crate) fn forget_seeded(list_index: u32) {
+    let mut map = read_manifest();
+    if map.remove(&list_index.to_string()).is_some() {
+        write_manifest(&map);
     }
+}
+
+fn write_manifest(map: &std::collections::BTreeMap<String, String>) {
+    let path = manifest_path();
     let ok = path
         .parent()
         .is_none_or(|d| std::fs::create_dir_all(d).is_ok())
-        && serde_json::to_vec(&map).is_ok_and(|b| std::fs::write(&path, b).is_ok());
+        && serde_json::to_vec(map).is_ok_and(|b| std::fs::write(&path, b).is_ok());
     if !ok {
-        eprintln!("[seed] could not record the seed manifest at {path:?} — a fixture saved by a spec may need a manual clear");
+        eprintln!("[seed] could not write the seed manifest at {path:?} — a fixture saved by a spec may need a manual clear");
     }
 }
 
@@ -129,20 +153,25 @@ fn manifest_owns(list_index: u32, name: &str) -> bool {
         .is_some_and(|n| n == name)
 }
 
-/// Ownership probe shared by the sweep, the target classification, and the e2e
-/// clear guard: the seed manifest (survives a spec's save) OR the fixture content
-/// marker (covers a fixture seeded before this manifest existed, and any run whose
-/// manifest was wiped). `list_index` is 0-BASED — the same space as the clears it
-/// gates; the field-8 read takes `list_index + 1`. Callers must be on a QUIET line
-/// (`drain_until_quiet` first) — a read fired mid-flood is dropped device-side.
-pub(crate) fn slot_is_fixture_owned_named(s: &mut Session, list_index: u32, name: &str) -> bool {
-    manifest_owns(list_index, name) || slot_is_fixture_owned(s, list_index + 1)
+/// Is this slot ours to overwrite or clear — either we RECORDED seeding it (survives a
+/// spec's save) or its body is still PRISTINE (covers a fixture seeded before the
+/// manifest existed, and any run whose best-effort write failed). Cheap check first, so
+/// the device read is skipped whenever the manifest already answers.
+///
+/// `list_index` is 0-BASED, the same space as the clears and imports this gates — as is
+/// [`slot_is_pristine_fixture`]. ONE index convention across both probes: this repo has
+/// already lost a real preset to a guard that read one space while the mutation acted in
+/// another. Callers must be on a QUIET line (`drain_until_quiet` first) — a field-8 read
+/// fired mid-flood is dropped device-side.
+pub(crate) fn slot_is_ours(s: &mut Session, list_index: u32, name: &str) -> bool {
+    manifest_owns(list_index, name) || slot_is_pristine_fixture(s, list_index)
 }
 
-/// Content-marker-only probe (`device_slot` is 1-BASED). Prefer
-/// [`slot_is_fixture_owned_named`] — this alone misses a fixture a spec has saved.
-pub(crate) fn slot_is_fixture_owned(s: &mut Session, device_slot: u32) -> bool {
-    matches!(s.read_slot_preset_json(device_slot), Ok(Some(bytes)) if is_fixture_body(&bytes))
+/// Does the body still carry an injected marker — i.e. NO spec has saved over it since
+/// the import? Answers "is this untouched", NOT "did we put it here"; conflating the two
+/// is what stranded fixtures. `list_index` is 0-BASED (the field-8 read takes +1).
+pub(crate) fn slot_is_pristine_fixture(s: &mut Session, list_index: u32) -> bool {
+    matches!(s.read_slot_preset_json(list_index + 1), Ok(Some(bytes)) if is_fixture_body(&bytes))
 }
 
 /// Clear every stray on the GIVEN session — but only after a per-candidate
@@ -163,7 +192,7 @@ fn sweep_on(
     s.drain_until_quiet(250, 20)?;
     let mut swept = Vec::new();
     for (slot, name) in strays {
-        let owned = slot_is_fixture_owned_named(s, slot, &name);
+        let owned = slot_is_pristine_fixture(s, slot);
         if !owned {
             eprintln!(
                 "[seed] slot {slot} ({name:?}) matches a scenario name but not a \
@@ -241,14 +270,14 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
         let name_ok = e.name == p.name;
         // PRISTINE: the body still carries the injected marker, so no spec has saved
         // over it — byte-identical to what we would import. Skip (the old fast path).
-        let pristine = name_ok && slot_is_fixture_owned(&mut s, p.list_index + 1);
+        let pristine = name_ok && slot_is_pristine_fixture(&mut s, p.list_index);
         if pristine {
             // Record it even though we're not importing: a verified fixture in place IS
             // ours, and this is the only chance to say so while the marker is still
             // readable. Without this, a slot seeded by an OLDER build (or by a run whose
             // manifest was wiped) is skipped here, never recorded, and strands the first
             // time a spec saves it — the exact bug, just one run later.
-            record_seeded(&[(p.list_index, p.name.clone())]);
+            record_seeded(p.list_index, &p.name);
             continue;
         }
         // OURS BUT DIRTY: we seeded this slot, and the marker is gone — a spec levelled
@@ -291,9 +320,7 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
         let still_safe = match &entry {
             None => true,
             Some(name) if session::is_empty_slot_name(name) => true,
-            Some(name) if *name == p.name => {
-                slot_is_fixture_owned_named(&mut s, p.list_index, name)
-            }
+            Some(name) if *name == p.name => slot_is_ours(&mut s, p.list_index, name),
             Some(_) => false,
         };
         drop(s);
@@ -311,7 +338,7 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
         replace_inplace_with(p.list_index, &bytes, false)?;
         // Record BEFORE anything can save over it — this is the ownership signal
         // teardown will need once a spec has rewritten the body.
-        record_seeded(&[(p.list_index, p.name.clone())]);
+        record_seeded(p.list_index, &p.name);
         seeded.push(p.list_index);
     }
     Ok(SeedOutcome { swept, seeded })
@@ -357,7 +384,7 @@ mod tests {
         // Nothing recorded yet → not owned (a pre-seed run must never bless a slot).
         assert!(!manifest_owns(400, "E2E Reference"));
 
-        record_seeded(&[(400, "E2E Reference".to_string())]);
+        record_seeded(400, "E2E Reference");
 
         // Owned by provenance alone — this is the case a body-marker probe misses.
         assert!(manifest_owns(400, "E2E Reference"));
@@ -368,6 +395,11 @@ mod tests {
         // Fail-closed on the axes that matter: wrong slot, and a renamed occupant.
         assert!(!manifest_owns(401, "E2E Reference"));
         assert!(!manifest_owns(400, "My Own Preset"));
+
+        // The claim is a LEASE: a verified clear releases it, so it can never outlive
+        // the fixture and bless whatever occupies the scratch slot next.
+        forget_seeded(400);
+        assert!(!manifest_owns(400, "E2E Reference"));
 
         std::env::remove_var("TMP_E2E_SEED_MANIFEST");
         let _ = std::fs::remove_dir_all(&dir);

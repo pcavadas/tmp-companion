@@ -417,7 +417,7 @@ async fn e2e_clear_preset(
             // its injected markers (the device rewrites the body on save), and a
             // marker-only check would refuse to clean up the harness's OWN preset —
             // stranding it and blocking the next run's seed.
-            if !probe_api::seed_scenario::slot_is_fixture_owned_named(&mut s, slot, &expect_name) {
+            if !probe_api::seed_scenario::slot_is_ours(&mut s, slot, &expect_name) {
                 return Err(format!(
                     "refusing to clear slot {slot}: '{expect_name}' matches by name but this \
                      harness has no record of seeding it — not seed-owned"
@@ -426,6 +426,9 @@ async fn e2e_clear_preset(
         }
         SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         s.clear_user_preset(slot)?;
+        // Cleared — release the manifest claim so it can never outlive the fixture and
+        // bless whatever occupies this scratch slot next. Only after the `?` above.
+        probe_api::seed_scenario::forget_seeded(slot);
         e2e_patch_snapshot_slot(slot, "Empty");
         Ok(())
     })
