@@ -1704,6 +1704,24 @@ pub enum FsWrite {
     Bake { clear_stale: Option<u32> },
 }
 
+/// Adopt `(v, l)` as the new best-so-far when it beats `*best_lufs`'s distance to
+/// `target_lufs` — shared by `measure_footswitch`'s bracket-expansion probe and its secant
+/// loop, both of which do exactly this after every extra capture.
+fn improve_best(
+    target_lufs: f64,
+    v: f32,
+    l: &lufs::Loudness,
+    best_v: &mut f32,
+    best_lufs: &mut f64,
+    best_spread: &mut f64,
+) {
+    if (l.integrated_lufs - target_lufs).abs() < (*best_lufs - target_lufs).abs() {
+        *best_v = v;
+        *best_lufs = l.integrated_lufs;
+        *best_spread = l.spread_lu();
+    }
+}
+
 /// Pure secant step in PARAMETER space: two `(value, loudness)` points → the next value
 /// that should hit `target`. `None` when the local slope is ~flat (the param doesn't move
 /// loudness). UNCLAMPED — caller clamps to the param's `[0,1]` range.
@@ -1713,6 +1731,33 @@ fn fs_secant_next(p0: (f64, f64), p1: (f64, f64), target: f64) -> Option<f64> {
         return None;
     }
     Some(p1.0 + (target - p1.1) / slope)
+}
+
+/// The extreme knob value worth ONE extra probe before giving up on a FLAT `(v_lo, l_lo)`/
+/// `(v_hi, l_hi)` secant seed pair — `None` when the pair already has slope (the plain
+/// secant can extrapolate from it as-is, bracketed or not — unchanged from before this
+/// fix) or already includes the relevant extreme (nothing left to try). A knob whose
+/// useful range is a small slice of `[0, 1]` (e.g. a compressor already saturated by 0.75)
+/// can seed a pair that reads flat even though a reachable, non-flat point exists further
+/// out — the minimum-viable fix for THAT specific pathology (full false-position/
+/// Illinois-damping bracketing deferred) is one more sample at 1.0 (target needs MORE
+/// loudness than either seed) or 0.0 (target needs LESS), so the existing plain secant
+/// gets a genuine slope instead of an honest-but-avoidable "no authority" clamp. Gated on
+/// flatness specifically (not merely "unbracketed") so an ordinary out-of-bracket-but-
+/// sloped pair — which the plain secant already extrapolates from correctly — doesn't pay
+/// for an extra real device capture it doesn't need.
+fn fs_bracket_expansion(v_lo: f32, l_lo: f64, v_hi: f32, l_hi: f64, target: f64) -> Option<f32> {
+    if (l_hi - l_lo).abs() >= KNOB_TOL_LU {
+        return None;
+    }
+    let (lo_l, hi_l) = (l_lo.min(l_hi), l_lo.max(l_hi));
+    if target > hi_l {
+        (v_lo < 1.0 && v_hi < 1.0).then_some(1.0)
+    } else if target < lo_l {
+        (v_lo > 0.0 && v_hi > 0.0).then_some(0.0)
+    } else {
+        None
+    }
 }
 
 /// True if `ftsw[switch][index]` is a `param` function targeting `param` — the post-write
@@ -1879,30 +1924,60 @@ pub fn measure_footswitch(
         } else {
             (v_hi, l_hi.integrated_lufs, l_hi.spread_lu())
         };
-    // Run the secant only when not already converged AND the knob has authority (a flat seed pair
-    // can't be solved — leave it as an honest, reason-less clamp).
-    if err(best_lufs) > KNOB_TOL_LU
-        && (l_hi.integrated_lufs - l_lo.integrated_lufs).abs() >= KNOB_TOL_LU
-    {
+    if err(best_lufs) > KNOB_TOL_LU {
         let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
         let mut p1 = (v_hi as f64, l_hi.integrated_lufs);
-        for _ in 0..MEASURE_CORRECT_MAX {
-            let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
-                break; // flat response — the knob can't move loudness here
-            };
-            let v2 = raw.clamp(0.0, 1.0) as f32;
-            let l2 = require_live(|| measure_at(v2), stimulus)?;
-            iterations += 1;
-            if err(l2.integrated_lufs) < err(best_lufs) {
-                best_v = v2;
-                best_lufs = l2.integrated_lufs;
-                best_spread = l2.spread_lu();
+        // Bracket before falling to the plain secant — see `fs_bracket_expansion`'s doc.
+        if let Some(v_extreme) = fs_bracket_expansion(
+            v_lo,
+            l_lo.integrated_lufs,
+            v_hi,
+            l_hi.integrated_lufs,
+            target_lufs,
+        ) {
+            if let Ok(l_extreme) = require_live(|| measure_at(v_extreme), stimulus) {
+                iterations += 1;
+                improve_best(
+                    target_lufs,
+                    v_extreme,
+                    &l_extreme,
+                    &mut best_v,
+                    &mut best_lufs,
+                    &mut best_spread,
+                );
+                let extreme_point = (v_extreme as f64, l_extreme.integrated_lufs);
+                if err(p0.1) <= err(p1.1) {
+                    p1 = extreme_point;
+                } else {
+                    p0 = extreme_point;
+                }
             }
-            if err(l2.integrated_lufs) <= KNOB_TOL_LU {
-                break;
+        }
+        // Run the secant only when not already converged AND the (possibly expanded) pair
+        // has authority (still flat → the knob truly can't move loudness here — an honest,
+        // reason-less clamp).
+        if err(best_lufs) > KNOB_TOL_LU && (p1.1 - p0.1).abs() >= KNOB_TOL_LU {
+            for _ in 0..MEASURE_CORRECT_MAX {
+                let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
+                    break; // flat response — the knob can't move loudness here
+                };
+                let v2 = raw.clamp(0.0, 1.0) as f32;
+                let l2 = require_live(|| measure_at(v2), stimulus)?;
+                iterations += 1;
+                improve_best(
+                    target_lufs,
+                    v2,
+                    &l2,
+                    &mut best_v,
+                    &mut best_lufs,
+                    &mut best_spread,
+                );
+                if err(l2.integrated_lufs) <= KNOB_TOL_LU {
+                    break;
+                }
+                p0 = p1;
+                p1 = (v2 as f64, l2.integrated_lufs);
             }
-            p0 = p1;
-            p1 = (v2 as f64, l2.integrated_lufs);
         }
     }
     // Signal is present past the seed probe, so a miss is a headroom/authority clamp, never a
@@ -3953,6 +4028,103 @@ mod tests {
         assert!((next - 0.70).abs() < 1e-9, "got {next}");
         // Flat response → None (no authority).
         assert!(fs_secant_next((0.25, -9.0), (0.75, -9.0), -23.0).is_none());
+    }
+
+    // See `fs_bracket_expansion`'s doc for the bug this covers.
+    #[test]
+    fn fs_bracket_expansion_targets_the_extreme_that_can_bracket() {
+        // Seed pair both near a saturated ceiling (flat) — target is well below both, so
+        // the amp needs to go QUIETER: probe toward 0.0.
+        assert_eq!(
+            fs_bracket_expansion(0.25, -18.0, 0.75, -17.9, -25.0),
+            Some(0.0)
+        );
+        // Symmetric case: target well ABOVE both seeds (needs MORE loudness) → probe 1.0.
+        assert_eq!(
+            fs_bracket_expansion(0.25, -30.0, 0.75, -29.9, -20.0),
+            Some(1.0)
+        );
+        // Target already bracketed by the seed pair → no expansion needed, the plain
+        // secant can converge as-is.
+        assert_eq!(fs_bracket_expansion(0.25, -30.0, 0.75, -18.0, -23.0), None);
+        // The relevant extreme is ALREADY one of the seeds — nothing left to try.
+        assert_eq!(fs_bracket_expansion(0.0, -30.0, 0.75, -29.9, -35.0), None);
+        assert_eq!(fs_bracket_expansion(0.25, -18.0, 1.0, -17.9, -10.0), None);
+    }
+
+    // The full bracket-then-secant shape, mirroring `correct_iter_secant_converges_on_compressor`'s
+    // convention (replicate the runner's loop against a synthetic response curve, no device).
+    #[test]
+    fn fs_bracket_expansion_lets_the_secant_reach_a_target_below_a_saturated_seed_pair() {
+        let ceiling = -18.0_f64;
+        let model = |v: f64| {
+            // Saturates by v=0.2 — BOTH seeds (0.25 and 0.75) land in the flat ceiling,
+            // reproducing the reported bug (a knob whose useful range is a small slice
+            // of [0, 1]).
+            if v > 0.2 {
+                ceiling
+            } else {
+                // Rises linearly from -40 (silent) to the ceiling over 0..0.2.
+                -40.0 + (ceiling - -40.0) * (v / 0.2)
+            }
+        };
+        let target = -25.0_f64;
+        let (v_lo, v_hi) = (0.25_f64, 0.75_f64);
+        let (l_lo, l_hi) = (model(v_lo), model(v_hi));
+        let err = |l: f64| (l - target).abs();
+
+        // Old behavior check: the seed pair alone is flat (both on the saturated ceiling) —
+        // confirms this fixture actually reproduces the reported bug, not a fixture error.
+        assert!(
+            (l_hi - l_lo).abs() < KNOB_TOL_LU,
+            "fixture must reproduce a flat seed pair: l_lo={l_lo} l_hi={l_hi}"
+        );
+        assert!(
+            err(l_lo.min(l_hi)) > KNOB_TOL_LU,
+            "target must be unreached by either seed"
+        );
+
+        let mut best = if err(l_lo) <= err(l_hi) {
+            (v_lo, l_lo)
+        } else {
+            (v_hi, l_hi)
+        };
+        let (mut p0, mut p1) = ((v_lo, l_lo), (v_hi, l_hi));
+        if let Some(v_extreme) = fs_bracket_expansion(v_lo as f32, l_lo, v_hi as f32, l_hi, target)
+        {
+            let l_extreme = model(v_extreme as f64);
+            if err(l_extreme) < err(best.1) {
+                best = (v_extreme as f64, l_extreme);
+            }
+            if err(p0.1) <= err(p1.1) {
+                p1 = (v_extreme as f64, l_extreme);
+            } else {
+                p0 = (v_extreme as f64, l_extreme);
+            }
+        }
+        if (p1.1 - p0.1).abs() >= KNOB_TOL_LU {
+            for _ in 0..MEASURE_CORRECT_MAX {
+                if err(best.1) <= KNOB_TOL_LU {
+                    break;
+                }
+                let Some(raw) = fs_secant_next(p0, p1, target) else {
+                    break;
+                };
+                let v2 = raw.clamp(0.0, 1.0);
+                let l2 = model(v2);
+                if err(l2) < err(best.1) {
+                    best = (v2, l2);
+                }
+                p0 = p1;
+                p1 = (v2, l2);
+            }
+        }
+        assert!(
+            err(best.1) <= KNOB_TOL_LU,
+            "expected convergence near {target}, got {} (v={})",
+            best.1,
+            best.0
+        );
     }
 
     #[test]
