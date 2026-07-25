@@ -227,6 +227,11 @@ function ResultRow({ it, restore }: ResultRowProps) {
         >
           <span
             style={{
+              // flex:1 + minWidth:0 — a flex item's default min-width:auto refuses to
+              // shrink below its text, so without these a long scene name pushes the
+              // trailing tag/chips out instead of ellipsising.
+              flex: 1,
+              minWidth: 0,
               fontFamily: t.serif,
               fontSize: t.fsName2,
               color: dim ? t.mutedInk : t.ink,

@@ -73,9 +73,11 @@ describe("RunBody live measuring strip", () => {
     render(runBody(null));
     expect(screen.getByText("connecting…")).toBeInTheDocument();
     // Opacity-gated, not unmounted — the header must not change height between items.
-    const meter = screen.getByText("LUFS").closest("div[aria-hidden]");
+    const meter = screen
+      .getByText("LUFS")
+      .closest<HTMLElement>("div[aria-hidden]");
     expect(meter?.getAttribute("aria-hidden")).toBe("true");
-    expect((meter as HTMLElement | null)?.style.opacity).toBe("0");
+    expect(meter?.style.opacity).toBe("0");
   });
 
   it("renders the live readout ONCE, in the header — never per row", () => {

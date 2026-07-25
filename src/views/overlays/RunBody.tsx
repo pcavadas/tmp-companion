@@ -31,7 +31,7 @@ import { ProgressBar } from "../../ui/ProgressBar";
 import { LiveVU } from "../../ui/LiveVU";
 import { LiveReadout } from "../../ui/LiveReadout";
 import { ConfirmBar } from "../../ui/ConfirmBar";
-import { RunRow } from "../../ui/RunRow";
+import { RunRow, RUNROW_GLYPH_W } from "../../ui/RunRow";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { fmtLufs } from "../../lib/format";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
@@ -44,7 +44,7 @@ import {
 
 /** The run table's shared grid: glyph · Sound (flexible) · Instrument · Target · Result.
  *  The header row and every RunRow lay out on THIS template, so the columns can't drift. */
-const LV_COLS = "18px minmax(0, 1fr) 124px 112px 158px";
+const LV_COLS = `${String(RUNROW_GLYPH_W)}px minmax(0, 1fr) 124px 112px 158px`;
 /** Live-meter frame. Fixed because LiveVU is `flex: 1` and the caption is variable-length —
  *  an intrinsic width would squeeze the progress bar as the active sound's name changes. */
 const LV_METER_W = 292;
