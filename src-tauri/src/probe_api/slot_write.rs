@@ -791,16 +791,39 @@ fn restore_scratch(
 /// recall+enable *without any write* reset 6 of them. So it is neither a race nor
 /// `change_parameter`; it CONTRADICTS `notes/leveling.md` ("enabling scene mode is
 /// harmless in itself") and `leveller::set_knobs`, which blames a re-`load_scene`
-/// between per-knob writes. The write still lands on the scene overlay with the enable
-/// dropped. UNTESTED branch: whether the enable is still required for a node that has
-/// NO overlay in the target scene.
+/// between per-knob writes.
 ///
-/// (b) STILL UNRECONCILED: `change_parameter` appears to carry a NORMALISED value — a
-/// written `tapTimeBPM` of 120.0 read back as 0.2599872. Needs a dedicated scratch-preset
-/// test before any doc or product change rests on it. It is not cosmetic: the Doctor's
-/// EQ-10 prescription writes a MEASURED FREQUENCY through this same path
-/// (`commands/doctor.rs::apply_doctor_ops`), so if real-unit params need normalising,
-/// that notch lands at the wrong frequency.
+/// The enable's necessity depends on whether the node ALREADY has an overlay in the
+/// target scene (both branches HW-proven on scratch slot 30):
+///   * overlay EXISTS  → the write lands on it with the enable dropped, and the enable
+///     is actively harmful (it reseeds the overlay from base).
+///   * overlay ABSENT  → without the enable the write LEAKS TO BASE (G3
+///     `ACD_MarG12H30BB.hpf` 59 → 200 landed on BASE while scene 0 gained no overlay).
+///     The enable is what materialises the overlay.
+///
+/// So `set_knob` should enable scene edit ONLY for a node with no overlay in that
+/// scene. This also reconciles `notes/leveling.md`'s "leaks to base" claim — true, but
+/// only for the overlay-absent case.
+///
+/// (b) RESOLVED — there is NO normalisation. `change_parameter` carries real-unit values
+/// VERBATIM (`ratehz` 6.0 → 3.0 and `hpf` 59 → 200 both landed exactly). `tapTimeBPM` is
+/// a DERIVED mirror of the block's rate — the PERIOD IN SECONDS, not BPM — which is why
+/// writes to it never stick and why it looked normalised: the 0.2599872 readback is
+/// 1/3.84634 s and the node's `speed` was 3.8463430404663086; a later write of
+/// `ratehz` = 3.0 moved the same field to 0.33333334 = 1/3. Both exact. The Doctor's
+/// measured-frequency EQ write (`commands/doctor.rs::apply_doctor_ops`) is therefore
+/// safe on the value axis.
+///
+/// (c) NEW, and the sharpest of the three: a `change_parameter` with NO preceding
+/// `load_scene` writes into the **currently active scene's overlay**, not base. A preset
+/// loads into its saved `lastLoadedScene`, so on a scened preset every "base" operation
+/// that omits the recall silently targets that scene (HW: slot 30 loads on scene 3;
+/// bare writes of `level` 0.80 and `ratehz` 3.0 landed in scene 3's overlay with BASE
+/// untouched — then, once base was the active context, an identical bare write moved
+/// BASE). `LevelKnob::Block { scene_slot: None }` (`commands/level_preset.rs`) and
+/// `capture_full_at`'s `scene: None` both take that path, so base block leveling
+/// measures AND writes the wrong scene. Base is a scene recall (wire slot 8), never an
+/// omission — `views/level/LevelView.tsx`'s "loading a preset activates BASE" is false.
 ///
 /// ponytail: single-param, [0,1]-only. Both limits are the diagnostic's, not the
 /// device's — widen it (multi-param targets, real-unit encoding) only if a repair
