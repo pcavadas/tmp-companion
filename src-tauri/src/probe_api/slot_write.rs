@@ -783,16 +783,24 @@ fn restore_scratch(
 /// `changeParameter`) and `scene = None` writes the base/global value. `verify: false`,
 /// so no stimulus is read and re-amp is never engaged — this is a pure write.
 ///
-/// TWO HW OBSERVATIONS from this arm's first use (fw 1.8.45, preset 028), recorded here
-/// because they are UNRECONCILED with existing docs — do not treat either as settled:
-/// (a) two consecutive single-param scene writes each appeared to snap the whole node's
-/// scene overlay back to its BASE values before applying the written param, which if
-/// confirmed on an AMP node would mean per-scene leveling discards that scene's other
-/// amp settings; this CONTRADICTS `notes/leveling.md` ("enabling scene mode is harmless
-/// in itself") and `leveller::set_knobs`, which blames a re-`load_scene` between per-knob
-/// writes instead. (b) `changeParameter` appears to carry a NORMALISED value: a written
-/// `tapTimeBPM` of 120.0 read back as 0.2599872. Both need a dedicated test on a scratch
-/// preset before any doc or product change is made on their basis.
+/// TWO HW OBSERVATIONS from this arm's first use (fw 1.8.45, preset 028):
+///
+/// (a) SETTLED by the `--scene-write-cell` 3-cell isolation matrix (fw 1.8.45, scratch
+/// slot 32): `set_node_scene_edit(node, true)` **alone** reseeds that node's scene
+/// overlay from BASE — recall+write without the enable kept all 7 sibling params, while
+/// recall+enable *without any write* reset 6 of them. So it is neither a race nor
+/// `change_parameter`; it CONTRADICTS `notes/leveling.md` ("enabling scene mode is
+/// harmless in itself") and `leveller::set_knobs`, which blames a re-`load_scene`
+/// between per-knob writes. The write still lands on the scene overlay with the enable
+/// dropped. UNTESTED branch: whether the enable is still required for a node that has
+/// NO overlay in the target scene.
+///
+/// (b) STILL UNRECONCILED: `change_parameter` appears to carry a NORMALISED value — a
+/// written `tapTimeBPM` of 120.0 read back as 0.2599872. Needs a dedicated scratch-preset
+/// test before any doc or product change rests on it. It is not cosmetic: the Doctor's
+/// EQ-10 prescription writes a MEASURED FREQUENCY through this same path
+/// (`commands/doctor.rs::apply_doctor_ops`), so if real-unit params need normalising,
+/// that notch lands at the wrong frequency.
 ///
 /// ponytail: single-param, [0,1]-only. Both limits are the diagnostic's, not the
 /// device's — widen it (multi-param targets, real-unit encoding) only if a repair
