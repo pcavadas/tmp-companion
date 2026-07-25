@@ -1870,7 +1870,7 @@ pub fn measure_footswitch(
         }
         Err(e) => return Err(e),
     };
-    let l_hi = measure_at(v_hi)?;
+    let l_hi = require_live(|| measure_at(v_hi), stimulus)?;
     let mut iterations = 2u32;
     let err = |l: f64| (l - target_lufs).abs();
     let (mut best_v, mut best_lufs, mut best_spread) =
@@ -1891,7 +1891,7 @@ pub fn measure_footswitch(
                 break; // flat response — the knob can't move loudness here
             };
             let v2 = raw.clamp(0.0, 1.0) as f32;
-            let l2 = measure_at(v2)?;
+            let l2 = require_live(|| measure_at(v2), stimulus)?;
             iterations += 1;
             if err(l2.integrated_lufs) < err(best_lufs) {
                 best_v = v2;
