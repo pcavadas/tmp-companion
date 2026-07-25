@@ -26,6 +26,7 @@ use serde::Serialize;
 use crate::audio;
 use crate::lufs;
 use crate::session::Session;
+use crate::{sleep_abortable, sleep_or_cancel};
 
 // Post-load DSP settle before a capture. Was a conservative 1200; HW-bisected to 400
 // on fw 1.8.45 (dry slot 11 + wet delay slot 5): measured C, presetLevel, and verify
@@ -245,6 +246,8 @@ pub const CANCELLED: &str = "cancelled";
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
 pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
+    // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
+    // the edit buffer dirty at the measurement level — the whole point of the restore.
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
@@ -363,7 +366,7 @@ pub(crate) fn measure_floor_guarded(
         "floor guard: capture spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent inject, retrying once",
         first.spread_lu()
     );
-    std::thread::sleep(gap);
+    sleep_or_cancel(gap.as_millis() as u64)?;
     let second = measure()?;
     if floor_suspect(second.spread_lu(), stimulus_spread_lu) {
         Ok(GuardOutcome::StillFlat(second))
@@ -432,9 +435,9 @@ pub fn measure_c(
     {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+        sleep_or_cancel(settle_after_load_ms())?;
     }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    sleep_or_cancel(RECONNECT_GAP_MS)?;
     let gap = Duration::from_millis(FLOOR_RETRY_GAP_MS);
     // No load → the set inside measure_at_level sticks on the now-current preset.
     let outcome = measure_floor_guarded(
@@ -448,7 +451,9 @@ pub fn measure_c(
         // confirm decides (real output tracks 20·log10(presetLevel); the floor doesn't).
         GuardOutcome::StillFlat(l) => {
             let confirm_level = confirm_ref_level(ref_level);
-            std::thread::sleep(gap);
+            // The 5 s confirm gap is the single longest non-capture wait in a run — a Stop
+            // here used to cost the gap PLUS a second full capture.
+            sleep_or_cancel(gap.as_millis() as u64)?;
             let confirm = measure_at_level(stimulus, confirm_level, force_bypass)?;
             if tracks_level_shift(
                 l.integrated_lufs,
@@ -516,12 +521,16 @@ fn capture_full_at(
     tail_ms: u64,
     skip_load: bool,
 ) -> Result<audio::Capture, String> {
+    // The settles here are `sleep_abortable`: a Stop pressed anywhere in the ~1.9 s of
+    // settling that brackets a capture bails immediately instead of being noticed only at
+    // the next step seam. Safe to leave from any of these points — nothing is engaged or
+    // written yet before the re-amp ON below.
     if !skip_load {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+        sleep_or_cancel(settle_after_load_ms())?;
         drop(s);
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        sleep_or_cancel(RECONNECT_GAP_MS)?;
     }
     let mut s = Session::connect_lean()?;
     let recall = if skip_load {
@@ -534,7 +543,7 @@ fn capture_full_at(
     // level write, not follow it.
     if let Some(scene) = recall {
         s.load_scene(scene)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
     }
     capture_on_session(&mut s, force_bypass, stimulus, ref_level, tail_ms)
 }
@@ -566,10 +575,13 @@ pub(crate) fn capture_on_session(
     // leaving the edit buffer's presetLevel untouched.
     if let Some(ref_level) = ref_level {
         set_knob(s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0))?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
     }
     let _ = s.set_reamp_mode(true)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+    // Past the engage there is NO early return: re-amp is on, and leaving it on strands the
+    // unit input-muted. So this settle only wakes early — `reamp_capture` then bails on its
+    // own up-front abort check, and the OFF below still goes out on this open session.
+    let _ = sleep_abortable(SETTLE_AFTER_REAMP_MS);
     let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
     cap
@@ -1657,7 +1669,8 @@ pub(crate) fn engage_measure_disengage(
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, String> {
     let _ = s.set_reamp_mode(true)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+    // Same no-early-return rule as `capture_full_at`: re-amp is engaged, the OFF must fire.
+    let _ = sleep_abortable(SETTLE_AFTER_REAMP_MS);
     let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
     let _ = s.set_reamp_mode(false);
     loudest_loudness(cap)
@@ -1682,7 +1695,7 @@ pub(crate) fn reamp_off_guaranteed(tag: &str) {
 fn measure_scene_asis(scene_slot: u32, stimulus: &[f32]) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -1701,7 +1714,7 @@ fn measure_knob_at(
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     set_knob(&mut s, knob, value)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -1849,7 +1862,7 @@ pub(crate) fn measure_fs_at(
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     s.change_parameter(lev.0, lev.1, lev.2, v)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -2973,6 +2986,8 @@ fn run_scene_jobs(
 /// the save itself). The connection never toggles re-amp, so the post-re-amp
 /// save-drop cannot bite.
 fn save_deferred_scene_writes(slot: u32, restore_scene: Option<u32>) -> Result<(), String> {
+    // NOT `sleep_or_cancel`: this is ALSO fired on cancel, to persist the scene overlays
+    // already written. Bailing here would throw away the run's completed work.
     let attempt = || -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
@@ -3442,7 +3457,7 @@ fn measure_knobs_at(
 ) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     set_knobs(&mut s, targets)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 

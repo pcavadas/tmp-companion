@@ -73,6 +73,8 @@ pub(crate) static SCENE_LEVEL_CANCEL: std::sync::atomic::AtomicBool =
 #[tauri::command]
 pub(crate) fn cancel_scene_leveling() {
     SCENE_LEVEL_CANCEL.store(true, SeqCst);
+    // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
+    crate::request_op_abort();
 }
 
 fn pick_scene_level_knob(

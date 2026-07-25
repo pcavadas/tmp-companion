@@ -30,6 +30,8 @@ static FOOTSWITCH_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 pub(crate) fn cancel_footswitch_leveling() {
     FOOTSWITCH_LEVEL_CANCEL.store(true, SeqCst);
+    // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
+    crate::request_op_abort();
 }
 
 /// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, the

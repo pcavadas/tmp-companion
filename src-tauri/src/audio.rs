@@ -378,6 +378,11 @@ fn reamp_capture_real(
     sample_rate: u32,
     tail_ms: u64,
 ) -> Result<Capture, String> {
+    // A Stop landed during the pre-capture settles — don't spin up the CoreAudio streams
+    // just to tear them down one hop later.
+    if crate::device_gate::op_aborted() {
+        return Err(crate::leveller::CANCELLED.to_string());
+    }
     // ponytail: TMP_AUDIO_TIMING is throwaway probe instrumentation (stream cost breakdown).
     let timing = std::env::var("TMP_AUDIO_TIMING").is_ok();
     let t0 = Instant::now();
@@ -401,15 +406,23 @@ fn reamp_capture_real(
     let play_ms = stimulus_mono.len() as u64 * 1000 / sample_rate as u64;
     let total_ms = play_ms + tail_ms;
 
-    if live_lufs_active() {
+    {
         // Advisory live-LUFS: emit the converging integrated loudness on a fixed cadence
         // while the SAME buffer fills. DEADLINE-bounded so total wall-clock stays exactly
         // `total_ms` regardless of hop count / emit latency — the authoritative buffer and
-        // the final `measure_mono` are byte-identical to the blind-sleep branch below (the
+        // the final `measure_mono` are byte-identical to a blind `sleep(total_ms)` (the
         // meter is parallel, fed from COPIES of the new frames; meter errors are swallowed
         // so a bad reading never aborts a real capture). PICK_MS mirrors `reamp_measure`'s
         // loudest-channel settle.
+        //
+        // The loop runs even with NO sink installed (the Doctor, `probe`) — it is also
+        // what makes the capture window STOPPABLE: this is the single longest wait in a
+        // leveling/Doctor run (6.8 s / 4.7 s), so polling the abort flag per hop is the
+        // difference between "Stop" landing in ~0.2 s and sitting out the whole capture.
+        // Bailing mid-capture is free: a cancelled measurement is discarded either way,
+        // and the caller still sends its re-amp OFF on the open session.
         const PICK_MS: u64 = 400;
+        let live = live_lufs_active();
         let deadline = Instant::now() + Duration::from_millis(total_ms);
         let mut loud_ch: Option<usize> = None;
         let mut meter: Option<IncrementalLoudness> = None;
@@ -418,8 +431,16 @@ fn reamp_capture_real(
         // bars — an empty hop re-emits the previous value (the floor before any audio).
         let mut momentary = MOMENTARY_FLOOR_DB;
         while Instant::now() < deadline {
+            // The hop sleep IS the abort poll — one cadence, no second timer.
             let remaining = deadline.saturating_duration_since(Instant::now());
-            std::thread::sleep(remaining.min(Duration::from_millis(LIVE_LUFS_HOP_MS)));
+            crate::sleep_or_cancel(
+                remaining
+                    .min(Duration::from_millis(LIVE_LUFS_HOP_MS))
+                    .as_millis() as u64,
+            )?;
+            if !live {
+                continue;
+            }
 
             // Copy only the NEW interleaved frames out from under the lock, then release.
             let (total_frames, new_interleaved) = {
@@ -480,8 +501,6 @@ fn reamp_capture_real(
                 emit_live_lufs(v, momentary);
             }
         }
-    } else {
-        std::thread::sleep(Duration::from_millis(total_ms));
     }
 
     let t_sleep_done = t0.elapsed();

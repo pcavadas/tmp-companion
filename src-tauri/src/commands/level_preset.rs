@@ -312,6 +312,8 @@ static PRESET_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 pub(crate) fn cancel_preset_leveling() {
     PRESET_LEVEL_CANCEL.store(true, SeqCst);
+    // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
+    crate::request_op_abort();
 }
 
 /// Restore a preset's `presetLevel` to its pre-leveling snapshot value (the
