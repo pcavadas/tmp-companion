@@ -99,11 +99,17 @@ reviews:
 
 knowledge_base:
   code_guidelines:
-    enabled: true # keeps defaults incl. **/CLAUDE.md (repo-wide guidelines)
-    # Additive to the defaults. These self-govern their own directories (used when a
-    # skill/note is edited); the real src/ enforcement is the path_instructions above.
+    enabled: true
+    # REVIEW.md and CLAUDE.md are both already in CodeRabbit's DEFAULT filePatterns, but
+    # the docs don't state whether an explicit list is additive to those defaults or
+    # replaces them. Listing them here costs two lines and makes the question moot —
+    # do not remove them on the assumption that the defaults still apply.
+    # The rest self-govern their own directories (used when a skill/note is edited);
+    # the real src/ enforcement is the path_instructions above.
     # Enumerated explicitly — never a .claude/skills/** wildcard.
     filePatterns:
+      - "REVIEW.md" # reviewer-facing: bug shape, ungated surfaces, what not to guess
+      - "CLAUDE.md"
       - ".claude/skills/tmp-companion-frontend/SKILL.md"
       - ".claude/skills/tmp-companion-catalog/SKILL.md"
       - ".claude/skills/tmp-companion-protocol/SKILL.md"
