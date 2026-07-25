@@ -169,6 +169,23 @@ fn main() {
         log::set_max_level(log::LevelFilter::Info);
     }
 
+    // An `--features e2e` build makes `audio::reamp_capture` substitute a FAKE capture
+    // whenever TMP_E2E_ONLINE is unset, and with no SimDevice installed (as in this
+    // binary) that fake is `sim_device::passthrough` — the stimulus handed straight back.
+    // Every LUFS this binary printed would then be fabricated but perfectly plausible.
+    // `scripts/e2e.sh` builds probe with that feature INTO THE SAME target dir, clobbering
+    // the production binary; this has silently invalidated hardware measurements twice.
+    // Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never measures.
+    #[cfg(feature = "e2e")]
+    if std::env::var("TMP_E2E_ONLINE").is_err() && !args.iter().any(|a| a == "--seed-scenario") {
+        eprintln!(
+            "[probe] REFUSING TO RUN: this is an `--features e2e` build without TMP_E2E_ONLINE, \
+             so audio captures would be FAKE (stimulus passthrough), not the device.\n\
+             Rebuild the production binary:  cargo build --bin probe"
+        );
+        std::process::exit(3);
+    }
+
     if args.iter().any(|a| a == "--activegraph") {
         match tmp_companion_lib::probe_active_graph() {
             Ok(graph) => {
