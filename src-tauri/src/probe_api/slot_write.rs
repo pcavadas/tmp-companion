@@ -826,3 +826,62 @@ pub fn probe_set_scene_param(
         if saved { "SAVED" } else { "NOT SAVED" },
     ))
 }
+
+/// One CELL of the scene-write isolation matrix (`probe --scene-write-cell`) — the arm that
+/// separates the three candidate causes of "a per-scene write resets the node's other scene
+/// params to base". Unlike [`probe_set_scene_param`] (which goes through
+/// `leveller::apply_level` and always does recall → scene-edit → write), this drives the
+/// session steps DIRECTLY so each one can be omitted independently:
+///
+/// * `scene_edit=false` → recall + write, no `setNodeSceneEdit`. Siblings survive ⇒ the
+///   scene-edit enable is the wiper.
+/// * `value=None` → recall + scene-edit + save, no `changeParameter`. Siblings wiped ⇒ the
+///   write is exonerated; the enable alone reseeds the overlay.
+/// * `recall_settle_ms` → lengthen the post-`loadScene` settle (keep well under the ~700 ms
+///   scene-write acceptance cliff). Siblings survive at a longer settle ⇒ it is a RACE (the
+///   node's scene values had not materialised when the enable arrived), not a semantic.
+///
+/// Always saves, so the caller can diff the persisted preset. Diagnostic only.
+#[allow(clippy::too_many_arguments)] // mirrors leveller::level_footswitch: a diagnostic seam with one arg per session step
+pub fn probe_scene_write_cell(
+    slot: u32,
+    scene: Option<u32>,
+    group: &str,
+    node: &str,
+    param: &str,
+    value: Option<f32>,
+    scene_edit: bool,
+    recall_settle_ms: u64,
+) -> Result<String, String> {
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::settle_after_load_ms(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+
+    let mut s = Session::connect()?;
+    if let Some(sc) = scene {
+        s.load_scene(sc)?;
+        std::thread::sleep(std::time::Duration::from_millis(recall_settle_ms));
+    }
+    if scene_edit && scene.is_some() {
+        s.set_node_scene_edit(group, node, true)?;
+        // 300 = leveller's private SETTLE_AFTER_SCENE_EDIT_MS, mirrored rather than
+        // widening its visibility for a diagnostic.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    if let Some(v) = value {
+        s.change_parameter(group, node, param, v)?;
+    }
+    s.save_current_preset(slot)?;
+    Ok(format!(
+        "[probe --scene-write-cell] slot {} · scene {:?} · {group}/{node}.{param}\n  \
+         scene_edit={scene_edit} write={:?} recall_settle={recall_settle_ms}ms  ⇒ saved\n",
+        slot + 1,
+        scene,
+        value,
+    ))
+}

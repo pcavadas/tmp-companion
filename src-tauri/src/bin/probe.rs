@@ -962,6 +962,57 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--scene-write-cell") {
+        // --scene-write-cell <listIdx> <sceneSlot> <group> <node> <param>
+        //     [--value V] [--no-scene-edit] [--recall-settle MS]
+        // ONE cell of the scene-write isolation matrix: drives loadScene /
+        // setNodeSceneEdit / changeParameter independently so the cause of the
+        // overlay reset can be separated. Always saves; diff the slot afterwards.
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let scene: Option<u32> = args.get(i + 2).and_then(|s| s.parse().ok());
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let node = args.get(i + 4).cloned().unwrap_or_default();
+        let param = args.get(i + 5).cloned().unwrap_or_default();
+        let value: Option<f32> = args
+            .iter()
+            .position(|a| a == "--value")
+            .and_then(|j| args.get(j + 1))
+            .and_then(|s| s.parse().ok());
+        let scene_edit = !args.iter().any(|a| a == "--no-scene-edit");
+        let recall_settle: u64 = args
+            .iter()
+            .position(|a| a == "--recall-settle")
+            .and_then(|j| args.get(j + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(150);
+        if slot == u32::MAX || scene.is_none() || group.is_empty() || node.is_empty() {
+            eprintln!("usage: probe --scene-write-cell <listIdx> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_scene_write_cell(
+            slot,
+            scene,
+            &group,
+            &node,
+            &param,
+            value,
+            scene_edit,
+            recall_settle,
+        ) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--set-scene-param") {
         // --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>
         // Pure WRITE (no measurement, no re-amp): set one block param and save. A
