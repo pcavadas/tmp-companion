@@ -41,6 +41,7 @@ import {
   chosenFrom,
   DYNAMIC_SPREAD_LU,
   optionToRunItem,
+  resolvedTargetLufs,
   runItemToOption,
   type RunItem,
   type SetupOption,
@@ -393,9 +394,9 @@ export function useLevelingFlow({
 
       // A row's effective target: the reachable-common-target override when set, else its
       // named target. Used at every dispatch site so the fallback re-levels everything to
-      // one target while a normal run keeps each row's named pick.
-      const targetOf = (x: RunItem) =>
-        x.targetOverrideLufs ?? targetLufsByName(x.targetName);
+      // one target while a normal run keeps each row's named pick. Shared with the run
+      // table's Target cell so the two can't drift.
+      const targetOf = (x: RunItem) => resolvedTargetLufs(x, targetLufsByName);
 
       for (let i = 0; i < total;) {
         if (isCancelled()) break;

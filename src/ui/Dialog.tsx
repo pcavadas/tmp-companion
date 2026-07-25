@@ -18,17 +18,21 @@ import type { ReactNode } from "react";
 import { useTheme } from "../theme/ThemeContext";
 import { DialogCardCtx } from "./dialogContext";
 
-/** The dialog width scale (standard sm/md steps). sm = confirms / progress, md = the
- *  explainer sheet + leveling wizard. (Add lg/xl here when a wider dialog needs one.) */
-export type DialogSize = "sm" | "md";
+/** The dialog width scale. sm = confirms / progress, md = the explainer sheet + the Doctor
+ *  run, lg = the leveling wizard (its run step is a 5-column table that needs the width).
+ *  (Add xl here when a wider dialog needs one.) */
+export type DialogSize = "sm" | "md" | "lg";
 
-const DIALOG_WIDTH: Record<DialogSize, number> = { sm: 460, md: 560 };
+const DIALOG_WIDTH: Record<DialogSize, number> = { sm: 460, md: 560, lg: 780 };
 
 /** Shared horizontal padding for every dialog section (header/body/footer). The wizard's
  *  own WizardHeader/WizardFooter import this too so nothing drifts. */
 export const DIALOG_PAD_X = 22;
 
 const VIEWPORT_CAP = "calc(100vh - 32px)";
+/** Width twin of VIEWPORT_CAP. The window's minWidth (640) is narrower than the `lg`
+ *  card, so without this the wizard clips off-screen on a narrowed window. */
+const VIEWPORT_CAP_X = "calc(100vw - 32px)";
 
 export interface DialogProps {
   /** Backdrop click (click-only app — no Escape shortcut). Pass undefined to make the
@@ -96,6 +100,7 @@ export function Dialog({
           position: "relative",
           width: DIALOG_WIDTH[size],
           height,
+          maxWidth: VIEWPORT_CAP_X,
           maxHeight: VIEWPORT_CAP,
           display: "flex",
           flexDirection: "column",

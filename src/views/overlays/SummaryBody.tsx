@@ -21,7 +21,12 @@ import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { fmtLufs } from "../../lib/format";
 import { restorePresetLevel } from "../../lib/invoke";
-import { ceilingOf, offbranchStatus, type RunItem } from "../level/leveling";
+import {
+  ceilingOf,
+  offbranchStatus,
+  presetLine,
+  type RunItem,
+} from "../level/leveling";
 
 /** True-peak clip threshold (dBTP): a Base row's PREDICTED true peak above this
  *  earns the "may clip" caveat (estimate, from `leveller::predicted_true_peak_dbtp`,
@@ -200,47 +205,71 @@ function ResultRow({ it, restore }: ResultRowProps) {
       >
         {icon}
       </span>
+      {/* Same two-line treatment as the run table: the scene/footswitch name owns the
+          line, its preset is the mono sub-line — a long preset name can no longer
+          ellipsise away the part that identifies the sound. */}
       <span
         style={{
           flex: 1,
           minWidth: 0,
           display: "flex",
-          alignItems: "baseline",
-          gap: t.space4,
+          flexDirection: "column",
+          gap: t.space1,
         }}
       >
         <span
           style={{
-            fontFamily: t.serif,
-            fontSize: 14,
-            color: dim ? t.mutedInk : t.ink,
+            minWidth: 0,
+            display: "flex",
+            alignItems: "baseline",
+            gap: t.space4,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: t.serif,
+              fontSize: t.fsName2,
+              color: dim ? t.mutedInk : t.ink,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {it.sceneName}
+          </span>
+          {it.tag && (
+            <span
+              style={{
+                fontFamily: t.mono,
+                fontSize: t.fsTag,
+                color: it.isBase ? t.faint : t.accentDeep,
+                flexShrink: 0,
+              }}
+            >
+              {it.tag}
+            </span>
+          )}
+          {byEarOf(it) && <ByEarChip />}
+          {truePeakWarn(it) && (
+            <span
+              title={`predicted ${fmtLufs(it.truePeakDbtp)} dBTP at the leveled setting`}
+            >
+              <Tag tone="warn">may clip</Tag>
+            </span>
+          )}
+        </span>
+        <span
+          style={{
+            fontFamily: t.mono,
+            fontSize: t.fsData2,
+            color: t.faint,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
           }}
         >
-          {it.label}
+          {presetLine(it)}
         </span>
-        {it.tag && (
-          <span
-            style={{
-              fontFamily: t.mono,
-              fontSize: 8.5,
-              color: it.isBase ? t.faint : t.accentDeep,
-              flexShrink: 0,
-            }}
-          >
-            {it.tag}
-          </span>
-        )}
-        {byEarOf(it) && <ByEarChip />}
-        {truePeakWarn(it) && (
-          <span
-            title={`predicted ${fmtLufs(it.truePeakDbtp)} dBTP at the leveled setting`}
-          >
-            <Tag tone="warn">may clip</Tag>
-          </span>
-        )}
       </span>
       <span
         style={{

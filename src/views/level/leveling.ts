@@ -25,6 +25,7 @@ import type {
 import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
 import { shortFallback } from "../../models/blockArt";
+import { slotLabel } from "../../lib/format";
 
 // ── selection scene-key helpers (shared by the list + the flow) ─────────────
 
@@ -305,8 +306,6 @@ export interface RunItem {
   instId: string;
   /** Chosen target name. */
   targetName: string;
-  /** "<preset> · <scene>" or "<preset>" (scene-less). */
-  label: string;
   // live + final:
   status: "queued" | "active" | "result";
   outcome?: Outcome;
@@ -361,17 +360,25 @@ export function offbranchStatus(hint: SilenceHint | undefined): string {
   return "not on USB 1/2";
 }
 
+/** The sound's preset line — the mono sub-line under its name. Rendered verbatim in
+ *  RunBody + SummaryBody, so it lives here rather than being retyped on both. */
+export const presetLine = (it: RunItem): string =>
+  `${slotLabel(it.slot)} · ${it.presetName}`;
+
+/** The LUFS a row is ACTUALLY aiming at. The reachable-common-target fallback stamps an
+ *  explicit override that wins over the named target — the run loop's dispatch and the
+ *  run table's Target cell must resolve it the same way, so both call this. */
+export const resolvedTargetLufs = (
+  it: RunItem,
+  targetLufsByName: (name: string | null) => number,
+): number => it.targetOverrideLufs ?? targetLufsByName(it.targetName);
+
 /** Turn a checked setup row into a run item with its resolved instrument + target. */
 export function optionToRunItem(
   o: SetupOption,
   instId: string,
   targetName: string,
 ): RunItem {
-  const label = o.isBase
-    ? o.hasScenes
-      ? `${o.presetName} · Base`
-      : o.presetName
-    : `${o.presetName} · ${o.sceneName}`;
   return {
     key: o.key,
     slot: o.slot,
@@ -383,7 +390,6 @@ export function optionToRunItem(
     footswitch: o.footswitch ?? null,
     instId,
     targetName,
-    label,
     status: "queued",
   };
 }

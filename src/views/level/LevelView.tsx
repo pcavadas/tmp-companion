@@ -360,6 +360,7 @@ export function LevelView({
           defaultInst={defaultInst}
           defaultTarget={defaultTarget}
           instrumentName={instName}
+          targetLufsByName={targetLufsByName}
           runItems={flow.run.items}
           runCurrentIndex={flow.run.currentIndex}
           runTotal={flow.run.total}

@@ -122,19 +122,46 @@ describe("RunRow", () => {
     expect(screen.getByText("BASE").style.color).toBe("rgb(18, 52, 86)");
   });
 
-  it("renders the expanded drawer (children) under the row", () => {
+  // ── columned mode (the Leveling run table) ────────────────────────────────
+  // The flex cases above are the Doctor-run regression guard; these cover the opt-in
+  // grid layout the Level run passes.
+
+  it("lays out on the caller's grid template and renders subLabel + target", () => {
     under(
       <RunRow
-        name="n"
-        statusWidth={150}
-        active
+        columns="18px minmax(0, 1fr) 124px 112px 158px"
+        name="Rhythm Crunch"
+        subLabel="028 · JFF LP Hiwatt"
+        target="Stage · −26.0"
         icon={<span>ic</span>}
-        status={<span>{""}</span>}
-      >
-        <div>live-vu-drawer</div>
-      </RunRow>,
+        status={<span>queued</span>}
+      />,
     );
-    expect(screen.getByText("live-vu-drawer")).toBeTruthy();
+    expect(screen.getByText("Rhythm Crunch")).toBeTruthy();
+    expect(screen.getByText("028 · JFF LP Hiwatt")).toBeTruthy();
+    expect(screen.getByText("Stage · −26.0")).toBeTruthy();
+    const row = screen.getByText("Rhythm Crunch").closest("div");
+    expect(row?.style.display).toBe("grid");
+    expect(row?.style.gridTemplateColumns).toBe(
+      "18px minmax(0, 1fr) 124px 112px 158px",
+    );
+  });
+
+  it("renders the instrument as a plain column cell, not a Tag chip", () => {
+    under(
+      <RunRow
+        columns="18px minmax(0, 1fr) 124px 112px 158px"
+        name="n"
+        instrument="Telecaster"
+        target="t"
+        icon={<span>ic</span>}
+        status={<span>queued</span>}
+      />,
+    );
+    const cell = screen.getByText("Telecaster");
+    expect(cell).toBeTruthy();
+    // The flex-mode Tag chip has a border; the column cell must not.
+    expect(cell.style.border).toBe("");
   });
 });
 

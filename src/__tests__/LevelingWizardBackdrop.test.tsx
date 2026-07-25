@@ -22,6 +22,7 @@ function wizard(overrides: Partial<LevelingWizardProps>): ReactElement {
     defaultInst: "none",
     defaultTarget: "",
     instrumentName: () => "",
+    targetLufsByName: () => -26,
     runItems: [],
     runCurrentIndex: 0,
     runTotal: 0,

@@ -1,8 +1,8 @@
-// src/__tests__/RunBody.test.tsx — the live "leveling…" strip contract. While an item is
-// active AND a live LUFS value is streaming, the readout shows the LATEST value and owns the
-// right status cell; with no live value the row shows its normal "leveling…" status; a
-// resolved row never shows the strip (the result row is the confirm). Mirrors the advisory
-// semantics — no assertion that the live value ≈ the result value.
+// src/__tests__/RunBody.test.tsx — the run step's live-capture contract and its columned
+// table. The live readout lives in the step HEADER (once per run, never per row) and shows
+// the LATEST streamed value; a row states its own scene name and target rather than one
+// concatenated label. Mirrors the advisory semantics — no assertion that the live value ≈
+// the result value.
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -14,34 +14,34 @@ import type { RunItem } from "../views/level/leveling";
 
 const activeItem: RunItem = {
   key: "k0",
-  slot: 0,
-  presetName: "Reverse Delay",
-  isBase: true,
-  sceneSlot: null,
-  sceneName: "",
-  tag: null,
+  slot: 27,
+  presetName: "JFF LP Hiwatt",
+  isBase: false,
+  sceneSlot: 1,
+  sceneName: "Rhythm Crunch",
+  tag: "FS7",
   instId: "",
-  targetName: "Live",
-  label: "Reverse Delay",
+  targetName: "Stage",
   status: "active",
 };
 
 function runBody(
   liveLufs: number | null,
-  item: RunItem = activeItem,
+  items: RunItem[] = [activeItem],
 ): ReactElement {
   return (
     <ThemeProvider>
       <RunBody
-        items={[item]}
+        items={items}
         currentIndex={0}
-        total={1}
+        total={items.length}
         done={false}
         stopped={false}
         stopping={false}
         liveLufs={liveLufs}
         liveTrace={[]}
-        instrumentName={() => ""}
+        instrumentName={() => "Telecaster"}
+        targetLufsByName={() => -26}
         onCancel={vi.fn()}
         onComplete={vi.fn()}
       />
@@ -50,12 +50,14 @@ function runBody(
 }
 
 describe("RunBody live measuring strip", () => {
-  it("shows the readout (latest value + leveling…) during an active capture", () => {
+  it("shows the readout (latest value + measuring caption) during an active capture", () => {
     render(runBody(-23.1));
     expect(screen.getByText("−23.1")).toBeInTheDocument();
     expect(screen.getByText("LUFS")).toBeInTheDocument();
-    expect(screen.getByText("leveling…")).toBeInTheDocument();
-    // The readout owns the right cell — the pre-bars "connecting…" status is suppressed.
+    expect(screen.getByText("measuring FS7")).toBeInTheDocument();
+    // The row's Result cell keeps its own live number; "connecting…" is only the
+    // pre-capture state.
+    expect(screen.getByText("leveling · −23.1")).toBeInTheDocument();
     expect(screen.queryByText("connecting…")).not.toBeInTheDocument();
   });
 
@@ -67,22 +69,60 @@ describe("RunBody live measuring strip", () => {
     expect(screen.queryByText("−30.0")).not.toBeInTheDocument();
   });
 
-  it("hides the readout and shows connecting… when nothing is streaming", () => {
+  it("shows connecting… and hides the readout when nothing is streaming", () => {
     render(runBody(null));
-    expect(screen.queryByText("leveling…")).not.toBeInTheDocument();
     expect(screen.getByText("connecting…")).toBeInTheDocument();
+    // Opacity-gated, not unmounted — the header must not change height between items.
+    const meter = screen.getByText("LUFS").closest("div[aria-hidden]");
+    expect(meter?.getAttribute("aria-hidden")).toBe("true");
+    expect((meter as HTMLElement | null)?.style.opacity).toBe("0");
   });
 
-  it("never shows the strip on a resolved row (the result row is the confirm)", () => {
+  it("renders the live readout ONCE, in the header — never per row", () => {
+    const second: RunItem = { ...activeItem, key: "k1", status: "queued" };
+    render(runBody(-23.1, [activeItem, second]));
+    expect(screen.getAllByText("LUFS")).toHaveLength(1);
+  });
+
+  it("never shows a live number on a resolved row (the result row is the confirm)", () => {
     const resolved: RunItem = {
       ...activeItem,
       status: "result",
       outcome: "done",
       value: -18.0,
     };
-    // Even if a late event left liveLufs non-null, a non-active row shows no strip.
-    render(runBody(-21.6, resolved));
-    expect(screen.queryByText("leveling…")).not.toBeInTheDocument();
+    // Even if a late event left liveLufs non-null, a non-active row shows its result.
+    render(runBody(-21.6, [resolved]));
+    expect(screen.queryByText("leveling · −21.6")).not.toBeInTheDocument();
     expect(screen.getByText("done · −18.0")).toBeInTheDocument();
+  });
+});
+
+describe("RunBody columned rows", () => {
+  it("states the scene name and its own target, not a concatenated label", () => {
+    render(runBody(null));
+    // The sound's own name owns the column; its preset is the mono sub-line.
+    expect(screen.getByText("Rhythm Crunch")).toBeInTheDocument();
+    expect(screen.getByText("028 · JFF LP Hiwatt")).toBeInTheDocument();
+    expect(
+      screen.queryByText("JFF LP Hiwatt · Rhythm Crunch"),
+    ).not.toBeInTheDocument();
+    // Every row states what it is aiming at.
+    expect(screen.getByText("Stage · −26.0")).toBeInTheDocument();
+  });
+
+  it("prefers a row's targetOverrideLufs over the named target's value", () => {
+    // The reachable-common-target fallback overrides a row; the cell must state what the
+    // row is ACTUALLY aiming at, not the store's value for the target's name.
+    const overridden: RunItem = { ...activeItem, targetOverrideLufs: -29.4 };
+    render(runBody(null, [overridden]));
+    expect(screen.getByText("Stage · −29.4")).toBeInTheDocument();
+  });
+
+  it("labels the columns", () => {
+    render(runBody(null));
+    for (const head of ["Sound", "Instrument", "Target", "Result"]) {
+      expect(screen.getByText(head)).toBeInTheDocument();
+    }
   });
 });

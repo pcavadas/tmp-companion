@@ -36,6 +36,8 @@ export interface LevelingWizardProps {
   defaultInst: string;
   defaultTarget: string;
   instrumentName: (id: string) => string;
+  /** Resolve a target name to its LUFS (the run table's Target column). */
+  targetLufsByName: (name: string | null) => number;
   // run state
   runItems: RunItem[];
   runCurrentIndex: number;
@@ -71,6 +73,7 @@ export function LevelingWizard({
   defaultInst,
   defaultTarget,
   instrumentName,
+  targetLufsByName,
   runItems,
   runCurrentIndex,
   runTotal,
@@ -115,7 +118,7 @@ export function LevelingWizard({
   // Summary are both reached only here (setup returns early above) — neither takes
   // an onBackdrop, so the scrim is inert on both; see the file header for why.
   return (
-    <WizardShell current={stageToStep(stage)}>
+    <WizardShell current={stageToStep(stage)} size="lg">
       {stage === "run" && (
         <RunBody
           items={runItems}
@@ -127,6 +130,7 @@ export function LevelingWizard({
           liveLufs={liveLufs}
           liveTrace={liveTrace}
           instrumentName={instrumentName}
+          targetLufsByName={targetLufsByName}
           onCancel={onRunCancel}
           onComplete={onRunComplete}
         />

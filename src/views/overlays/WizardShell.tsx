@@ -11,7 +11,12 @@
 import { Fragment, type ReactNode } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
-import { Dialog, DialogFooter, DIALOG_PAD_X } from "../../ui/Dialog";
+import {
+  Dialog,
+  DialogFooter,
+  DIALOG_PAD_X,
+  type DialogSize,
+} from "../../ui/Dialog";
 import { Icon } from "../../ui/Icon";
 import { WIZ_STEPS, type Stage, type RailStep } from "./wizardContext";
 
@@ -135,6 +140,9 @@ export interface WizardShellProps {
   children: ReactNode;
   /** Fixed frame height (px). Default 512. */
   height?: number;
+  /** Frame width step. Default "md" — the leveling wizard opts into "lg" for its
+   *  columned run table; the Doctor run keeps the default. */
+  size?: DialogSize;
   /** Rail nodes (defaults to the leveling rail). Bulk Block Edit passes its own
    *  4-node rail (Block · Choose · Check · Done). */
   steps?: readonly RailStep[];
@@ -145,10 +153,11 @@ export function WizardShell({
   onBackdrop,
   children,
   height = 512,
+  size = "md",
   steps = WIZ_STEPS,
 }: WizardShellProps) {
   return (
-    <Dialog size="md" height={height} onClose={onBackdrop}>
+    <Dialog size={size} height={height} onClose={onBackdrop}>
       <WizardHeader current={current} steps={steps} />
       {children}
     </Dialog>
