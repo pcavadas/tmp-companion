@@ -135,6 +135,6 @@ Anything that reorders presets and then verifies (or reports success to the user
 - **Preset Volume is Fender's own name for what this app automates** — p.17 describes it as "for normalizing volume of all presets", 0–100 %. Good framing for user-facing copy.
 - **The global −6 dB instrument pad** is on the analog input, so it shifts a Tier-2 DI capture but not a re-amped USB capture — an asymmetry between the two calibration paths.
 - **Loop 3 = LEFT, Loop 4 = RIGHT** when configured as one stereo loop (silkscreened on the chassis, absent from the prose).
-- **Bank 4 holds 120 presets, not 128** — relevant to any MIDI-recall feature.
+- **MIDI bank 3 (0-based: CC0 value 3, the 4th and last bank) holds 120 presets (program numbers 1–120), not 128** — banks 0–2 hold 128 each. Relevant to any MIDI-recall feature; see `SKILL.md`'s MIDI implementation section for the full addressing table.
 - **"Bank" is overloaded**: six presets per footswitch bank (pp.5, 9) versus 128 presets per MIDI bank (p.42).
 - **Splitter and mixer render with an identical glyph** (p.12, p.18) — position in the chain is the only differentiator, so `SignalChainView` must not key on glyph identity.

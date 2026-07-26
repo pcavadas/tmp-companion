@@ -104,7 +104,10 @@ pub fn probe_tail_decay(
     let (samples, rate) =
         leveller::doctor_capture(slot, scene, &[], &stim, Some(0.5), tail_ms, false)?;
     write_wav_mono(out, &samples, rate)?;
-    let stim_ms = stim.len() as u64 * 1000 / rate as u64;
+    // The stimulus is 48 kHz by construction (`read_stimulus_48k`); `rate` is the
+    // CAPTURE rate `doctor_capture` returns and need not match it — using `rate`
+    // here would misreport the stimulus duration by their ratio if they differ.
+    let stim_ms = stim.len() as u64 * 1000 / 48_000;
     Ok(format!(
         "captured slot {slot} scene {scene:?}: {stim_ms}ms stimulus + {tail_ms}ms tail = {} samples @ {rate} Hz → {out}\n",
         samples.len()
@@ -177,6 +180,15 @@ pub fn probe_reamp_wav(
                 Ok((g.to_string(), n.to_string(), true))
             })
             .collect::<Result<Vec<_>, String>>()?;
+        // bypass_nodes was non-empty text but every token was blank after
+        // trim/filter (e.g. "," or " , "): reject rather than silently falling
+        // through to an unbypassed capture, which would look like a valid
+        // all-lanes measurement instead of a malformed argument.
+        if forced.is_empty() {
+            return Err(format!(
+                "bypass-nodes={bypass_nodes:?} produced no GROUP/NODE tokens after parsing"
+            ));
+        }
         let (mono, rate) = leveller::capture_samples_bypassed(slot, &stim, ref_level, &forced)?;
         write_wav_mono(out, &mono, rate)?;
         let loud = lufs::measure_mono(&mono, rate)

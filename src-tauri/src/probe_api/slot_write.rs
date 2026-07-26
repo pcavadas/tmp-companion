@@ -149,12 +149,29 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     // here isn't a substitute fix: loading the ALREADY-current preset emits no
     // field-3 push at all (see the `Some(slot)` note below), so it wouldn't move
     // the risk, only hide it behind a call that looks like it helped.
-    let expected_name = s
-        .list_my_presets()?
-        .into_iter()
-        .find(|p| p.slot == slot)
-        .map(|p| p.name)
-        .ok_or_else(|| format!("list index {slot} not found in My Presets"))?;
+    //
+    // Compares `info.preset_id`, NOT `info.displayName` — displayName is
+    // user-editable and duplicates are allowed (see this skill's own documented
+    // invariant: preset identity is the UUID, never the label), so a name-only
+    // check could pass while a different, same-named preset is actually active.
+    // The field-8 read is on a QUIET line (its own drain, like `probe_roster`),
+    // BEFORE the undrained capture below — the two don't interleave.
+    s.drain_until_quiet(250, 20)?;
+    let expected_raw = s
+        .read_slot_preset_json(slot + 1)?
+        .ok_or_else(|| format!("list index {slot}: no presetJson on the device (empty slot?)"))?;
+    let expected_json = session::tolerant_parse_json(&String::from_utf8_lossy(&expected_raw))
+        .ok_or_else(|| format!("list index {slot}: presetJson did not parse"))?;
+    let expected_id = expected_json
+        .pointer("/info/preset_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("list index {slot}: presetJson has no info.preset_id"))?
+        .to_string();
+    let expected_name = expected_json
+        .pointer("/info/displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<unnamed>")
+        .to_string();
     // NO pre-drain here. `capture_full_preset_json` waits for the field-3
     // currentPresetDataChanged PUSH, and `drain_until_quiet` eats exactly that —
     // draining first made the capture fail with "no payload captured". This is the
@@ -179,25 +196,29 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
 
     // Verify identity BEFORE writing, from the same read the "before" comparison
     // already needs — never trust that the caller loaded the right preset earlier.
-    let name_of = |j: &str| {
-        j.find("\"displayName\":\"").and_then(|i| {
-            let r = &j[i + 15..];
+    // Compares preset_id (the canonical identity); displayName is extracted too,
+    // but only for the error message — it's context, not the check.
+    let field_of = |j: &str, key: &str| {
+        let needle = format!("\"{key}\":\"");
+        j.find(&needle).and_then(|i| {
+            let r = &j[i + needle.len()..];
             r.find('"').map(|e| r[..e].to_string())
         })
     };
-    match name_of(&before) {
-        Some(n) if n == expected_name => {}
-        Some(n) => {
+    let active_name = field_of(&before, "displayName").unwrap_or_else(|| "<unknown>".into());
+    match field_of(&before, "preset_id") {
+        Some(id) if id == expected_id => {}
+        Some(_) => {
             return Err(format!(
-                "refusing switchTemplate: active preset is {n:?}, not {expected_name:?} \
-                 (list index {slot}) — load the scratch preset first"
+                "refusing switchTemplate: active preset is {active_name:?}, not \
+                 {expected_name:?} (list index {slot}) — load the scratch preset first"
             ));
         }
         None => {
             return Err(format!(
-                "refusing switchTemplate: could not read the active preset's name from the \
-                 pre-switch capture, so identity against list index {slot} ({expected_name:?}) \
-                 could not be confirmed"
+                "refusing switchTemplate: could not read the active preset's preset_id from \
+                 the pre-switch capture, so identity against list index {slot} \
+                 ({expected_name:?}) could not be confirmed"
             ));
         }
     }
