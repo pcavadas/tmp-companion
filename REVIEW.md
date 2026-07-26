@@ -18,6 +18,8 @@ from the changed one:
 | #109 | Summary stage lacked the backdrop-click protection Run already had            |
 | #108 | Doctor's run screen lacked `RunBody`'s stop-requested / stopped / done states |
 | #110 | Escape-to-close survived in an app that is click-only by design               |
+| #112 | A bare device write/measure with no preceding `loadScene` omitted the base recall present in a sibling path, landing in whatever scene the connection currently held |
+| #112 | A new footswitch assignment hardcoded 5 switch-owned fields instead of inheriting them from a sibling function on the same switch |
 
 Reading a hunk in isolation cannot catch any of these. So when a diff touches one
 stage, branch, or case, name its siblings and compare. The sets that keep drifting:
@@ -25,6 +27,8 @@ stage, branch, or case, name its siblings and compare. The sets that keep drifti
 - `src/views/overlays/{SetupBody,RunBody,SummaryBody}` — the wizard stages
 - `src/views/doctor/DoctorRun` vs `src/views/overlays/RunBody` — two run screens, one contract
 - any `useXxxFlow` state machine — a flag added to one case must be consumed by all
+- `leveller.rs`'s device write/measure entry points (`capture_full_at`/`set_knob`/`set_knobs`/`write_footswitch_values`) vs `commands/doctor.rs::apply_ops_under_scene` — each must hoist an explicit scene recall before its first write; the omission is silent (no `presetError`, just the wrong scene)
+- any code that constructs a NEW footswitch function assignment — it must inherit `colorA`/`colorB`/`customLabel`/`linkGroup`/`isActive` from a sibling function on the same switch, never hardcode them
 
 Report the gap citing both paths, and say which sibling has it. If the siblings agree,
 report nothing; an empty result is correct.

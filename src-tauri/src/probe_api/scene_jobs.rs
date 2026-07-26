@@ -309,11 +309,12 @@ pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 /// survives): the repair writes ride the SAME ~700 ms post-`loadScene` acceptance window
 /// as the leveled knob itself (HW-bisected, `probe --bisect-scene`), so an unbounded diff
 /// risks silently dropping writes past the cliff instead of repairing anything. A partial
-/// repair (the top-K most-divergent) is strictly better than none. UNLIKE the settle
-/// constants it shares a budget with, `3` is an asserted starting point, not itself
-/// HW-bisected — no `probe` recipe yet measures how many extra writes actually fit in the
-/// window under real load. Revisit if the B1 hardware check (a scratch preset with a
-/// multi-param scene overlay) shows either headroom to raise it or drops even at 3.
+/// repair (the top-K most-divergent) is strictly better than none. `3` landed inside the
+/// window on a single-node scene (HW-confirmed 2026-07-26, scratch slot 35 — see
+/// `notes/leveling.md`). Callers shrink the effective per-node cap for a multi-node
+/// (parallel-amp) scene via this function's `max_params` param, so the MERGED batch across
+/// all nodes — not each node alone — stays inside the window; that halving
+/// (`build_scene_jobs`) is offline-tested only, not itself HW-bisected.
 const SCENE_REPAIR_MAX_PARAMS: usize = 3;
 
 /// `group_id`/`node_id`'s `dspUnitParameters` object in `doc` (`audioGraph.guitarNodes`

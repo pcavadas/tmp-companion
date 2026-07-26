@@ -15,8 +15,9 @@ of shipping — and makes the review quota a real resource to spend deliberately
 **Progressive review is automatic.** On a PR that has been reviewed, pushing fix commits and
 replying to threads is enough — the incremental review picks up the delta and the replies on its
 own, and re-approves once its concerns are addressed. Posting a command in that flow is at best a
-wasted quota unit and at worst resets a rate-limit countdown. Default action after addressing
-findings: push once, reply on the threads, post nothing.
+wasted quota unit and at worst appears to reset a rate-limit countdown (observed here, not
+vendor-documented). Default action after addressing findings: push once, reply on the threads,
+post nothing.
 
 One documented exception to "automatic": `auto_pause_after_reviewed_commits` (default **5**)
 silently pauses incremental review once a PR has accumulated that many reviewed pushes — a
@@ -55,7 +56,11 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 ## Recovery ladder (for a main-targeted, non-draft, same-repo PR with no review on its head)
 
 1. Walkthrough says "Review limit reached … next review available in N minutes" → wait until
-   (last edit + N min). Before that, any command is wasted.
+   (last edit + N min). Before that, any command is wasted. Compute this from the walkthrough
+   COMMENT's own text and edit timestamp — the PR's CodeRabbit check-run label (e.g. "Review
+   rate limited") is a stamp from the attempt that raised it and does NOT clear when the window
+   passes; trusting the label instead of the quoted window can turn a 3-minute wait into hours
+   of idle babysitting.
 2. After the window (or for failure/skip/pause states with no window): post ONE
    `@coderabbitai review`.
 3. If that provably no-ops (0 reviews / 0 threads on the head): ONE `@coderabbitai full review`,
@@ -67,7 +72,11 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 
 - Verify each finding against **current** code first — reviews can lag pushes and rebases.
 - Fix root causes; batch ALL of a PR's fixes into ONE commit + ONE push (each push to a
-  main-targeted PR spends a review attempt — never push cosmetically).
+  main-targeted PR spends a review attempt — never push cosmetically) — on the branch of the PR
+  the findings were actually posted on. In a stacked pair the checked-out branch is NOT
+  necessarily that PR's head (only the main-targeted front of a stack gets reviewed, per the
+  stacking note below, so the PR you're reading threads on can silently differ from the branch
+  you're on): confirm with `gh pr view <n> --json headRefName` before committing.
 - A finding that is wrong or deliberately not applicable gets ONE factual reply on its thread
   citing file:line — never a fake-fix to appease the bot, and no further argument on that thread.
   When replying after a fix push, match threads by the stable thread id — never by `(path, line)`,
@@ -103,9 +112,9 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 
 Spends a review: every push to a main-targeted PR, every retarget-to-main, every manual review
 command. Refills slowly (~a few/hour, throttling toward ~1/hour under sustained multi-PR
-activity) — and the quoted "next review available in N minutes" window itself inflates with
-same-day spend, so never assume attempt N's window applies to attempt N+1 (a four-PR cascade
-saw 42/33/27/59-minute windows).
+activity) — and the quoted "next review available in N minutes" window itself varies
+unpredictably with same-day spend, so never assume attempt N's window applies to attempt N+1
+(a four-PR cascade saw 42/33/27/59-minute windows, non-monotonic).
 
 Free: **draft PRs are skipped entirely** (`auto_review.drafts` default) — iterate in draft, mark
 ready when settled; pushes to stacked descendants whose base is NOT main (auto-review fires only
