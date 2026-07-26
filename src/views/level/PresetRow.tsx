@@ -152,7 +152,7 @@ export function PresetRow({
         caretActive
           ? expanded
             ? "Hide sounds"
-            : "Show Base + scenes"
+            : "Show Base Preset + sounds"
           : "Loading sounds…"
       }
       style={{
@@ -264,7 +264,7 @@ export function PresetRow({
           <SceneRow
             kind="base"
             tag="BASE"
-            name="Base"
+            name="Base Preset"
             sub="main preset sound"
             selected={sel.has(baseKey(row.slot))}
             onToggle={() => {

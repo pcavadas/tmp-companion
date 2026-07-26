@@ -741,31 +741,35 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
     Ok(())
 }
 
-/// Open a live-edit session on `list_index`, confirm identity, and apply
-/// `ops` — the ONE home of the connect → `confirm_active` → `begin_live_edit`
-/// → `apply_doctor_ops` sequence shared by `doctor_apply` step (b) (unsaved
-/// A/B) and `doctor_save` (rebuild-from-scratch persist). On success returns
-/// the still-open session — `doctor_apply` drops it (never saves), `doctor_save`
-/// calls `save_current_preset` on it (save must stay the LAST op on that
-/// connection). On ANY op failure the live session is dropped (freeing the
-/// seize) BEFORE `restore_saved_preset` reconnects to discard the partial
-/// edit, and an error naming `verb` ("apply"/"save") is returned.
+/// Open a live-edit session on `list_index`, confirm identity, recall `scene`,
+/// and apply `ops` — the ONE home of the connect → `confirm_active` →
+/// `begin_live_edit` → `load_scene` → `apply_doctor_ops` sequence shared by
+/// `doctor_apply` step (b) (unsaved A/B) and `doctor_save` (rebuild-from-scratch
+/// persist). On success returns the still-open session — `doctor_apply` keeps it
+/// open to capture the AFTER clip on it (`leveller::doctor_capture_on_session`),
+/// `doctor_save` calls `save_current_preset` on it (save must stay the LAST op on
+/// that connection). On ANY op failure the live session is dropped (freeing the
+/// seize) BEFORE `restore_saved_preset` reconnects to discard the partial edit,
+/// and an error naming `verb` ("apply"/"save") is returned.
+///
+/// `scene`: see `apply_ops_under_scene`'s doc.
 ///
 /// `pub(crate)`: shared with `probe --doctor-inject` (touches only
 /// `Session`/`leveller`, no Tauri state); move out of `commands::` if a third
 /// caller appears.
 ///
 /// Every failure past this point — including `Session::connect`/`confirm_active`/
-/// `begin_live_edit`, not just `apply_doctor_ops` — routes through the same
-/// restore: the caller (`doctor_apply` step (b)) is invoked right after a BEFORE
-/// capture that already wrote unsaved force-bypass isolation onto the live edit
-/// buffer (`leveller::doctor_capture`/`capture_full_at`, which never reloads
-/// before returning), so the device is dirty even before this function's own
-/// `Session::connect` runs — a setup failure here must still discard that, not
-/// just an `apply_doctor_ops` failure.
+/// `begin_live_edit`/`load_scene`, not just `apply_doctor_ops` — routes through
+/// the same restore: the caller (`doctor_apply` step (b)) is invoked right after
+/// a BEFORE capture that already wrote unsaved force-bypass isolation onto the
+/// live edit buffer (`leveller::doctor_capture`/`capture_full_at`, which never
+/// reloads before returning), so the device is dirty even before this function's
+/// own `Session::connect` runs — a setup failure here must still discard that,
+/// not just an `apply_doctor_ops` failure.
 pub(crate) fn ops_session(
     list_index: u32,
     expect_name: &str,
+    scene: Option<u32>,
     ops: &[doctor::DoctorOp],
     verb: &str,
 ) -> Result<Session, String> {
@@ -783,11 +787,46 @@ pub(crate) fn ops_session(
     let setup = || -> Result<Session, String> {
         let mut s = Session::connect()?;
         s.confirm_active(list_index, Some(expect_name))?;
-        s.begin_live_edit()?;
-        apply_doctor_ops(&mut s, ops)?;
+        apply_ops_under_scene(&mut s, scene, ops)?;
         Ok(s)
     };
     setup().map_err(|detail| restored_err(list_index, verb, detail))
+}
+
+/// `begin_live_edit` → `load_scene` → `apply_doctor_ops` on an already-confirmed
+/// session — split out of `ops_session` so the op ORDER (scene recall before any
+/// write) is unit-testable against a `SimDevice` without a real HID connection
+/// (`ops_session` itself needs `Session::connect()` + `confirm_active`'s "My
+/// Presets" list echo, which the fake doesn't model).
+///
+/// `scene`: the diagnosed sound's 0-based `scenes[]` wire index, `None` for
+/// base. Recalled explicitly (base via `session::BASE_SCENE_SLOT`, never omitted)
+/// because a bare `changeParameter` with no preceding `loadScene` lands in
+/// whatever scene the CONNECTION happens to default to (the preset's saved
+/// `lastLoadedScene`), not necessarily the diagnosed scene — omitting the recall
+/// let a scene-2 prescription silently write scene-0's overlay (or base) instead.
+///
+/// KNOWN LIMITATION (not fixed here): this recall alone is not sufficient when
+/// the diagnosed node has NO EXISTING overlay in that scene — a bare
+/// `changeParameter` still leaks to base in that case (`set_node_scene_edit` is
+/// what forces the overlay into existence, per leveling's `set_knob`/`set_knobs`).
+/// Adding `set_node_scene_edit` here isn't a free fix: it reseeds the node's
+/// scene overlay from base, wiping any OTHER already-scene-edited params on that
+/// node — the same reseed-wipes-siblings bug leveling's `set_knob`/`set_knobs`
+/// has (fixed there by a measure-the-diff-and-repair pass; no equivalent repair
+/// exists for Doctor yet). Doctor prescriptions stay on the
+/// pre-existing-overlay-only path until one lands here.
+fn apply_ops_under_scene(
+    s: &mut Session,
+    scene: Option<u32>,
+    ops: &[doctor::DoctorOp],
+) -> Result<(), String> {
+    s.begin_live_edit()?;
+    s.load_scene(scene.unwrap_or(session::BASE_SCENE_SLOT))?;
+    std::thread::sleep(std::time::Duration::from_millis(
+        leveller::SETTLE_AFTER_SET_MS,
+    ));
+    apply_doctor_ops(s, ops)
 }
 
 /// Apply a prescription LIVE onto the edit buffer (never saved) and return the
@@ -895,22 +934,28 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                 }
             };
 
-            // (b) APPLY live onto the edit buffer. NEVER saves. On ANY op failure the
-            //     stored preset is reloaded (the partial edit is discarded).
-            ops_session(job.list_index, &job.name, &job.ops, "apply")?;
+            // (b) APPLY live onto the edit buffer, recalling the diagnosed scene FIRST
+            //     (`ops_session`) so the ops land in it, not wherever the connection
+            //     defaulted to. NEVER saves. On ANY op failure the stored preset is
+            //     reloaded (the partial edit is discarded). Kept OPEN — (c) captures
+            //     on this SAME session, never reconnecting.
+            let mut s = ops_session(job.list_index, &job.name, job.scene, &job.ops, "apply")?;
 
-            // (c) AFTER: capture the live edit buffer WITHOUT reloading, under the
-            //     SAME scene/isolation as (a). ref_level None like (a): nothing
-            //     touched the level between the captures, so the A/B is inherently
-            //     level-fair at the preset's own level. Past this point the ops
-            //     already applied (b succeeded), so ANY failure here must restore
-            //     the stored preset before returning — the frontend's applyLock
-            //     releases on any `doctorApply` error assuming an auto-restore
-            //     (`PrescriptionCard.tsx`'s "a failed apply auto-restores"), and a
-            //     stranded mutated buffer would let a sibling card Apply on top of it.
+            // (c) AFTER: capture the live edit buffer on the SAME session (b) just
+            //     wrote to — NOT a fresh reconnect, which would recall the scene
+            //     again and revert the just-applied ops before ever capturing them
+            //     (`leveller::capture_on_session`'s doc). ref_level None like (a):
+            //     nothing touched the level between the captures, so the A/B is
+            //     inherently level-fair at the preset's own level. Past this point
+            //     the ops already applied (b succeeded), so ANY failure here must
+            //     restore the stored preset before returning — the frontend's
+            //     applyLock releases on any `doctorApply` error assuming an
+            //     auto-restore (`PrescriptionCard.tsx`'s "a failed apply
+            //     auto-restores"), and a stranded mutated buffer would let a
+            //     sibling card Apply on top of it.
             let after_clip = match (|| -> Result<String, String> {
                 let (after, rate) =
-                    leveller::doctor_capture_current(&stim, job.scene, &fb, None, tail_ms)?;
+                    leveller::doctor_capture_on_session(&mut s, &fb, &stim, None, tail_ms)?;
                 Ok(format!(
                     "data:audio/wav;base64,{}",
                     base64_encode(&wav_bytes(&after, rate)?)
@@ -956,12 +1001,13 @@ pub(crate) async fn doctor_save(
     state: State<'_, AppState>,
     list_index: u32,
     expect_name: String,
+    scene: Option<u32>,
     ops: Vec<doctor::DoctorOp>,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         leveller::restore_saved_preset(list_index)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let mut s = ops_session(list_index, &expect_name, &ops, "save")?;
+        let mut s = ops_session(list_index, &expect_name, scene, &ops, "save")?;
         s.save_current_preset(list_index)?;
         Ok(())
     })

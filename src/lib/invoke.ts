@@ -288,15 +288,18 @@ export const doctorApply = (job: DoctorApplyJob): Promise<DoctorApplyResult> =>
   invoke("doctor_apply", { job });
 
 /** Persist an applied prescription. Structurally safe: the backend rebuilds
- * SAVED+`ops` from scratch (reload the stored preset, re-apply `ops` on a
- * fresh confirmed session, save) rather than persisting whatever the A/B left
- * in the live edit buffer — so `ops` must be the SAME ops the card applied.
- * Only offered behind the backup acknowledgment. */
+ * SAVED+`ops` from scratch (reload the stored preset, recall `scene`, re-apply
+ * `ops` on a fresh confirmed session, save) rather than persisting whatever the
+ * A/B left in the live edit buffer — so `ops`/`scene` must be the SAME the card
+ * applied (the diagnosed sound's own scene, `null` for base — see `doctorApply`'s
+ * `job.scene`). Only offered behind the backup acknowledgment. */
 export const doctorSave = (
   listIndex: number,
   expectName: string,
+  scene: number | null,
   ops: DoctorOp[],
-): Promise<void> => invoke("doctor_save", { listIndex, expectName, ops });
+): Promise<void> =>
+  invoke("doctor_save", { listIndex, expectName, scene, ops });
 
 /** Discard an applied-but-unsaved prescription by reloading the stored preset
  * (the device's edit buffer is dropped on load — the established revert). */

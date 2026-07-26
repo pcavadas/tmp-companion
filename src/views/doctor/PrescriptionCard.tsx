@@ -123,6 +123,7 @@ export function PrescriptionCard({
   // while this card sits in "applied"; runSave must persist what was
   // actually applied/auditioned, not whatever `rx.ops` reads at save time.
   const [appliedOps, setAppliedOps] = useState<DoctorRx["ops"] | null>(null);
+  const [appliedScene, setAppliedScene] = useState<number | null>(null);
 
   // Global guard: every card targets the device's ONE edit buffer, so only one
   // card app-wide may hold an applied-but-unsaved edit at a time (see `applyLock`).
@@ -172,9 +173,11 @@ export function PrescriptionCard({
   async function runApply() {
     setBusy(true);
     setError(null);
-    // Snapshot rx.ops now — rx is a live prop and may be replaced (e.g.
-    // MatchCard recomputing on a new reference pick) before Save is clicked.
+    // Snapshot rx.ops and soundScene now — both are live props that may change
+    // (e.g. MatchCard recomputing on a new reference pick, or the user switching
+    // scenes) before Save is clicked; Save must replay into the scene Apply diagnosed.
     const ops = rx.ops;
+    const scene = soundScene;
     // Take the lock BEFORE the await: the device's edit buffer is dirty from the
     // moment the command starts, so a sibling Apply during the in-flight window
     // would clobber it. Released in the catch (a failed apply auto-restores).
@@ -187,7 +190,7 @@ export function PrescriptionCard({
         topologyId: stimulus.topologyId,
         calibrationLufs: stimulus.calibrationLufs,
         profileId: stimulus.profileId,
-        scene: soundScene,
+        scene,
         footswitch: soundFootswitch,
         nodes,
         footswitches,
@@ -201,6 +204,7 @@ export function PrescriptionCard({
       if (mountedRef.current) {
         setClips(res);
         setAppliedOps(ops);
+        setAppliedScene(scene ?? null);
         setPhase("applied");
       }
     } catch (e) {
@@ -221,6 +225,7 @@ export function PrescriptionCard({
       setPhase("draft");
       setClips(null);
       setAppliedOps(null);
+      setAppliedScene(null);
       setAcked(false);
       lock.release(cardId);
     } catch (e) {
@@ -235,7 +240,7 @@ export function PrescriptionCard({
     setBusy(true);
     setError(null);
     try {
-      await doctorSave(listIndex, presetName, appliedOps);
+      await doctorSave(listIndex, presetName, appliedScene, appliedOps);
       setPhase("saved");
       lock.release(cardId);
     } catch (e) {

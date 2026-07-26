@@ -17,6 +17,41 @@ reviews:
     base_branches:
       - main
 
+  # NB: no path_filters here on purpose. Excluding the generated catalog JSON and the
+  # lockfiles is tempting for review budget, but an ALL-NEGATIONS list is only safe if
+  # CodeRabbit reads it as include-all-then-exclude; if it reads as include-nothing it
+  # silently disables review repo-wide. Nobody has complained about review budget, so
+  # the risk buys nothing. Add exclusions only alongside a positive pattern ("src/**").
+
+  # Whole-PR pass. path_instructions below are per-hunk and can only judge lines the
+  # diff ADDS; this one judges what the diff FAILED to add — the actual shipped-bug
+  # shape here (#108, #109), where a sibling path's guard was never carried over.
+  pre_merge_checks:
+    docstrings:
+      mode: "off" # quoted: bare `off` is YAML 1.1 boolean false, the schema wants the string. 27% actual vs an 80% threshold: a permanent warning that drowns the check below
+    custom_checks:
+      - name: "Behavioral parity"
+        mode: warning
+        instructions: |
+          The bugs that ship from this repo are OMISSIONS, not bad added lines. Two recent examples:
+          the leveling wizard's Summary stage lacked the accidental-backdrop-click protection its Run
+          stage already had (#109); Doctor's run screen lacked the stop-requested/stopped/done footer
+          states Leveling's RunBody already had (#108). Reading each hunk in isolation cannot catch
+          either — the defect is a guard that is present next door and absent here.
+
+          For this PR:
+          1. Name the siblings of every changed unit — the other stages of the same wizard, the other
+             cases of the same state machine, the other branch of the same conditional, the other view
+             rendering the same flow (e.g. src/views/doctor/DoctorRun vs src/views/overlays/RunBody, or
+             SetupBody / RunBody / SummaryBody).
+          2. For each guard, confirmation gate, cancel path, loading / stopping / error state, or
+             cleanup present in a sibling but MISSING from the changed code, report it as a finding
+             citing both file paths. Say which sibling has it.
+          3. If a new state or flag is added to one sibling, check every other sibling consumes it.
+
+          Report nothing when the siblings are consistent — an empty result is a correct result.
+          Do not manufacture parity gaps, and do not restate style or naming findings here.
+
   # File-scoped invariants — the load-bearing rules that break SILENTLY (no error,
   # no failing test unless an oracle is updated). Scoped to the exact files where a
   # violation appears in a diff, so CodeRabbit flags it reliably.
@@ -54,18 +89,25 @@ reviews:
         No escape hatches: no eslint-disable / @ts-nocheck / @ts-ignore / @ts-expect-error, no any / as any, no non-null `!`. Fix by changing code, not silencing.
         Every line-icon routes through <Icon name=...> and every block illustration through BlockIcon — flag inline glyph <svg> in a view.
         React hooks must precede any conditional early return. Dialogs/overlays go through the ONE DS Dialog (ui/Dialog.tsx) — flag a per-view position:absolute/fixed scrim.
-        The app is click-only — flag added keyboard-shortcut / onKeyDown-submit handlers.
+        The app is click-only — flag added keyboard-shortcut / onKeyDown-submit handlers. This rule also applies to code the diff MOVES or merely touches, not only to newly added handlers.
+        Prefer behavioral findings over style ones in this tree. A destructive or in-flight device action (a leveling/Doctor run, a Copy save) must not be abortable by a backdrop click or an unguarded close; a stop control must give immediate feedback rather than waiting on the in-flight capture. If the changed file is one stage or branch of a flow, compare it against its siblings and report a guard or run-state the siblings have and it lacks.
     - path: ".github/workflows/**"
       instructions: |
         Security-critical. Flag: a new pull_request_target trigger; a job that checks out a PR head AND has access to secrets; interpolating untrusted ${{ github.event.* }} into a run: block (use an env: var); a widened permissions: scope; an un-pinned action (must be a full commit SHA). Keep least-privilege.
 
 knowledge_base:
   code_guidelines:
-    enabled: true # keeps defaults incl. **/CLAUDE.md (repo-wide guidelines)
-    # Additive to the defaults. These self-govern their own directories (used when a
-    # skill/note is edited); the real src/ enforcement is the path_instructions above.
+    enabled: true
+    # REVIEW.md and CLAUDE.md are both already in CodeRabbit's DEFAULT filePatterns, but
+    # the docs don't state whether an explicit list is additive to those defaults or
+    # replaces them. Listing them here costs two lines and makes the question moot —
+    # do not remove them on the assumption that the defaults still apply.
+    # The rest self-govern their own directories (used when a skill/note is edited);
+    # the real src/ enforcement is the path_instructions above.
     # Enumerated explicitly — never a .claude/skills/** wildcard.
     filePatterns:
+      - "REVIEW.md" # reviewer-facing: bug shape, ungated surfaces, what not to guess
+      - "CLAUDE.md"
       - ".claude/skills/tmp-companion-frontend/SKILL.md"
       - ".claude/skills/tmp-companion-catalog/SKILL.md"
       - ".claude/skills/tmp-companion-protocol/SKILL.md"

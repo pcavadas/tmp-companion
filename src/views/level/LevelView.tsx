@@ -170,7 +170,9 @@ export function LevelView({
   if (live.presetNonce !== prevPresetNonce) {
     setPrevPresetNonce(live.presetNonce);
     if (live.presetNonce !== 0) {
-      setLiveScene("base"); // loading a preset activates BASE
+      // Optimistic default, corrected below once tmp://live-scene reports
+      // the actual scene — see the scene-context rule (CLAUDE.md).
+      setLiveScene("base");
       setDiagError(false);
     }
   }

@@ -251,8 +251,7 @@ impl PlaybackOffsets {
 /// PROVISIONAL playback-level offsets, anchored at Rehearsal (= the assumed
 /// calibration monitoring level, offset 0). Values are deliberately coarse and
 /// PROVISIONAL — pending an SPL-anchored recalibration sweep that records monitor
-/// SPL and re-derives them (see notes/doctor-calibration.md), the same convention
-/// as the `*_CAPTURE` tables.
+/// SPL and re-derives them (see notes/doctor-calibration.md).
 pub fn playback_offsets(level: PlaybackLevel) -> PlaybackOffsets {
     match level {
         // Stage is loudest → tighten: boomy/muddy −2.0, fizzy −1.0 (fires earlier).

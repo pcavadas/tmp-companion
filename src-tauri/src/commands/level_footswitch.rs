@@ -103,18 +103,35 @@ pub(crate) fn resolve_footswitch_job(
         &job.lev_parameter_id,
     )
     .and_then(|i| sw.get(i as usize).map(|a| (i, a)));
+    // colorA/colorB/customLabel/linkGroup/switchType are SWITCH-level — the manual:
+    // "common to all five footswitch assignments" — so both an edited existing
+    // function AND a brand-new one read them the same way (an absent field on an
+    // existing function falls back to the historical constants, same as a switch
+    // with no sibling to inherit from). isActive is NOT switch-level (it's the
+    // per-function ENGAGED state — HW round-trip: engaging an unlinked switch and
+    // re-saving flipped it false→true on that one function only) — a firmware-
+    // authored disengaged assignment reads false, so an absent field means
+    // disengaged, never inherited/defaulted to engaged.
+    let field_u64 = |v: Option<&serde_json::Value>, field: &str, default: u64| -> u32 {
+        v.and_then(|a| a.get(field))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default) as u32
+    };
+    let field_str = |v: Option<&serde_json::Value>, field: &str| -> String {
+        v.and_then(|a| a.get(field))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     let spec = match existing {
         Some((i, a)) => leveller::FootswitchWriteSpec {
             function_index: i,
-            color_a: a.get("colorA").and_then(|v| v.as_u64()).unwrap_or(3) as u32,
-            color_b: a.get("colorB").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            custom_label: a
-                .get("customLabel")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            link_group: a.get("linkGroup").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            is_active: a.get("isActive").and_then(|v| v.as_bool()).unwrap_or(true),
+            color_a: field_u64(Some(a), "colorA", 3),
+            color_b: field_u64(Some(a), "colorB", 0),
+            custom_label: field_str(Some(a), "customLabel"),
+            link_group: field_u64(Some(a), "linkGroup", 0),
+            is_active: a.get("isActive").and_then(|v| v.as_bool()).unwrap_or(false),
+            switch_type: field_u64(Some(a), "switchType", 0),
         },
         None => {
             if sw.len() >= 5 {
@@ -123,13 +140,22 @@ pub(crate) fn resolve_footswitch_job(
                     job.switch
                 ));
             }
+            // A new assignment must INHERIT the switch-level fields from an existing
+            // sibling function (`sw.first()`), not hardcode defaults: a linked
+            // on-off's linkGroup would otherwise drop the switch out of its Switch
+            // Link, and colour/label would silently diverge from the switch's other
+            // assignments (Fender's own CloudPresets multi-function switches keep
+            // all five fields identical across every assignment). Falls back to the
+            // historical constants only when the switch has no existing function.
+            let sibling = sw.first();
             leveller::FootswitchWriteSpec {
                 function_index: sw.len() as u32,
-                color_a: 3,
-                color_b: 0,
-                custom_label: String::new(),
-                link_group: 0,
-                is_active: true,
+                color_a: field_u64(sibling, "colorA", 3),
+                color_b: field_u64(sibling, "colorB", 0),
+                custom_label: field_str(sibling, "customLabel"),
+                link_group: field_u64(sibling, "linkGroup", 0),
+                is_active: false,
+                switch_type: field_u64(sibling, "switchType", 0),
             }
         }
     };
@@ -375,4 +401,114 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         Ok(results.into_iter().flatten().collect())
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn preset_with_lev_param(value: f64) -> serde_json::Value {
+        serde_json::json!({
+            "audioGraph": {
+                "template": "gtrSeries",
+                "guitarNodes": {
+                    "G1": [
+                        { "FenderId": "amp", "nodeId": "amp",
+                          "dspUnitParameters": { "drive": value } }
+                    ]
+                }
+            }
+        })
+    }
+
+    fn job() -> FootswitchLevelJob {
+        FootswitchLevelJob {
+            switch: 0,
+            lev_group_id: "G1".into(),
+            lev_node_id: "amp".into(),
+            lev_parameter_id: "drive".into(),
+            target_lufs: -20.0,
+        }
+    }
+
+    // (A4) A NEW assignment on a switch that already has a function must inherit
+    // that sibling's switch-level fields (colour/label/link/switchType) rather
+    // than hardcode defaults — a linked on-off's linkGroup would otherwise drop
+    // the switch out of its Switch Link, and colour/label would silently diverge.
+    #[test]
+    fn new_assignment_inherits_sibling_switch_level_fields() {
+        let ftsw = serde_json::json!([
+            [
+                {
+                    "func": "on-off",
+                    "colorA": 1, "colorB": 2,
+                    "customLabel": "BOOST",
+                    "linkGroup": 1,
+                    "isActive": true,
+                    "switchType": 1
+                }
+            ]
+        ]);
+        let preset = preset_with_lev_param(0.5);
+        let (_, spec) = resolve_footswitch_job(&ftsw, &preset, &job()).expect("resolve");
+        assert_eq!(
+            spec.function_index, 1,
+            "appended after the existing on-off fn"
+        );
+        assert_eq!(spec.color_a, 1, "colorA inherited from the sibling");
+        assert_eq!(spec.color_b, 2, "colorB inherited from the sibling");
+        assert_eq!(
+            spec.custom_label, "BOOST",
+            "customLabel inherited from the sibling"
+        );
+        assert_eq!(
+            spec.link_group, 1,
+            "linkGroup inherited — else the switch drops out of its Switch Link"
+        );
+        assert_eq!(spec.switch_type, 1, "switchType inherited from the sibling");
+        assert!(
+            !spec.is_active,
+            "isActive is per-function engaged state, NOT inherited — a fresh assignment starts disengaged"
+        );
+    }
+
+    // An empty switch (no existing function to inherit from) falls back to the
+    // historical constants — there is nothing to inherit.
+    #[test]
+    fn new_assignment_on_empty_switch_falls_back_to_defaults() {
+        let ftsw = serde_json::json!([[]]);
+        let preset = preset_with_lev_param(0.5);
+        let (_, spec) = resolve_footswitch_job(&ftsw, &preset, &job()).expect("resolve");
+        assert_eq!(spec.function_index, 0);
+        assert_eq!(spec.color_a, 3);
+        assert_eq!(spec.color_b, 0);
+        assert_eq!(spec.custom_label, "");
+        assert_eq!(spec.link_group, 0);
+        assert_eq!(spec.switch_type, 0);
+        assert!(!spec.is_active);
+    }
+
+    // An EXISTING param assignment's isActive reads its own field verbatim — an
+    // absent field means disengaged (false), not the old unwrap_or(true) default.
+    #[test]
+    fn existing_assignment_missing_is_active_defaults_to_disengaged() {
+        let ftsw = serde_json::json!([
+            [
+                {
+                    "func": "param", "groupId": "G1", "nodeId": "amp", "parameterId": "drive",
+                    "colorA": 5, "colorB": 9, "customLabel": "X", "linkGroup": 2
+                }
+            ]
+        ]);
+        let preset = preset_with_lev_param(0.5);
+        let (_, spec) = resolve_footswitch_job(&ftsw, &preset, &job()).expect("resolve");
+        assert_eq!(
+            spec.function_index, 0,
+            "edits the existing param fn, not a new one"
+        );
+        assert!(
+            !spec.is_active,
+            "an absent isActive must default to disengaged, not engaged"
+        );
+    }
 }

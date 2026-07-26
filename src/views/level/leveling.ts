@@ -77,6 +77,7 @@ const LOUDNESS_PARAMS = new Set([
   "output",
   "mix",
   "volume",
+  "loudness",
 ]);
 /** True when adjusting this parameter changes loudness only (not the tone). */
 export const isLoudnessParam = (p: string): boolean => LOUDNESS_PARAMS.has(p);
@@ -188,7 +189,7 @@ export interface SetupOption {
   /** The `loadScene` / `level_scenes_apply` wire slot (0-based scenes[] index);
    *  null for the Base/whole-preset row (which levels `presetLevel`). */
   sceneSlot: number | null;
-  /** Display name: "Base" / "Whole preset" / the scene name. */
+  /** Display name: "Base Preset" / "Whole preset" / the scene name. */
   sceneName: string;
   /** Tag chip: "BASE" | `FS${n}` | null (em-dash for an untagged named scene). */
   tag: string | null;
@@ -229,7 +230,7 @@ export function chosenFrom(
       const scenes = sceneInfo.get(r.slot) ?? [];
       const footswitches = footswitchInfo.get(r.slot) ?? [];
       // A footswitch row reads like a scene (the user picks "a sound"), so a preset with
-      // ONLY footswitches still shows "Base" vs "Whole preset" as a true scene-less case.
+      // ONLY footswitches still shows "Base Preset" vs "Whole preset" as a true scene-less case.
       const hasChildren = scenes.length > 0 || footswitches.length > 0;
       if (sel.has(baseKey(r.slot))) {
         items.push({
@@ -238,7 +239,7 @@ export function chosenFrom(
           presetName: r.name,
           isBase: true,
           sceneSlot: null,
-          sceneName: hasChildren ? "Base" : "Whole preset",
+          sceneName: hasChildren ? "Base Preset" : "Whole preset",
           tag: hasChildren ? "BASE" : null,
           hasScenes: hasChildren,
         });
@@ -346,9 +347,19 @@ export interface RunItem {
 /** A finished row's MEASURED raw ceiling for the reachable-common-target derivation, or null
  *  when unknown. A CLAMPED row sits at max, so its measured `value` IS its ceiling; a done
  *  row's ceiling is `ceilingLufs` (Base rows carry `constant_c`; done scene/footswitch rows
- *  have none → excluded, their true ceiling is ≥ their reached target so they don't bind). */
+ *  have none → excluded, their true ceiling is ≥ their reached target so they don't bind).
+ *
+ *  EXCEPT a clamped FOOTSWITCH row: preset/scene clamps are top-rail only (`LEVEL_MIN` is
+ *  0.0 and `ideal = 10^x > 0`, so `ideal < LEVEL_MIN` is unreachable — a preset/scene can
+ *  only clamp because it's TOO QUIET to reach target, never too loud), so their clamped
+ *  `value` genuinely IS a ceiling. `measure_footswitch`'s clamp is direction-agnostic (a
+ *  switch CAN clamp because it's too LOUD), so treating it the same way would feed a FLOOR
+ *  into `min(ceiling)` and drag the whole library's derived common target down. Accepted
+ *  loss: a genuinely quiet clamped switch stops binding the common target — it still shows
+ *  its own clamped outcome, just doesn't drag every OTHER sound's target down with it. */
 export const ceilingOf = (it: RunItem): number | null => {
-  const c = it.outcome === "clamped" ? it.value : it.ceilingLufs;
+  const c =
+    it.outcome === "clamped" && !it.footswitch ? it.value : it.ceilingLufs;
   return c != null && Number.isFinite(c) ? c : null;
 };
 

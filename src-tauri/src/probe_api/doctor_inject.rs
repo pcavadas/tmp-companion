@@ -185,7 +185,7 @@ pub fn probe_doctor_inject(
         params: gains.to_vec(),
     }];
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let mut ops_s = crate::commands::doctor::ops_session(slot, &name, &ops, "inject")?;
+    let mut ops_s = crate::commands::doctor::ops_session(slot, &name, None, &ops, "inject")?;
     // Schema/write-verification readout: the edit provokes a live field-3 push whose
     // graph carries the freshly-inserted vehicle WITH its parameter values — print
     // them, so an unmapped controlId shows up as an unchanged default instead of a

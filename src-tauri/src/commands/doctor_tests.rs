@@ -417,3 +417,63 @@ fn before_cache_hits_only_the_exact_sound_and_stimulus() {
     clear_doctor_before_cache();
     assert_eq!(before_cache_get(&key), None);
 }
+
+/// One `hpf` param op — the fixture both `apply_ops_under_scene` tests apply.
+fn hpf_op() -> Vec<doctor::DoctorOp> {
+    vec![doctor::DoctorOp::Param {
+        group_id: "G1".into(),
+        node_id: "amp".into(),
+        param: "hpf".into(),
+        value: 90.0,
+    }]
+}
+
+// `apply_ops_under_scene` — the op-ORDER fix: a scene recall must precede every
+// prescription write, or a bare `changeParameter` lands wherever the connection
+// happens to default to (the preset's saved `lastLoadedScene`), not the diagnosed
+// scene. Split out of `ops_session` (which needs a real `Session::connect()` +
+// `confirm_active`'s "My Presets" list echo — not modeled by `SimDevice`) so this
+// ordering is unit-testable offline.
+#[test]
+fn apply_ops_under_scene_recalls_before_writing() {
+    let sim = crate::sim_device::SimDevice::new();
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    apply_ops_under_scene(&mut s, Some(2), &hpf_op()).expect("apply_ops_under_scene");
+    let ev = sim.events();
+    let scene_edit_pos = ev
+        .iter()
+        .position(|e| matches!(e, crate::sim_device::SimEvent::LoadScene(2)));
+    let write_pos = ev.iter().position(|e| {
+        matches!(
+            e,
+            crate::sim_device::SimEvent::ChangeParameter { scene: 2, param, .. } if param == "hpf"
+        )
+    });
+    assert!(
+        matches!((scene_edit_pos, write_pos), (Some(r), Some(w)) if r < w),
+        "LoadScene(2) must precede the scene-2 write: {ev:?}"
+    );
+}
+
+// The base case: `scene: None` recalls `BASE_SCENE_SLOT`, not "no recall at all"
+// — a bare write with no recall lands in whatever scene the connection defaults
+// to (the preset's saved `lastLoadedScene`), which can silently differ from base.
+#[test]
+fn apply_ops_under_scene_recalls_base_explicitly_for_none() {
+    let sim = crate::sim_device::SimDevice::new().with_saved_scene(0, Some(3));
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(0).expect("load_preset"); // activates saved scene 3, not base
+    apply_ops_under_scene(&mut s, None, &hpf_op()).expect("apply_ops_under_scene");
+    let ev = sim.events();
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            crate::sim_device::SimEvent::ChangeParameter {
+                scene: crate::sim_device::SCENE_BASE,
+                param,
+                ..
+            } if param == "hpf"
+        )),
+        "a None scene must write base, not the leftover saved scene 3: {ev:?}"
+    );
+}

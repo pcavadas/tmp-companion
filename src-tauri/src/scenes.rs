@@ -6,6 +6,19 @@ use serde_json::Value;
 
 use crate::leveller::common_target;
 
+/// The node object at `group_id`/`node_id` under `preset`'s `audioGraph.guitarNodes`
+/// (an array per group; matched by `nodeId`/`FenderId` via `audiograph::node_id`). Shared
+/// node-lookup for [`block_bypass_in_live_graph`] and the scene-repair diff
+/// (`probe_api::scene_jobs::node_dsp_params`) — both need "find this node in a
+/// materialized `audioGraph` doc" and previously duplicated the pointer/array/find walk.
+pub fn guitar_node<'a>(preset: &'a Value, group_id: &str, node_id: &str) -> Option<&'a Value> {
+    preset
+        .pointer(&format!("/audioGraph/guitarNodes/{group_id}"))?
+        .as_array()?
+        .iter()
+        .find(|n| crate::audiograph::node_id(n) == Some(node_id))
+}
+
 /// A block's `bypass` state in the LIVE `audioGraph` (`audioGraph.guitarNodes[group]`,
 /// an array of nodes each carrying `nodeId`/`FenderId`). `None` = the block wasn't
 /// found / has no `bypass`.
@@ -17,13 +30,8 @@ use crate::leveller::common_target;
 /// the scene loaded over USB), NOT the stored `scenes[]` overlay — the overlay flags
 /// proved unstable (the same scene read opposite amp states in different read contexts).
 pub fn block_bypass_in_live_graph(preset: &Value, group_id: &str, node_id: &str) -> Option<bool> {
-    let nodes = preset
-        .pointer(&format!("/audioGraph/guitarNodes/{group_id}"))?
-        .as_array()?;
-    nodes
-        .iter()
-        .find(|n| crate::audiograph::node_id(n) == Some(node_id))
-        .and_then(|n| n.pointer("/dspUnitParameters/bypass"))
+    guitar_node(preset, group_id, node_id)?
+        .pointer("/dspUnitParameters/bypass")
         .and_then(Value::as_bool)
 }
 

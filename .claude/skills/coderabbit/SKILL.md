@@ -13,6 +13,11 @@ This skill is a **decision procedure**, not advice. Observe state with the comma
 state up in §3, take the one action it names. If a situation is not in the table, the action is
 **wait**.
 
+**Progressive review is automatic.** On a reviewed PR, pushing fix commits and replying to threads
+is enough — the incremental review picks up the delta and the replies on its own, and re-approves
+once its concerns are addressed. A command in that flow is at best a wasted quota unit and at worst
+appears to reset a rate-limit countdown (observed here, not vendor-documented).
+
 ## 1. Hard rules (no exceptions, no judgment)
 
 | #   | Never                                                                                                            | Because                                                                                                 |
@@ -22,7 +27,7 @@ state up in §3, take the one action it names. If a situation is not in the tabl
 | N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2. CodeRabbit resolves its own threads once it accepts a fix or a rebuttal.                    |
 | N4  | `@coderabbitai approve`                                                                                          | Resolves all threads AND submits the approval that is this repo's merge gate — self-approving a merge.  |
 | N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).  |
-| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state. See §3 row S1.                                                       |
+| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state, and the command may itself reset the countdown. See §3 row S1.       |
 | N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                   |
 
 Only ONE command is ever postable on this repo: **`@coderabbitai review`**, and only in §3 row S3.
@@ -40,9 +45,14 @@ date -u +%H:%M:%SZ                                       # for window arithmetic
 Three observations decide everything:
 
 - **`REVIEWED`** — a formal review exists whose `submittedAt` is after the current head was pushed.
-- **`LIMITED(t, n)`** — the latest CodeRabbit comment says "Review limit reached … next review
-  available in **n** minutes", last edited at **t**. The limit is **lifted** once `now ≥ t + n`.
+- **`LIMITED(t, n)`** — a CodeRabbit **comment** says "Review limit reached … next review available
+  in **n** minutes", last edited at **t**. The limit is **lifted** once `now ≥ t + n`.
 - **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
+
+**Read `LIMITED` from the COMMENT's own text and edit timestamp, never from the check run.** The
+PR's CodeRabbit check-run label (e.g. "Review rate limited") is a stamp from the attempt that raised
+it and does NOT clear when the window passes; trusting the label instead of the quoted window can
+turn a 3-minute wait into hours of idle babysitting.
 
 **Record `LIMITED(t, n)` the moment you see it — it is not durable.** CodeRabbit reuses ONE
 walkthrough comment, so the limit notice gets EDITED AWAY when that comment is next regenerated (on
@@ -56,7 +66,7 @@ replies within 13 seconds while no review had run on the head. So "it responds t
 review appears" is the LIMITED signature, not a dead integration — and conversely, a fast reply is
 NOT evidence that a review will run. Never infer `REVIEWED` from reply liveness.
 
-Two traps that make observation lie:
+Two more traps that make observation lie:
 
 - **Never key on `reviewDecision` flipping.** A push dismisses approvals
   (`dismiss_stale_reviews_on_push`) but NOT a request-changes review, which stands until a new
@@ -80,6 +90,11 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S6  | `APPROVED` + CI green + `mergeStateStatus` clean                    | Done. Auto-merge takes it; report the merge.                                        |
 | S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads) | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).          |
 
+`mergeStateStatus: DIRTY` is not in this table because it is not a review state — it means `main`
+moved and the branch now conflicts. Merge `origin/main` in (never rebase + force-push a PR branch),
+resolve, and re-enter at S1. Preserve what the incoming side added: a conflict in a file both
+branches edited is two sessions' findings, not yours versus noise.
+
 ## 4. Handling one thread (deterministic)
 
 Per finding, in order:
@@ -88,7 +103,13 @@ Per finding, in order:
    rebases, so a finding can already be fixed or have moved.
 2. **Classify.** Valid ⇒ step 3. Invalid or deliberately out of scope ⇒ step 4. There is no third
    branch: every open thread gets a fix or a reasoned reply.
-3. **Fix the root cause.** Batch every fix on the PR into ONE commit + ONE push (N7).
+3. **Fix the root cause**, on the branch of the PR the findings were actually posted on. Batch every
+   fix into ONE commit + ONE push (N7). In a stacked pair the checked-out branch is NOT necessarily
+   that PR's head (only the main-targeted front of a stack gets reviewed, per §5, so the PR whose
+   threads you are reading can silently differ from the branch you are on): confirm with
+   `gh pr view <n> --json headRefName,headRefOid` and match BOTH the branch name and
+   `git rev-parse HEAD` against `headRefOid` — branch name alone doesn't prove the checkout is at
+   the PR's actual head after a force-push — or just `gh pr checkout <n>`.
 4. **Reply once** on the thread, including `@coderabbitai` so it engages, citing `file:line`, and
    **stating the reason** it isn't being fixed. A reply without a reason gives it nothing to
    evaluate and the thread stays open. No second reply, no argument.
@@ -116,8 +137,9 @@ stalled review. A reply is the only thread-level lever that exists.
   plain `review` "finishes" in seconds having reviewed nothing. That is row S7, not a retry.
 - **Quota (free/OSS: small, shared, adaptive).** Spent by every push to a main-targeted PR, every
   retarget-to-main, and every manual command. Refills ~a few/hour, throttling toward ~1/hour under
-  sustained activity — and the quoted "next review available in n minutes" inflates with same-day
-  spend, so never assume attempt N's window applies to N+1 (a four-PR cascade saw 42/33/27/59 min).
+  sustained activity — and the quoted "next review available in n minutes" varies unpredictably with
+  same-day spend, so never assume attempt N's window applies to N+1 (a four-PR cascade saw
+  42/33/27/59-minute windows, non-monotonic).
 - **Only main-targeted PRs are auto-reviewed** (unless `base_branches` extends it). A stacked
   child meets CodeRabbit for the first time when it retargets to main after its parent merges —
   budget one review per cascade step; pushes to non-main-based descendants are quota-free.

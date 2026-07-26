@@ -34,7 +34,7 @@ use crate::proto;
 /// scene — that is why the offline capture model's `outputLevel` term reads back only the
 /// override written for the scene being measured (a scene with no override measures its
 /// stored knob → a 0 LU shift, the locked convention).
-const SCENE_BASE: i64 = -1;
+pub(crate) const SCENE_BASE: i64 = -1;
 
 /// FenderMessageTMS field carrying a `PresetMessage`.
 const TMS_PRESET: u32 = 2;
@@ -65,6 +65,7 @@ const F_SAVE: u32 = 14;
 const F_SET_PRESET_LEVEL: u32 = 76;
 const F_CHANGE_PARAMETER: u32 = 12;
 const F_LOAD_SCENE: u32 = 101;
+const F_SET_NODE_SCENE_EDIT: u32 = 107;
 /// FenderMessageTMS field carrying a `SettingsMessage` (the re-amp toggle lives here).
 const TMS_SETTINGS: u32 = 3;
 /// `SettingsMessage.reampModeActive` (30) → `{ value(1) }`.
@@ -111,6 +112,23 @@ pub enum SimEvent {
     Saved(u32),
     /// `setPresetLevel`(76) — the linear amplitude that was sent.
     PresetLevel(f32),
+    /// `loadScene`(101) — the 0-based `scenes[]` wire index.
+    LoadScene(u32),
+    /// `changeParameter`(12) float write. `scene` is the [`SCENE_BASE`] sentinel or the
+    /// 0-based `scenes[]` index it landed under (the currently active scene at send time).
+    ChangeParameter {
+        scene: i64,
+        group: String,
+        node: String,
+        param: String,
+        value: f32,
+    },
+    /// `setNodeSceneEdit`(107).
+    SceneEdit {
+        group: String,
+        node: String,
+        enable: bool,
+    },
 }
 
 struct SimState {
@@ -143,8 +161,14 @@ struct SimState {
     /// The 0-based list index of the last `loadPreset` (the sidecar / stored-knob key).
     current_slot: u32,
     /// The active scene: `None` = base, else the 0-based `scenes[]` wire index from the
-    /// last `loadScene`. Reset to base on every `loadPreset`.
+    /// last `loadScene`. Restored on `loadPreset` from [`saved_scene`](SimState::saved_scene)
+    /// (a fresh load activates the preset's saved `lastLoadedScene`, not base — HW-confirmed).
     current_scene: Option<u32>,
+    /// Per-slot `lastLoadedScene` (0-based `scenes[]` index, `None` = base) as of the last
+    /// `saveCurrentPreset` — what a subsequent `loadPreset` restores into `current_scene`.
+    /// [`SimDevice::with_saved_scene`] seeds it directly for a test that doesn't want to
+    /// drive a save first.
+    saved_scene: HashMap<u32, Option<u32>>,
     /// The last `setPresetLevel` — the linear global multiplier the model shifts by
     /// `20·log10`. SIMPLIFICATION: a real `loadPreset` restores the slot's SAVED
     /// presetLevel, but the sim tracks no per-slot saved value, so it just PRESERVES the
@@ -194,6 +218,7 @@ impl Default for SimState {
                 .to_string(),
             current_slot: 0,
             current_scene: None,
+            saved_scene: HashMap::new(),
             preset_level: 1.0,
             param_writes: HashMap::new(),
             bypass_writes: HashMap::new(),
@@ -238,6 +263,20 @@ impl SimDevice {
         self
     }
 
+    /// Seed slot `slot0`'s (0-based) saved `lastLoadedScene` — what a subsequent
+    /// `loadPreset` for that slot restores `current_scene` to. Lets a test drive the
+    /// "loading a preset activates its saved scene, not base" behavior without first
+    /// driving a `loadScene` + `saveCurrentPreset` round-trip.
+    #[cfg(test)]
+    pub fn with_saved_scene(self, slot0: u32, scene: Option<u32>) -> SimDevice {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .saved_scene
+            .insert(slot0, scene);
+        self
+    }
+
     /// Override the preset JSON a `loadPreset` echoes as `currentPresetDataChanged`(3) —
     /// the pre-edit roster the `blockcaps` guard reads. Lets a test configure a specific
     /// `audioGraph` (e.g. one already at a block-count cap) to exercise the guard's
@@ -273,6 +312,19 @@ impl SimDevice {
         self.state.lock().expect("sim lock").songs.clone()
     }
 
+    /// The value last written to `node`'s `bypass` via `changeParameter`'s BOOL path
+    /// (`ChangeParameter.boolVal`), or `None` if never written. Node-keyed only (matches
+    /// `bypass_writes`) — the sim's bypass model isn't scene-scoped.
+    #[cfg(test)]
+    pub fn bypass_write(&self, node: &str) -> Option<bool> {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .bypass_writes
+            .get(node)
+            .copied()
+    }
+
     /// Parse one request body and produce the device's framed reply reports.
     fn handle(&self, body: &[u8]) -> Vec<Vec<u8>> {
         let top = proto::parse(body);
@@ -302,12 +354,13 @@ impl SimDevice {
             let dev_slot = proto::first_varint(&proto::parse(lp), 6).unwrap_or(0);
             let slot0 = dev_slot.saturating_sub(1) as u32;
             st.events.push(SimEvent::Loaded(slot0));
-            // A load resets the active scene to base and discards the edit buffer (the
-            // scene-scoped knob writes + forced bypasses). `preset_level` is deliberately
-            // NOT reset — see its field doc (the sim has no per-slot saved value, so it
-            // preserves the last-set multiplier; faithful for the leveling flow).
+            // A load activates the preset's saved `lastLoadedScene` (HW-confirmed — a bare
+            // load does NOT reset to base) and discards the edit buffer (the scene-scoped
+            // knob writes + forced bypasses). `preset_level` is deliberately NOT reset —
+            // see its field doc (the sim has no per-slot saved value, so it preserves the
+            // last-set multiplier; faithful for the leveling flow).
             st.current_slot = slot0;
-            st.current_scene = None;
+            st.current_scene = st.saved_scene.get(&slot0).copied().flatten();
             st.param_writes.clear();
             st.bypass_writes.clear();
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
@@ -367,8 +420,10 @@ impl SimDevice {
         }
         if let Some(save) = proto::first_bytes(&f, F_SAVE) {
             let dev_slot = proto::first_varint(&proto::parse(save), 1).unwrap_or(0);
-            st.events
-                .push(SimEvent::Saved(dev_slot.saturating_sub(1) as u32));
+            let slot0 = dev_slot.saturating_sub(1) as u32;
+            let scene = st.current_scene;
+            st.saved_scene.insert(slot0, scene);
+            st.events.push(SimEvent::Saved(slot0));
             return Vec::new();
         }
         if let Some(spl) = proto::first_bytes(&f, F_SET_PRESET_LEVEL) {
@@ -382,14 +437,22 @@ impl SimDevice {
             return vec![frame(&preset_level_changed(level))];
         }
         if let Some(ls) = proto::first_bytes(&f, F_LOAD_SCENE) {
-            // LoadScene{ sceneSlot(1) } — the 0-based scenes[] wire index.
-            st.current_scene = Some(proto::first_varint(&proto::parse(ls), 1).unwrap_or(0) as u32);
+            // LoadScene{ sceneSlot(1) } — the 0-based scenes[] wire index, OR the
+            // `BASE_SCENE_SLOT` (8) sentinel that recalls base (not a real `scenes[]`
+            // entry — HW-confirmed; `session::BASE_SCENE_SLOT`).
+            let wire_slot = proto::first_varint(&proto::parse(ls), 1).unwrap_or(0) as u32;
+            st.current_scene = if wire_slot == crate::session::BASE_SCENE_SLOT {
+                None
+            } else {
+                Some(wire_slot)
+            };
+            st.events.push(SimEvent::LoadScene(wire_slot));
             // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
             // classify each scene's routing (the real device pushes the scene graph on a scene
             // CHANGE). The sim carries one graph, and the physics model reads the written
             // `outputLevel` node-agnostically, so re-serving the same graph per scene is enough
             // for the amp pick to resolve — without it, the pre-pass harvests nothing and every
-            // scene fails to classify ("read failed"). Only scene-leveling sends `loadScene`.
+            // scene fails to classify ("read failed").
             let json = load_echo_json(&st, st.current_slot);
             return frame_multi(&current_preset_data_changed(&json));
         }
@@ -407,10 +470,50 @@ impl SimDevice {
                 .find(|(n, _)| *n == 5)
                 .and_then(|(_, val)| val.as_f32());
             if let Some(v) = float_val {
+                st.events.push(SimEvent::ChangeParameter {
+                    scene,
+                    group: group.clone(),
+                    node: node.clone(),
+                    param: param.clone(),
+                    value: v,
+                });
                 st.param_writes.insert((scene, group, node, param), v);
             } else if param == "bypass" {
                 let on = proto::first_varint(&inner, 7).unwrap_or(0) != 0;
                 st.bypass_writes.insert(node, on);
+            }
+            return Vec::new();
+        }
+        if let Some(se) = proto::first_bytes(&f, F_SET_NODE_SCENE_EDIT) {
+            // SetNodeSceneEdit{ nodeId(1), groupId(2), sceneEditEnable(3) }.
+            let inner = proto::parse(se);
+            let node = str_field(&inner, 1);
+            let group = str_field(&inner, 2);
+            let enable = proto::first_varint(&inner, 3).unwrap_or(0) != 0;
+            st.events.push(SimEvent::SceneEdit {
+                group: group.clone(),
+                node: node.clone(),
+                enable,
+            });
+            // HW-confirmed (B): enabling Scene Edit on a node RESEEDS that node's scene
+            // overlay from base — any prior override for OTHER params on this node in the
+            // active scene is lost, replaced by whatever the node currently holds at base.
+            // The offline model can only see explicit writes, so it reseeds from base's
+            // recorded `param_writes` (the [`SCENE_BASE`] entries) rather than the true
+            // stored/firmware value — a param never explicitly written at base has nothing
+            // to reseed from and is simply dropped, a known offline-fidelity gap.
+            let scene_key = st.scene_key();
+            if enable && scene_key != SCENE_BASE {
+                let mut reseed = Vec::new();
+                st.param_writes.retain(|(s, g, n, p), v| {
+                    if *s == SCENE_BASE && *g == group && *n == node {
+                        reseed.push(((scene_key, g.clone(), n.clone(), p.clone()), *v));
+                        true
+                    } else {
+                        !(*s == scene_key && *g == group && *n == node)
+                    }
+                });
+                st.param_writes.extend(reseed);
             }
             return Vec::new();
         }
@@ -1186,6 +1289,123 @@ mod physics_tests {
                 .integrated_lufs
                 .is_finite(),
             "the capture after the one-shot fault is healthy"
+        );
+    }
+}
+
+// ─── scene-context model tests (the bug this PR fixes was invisible without these) ──
+#[cfg(test)]
+mod scene_context_tests {
+    use super::*;
+    use crate::session::{Session, BASE_SCENE_SLOT};
+
+    // (A) A bare write after loading a preset lands in that preset's SAVED scene, not base.
+    #[test]
+    fn a_load_activates_the_saved_scene_not_base() {
+        let sim = SimDevice::new().with_saved_scene(2, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(2).unwrap();
+        s.change_parameter("G1", "n1", "level", 0.42).unwrap();
+        let ev = sim.events();
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, SimEvent::ChangeParameter { scene: 3, .. })),
+            "a bare write after loading a preset saved on scene 3 must land in scene 3: {ev:?}"
+        );
+    }
+
+    // A preset with no saved scene (never re-saved after switching) loads into base.
+    #[test]
+    fn loading_a_preset_with_no_saved_scene_activates_base() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(5).unwrap();
+        s.change_parameter("G1", "n1", "level", 0.42).unwrap();
+        let ev = sim.events();
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                SimEvent::ChangeParameter {
+                    scene: SCENE_BASE,
+                    ..
+                }
+            )),
+            "no saved scene → base: {ev:?}"
+        );
+    }
+
+    // A save records the currently active scene as the slot's `lastLoadedScene` for the
+    // NEXT load — including a save while base (BASE_SCENE_SLOT) is active.
+    #[test]
+    fn saving_records_the_active_scene_for_the_next_load() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(1).unwrap();
+        s.load_scene(4).unwrap();
+        s.save_current_preset(1).unwrap();
+        s.load_preset(9).unwrap(); // a different slot in between
+        s.load_preset(1).unwrap(); // reload slot 1 → restores scene 4
+        s.change_parameter("G1", "n1", "level", 0.1).unwrap();
+        let ev = sim.events();
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, SimEvent::ChangeParameter { scene: 4, .. })),
+            "reloading a slot saved on scene 4 must reactivate scene 4: {ev:?}"
+        );
+    }
+
+    // `loadScene(BASE_SCENE_SLOT)` is the wire sentinel for base, not a real scenes[]
+    // entry — it must resolve to the SCENE_BASE key, not scene index 8.
+    #[test]
+    fn load_scene_base_sentinel_resolves_to_scene_base() {
+        let sim = SimDevice::new().with_saved_scene(0, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(0).unwrap();
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        s.change_parameter("G1", "n1", "level", 0.9).unwrap();
+        let ev = sim.events();
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                SimEvent::ChangeParameter {
+                    scene: SCENE_BASE,
+                    ..
+                }
+            )),
+            "an explicit base recall (wire slot {BASE_SCENE_SLOT}) must write scene_base: {ev:?}"
+        );
+    }
+
+    // (B) Enabling Scene Edit on a node reseeds that node's scene overlay from base: an
+    // existing scene override for another param on the SAME node is dropped, and a base
+    // override for that param is copied into the scene's overlay.
+    #[test]
+    fn enabling_scene_edit_reseeds_the_node_from_base() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(0).unwrap();
+        // A prior scene-3 overlay write on "drive" (as if scene-edited earlier).
+        s.load_scene(3).unwrap();
+        s.set_node_scene_edit("G1", "amp", true).unwrap();
+        s.change_parameter("G1", "amp", "drive", 0.2).unwrap();
+        // A base override for "drive" (an explicit base recall + write).
+        s.load_scene(BASE_SCENE_SLOT).unwrap();
+        s.change_parameter("G1", "amp", "drive", 0.7).unwrap();
+        // Re-enter the scene and re-enable Scene Edit on the SAME node (e.g. leveling a
+        // different param on it) — must reseed "drive" from the base override (0.7), not
+        // leave the earlier scene-local write (0.2).
+        s.load_scene(3).unwrap();
+        s.set_node_scene_edit("G1", "amp", true).unwrap();
+        // The reseed isn't itself a ChangeParameter event; assert on the resulting state.
+        let st = sim.state.lock().expect("sim lock");
+        let reseeded = st
+            .param_writes
+            .get(&(3, "G1".to_string(), "amp".to_string(), "drive".to_string()))
+            .copied();
+        assert_eq!(
+            reseeded,
+            Some(0.7),
+            "enabling Scene Edit again must reseed drive from base (0.7), not keep 0.2"
         );
     }
 }

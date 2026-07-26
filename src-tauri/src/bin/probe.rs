@@ -169,6 +169,26 @@ fn main() {
         log::set_max_level(log::LevelFilter::Info);
     }
 
+    // An `--features e2e` build makes `audio::reamp_capture` substitute a FAKE capture
+    // whenever TMP_E2E_ONLINE is unset, and with no SimDevice installed (as in this
+    // binary) that fake is `sim_device::passthrough` — the stimulus handed straight back.
+    // Every LUFS this binary printed would then be fabricated but perfectly plausible.
+    // `scripts/e2e.sh` builds probe with that feature INTO THE SAME target dir, clobbering
+    // the production binary; this has silently invalidated hardware measurements twice.
+    // Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never measures.
+    #[cfg(feature = "e2e")]
+    let seed_scenario_only =
+        args.get(1).is_some_and(|arg| arg == "--seed-scenario") && args.len() == 2;
+    #[cfg(feature = "e2e")]
+    if std::env::var("TMP_E2E_ONLINE").is_err() && !seed_scenario_only {
+        eprintln!(
+            "[probe] REFUSING TO RUN: this is an `--features e2e` build without TMP_E2E_ONLINE, \
+             so audio captures would be FAKE (stimulus passthrough), not the device.\n\
+             Rebuild the production binary:  cargo build --bin probe"
+        );
+        std::process::exit(3);
+    }
+
     if args.iter().any(|a| a == "--activegraph") {
         match tmp_companion_lib::probe_active_graph() {
             Ok(graph) => {
@@ -951,6 +971,117 @@ fn main() {
             std::process::exit(2);
         }
         match tmp_companion_lib::probe_channels(slot) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--scene-write-cell") {
+        // --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param>
+        //     [--value V] [--no-scene-edit] [--recall-settle MS]
+        // ONE cell of the scene-write isolation matrix: drives loadScene /
+        // setNodeSceneEdit / changeParameter independently so the cause of the
+        // overlay reset can be separated. Always saves; diff the slot afterwards.
+        // <expectName> is a non-destructive-read guard — refuses if slot doesn't match.
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let expect_name = args.get(i + 2).cloned().unwrap_or_default();
+        let scene: Option<u32> = args.get(i + 3).and_then(|s| s.parse().ok());
+        let group = args.get(i + 4).cloned().unwrap_or_default();
+        let node = args.get(i + 5).cloned().unwrap_or_default();
+        let param = args.get(i + 6).cloned().unwrap_or_default();
+        let value: Option<f32> = args
+            .iter()
+            .position(|a| a == "--value")
+            .and_then(|j| args.get(j + 1))
+            .and_then(|s| s.parse().ok());
+        let scene_edit = !args.iter().any(|a| a == "--no-scene-edit");
+        let recall_settle: u64 = args
+            .iter()
+            .position(|a| a == "--recall-settle")
+            .and_then(|j| args.get(j + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(150);
+        // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — not a real scene overlay.
+        if slot == u32::MAX
+            || expect_name.is_empty()
+            || scene.is_none_or(|s| s == 8)
+            || group.is_empty()
+            || node.is_empty()
+            || param.is_empty()
+            || param.starts_with("--")
+            || value.is_some_and(|v| !v.is_finite())
+        {
+            eprintln!("usage: probe --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_scene_write_cell(
+            slot,
+            &expect_name,
+            scene,
+            &group,
+            &node,
+            &param,
+            value,
+            scene_edit,
+            recall_settle,
+        ) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--set-scene-param") {
+        // --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>
+        // Pure WRITE (no measurement, no re-amp): set one block param and save. A
+        // numeric sceneSlot writes that scene's overlay (recall + Scene Edit); "base"
+        // writes the base/global value.
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let scene = match args.get(i + 2).map(String::as_str) {
+            Some("base") => Some(None),
+            Some(s) => s.parse::<u32>().ok().map(Some),
+            None => None,
+        };
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let node = args.get(i + 4).cloned().unwrap_or_default();
+        let param = args.get(i + 5).cloned().unwrap_or_default();
+        let value: f32 = args
+            .get(i + 6)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f32::NAN);
+        // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — use "base", not "8".
+        if slot == u32::MAX
+            || scene.is_none()
+            || scene == Some(Some(8))
+            || group.is_empty()
+            || node.is_empty()
+            || param.is_empty()
+            || param.starts_with("--")
+            || !value.is_finite()
+        {
+            eprintln!("usage: probe --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>");
+            std::process::exit(2);
+        }
+        // Outer Option = "arg present and parseable"; inner = None for base, Some(n) for scene n.
+        let scene = scene.flatten();
+        match tmp_companion_lib::probe_set_scene_param(slot, scene, &group, &node, &param, value) {
             Ok(r) => {
                 print!("{r}");
                 return;

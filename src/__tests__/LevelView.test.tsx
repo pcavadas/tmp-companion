@@ -359,8 +359,8 @@ function mockLevelingFixture(
 async function selectBaseOnly(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("Plexi");
   await screen.findByText("2 scenes"); // 2 FS scenes (count excludes Base), backup ready
-  await user.click(screen.getByTitle("Show Base + scenes"));
-  await user.click(await screen.findByText("Base")); // toggles the Base key only
+  await user.click(screen.getByTitle("Show Base Preset + sounds"));
+  await user.click(await screen.findByText("Base Preset")); // toggles the Base key only
 }
 
 // Tick the WHOLE Plexi preset (checkbox) → Base + both FS scenes selected.
@@ -705,7 +705,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     await screen.findByText("Plexi");
     // Collapsed meta shows the scene + footswitch breakdown.
     await screen.findByText("2 scenes · 1 footswitch");
-    await user.click(screen.getByTitle("Show Base + scenes"));
+    await user.click(screen.getByTitle("Show Base Preset + sounds"));
     // Tick ONLY the footswitch row (its own `f` key), not Base/scenes.
     await user.click(await screen.findByText("Solo"));
     await user.click(

@@ -778,6 +778,119 @@ mod tests {
         assert_eq!(sw2.functions[0].value_b, Some(0.4));
     }
 
+    // Regression fixture for the reported bug: preset 28 ("JFF LP  Hiwatt 3 scenes")'s full
+    // real 20-slot `ftsw` + real block params — 4 `func:"scene"` entries (one of them
+    // literally named "Base Scene", at switch 1; the enumerator skips it by `func`, never by
+    // name — no code path here reads scene names at all) interleaved with 4 block-acting
+    // switches that act on nodes from TWO different `audioGraph` groups (G1 and G4). The
+    // single-node fixture in `enumerate_block_footswitches_filters_and_resolves` above can't
+    // exercise resolving multiple nodes across groups in one pass; this one can.
+    #[test]
+    fn enumerate_block_footswitches_on_preset28_real_ftsw_skips_scenes_incl_the_base_scene_name() {
+        let onoff = |group: &str, node: &str| {
+            serde_json::json!({ "func": "on-off", "nodes": [{ "groupId": group, "nodeId": node }],
+                "colorA": 13, "colorB": 19, "customLabel": "", "linkGroup": 0, "isActive": false })
+        };
+        let ftsw = serde_json::json!([
+            [],
+            [scene_switch("Base Scene", 3)],
+            [onoff("G1", "ACD_MythicDrive")],
+            [onoff("G1", "ACD_Lightspeed")],
+            [],
+            [],
+            [scene_switch("Clean", 0)],
+            [scene_switch("Rhythm", 1)],
+            [scene_switch("Dirty", 2)],
+            [],
+            [],
+            [onoff("G1", "ACD_TremoloBias")],
+            [onoff("G4", "ACD_UniVibe")],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+        ]);
+        let preset = serde_json::json!({ "audioGraph": { "guitarNodes": {
+            "G1": [
+                { "nodeId": "ACD_MythicDrive", "FenderId": "ACD_MythicDrive", "dspUnitParameters": {
+                    "bypass": true, "bypassType": "Post", "gain": 0.5999999046325684,
+                    "output": 0.5499999523162842, "treble": 0.5999999642372131 } },
+                { "nodeId": "ACD_Lightspeed", "FenderId": "ACD_Lightspeed", "dspUnitParameters": {
+                    "bypass": true, "bypassType": "Post", "drive": 0.6200000047683716,
+                    "freq": 0.41999998688697815, "loudness": 0.4699999988079071 } },
+                { "nodeId": "ACD_TremoloBias", "FenderId": "ACD_TremoloBias", "dspUnitParameters": {
+                    "bypass": true, "bypassType": "Post", "intensity": 0.5, "level": 0.5,
+                    "ratehz": 6.0 } },
+            ],
+            "G4": [
+                { "nodeId": "ACD_UniVibe", "FenderId": "ACD_UniVibe", "dspUnitParameters": {
+                    "bypass": true, "bypassType": "Post", "intensity": 0.7400000095367432,
+                    "speed": 3.8463430404663086, "volume": 0.489999920129776 } },
+            ],
+        }, "micNodes": {} } });
+
+        let infos = enumerate_block_footswitches(&ftsw, &preset);
+        let switches: Vec<u32> = infos.iter().map(|i| i.switch).collect();
+        assert_eq!(
+            switches,
+            vec![2, 3, 11, 12],
+            "the 4 scene switches (incl. the \"Base Scene\"-named one at 1) must be skipped: {infos:?}"
+        );
+
+        // G1 side: switch 2 (ACD_MythicDrive) resolves its levelable params.
+        let mythic = infos.iter().find(|i| i.switch == 2).expect("switch 2");
+        assert_eq!(mythic.functions[0].fender_id, "ACD_MythicDrive");
+        let mythic_params: Vec<&str> = mythic
+            .level_params
+            .iter()
+            .map(|p| p.parameter_id.as_str())
+            .collect();
+        assert_eq!(mythic_params, vec!["gain", "output", "treble"]);
+
+        // G1 side: switch 3 (ACD_Lightspeed) — the B3 bracketing-fix subject.
+        let lightspeed = infos.iter().find(|i| i.switch == 3).expect("switch 3");
+        assert_eq!(lightspeed.functions[0].fender_id, "ACD_Lightspeed");
+        let lightspeed_params: Vec<&str> = lightspeed
+            .level_params
+            .iter()
+            .map(|p| p.parameter_id.as_str())
+            .collect();
+        assert_eq!(lightspeed_params, vec!["drive", "freq", "loudness"]);
+
+        // G1 side: switch 11 (ACD_TremoloBias) — ratehz=6.0 is outside [0,1] and excluded,
+        // same shape as UniVibe's speed exclusion below.
+        let tremolo = infos.iter().find(|i| i.switch == 11).expect("switch 11");
+        assert_eq!(tremolo.functions[0].fender_id, "ACD_TremoloBias");
+        let tremolo_params: Vec<&str> = tremolo
+            .level_params
+            .iter()
+            .map(|p| p.parameter_id.as_str())
+            .collect();
+        assert_eq!(
+            tremolo_params,
+            vec!["intensity", "level"],
+            "ratehz=6.0 is outside [0,1] and correctly excluded"
+        );
+
+        // G4 side: switch 12 (ACD_UniVibe) resolves in the SAME pass as the G1 switches
+        // above — the multi-group case the single-node fixture elsewhere can't exercise.
+        let uni_vibe = infos.iter().find(|i| i.switch == 12).expect("switch 12");
+        assert_eq!(uni_vibe.functions[0].fender_id, "ACD_UniVibe");
+        let uni_vibe_params: Vec<&str> = uni_vibe
+            .level_params
+            .iter()
+            .map(|p| p.parameter_id.as_str())
+            .collect();
+        assert_eq!(
+            uni_vibe_params,
+            vec!["intensity", "volume"],
+            "speed=3.85 is outside [0,1] and correctly excluded"
+        );
+    }
+
     // ── Bake-vs-assign planning ──
 
     /// A preset graph with one guitar block `N` and an optional sibling `M`, each with a

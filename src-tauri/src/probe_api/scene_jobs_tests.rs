@@ -475,3 +475,268 @@ fn scene_jobs_saved_fallback_without_template_still_errors() {
         build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, Some(&saved)).unwrap_err();
     assert!(err.contains("routing"), "got: {err}");
 }
+
+// B1: `SetNodeSceneEdit(node, true)` reseeds a node's ENTIRE scene overlay from base (HW
+// 3-cell isolation matrix, `probe_api/slot_write.rs`), so `build_scene_jobs` must compute a
+// repair diff for every OTHER param that scene has already scene-edited — not just leave
+// them to the reseed. `gain` diverges (repair candidate); `outputLevel` also diverges but is
+// the param being leveled (excluded); `bypass` matches base (no repair needed).
+#[test]
+fn scene_jobs_repair_diff_covers_a_diverging_sibling_param() {
+    let amp = |gain: f64, output_level: f64| {
+        serde_json::json!({
+            "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+            "dspUnitParameters": { "bypass": false, "gain": gain, "outputLevel": output_level }
+        })
+    };
+    let scene_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [amp(0.4, 1.0)] } }
+    });
+    let base_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [amp(0.7, 0.5)] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 1.0,
+    }];
+    let jobs = build_scene_jobs(
+        &[2],
+        &candidates,
+        &[(2, Some(scene_doc)), (8, Some(base_doc))],
+        -23.0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(jobs[0].repair.len(), 1, "repair: {:?}", jobs[0].repair);
+    let (knob, value) = &jobs[0].repair[0];
+    let leveller::LevelKnob::Block {
+        parameter_id,
+        scene_slot,
+        ..
+    } = knob
+    else {
+        panic!("expected block knob");
+    };
+    assert_eq!(parameter_id, "gain");
+    assert_eq!(*scene_slot, Some(2));
+    assert_eq!(*value, 0.4);
+}
+
+// A base-only job (no scene doc requested — the whole preset is base) never enables Scene
+// Edit, so there is nothing to reseed and no repair to compute.
+#[test]
+fn scene_jobs_repair_diff_empty_without_a_base_doc() {
+    let doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+              "dspUnitParameters": { "bypass": false, "gain": 0.4, "outputLevel": 1.0 } }
+        ] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 1.0,
+    }];
+    // No base doc supplied (docs holds only scene 2) — repair must default empty, not panic
+    // or guess.
+    let jobs = build_scene_jobs(&[2], &candidates, &[(2, Some(doc))], -23.0, None).unwrap();
+    assert!(jobs[0].repair.is_empty());
+}
+
+// The repair cap: more than `SCENE_REPAIR_MAX_PARAMS` diverging float params keeps only the
+// top-K most-divergent by |Δ|; `bypass` always survives the cap since it travels a separate
+// wire call, not the float `dspUnitParameters` budget the cap protects.
+#[test]
+fn scene_jobs_repair_diff_caps_float_params_but_always_keeps_bypass() {
+    // The amp is ACTIVE (unbypassed) in the scene — bypassed amps aren't classifiable
+    // leveling candidates at all (`classify_scene_knobs` filters them out) — but bypassed
+    // in BASE: exactly the disaster case B0 investigated, where a naive reseed would
+    // silently RE-BYPASS the very amp being leveled.
+    let scene_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+              "dspUnitParameters": {
+                  "bypass": false, "outputLevel": 1.0,
+                  "a": 0.9, "b": 0.7, "c": 0.5, "d": 0.1
+              } }
+        ] } }
+    });
+    let base_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+              "dspUnitParameters": {
+                  "bypass": true, "outputLevel": 0.5,
+                  "a": 0.0, "b": 0.0, "c": 0.0, "d": 0.0
+              } }
+        ] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 1.0,
+    }];
+    let jobs = build_scene_jobs(
+        &[2],
+        &candidates,
+        &[(2, Some(scene_doc)), (8, Some(base_doc))],
+        -23.0,
+        None,
+    )
+    .unwrap();
+    // a/b/c (|Δ| 0.9/0.7/0.5) survive the top-3 cap; d (|Δ| 0.1) is dropped; bypass always
+    // rides along despite the cap already being full.
+    let names: Vec<&str> = jobs[0]
+        .repair
+        .iter()
+        .map(|(k, _)| match k {
+            leveller::LevelKnob::Block { parameter_id, .. } => parameter_id.as_str(),
+            leveller::LevelKnob::PresetLevel => "presetLevel",
+        })
+        .collect();
+    assert_eq!(jobs[0].repair.len(), 4, "repair: {names:?}");
+    assert!(names.contains(&"a"));
+    assert!(names.contains(&"b"));
+    assert!(names.contains(&"c"));
+    assert!(
+        !names.contains(&"d"),
+        "d should be dropped past the cap: {names:?}"
+    );
+    assert!(
+        names.contains(&"bypass"),
+        "bypass must survive the cap: {names:?}"
+    );
+    let bypass_value = jobs[0]
+        .repair
+        .iter()
+        .find(|(k, _)| matches!(k, leveller::LevelKnob::Block { parameter_id, .. } if parameter_id == "bypass"))
+        .map(|(_, v)| *v);
+    assert_eq!(
+        bypass_value,
+        Some(0.0),
+        "scene bypass=false must encode as 0.0"
+    );
+}
+
+// A parallel (2-amp) scene's per-node repair cap must SHRINK — the ~700 ms post-loadScene
+// write window is a per-BATCH budget, not per-node (CodeRabbit #117 finding: unshrunk, 2
+// nodes at the top-3 cap could add up to 8 repair writes on top of 2 leveled knobs).
+#[test]
+fn scene_jobs_repair_diff_shrinks_per_node_cap_for_a_multi_node_scene() {
+    let amp = |fid: &str, a: f64, b: f64, c: f64| {
+        serde_json::json!({
+            "nodeId": fid, "FenderId": fid,
+            "dspUnitParameters": { "bypass": false, "outputLevel": 0.5, "a": a, "b": b, "c": c }
+        })
+    };
+    let scene_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
+            "G1": [],
+            "G2": [ amp("ACD_TM59Bassman", 0.9, 0.7, 0.5) ],
+            "G3": [ amp("ACD_HiwattDR103CanMod", 0.9, 0.7, 0.5) ]
+        } }
+    });
+    let base_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
+            "G1": [],
+            "G2": [ amp("ACD_TM59Bassman", 0.0, 0.0, 0.0) ],
+            "G3": [ amp("ACD_HiwattDR103CanMod", 0.0, 0.0, 0.0) ]
+        } }
+    });
+    let candidates = vec![
+        LevelBlockArg {
+            group_id: "G2".into(),
+            node_id: "ACD_TM59Bassman".into(),
+            parameter_id: "outputLevel".into(),
+            value: 0.5,
+        },
+        LevelBlockArg {
+            group_id: "G3".into(),
+            node_id: "ACD_HiwattDR103CanMod".into(),
+            parameter_id: "outputLevel".into(),
+            value: 0.5,
+        },
+    ];
+    let jobs = build_scene_jobs(
+        &[7],
+        &candidates,
+        &[(7, Some(scene_doc)), (8, Some(base_doc))],
+        -23.0,
+        None,
+    )
+    .unwrap();
+    // Each node diverges on 3 floats; the top-3 cap would keep all 6. The halved cap
+    // (3 / 2 = 1, at least 1) keeps only the single most-divergent float per node.
+    assert_eq!(
+        jobs[0].repair.len(),
+        2,
+        "repair: {:?} — the per-node cap must shrink for a 2-node scene",
+        jobs[0].repair
+    );
+}
+
+// Regression fixture for the reported bug: preset 28 ("JFF LP  Hiwatt 3 scenes"), scene 0
+// ("Clean") vs base — real field-8 values, not synthetic. The Hiwatt amp's "Clean" overlay
+// diverges on 7 sibling params besides the leveled `outputLevel`; the cap (3) must keep the
+// 3 largest by |Δ| (normalvolume 0.22, middle 0.20, mastervolume 0.18) and drop the rest
+// (bass 0.16, presence 0.16, brightvolume 0.11, treble 0.10) — this is the actual overlay
+// shape that a naive reseed (no repair) silently wiped on hardware.
+#[test]
+fn scene_jobs_repair_diff_on_preset28_hiwatt_overlay_keeps_top3_by_real_divergence() {
+    let hiwatt = |p: serde_json::Value| {
+        serde_json::json!({
+            "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+            "dspUnitParameters": p
+        })
+    };
+    let base_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [hiwatt(serde_json::json!({
+            "bass": 0.47999998927116394, "brightvolume": 0.41999998688697815, "bypass": false,
+            "gatePreset": "off", "mastervolume": 0.41999998688697815, "middle": 0.5899999737739563,
+            "normalvolume": 0.5600000023841858, "outputLevel": 0.6899999976158142,
+            "presence": 0.47999998927116394, "treble": 0.27000001072883606
+        }))] } }
+    });
+    let scene_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [hiwatt(serde_json::json!({
+            "bass": 0.3199999928474426, "brightvolume": 0.3100000023841858, "bypass": false,
+            "gatePreset": "off", "mastervolume": 0.6000000238418579, "middle": 0.38999998569488525,
+            "normalvolume": 0.3400000035762787, "outputLevel": 0.9599999785423279,
+            "presence": 0.6399999856948853, "treble": 0.3700000047683716
+        }))] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 1.0,
+    }];
+    let jobs = build_scene_jobs(
+        &[0],
+        &candidates,
+        &[(0, Some(scene_doc)), (8, Some(base_doc))],
+        -23.0,
+        None,
+    )
+    .unwrap();
+    let names: Vec<&str> = jobs[0]
+        .repair
+        .iter()
+        .map(|(k, _)| match k {
+            leveller::LevelKnob::Block { parameter_id, .. } => parameter_id.as_str(),
+            leveller::LevelKnob::PresetLevel => "presetLevel",
+        })
+        .collect();
+    // len == 3 + these 3 positive names already fully pins the set; the one negative
+    // check below targets the tightest real competitor (bass, tied with presence at
+    // |Δ| 0.16, both just under mastervolume's 0.18) — the case an off-by-one or a
+    // wrong-direction sort would actually get wrong.
+    assert_eq!(jobs[0].repair.len(), 3, "repair: {names:?}");
+    assert!(names.contains(&"normalvolume"), "repair: {names:?}");
+    assert!(names.contains(&"middle"), "repair: {names:?}");
+    assert!(names.contains(&"mastervolume"), "repair: {names:?}");
+    assert!(!names.contains(&"bass"), "dropped past cap: {names:?}");
+}

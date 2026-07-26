@@ -4,6 +4,7 @@ use super::songs::read_song_presets;
 use super::SCRATCH_SLOTS;
 use crate::bulk_cmd;
 use crate::bulkrun;
+use crate::leveller;
 use crate::library;
 use crate::proto;
 use crate::session;
@@ -1087,4 +1088,159 @@ fn restore_scratch(
         base_ol,
         scene_ol,
     )
+}
+
+/// Write ONE block parameter to a preset and persist it (`probe --set-scene-param`) —
+/// the repair seam for a preset whose scene overlay drifted. Routes through the
+/// leveller's own [`leveller::apply_level`] write path, so `scene = Some(n)` gets the
+/// supported per-scene treatment (scene recall → per-block Scene Edit →
+/// `changeParameter`) and `scene = None` writes the base/global value. `verify: false`,
+/// so no stimulus is read and re-amp is never engaged — this is a pure write.
+///
+/// TWO HW OBSERVATIONS from this arm's first use (fw 1.8.45, preset 028):
+///
+/// (a) SETTLED by the `--scene-write-cell` 3-cell isolation matrix (fw 1.8.45, scratch
+/// slot 32): `set_node_scene_edit(node, true)` **alone** reseeds that node's scene
+/// overlay from BASE — recall+write without the enable kept all 7 sibling params, while
+/// recall+enable *without any write* reset 6 of them. So it is neither a race nor
+/// `change_parameter`; it SUPERSEDES the earlier assumption in `notes/leveling.md`
+/// ("enabling scene mode is harmless in itself" — corrected since) and
+/// `leveller::set_knobs`, which used to blame a re-`load_scene` between per-knob writes.
+///
+/// The enable's necessity depends on whether the node ALREADY has an overlay in the
+/// target scene (both branches HW-proven on scratch slot 30):
+///   * overlay EXISTS  → the write lands on it with the enable dropped, and the enable
+///     is actively harmful (it reseeds the overlay from base).
+///   * overlay ABSENT  → without the enable the write LEAKS TO BASE (G3
+///     `ACD_MarG12H30BB.hpf` 59 → 200 landed on BASE while scene 0 gained no overlay).
+///     The enable is what materialises the overlay.
+///
+/// So `set_knob` should enable scene edit ONLY for a node with no overlay in that
+/// scene. This also reconciles `notes/leveling.md`'s "leaks to base" claim — true, but
+/// only for the overlay-absent case.
+///
+/// (b) RESOLVED — there is NO normalisation. `change_parameter` carries real-unit values
+/// VERBATIM (`ratehz` 6.0 → 3.0 and `hpf` 59 → 200 both landed exactly). `tapTimeBPM` is
+/// a DERIVED mirror of the block's rate — the PERIOD IN SECONDS, not BPM — which is why
+/// writes to it never stick and why it looked normalised: the 0.2599872 readback is
+/// 1/3.84634 s and the node's `speed` was 3.8463430404663086; a later write of
+/// `ratehz` = 3.0 moved the same field to 0.33333334 = 1/3. Both exact. The Doctor's
+/// measured-frequency EQ write (`commands/doctor.rs::apply_doctor_ops`) is therefore
+/// safe on the value axis.
+///
+/// (c) NEW, and the sharpest of the three: a `change_parameter` with NO preceding
+/// `load_scene` writes into the **currently active scene's overlay**, not base. A preset
+/// loads into its saved `lastLoadedScene`, so on a scened preset every "base" operation
+/// that omits the recall silently targets that scene (HW: slot 30 loads on scene 3;
+/// bare writes of `level` 0.80 and `ratehz` 3.0 landed in scene 3's overlay with BASE
+/// untouched — then, once base was the active context, an identical bare write moved
+/// BASE). `LevelKnob::Block { scene_slot: None }` (`commands/level_preset.rs`) and
+/// `capture_full_at`'s `scene: None` both take that path, so base block leveling
+/// measures AND writes the wrong scene. Base is a scene recall (wire slot 8), never an
+/// omission — `views/level/LevelView.tsx`'s "loading a preset activates BASE" is false.
+///
+/// ponytail: single-param, [0,1]-only. Both limits are the diagnostic's, not the
+/// device's — widen it (multi-param targets, real-unit encoding) only if a repair
+/// actually needs it.
+pub fn probe_set_scene_param(
+    slot: u32,
+    scene: Option<u32>,
+    group: &str,
+    node: &str,
+    param: &str,
+    value: f32,
+) -> Result<String, String> {
+    let knob = leveller::LevelKnob::Block {
+        group_id: group.to_string(),
+        node_id: node.to_string(),
+        parameter_id: param.to_string(),
+        scene_slot: scene,
+    };
+    let opts = leveller::LevelOptions {
+        save: true,
+        verify: false,
+        ..Default::default()
+    };
+    let (saved, _) = leveller::apply_level(slot, &[], &knob, value, opts, true)?;
+    Ok(format!(
+        "[probe --set-scene-param] slot {} · scene {} · {group}/{node}.{param} = {value:.4}  ⇒  {}\n",
+        slot + 1,
+        scene
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "base(global)".to_string()),
+        if saved { "SAVED" } else { "NOT SAVED" },
+    ))
+}
+
+/// One CELL of the scene-write isolation matrix (`probe --scene-write-cell`) — the arm that
+/// separates the three candidate causes of "a per-scene write resets the node's other scene
+/// params to base". Unlike [`probe_set_scene_param`] (which goes through
+/// `leveller::apply_level` and always does recall → scene-edit → write), this drives the
+/// session steps DIRECTLY so each one can be omitted independently:
+///
+/// * `scene_edit=false` → recall + write, no `setNodeSceneEdit`. Siblings survive ⇒ the
+///   scene-edit enable is the wiper.
+/// * `value=None` → recall + scene-edit + save, no `changeParameter`. Siblings wiped ⇒ the
+///   write is exonerated; the enable alone reseeds the overlay.
+/// * `recall_settle_ms` → lengthen the post-`loadScene` settle (keep well under the ~700 ms
+///   scene-write acceptance cliff). Siblings survive at a longer settle ⇒ it is a RACE (the
+///   node's scene values had not materialised when the enable arrived), not a semantic.
+///
+/// Always saves, so the caller can diff the persisted preset. Diagnostic only.
+#[allow(clippy::too_many_arguments)] // mirrors leveller::level_footswitch: a diagnostic seam with one arg per session step
+pub fn probe_scene_write_cell(
+    slot: u32,
+    expect_name: &str,
+    scene: Option<u32>,
+    group: &str,
+    node: &str,
+    param: &str,
+    value: Option<f32>,
+    scene_edit: bool,
+    recall_settle_ms: u64,
+) -> Result<String, String> {
+    // Non-destructive read-back BEFORE any write: confirm the list-index mapping in the
+    // SAME address space as the mutation below, so an index mistake refuses instead of
+    // silently saving over a real preset (the write-safety lesson this PR series is about).
+    let before = Session::connect()?.list_my_presets()?;
+    let cur = before
+        .iter()
+        .find(|p| p.slot == slot)
+        .map(|p| p.name.clone());
+    if cur.as_deref() != Some(expect_name) {
+        return Err(format!(
+            "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
+        ));
+    }
+    {
+        let mut s = Session::connect()?;
+        s.load_preset(slot)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::settle_after_load_ms(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+
+    let mut s = Session::connect()?;
+    if let Some(sc) = scene {
+        s.load_scene(sc)?;
+        std::thread::sleep(std::time::Duration::from_millis(recall_settle_ms));
+    }
+    if scene_edit && scene.is_some() {
+        s.set_node_scene_edit(group, node, true)?;
+        // 300 = leveller's private SETTLE_AFTER_SCENE_EDIT_MS, mirrored rather than
+        // widening its visibility for a diagnostic.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    if let Some(v) = value {
+        s.change_parameter(group, node, param, v)?;
+    }
+    s.save_current_preset(slot)?;
+    Ok(format!(
+        "[probe --scene-write-cell] slot {} · scene {:?} · {group}/{node}.{param}\n  \
+         scene_edit={scene_edit} write={:?} recall_settle={recall_settle_ms}ms  ⇒ saved\n",
+        slot + 1,
+        scene,
+        value,
+    ))
 }

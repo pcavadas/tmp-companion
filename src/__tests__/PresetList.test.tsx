@@ -153,7 +153,7 @@ describe("PresetList (scene tree)", () => {
     const onToggleExpand = vi.fn();
     // collapsed: clicking the caret asks to expand.
     const { rerender } = renderList({ onToggleExpand });
-    await userEvent.click(screen.getAllByTitle("Show Base + scenes")[0]);
+    await userEvent.click(screen.getAllByTitle("Show Base Preset + sounds")[0]);
     expect(onToggleExpand).toHaveBeenCalledWith(0);
     // expanded: the Base + FS scene + footswitch sub-rows render.
     rerender(
@@ -178,7 +178,7 @@ describe("PresetList (scene tree)", () => {
         />
       </ThemeProvider>,
     );
-    expect(screen.getByText("Base")).toBeTruthy();
+    expect(screen.getByText("Base Preset")).toBeTruthy();
     expect(screen.getByText("Bright")).toBeTruthy();
     expect(screen.getByText("Lead")).toBeTruthy();
     // the footswitch rides as a sibling row: its label + accent FS tag.
@@ -218,7 +218,7 @@ describe("PresetList (scene tree)", () => {
   it("the caret is inert until ready", () => {
     renderList({ ready: false });
     // Not-ready carets carry the loading title, not the expand affordance.
-    expect(screen.queryByTitle("Show Base + scenes")).toBeNull();
+    expect(screen.queryByTitle("Show Base Preset + sounds")).toBeNull();
     expect(screen.getAllByTitle("Loading sounds…").length).toBeGreaterThan(0);
   });
 

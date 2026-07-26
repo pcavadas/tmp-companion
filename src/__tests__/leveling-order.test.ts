@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   baseKey,
+  ceilingOf,
   chosenFrom,
   defaultParamIndex,
   footswitchName,
@@ -14,6 +15,7 @@ import {
   sceneKeyOf,
   targetFromCandidate,
 } from "../views/level/leveling";
+import type { RunItem } from "../views/level/leveling";
 import type { PresetRow } from "../views/PresetList";
 import type { FootswitchInfo, SceneInfo } from "../lib/types";
 
@@ -176,6 +178,22 @@ describe("chosenFrom run-order", () => {
     expect(defaultParamIndex(toneOnly)).toBe(0); // [gain, tone] → first
   });
 
+  // A Lightspeed compressor's own param is literally named "loudness" — without it in
+  // LOUDNESS_PARAMS, defaultParamIndex fell back to the alphabetically-first candidate
+  // (drive, a tone knob) and the run row was named after it instead of "Loudness".
+  it("defaultParamIndex prefers loudness over an alphabetically-earlier drive param", () => {
+    const at = (parameter_id: string, current: number) => ({
+      group_id: "G1",
+      node_id: "N0",
+      fender_id: "ACD_Lightspeed",
+      parameter_id,
+      current,
+    });
+    const params = [at("drive", 0.6), at("loudness", 0.5)];
+    expect(defaultParamIndex(params)).toBe(1);
+    expect(params[defaultParamIndex(params)].parameter_id).toBe("loudness");
+  });
+
   it("chosenFrom defaults a footswitch to its loudness param and carries the full candidate list", () => {
     const fswInfo = new Map<number, FootswitchInfo[]>([
       [0, [fswMulti(4, "Solo")]],
@@ -213,7 +231,58 @@ describe("chosenFrom run-order", () => {
       fswInfo,
     );
     expect(out.map((o) => o.key)).toEqual([baseKey(1), fswKey(1, 0)]);
-    expect(out[0]).toMatchObject({ isBase: true, sceneName: "Base" });
+    expect(out[0]).toMatchObject({ isBase: true, sceneName: "Base Preset" });
     expect(out[1]).toMatchObject({ tag: "FS1", sceneName: "Drive" });
+  });
+});
+
+describe("ceilingOf", () => {
+  function baseRunItem(over: Partial<RunItem>): RunItem {
+    return {
+      key: "p0",
+      slot: 0,
+      presetName: "Test",
+      isBase: true,
+      sceneSlot: null,
+      sceneName: "Base Preset",
+      tag: null,
+      instId: "",
+      targetName: "Rhythm",
+      status: "result",
+      ...over,
+    };
+  }
+
+  // Preset/scene clamps are top-rail only (LEVEL_MIN=0, ideal=10^x>0 is always
+  // reachable from below) — a clamped row's measured value genuinely IS its ceiling.
+  it("a clamped Base row's value is its ceiling", () => {
+    const it_ = baseRunItem({ outcome: "clamped", value: -18.5 });
+    expect(ceilingOf(it_)).toBe(-18.5);
+  });
+
+  // measure_footswitch's clamp is direction-agnostic (a switch can clamp because
+  // it's too LOUD, not just too quiet) — treating its value as a ceiling would feed
+  // a FLOOR into min(ceiling) and drag the whole library's common target down. A
+  // clamped footswitch row falls back to ceilingLufs instead (undefined here → null).
+  it("a clamped FOOTSWITCH row does NOT use value as its ceiling", () => {
+    const it_ = baseRunItem({
+      isBase: false,
+      footswitch: {
+        switchIndex: 0,
+        levGroupId: "G1",
+        levNodeId: "N0",
+        levParameterId: "loudness",
+      },
+      outcome: "clamped",
+      value: -6.0, // e.g. clamped because it's too LOUD
+      ceilingLufs: -14,
+    });
+    expect(ceilingOf(it_)).toBe(-14);
+  });
+
+  // A done row (not clamped) always reads ceilingLufs, footswitch or not.
+  it("a done row reads ceilingLufs regardless of footswitch", () => {
+    const it_ = baseRunItem({ outcome: "done", value: -22, ceilingLufs: -14 });
+    expect(ceilingOf(it_)).toBe(-14);
   });
 });
