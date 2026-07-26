@@ -44,6 +44,18 @@ Three observations decide everything:
   available in **n** minutes", last edited at **t**. The limit is **lifted** once `now ≥ t + n`.
 - **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
 
+**Record `LIMITED(t, n)` the moment you see it — it is not durable.** CodeRabbit reuses ONE
+walkthrough comment, so the limit notice gets EDITED AWAY when that comment is next regenerated (on
+PR #119 the 21:05Z "next review available in 40 minutes" text was gone by 21:27Z, same comment id,
+leaving only walkthrough content). Its later absence proves nothing in either direction: do not
+re-derive the state from the comment you can still see, and do not treat the disappearance as the
+limit lifting. Compute `t + n` from the observation you captured.
+
+**Thread replies are served even when review quota is exhausted.** CodeRabbit answered three thread
+replies within 13 seconds while no review had run on the head. So "it responds to replies but no
+review appears" is the LIMITED signature, not a dead integration — and conversely, a fast reply is
+NOT evidence that a review will run. Never infer `REVIEWED` from reply liveness.
+
 Two traps that make observation lie:
 
 - **Never key on `reviewDecision` flipping.** A push dismisses approvals
@@ -109,7 +121,14 @@ stalled review. A reply is the only thread-level lever that exists.
 - **Only main-targeted PRs are auto-reviewed** (unless `base_branches` extends it). A stacked
   child meets CodeRabbit for the first time when it retargets to main after its parent merges —
   budget one review per cascade step; pushes to non-main-based descendants are quota-free.
-- **The approval that merges must postdate the final commit** (`dismiss_stale_reviews_on_push`).
+- **An unresolved thread does NOT block merge here.** The "protect main" ruleset has
+  `required_review_thread_resolution: false` — what gates the merge is
+  `required_approving_review_count: 1` plus `require_last_push_approval: true`. CodeRabbit will
+  sometimes deliberately leave a thread open to track deferred work ("I'll leave this finding
+  unresolved for the deferred implementation"). That is its choice and it is merge-safe: leave it
+  open (N3) and do not chase it.
+- **The approval that merges must postdate the final commit** (`dismiss_stale_reviews_on_push` +
+  `require_last_push_approval`). So the last thing you do to a PR is stop pushing.
 - Other commands (`configuration`, `help`, `generate docstrings|unit tests|sequence diagram`,
   `summary`) are informational and harmless, but each adds bot noise. `@coderabbitai ignore` goes
   in the PR **description** and permanently disables auto-review for that PR.
