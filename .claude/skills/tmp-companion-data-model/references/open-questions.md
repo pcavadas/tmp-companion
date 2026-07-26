@@ -270,13 +270,13 @@ A `change_parameter` write against scratch slot 400, via a merely-connected (not
 
 ### A7. Can the TMP **emulator** stand in for the unit on these questions? — **NO for audio, UNRELIABLE for state**
 
-Worth recording because it looks like an obvious substitute when the unit is unavailable, and it is not one. A firmware emulator exists (a separate, private project) with a drivable touchscreen UI — which makes it tempting for exactly the entries above. Assessed against its own capabilities:
+Worth recording because it looks like an obvious substitute when the unit is unavailable, and it is not one. A firmware emulator exists (a separate, private project) with a drivable touchscreen UI — which makes it tempting for exactly the entries above. **Keep this section generic: tmp-companion is public, so never name that project's repo, binaries, RE tooling or VM internals here — `scripts/leak-guard.sh` refuses the commit.** Assessed against its own capabilities:
 
-- **Audio questions (A1, A4) — categorically impossible.** The emulator's audio layer is a stimulus/silence fixture, not a DSP — no effect algorithm renders audio and there is no USB-audio device. There is nothing to measure a LUFS or a PSD _of_. No amount of effort changes this — it is not a "not built yet" problem.
+- **Audio questions (A1–A4) — categorically impossible.** The emulator's audio layer is a stimulus/silence fixture, not a DSP — no effect algorithm renders audio and there is no USB-audio device. There is nothing to measure a LUFS or a PSD _of_. No amount of effort changes this — it is not a "not built yet" problem.
 - **State questions (C1, C2) — runs real UI code, but through a mocked device backend.** The client's UI logic genuinely executes, but the device side of the handshake is mocked rather than real firmware behaviour in several places. Whether a scene-change or template-change round-trip exercises firmware logic or a mock responder is **not established**.
 - **Version mismatch.** The emulator is pinned to an older firmware than the unit (**1.7.75** vs **1.8.45**). Any behavioural result would need re-validating on the device anyway.
 
-**Verdict:** do not use the emulator to close A1 or A4 — it cannot. It _may_ be usable to form a hypothesis for C1/C2, but a result from it must never be tagged HW-derived, and given the version gap it saves little over just doing the check on the unit.
+**Verdict:** do not use the emulator to close any of A1–A4 — it cannot. It _may_ be usable to form a hypothesis for C1/C2, but a result from it must never be tagged HW-derived, and given the version gap it saves little over just doing the check on the unit.
 
 ---
 

@@ -66,6 +66,11 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 ## Addressing findings
 
 - Verify each finding against **current** code first — reviews can lag pushes and rebases.
+- **`.coderabbit.yaml` does not enumerate CodeRabbit's static-analysis integrations.** This repo sets
+  no `tools:` section, so every one of them defaults `true` and can appear in a `🧰 Tools` block that
+  the repo config never mentions — including **SkillSpector** (NVIDIA's agent-skill security scanner,
+  v2.3.11) on a `SKILL.md` diff. Identify an unfamiliar tool from CodeRabbit's tools reference; a grep
+  of the repo config cannot tell you whether it is real.
 - Fix root causes; batch ALL of a PR's fixes into ONE commit + ONE push (each push to a
   main-targeted PR spends a review attempt — never push cosmetically).
 - A finding that is wrong or deliberately not applicable gets ONE factual reply on its thread

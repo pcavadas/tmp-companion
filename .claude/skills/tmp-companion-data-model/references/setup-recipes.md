@@ -129,7 +129,7 @@ Re-amp audio enters **at the first processing block** and **does not pass throug
 
 > **USB out 3 (dry instrument) has no limiter and clips at 0 dBFS** for hot pickups played hard (live-confirmed) — never roll the guitar volume back to avoid it, that just under-drives the amp and darkens the tone (see `SKILL.md`). **The re-amp inject is NOT AGC'd** — its amplitude directly drives the block's nonlinearity, so a hotter injected signal genuinely drives the chain harder; do not apply gain processing to the injected track expecting the device to compensate.
 
-**Clocks are separate specs (p.46):** internal A/D–D/A conversion is **44.1 kHz / 32-bit**; the USB audio clock is **44.1 / 48 / 88.2 / 96 kHz, DAW-selectable**. The manual states no internal DSP rate and does not relate the two — see `open-questions.md` before drawing conclusions about resampling in the re-amp path.
+**Clocks are separate specs (p.46):** internal A/D–D/A conversion is **44.1 kHz / 32-bit**; the USB audio clock is **44.1 / 48 / 88.2 / 96 kHz, DAW-selectable**. The manual states no internal DSP rate and does not relate the two — but measurement does: a **44.1 kHz stage is in the re-amp path** (`open-questions.md` A2, HW fw 1.8.45), so nothing above ~22 kHz in a USB capture is preset tone. The host side still runs at 48 kHz.
 
 ---
 

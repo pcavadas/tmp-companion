@@ -85,9 +85,9 @@ p.17 documents a per-preset on/off for hearing delay and reverb tails when chang
 
 ---
 
-## 7. 48 kHz is a USB rate, not the device's internal rate — comment needs fixing
+## 7. 48 kHz is a USB rate, not the device's internal rate
 
-`leveller.rs` hardcodes `RATE = 48_000` and comments it as "the device clock" (lines 74, 88). The spec sheet (p.46) lists the internal A/D–D/A at **44.1 kHz** and the USB audio clock as DAW-selectable 44.1/48/88.2/96. The precise claim is _"the macOS Core Audio device must be set to 48 kHz"_ — not _"the device clock is 48 kHz"_.
+`leveller.rs` hardcodes `RATE = 48_000` and used to comment it as "the device clock". The spec sheet (p.46) lists the internal A/D–D/A at **44.1 kHz** and the USB audio clock as DAW-selectable 44.1/48/88.2/96. The precise claim is _"the macOS Core Audio device must be set to 48 kHz"_ — not _"the device clock is 48 kHz"_.
 
 **Measured (fw 1.8.45): the capture is band-limited near 22 kHz.** Flat-noise re-amp captures on two presets with opposite spectral tilts both collapse to the float noise floor above ~22.05 kHz, with macOS CoreAudio confirmed at 48 000 Hz (so no host-side resampling). A bit-transparent 48 kHz digital path would be flat to 24 kHz. **There is a 44.1 kHz stage in USB-in → DSP → USB-out.**
 

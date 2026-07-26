@@ -226,6 +226,8 @@ Most load-bearing CCs for automation:
 
 TMP enumerates as a **4-in / 4-out** USB 2.0 audio interface. Sample rates 44.1 / 48 / 88.2 / 96 kHz DAW-selectable. Bit depth 32 (engine internal). Set mode in Global Settings → I/O → USB.
 
+> **The USB clock rate is not the internal rate.** A **44.1 kHz stage sits inside the USB-in → DSP → USB-out path** (HW-measured, fw 1.8.45): re-amp captures collapse to the float noise floor above ~22.05 kHz on two presets with _opposite_ spectral tilts. The **host Core Audio rate stays 48 kHz** — that is what `audio.rs` requires and is not a bug to "fix" to 44.1 — so capture content above ~22 kHz is anti-alias skirt, not preset tone. Load-bearing for spectrum / EQ-match / Doctor-PSD work. The limit is **not proven fixed in firmware**: the global `sampleRate` setting was never varied. Evidence + method traps: `references/open-questions.md` A2.
+
 ### Standard mode (default)
 
 | USB Out | Source                                                                                                    |
