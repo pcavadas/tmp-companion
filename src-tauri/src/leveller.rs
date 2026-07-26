@@ -4768,7 +4768,13 @@ mod tests {
 
     // (A3) A base block knob write must recall base explicitly — a preset loads
     // into its saved lastLoadedScene, not necessarily base (HW), so a bare write
-    // with no recall would silently land wherever that saved scene left it.
+    // with no recall would silently land wherever that saved scene left it. This
+    // is the reported bug's exact shape: preset 28 ("JFF LP  Hiwatt 3 scenes")
+    // has `lastLoadedScene = 3`, and scene 3 is literally named "Base Scene" —
+    // the naming collision that made the symptom read as "leveling wrote into
+    // the base preset" when it actually wrote into scene 3's overlay. The
+    // engine only ever addresses scenes by numeric slot (no name field exists
+    // at this layer), so the fix is immune to the name regardless.
     #[test]
     fn set_knob_base_block_recalls_base_explicitly() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));

@@ -620,3 +620,66 @@ fn scene_jobs_repair_diff_caps_float_params_but_always_keeps_bypass() {
         "scene bypass=false must encode as 0.0"
     );
 }
+
+// Regression fixture for the reported bug: preset 28 ("JFF LP  Hiwatt 3 scenes"), scene 0
+// ("Clean") vs base — real field-8 values, not synthetic. The Hiwatt amp's "Clean" overlay
+// diverges on 7 sibling params besides the leveled `outputLevel`; the cap (3) must keep the
+// 3 largest by |Δ| (normalvolume 0.22, middle 0.20, mastervolume 0.18) and drop the rest
+// (bass 0.16, presence 0.16, brightvolume 0.11, treble 0.10) — this is the actual overlay
+// shape that a naive reseed (no repair) silently wiped on hardware.
+#[test]
+fn scene_jobs_repair_diff_on_preset28_hiwatt_overlay_keeps_top3_by_real_divergence() {
+    let hiwatt = |p: serde_json::Value| {
+        serde_json::json!({
+            "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
+            "dspUnitParameters": p
+        })
+    };
+    let base_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [hiwatt(serde_json::json!({
+            "bass": 0.47999998927116394, "brightvolume": 0.41999998688697815, "bypass": false,
+            "gatePreset": "off", "mastervolume": 0.41999998688697815, "middle": 0.5899999737739563,
+            "normalvolume": 0.5600000023841858, "outputLevel": 0.6899999976158142,
+            "presence": 0.47999998927116394, "treble": 0.27000001072883606
+        }))] } }
+    });
+    let scene_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [hiwatt(serde_json::json!({
+            "bass": 0.3199999928474426, "brightvolume": 0.3100000023841858, "bypass": false,
+            "gatePreset": "off", "mastervolume": 0.6000000238418579, "middle": 0.38999998569488525,
+            "normalvolume": 0.3400000035762787, "outputLevel": 0.9599999785423279,
+            "presence": 0.6399999856948853, "treble": 0.3700000047683716
+        }))] } }
+    });
+    let candidates = vec![LevelBlockArg {
+        group_id: "G1".into(),
+        node_id: "ACD_HiwattDR103CanMod".into(),
+        parameter_id: "outputLevel".into(),
+        value: 1.0,
+    }];
+    let jobs = build_scene_jobs(
+        &[0],
+        &candidates,
+        &[(0, Some(scene_doc)), (8, Some(base_doc))],
+        -23.0,
+        None,
+    )
+    .unwrap();
+    let names: Vec<&str> = jobs[0]
+        .repair
+        .iter()
+        .map(|(k, _)| match k {
+            leveller::LevelKnob::Block { parameter_id, .. } => parameter_id.as_str(),
+            leveller::LevelKnob::PresetLevel => "presetLevel",
+        })
+        .collect();
+    // len == 3 + these 3 positive names already fully pins the set; the one negative
+    // check below targets the tightest real competitor (bass, tied with presence at
+    // |Δ| 0.16, both just under mastervolume's 0.18) — the case an off-by-one or a
+    // wrong-direction sort would actually get wrong.
+    assert_eq!(jobs[0].repair.len(), 3, "repair: {names:?}");
+    assert!(names.contains(&"normalvolume"), "repair: {names:?}");
+    assert!(names.contains(&"middle"), "repair: {names:?}");
+    assert!(names.contains(&"mastervolume"), "repair: {names:?}");
+    assert!(!names.contains(&"bass"), "dropped past cap: {names:?}");
+}
