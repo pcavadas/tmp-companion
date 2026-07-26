@@ -332,9 +332,13 @@ fn node_dsp_params<'a>(
 /// base, excluding `leveled_param` — the repair diff `SetNodeSceneEdit(node, true)`'s reseed
 /// (HW 3-cell isolation matrix, `probe_api/slot_write.rs`) makes necessary. `bypass` (bool,
 /// 0.0/1.0-encoded — see `leveller`'s `set_knob_value_only` dispatch) always survives; the
-/// remaining float params are capped at [`SCENE_REPAIR_MAX_PARAMS`] most-divergent by `|Δ|`,
-/// anything past the cap named in a `log::warn` and dropped. A node missing from either doc
-/// (truncated read) yields no repair for that node — never a partial/wrong guess.
+/// remaining float params are capped at `max_params` most-divergent by `|Δ|`, anything past
+/// the cap named in a `log::warn` and dropped (the caller shrinks `max_params` below
+/// [`SCENE_REPAIR_MAX_PARAMS`] for a multi-node scene, so the ~700 ms per-BATCH write window
+/// — not per-node — stays the real budget). A non-numeric/non-bool diverging param (e.g. an
+/// enum/string) is not repairable through this `(LevelKnob, f32)` wire; it's named in its own
+/// `log::warn` rather than silently lost. A node missing from either doc (truncated read)
+/// yields no repair for that node — never a partial/wrong guess.
 fn scene_repair_diff(
     scene_doc: &serde_json::Value,
     base_doc: &serde_json::Value,
@@ -342,6 +346,7 @@ fn scene_repair_diff(
     node_id: &str,
     leveled_param: &str,
     scene_slot: u32,
+    max_params: usize,
 ) -> Vec<(leveller::LevelKnob, f32)> {
     let Some(scene_params) = node_dsp_params(scene_doc, group_id, node_id) else {
         return Vec::new();
@@ -374,24 +379,27 @@ fn scene_repair_diff(
             if (s - b).abs() > 1e-6 {
                 floats.push((pname, s as f32, (s - b).abs()));
             }
+        } else if sval != bval {
+            log::warn!(
+                "scene repair: {group_id}/{node_id} scene {scene_slot} param {pname} diverges \
+                 from base but isn't numeric/bool — not repairable, base value is lost if this \
+                 node's Scene Edit gets enabled"
+            );
         }
     }
     floats.sort_by(|a, b| b.2.total_cmp(&a.2));
-    if floats.len() > SCENE_REPAIR_MAX_PARAMS {
-        let dropped: Vec<&str> = floats[SCENE_REPAIR_MAX_PARAMS..]
-            .iter()
-            .map(|(p, ..)| *p)
-            .collect();
+    if floats.len() > max_params {
+        let dropped: Vec<&str> = floats[max_params..].iter().map(|(p, ..)| *p).collect();
         log::warn!(
             "scene repair: {group_id}/{node_id} scene {scene_slot} dropped {} diverging \
-             param(s) past the top-{SCENE_REPAIR_MAX_PARAMS} cap: {}",
+             param(s) past the top-{max_params} cap: {}",
             dropped.len(),
             dropped.join(", ")
         );
     }
     let mut out: Vec<(leveller::LevelKnob, f32)> = floats
         .into_iter()
-        .take(SCENE_REPAIR_MAX_PARAMS)
+        .take(max_params)
         .map(|(pname, val, _)| (knob(pname), val))
         .collect();
     out.extend(bypass);
@@ -464,21 +472,31 @@ pub(crate) fn build_scene_jobs(
                 Ok((triples, kind)) => {
                     // Repair diff BEFORE `knobs` consumes `triples` — base itself never
                     // needs one (`set_knobs` never enables Scene Edit for a base-only
-                    // target, so there's nothing to reseed).
+                    // target, so there's nothing to reseed). The per-node cap shrinks for a
+                    // multi-node (parallel) scene so the merged batch — not each node alone —
+                    // stays inside the ~700 ms post-loadScene write window.
                     let repair: Vec<(leveller::LevelKnob, f32)> = match (scene_slot, base_doc) {
-                        (Some(s), Some(base_doc)) => triples
-                            .iter()
-                            .flat_map(|(group_id, node_id, _)| {
-                                scene_repair_diff(
-                                    &doc,
-                                    base_doc,
-                                    group_id,
-                                    node_id,
-                                    "outputLevel",
-                                    s,
-                                )
-                            })
-                            .collect(),
+                        (Some(s), Some(base_doc)) => {
+                            let per_node_cap = if triples.len() > 1 {
+                                (SCENE_REPAIR_MAX_PARAMS / 2).max(1)
+                            } else {
+                                SCENE_REPAIR_MAX_PARAMS
+                            };
+                            triples
+                                .iter()
+                                .flat_map(|(group_id, node_id, _)| {
+                                    scene_repair_diff(
+                                        &doc,
+                                        base_doc,
+                                        group_id,
+                                        node_id,
+                                        "outputLevel",
+                                        s,
+                                        per_node_cap,
+                                    )
+                                })
+                                .collect()
+                        }
                         _ => Vec::new(),
                     };
                     let knobs = triples

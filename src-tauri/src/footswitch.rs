@@ -850,6 +850,31 @@ mod tests {
             .collect();
         assert_eq!(mythic_params, vec!["gain", "output", "treble"]);
 
+        // G1 side: switch 3 (ACD_Lightspeed) — the B3 bracketing-fix subject.
+        let lightspeed = infos.iter().find(|i| i.switch == 3).expect("switch 3");
+        assert_eq!(lightspeed.functions[0].fender_id, "ACD_Lightspeed");
+        let lightspeed_params: Vec<&str> = lightspeed
+            .level_params
+            .iter()
+            .map(|p| p.parameter_id.as_str())
+            .collect();
+        assert_eq!(lightspeed_params, vec!["drive", "freq", "loudness"]);
+
+        // G1 side: switch 11 (ACD_TremoloBias) — ratehz=6.0 is outside [0,1] and excluded,
+        // same shape as UniVibe's speed exclusion below.
+        let tremolo = infos.iter().find(|i| i.switch == 11).expect("switch 11");
+        assert_eq!(tremolo.functions[0].fender_id, "ACD_TremoloBias");
+        let tremolo_params: Vec<&str> = tremolo
+            .level_params
+            .iter()
+            .map(|p| p.parameter_id.as_str())
+            .collect();
+        assert_eq!(
+            tremolo_params,
+            vec!["intensity", "level"],
+            "ratehz=6.0 is outside [0,1] and correctly excluded"
+        );
+
         // G4 side: switch 12 (ACD_UniVibe) resolves in the SAME pass as the G1 switches
         // above — the multi-group case the single-node fixture elsewhere can't exercise.
         let uni_vibe = infos.iter().find(|i| i.switch == 12).expect("switch 12");

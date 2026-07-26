@@ -621,6 +621,63 @@ fn scene_jobs_repair_diff_caps_float_params_but_always_keeps_bypass() {
     );
 }
 
+// A parallel (2-amp) scene's per-node repair cap must SHRINK — the ~700 ms post-loadScene
+// write window is a per-BATCH budget, not per-node (CodeRabbit #117 finding: unshrunk, 2
+// nodes at the top-3 cap could add up to 8 repair writes on top of 2 leveled knobs).
+#[test]
+fn scene_jobs_repair_diff_shrinks_per_node_cap_for_a_multi_node_scene() {
+    let amp = |fid: &str, a: f64, b: f64, c: f64| {
+        serde_json::json!({
+            "nodeId": fid, "FenderId": fid,
+            "dspUnitParameters": { "bypass": false, "outputLevel": 0.5, "a": a, "b": b, "c": c }
+        })
+    };
+    let scene_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
+            "G1": [],
+            "G2": [ amp("ACD_TM59Bassman", 0.9, 0.7, 0.5) ],
+            "G3": [ amp("ACD_HiwattDR103CanMod", 0.9, 0.7, 0.5) ]
+        } }
+    });
+    let base_doc = serde_json::json!({
+        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
+            "G1": [],
+            "G2": [ amp("ACD_TM59Bassman", 0.0, 0.0, 0.0) ],
+            "G3": [ amp("ACD_HiwattDR103CanMod", 0.0, 0.0, 0.0) ]
+        } }
+    });
+    let candidates = vec![
+        LevelBlockArg {
+            group_id: "G2".into(),
+            node_id: "ACD_TM59Bassman".into(),
+            parameter_id: "outputLevel".into(),
+            value: 0.5,
+        },
+        LevelBlockArg {
+            group_id: "G3".into(),
+            node_id: "ACD_HiwattDR103CanMod".into(),
+            parameter_id: "outputLevel".into(),
+            value: 0.5,
+        },
+    ];
+    let jobs = build_scene_jobs(
+        &[7],
+        &candidates,
+        &[(7, Some(scene_doc)), (8, Some(base_doc))],
+        -23.0,
+        None,
+    )
+    .unwrap();
+    // Each node diverges on 3 floats; the top-3 cap would keep all 6. The halved cap
+    // (3 / 2 = 1, at least 1) keeps only the single most-divergent float per node.
+    assert_eq!(
+        jobs[0].repair.len(),
+        2,
+        "repair: {:?} — the per-node cap must shrink for a 2-node scene",
+        jobs[0].repair
+    );
+}
+
 // Regression fixture for the reported bug: preset 28 ("JFF LP  Hiwatt 3 scenes"), scene 0
 // ("Clean") vs base — real field-8 values, not synthetic. The Hiwatt amp's "Clean" overlay
 // diverges on 7 sibling params besides the leveled `outputLevel`; the cap (3) must keep the
