@@ -124,16 +124,17 @@ The serialization is a sparse diff (`ftswStates` array + scene-keyed override ma
 
 8 of 10 physical footswitches are assignable (2 are fixed: FS Mode toggle, Tap/Tuner). Each assignable footswitch can carry up to **5 functions simultaneously**.
 
-Function types:
+**On-screen picker order (p.23), six types:** `ON/OFF` · `PARAMETER CHANGE` · `SCENE` · `LOOPER` · `MIDI` · `AMP CONTROL`. `MIDI` is ONE on-screen type whose own config screen lets you choose CC or PC — the table below splits it into two rows because the two sends configure disjoint fields (a CC has channel+CC#+active/inactive values; a PC has channel+program number), not because the manual lists them separately:
 
-| Type               | Purpose                                                                                           |
-| ------------------ | ------------------------------------------------------------------------------------------------- |
-| `ON/OFF`           | toggle one or more blocks; multi-block = `MULTI` label; A/B selection via per-block Bypass switch |
-| `Parameter Change` | toggle a single block parameter between two values                                                |
-| `Scene`            | recall a scene                                                                                    |
-| `MIDI CC`          | send a CC message (channel + CC# + active/inactive values + latching/momentary)                   |
-| `MIDI PC`          | send a Program Change                                                                             |
-| `Amp Control`      | drive AMP CTRL 1 or AMP CTRL 2 (tip/ring of the rear-panel TRS jack)                              |
+| Type               | Purpose                                                                                                                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ON/OFF`           | toggle one or more blocks; multi-block = `MULTI` label; A/B selection via per-block Bypass switch                                                                                                                               |
+| `Parameter Change` | toggle a single block parameter between two values                                                                                                                                                                              |
+| `Scene`            | recall a scene                                                                                                                                                                                                                  |
+| `Looper`           | assign one Looper transport action (Record/Overdub, Play/Stop, Reverse, ½ Speed, 1-Shot, Undo, or EZ Looper) to this footswitch — distinct from the separate modal Looper layout (hold `FS Mode` 2s), see Operating modes below |
+| `MIDI CC`          | send a CC message (channel + CC# + active/inactive values + latching/momentary)                                                                                                                                                 |
+| `MIDI PC`          | send a Program Change                                                                                                                                                                                                           |
+| `Amp Control`      | drive AMP CTRL 1 or AMP CTRL 2 (tip/ring of the rear-panel TRS jack)                                                                                                                                                            |
 
 **Field scope — switch-level vs function-level.** The manual (p.23) marks three rows verbatim "Common to all five footswitch assignments"; the rest are per-function. Getting this backwards produces per-function colour/label writes that the device silently resolves at switch level:
 

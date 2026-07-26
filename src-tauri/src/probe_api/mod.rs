@@ -4,6 +4,12 @@
 //! as `<libcrate>::probe_xxx`. Helpers that stayed-in-lib commands still call are
 //! `pub(crate)` and re-listed in `lib.rs`'s explicit `pub(crate) use` seam.
 
+/// List indices the e2e scenario fixtures own and the only slots a destructive
+/// or working-copy-writing probe experiment may target. Shared by every guard
+/// that gates a probe write — a single declaration so widening or shifting the
+/// scratch zone is one edit, not four.
+pub(crate) const SCRATCH_SLOTS: [u32; 3] = [400, 401, 402];
+
 pub(crate) mod analyze;
 pub(crate) mod doctor_calib;
 pub(crate) mod doctor_defects;

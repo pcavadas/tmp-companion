@@ -139,13 +139,7 @@ pub fn probe_set_master_level(level: f32) -> Result<String, String> {
     s.begin_live_edit()?;
     // Dump whatever comes back purely for the record — a reply is NOT expected and
     // its absence is NOT a failure, so the result is never derived from it.
-    // TMP_MASTER_BATCH=<n> retries the write carrying batchStatus, so "un-batched
-    // write ignored" cannot be mistaken for "message unserved" (see
-    // `proto::set_master_level_batched`).
-    let batch = std::env::var("TMP_MASTER_BATCH")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok());
-    let dump = s.send_and_dump(&proto::set_master_level_batched(level, batch), 600)?;
+    let dump = s.send_and_dump(&proto::set_master_level(level), 600)?;
     Ok(format!(
         "SetMasterLevel({level}) sent — NOT confirmed (TMS 5 emits no reply).\n\
          Verify: probe --device-backup → settingsBackup.mixerSaveData.masterVolume\n\

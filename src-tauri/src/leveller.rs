@@ -71,7 +71,7 @@ pub const DOCTOR_TAIL_MS: u32 = 1500;
 /// LEVELING window does not apply here.
 pub const DOCTOR_STIM_MS: usize = 3000;
 
-/// [`DOCTOR_STIM_MS`] at the device clock ([`RATE`]), in samples.
+/// [`DOCTOR_STIM_MS`] at the required host Core Audio rate ([`RATE`]), in samples.
 pub fn doctor_stim_samples() -> usize {
     (RATE as usize / 1000) * DOCTOR_STIM_MS
 }
@@ -85,7 +85,7 @@ pub fn doctor_stim_samples() -> usize {
 /// drops silence, and the body PSD starts at [`doctor_signal_start`].
 pub const DOCTOR_PAD_MS: usize = 200;
 
-/// [`DOCTOR_PAD_MS`] at the device clock, in samples.
+/// [`DOCTOR_PAD_MS`] at the required host Core Audio rate, in samples.
 pub fn doctor_pad_samples() -> usize {
     (RATE as usize / 1000) * DOCTOR_PAD_MS
 }

@@ -1,5 +1,6 @@
 //! Stimulus WAV I/O + calibration + probe measurement entry points.
 
+use super::SCRATCH_SLOTS as SCRATCH;
 use crate::audio;
 use crate::doctor;
 use crate::footswitch;
@@ -72,17 +73,6 @@ pub fn probe_capture_reference(slot: u32, topology_id: &str, out: &str) -> Resul
     ))
 }
 
-/// HW PROBE: re-amp an **arbitrary** stimulus WAV through `slot` and save the
-/// captured USB 1/2 audio. Sibling of [`probe_capture_reference`], which resolves
-/// its stimulus from the bundled per-topology WAV — this one takes any 48 kHz mono
-/// file, which is what a swept-sine bandwidth test needs.
-///
-/// Read UNNORMALIZED (`read_stimulus_48k`, no LUFS scaling): a chirp's flat drive
-/// per octave is the whole point, and calibration scaling would tilt it.
-///
-/// Band-edge caveat: run it through a CLEAN, effects-free preset. A distorting amp
-/// model generates harmonics that fill the octave above the fundamental sweep and
-/// muddy exactly the band edge the test reads.
 /// HW PROBE (WRITE): capture a short stimulus burst plus a long silent `tail_ms`
 /// afterward, so the raw WAV shows a reverb/delay tail's own decay curve directly
 /// — rather than trying to infer contamination risk from the ~1.3 s inter-connection
@@ -103,7 +93,6 @@ pub fn probe_tail_decay(
     tail_ms: u64,
     out: &str,
 ) -> Result<String, String> {
-    const SCRATCH: [u32; 3] = [400, 401, 402];
     if !SCRATCH.contains(&slot) && std::env::var("TMP_ALLOW_NONSCRATCH_TAIL_DECAY").is_err() {
         return Err(format!(
             "refusing --tail-decay on list index {slot}: outside the scratch zone {SCRATCH:?}, \
@@ -122,6 +111,17 @@ pub fn probe_tail_decay(
     ))
 }
 
+/// HW PROBE: re-amp an **arbitrary** stimulus WAV through `slot` and save the
+/// captured USB 1/2 audio. Sibling of [`probe_capture_reference`], which resolves
+/// its stimulus from the bundled per-topology WAV — this one takes any 48 kHz mono
+/// file, which is what a swept-sine bandwidth test needs.
+///
+/// Read UNNORMALIZED (`read_stimulus_48k`, no LUFS scaling): a chirp's flat drive
+/// per octave is the whole point, and calibration scaling would tilt it.
+///
+/// Band-edge caveat: run it through a CLEAN, effects-free preset. A distorting amp
+/// model generates harmonics that fill the octave above the fundamental sweep and
+/// muddy exactly the band edge the test reads.
 pub fn probe_reamp_wav(
     slot: u32,
     stimulus_wav: &str,
@@ -138,7 +138,6 @@ pub fn probe_reamp_wav(
     // Measuring a non-scratch preset is sometimes necessary (the unit may hold only
     // one preset of the template under test), so this is an explicit opt-in rather
     // than a refusal.
-    const SCRATCH: [u32; 3] = [400, 401, 402];
     if !SCRATCH.contains(&slot) && std::env::var("TMP_ALLOW_NONSCRATCH_REAMP").is_err() {
         return Err(format!(
             "refusing --reamp-wav on list index {slot}: outside the scratch zone {SCRATCH:?}, \
@@ -180,8 +179,9 @@ pub fn probe_reamp_wav(
 
     // `bypass_all` turns the preset into approximately a wire, so the capture
     // reads the PATH's bandwidth instead of the amp model's HF rolloff. The node
-    // list comes from the live graph (every block, all groups) rather than the
-    // level-control list, which only sees blocks that HAVE a level parameter.
+    // list comes from `load_then_discover_blocks` — the SAME level-control list
+    // used elsewhere in this crate — not a full live-graph walk; see the caveat
+    // below for what that means for the "approximately a wire" claim.
     let mut forced: Vec<(String, String, bool)> = Vec::new();
     if bypass_all {
         // Node discovery goes through `load_then_discover_blocks` — the

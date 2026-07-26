@@ -1328,7 +1328,7 @@ fn main() {
         let out = args.get(i + 3).cloned().unwrap_or_default();
         let (Some(slot), false) = (slot, stim.is_empty() || out.is_empty()) else {
             eprintln!(
-                "usage: probe --reamp-wav <slot> <stimulus.wav> <out.wav> [ref_level=0.5] [bypass]"
+                "usage: probe --reamp-wav <slot> <stimulus.wav> <out.wav> [ref_level=0.5] [bypass] [bypass-nodes=G1/NODE,...]"
             );
             std::process::exit(2);
         };

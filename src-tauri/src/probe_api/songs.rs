@@ -1,6 +1,7 @@
 //! Probe entry points: Songs CRUD + shared song-read helpers (used by the song commands).
 
 use super::slot_write::discover_active_graph;
+use super::SCRATCH_SLOTS;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
@@ -324,9 +325,9 @@ pub fn probe_assign_song_preset(
     row: u32,
     list_index: u32,
 ) -> Result<String, String> {
-    if !(400..=402).contains(&list_index) {
+    if !SCRATCH_SLOTS.contains(&list_index) {
         return Err(format!(
-            "refusing to bind list index {list_index}: scratch zone 400..=402 only"
+            "refusing to bind list index {list_index}: scratch zone {SCRATCH_SLOTS:?} only"
         ));
     }
     let songs = read_song_list()?;

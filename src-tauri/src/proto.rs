@@ -615,8 +615,19 @@ pub fn mixer_request(request_field: u32) -> Vec<u8> {
 /// `masterLevel` is `float` (wire type 5 / fixed32 LE), not a varint — the mixer
 /// schema uses floats for every level, and a varint here would encode a silently
 /// wrong message that the device drops without complaint.
+///
+/// Carries NO `batchStatus` — setters/commands and the heartbeat must omit it
+/// (only *requests* carry it; a setter WITH one is silently ignored, the same
+/// rule `set_reamp_mode` and every other setter in this file follow). A batched
+/// variant existed briefly to rule out "un-batched write ignored" as a confound
+/// while TMS 5's write-serving status was open; the retest (with and without
+/// `batchStatus`) landed the same null either way, so the diagnostic has already
+/// answered the question it existed to ask — see `open-questions.md` A1.
 pub fn set_master_level(level: f32) -> Vec<u8> {
-    set_master_level_batched(level, None)
+    let mut inner = Vec::new();
+    put_varint(&mut inner, tag(1, 5)); // masterLevel, fixed32
+    inner.extend_from_slice(&level.to_le_bytes());
+    len_delimited(5, &len_delimited(16, &inner))
 }
 
 /// `SettingsMessage.sceneChangeBehavior` — field **83** on TMS 3.
@@ -675,23 +686,6 @@ pub fn switch_template(template_type: &str) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, template_type.as_bytes());
     len_delimited(2, &len_delimited(43, &inner))
-}
-
-/// As [`set_master_level`], optionally carrying `batchStatus` (field 10).
-///
-/// Pro Control groups some writes into batches, and parts of this protocol reject
-/// an un-batched message (see [`request`]). So "the un-batched write was ignored"
-/// does NOT by itself prove the message is unserved — the batched form has to be
-/// ruled out too before making that claim.
-pub fn set_master_level_batched(level: f32, batch: Option<u64>) -> Vec<u8> {
-    let mut inner = Vec::new();
-    put_varint(&mut inner, tag(1, 5)); // masterLevel, fixed32
-    inner.extend_from_slice(&level.to_le_bytes());
-    let mut out = len_delimited(5, &len_delimited(16, &inner));
-    if let Some(b) = batch {
-        field_varint(&mut out, 10, b);
-    }
-    out
 }
 
 /// PresetMessage.exportPresetRequest{ listEnum, presetSlot } — field **115** in

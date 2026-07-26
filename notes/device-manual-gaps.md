@@ -93,7 +93,7 @@ p.17 documents a per-preset on/off for hearing delay and reverb tails when chang
 
 Consequences for this repo:
 
-- The 48 kHz constant is still **correct** as the Core Audio negotiation rate — keep it — but the comment justifying it as "the device clock" is wrong and should read "the required host Core Audio rate". **Not yet fixed in code.**
+- The 48 kHz constant is still **correct** as the Core Audio negotiation rate — keep it. The `leveller.rs` comments justifying it were fixed to say "the required host Core Audio rate" instead of "the device clock".
 - Anything reasoning about capture content above ~22 kHz (spectrum reports, the Doctor's fine-PSD `peaks`, EQ-match) is reading the anti-alias skirt, not preset tone. Worth an upper bound on analysed bandwidth.
 - The device carries a global `sampleRate` setting (`settingsBackup.sampleRate`, `0` here). Whether the band limit moves with it is untested — do not assume 22 kHz is fixed.
 

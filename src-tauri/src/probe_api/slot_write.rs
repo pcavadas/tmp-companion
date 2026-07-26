@@ -1,6 +1,7 @@
 //! Probe entry points: preset write ops (import / clear / map / diag) + block discovery + bulk apply + connect/firmware.
 
 use super::songs::read_song_presets;
+use super::SCRATCH_SLOTS;
 use crate::bulk_cmd;
 use crate::bulkrun;
 use crate::library;
@@ -17,10 +18,6 @@ pub fn probe_connect_and_list() -> Result<Vec<PresetEntry>, String> {
     let mut s = Session::connect()?;
     s.list_my_presets()
 }
-
-/// Scratch list indices the e2e scenario owns — the only slots a probe experiment
-/// may reorder. Kept local to the one guard that needs it.
-const SCRATCH_SLOTS: [u32; 3] = [400, 401, 402];
 
 /// HW PROBE (WRITE): set the global `sceneChangeBehavior` (SettingsMessage field 83).
 ///
@@ -180,9 +177,9 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     // one field being measured.
     let tpl = |j: &str| {
         j.find("\"template\":\"")
-            .map(|i| {
+            .and_then(|i| {
                 let r = &j[i + 12..];
-                r[..r.find('"').unwrap_or(0)].to_string()
+                r.find('"').map(|e| r[..e].to_string())
             })
             .unwrap_or_else(|| "<absent>".into())
     };

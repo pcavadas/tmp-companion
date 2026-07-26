@@ -247,6 +247,15 @@ mod fixture_gates {
                 info["preset_id"].as_str().unwrap_or_default().to_string(),
             ));
         }
+        assert_eq!(
+            ids.len(),
+            entries.len(),
+            "every fixture entry must expose a parseable presetJson; checked {} of {} — \
+             a schema rename that made presetJson unreadable would otherwise leave `ids` \
+             empty and this gate would pass vacuously",
+            ids.len(),
+            entries.len()
+        );
 
         for (i, (n1, id1)) in ids.iter().enumerate() {
             for (n2, id2) in ids.iter().skip(i + 1) {
@@ -302,18 +311,27 @@ mod fixture_gates {
         }
         let db_bytes = db_bytes.expect("databaseBackup entry present");
 
+        // Deleted on every exit (including a panic from an `expect` below), mirroring
+        // `backup_read::read_backup_archive`'s own `TempDb` guard — without it a
+        // failed assertion here leaks the extracted DB into the temp dir.
+        struct TempDb(std::path::PathBuf);
+        impl Drop for TempDb {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
         let db_path = std::env::temp_dir().join(format!(
             "tmp-companion-fixture-gate-{}.db3",
             std::process::id()
         ));
         std::fs::write(&db_path, &db_bytes).expect("write temp db");
+        let _guard = TempDb(db_path.clone());
         let out = std::process::Command::new("sqlite3")
             .arg("-json")
             .arg(&db_path)
             .arg("SELECT displayName, presetJson FROM UserPresets")
             .output()
             .expect("run sqlite3");
-        let _ = std::fs::remove_file(&db_path);
         assert!(out.status.success(), "sqlite3 query failed: {out:?}");
         let rows: serde_json::Value =
             serde_json::from_slice(&out.stdout).expect("sqlite3 -json output parses");
@@ -341,6 +359,15 @@ mod fixture_gates {
                 info["preset_id"].as_str().unwrap_or_default().to_string(),
             ));
         }
+        assert_eq!(
+            ids.len(),
+            rows.len(),
+            "every UserPresets row must expose a parseable presetJson; checked {} of {} — \
+             a schema rename would otherwise leave `ids` empty and this gate would pass \
+             vacuously",
+            ids.len(),
+            rows.len()
+        );
 
         for (i, (n1, id1)) in ids.iter().enumerate() {
             for (n2, id2) in ids.iter().skip(i + 1) {
