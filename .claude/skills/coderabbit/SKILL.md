@@ -18,22 +18,28 @@ own, and re-approves once its concerns are addressed. Posting a command in that 
 wasted quota unit and at worst resets a rate-limit countdown. Default action after addressing
 findings: push once, reply on the threads, post nothing.
 
-One documented exception to "automatic": `auto_pause_after_reviewed_commits` (default **5**)
-silently pauses incremental review once a PR has accumulated that many reviewed pushes — a
-long-lived PR can stop getting reviews with no error anywhere. That pause, like a rate-limit
-skip, is a legitimate reason to post one plain `review`.
+One documented wrinkle: `auto_pause_after_reviewed_commits` (default **5**) silently pauses
+incremental review once a PR has accumulated that many reviewed pushes — a long-lived PR can stop
+getting reviews with no error anywhere. It looks exactly like ambiguous silence and it does NOT
+license a command; a PR that has genuinely stalled this way goes to a human.
 
-## The review commands (each has a narrow use)
+## The review commands
 
-| Command                     | What it does                        | When to post it                                                                                                                                                                                  |
-| --------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@coderabbitai review`      | Incremental review of new changes   | A review was **skipped** (rate limit / failure — skips never auto-retry; wait out the "next review available in N minutes" window first), or auto-review **paused** after many reviewed commits. |
-| `@coderabbitai full review` | From-scratch review of the whole PR | You deliberately want everything re-reviewed — or a recovery `review` **provably no-oped** (see below).                                                                                          |
+There is exactly ONE command you may ever post on this repo:
 
-Both consume one review from the quota per execution. Known trap behind the escalation clause: a
-rate-limited attempt can mark the head commits as _processed_, so a later plain `review`
-"finishes" in seconds having reviewed nothing. That proven no-op is the only case where
-`full review` is the recovery, posted ONCE in a quiet window.
+| Command                     | Verdict                                                                                                                                                                                      |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@coderabbitai review`      | Post **only once a review limit has been lifted** — CodeRabbit said "Review limit reached … next review available in N minutes" and that window has since elapsed. Nothing else licenses it. |
+| `@coderabbitai full review` | **Never post it.** Standing instruction. Not as an escalation, not for a proven no-op, not in a quiet window — never.                                                                        |
+
+Ambiguous silence is NOT a lifted limit: with no explicit limit message there is nothing to lift,
+so the action is to keep watching, not to post. A limit message whose window has not yet elapsed
+is not lifted either — waiting is the action.
+
+Known trap (worth recognizing, no longer actionable): a rate-limited attempt can mark the head
+commits as _processed_, so a later plain `review` "finishes" in seconds having reviewed nothing.
+With `full review` off the table, a proven no-op escalates to a **human**, never to a second
+command.
 
 ## Verify a review actually ran
 
@@ -54,16 +60,19 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 
 ## Recovery ladder (for a main-targeted, non-draft, same-repo PR with no review on its head)
 
-1. Walkthrough says "Review limit reached … next review available in N minutes" → wait until
+1. No explicit limit message → **post nothing, keep watching.** Quiet is not a state you fix.
+2. Walkthrough says "Review limit reached … next review available in N minutes" → wait until
    (last edit + N min). Before that, any command is wasted.
-2. After the window (or for failure/skip/pause states with no window): post ONE
-   `@coderabbitai review`.
-3. If that provably no-ops (0 reviews / 0 threads on the head): ONE `@coderabbitai full review`,
-   in a quiet window (same-day dependabot/auto-merge PRs drain the same shared quota).
-4. Three recovery commands after the current head with no real review → stop; flag for human
-   attention instead of posting a fourth.
+3. Once that window has elapsed — the limit is now _lifted_ — post ONE `@coderabbitai review`.
+4. If it provably no-ops (0 reviews / 0 threads on the head): **stop and flag for a human.** Do
+   not post a second command, and never `full review`.
 
 ## Addressing findings
+
+The whole loop, in one line: **fix the valid ones, explain the invalid ones, resolve nothing.**
+Both a fix and a reasoned rebuttal are things CodeRabbit evaluates and acknowledges on its own —
+it marks the thread resolved itself, and that resolution is the receipt that it agreed. Closing a
+thread by hand forges that receipt.
 
 - Verify each finding against **current** code first — reviews can lag pushes and rebases.
 - **`.coderabbit.yaml` does not enumerate CodeRabbit's static-analysis integrations.** This repo sets
@@ -95,9 +104,10 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 - **`@coderabbitai autofix` — don't use here.** It pushes CodeRabbit-authored fixes from its own
   side, which bypasses the local gate stack (`scripts/gates.sh` stamp, /simplify, HW checks).
   Implement findings locally through the gates instead.
-- **`@coderabbitai resolve`** — blunt: resolves ALL CodeRabbit threads at once (top-level
-  comment only). Prefer per-thread replies; reach for `resolve` only after genuinely addressing
-  everything.
+- **`@coderabbitai resolve` — never post it.** Resolving is CodeRabbit's signal that it accepted
+  a fix or a rebuttal; resolving on its behalf destroys the only evidence that it agreed. Same
+  reason you never click GitHub's own "Resolve conversation" or call the
+  `resolveReviewThread` mutation. Fix or explain, then leave the thread alone.
 - **`@coderabbitai pause` / `resume`** — quota-friendly during a rapid push series on an
   already-ready PR (drafts are the better tool when available; pause doesn't block manual
   commands).
