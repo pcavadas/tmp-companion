@@ -46,12 +46,20 @@ There is **no `merged` field** on `gh pr view --json` — asking for one is a ha
 loop that does `--json merged --jq .merged || echo false` reads as "not merged" forever and never
 fires. Detect a merge with `state == "MERGED"` (or a non-null `mergedAt`).
 
-Three observations decide everything:
+Four observations decide everything:
 
 - **`REVIEWED`** — a formal review exists whose `submittedAt` is after the current head was pushed.
 - **`LIMITED(t, n)`** — a CodeRabbit **comment** says "Review limit reached … next review available
   in **n** minutes", last edited at **t**. The limit is **lifted** once `now ≥ t + n`.
 - **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
+- **`ACTIONABLE`** — the subset of `OPEN_THREADS` that still needs something from you: either you
+  have never replied in the thread, or CodeRabbit's latest comment asks a question or requests a
+  change. An open thread where you have replied and CodeRabbit's answer asks for nothing is
+  **settled** and is NOT actionable, however long it stays open. Only `ACTIONABLE` drives §4;
+  keying the loop on `OPEN_THREADS` instead makes a deliberately-deferred thread re-enter §4
+  forever. Some acks carry a `<!-- <review_comment_addressed> -->` or `<!-- <review_comment_withdrawn> -->` marker,
+  which is a useful hint — but it is applied inconsistently (3 of 15 acks on PR #119), so it
+  confirms settledness and never establishes actionability.
 
 **Read `LIMITED` from the COMMENT's own text and edit timestamp, never from the check run.** The
 PR's CodeRabbit check-run label (e.g. "Review rate limited") is a stamp from the attempt that raised
@@ -99,8 +107,8 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S1  | Not `REVIEWED`, no `LIMITED` message                                | **Wait.** Re-observe later. Post nothing — this includes an hours-long quiet spell. |
 | S2  | `LIMITED(t, n)` and `now < t + n`                                   | **Wait** until `t + n`. Any command before then is wasted.                          |
 | S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                | Post exactly ONE `@coderabbitai review`. Then go to S1.                             |
-| S4  | `REVIEWED` and `OPEN_THREADS` non-empty                             | Run §4 on every open thread. One commit, one push. Then S1.                         |
-| S5  | `REVIEWED`, no `OPEN_THREADS`, `reviewDecision != APPROVED`         | **Wait** — it re-approves on its own after accepting the last thread.               |
+| S4  | `REVIEWED` and `ACTIONABLE` non-empty                               | Run §4 on every ACTIONABLE thread. One commit, one push. Then S1.                   |
+| S5  | `REVIEWED`, `ACTIONABLE` empty, `reviewDecision != APPROVED`        | **Wait** — it re-approves on its own after accepting the last thread.               |
 | S6  | `APPROVED` + CI green + `mergeStateStatus` clean                    | Done. Auto-merge takes it; report the merge.                                        |
 | S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads) | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).          |
 
@@ -110,6 +118,9 @@ resolve, and re-enter at S1. Preserve what the incoming side added: a conflict i
 branches edited is two sessions' findings, not yours versus noise.
 
 ## 4. Handling one thread (deterministic)
+
+Runs on ACTIONABLE threads only (§2). A settled thread is terminal even while open — do not
+re-reply to it, and do not let it hold up S5/S6.
 
 Per finding, in order:
 
