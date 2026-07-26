@@ -242,10 +242,14 @@ mod fixture_gates {
              \"pro\" makes the unit report \"created using a newer firmware revision\" \
              and refuses scene selection."
             );
-            ids.push((
-                name,
-                info["preset_id"].as_str().unwrap_or_default().to_string(),
-            ));
+            let preset_id = info["preset_id"].as_str().unwrap_or_default().to_string();
+            assert!(
+                !preset_id.is_empty(),
+                "preset {name:?}: preset_id must be present and non-empty — a missing field \
+                 defaulting to \"\" would compare equal to another missing preset_id and pass \
+                 the uniqueness check below vacuously"
+            );
+            ids.push((name, preset_id));
         }
         assert_eq!(
             ids.len(),
@@ -354,10 +358,14 @@ mod fixture_gates {
                 "preset {name:?}: product_id must be \"tmStomp\" — see \
                  e2e_fixtures_use_device_product_id_and_unique_preset_ids for why"
             );
-            ids.push((
-                name,
-                info["preset_id"].as_str().unwrap_or_default().to_string(),
-            ));
+            let preset_id = info["preset_id"].as_str().unwrap_or_default().to_string();
+            assert!(
+                !preset_id.is_empty(),
+                "preset {name:?}: preset_id must be present and non-empty — a missing field \
+                 defaulting to \"\" would compare equal to another missing preset_id and pass \
+                 the uniqueness check below vacuously"
+            );
+            ids.push((name, preset_id));
         }
         assert_eq!(
             ids.len(),

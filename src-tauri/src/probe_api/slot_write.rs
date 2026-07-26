@@ -130,9 +130,9 @@ pub fn probe_settings_read(field: u32) -> Result<String, String> {
 /// never whether per-scene bypass/parameter overrides are preserved, remapped or
 /// wiped.
 ///
-/// Loads the target slot first so the write lands on a KNOWN preset rather than
-/// whatever the unit happened to have open. Scratch-guarded: this is a destructive
-/// edit if the device auto-saves, and whether it does is one of the unknowns.
+/// Scratch-guarded: this is a destructive edit if the device auto-saves, and
+/// whether it does is one of the unknowns. Does NOT load `slot` itself — see the
+/// active-preset check below for why an explicit load can't substitute for it.
 pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, String> {
     if !SCRATCH_SLOTS.contains(&slot) {
         return Err(format!(
@@ -141,6 +141,20 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
         ));
     }
     let mut s = Session::connect()?;
+    // Confirm identity through the mutation path's own read — never a caller-
+    // supplied assumption (same discipline as `probe_move_preset` below). This
+    // function used to just trust that the caller had already loaded `slot` in a
+    // prior session; nothing enforced it, so switchTemplate could land on
+    // whatever preset the unit actually had open. An explicit `load_preset(slot)`
+    // here isn't a substitute fix: loading the ALREADY-current preset emits no
+    // field-3 push at all (see the `Some(slot)` note below), so it wouldn't move
+    // the risk, only hide it behind a call that looks like it helped.
+    let expected_name = s
+        .list_my_presets()?
+        .into_iter()
+        .find(|p| p.slot == slot)
+        .map(|p| p.name)
+        .ok_or_else(|| format!("list index {slot} not found in My Presets"))?;
     // NO pre-drain here. `capture_full_preset_json` waits for the field-3
     // currentPresetDataChanged PUSH, and `drain_until_quiet` eats exactly that —
     // draining first made the capture fail with "no payload captured". This is the
@@ -160,9 +174,34 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     // reloading — a reload would discard the very edit being measured.
     // `Some(slot)` would RE-load the preset, and re-loading the preset that is
     // already current emits no push at all, so the capture times out. Ride the
-    // handshake's own push instead (`None`) — the caller ensures the target is
-    // current by loading it in a prior session.
+    // handshake's own push instead (`None`).
     let before = String::from_utf8_lossy(&s.capture_full_preset_json(None, 3000)?).into_owned();
+
+    // Verify identity BEFORE writing, from the same read the "before" comparison
+    // already needs — never trust that the caller loaded the right preset earlier.
+    let name_of = |j: &str| {
+        j.find("\"displayName\":\"").and_then(|i| {
+            let r = &j[i + 15..];
+            r.find('"').map(|e| r[..e].to_string())
+        })
+    };
+    match name_of(&before) {
+        Some(n) if n == expected_name => {}
+        Some(n) => {
+            return Err(format!(
+                "refusing switchTemplate: active preset is {n:?}, not {expected_name:?} \
+                 (list index {slot}) — load the scratch preset first"
+            ));
+        }
+        None => {
+            return Err(format!(
+                "refusing switchTemplate: could not read the active preset's name from the \
+                 pre-switch capture, so identity against list index {slot} ({expected_name:?}) \
+                 could not be confirmed"
+            ));
+        }
+    }
+
     let dump = s.send_and_dump(&proto::switch_template(template_type), 1500)?;
     std::thread::sleep(std::time::Duration::from_millis(800));
     // Non-fatal: if switchTemplate is ignored there is no push to capture, and a

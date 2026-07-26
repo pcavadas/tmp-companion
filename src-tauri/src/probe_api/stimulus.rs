@@ -130,6 +130,15 @@ pub fn probe_reamp_wav(
     bypass_all: bool,
     bypass_nodes: &str,
 ) -> Result<String, String> {
+    // Reject rather than silently clamp: `capture_full_at` clamps ref_level to
+    // 0.05..=1.0 downstream, but the reported string below prints the ARGUMENT,
+    // not the clamped value — so an out-of-range or non-finite level would
+    // measure at one value while claiming another.
+    if !ref_level.is_finite() || !(0.05..=1.0).contains(&ref_level) {
+        return Err(format!(
+            "ref_level {ref_level} must be a finite value in 0.05..=1.0"
+        ));
+    }
     // THIS IS A WRITE PATH, despite reading like a measurement: `capture_full_at`
     // sets `bypass` flags and `PresetLevel` on the target preset's working copy
     // (`leveller.rs`). Nothing is saved — a reload discards it — but the write is
@@ -151,15 +160,23 @@ pub fn probe_reamp_wav(
     // Parallel template so a capture can be attributed to a specific lane, which
     // is what "what actually reaches USB 1/2 on a Split?" needs.
     if !bypass_nodes.is_empty() {
+        // Reject a token missing GROUP/ rather than silently defaulting to G1 —
+        // a typo'd lane selector would otherwise bypass the wrong group and the
+        // resulting capture would look like a valid but wrong measurement.
         let forced: Vec<(String, String, bool)> = bypass_nodes
             .split(',')
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .map(|t| {
-                let (g, n) = t.split_once('/').unwrap_or(("G1", t));
-                (g.to_string(), n.to_string(), true)
+                let (g, n) = t
+                    .split_once('/')
+                    .ok_or_else(|| format!("bypass-nodes token {t:?} is not GROUP/NODE"))?;
+                if g.is_empty() || n.is_empty() {
+                    return Err(format!("bypass-nodes token {t:?} is not GROUP/NODE"));
+                }
+                Ok((g.to_string(), n.to_string(), true))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         let (mono, rate) = leveller::capture_samples_bypassed(slot, &stim, ref_level, &forced)?;
         write_wav_mono(out, &mono, rate)?;
         let loud = lufs::measure_mono(&mono, rate)

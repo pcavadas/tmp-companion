@@ -1332,7 +1332,22 @@ fn main() {
             );
             std::process::exit(2);
         };
-        let ref_level: f32 = args.get(i + 4).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        // A positional arg that IS one of the flag forms below means ref_level was
+        // omitted, not supplied-and-malformed — only a value that's neither gets
+        // parsed, and a parse failure there is an error, not a silent 0.5.
+        let ref_level_arg = args
+            .get(i + 4)
+            .filter(|a| *a != "bypass" && !a.starts_with("bypass-nodes="));
+        let ref_level: f32 = match ref_level_arg {
+            None => 0.5,
+            Some(s) => match s.parse::<f32>() {
+                Ok(v) if v.is_finite() => v,
+                _ => {
+                    eprintln!("[probe] invalid ref_level {s:?}: must be a finite number");
+                    std::process::exit(2);
+                }
+            },
+        };
         // `bypass` force-bypasses EVERY graph block, so the capture reads the
         // re-amp path's own bandwidth instead of the amp model's HF rolloff.
         let bypass_all = args.iter().any(|a| a == "bypass");
@@ -1343,6 +1358,13 @@ fn main() {
             .find_map(|a| a.strip_prefix("bypass-nodes="))
             .unwrap_or("")
             .to_string();
+        if bypass_all && !bypass_nodes.is_empty() {
+            eprintln!(
+                "[probe] usage: bypass and bypass-nodes=... are mutually exclusive \
+                 (bypass-nodes would silently win and bypass would be ignored)"
+            );
+            std::process::exit(2);
+        }
         eprintln!("[probe] re-amping {stim} through slot {slot} → {out}…");
         match tmp_companion_lib::probe_reamp_wav(
             slot,
@@ -1369,17 +1391,37 @@ fn main() {
         // silent tail so the raw WAV shows a reverb/delay tail's own decay curve.
         // scene (optional): 0-based scenes[] wire index to recall after the load
         // (same convention as --measure-scene) — omit to test the base preset state.
+        // A supported max, not a hard protocol limit: this is a diagnostic capture
+        // (a burst + silence), and an unbounded tail_ms (e.g. u64::MAX) would ask
+        // for hours of audio and gigabytes of buffer for no diagnostic benefit.
+        const TAIL_MS_MAX: u64 = 60_000;
         let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
         let stim = args.get(i + 2).cloned().unwrap_or_default();
         let tail_ms = args.get(i + 3).and_then(|s| s.parse::<u64>().ok());
         let out = args.get(i + 4).cloned().unwrap_or_default();
-        let scene = args.get(i + 5).and_then(|s| s.parse::<u32>().ok());
         let (Some(slot), Some(tail_ms), false) = (slot, tail_ms, stim.is_empty() || out.is_empty())
         else {
             eprintln!(
                 "usage: probe --tail-decay <slot> <stimulus.wav> <tail_ms> <out.wav> [scene]"
             );
             std::process::exit(2);
+        };
+        if tail_ms > TAIL_MS_MAX {
+            eprintln!("[probe] tail_ms {tail_ms} exceeds the supported max {TAIL_MS_MAX}");
+            std::process::exit(2);
+        }
+        // scene is genuinely optional (omit = base preset) — but a SUPPLIED value
+        // that fails to parse is a typo, not "omitted", so it errors rather than
+        // silently falling back to the base preset.
+        let scene = match args.get(i + 5) {
+            None => None,
+            Some(s) => match s.parse::<u32>() {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    eprintln!("[probe] invalid scene {s:?}: must be a non-negative integer");
+                    std::process::exit(2);
+                }
+            },
         };
         eprintln!(
             "[probe] tail-decay: {stim} + {tail_ms}ms tail through slot {slot} scene {scene:?} → {out}…"
