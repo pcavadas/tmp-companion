@@ -74,7 +74,9 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
 - Fix root causes; batch ALL of a PR's fixes into ONE commit + ONE push (each push to a
   main-targeted PR spends a review attempt — never push cosmetically).
 - A finding that is wrong or deliberately not applicable gets ONE factual reply on its thread
-  citing file:line — never a fake-fix to appease the bot, and no further argument on that thread.
+  citing file:line, WITH the reason spelled out — a reply that doesn't explain why the finding
+  isn't being fixed doesn't give CodeRabbit anything to evaluate, and it won't resolve the thread
+  on its own. Never a fake-fix to appease the bot, and no further argument on that thread.
   When replying after a fix push, match threads by the stable thread id — never by `(path, line)`,
   since line numbers shift with the push and the miss is silent. Comment BODY is a fallback only
   after confirming it's unique among the PR's threads (duplicate findings can share near-identical
