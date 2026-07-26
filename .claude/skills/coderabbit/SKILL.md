@@ -76,7 +76,10 @@ stands until a new review supersedes it. Key "has the re-review happened?" on a 
   the findings were actually posted on. In a stacked pair the checked-out branch is NOT
   necessarily that PR's head (only the main-targeted front of a stack gets reviewed, per the
   stacking note below, so the PR you're reading threads on can silently differ from the branch
-  you're on): confirm with `gh pr view <n> --json headRefName` before committing.
+  you're on): confirm with `gh pr view <n> --json headRefName,headRefOid` before committing —
+  match BOTH the branch name and `git rev-parse HEAD` against `headRefOid` (branch name alone
+  doesn't prove the checkout is at the PR's actual head after a force-push), or just
+  `gh pr checkout <n>`.
 - A finding that is wrong or deliberately not applicable gets ONE factual reply on its thread
   citing file:line — never a fake-fix to appease the bot, and no further argument on that thread.
   When replying after a fix push, match threads by the stable thread id — never by `(path, line)`,
