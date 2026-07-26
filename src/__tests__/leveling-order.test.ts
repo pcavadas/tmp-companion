@@ -275,8 +275,9 @@ describe("ceilingOf", () => {
       },
       outcome: "clamped",
       value: -6.0, // e.g. clamped because it's too LOUD
+      ceilingLufs: -14,
     });
-    expect(ceilingOf(it_)).toBeNull();
+    expect(ceilingOf(it_)).toBe(-14);
   });
 
   // A done row (not clamped) always reads ceilingLufs, footswitch or not.

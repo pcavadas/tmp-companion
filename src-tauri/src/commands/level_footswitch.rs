@@ -444,7 +444,7 @@ mod tests {
                     "colorA": 1, "colorB": 2,
                     "customLabel": "BOOST",
                     "linkGroup": 1,
-                    "isActive": false,
+                    "isActive": true,
                     "switchType": 1
                 }
             ]

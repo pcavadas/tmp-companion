@@ -789,9 +789,9 @@ fn restore_scratch(
 /// slot 32): `set_node_scene_edit(node, true)` **alone** reseeds that node's scene
 /// overlay from BASE — recall+write without the enable kept all 7 sibling params, while
 /// recall+enable *without any write* reset 6 of them. So it is neither a race nor
-/// `change_parameter`; it CONTRADICTS `notes/leveling.md` ("enabling scene mode is
-/// harmless in itself") and `leveller::set_knobs`, which blames a re-`load_scene`
-/// between per-knob writes.
+/// `change_parameter`; it SUPERSEDES the earlier assumption in `notes/leveling.md`
+/// ("enabling scene mode is harmless in itself" — corrected since) and
+/// `leveller::set_knobs`, which used to blame a re-`load_scene` between per-knob writes.
 ///
 /// The enable's necessity depends on whether the node ALREADY has an overlay in the
 /// target scene (both branches HW-proven on scratch slot 30):
@@ -876,6 +876,7 @@ pub fn probe_set_scene_param(
 #[allow(clippy::too_many_arguments)] // mirrors leveller::level_footswitch: a diagnostic seam with one arg per session step
 pub fn probe_scene_write_cell(
     slot: u32,
+    expect_name: &str,
     scene: Option<u32>,
     group: &str,
     node: &str,
@@ -884,6 +885,19 @@ pub fn probe_scene_write_cell(
     scene_edit: bool,
     recall_settle_ms: u64,
 ) -> Result<String, String> {
+    // Non-destructive read-back BEFORE any write: confirm the list-index mapping in the
+    // SAME address space as the mutation below, so an index mistake refuses instead of
+    // silently saving over a real preset (the write-safety lesson this PR series is about).
+    let before = Session::connect()?.list_my_presets()?;
+    let cur = before
+        .iter()
+        .find(|p| p.slot == slot)
+        .map(|p| p.name.clone());
+    if cur.as_deref() != Some(expect_name) {
+        return Err(format!(
+            "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
+        ));
+    }
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;

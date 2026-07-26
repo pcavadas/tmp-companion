@@ -152,7 +152,7 @@ export function PresetRow({
         caretActive
           ? expanded
             ? "Hide sounds"
-            : "Show Base Preset + scenes"
+            : "Show Base Preset + sounds"
           : "Loading sounds…"
       }
       style={{

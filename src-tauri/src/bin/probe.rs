@@ -177,7 +177,10 @@ fn main() {
     // the production binary; this has silently invalidated hardware measurements twice.
     // Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never measures.
     #[cfg(feature = "e2e")]
-    if std::env::var("TMP_E2E_ONLINE").is_err() && !args.iter().any(|a| a == "--seed-scenario") {
+    let seed_scenario_only =
+        args.get(1).is_some_and(|arg| arg == "--seed-scenario") && args.len() == 2;
+    #[cfg(feature = "e2e")]
+    if std::env::var("TMP_E2E_ONLINE").is_err() && !seed_scenario_only {
         eprintln!(
             "[probe] REFUSING TO RUN: this is an `--features e2e` build without TMP_E2E_ONLINE, \
              so audio captures would be FAKE (stimulus passthrough), not the device.\n\
@@ -980,19 +983,21 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--scene-write-cell") {
-        // --scene-write-cell <listIdx> <sceneSlot> <group> <node> <param>
+        // --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param>
         //     [--value V] [--no-scene-edit] [--recall-settle MS]
         // ONE cell of the scene-write isolation matrix: drives loadScene /
         // setNodeSceneEdit / changeParameter independently so the cause of the
         // overlay reset can be separated. Always saves; diff the slot afterwards.
+        // <expectName> is a non-destructive-read guard — refuses if slot doesn't match.
         let slot: u32 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let scene: Option<u32> = args.get(i + 2).and_then(|s| s.parse().ok());
-        let group = args.get(i + 3).cloned().unwrap_or_default();
-        let node = args.get(i + 4).cloned().unwrap_or_default();
-        let param = args.get(i + 5).cloned().unwrap_or_default();
+        let expect_name = args.get(i + 2).cloned().unwrap_or_default();
+        let scene: Option<u32> = args.get(i + 3).and_then(|s| s.parse().ok());
+        let group = args.get(i + 4).cloned().unwrap_or_default();
+        let node = args.get(i + 5).cloned().unwrap_or_default();
+        let param = args.get(i + 6).cloned().unwrap_or_default();
         let value: Option<f32> = args
             .iter()
             .position(|a| a == "--value")
@@ -1005,12 +1010,22 @@ fn main() {
             .and_then(|j| args.get(j + 1))
             .and_then(|s| s.parse().ok())
             .unwrap_or(150);
-        if slot == u32::MAX || scene.is_none() || group.is_empty() || node.is_empty() {
-            eprintln!("usage: probe --scene-write-cell <listIdx> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]");
+        // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — not a real scene overlay.
+        if slot == u32::MAX
+            || expect_name.is_empty()
+            || scene.is_none_or(|s| s == 8)
+            || group.is_empty()
+            || node.is_empty()
+            || param.is_empty()
+            || param.starts_with("--")
+            || value.is_some_and(|v| !v.is_finite())
+        {
+            eprintln!("usage: probe --scene-write-cell <listIdx> <expectName> <sceneSlot> <group> <node> <param> [--value V] [--no-scene-edit] [--recall-settle MS]");
             std::process::exit(2);
         }
         match tmp_companion_lib::probe_scene_write_cell(
             slot,
+            &expect_name,
             scene,
             &group,
             &node,
@@ -1051,12 +1066,15 @@ fn main() {
             .get(i + 6)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
+        // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — use "base", not "8".
         if slot == u32::MAX
             || scene.is_none()
+            || scene == Some(Some(8))
             || group.is_empty()
             || node.is_empty()
             || param.is_empty()
-            || value.is_nan()
+            || param.starts_with("--")
+            || !value.is_finite()
         {
             eprintln!("usage: probe --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>");
             std::process::exit(2);
