@@ -42,6 +42,10 @@ gh api repos/<owner>/<repo>/issues/<n>/comments --jq \
 date -u +%H:%M:%SZ                                       # for window arithmetic
 ```
 
+There is **no `merged` field** on `gh pr view --json` — asking for one is a hard error, so a poll
+loop that does `--json merged --jq .merged || echo false` reads as "not merged" forever and never
+fires. Detect a merge with `state == "MERGED"` (or a non-null `mergedAt`).
+
 Three observations decide everything:
 
 - **`REVIEWED`** — a formal review exists whose `submittedAt` is after the current head was pushed.
