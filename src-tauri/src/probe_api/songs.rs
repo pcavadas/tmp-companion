@@ -312,6 +312,46 @@ pub fn probe_set_song_bpm(name: &str, bpm: f32) -> Result<String, String> {
 
 /// `--remove-song <name>` — DELETE a song resolved by exact name (guard: refuses on
 /// no-match / ambiguity, so the slot used for deletion is the one that reads as `name`).
+/// HW PROBE (DEVICE WRITE): bind a user preset to a Song row (`assignSongPreset`),
+/// then read the Song's rows back so the binding is confirmed by the DEVICE rather
+/// than by the setter's own optimism (`assign_song_preset` is fire-and-forget).
+///
+/// `list_index` is the 0-based preset list index — **scratch zone only**, because
+/// the point of this probe is to then reorder that preset and see whether the
+/// binding follows it.
+pub fn probe_assign_song_preset(
+    song_name: &str,
+    row: u32,
+    list_index: u32,
+) -> Result<String, String> {
+    if !(400..=402).contains(&list_index) {
+        return Err(format!(
+            "refusing to bind list index {list_index}: scratch zone 400..=402 only"
+        ));
+    }
+    let songs = read_song_list()?;
+    let slot = find_song_slot(&songs, song_name)?;
+    {
+        let mut s = Session::connect()?;
+        // label/colour are cosmetic footswitch fields; scene 0 = base.
+        s.assign_song_preset(slot, row, list_index, "PROBE", 1, 0)?;
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    }
+    let rows = read_song_presets(slot)?;
+    let mut out = format!(
+        "[probe --assign-song-preset] {song_name:?} (songSlot {slot}) row {row} \
+         → list idx {list_index} (device userPresetSlot {})\n",
+        list_index + 1
+    );
+    for (i, r) in rows.iter().enumerate() {
+        out += &format!(
+            "  row {i}: empty={} userPresetSlot={} presetSceneSlot={} scene={:?}\n",
+            r.is_empty, r.user_preset_slot, r.preset_scene_slot, r.preset_scene_name
+        );
+    }
+    Ok(out)
+}
+
 pub fn probe_remove_song(name: &str) -> Result<String, String> {
     let songs = read_song_list()?;
     let slot = find_song_slot(&songs, name)?; // guard in the same (read) space we will delete

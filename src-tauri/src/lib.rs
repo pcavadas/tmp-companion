@@ -181,3 +181,174 @@ pub(crate) use e2e_server::e2e_online;
 pub(crate) use e2e_server::e2e_showcase;
 #[cfg(feature = "e2e")]
 pub use e2e_server::run_e2e_server;
+
+/// Fixture invariants that must hold regardless of build features.
+///
+/// Deliberately NOT inside the `#[cfg(feature = "e2e")]` test module: that module
+/// only compiles under `--features e2e`, and building with that feature is
+/// forbidden here (it fabricates every LUFS and clobbers the production probe in
+/// the shared target dir). A gate that only runs in a build nobody may make is
+/// not a gate.
+#[cfg(test)]
+mod fixture_gates {
+
+    /// NON-REGRESSION GATE for two defects found on a real 1.8.45 unit (2026-07-26).
+    ///
+    /// The e2e scenario fixtures were written with `info.product_id = "pro"`. Every
+    /// preset the device itself creates uses **`tmStomp`**, and on the unit a `"pro"`
+    /// preset is rejected with **"This preset was created using a newer firmware
+    /// revision"** — the scene-selection ribbon refuses to open it. Any scene-related
+    /// experiment or e2e step targeting these fixtures is silently invalid.
+    ///
+    /// The same fixtures also shared ONE `preset_id` across all four presets, which
+    /// contradicts the documented invariant (`tmp-companion-data-model`: preset
+    /// identity is "a UUID, unique per preset" and the join key for host-side
+    /// metadata). Four presets sharing a key makes that mapping ambiguous.
+    ///
+    /// Skips when the fixture is absent (fresh `git worktree`), per repo convention.
+    #[test]
+    fn e2e_fixtures_use_device_product_id_and_unique_preset_ids() {
+        let path = std::path::Path::new("../e2e/fixtures/scenario-presets.json");
+        if !path.is_file() {
+            eprintln!("skip: {} not present", path.display());
+            return;
+        }
+        let raw = std::fs::read_to_string(path).expect("read fixture");
+        let doc: serde_json::Value = serde_json::from_str(&raw).expect("fixture is JSON");
+        let entries = doc.as_array().cloned().unwrap_or_else(|| {
+            doc.get("presets")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default()
+        });
+        assert!(!entries.is_empty(), "no fixture presets found to check");
+
+        let mut ids = Vec::new();
+        for e in &entries {
+            let Some(js) = e.get("presetJson").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let p: serde_json::Value = serde_json::from_str(js).expect("presetJson parses");
+            let info = &p["info"];
+            let name = info["displayName"]
+                .as_str()
+                .unwrap_or("<unnamed>")
+                .to_string();
+
+            assert_eq!(
+                info["product_id"].as_str(),
+                Some("tmStomp"),
+                "preset {name:?}: product_id must be \"tmStomp\" (what the device writes). \
+             \"pro\" makes the unit report \"created using a newer firmware revision\" \
+             and refuses scene selection."
+            );
+            ids.push((
+                name,
+                info["preset_id"].as_str().unwrap_or_default().to_string(),
+            ));
+        }
+
+        for (i, (n1, id1)) in ids.iter().enumerate() {
+            for (n2, id2) in ids.iter().skip(i + 1) {
+                assert_ne!(
+                    id1, id2,
+                    "presets {n1:?} and {n2:?} share preset_id {id1} — preset_id is the \
+                 documented unique per-preset identity and the host-metadata join key"
+                );
+            }
+        }
+    }
+
+    /// Same gate as above, applied to `backup-fixture.bin` — the OTHER committed
+    /// fixture the same defect class can hide in.
+    ///
+    /// `backup_read::tests::scenario_fixture_matches_scenario_presets_json` (the
+    /// drift lock between this file and `scenario-presets.json`) does NOT catch a
+    /// stale `product_id`/`preset_id`: it compares decoded `BackupPresetRow`s, and
+    /// that struct never carries either field, so two archives that disagree on
+    /// them still compare equal. This test reads the raw `presetJson` column
+    /// directly (mirroring `backup_read::read_backup_archive`'s own LZ4-frame +
+    /// tar + `sqlite3` decode) instead of going through `BackupPresetRow`, so the
+    /// two fields the drift lock is blind to are actually checked.
+    #[test]
+    fn backup_fixture_uses_device_product_id_and_unique_preset_ids() {
+        use std::io::Read;
+
+        let path = std::path::Path::new("../e2e/fixtures/backup-fixture.bin");
+        if !path.is_file() {
+            eprintln!("skip: {} not present", path.display());
+            return;
+        }
+        let blob = std::fs::read(path).expect("read backup-fixture.bin");
+
+        let mut tar_bytes = Vec::new();
+        lz4_flex::frame::FrameDecoder::new(std::io::Cursor::new(&blob))
+            .read_to_end(&mut tar_bytes)
+            .expect("LZ4-frame decode");
+        let mut db_bytes = None;
+        let mut ar = tar::Archive::new(std::io::Cursor::new(&tar_bytes));
+        for entry in ar.entries().expect("tar entries") {
+            let mut e = entry.expect("tar entry");
+            let path = e
+                .path()
+                .expect("tar entry path")
+                .to_string_lossy()
+                .into_owned();
+            if path == "databaseBackup" || path.ends_with("normalDb.db3") {
+                let mut buf = Vec::new();
+                e.read_to_end(&mut buf).expect("tar extract db");
+                db_bytes = Some(buf);
+            }
+        }
+        let db_bytes = db_bytes.expect("databaseBackup entry present");
+
+        let db_path = std::env::temp_dir().join(format!(
+            "tmp-companion-fixture-gate-{}.db3",
+            std::process::id()
+        ));
+        std::fs::write(&db_path, &db_bytes).expect("write temp db");
+        let out = std::process::Command::new("sqlite3")
+            .arg("-json")
+            .arg(&db_path)
+            .arg("SELECT displayName, presetJson FROM UserPresets")
+            .output()
+            .expect("run sqlite3");
+        let _ = std::fs::remove_file(&db_path);
+        assert!(out.status.success(), "sqlite3 query failed: {out:?}");
+        let rows: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("sqlite3 -json output parses");
+        let rows = rows.as_array().expect("UserPresets rows");
+        assert!(!rows.is_empty(), "no UserPresets rows found to check");
+
+        let mut ids = Vec::new();
+        for row in rows {
+            let name = row["displayName"]
+                .as_str()
+                .unwrap_or("<unnamed>")
+                .to_string();
+            let js = row["presetJson"].as_str().expect("presetJson is text");
+            let p: serde_json::Value = serde_json::from_str(js).expect("presetJson parses");
+            let info = &p["info"];
+
+            assert_eq!(
+                info["product_id"].as_str(),
+                Some("tmStomp"),
+                "preset {name:?}: product_id must be \"tmStomp\" — see \
+                 e2e_fixtures_use_device_product_id_and_unique_preset_ids for why"
+            );
+            ids.push((
+                name,
+                info["preset_id"].as_str().unwrap_or_default().to_string(),
+            ));
+        }
+
+        for (i, (n1, id1)) in ids.iter().enumerate() {
+            for (n2, id2) in ids.iter().skip(i + 1) {
+                assert_ne!(
+                    id1, id2,
+                    "presets {n1:?} and {n2:?} share preset_id {id1} in backup-fixture.bin"
+                );
+            }
+        }
+    }
+}

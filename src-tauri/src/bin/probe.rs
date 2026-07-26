@@ -1172,6 +1172,254 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--set-param") {
+        // C2 step: set ONE block parameter on the working copy. One step per
+        // invocation, so each verifying read rides its own fresh handshake.
+        let slot: u32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+            Some(v) => v,
+            None => {
+                eprintln!(
+                    "[probe] usage: --set-param <slot 400..402> <group> <node> <param> <value>"
+                );
+                std::process::exit(2);
+            }
+        };
+        let (Some(g), Some(n), Some(p)) = (args.get(i + 2), args.get(i + 3), args.get(i + 4))
+        else {
+            eprintln!("[probe] usage: --set-param <slot 400..402> <group> <node> <param> <value>");
+            std::process::exit(2);
+        };
+        let Some(v) = args.get(i + 5).and_then(|v| v.parse::<f32>().ok()) else {
+            eprintln!("[probe] usage: --set-param <slot 400..402> <group> <node> <param> <value>");
+            std::process::exit(2);
+        };
+        eprintln!("[probe] set {g}/{n}/{p} = {v} on slot {slot}…");
+        match tmp_companion_lib::probe_set_param(slot, g, n, p, v) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--settings-read") {
+        // READ-ONLY. Live counterpart to the backup, which only shows persisted state.
+        let f: u32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+            Some(v) => v,
+            None => {
+                eprintln!("[probe] usage: --settings-read <field>  (47=footswitchSettings)");
+                std::process::exit(2);
+            }
+        };
+        match tmp_companion_lib::probe_settings_read(f) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--set-scene-behavior") {
+        // WRITE to a GLOBAL setting on the served TMS-3 branch. Restore it after.
+        let v: u64 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+            Some(v) => v,
+            None => {
+                eprintln!("[probe] usage: --set-scene-behavior <0=Retain|1=Revert>");
+                std::process::exit(2);
+            }
+        };
+        eprintln!("[probe] setting sceneChangeBehavior to {v}…");
+        match tmp_companion_lib::probe_set_scene_change_behavior(v) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--switch-template") {
+        // WRITE: repopulates a scratch preset's signal path. Scratch-guarded.
+        let slot: u32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+            Some(v) => v,
+            None => {
+                eprintln!("[probe] usage: --switch-template <slot 400..402> <templateType>");
+                std::process::exit(2);
+            }
+        };
+        let Some(t) = args.get(i + 2) else {
+            eprintln!("[probe] usage: --switch-template <slot 400..402> <templateType>");
+            std::process::exit(2);
+        };
+        eprintln!("[probe] switching slot {slot} template → {t}…");
+        match tmp_companion_lib::probe_switch_template(slot, t) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--set-master") {
+        // WRITE to a GLOBAL setting. Settles A1 (is the master control in the USB
+        // 1/2 path?) without a hand on the physical knob. The caller MUST restore
+        // the original value afterwards — read it from a backup's
+        // settingsBackup.mixerSaveData.masterVolume BEFORE changing anything.
+        let level: f32 = match args.get(i + 1).and_then(|v| v.parse().ok()) {
+            Some(v) => v,
+            None => {
+                eprintln!("[probe] usage: --set-master <level 0.0..=0.75>");
+                std::process::exit(2);
+            }
+        };
+        eprintln!("[probe] setting master level to {level}…");
+        match tmp_companion_lib::probe_set_master_level(level) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--mixer") {
+        // READ-ONLY: dump the output-mixer channel strips (fader/mute/solo/master-
+        // link/AUX per channel). The leveller's measurement tap IS a mixer channel
+        // (USB 1/2), so a non-unity fader biases every solved presetLevel invisibly.
+        eprintln!("[probe] reading output-mixer channel state…");
+        match tmp_companion_lib::probe_mixer_state() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--reamp-wav") {
+        // --reamp-wav <slot> <stimulus.wav> <out.wav> [ref_level=0.5]
+        // Re-amp an ARBITRARY stimulus through a preset and save the captured
+        // USB 1/2 audio. `--measure-current` can't do this: it resolves its
+        // stimulus from the bundled per-topology WAV (probe_stimulus_path) and
+        // returns only LUFS, so a chirp/PSD experiment needs its own seam.
+        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let stim = args.get(i + 2).cloned().unwrap_or_default();
+        let out = args.get(i + 3).cloned().unwrap_or_default();
+        let (Some(slot), false) = (slot, stim.is_empty() || out.is_empty()) else {
+            eprintln!(
+                "usage: probe --reamp-wav <slot> <stimulus.wav> <out.wav> [ref_level=0.5] [bypass]"
+            );
+            std::process::exit(2);
+        };
+        let ref_level: f32 = args.get(i + 4).and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        // `bypass` force-bypasses EVERY graph block, so the capture reads the
+        // re-amp path's own bandwidth instead of the amp model's HF rolloff.
+        let bypass_all = args.iter().any(|a| a == "bypass");
+        // bypass-nodes=G2/ACD_Foo,G3/ACD_Bar — bypass an explicit node list (one
+        // lane of a Split/Parallel template) instead of the whole chain.
+        let bypass_nodes = args
+            .iter()
+            .find_map(|a| a.strip_prefix("bypass-nodes="))
+            .unwrap_or("")
+            .to_string();
+        eprintln!("[probe] re-amping {stim} through slot {slot} → {out}…");
+        match tmp_companion_lib::probe_reamp_wav(
+            slot,
+            &stim,
+            &out,
+            ref_level,
+            bypass_all,
+            &bypass_nodes,
+        ) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--tail-decay") {
+        // --tail-decay <slot> <stimulus.wav> <tail_ms> <out.wav> [scene]
+        // One-off diagnostic (gap 6, spillover): capture a short burst + a long
+        // silent tail so the raw WAV shows a reverb/delay tail's own decay curve.
+        // scene (optional): 0-based scenes[] wire index to recall after the load
+        // (same convention as --measure-scene) — omit to test the base preset state.
+        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let stim = args.get(i + 2).cloned().unwrap_or_default();
+        let tail_ms = args.get(i + 3).and_then(|s| s.parse::<u64>().ok());
+        let out = args.get(i + 4).cloned().unwrap_or_default();
+        let scene = args.get(i + 5).and_then(|s| s.parse::<u32>().ok());
+        let (Some(slot), Some(tail_ms), false) = (slot, tail_ms, stim.is_empty() || out.is_empty())
+        else {
+            eprintln!(
+                "usage: probe --tail-decay <slot> <stimulus.wav> <tail_ms> <out.wav> [scene]"
+            );
+            std::process::exit(2);
+        };
+        eprintln!(
+            "[probe] tail-decay: {stim} + {tail_ms}ms tail through slot {slot} scene {scene:?} → {out}…"
+        );
+        match tmp_companion_lib::probe_tail_decay(slot, scene, &stim, tail_ms, &out) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--move-preset") {
+        // --move-preset <from> <to>   (0-based list indices; DEVICE WRITE — reorders)
+        // Reordering renumbers presets; whether Song/Setlist bindings follow is the
+        // open question. SCRATCH ZONE ONLY (400/401/402) — a reorder outside it
+        // shifts real presets.
+        let from = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let to = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
+        let (Some(from), Some(to)) = (from, to) else {
+            eprintln!("usage: probe --move-preset <from-list-index> <to-list-index>");
+            std::process::exit(2);
+        };
+        eprintln!("[probe] WRITE move preset list idx {from} → {to}…");
+        match tmp_companion_lib::probe_move_preset(from, to) {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--loadscene") {
         // --loadscene <sceneSlot>  — recall a scene on the CURRENT preset. The wire
         // slot is the 0-based scenes[] index (0..=7); 8 = the base scene (constant).
@@ -1658,6 +1906,27 @@ fn main() {
         eprintln!("[probe] WRITE song-bpm {name:?} → {bpm}…");
         run!(tmp_companion_lib::probe_set_song_bpm(&name, bpm));
     }
+    if let Some(i) = args.iter().position(|a| a == "--assign-song-preset") {
+        // --assign-song-preset <song-name> <row> <list-index>   (DEVICE WRITE)
+        // Bind a scratch preset to a Song row, then read the rows back. Feeds the
+        // "does reordering a preset break slot-keyed Song bindings?" experiment.
+        let name = args.get(i + 1).cloned().unwrap_or_default();
+        let row: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let idx: u32 = args
+            .get(i + 3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        if name.is_empty() || row == u32::MAX || idx == u32::MAX {
+            eprintln!("usage: probe --assign-song-preset <song-name> <row> <list-index>");
+            std::process::exit(2);
+        }
+        eprintln!("[probe] WRITE assign-song-preset {name:?} row {row} → list idx {idx}…");
+        run!(tmp_companion_lib::probe_assign_song_preset(&name, row, idx));
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--remove-song") {
         let name = args.get(i + 1).cloned().unwrap_or_default();
         if name.is_empty() {

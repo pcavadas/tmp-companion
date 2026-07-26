@@ -574,6 +574,37 @@ pub fn capture_samples(
     Ok((cap.channel(ch), cap.sample_rate))
 }
 
+/// [`capture_samples`] with a caller-supplied force-bypass list, so a probe can
+/// measure the re-amp PATH rather than a preset's tone.
+///
+/// Why this is needed: a bandwidth test through a normal preset measures the
+/// AMP's HF rolloff, not the transport's. Measured on fw 1.8.45, a
+/// TubeScreamer→Plexi chain puts the capture 49 dB down by 16 kHz and at the
+/// float floor by 22 kHz — which mimics a band-limit cliff that may not be there.
+/// Bypassing every block makes the chain approximately a wire, so whatever
+/// reaches 20–24 kHz is a property of the path, not of the tone.
+///
+/// Uses the same `capture_full_at` ordering as the leveller's own force-bypass
+/// callers: the bypasses land after the load, before the engage.
+pub fn capture_samples_bypassed(
+    slot: u32,
+    stimulus: &[f32],
+    ref_level: f32,
+    force_bypass: &[(String, String, bool)],
+) -> Result<(Vec<f32>, u32), String> {
+    let cap = capture_full_at(
+        slot,
+        None,
+        force_bypass,
+        stimulus,
+        Some(ref_level),
+        CAPTURE_TAIL_MS,
+        false,
+    )?;
+    let (ch, _) = cap.loudest_channel();
+    Ok((cap.channel(ch), cap.sample_rate))
+}
+
 /// Doctor-only MEASURE seam: like `capture_samples`, but optionally activates a scene
 /// first (0-based `scenes[]` wire index, `None` = base) and captures with a
 /// caller-chosen tail (`tail_ms` below). Shares `capture_full_at`

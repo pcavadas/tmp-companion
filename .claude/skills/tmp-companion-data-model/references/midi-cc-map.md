@@ -1,4 +1,4 @@
-# MIDI CC Map — TMP firmware v1.7
+# MIDI CC Map — TMP firmware v1.7, re-verified unchanged in v1.8
 
 Reproduced from the MIDI Implementation Chart in the Owner's Manual (p.43), plus surrounding semantic notes from pp.42-43.
 
@@ -106,4 +106,6 @@ Global Settings → I/O → MIDI:
 
 ## Source
 
-Fender Tone Master Pro Owner's Manual, firmware v1.7, pp. 42-43 (MIDI section + MIDI Implementation Chart). Re-fetch from `www.fender.com/tonemaster_pro` when firmware revs (the CC map has been extended in past firmware releases).
+Fender Tone Master Pro Owner's Manual, pp. 42-43 (MIDI section + MIDI Implementation Chart).
+
+**Re-verified against the v1.8 manual (rev. J)** by rendering p.43 as an image and comparing row by row: the chart is IDENTICAL between v1.7 and v1.8 — 31 rows, same CC numbers, same value classes, same function names. Confirmed in print, not extraction artefacts: CC 25 is genuinely absent (Effects FS run 21-24, 26-29); CC 30's value cell really does read `0-7` / `10-17` with an 8-9 gap; and CC gaps 5-6, 8-19, 31-63, 71-102 are real, with nothing above CC 110. Re-fetch from `www.fender.com/tonemaster_pro` when firmware revs (the CC map has been extended in past firmware releases).

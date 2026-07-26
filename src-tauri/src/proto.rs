@@ -556,6 +556,144 @@ pub fn set_reamp_mode(active: bool) -> Vec<u8> {
     len_delimited(3, &len_delimited(30, &inner))
 }
 
+/// `MixerMessage.allChannelsDisplayStateRequest{ dummy=true }` — TMS field **5**
+/// (`mixerMessage`), inner field **2**. Schema from the firmware-extracted
+/// `MixerMessage.proto` (fw 1.7.75, sibling RE repo): the mixer service exposes a
+/// request/changed pair per topic, and the reply here is
+/// `channelDisplayStateChanged` (field 7) carrying a repeated `ChannelDisplayState`
+/// { idEnum, isStereo, faderLevel, muteActive, soloActive, linkToMasterLvl,
+/// monoOutActive, globalEqActive, sourceActive[], cutActive, preEnabled }.
+///
+/// Why this matters: the leveller measures **USB 1/2**, which is a full mixer
+/// channel (fader/mute/solo/AUX). None of that is in preset data, so a
+/// non-unity fader silently biases every solved `presetLevel` — and solve-then-
+/// verify cannot detect it (both captures ride the same attenuation). This read
+/// is what makes a pre-flight possible instead of a disclaimer.
+///
+/// Two shape rules copied from `set_reamp_mode`, both HW-load-bearing there:
+/// NO `batchStatus` (field 10) — the device rejects a Settings-family message
+/// carrying one — and `dummy` is sent EXPLICITLY as `true` so the inner message
+/// is non-empty (the device ignores an empty `LoadScene{}`; an empty request
+/// submessage is the same silent-drop shape).
+///
+/// NB `set_reamp_mode` proves the SettingsMessage (TMS 3) path is live; whether
+/// TMS 5 is also served is exactly what `probe --mixer` decides. A silent reply
+/// is a real negative for fw 1.7.75's schema, not proof the mixer is unreadable
+/// on a later firmware.
+pub fn mixer_state_request() -> Vec<u8> {
+    mixer_request(2)
+}
+
+/// Generic `MixerMessage{ <request_field>{ dummy=true } }` on TMS field **5**.
+///
+/// All five read requests in the extracted schema — `allChannelsDisplayDataRequest`
+/// (1), `allChannelsDisplayStateRequest` (2), `globalEqDisplayInfoRequest` (3),
+/// `reAmpModeRequest` (4), `masterLevelInfoRequest` (5) — are the same
+/// `{ bool dummy = 1 }` shape, so one builder covers the sweep.
+///
+/// `reAmpModeRequest` is itself one of these five TMS-5 requests, not an
+/// independent control on a different, known-working branch — re-amp state being
+/// provably real (the `SettingsMessage` path drives it every leveling run) says
+/// nothing about whether *this* message type is served. A silent reply to it is
+/// one more untested instance of the same branch, not proof TMS 5 is unserved.
+pub fn mixer_request(request_field: u32) -> Vec<u8> {
+    let mut inner = Vec::new();
+    field_varint(&mut inner, 1, 1); // dummy=true
+    len_delimited(5, &len_delimited(request_field, &inner))
+}
+
+/// `MixerMessage{ SetMasterLevel{ masterLevel: float } }` — field **16** on TMS 5.
+///
+/// A WRITE, not a read. TMS 5 *reads* are unserved on fw 1.8.45 — `probe --mixer`
+/// got silence from all five requests — but a write can still land on a path
+/// whose notification side is dead, so the two have to be tested separately.
+///
+/// Consequently this write is NEVER verified by a reply. It is verified out of
+/// band by re-reading `settingsBackup.mixerSaveData.masterVolume` from a fresh
+/// `--device-backup`, which does not touch the dead TMS-5 notify path at all.
+///
+/// `masterLevel` is `float` (wire type 5 / fixed32 LE), not a varint — the mixer
+/// schema uses floats for every level, and a varint here would encode a silently
+/// wrong message that the device drops without complaint.
+pub fn set_master_level(level: f32) -> Vec<u8> {
+    set_master_level_batched(level, None)
+}
+
+/// `SettingsMessage.sceneChangeBehavior` — field **83** on TMS 3.
+///
+/// Unlike the mixer, this rides the SettingsMessage path, which is **provably
+/// served**: `set_reamp_mode` drives field 30 on the same TMS 3 branch every
+/// leveling run. Structurally identical too — `{ uint32 value = 1 }` wrapped in a
+/// field-numbered submessage — so `1a05 9a05 02 0801` here is the exact analogue
+/// of the re-amp golden `1a05 f201 02 0801`.
+///
+/// `value` is the `SceneChangeBehavior::Behavior` enum recovered from the client's
+/// Qt MOC table: keys `Retain`, `Revert`, in that declaration order. **0 = Retain
+/// is inferred, not proven** (MOC stores enum values in a separate array that was
+/// not decoded) — writing a value and reading it back via `--device-backup` is
+/// what settles the ordinal.
+///
+/// GLOBAL setting: the caller MUST restore the original value.
+pub fn set_scene_change_behavior(value: u64) -> Vec<u8> {
+    let mut inner = Vec::new();
+    // Sent EXPLICITLY even when 0 — proto3 would otherwise elide the field and the
+    // device drops an empty submessage (the same silent-drop shape documented on
+    // `mixer_request`'s `dummy`), so restoring to 0 would quietly no-op.
+    field_varint(&mut inner, 1, value);
+    len_delimited(3, &len_delimited(83, &inner))
+}
+
+/// `SettingsMessage{ <field>{ dummy = true } }` — the `EmptyRequestMessage` read
+/// shape shared by every settings sub-request (`footswitchSettingsRequest` 47,
+/// `inputSettingsRequest` 49, `outputSettingsRequest` 51, `usbSettingsRequest` 55,
+/// `internalSettingsRequest` 72, …).
+///
+/// Needed to distinguish "the write was ignored" from "the write landed but the
+/// backup only shows persisted state" — the device backup cannot tell those apart,
+/// and a LIVE read can. `footswitchSettingsRequest` (47) is the useful one here
+/// because `FootswitchSettings` carries `sceneChangeBehavior` at field 12.
+pub fn settings_request(field: u32) -> Vec<u8> {
+    request(3, field, 1, None)
+}
+
+/// `PresetMessage.switchTemplate{ templateType: string }` — field **43** on TMS 2.
+///
+/// Changes the CURRENT preset's signal-path template. The node-edit surface
+/// (`--replace/--insert/--remove`) only works *within* a template, but
+/// `switchTemplate` sits alongside it and the device echoes `templateSwitched`
+/// (field 44).
+///
+/// `templateType` is a STRING, and the accepted values are the template names
+/// embedded in `tm-stomp-server`: `gtrSeries`, `gtrParallel1`, `gtrParallel2`,
+/// `gtrSplit`, `gtrMicSeries`, `gtrMicMix`, `gtrMicMix2`, `gtrMicMix3`,
+/// `gtrMicParallel`, `micSeries`, `micParallel1`, `micSplit`.
+///
+/// Operates on the working copy. Nothing persists unless a save follows — but run
+/// it on a SCRATCH slot regardless, because "does it autosave?" is exactly one of
+/// the things the experiment is measuring.
+pub fn switch_template(template_type: &str) -> Vec<u8> {
+    let mut inner = Vec::new();
+    field_bytes(&mut inner, 1, template_type.as_bytes());
+    len_delimited(2, &len_delimited(43, &inner))
+}
+
+/// As [`set_master_level`], optionally carrying `batchStatus` (field 10).
+///
+/// Pro Control groups some writes into batches, and parts of this protocol reject
+/// an un-batched message (see [`request`]). So "the un-batched write was ignored"
+/// does NOT by itself prove the message is unserved — the batched form has to be
+/// ruled out too before making that claim.
+pub fn set_master_level_batched(level: f32, batch: Option<u64>) -> Vec<u8> {
+    let mut inner = Vec::new();
+    put_varint(&mut inner, tag(1, 5)); // masterLevel, fixed32
+    inner.extend_from_slice(&level.to_le_bytes());
+    let mut out = len_delimited(5, &len_delimited(16, &inner));
+    if let Some(b) = batch {
+        field_varint(&mut out, 10, b);
+    }
+    out
+}
+
 /// PresetMessage.exportPresetRequest{ listEnum, presetSlot } — field **115** in
 /// `PresetMessage` (TMS field 2); inner `ExportPresetRequest{ listEnum=1,
 /// presetSlot=2 }`.
@@ -1659,6 +1797,57 @@ mod tests {
         //   ON  = 1a 05 f2 01 02 08 01   OFF = 1a 03 f2 01 00   (no batchStatus)
         assert_eq!(hex(&set_reamp_mode(true)), "1a05f201020801");
         assert_eq!(hex(&set_reamp_mode(false)), "1a03f20100");
+    }
+
+    #[test]
+    fn mixer_state_request_matches_schema() {
+        // TMS 5 (mixerMessage) → field 2 (allChannelsDisplayStateRequest) →
+        // field 1 varint 1 (dummy=true, sent explicitly so the inner message is
+        // non-empty). No batchStatus.
+        //   2a 04   12 02   08 01
+        assert_eq!(hex(&mixer_state_request()), "2a0412020801");
+    }
+
+    #[test]
+    fn scene_change_behavior_mirrors_the_reamp_golden() {
+        // TMS[3]{ [83]{ [1]=1 } } → 1a 05  9a 05  02  08 01
+        // Structurally identical to the proven re-amp ON golden 1a05f201020801,
+        // which is the whole reason this path is expected to be served.
+        assert_eq!(hex(&set_scene_change_behavior(1)), "1a059a05020801");
+        // 0 must still be on the wire — an elided field would silently no-op the
+        // restore and leave the user's global setting flipped.
+        assert_eq!(hex(&set_scene_change_behavior(0)), "1a059a05020800");
+    }
+
+    #[test]
+    fn switch_template_carries_the_name_as_a_string() {
+        // TMS[2]{ [43]{ [1]="gtrSplit" } }
+        //   12 0d       TMS field 2, len 13
+        //     da 02     field 43, wire 2   ((43<<3)|2 = 346)
+        //     0a        submessage len 10
+        //       0a 08   field 1, wire 2, len 8
+        //       "gtrSplit"
+        let b = switch_template("gtrSplit");
+        assert_eq!(hex(&b), "120dda020a0a0867747253706c6974");
+        // The name must survive verbatim — the device matches it against the
+        // template blobs embedded in tm-stomp-server.
+        assert!(String::from_utf8_lossy(&b).contains("gtrSplit"));
+    }
+
+    #[test]
+    fn set_master_level_is_a_fixed32_float_on_field_16() {
+        // TMS[5]{ [16]{ [1]=0.25f32 } }
+        //   2a 08   82 01 05   0d 00 00 80 3e
+        // The inner tag is 0x0d = (1<<3)|5 — wire type 5 (fixed32), NOT 0 (varint):
+        // encoding a level as a varint yields a message the device drops in silence,
+        // and with TMS-5 reads unserved there would be no reply to reveal the error.
+        assert_eq!(hex(&set_master_level(0.25)), "2a088201050d0000803e");
+        // Little-endian payload, and the level round-trips bit-exactly.
+        let b = set_master_level(0.499_999_2);
+        assert_eq!(
+            f32::from_le_bytes(b[b.len() - 4..].try_into().unwrap()),
+            0.499_999_2
+        );
     }
 
     #[test]
