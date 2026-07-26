@@ -93,6 +93,13 @@ thread by hand forges that receipt.
   Include `@coderabbitai` in the reply when you want the bot to actually engage with the rebuttal
   (it answers contextually and can concede); a plain reply is only a note for the next review
   pass and human readers.
+- **No command operates on a single thread.** Per the command reference, every `@coderabbitai`
+  command is a top-level PR comment (`approve` and `resolve` are documented as top-level ONLY and
+  explicitly do not work inside a review thread; `resolve` resolves ALL threads at once, so there
+  is no per-thread `resolve` to "nudge" one thread with). The ONLY thread-level lever is a reply
+  that @-mentions `@coderabbitai` — it evaluates the reply in context, concedes or pushes back, and
+  resolves the thread itself. So when a thread needs attention, the answer is always a reply, never
+  a command.
 - `dismiss_stale_reviews_on_push` is on: an approval is dismissed by any later push, so the
   approval that merges must postdate the final commit.
 
@@ -108,9 +115,10 @@ thread by hand forges that receipt.
   a fix or a rebuttal; resolving on its behalf destroys the only evidence that it agreed. Same
   reason you never click GitHub's own "Resolve conversation" or call the
   `resolveReviewThread` mutation. Fix or explain, then leave the thread alone.
-- **`@coderabbitai pause` / `resume`** — quota-friendly during a rapid push series on an
-  already-ready PR (drafts are the better tool when available; pause doesn't block manual
-  commands).
+- **`@coderabbitai pause` / `resume`** — `resume` pairs EXCLUSIVELY with a prior `pause`; it is
+  not a review trigger and does nothing on a PR that was never paused, so it is never the tool for
+  a stalled review. `pause` itself is quota-friendly during a rapid push series on an already-ready
+  PR (drafts are the better tool when available; pause doesn't block manual commands).
 - **`@coderabbitai ignore`** — goes in the PR **description** (not a comment), permanently
   disables auto-review for that PR until removed.
 - `configuration` / `help` / `generate docstrings|unit tests|sequence diagram` — informational /
