@@ -15,8 +15,8 @@ state up in §3, take the one action it names. If a situation is not in the tabl
 
 **Progressive review is automatic.** On a reviewed PR, pushing fix commits and replying to threads
 is enough — the incremental review picks up the delta and the replies on its own, and re-approves
-once its concerns are addressed. A command in that flow is at best a wasted quota unit and at worst
-appears to reset a rate-limit countdown (observed here, not vendor-documented).
+once its concerns are addressed. A command in that flow is a wasted quota unit (it does not, measurably, push
+out an open rate-limit window — see §2 — but it spends one).
 
 ## 1. Hard rules (no exceptions, no judgment)
 
@@ -27,7 +27,7 @@ appears to reset a rate-limit countdown (observed here, not vendor-documented).
 | N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2. CodeRabbit resolves its own threads once it accepts a fix or a rebuttal.                    |
 | N4  | `@coderabbitai approve`                                                                                          | Resolves all threads AND submits the approval that is this repo's merge gate — self-approving a merge.  |
 | N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).  |
-| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state, and the command may itself reset the countdown. See §3 row S1.       |
+| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state; the command spends a quota unit for nothing. See §3 row S1.          |
 | N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                   |
 
 Only ONE command is ever postable on this repo: **`@coderabbitai review`**, and only in §3 row S3.
@@ -57,6 +57,16 @@ Three observations decide everything:
 PR's CodeRabbit check-run label (e.g. "Review rate limited") is a stamp from the attempt that raised
 it and does NOT clear when the window passes; trusting the label instead of the quoted window can
 turn a 3-minute wait into hours of idle babysitting.
+
+**The deadline is absolute; `n` is remaining time recomputed at each render.** An attempt made
+while the window is open does NOT restart it. Measured on PR #119, same comment id: 22:08:21Z said
+"48 minutes" (deadline 22:56:21Z) and 22:17:35Z said "39 minutes" (deadline 22:56:35Z) — a push in
+between re-rendered the notice without moving the deadline by more than render time. So a wasted
+mid-window attempt costs a quota unit but does not push the window out (contrary to the older
+"resets the countdown" belief, which was never vendor-documented). A NEW window is armed only by an
+attempt made after the previous one lapsed: the 21:05Z window expired at 21:45Z, and the next
+attempt at 22:08Z armed a fresh 48-minute one. This is one measured push, not a general proof for
+every command type — still wait, but do not treat an accidental attempt as having reset the clock.
 
 **Record `LIMITED(t, n)` the moment you see it — it is not durable.** CodeRabbit reuses ONE
 walkthrough comment, so the limit notice gets EDITED AWAY when that comment is next regenerated (on
