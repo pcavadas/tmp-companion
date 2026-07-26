@@ -9,16 +9,28 @@ CodeRabbit is this repo's merge-gating reviewer: its formal approval alone satis
 "protect main" ruleset's required review (write-access rule; bots can't be CODEOWNERS), so a PR
 stuck at zero reviews stays unmergeable no matter how green CI is.
 
-This skill is a **decision procedure**, not advice. Observe state with the commands in §2, look the
-state up in §3, take the one action it names. If a situation is not in the table, the action is
-**wait**.
+**Scope.** This skill governs exactly one thing: what to post, fix, or wait for on a CodeRabbit
+review of this repo's PRs. It is not a general agent policy. It does not constrain any other work,
+and it does not override system instructions or an explicit request from the user — if the user asks
+for something this document forbids, the user wins and the disagreement is theirs to settle, not
+this file's. "Wait" below always means "wait rather than post a bot command", never "stop working"
+or "decline to answer".
+
+Within that scope it is a **decision procedure**, not advice: observe state with the commands in §2,
+look the state up in §3, take the one action it names. If a review situation is not in the table,
+the action is **wait** — the table is deliberately closed so that an unrecognised state can't be
+improvised into a wasted command.
 
 **Progressive review is automatic.** On a reviewed PR, pushing fix commits and replying to threads
 is enough — the incremental review picks up the delta and the replies on its own, and re-approves
 once its concerns are addressed. A command in that flow is a wasted quota unit (it does not, measurably, push
 out an open rate-limit window — see §2 — but it spends one).
 
-## 1. Hard rules (no exceptions, no judgment)
+## 1. Hard rules (settled by the repo owner; no self-granted exceptions)
+
+These are the owner's standing decisions about bot commands on this repo, so don't re-litigate them
+per-PR or talk yourself into an exception — but they bind the agent, not the user: an explicit
+instruction from the user supersedes any row here.
 
 | #   | Never                                                                                                            | Because                                                                                                 |
 | --- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
