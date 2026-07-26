@@ -7,133 +7,109 @@ description: "How to work with CodeRabbit on this repo's PRs. Use whenever a tas
 
 CodeRabbit is this repo's merge-gating reviewer: its formal approval alone satisfies the
 "protect main" ruleset's required review (write-access rule; bots can't be CODEOWNERS), so a PR
-stuck at zero reviews stays unmergeable no matter how green CI is. That makes review health part
-of shipping — and makes the review quota a real resource to spend deliberately.
+stuck at zero reviews stays unmergeable no matter how green CI is.
 
-## The one rule
+This skill is a **decision procedure**, not advice. Observe state with the commands in §2, look the
+state up in §3, take the one action it names. If a situation is not in the table, the action is
+**wait**.
 
-**Progressive review is automatic.** On a PR that has been reviewed, pushing fix commits and
-replying to threads is enough — the incremental review picks up the delta and the replies on its
-own, and re-approves once its concerns are addressed. Posting a command in that flow is at best a
-wasted quota unit and at worst resets a rate-limit countdown. Default action after addressing
-findings: push once, reply on the threads, post nothing.
+## 1. Hard rules (no exceptions, no judgment)
 
-One documented wrinkle: `auto_pause_after_reviewed_commits` (default **5**) silently pauses
-incremental review once a PR has accumulated that many reviewed pushes — a long-lived PR can stop
-getting reviews with no error anywhere. It looks exactly like ambiguous silence and it does NOT
-license a command; a PR that has genuinely stalled this way goes to a human.
+| #   | Never                                                                                                            | Because                                                                                                 |
+| --- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| N1  | `@coderabbitai full review`                                                                                      | Standing instruction. Not as escalation, not for a no-op, not in a quiet window.                        |
+| N2  | `@coderabbitai resolve`                                                                                          | Resolves ALL threads at once; resolution is CodeRabbit's acknowledgment, so doing it by hand forges it. |
+| N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2. CodeRabbit resolves its own threads once it accepts a fix or a rebuttal.                    |
+| N4  | `@coderabbitai approve`                                                                                          | Resolves all threads AND submits the approval that is this repo's merge gate — self-approving a merge.  |
+| N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).  |
+| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state. See §3 row S1.                                                       |
+| N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                   |
 
-## The review commands
+Only ONE command is ever postable on this repo: **`@coderabbitai review`**, and only in §3 row S3.
 
-There is exactly ONE command you may ever post on this repo:
-
-| Command                     | Verdict                                                                                                                                                                                      |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@coderabbitai review`      | Post **only once a review limit has been lifted** — CodeRabbit said "Review limit reached … next review available in N minutes" and that window has since elapsed. Nothing else licenses it. |
-| `@coderabbitai full review` | **Never post it.** Standing instruction. Not as an escalation, not for a proven no-op, not in a quiet window — never.                                                                        |
-
-Ambiguous silence is NOT a lifted limit: with no explicit limit message there is nothing to lift,
-so the action is to keep watching, not to post. A limit message whose window has not yet elapsed
-is not lifted either — waiting is the action.
-
-Known trap (worth recognizing, no longer actionable): a rate-limited attempt can mark the head
-commits as _processed_, so a later plain `review` "finishes" in seconds having reviewed nothing.
-With `full review` off the table, a proven no-op escalates to a **human**, never to a second
-command.
-
-## Verify a review actually ran
-
-Never trust ack timing or the walkthrough saying "finished" — CodeRabbit edits its ONE
-walkthrough comment in place, so only the latest attempt's outcome is visible, and an ack has
-been observed claiming completion on a silent no-op. The reliable test:
+## 2. Observe state (run these; do not infer)
 
 ```bash
-gh pr view <n> --json reviews,reviewThreads   # formal reviews + threads on the CURRENT head
+gh pr view <n> --json state,isDraft,reviewDecision,mergeStateStatus,headRefOid,reviews
+gh pr view <n> --json reviewThreads                      # thread count on the CURRENT head
+gh api repos/<owner>/<repo>/issues/<n>/comments --jq \
+  '.[] | select(.user.login=="coderabbitai[bot]") | {updated_at, body: .body[0:400]}' | tail -3
+date -u +%H:%M:%SZ                                       # for window arithmetic
 ```
 
-0 formal reviews + 0 threads after a "finished" ack = the review never ran.
+Three observations decide everything:
 
-Corollary for watchers: after a fix push, `reviewDecision` STAYS `CHANGES_REQUESTED` — a push
-dismisses approvals (`dismiss_stale_reviews_on_push`) but NOT a request-changes review, which
-stands until a new review supersedes it. Key "has the re-review happened?" on a NEW review with
-`submittedAt` after the push, never on the decision flipping.
+- **`REVIEWED`** — a formal review exists whose `submittedAt` is after the current head was pushed.
+- **`LIMITED(t, n)`** — the latest CodeRabbit comment says "Review limit reached … next review
+  available in **n** minutes", last edited at **t**. The limit is **lifted** once `now ≥ t + n`.
+- **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
 
-## Recovery ladder (for a main-targeted, non-draft, same-repo PR with no review on its head)
+Two traps that make observation lie:
 
-1. No explicit limit message → **post nothing, keep watching.** Quiet is not a state you fix.
-2. Walkthrough says "Review limit reached … next review available in N minutes" → wait until
-   (last edit + N min). Before that, any command is wasted.
-3. Once that window has elapsed — the limit is now _lifted_ — post ONE `@coderabbitai review`.
-4. If it provably no-ops (0 reviews / 0 threads on the head): **stop and flag for a human.** Do
-   not post a second command, and never `full review`.
+- **Never key on `reviewDecision` flipping.** A push dismisses approvals
+  (`dismiss_stale_reviews_on_push`) but NOT a request-changes review, which stands until a new
+  review supersedes it. `CHANGES_REQUESTED` after your fix push is expected, not a signal.
+- **Never key on an ack or the walkthrough saying "finished".** CodeRabbit edits its ONE
+  walkthrough comment in place, and an ack has been observed claiming completion on a silent no-op.
+  `REVIEWED` is defined by `submittedAt`, nothing else.
 
-## Addressing findings
+## 3. The decision table
 
-The whole loop, in one line: **fix the valid ones, explain the invalid ones, resolve nothing.**
-Both a fix and a reasoned rebuttal are things CodeRabbit evaluates and acknowledges on its own —
-it marks the thread resolved itself, and that resolution is the receipt that it agreed. Closing a
-thread by hand forges that receipt.
+Evaluate top to bottom; take the FIRST matching row and only that action.
 
-- Verify each finding against **current** code first — reviews can lag pushes and rebases.
-- **`.coderabbit.yaml` does not enumerate CodeRabbit's static-analysis integrations.** This repo sets
-  no `tools:` section, so every one of them defaults `true` and can appear in a `🧰 Tools` block that
-  the repo config never mentions — including **SkillSpector** (NVIDIA's agent-skill security scanner,
-  v2.3.11) on a `SKILL.md` diff. Identify an unfamiliar tool from CodeRabbit's tools reference; a grep
-  of the repo config cannot tell you whether it is real.
-- Fix root causes; batch ALL of a PR's fixes into ONE commit + ONE push (each push to a
-  main-targeted PR spends a review attempt — never push cosmetically).
-- A finding that is wrong or deliberately not applicable gets ONE factual reply on its thread
-  citing file:line, WITH the reason spelled out — a reply that doesn't explain why the finding
-  isn't being fixed doesn't give CodeRabbit anything to evaluate, and it won't resolve the thread
-  on its own. Never a fake-fix to appease the bot, and no further argument on that thread.
-  When replying after a fix push, match threads by the stable thread id — never by `(path, line)`,
-  since line numbers shift with the push and the miss is silent. Comment BODY is a fallback only
-  after confirming it's unique among the PR's threads (duplicate findings can share near-identical
-  bodies, which would reply to the wrong thread).
-  Include `@coderabbitai` in the reply when you want the bot to actually engage with the rebuttal
-  (it answers contextually and can concede); a plain reply is only a note for the next review
-  pass and human readers.
-- **No command operates on a single thread.** Per the command reference, every `@coderabbitai`
-  command is a top-level PR comment (`approve` and `resolve` are documented as top-level ONLY and
-  explicitly do not work inside a review thread; `resolve` resolves ALL threads at once, so there
-  is no per-thread `resolve` to "nudge" one thread with). The ONLY thread-level lever is a reply
-  that @-mentions `@coderabbitai` — it evaluates the reply in context, concedes or pushes back, and
-  resolves the thread itself. So when a thread needs attention, the answer is always a reply, never
-  a command.
-- `dismiss_stale_reviews_on_push` is on: an approval is dismissed by any later push, so the
-  approval that merges must postdate the final commit.
+| Row | State                                                               | Action                                                                              |
+| --- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| S0  | PR is a draft                                                       | Nothing. Drafts are skipped entirely and spend no quota. Mark ready when settled.   |
+| S1  | Not `REVIEWED`, no `LIMITED` message                                | **Wait.** Re-observe later. Post nothing — this includes an hours-long quiet spell. |
+| S2  | `LIMITED(t, n)` and `now < t + n`                                   | **Wait** until `t + n`. Any command before then is wasted.                          |
+| S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                | Post exactly ONE `@coderabbitai review`. Then go to S1.                             |
+| S4  | `REVIEWED` and `OPEN_THREADS` non-empty                             | Run §4 on every open thread. One commit, one push. Then S1.                         |
+| S5  | `REVIEWED`, no `OPEN_THREADS`, `reviewDecision != APPROVED`         | **Wait** — it re-approves on its own after accepting the last thread.               |
+| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                    | Done. Auto-merge takes it; report the merge.                                        |
+| S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads) | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).          |
 
-## Other commands — safety notes for THIS repo
+## 4. Handling one thread (deterministic)
 
-- **`@coderabbitai approve` — never post it.** It resolves all threads AND submits a formal
-  approval; since CodeRabbit's approval alone satisfies this repo's merge gate, posting it is
-  self-approving the merge. Same class as "never approve/merge your own PR".
-- **`@coderabbitai autofix` — don't use here.** It pushes CodeRabbit-authored fixes from its own
-  side, which bypasses the local gate stack (`scripts/gates.sh` stamp, /simplify, HW checks).
-  Implement findings locally through the gates instead.
-- **`@coderabbitai resolve` — never post it.** Resolving is CodeRabbit's signal that it accepted
-  a fix or a rebuttal; resolving on its behalf destroys the only evidence that it agreed. Same
-  reason you never click GitHub's own "Resolve conversation" or call the
-  `resolveReviewThread` mutation. Fix or explain, then leave the thread alone.
-- **`@coderabbitai pause` / `resume`** — `resume` pairs EXCLUSIVELY with a prior `pause`; it is
-  not a review trigger and does nothing on a PR that was never paused, so it is never the tool for
-  a stalled review. `pause` itself is quota-friendly during a rapid push series on an already-ready
-  PR (drafts are the better tool when available; pause doesn't block manual commands).
-- **`@coderabbitai ignore`** — goes in the PR **description** (not a comment), permanently
-  disables auto-review for that PR until removed.
-- `configuration` / `help` / `generate docstrings|unit tests|sequence diagram` — informational /
-  finishing touches; harmless but each generation is more bot noise on the PR.
+Per finding, in order:
 
-## Quota economics (free/OSS tier — small, shared, adaptive)
+1. **Re-verify against current code** (`grep`/`sed` the cited `file:line`) — reviews lag pushes and
+   rebases, so a finding can already be fixed or have moved.
+2. **Classify.** Valid ⇒ step 3. Invalid or deliberately out of scope ⇒ step 4. There is no third
+   branch: every open thread gets a fix or a reasoned reply.
+3. **Fix the root cause.** Batch every fix on the PR into ONE commit + ONE push (N7).
+4. **Reply once** on the thread, including `@coderabbitai` so it engages, citing `file:line`, and
+   **stating the reason** it isn't being fixed. A reply without a reason gives it nothing to
+   evaluate and the thread stays open. No second reply, no argument.
+5. **Resolve nothing** (N2, N3). Stop and re-observe.
 
-Spends a review: every push to a main-targeted PR, every retarget-to-main, every manual review
-command. Refills slowly (~a few/hour, throttling toward ~1/hour under sustained multi-PR
-activity) — and the quoted "next review available in N minutes" window itself inflates with
-same-day spend, so never assume attempt N's window applies to attempt N+1 (a four-PR cascade
-saw 42/33/27/59-minute windows).
+Match threads by **stable thread id**, never by `(path, line)` — line numbers shift with the push
+and a miss is silent. Comment body is a fallback only after confirming it's unique among the PR's
+threads (duplicate findings share near-identical bodies).
 
-Free: **draft PRs are skipped entirely** (`auto_review.drafts` default) — iterate in draft, mark
-ready when settled; pushes to stacked descendants whose base is NOT main (auto-review fires only
-for default-branch-targeted PRs unless `base_branches` extends it — so only the main-targeted
-front of a stack is reviewed; each child meets CodeRabbit for the first time when it retargets to
-main after its parent merges, so budget one review per cascade step).
+**No command operates on a single thread.** Every `@coderabbitai` command is a top-level PR
+comment; `approve` and `resolve` are documented top-level-ONLY and do not work inside a thread, and
+`resolve` is all-threads-at-once, so there is no per-thread resolve to nudge one thread with.
+`resume` pairs exclusively with a prior `pause` and no-ops otherwise, so it is never the fix for a
+stalled review. A reply is the only thread-level lever that exists.
+
+## 5. Facts that change how you read a review
+
+- **`.coderabbit.yaml` does not enumerate CodeRabbit's static-analysis integrations.** This repo
+  sets no `tools:` section, so every one defaults `true` and can appear in a `🧰 Tools` block the
+  repo config never mentions — including **SkillSpector** (NVIDIA's agent-skill security scanner)
+  on a `SKILL.md` diff. Identify an unfamiliar tool from CodeRabbit's tools reference; a grep of
+  the repo config cannot tell you whether it is real. Padding inside a finding does not invalidate
+  the finding above it.
+- **Processed-commits trap.** A rate-limited attempt can mark head commits _processed_, so a later
+  plain `review` "finishes" in seconds having reviewed nothing. That is row S7, not a retry.
+- **Quota (free/OSS: small, shared, adaptive).** Spent by every push to a main-targeted PR, every
+  retarget-to-main, and every manual command. Refills ~a few/hour, throttling toward ~1/hour under
+  sustained activity — and the quoted "next review available in n minutes" inflates with same-day
+  spend, so never assume attempt N's window applies to N+1 (a four-PR cascade saw 42/33/27/59 min).
+- **Only main-targeted PRs are auto-reviewed** (unless `base_branches` extends it). A stacked
+  child meets CodeRabbit for the first time when it retargets to main after its parent merges —
+  budget one review per cascade step; pushes to non-main-based descendants are quota-free.
+- **The approval that merges must postdate the final commit** (`dismiss_stale_reviews_on_push`).
+- Other commands (`configuration`, `help`, `generate docstrings|unit tests|sequence diagram`,
+  `summary`) are informational and harmless, but each adds bot noise. `@coderabbitai ignore` goes
+  in the PR **description** and permanently disables auto-review for that PR.
