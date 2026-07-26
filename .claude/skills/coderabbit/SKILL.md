@@ -73,6 +73,15 @@ Four observations decide everything:
   which is a useful hint — but it is applied inconsistently (3 of 15 acks on PR #119), so it
   confirms settledness and never establishes actionability.
 
+**A resolved thread is not necessarily an addressed one.** A thread can resolve because the diff
+moved under it (`isOutdated`), not because anyone answered it — so a finding you never triaged can
+leave `OPEN_THREADS` on its own and never reappear. Once per review round, list the RESOLVED threads
+too and check each for a finding that got no fix and no reply from you; judge those on the merits
+regardless of thread state. On PR #119 a `Major` security finding ("do not make repository content an
+unscoped agent-control policy") auto-resolved this way after an edit shifted its lines, and was
+found only by reading the resolved list. Do NOT reopen such a thread (N3) — fix it and say so in the
+next round's commit.
+
 **Read `LIMITED` from the COMMENT's own text and edit timestamp, never from the check run.** The
 PR's CodeRabbit check-run label (e.g. "Review rate limited") is a stamp from the attempt that raised
 it and does NOT clear when the window passes; trusting the label instead of the quoted window can
