@@ -39,7 +39,7 @@ tauri-plugin-process = "2"
 # Device-backup fast DB read (`probe --device-backup`): the unit streams a
 # GNU-tar + LZ4-frame archive of /data (built by `tm-stomp-server`'s libarchive).
 # Both pure-Rust, no C dependency. SQLite itself is read via the system `sqlite3`.
-lz4_flex = "0.13"
+lz4_flex = "0.14"
 tar = "0.4"
 realfft = "3.5.0"
 
