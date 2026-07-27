@@ -240,6 +240,11 @@ export const levelFootswitchesApply = (
       levNodeId: string;
       levParameterId: string;
       targetLufs: number;
+      /** The switch's CURRENT display label (the Level list's row name). The backend
+       * writes it as the switch's `customLabel` when it adds a second function to an
+       * UNLABELLED switch — the unit displays "MULTI" for a multi-function switch with
+       * no label, so this keeps the pedalboard display unchanged. */
+      displayLabel?: string;
     }[];
     save: boolean;
     topologyId: string | null;

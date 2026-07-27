@@ -408,7 +408,7 @@ pub(crate) fn build_scene_jobs(
 
 /// The ONE field-8 saved-preset read a leveling run gets, THE source for everything the
 /// saved document answers: the raw per-node scene overlays ([`scene_overlay`],
-/// [`scene_overlays_touch_bypass`]) and [`build_scene_jobs`]'s routing-structure fallback.
+/// [`scene_overlays_change_param`]) and [`build_scene_jobs`]'s routing-structure fallback.
 /// Read it once per preset and thread the document — never add a second read.
 ///
 /// GAP CONTRACT (the HID open-lockout is real: every failed exclusive open resets it, so
@@ -607,7 +607,7 @@ fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::V
 /// "can't tell" is its own state and never collapses into `Absent`.
 ///
 /// Consumed by `leveller::set_knobs`' Scene Edit enable decision and by the footswitch bake
-/// gate (`footswitch::plan_footswitch_jobs`, via [`scene_overlays_touch_bypass`]).
+/// gate (`footswitch::plan_footswitch_jobs`, via [`scene_overlays_change_param`]).
 pub(crate) enum SceneOverlay<'a> {
     /// The scene carries params for this node — write WITHOUT the Scene Edit enable.
     Present(&'a serde_json::Map<String, serde_json::Value>),
@@ -693,22 +693,86 @@ fn max_referenced_scene(preset: &serde_json::Value) -> Option<u32> {
         .max()
 }
 
-/// Does ANY scene overlay carry `node`'s `bypass`? The per-node footswitch bake gate: a
-/// scene that flips the block's bypass can render a baked value in a state the leveler never
-/// measured, so such a node must take the assign path instead. Conservative — an unreadable
-/// `scenes` answers `true`, because "unknown" must never authorise a bake: the key absent, a
-/// truncated entry, or an array cut SHORT of the scenes the document still references
-/// ([`max_referenced_scene`] — a `false` derived from scenes we can't see is exactly what this
-/// gate exists to prevent).
-pub(crate) fn scene_overlays_touch_bypass(preset: &serde_json::Value, node: &str) -> bool {
+/// Tolerance for "this overlay merely restates the base value". Params are 0..1 knob floats
+/// that JSON round-trips exactly, so this only absorbs a last-bit difference.
+const SCENE_PARAM_EPS: f64 = 1e-6;
+
+/// Do two param values differ? Numeric pairs compare within [`SCENE_PARAM_EPS`], everything
+/// else (bools like `bypass`, strings, a type change) by exact JSON equality.
+fn values_differ(base: &serde_json::Value, overlay: &serde_json::Value) -> bool {
+    match (base.as_f64(), overlay.as_f64()) {
+        (Some(b), Some(o)) => (b - o).abs() > SCENE_PARAM_EPS,
+        _ => base != overlay,
+    }
+}
+
+/// Every BASE-graph node answering to `node` — by `nodeId` OR `FenderId`, the same two-id rule
+/// [`scene_overlay`] resolves by — each with its `dspUnitParameters` (`None` = the node carries
+/// none). More than one hit means the id is AMBIGUOUS, which the caller refuses outright.
+fn base_node_matches(
+    preset: &serde_json::Value,
+    node: &str,
+) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
+    let mut hits = Vec::new();
+    crate::audiograph::for_each_node(preset, |obj| {
+        let is_node = ["nodeId", "FenderId"]
+            .iter()
+            .any(|k| obj.get(*k).and_then(|v| v.as_str()) == Some(node));
+        if is_node {
+            hits.push(
+                obj.get("dspUnitParameters")
+                    .and_then(|p| p.as_object())
+                    .cloned(),
+            );
+        }
+    });
+    hits
+}
+
+/// Does ANY scene overlay CHANGE `param` on `node` relative to base? The per-node footswitch
+/// bake gate, called once for `bypass` (a scene that flips the block on renders a baked value
+/// in a state the leveler never measured) and once for the LEVELED param (a scene that
+/// overlays it with its own value would simply not render the baked one).
+///
+/// VALUE semantics, not key presence: a DEVICE-AUTHORED preset carries the full param set for
+/// every node in every scene overlay, so "the key is there" is true of every node of every
+/// real scened preset and would collapse this back to the whole-preset gate it replaced
+/// (every switch → Assign → a second function on the switch → the unit displays "MULTI").
+///
+/// Conservative — anything unreadable answers `true`, because "unknown" must never authorise a
+/// bake: the `scenes` key absent, a truncated entry, an array cut SHORT of the scenes the
+/// document still references ([`max_referenced_scene`]), an AMBIGUOUS node identity, or a base
+/// value we can't resolve. A `false` derived from state we can't see is exactly what this gate
+/// exists to prevent.
+pub(crate) fn scene_overlays_change_param(
+    preset: &serde_json::Value,
+    node: &str,
+    param: &str,
+) -> bool {
     let Some(scenes) = preset.get("scenes").and_then(|s| s.as_array()) else {
         return true;
     };
     if max_referenced_scene(preset).is_some_and(|m| m as usize >= scenes.len()) {
         return true;
     }
+    // AMBIGUOUS identity is refused BEFORE any scene is read, not per overlay: [`scene_overlay`]
+    // resolves the node off the roster's FIRST match and keys the lookup by THAT instance's
+    // group, so with two instances an overlay living under the other one reads `Absent` — a
+    // bake authorised off a scene we never looked at, not merely a mismatched value.
+    let mut base = base_node_matches(preset, node);
+    if base.len() > 1 {
+        return true;
+    }
+    // No hit = the node isn't in the base graph at all, which `scene_overlay` reports as
+    // `Absent` for every scene (its own roster lookup misses too) — so this `None` is never
+    // consulted, and a node no scene mentions stays bakeable.
+    let base = base.pop().flatten();
     (0..scenes.len() as u32).any(|scene| match scene_overlay(preset, scene, node) {
-        SceneOverlay::Present(params) => params.contains_key("bypass"),
+        SceneOverlay::Present(params) => params.get(param).is_some_and(|overlay| {
+            base.as_ref()
+                .and_then(|b| b.get(param))
+                .is_none_or(|base| values_differ(base, overlay))
+        }),
         SceneOverlay::Unknown => true,
         SceneOverlay::Absent => false,
     })

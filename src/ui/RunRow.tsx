@@ -46,7 +46,7 @@ export interface RunRowProps {
   /** `grid-template-columns` ⇒ COLUMNED mode (glyph · sound · instrument · target ·
    *  result). Omit for the flex row. */
   columns?: string;
-  /** Mono sub-line under `name` (e.g. `028 · JFF LP Hiwatt`). */
+  /** Mono sub-line under `name` (e.g. `028 · E2E Hiwatt 3S`). */
   subLabel?: string;
   /** Target cell text (e.g. `Stage · −26.0`). Columned mode only. */
   target?: string;

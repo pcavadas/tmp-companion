@@ -167,7 +167,7 @@ fn e2e_install_offline_fake() {
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim); // expose its event log to /sim/events
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
-    // The 4 scenario presets at slots 400-403 — same slots the online tier seeds by
+    // The 5 scenario presets at slots 400-404 — same slots the online tier seeds by
     // cloning, and the same presets baked into the backup fixture, so one set of specs
     // runs in both modes. `ensureScenario` finds them present offline and skips seeding.
     let presets = vec![
@@ -186,6 +186,10 @@ fn e2e_install_offline_fake() {
         session::PresetEntry {
             slot: 403,
             name: "E2E Realistic".into(),
+        },
+        session::PresetEntry {
+            slot: 404,
+            name: "E2E Hiwatt 3S".into(),
         },
     ];
     MONITOR_ENABLED.store(true, SeqCst);
@@ -301,10 +305,10 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
     true
 }
 
-/// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place the THREE
-/// committed scenario presets (`e2e/fixtures/scenario-presets.json` — the SAME
-/// presetJsons baked into the offline backup fixture) at their list indices
-/// (400/401/402). The heavy lifting lives in `probe_api::seed_scenario` — shared with
+/// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place EVERY
+/// committed scenario preset (`e2e/fixtures/scenario-presets.json` — the SAME
+/// presetJsons baked into the offline backup fixture) at its list index
+/// (400-404; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
 /// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
 /// before the server starts, dodges the in-process `0xe00002c5` open lockout that
 /// aborted in-spec seeds). This command is the fallback for specs run without the

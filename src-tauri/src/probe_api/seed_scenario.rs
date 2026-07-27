@@ -1,5 +1,5 @@
-//! Online-e2e scenario seeding — sweep stray imports, then place the three committed
-//! scenario presets at their slots. Shared by `probe --seed-scenario` (a FRESH process
+//! Online-e2e scenario seeding — sweep stray imports, then place the committed
+//! scenario presets at their slots (every entry of `scenario-presets.json`, 400-404). Shared by `probe --seed-scenario` (a FRESH process
 //! per seed, invoked by the runner BEFORE the bridge server starts — keeps the seed's
 //! many fresh connections clear of the in-process `0xe00002c5` open lockout that
 //! aborted the original in-spec seeds) and by the `e2e_seed_scenario` bridge command
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn committed_fixtures_carry_an_ownership_marker() {
         let spec = scenario_spec().expect("committed spec parses");
-        assert_eq!(spec.len(), 4);
+        assert_eq!(spec.len(), 5, "every committed scenario preset is checked");
         for p in &spec {
             assert!(
                 is_fixture_body(p.preset_json.as_bytes()),

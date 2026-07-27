@@ -212,6 +212,9 @@ function footswitchResultStub(over: Record<string, unknown> = {}) {
     target_lufs: -22,
     predicted_lufs: -22,
     clamped: false,
+    // Mirrors the wire shape exactly — the stub is untyped, so a missing field would
+    // silently read as `undefined` instead of failing the way the real contract does.
+    unconverged: false,
     clamp_reason: null,
     saved: true,
     verify_lufs: -22,
@@ -728,6 +731,14 @@ describe("LevelView — full leveling wizard e2e", () => {
     // The footswitch lane fired; a footswitch-only run never levels the preset base.
     expect(fired("level_footswitches_apply")).toBe(true);
     expect(fired("level_preset")).toBe(false);
+    // The row's DISPLAY label rides along on the job: the assign path writes it as the
+    // switch's `customLabel` when the switch has none, so adding a second function
+    // doesn't flip the unit's pedalboard display to "MULTI".
+    const fsArgs = vi
+      .mocked(invoke)
+      .mock.calls.find(([cmd]) => cmd === "level_footswitches_apply")?.[1] as
+      { jobs: { displayLabel?: string }[] } | undefined;
+    expect(fsArgs?.jobs[0].displayLabel).toBe("Solo");
     // The bake/assign `method` is never surfaced to the user.
     expect(screen.queryByText(/baked/i)).toBeNull();
     expect(screen.queryByText(/assigned/i)).toBeNull();

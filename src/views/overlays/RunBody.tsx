@@ -103,12 +103,16 @@ export function RunBody({
 
   const resultText = (it: RunItem): string => {
     if (it.outcome === "clamped") return `clamped · ${fmtLufs(it.value)}`;
+    // A clamped sound is at its limit; this one just missed — hence a different word and
+    // no "clamped", which would tell the user re-running is pointless when it isn't.
+    if (it.outcome === "unconverged")
+      return `off target · ${fmtLufs(it.value)}`;
     if (it.outcome === "offbranch") return offbranchStatus(it.silenceHint);
     if (it.outcome === "skipped") return "skipped · read failed";
     return `done · ${fmtLufs(it.value)}`;
   };
   const resultColor = (it: RunItem): string =>
-    it.outcome === "clamped"
+    it.outcome === "clamped" || it.outcome === "unconverged"
       ? t.sevWarn
       : it.outcome === "offbranch"
         ? t.warn
@@ -286,6 +290,15 @@ export function RunBody({
                       (it.outcome === "clamped" ? (
                         <Icon
                           name="warn-tri"
+                          size={14}
+                          stroke={t.sevWarn}
+                          strokeWidth={1.7}
+                        />
+                      ) : it.outcome === "unconverged" ? (
+                        // Shape, not colour alone, separates "ran out of knob" (warning
+                        // triangle) from "ran out of tries" (re-run).
+                        <Icon
+                          name="refresh"
                           size={14}
                           stroke={t.sevWarn}
                           strokeWidth={1.7}

@@ -17,6 +17,11 @@
       "base": -28.0,
       "scenes": [-22.0, -16.0, -18.0, -17.0],
       "offbranchSwitchNode": "ACD_TubeScreamer"
+    },
+    "404": {
+      "_comment": "E2E Hiwatt 3S — the CORRUPTION-CLASS fixture (a real 1.8.45 unit's 3-scene + 'Base Scene' preset, saved lastLoadedScene=3, 4 block-acting footswitches). Base C=-20 and scene 3 C=-34 are the MEASUREMENT-CONTEXT discriminator: a base run recalled to base solves -26 (presetLevel ~0.5, done), while the pre-fix unrecalled run measures scene 3 (its saved lastLoadedScene) and CLAMPS (-26 is 8 dB above that ceiling). Scenes 0/1/2 are authored ABOVE -26 so the scene-wipe run converges on amp outputLevel; scene 3 is excluded from that job list (its ceiling is the context probe, not a levelable sound).",
+      "base": -20.0,
+      "scenes": [-20.0, -18.0, -22.0, -34.0]
     }
   },
   "default": -18.0

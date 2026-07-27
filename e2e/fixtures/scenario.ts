@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 
 // Shared scenario setup for the dual-mode specs. The working presets live at slots
-// 400-403 (the high scratch zone, clear of the user's real presets) and are the SAME
+// 400-404 (the high scratch zone, clear of the user's real presets) and are the SAME
 // fixed presets in both modes (deterministic — same blocks every run, validated against).
 // OFFLINE they are baked into the backup fixture + the startup snapshot, so `ensureScenario`
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
@@ -16,7 +16,7 @@ export interface Preset {
 }
 
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
-// (401/402/403/404), so a slot-numbered name would read off-by-one in the backup view. The
+// (401/402/403/404/405), so a slot-numbered name would read off-by-one in the backup view. The
 // Reference is the Copy source; Target 1/2 are the edited presets; Realistic (gtrParallel1,
 // scenes + an off-branch footswitch) is the physics-spec fixture (level-defaults.spec.ts).
 export const SCENARIO: Preset[] = [
@@ -24,6 +24,7 @@ export const SCENARIO: Preset[] = [
   { slot: 401, name: "E2E Target 1" },
   { slot: 402, name: "E2E Target 2" },
   { slot: 403, name: "E2E Realistic" },
+  { slot: 404, name: "E2E Hiwatt 3S" },
 ];
 
 export async function invoke(
@@ -52,7 +53,7 @@ export async function listPresets(page: Page): Promise<Preset[]> {
   return (await invoke(page, "list_presets")) as Preset[];
 }
 
-/** Ensure the three scenario presets exist at 400/401/402. Offline: baked into the
+/** Ensure every scenario preset exists at its slot (400-404). Offline: baked into the
  *  fixture + snapshot, so a name check suffices (SimDevice state is disposable).
  *  ONLINE: always route through the ownership-verified seed — it verifies every
  *  occupied target by fixture CONTENT MARKER (not name; a user preset coincidentally

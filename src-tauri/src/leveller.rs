@@ -319,6 +319,24 @@ pub(crate) fn floor_suspect(capture_spread_lu: f64, stimulus_spread_lu: f64) -> 
     stimulus_spread_lu > STATIONARY_STIM_LU && capture_spread_lu <= FLOOR_TRIP_LU
 }
 
+/// Slack over the stimulus spread before a capture counts as aberrant. A driven chain
+/// only ever COMPRESSES dynamics, so out-spread ≤ in-spread is the physical bound and
+/// this margin covers metering noise around it (the two spreads are measured on
+/// different buffers by different meter runs), not any real excess.
+pub(crate) const SPREAD_ABERRANT_MARGIN_LU: f64 = 0.3;
+
+/// Is this capture MORE dynamic than the stimulus that drove it? Physically impossible
+/// for a genuinely driven amp state (a chain compresses, it does not expand), so it is
+/// the tell for a fire-and-forget preset/scene recall that only PARTIALLY landed — the
+/// capture then reads plausible but belongs to a sound we did not ask for. Armed by the
+/// same stationary-stimulus gate as [`floor_suspect`]: a stimulus with no dynamics of
+/// its own (or an unmeasurable one, which reports 0.0) can't discriminate, so it
+/// disarms both checks rather than trip this one on every capture.
+pub(crate) fn spread_aberrant(capture_spread_lu: f64, stimulus_spread_lu: f64) -> bool {
+    stimulus_spread_lu > STATIONARY_STIM_LU
+        && capture_spread_lu > stimulus_spread_lu + SPREAD_ABERRANT_MARGIN_LU
+}
+
 /// Did the capture track a `presetLevel` shift by 20·log10 (real signal), or stay
 /// put (floor)?
 pub(crate) fn tracks_level_shift(
@@ -349,29 +367,51 @@ pub(crate) enum GuardOutcome {
     StillFlat(lufs::Loudness),
 }
 
-/// Run `measure`; if the capture is floor-suspect, wait `gap` and retry ONCE with the
-/// same settings (heals a transient inject failure). A persistently flat capture is
-/// reported, not swallowed. The measurement's own spread stays advisory elsewhere.
+/// Run `measure`; if the capture is aberrant, wait `gap` and retry ONCE with the same
+/// settings (heals a transient inject failure or a half-landed recall). TWO tells, one
+/// retry budget between them:
+///
+/// * FLOOR ([`floor_suspect`]) — no dynamics at all. A persistently flat capture is
+///   reported as [`GuardOutcome::StillFlat`], not swallowed; callers escalate.
+/// * SPREAD ([`spread_aberrant`]) — MORE dynamics out than in. Always resolves to
+///   `Live`: the reading is plausible (just possibly of the wrong sound), so erroring a
+///   row on this heuristic would be the worse failure. It must NOT resolve to
+///   `StillFlat` either — `measure_c`'s level-shift confirm would PASS a wrong-scene
+///   capture (`presetLevel` is a linear post-chain multiplier whatever scene landed)
+///   and launder it as verified.
 pub(crate) fn measure_floor_guarded(
     mut measure: impl FnMut() -> Result<lufs::Loudness, String>,
     stimulus_spread_lu: f64,
     gap: Duration,
 ) -> Result<GuardOutcome, String> {
     let first = measure()?;
-    if !floor_suspect(first.spread_lu(), stimulus_spread_lu) {
+    if floor_suspect(first.spread_lu(), stimulus_spread_lu) {
+        log::warn!(
+            "floor guard: capture spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent inject, retrying once",
+            first.spread_lu()
+        );
+    } else if spread_aberrant(first.spread_lu(), stimulus_spread_lu) {
+        log::warn!(
+            "floor guard: capture spread {:.2} LU exceeds the stimulus's {stimulus_spread_lu:.2} LU \
+             — a chain cannot expand dynamics, so the recall likely half-landed; retrying once",
+            first.spread_lu()
+        );
+    } else {
         return Ok(GuardOutcome::Live(first));
     }
-    log::warn!(
-        "floor guard: capture spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent inject, retrying once",
-        first.spread_lu()
-    );
     std::thread::sleep(gap);
     let second = measure()?;
     if floor_suspect(second.spread_lu(), stimulus_spread_lu) {
-        Ok(GuardOutcome::StillFlat(second))
-    } else {
-        Ok(GuardOutcome::Live(second))
+        return Ok(GuardOutcome::StillFlat(second));
     }
+    if spread_aberrant(second.spread_lu(), stimulus_spread_lu) {
+        log::warn!(
+            "floor guard: capture spread {:.2} LU still exceeds the stimulus's \
+             {stimulus_spread_lu:.2} LU after the retry — reporting it, verify this sound by ear",
+            second.spread_lu()
+        );
+    }
+    Ok(GuardOutcome::Live(second))
 }
 
 /// The common call-site shape: guard `measure`, collapse a persistent flat read to
@@ -2671,6 +2711,11 @@ pub struct BatchedSceneOutcome {
     /// close enough to a solo lane that bleed may have skewed the equal-solo balance (the
     /// overall target is still hit). `false` outside rebalance.
     pub verify_by_ear: bool,
+    /// Post-save param-level verify (`verify_persisted_writes`): `Some(true)` = the saved
+    /// preset does NOT hold the value this outcome reports, so the number above is
+    /// pre-wipe and must not be trusted; `Some(false)` = re-read and confirmed. `None` =
+    /// not checked (the scene wrote nothing, the run didn't save, or the re-read failed).
+    pub persist_mismatch: Option<bool>,
 }
 
 /// One amp knob to drive within a scene: the control, its bounds, and its current
@@ -2863,6 +2908,7 @@ pub fn level_scenes_live_batched(
                     dynamic_spread_lu: None, // live windows carry no full-capture meter
                     clamp_reason: None,
                     verify_by_ear: false,
+                    persist_mismatch: None,
                 },
                 Err(e) if e == CANCELLED => return Err(e),
                 Err(e) => BatchedSceneOutcome {
@@ -2878,6 +2924,7 @@ pub fn level_scenes_live_batched(
                     dynamic_spread_lu: None,
                     clamp_reason: None,
                     verify_by_ear: false,
+                    persist_mismatch: None,
                 },
             };
             on_scene(job.scene_slot, Some(&outcome));
@@ -3102,6 +3149,8 @@ fn run_scene_jobs(
     let mut outcomes = Vec::with_capacity(jobs.len());
     let mut attempted = false;
     let mut stopped = false;
+    // Every value this batch actually wrote, for the post-save re-read (`verify_persisted_writes`).
+    let mut written: Vec<PersistedWrite> = Vec::new();
     // Every writing scene verifies + self-corrects (see `jointk_one_scene`): a downstream
     // compressor undershoots the open-loop solve per scene, so the canary-only model isn't
     // enough. Cost is one verify capture per off-target scene (none when already at target).
@@ -3133,7 +3182,30 @@ fn run_scene_jobs(
 
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let outcome = match result {
-            Ok(s) => solved_scene_outcome(job.scene_slot, eff_target, s, t0.elapsed().as_millis()),
+            Ok(s) => {
+                // Harvested BEFORE `solved_scene_outcome` consumes the solve: the outcome keeps
+                // only the loudest lane's level, but every lane amp was written and each one has
+                // to be re-read. `writes == 0` wrote nothing, so there is nothing to confirm.
+                if s.writes > 0 {
+                    written.extend(job.knobs.iter().zip(&s.levels).filter_map(|(k, &v)| {
+                        match &k.knob {
+                            LevelKnob::Block {
+                                node_id,
+                                parameter_id,
+                                ..
+                            } => Some(PersistedWrite {
+                                scene_slot: job.scene_slot,
+                                node_id: node_id.clone(),
+                                parameter_id: parameter_id.clone(),
+                                value: v,
+                            }),
+                            // Not written by a scene job, and not scene-scoped if it were.
+                            LevelKnob::PresetLevel => None,
+                        }
+                    }));
+                }
+                solved_scene_outcome(job.scene_slot, eff_target, s, t0.elapsed().as_millis())
+            }
             Err(e) if e == CANCELLED => {
                 stopped = true;
                 break;
@@ -3158,6 +3230,10 @@ fn run_scene_jobs(
             }
         } else {
             save_deferred_scene_writes(slot, restore_scene)?;
+            // Confirm the save kept what the run reports — no re-capture, one field-8 read,
+            // after every audio step. A stopped run returns CANCELLED below and its outcomes
+            // are discarded, so it is not worth a read.
+            verify_persisted_writes(slot, &written, &mut outcomes);
         }
     }
     if stopped {
@@ -3190,6 +3266,106 @@ fn save_deferred_scene_writes(slot: u32, restore_scene: Option<u32>) -> Result<(
         log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
         attempt()
     })
+}
+
+/// One solved scene write, to be checked against what the batch-end save actually persisted.
+#[derive(Debug, Clone)]
+pub(crate) struct PersistedWrite {
+    /// The scene the value was written into; `session::BASE_SCENE_SLOT` = the base graph.
+    pub scene_slot: u32,
+    pub node_id: String,
+    pub parameter_id: String,
+    /// The value the run SOLVED and reported.
+    pub value: f32,
+}
+
+/// Agreement band between a solved `f32` and its round-tripped JSON value. Wide enough for
+/// the float formatting, far below any real leveling step.
+const PERSIST_TOL: f64 = 1e-3;
+
+/// What the saved document holds for one solved write: the SCENE OVERLAY's value for an FS
+/// scene, the base graph node's for base (`scene_overlay` answers `Unknown` at/above
+/// `BASE_SCENE_SLOT`, so base must not go through it).
+fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> Option<f64> {
+    if w.scene_slot >= crate::session::BASE_SCENE_SLOT {
+        return crate::commands::level_footswitch::node_param_f64(
+            saved,
+            &w.node_id,
+            &w.parameter_id,
+        );
+    }
+    match scene_overlay(saved, w.scene_slot, &w.node_id) {
+        SceneOverlay::Present(params) => params.get(&w.parameter_id).and_then(|v| v.as_f64()),
+        SceneOverlay::Absent | SceneOverlay::Unknown => None,
+    }
+}
+
+/// The solved writes the save did NOT persist, as `(scene_slot, detail)`. A write the saved
+/// document cannot answer counts as a MISS: the gate exists so a report can never show
+/// numbers the save wiped, and "can't tell" is not "fine".
+pub(crate) fn persist_mismatches(
+    saved: &serde_json::Value,
+    writes: &[PersistedWrite],
+) -> Vec<(u32, String)> {
+    writes
+        .iter()
+        .filter_map(|w| match persisted_value(saved, w) {
+            Some(got) if (got - w.value as f64).abs() <= PERSIST_TOL => None,
+            Some(got) => Some((
+                w.scene_slot,
+                format!(
+                    "{}/{} solved {:.4} but the save holds {got:.4}",
+                    w.node_id, w.parameter_id, w.value
+                ),
+            )),
+            None => Some((
+                w.scene_slot,
+                format!(
+                    "{}/{} solved {:.4} but the saved preset holds no such value",
+                    w.node_id, w.parameter_id, w.value
+                ),
+            )),
+        })
+        .collect()
+}
+
+/// Post-save param-level verify: RE-READ the preset and confirm every solved write survived
+/// the batch-end save, stamping `persist_mismatch` on each outcome. Cheap and audio-free —
+/// one field-8 read per preset per run, after all capture work — and the one thing that stops
+/// a summary from reporting pre-wipe numbers as persisted. `writes` pairs a scene slot with
+/// the values solved for it; scenes that wrote nothing are not checked.
+fn verify_persisted_writes(
+    slot: u32,
+    writes: &[PersistedWrite],
+    outcomes: &mut [BatchedSceneOutcome],
+) {
+    if writes.is_empty() {
+        return;
+    }
+    // `save_deferred_scene_writes` has just closed its session and `read_saved_preset` sleeps
+    // only AFTER itself, so the opening gap is the caller's to provide.
+    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    let Some(saved) = read_saved_preset(slot) else {
+        log::warn!(
+            "slot {slot}: post-save verify skipped — the saved preset could not be re-read; \
+             the reported values are unconfirmed"
+        );
+        return;
+    };
+    let misses = persist_mismatches(&saved, writes);
+    for o in outcomes.iter_mut() {
+        // Only a scene we actually checked gets a verdict; the rest stay `None` (unknown).
+        if !writes.iter().any(|w| w.scene_slot == o.scene_slot) {
+            continue;
+        }
+        let mismatch = misses.iter().any(|(scene, _)| *scene == o.scene_slot);
+        o.persist_mismatch = Some(mismatch);
+    }
+    for (scene, detail) in &misses {
+        log::warn!(
+            "slot {slot} scene {scene}: the save did not persist the leveled value — {detail}"
+        );
+    }
 }
 
 /// Result of the joint-k solve for a scene's amp-knob set.
@@ -3946,6 +4122,7 @@ fn solved_scene_outcome(
         dynamic_spread_lu: Some(s.spread),
         clamp_reason: s.clamp_reason,
         verify_by_ear: s.verify_by_ear,
+        persist_mismatch: None,
     }
 }
 
@@ -3969,6 +4146,7 @@ fn failed_scene_outcome(
         dynamic_spread_lu: None,
         clamp_reason: None,
         verify_by_ear: false,
+        persist_mismatch: None,
     }
 }
 
@@ -4136,6 +4314,73 @@ pub fn level_preset_block(
 }
 
 #[cfg(test)]
+mod persist_verify_tests {
+    use super::*;
+
+    // Base graph carrying one amp at outputLevel 0.40, plus a scene 0 overlay that holds
+    // 0.72 for the same node — the shape a batch-end save leaves behind.
+    fn saved_preset() -> serde_json::Value {
+        serde_json::json!({
+            "audioGraph": { "guitarNodes": {
+                "G1": [ { "nodeId": "amp", "FenderId": "amp",
+                          "dspUnitParameters": { "bypass": false, "outputLevel": 0.40 } } ]
+            } },
+            "scenes": [
+                { "guitarNodes": { "G1": { "amp": { "dspUnitParameters": { "outputLevel": 0.72 } } } } },
+                { "guitarNodes": { "G1": {} } }
+            ]
+        })
+    }
+
+    fn write(scene_slot: u32, value: f32) -> PersistedWrite {
+        PersistedWrite {
+            scene_slot,
+            node_id: "amp".to_string(),
+            parameter_id: "outputLevel".to_string(),
+            value,
+        }
+    }
+
+    // The gate this exists for: a report must never show numbers the save did not persist.
+    #[test]
+    fn persist_mismatches_flags_only_the_scenes_the_save_did_not_keep() {
+        let saved = saved_preset();
+
+        // Solved == persisted, in the scene overlay and at base: nothing to flag.
+        assert!(persist_mismatches(&saved, &[write(0, 0.72)]).is_empty());
+        assert!(
+            persist_mismatches(&saved, &[write(crate::session::BASE_SCENE_SLOT, 0.40)]).is_empty()
+        );
+
+        // The wipe case: the overlay holds a DIFFERENT value than the run solved.
+        let miss = persist_mismatches(&saved, &[write(0, 0.55)]);
+        assert_eq!(
+            miss.len(),
+            1,
+            "the divergent scene must be flagged: {miss:?}"
+        );
+        assert_eq!(miss[0].0, 0);
+
+        // A base write compared against the base graph, same divergence.
+        assert_eq!(
+            persist_mismatches(&saved, &[write(crate::session::BASE_SCENE_SLOT, 0.55)]).len(),
+            1
+        );
+
+        // Scene 1 has no overlay for the node at all — the write is simply not there, which
+        // is a miss, not an "unknown" to be waved through.
+        let miss = persist_mismatches(&saved, &[write(1, 0.61)]);
+        assert_eq!(miss.len(), 1, "an absent overlay is a miss: {miss:?}");
+        assert_eq!(miss[0].0, 1);
+
+        // Only the divergent write is reported when a batch mixes both.
+        let mixed = persist_mismatches(&saved, &[write(0, 0.72), write(1, 0.61)]);
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].0, 1);
+    }
+}
+
+#[cfg(test)]
 mod floor_guard_tests {
     use super::*;
 
@@ -4197,6 +4442,9 @@ mod floor_guard_tests {
     fn guarded_measure_retries_once_then_reports_still_flat() {
         let lively = loud(-30.0, 5.0);
         let flat = loud(-30.18, 0.01);
+        // The stimulus spread must exceed the capture's: a chain only compresses, so a
+        // livelier-out-than-in fixture is the aberrant case the spread tell retries.
+        let stim = 6.0;
 
         // First capture lively → no retry.
         let mut calls = 0;
@@ -4205,7 +4453,7 @@ mod floor_guard_tests {
                 calls += 1;
                 Ok(lively)
             },
-            1.5,
+            stim,
             Duration::ZERO,
         )
         .unwrap();
@@ -4219,7 +4467,7 @@ mod floor_guard_tests {
                 calls += 1;
                 Ok(if calls == 1 { flat } else { lively })
             },
-            1.5,
+            stim,
             Duration::ZERO,
         )
         .unwrap();
@@ -4233,7 +4481,7 @@ mod floor_guard_tests {
                 calls += 1;
                 Ok(flat)
             },
-            1.5,
+            stim,
             Duration::ZERO,
         )
         .unwrap();
@@ -4253,6 +4501,94 @@ mod floor_guard_tests {
         .unwrap();
         assert!(matches!(out, GuardOutcome::Live(_)));
         assert_eq!(calls, 1);
+    }
+
+    // A capture cannot be MORE dynamic than the stimulus that drove it — a chain only
+    // compresses. More spread out than in means the capture is not the sound we asked
+    // for (a partially-landed recall). Armed by the same stationary-stimulus gate as
+    // `floor_suspect`, so a disarmed stimulus disarms both.
+    #[test]
+    fn spread_aberrant_trips_only_above_the_stimulus_with_a_lively_stimulus() {
+        assert!(spread_aberrant(9.0, 6.0)); // more dynamic out than in — impossible
+        assert!(!spread_aberrant(6.0, 6.0)); // equal: the pass-through limit
+        assert!(!spread_aberrant(5.0, 6.0)); // compressed: the normal case
+        assert!(!spread_aberrant(6.0 + SPREAD_ABERRANT_MARGIN_LU, 6.0)); // margin is inclusive
+        assert!(!spread_aberrant(9.0, 0.2)); // stationary stimulus disarms the trip
+    }
+
+    // The spread tell buys exactly ONE re-measure and then reports whatever it got:
+    // unlike a floor read, an aberrant-spread capture is a plausible number, so it is
+    // never escalated to an error (and never to StillFlat, whose level-shift confirm a
+    // wrong-scene capture would pass — presetLevel is linear whatever scene landed).
+    #[test]
+    fn guarded_measure_retries_once_on_aberrant_spread() {
+        let stim = 6.0;
+        let aberrant = loud(-30.0, 9.0);
+        let compressed = loud(-24.0, 5.0);
+
+        // Aberrant then compressed → the SECOND reading is returned, two calls.
+        let mut calls = 0;
+        let out = measure_floor_guarded(
+            || {
+                calls += 1;
+                Ok(if calls == 1 { aberrant } else { compressed })
+            },
+            stim,
+            Duration::ZERO,
+        )
+        .unwrap();
+        match out {
+            GuardOutcome::Live(l) => assert!((l.integrated_lufs - -24.0).abs() < 1e-9),
+            GuardOutcome::StillFlat(_) => panic!("an aberrant capture must never escalate"),
+        }
+        assert_eq!(calls, 2);
+
+        // Persistently aberrant → still Live (best effort), still exactly one retry.
+        let mut calls = 0;
+        let out = measure_floor_guarded(
+            || {
+                calls += 1;
+                Ok(aberrant)
+            },
+            stim,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(matches!(out, GuardOutcome::Live(_)));
+        assert_eq!(calls, 2);
+
+        // A compressed capture is the normal case — no retry at all.
+        let mut calls = 0;
+        let out = measure_floor_guarded(
+            || {
+                calls += 1;
+                Ok(compressed)
+            },
+            stim,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(matches!(out, GuardOutcome::Live(_)));
+        assert_eq!(calls, 1);
+
+        // The retry can land on a FLOOR read — that must still be reported as flat,
+        // not laundered into a Live reading by the spread lane.
+        let mut calls = 0;
+        let out = measure_floor_guarded(
+            || {
+                calls += 1;
+                Ok(if calls == 1 {
+                    aberrant
+                } else {
+                    loud(-30.18, 0.01)
+                })
+            },
+            stim,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(matches!(out, GuardOutcome::StillFlat(_)));
+        assert_eq!(calls, 2);
     }
 }
 
@@ -5057,7 +5393,7 @@ mod tests {
     // (A3) A base block knob write must recall base explicitly — a preset loads
     // into its saved lastLoadedScene, not necessarily base (HW), so a bare write
     // with no recall would silently land wherever that saved scene left it. This
-    // is the reported bug's exact shape: preset 28 ("JFF LP  Hiwatt 3 scenes")
+    // is the reported bug's exact shape: preset 28 (the e2e `E2E Hiwatt 3S` fixture)
     // has `lastLoadedScene = 3`, and scene 3 is literally named "Base Scene" —
     // the naming collision that made the symptom read as "leveling wrote into
     // the base preset" when it actually wrote into scene 3's overlay. The

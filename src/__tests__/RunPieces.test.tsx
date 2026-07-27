@@ -131,14 +131,14 @@ describe("RunRow", () => {
       <RunRow
         columns="18px minmax(0, 1fr) 124px 112px 158px"
         name="Rhythm Crunch"
-        subLabel="028 · JFF LP Hiwatt"
+        subLabel="028 · E2E Hiwatt 3S"
         target="Stage · −26.0"
         icon={<span>ic</span>}
         status={<span>queued</span>}
       />,
     );
     expect(screen.getByText("Rhythm Crunch")).toBeTruthy();
-    expect(screen.getByText("028 · JFF LP Hiwatt")).toBeTruthy();
+    expect(screen.getByText("028 · E2E Hiwatt 3S")).toBeTruthy();
     expect(screen.getByText("Stage · −26.0")).toBeTruthy();
     const row = screen.getByText("Rhythm Crunch").closest("div");
     expect(row?.style.display).toBe("grid");

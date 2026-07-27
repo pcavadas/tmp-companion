@@ -224,8 +224,9 @@ pub fn probe_bake_validate(
 /// Probe (read-only): list a slot's block-acting footswitches with each acted-on block's base
 /// bypass + the bake/assign classification for its first level param — to find bake-eligible
 /// presets (an active on-off enabling an OFF-in-base block). `has_fs_scenes` is printed as a raw
-/// read DIAGNOSTIC only — the bake/assign gate is per-node (a scene overlay on THAT block's
-/// `bypass`), so a `has_fs_scenes=true` preset can still classify as Bake.
+/// read DIAGNOSTIC only — the bake/assign gate is per-node (a scene overlay CHANGING that
+/// block's `bypass` OR its leveled param vs base), so a `has_fs_scenes=true` preset can
+/// still classify as Bake.
 pub fn probe_fs_list(slot: u32) -> Result<String, String> {
     let (preset, has_fs_scenes, json_len) = read_slot_preset_parsed(slot)?;
     let ftsw = preset
@@ -368,6 +369,8 @@ pub fn probe_level_footswitch(
         lev_node_id: lev_node.to_string(),
         lev_parameter_id: lev_param.to_string(),
         target_lufs,
+        // probe: no UI row label to preserve.
+        display_label: None,
     };
     let plan = footswitch::plan_footswitch_jobs(
         &ftsw,
@@ -487,6 +490,7 @@ pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, Strin
                 lev_node_id: p.node_id.clone(),
                 lev_parameter_id: p.parameter_id.clone(),
                 target_lufs: -24.0,
+                display_label: None,
             })
         })
         .collect();

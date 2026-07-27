@@ -283,7 +283,15 @@ export function chosenFrom(
 
 // `offbranch` is its OWN outcome (not a flavor of `clamped`): the amp doesn't reach the
 // USB 1/2 capture, so re-leveling can't fix it — only a routing change on the unit can.
-export type Outcome = "done" | "clamped" | "offbranch" | "skipped";
+//
+// `unconverged` is likewise its own outcome, and the distinction from `clamped` is the
+// user's next action: a CLAMPED sound is at the end of its knob and cannot reach target
+// however often it runs, while an UNCONVERGED one still had knob room and simply ran out
+// of measurement captures — running it again improves it. Backed by
+// `FootswitchLevelResult.unconverged` (footswitch rows only today). Folding it into
+// `clamped` would also feed a non-ceiling into `ceilingOf` → the derived common target.
+export type Outcome =
+  "done" | "clamped" | "unconverged" | "offbranch" | "skipped";
 
 /** Dynamics-spread flag threshold (LU): short-term-max − integrated above this
  *  marks a DYNAMIC sound — the gated reading understates its peaks vs a

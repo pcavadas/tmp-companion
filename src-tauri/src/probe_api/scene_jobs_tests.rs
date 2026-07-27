@@ -420,7 +420,7 @@ fn scene_docs_restore_scene_none_when_absent() {
 // A preset whose audioGraph overruns the device's lean-session field-3 push (~3.4 KB
 // observed; the prepass sessions empirically get the lean cut)
 // loses `audioGraph.template` in EVERY live scene doc, which used to hard-fail the whole
-// preset ("some presets just never scene-level" — the JFF LP Hiwatt user report). The
+// preset ("some presets just never scene-level" — the Hiwatt user report). The
 // field-8 saved JSON still carries the template (it sits at the end of audioGraph, well
 // inside the ~17 KB field-8 partial), so build_scene_jobs accepts it as the routing
 // STRUCTURE while knob values keep coming from the live docs.
@@ -589,7 +589,7 @@ fn scene_overlay_base_slot_is_unknown() {
     ));
 }
 
-// ── per-node bake gate: does ANY scene overlay touch this node's bypass ────────────────
+// ── per-node bake gate: does ANY scene overlay CHANGE this node's param ────────────────
 
 // `saved_preset`'s `lastLoadedScene` (2) is out of range for its 2-entry `scenes[]`, which the
 // bake gate correctly reads as a cut tail — so the gate's own fixture pins it in range.
@@ -607,70 +607,129 @@ fn without_scene0_bypass() -> serde_json::Value {
     p
 }
 
+// Scene 0 overlays `bypass: false` over a base `bypass: true` — a real FLIP.
 #[test]
-fn touch_bypass_true_when_a_scene_overlays_bypass() {
-    assert!(scene_overlays_touch_bypass(&bake_gate_preset(), "ampA"));
-}
-
-#[test]
-fn touch_bypass_false_when_no_scene_overlays_bypass() {
-    assert!(!scene_overlays_touch_bypass(
-        &without_scene0_bypass(),
-        "ampA"
+fn change_param_true_when_a_scene_flips_bypass() {
+    assert!(scene_overlays_change_param(
+        &bake_gate_preset(),
+        "ampA",
+        "bypass"
     ));
 }
 
 #[test]
-fn touch_bypass_false_for_a_sceneless_preset() {
+fn change_param_false_when_no_scene_overlays_bypass() {
+    assert!(!scene_overlays_change_param(
+        &without_scene0_bypass(),
+        "ampA",
+        "bypass"
+    ));
+}
+
+// The DEVICE-AUTHORED shape: the unit writes the FULL param set into every scene overlay, so
+// the key is always present. Only a value that DIFFERS from base changes what the scene
+// renders — an overlay restating base must read `false` for every param it carries, else the
+// gate collapses to "this preset has scenes" on every preset the unit itself wrote.
+#[test]
+fn change_param_false_when_a_full_overlay_restates_the_base_values() {
+    let mut p = bake_gate_preset();
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
+        serde_json::json!({ "bypass": true, "outputLevel": 0.4 });
+    assert!(!scene_overlays_change_param(&p, "ampA", "bypass"));
+    assert!(!scene_overlays_change_param(&p, "ampA", "outputLevel"));
+}
+
+// The leveled-param check the footswitch gate's second call makes: base 0.4 → scene 0.9.
+#[test]
+fn change_param_true_when_a_scene_changes_a_non_bypass_param() {
+    assert!(scene_overlays_change_param(
+        &bake_gate_preset(),
+        "ampA",
+        "outputLevel"
+    ));
+}
+
+// Two graph nodes answering to the same id: `scene_overlay` resolves the overlay off the
+// roster's FIRST match, so a value comparison could pit one instance's base against the
+// other's overlay. Ambiguous identity is unreadable state → conservative `true`.
+#[test]
+fn change_param_true_when_the_base_node_is_ambiguous() {
+    let mut p = bake_gate_preset();
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
+        serde_json::json!({ "bypass": true, "outputLevel": 0.4 });
+    let dup = p["audioGraph"]["guitarNodes"]["G1"][0].clone();
+    p["audioGraph"]["guitarNodes"]["G1"] = serde_json::json!([dup.clone(), dup]);
+    assert!(scene_overlays_change_param(&p, "ampA", "outputLevel"));
+}
+
+// The ambiguity case a per-overlay guard CANNOT catch: the duplicate lives in another group
+// (the same block in both parallel lanes) and the scene overlays only THAT copy. `scene_overlay`
+// looks under the first instance's group, finds nothing and reports `Absent` — so without the
+// up-front refusal this bakes off a scene state never read.
+#[test]
+fn change_param_true_when_a_duplicate_instance_is_the_one_the_scene_overlays() {
+    let mut p = bake_gate_preset();
+    let dup = p["audioGraph"]["guitarNodes"]["G1"][0].clone();
+    p["audioGraph"]["guitarNodes"]["G2"] = serde_json::json!([dup]);
+    // Only G2's copy is overlaid; G1's (the roster's first match) is not mentioned at all.
+    p["scenes"][0] = serde_json::json!({ "guitarNodes": { "G2": {
+        "ACD_TwinReverb": { "dspUnitParameters": { "outputLevel": 0.9 } }
+    } } });
+    assert!(scene_overlays_change_param(&p, "ampA", "outputLevel"));
+}
+
+#[test]
+fn change_param_false_for_a_sceneless_preset() {
     let mut p = bake_gate_preset();
     p["scenes"] = serde_json::json!([]);
     // A preset with no scenes sits on base, which is not a `scenes[]` index.
     p["lastLoadedScene"] = serde_json::json!(session::BASE_SCENE_SLOT);
-    assert!(!scene_overlays_touch_bypass(&p, "ampA"));
+    assert!(!scene_overlays_change_param(&p, "ampA", "bypass"));
 }
 
 // The truncation case the bake gate exists for: `scenes` absent → unknown → never bake.
 #[test]
-fn touch_bypass_true_when_scenes_key_absent() {
+fn change_param_true_when_scenes_key_absent() {
     let mut p = bake_gate_preset();
     p.as_object_mut().unwrap().remove("scenes");
-    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
 }
 
 #[test]
-fn touch_bypass_true_when_a_scene_entry_is_truncated() {
+fn change_param_true_when_a_scene_entry_is_truncated() {
     let mut p = without_scene0_bypass();
     p["scenes"][1] = serde_json::json!("truncated");
-    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
 }
 
 // The tail cut that SHORTENS `scenes[]`: the dropped scenes are invisible to a plain
 // `0..len` walk, so the gate must catch them via the indices the document still references
 // (`lastLoadedScene` here — scene 1 with only scene 0 left in the array).
 #[test]
-fn touch_bypass_true_when_scenes_array_is_cut_short() {
+fn change_param_true_when_scenes_array_is_cut_short() {
     let mut p = without_scene0_bypass();
     let scene0 = p["scenes"][0].clone();
     p["scenes"] = serde_json::json!([scene0]);
     p["lastLoadedScene"] = serde_json::json!(1);
-    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
 }
 
 // Same cut, evidenced by a FOOTSWITCH scene assignment instead of `lastLoadedScene`.
 #[test]
-fn touch_bypass_true_when_a_footswitch_references_a_dropped_scene() {
+fn change_param_true_when_a_footswitch_references_a_dropped_scene() {
     let mut p = without_scene0_bypass();
     let scene0 = p["scenes"][0].clone();
     p["scenes"] = serde_json::json!([scene0]);
     p["ftsw"] = serde_json::json!([[{ "func": "scene", "sceneSlot": 3, "isActive": true }]]);
-    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
 }
 
 // A node no scene mentions is bakeable (a plain preset whose scenes touch other blocks).
 #[test]
-fn touch_bypass_false_for_a_node_no_scene_mentions() {
-    assert!(!scene_overlays_touch_bypass(
+fn change_param_false_for_a_node_no_scene_mentions() {
+    assert!(!scene_overlays_change_param(
         &bake_gate_preset(),
-        "otherNode"
+        "otherNode",
+        "bypass"
     ));
 }

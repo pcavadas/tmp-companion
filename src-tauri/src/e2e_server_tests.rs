@@ -11,6 +11,10 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     lock_ok(&SERIAL)
 }
 
+/// How many presets `e2e/fixtures/scenario-presets.json` ships (= the offline snapshot list
+/// + the backup-fixture row count). One constant so adding a scenario preset is one edit.
+const SCENARIO_PRESETS: usize = 5;
+
 /// Invoke a command through the SAME IPC path the HTTP bridge uses: a JSON body in,
 /// the command's JSON response out (or its error value).
 fn invoke(
@@ -74,7 +78,7 @@ fn offline_copy_journey_through_real_backend() {
         ),
     );
     // Pre-fill the startup snapshot so connect/list serve it with no monitor thread —
-    // the 4 scenario presets at slots 400-403 (matching the backup fixture).
+    // the 5 scenario presets at slots 400-404 (matching the backup fixture).
     let presets = vec![
         crate::session::PresetEntry {
             slot: 400,
@@ -91,6 +95,10 @@ fn offline_copy_journey_through_real_backend() {
         crate::session::PresetEntry {
             slot: 403,
             name: "E2E Realistic".into(),
+        },
+        crate::session::PresetEntry {
+            slot: 404,
+            name: "E2E Hiwatt 3S".into(),
         },
     ];
     MONITOR_ENABLED.store(true, SeqCst);
@@ -117,17 +125,21 @@ fn offline_copy_journey_through_real_backend() {
         Some("1.8.45")
     );
 
-    // 2. list presets → the snapshot's 4 fixture entries.
+    // 2. list presets → the snapshot's fixture entries (one per scenario preset).
     let list = invoke(&webview, "list_presets", serde_json::json!({})).expect("list");
-    assert_eq!(list.as_array().map(|a| a.len()), Some(4), "presets: {list}");
+    assert_eq!(
+        list.as_array().map(|a| a.len()),
+        Some(SCENARIO_PRESETS),
+        "presets: {list}"
+    );
 
-    // 3. read the library via the fixture backup → 4 rows, decoded graphs.
+    // 3. read the library via the fixture backup → the same rows, decoded graphs.
     let lib = invoke(&webview, "read_library_via_backup", serde_json::json!({})).expect("library");
     let rows = lib
         .get("presets")
         .and_then(|p| p.as_array())
         .expect("library presets array");
-    assert_eq!(rows.len(), 4, "library rows: {lib}");
+    assert_eq!(rows.len(), SCENARIO_PRESETS, "library rows: {lib}");
     assert!(
         rows.iter()
             .any(|r| r.get("graph").is_some_and(|g| !g.is_null())),
@@ -755,4 +767,312 @@ fn offline_songs_crud_through_real_backend() {
         "after remove: {after_rm}"
     );
     assert!(!sim.song_names().iter().any(|n| n == "Opening Set"));
+}
+
+/// FIELD-8 GATE: the SimDevice answers `presetDataRequest`(8) for a scenario slot, so
+/// `read_saved_preset` — THE saved document behind `set_knobs`' overlay classification and the
+/// footswitch bake gate — resolves offline. Without it every scene/footswitch write is refused
+/// ("no saved-preset read") and the whole offline scene tier goes dark (it did: 951d141 landed
+/// with two offline gates red for exactly this reason).
+///
+/// Also pins the reassembly, which is the part that can silently regress: a ~20 KB presetJson
+/// is ~340 HID frames, so a rule change in `streams_final`/`try_preset_data_json` would return
+/// a TRUNCATED document — which parses, and then answers "overlay unknown" instead of failing
+/// loudly. Hence the `scenes` + per-scene-overlay assertions, not just `is_some`.
+#[test]
+fn sim_answers_the_field8_saved_preset_read() {
+    let _serial = serial();
+    set_e2e_env(&[(
+        "TMP_E2E_SCENARIO_PRESETS",
+        "/../e2e/fixtures/scenario-presets.json",
+    )]);
+    let sim = crate::sim_device::SimDevice::new();
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+
+    let saved = crate::read_saved_preset(403).expect("field-8 read answers for a scenario slot");
+    let scenes = saved["scenes"].as_array().expect("scenes array survived");
+    assert_eq!(scenes.len(), 4, "403 has 4 scenes: {scenes:?}");
+    assert!(
+        matches!(
+            crate::scene_overlay(&saved, 1, "ACD_TwinReverb65NoFx"),
+            crate::SceneOverlay::Present(_)
+        ),
+        "the per-node overlay accessor resolves against the read document"
+    );
+}
+
+/// The scenario slot + node the corruption-class gates below drive: the reported preset
+/// (a real 1.8.45 unit's 3-scene + "Base Scene" Hiwatt, saved `lastLoadedScene = 3`, 4
+/// block-acting footswitches) and its trunk amp. See `notes/user-journeys.md`'s bug→gate rows.
+const HIWATT: u32 = 404;
+const HIWATT_AMP: &str = "ACD_HiwattDR103CanMod";
+
+/// The scenario env every 404 gate needs (fixture presets + the authored C table + backup +
+/// stimulus), plus a live SimDevice wired as the transport factory. Returns the fake so the
+/// caller can read its event log.
+fn hiwatt_sim() -> crate::sim_device::SimDevice {
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+        (
+            "TMP_E2E_BACKUP_FIXTURE",
+            "/../e2e/fixtures/backup-fixture.bin",
+        ),
+        (
+            "TMP_E2E_STIMULUS",
+            "/resources/samples/guitar-humbucker.wav",
+        ),
+    ]);
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    sim
+}
+
+/// BUG→GATE (2026-07-27 report, the SCENE-TONE WIPE — the corruption bug): leveling the
+/// reported preset's scenes must NOT send `SetNodeSceneEdit(enable)` for a node that ALREADY
+/// has an overlay in that scene. On hardware that enable RESEEDS the whole overlay from base,
+/// so the scene's authored tone (this preset's per-scene Hiwatt bass/treble/middle/presence/
+/// volumes) reverted to base while the leveled `outputLevel` survived — the user's "it changed
+/// my sound" report.
+///
+/// WHY THE EVENT LOG, not a persisted read-back: the fake has no persisted preset store at all
+/// (`param_writes` is edit-buffer state, cleared on every `loadPreset`), so "the stored overlay
+/// still holds its tone params" is not expressible offline. The enable being SENT is the
+/// device-visible cause, and `sim_device::scene_context_tests::
+/// enabling_scene_edit_reseeds_the_node_from_base` pins that the enable does wipe. Together
+/// they cover the class; the persisted survival itself is an ONLINE assertion.
+///
+/// The premise is asserted first (the amp really does have an overlay in every job scene),
+/// so the gate cannot pass vacuously if a fixture edit flattens the overlays.
+#[test]
+fn hiwatt_scene_leveling_never_reseeds_an_existing_overlay() {
+    let _serial = serial();
+    let sim = hiwatt_sim();
+
+    // Premise: scenes 0/1/2 each carry an overlay for the amp — the `Present` branch, the one
+    // where the enable is pure corruption (an `Absent` overlay legitimately needs it).
+    let saved = crate::read_saved_preset(HIWATT).expect("field-8 read");
+    for scene in 0..3u32 {
+        assert!(
+            matches!(
+                crate::scene_overlay(&saved, scene, HIWATT_AMP),
+                crate::SceneOverlay::Present(_)
+            ),
+            "fixture premise: scene {scene} must already carry an overlay for {HIWATT_AMP}"
+        );
+    }
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![level_scenes_apply_batched])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let amp = serde_json::json!([{
+        "groupId": "G1", "nodeId": HIWATT_AMP, "parameterId": "outputLevel", "value": 0.69
+    }]);
+    // Scenes 0/1/2 only: scene 3 ("Base Scene") is the measurement-context probe — its authored
+    // C is 8 dB below the target on purpose (see the sidecar comment), so it would clamp here.
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": HIWATT,
+            "jobs": (0..3).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -26.0})).collect::<Vec<_>>(),
+            "candidates": amp,
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    let rows = res.as_array().expect("results array");
+    assert_eq!(rows.len(), 3, "one result per scene: {rows:?}");
+
+    let events = sim.events();
+    let reseeds: Vec<&crate::sim_device::SimEvent> = events
+        .iter()
+        .filter(|e| {
+            matches!(e, crate::sim_device::SimEvent::SceneEdit { node, enable: true, .. }
+                if node == HIWATT_AMP)
+        })
+        .collect();
+    assert!(
+        reseeds.is_empty(),
+        "leveling a scene whose overlay already exists must NOT enable Scene Edit (it reseeds \
+         the overlay from base — the reported tone corruption): {reseeds:?}"
+    );
+
+    // The other half of the same bug: with the enable dropped, the write must still land in the
+    // SCENE's overlay, never leak to base (which would move every scene at once).
+    for scene in 0..3i64 {
+        assert!(
+            events.iter().any(|e| matches!(e,
+                crate::sim_device::SimEvent::ChangeParameter { scene: s, node, param, .. }
+                    if *s == scene && node == HIWATT_AMP && param == "outputLevel")),
+            "scene {scene}'s solved outputLevel must be written under that scene, not base: \
+             {events:?}"
+        );
+    }
+    assert!(
+        !events.iter().any(|e| matches!(e,
+            crate::sim_device::SimEvent::ChangeParameter { scene, node, param, .. }
+                if *scene == crate::sim_device::SCENE_BASE && node == HIWATT_AMP
+                    && param == "outputLevel")),
+        "no scene-leveling write may land at base: {events:?}"
+    );
+}
+
+/// BUG→GATE (2026-07-27 report, the MEASUREMENT CONTEXT): a preset loads into its SAVED
+/// `lastLoadedScene`, so a base measurement that does not recall base first measures THAT
+/// scene. The reported preset saves `lastLoadedScene = 3`, and the authored C table puts scene
+/// 3 eight dB below base (-34 vs -20) — so the outcome itself discriminates: recalled to base
+/// the run SOLVES -26 (presetLevel ~0.5); measuring scene 3 instead the target is above that
+/// ceiling and the run reports CLAMPED. No event-order heuristic needed.
+#[test]
+fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
+    let _serial = serial();
+    let sim = hiwatt_sim();
+    // Premise: the fake really does activate the fixture's saved scene on a load (the whole
+    // reason the recall exists) — else this gate would pass with no recall at all.
+    {
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(HIWATT).expect("load");
+        assert!(
+            sim.events()
+                .iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::Loaded(s) if *s == HIWATT)),
+            "the fake saw the load"
+        );
+    }
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![level_preset])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let job = serde_json::json!({
+        "slot": HIWATT, "target_lufs": -26.0, "save": false,
+        "topology_id": null, "calibration_lufs": null, "stimulus_path": null, "profile_id": null,
+        "block_group_id": null, "block_node_id": null, "block_parameter_id": null,
+        "block_value": null
+    });
+    let r = invoke(&webview, "level_preset", serde_json::json!({ "job": job }))
+        .expect("level_preset 404");
+    assert_eq!(
+        r["clamped"],
+        serde_json::json!(false),
+        "base solved from base's C=-20; a CLAMP means the capture measured the saved scene 3 \
+         (C=-34) instead of base: {r}"
+    );
+    let measured = r["measured_lufs"].as_f64().expect("measured_lufs");
+    assert!(
+        (measured + 26.0).abs() < 1.0,
+        "the base run lands on target: {r}"
+    );
+    // Belt-and-braces on the mechanism, not just the outcome: base (wire slot 8) was recalled.
+    assert!(
+        sim.events()
+            .iter()
+            .any(|e| matches!(e, crate::sim_device::SimEvent::LoadScene(s)
+                if *s == crate::session::BASE_SCENE_SLOT)),
+        "every base measurement recalls base explicitly: {:?}",
+        sim.events()
+    );
+}
+
+/// BUG→GATE (2026-07-27 report, the FOOTSWITCH "MULTI" class): pin the bake-vs-assign PLAN the
+/// reported preset produces, so a change to the discriminator has to face this fixture.
+///
+/// All four of its block-acting switches take the ASSIGN path, and the load-bearing reason is
+/// the LEVELED PARAM, not the bypass key: each scene overlays the very param the leveler would
+/// bake with a value that differs from base (MythicDrive `output` 0.55 → 0.78 in scene 3;
+/// TremoloBias `level` 0.5 → 0.0; UniVibe `volume` 0.49 → 0.54; Lightspeed `loudness` 0.47 →
+/// 0.26 in scene 2), so a baked value would be silently overridden in those scenes — scene 3
+/// being this preset's own `lastLoadedScene`. Assign is therefore CORRECT here, and this gate
+/// stays green under a value-based bypass discriminator while going red if anything makes a
+/// scened preset bake unconditionally.
+///
+/// The shipped discriminator is `scene_jobs::scene_overlays_change_param`, asked once for
+/// `bypass` and once for the LEVELED param, by VALUE. Key presence was not enough: this
+/// fixture's device-authored overlays carry the full param set for every node in every scene, so
+/// a "does the `bypass` KEY appear" gate is true of every switch of every preset the unit itself
+/// wrote — it collapsed to the whole-preset gate and the added-function / "MULTI" symptom
+/// survived. Pure planner test (no device): `plan_footswitch_jobs` is the whole decision.
+#[test]
+fn hiwatt_footswitch_plan_is_assign_because_scenes_overlay_the_leveled_param() {
+    let _serial = serial(); // pure, but it writes the shared scenario-path env
+    set_e2e_env(&[(
+        "TMP_E2E_SCENARIO_PRESETS",
+        "/../e2e/fixtures/scenario-presets.json",
+    )]);
+    let spec = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
+    let preset: serde_json::Value = serde_json::from_str(
+        &spec
+            .iter()
+            .find(|p| p.list_index == HIWATT)
+            .expect("404 present")
+            .preset_json,
+    )
+    .expect("404 json");
+    let ftsw = preset["ftsw"].clone();
+
+    // The switches + their DEFAULT leveled param, exactly as the UI derives them (the backup
+    // scan's `level_params`, then `leveling.ts::defaultParamIndex` = first loudness-only param).
+    let jobs: Vec<(u32, &str, &str)> = vec![
+        (2, "ACD_MythicDrive", "output"),
+        (3, "ACD_Lightspeed", "loudness"),
+        (11, "ACD_TremoloBias", "level"),
+        (12, "ACD_UniVibe", "volume"),
+    ];
+    let keys: Vec<crate::footswitch::FsJobKey> = jobs
+        .iter()
+        .map(|(switch, node, param)| crate::footswitch::FsJobKey {
+            switch: *switch,
+            lev_node: node,
+            lev_param: param,
+            target_bits: (-26.0f64).to_bits(),
+        })
+        .collect();
+    let plans = crate::footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys);
+    assert_eq!(plans.len(), jobs.len());
+    for ((switch, node, param), plan) in jobs.iter().zip(&plans) {
+        assert!(
+            matches!(plan, crate::footswitch::FsLevelPlan::Assign { .. }),
+            "switch {switch} ({node}.{param}): a scene overlays this exact param with a \
+             different value, so the solved value must be ASSIGNED to the switch, never baked \
+             onto the block (a bake is overridden in those scenes): {plan:?}"
+        );
+        // And the reason is real, not incidental: some scene's overlay for this node carries
+        // `param` with a value differing from base.
+        let base = crate::commands::level_footswitch::node_param_f64(&preset, node, param)
+            .unwrap_or_else(|| panic!("{node}.{param} exists at base"));
+        let scenes = preset["scenes"].as_array().expect("scenes");
+        assert!(
+            (0..scenes.len() as u32).any(|scene| {
+                match crate::scene_overlay(&preset, scene, node) {
+                    crate::SceneOverlay::Present(p) => p
+                        .get(*param)
+                        .and_then(serde_json::Value::as_f64)
+                        .is_some_and(|v| (v - base).abs() > 1e-6),
+                    _ => false,
+                }
+            }),
+            "{node}.{param}: at least one scene overlay must differ from base ({base}) — \
+             otherwise the Assign above is the bypass-key gate, not the param one"
+        );
+    }
 }

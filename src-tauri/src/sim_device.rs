@@ -66,6 +66,10 @@ const F_SET_PRESET_LEVEL: u32 = 76;
 const F_CHANGE_PARAMETER: u32 = 12;
 const F_LOAD_SCENE: u32 = 101;
 const F_SET_NODE_SCENE_EDIT: u32 = 107;
+/// `presetDataRequest`(8) — the slot-addressed saved-preset ("field-8") read.
+const F_PRESET_DATA_REQUEST: u32 = 8;
+/// `presetDataChanged`(9) — its reply, carrying PLAINTEXT `presetJson`(3).
+const F_PRESET_DATA_CHANGED: u32 = 9;
 /// FenderMessageTMS field carrying a `SettingsMessage` (the re-amp toggle lives here).
 const TMS_SETTINGS: u32 = 3;
 /// `SettingsMessage.reampModeActive` (30) → `{ value(1) }`.
@@ -384,7 +388,13 @@ impl SimDevice {
             // see its field doc (the sim has no per-slot saved value, so it preserves the
             // last-set multiplier; faithful for the leveling flow).
             st.current_slot = slot0;
-            st.current_scene = st.saved_scene.get(&slot0).copied().flatten();
+            st.current_scene = match st.saved_scene.get(&slot0).copied() {
+                Some(scene) => scene,
+                // No recorded save this run → the FIXTURE's own `lastLoadedScene`, so a
+                // scenario preset saved in a scene (404) activates it offline exactly as the
+                // unit does, with no per-test setup.
+                None => fixture_last_loaded_scene(slot0),
+            };
             st.param_writes.clear();
             st.bypass_writes.clear();
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
@@ -394,6 +404,19 @@ impl SimDevice {
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
             reports.extend(frame_multi(&current_preset_data_changed(&json)));
             return reports;
+        }
+        if let Some(dr) = proto::first_bytes(&f, F_PRESET_DATA_REQUEST) {
+            // presetDataRequest{ listEnum(1), presetSlot(2) } → presetDataChanged(9) with the
+            // slot's SAVED document. THE offline field-8 read: `read_saved_preset` feeds
+            // `set_knobs`' overlay classification + the footswitch bake gate, and without a
+            // reply every scene/footswitch write is refused ("no saved-preset read").
+            let dev_slot = proto::first_varint(&proto::parse(dr), 2).unwrap_or(0);
+            let slot0 = dev_slot.saturating_sub(1) as u32;
+            return match saved_slot_json(slot0) {
+                // Plaintext (NOT lz4): every read path does `from_utf8_lossy` on field 9.
+                Some(j) => frame_multi(&preset_data_changed(dev_slot, j.as_bytes())),
+                None => Vec::new(), // non-scenario slot: the read times out, as offline today
+            };
         }
         if let Some(rn) = proto::first_bytes(&f, F_REPLACE_NODE) {
             let (group, node_id, fender_id) = three_strings(rn);
@@ -1097,6 +1120,42 @@ fn current_preset_data_changed(json: &[u8]) -> Vec<u8> {
     let lz4 = proto::lz4_block_compress_stored(json);
     let inner = proto::len_delimited(1, &lz4);
     preset_message(F_CURRENT_PRESET_DATA_CHANGED, &inner)
+}
+
+/// `presetDataChanged`(9) — `{ listEnum(1)=1, presetSlot(2)=dev_slot, presetJson(3) }`.
+/// `presetJson` is PLAINTEXT here (unlike field 3's lz4 block): the read path hands the
+/// field-9 bytes straight to `from_utf8_lossy` (`session::read_slot_preset_json`).
+fn preset_data_changed(dev_slot: u64, json: &[u8]) -> Vec<u8> {
+    let mut inner = Vec::new();
+    proto::field_varint(&mut inner, 1, 1);
+    proto::field_varint(&mut inner, 2, dev_slot);
+    inner.extend_from_slice(&proto::len_delimited(3, json));
+    preset_message(F_PRESET_DATA_CHANGED, &inner)
+}
+
+/// The SAVED document for a 0-based list index — the committed scenario presetJson, which
+/// is exactly what the unit stores for these slots (the seed imports it verbatim). `None`
+/// for a non-scenario slot / a non-e2e build.
+fn saved_slot_json(slot0: u32) -> Option<&'static str> {
+    #[cfg(feature = "e2e")]
+    {
+        scenario_json_for(slot0)
+    }
+    #[cfg(not(feature = "e2e"))]
+    {
+        let _ = slot0;
+        None
+    }
+}
+
+/// The scenario fixture's own `lastLoadedScene` for a slot (0-based `scenes[]` index;
+/// `None` = base, including the `BASE_SCENE_SLOT` sentinel). Only preset 404 carries the
+/// key, so every other slot keeps its base default.
+fn fixture_last_loaded_scene(slot0: u32) -> Option<u32> {
+    let scene = saved_slot_json(slot0)
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+        .and_then(|v| v.get("lastLoadedScene").and_then(serde_json::Value::as_u64))?;
+    (scene != u64::from(crate::session::BASE_SCENE_SLOT)).then_some(scene as u32)
 }
 
 /// `PresetLevelChanged{ presetLevel(1)=level }` (fixed32 float echo).

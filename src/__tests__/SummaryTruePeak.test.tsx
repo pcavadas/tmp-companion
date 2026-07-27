@@ -3,11 +3,10 @@
 // warn chip + the run gets one explanatory footnote.
 
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 
-import { ThemeProvider } from "../theme/ThemeProvider";
-import { SummaryBody } from "../views/overlays/SummaryBody";
 import type { RunItem } from "../views/level/leveling";
+import { renderSummary } from "./summaryTestUtils";
 
 const base = (over: Partial<RunItem>): RunItem => ({
   key: "p3",
@@ -25,18 +24,6 @@ const base = (over: Partial<RunItem>): RunItem => ({
   value: -22,
   ...over,
 });
-
-const renderSummary = (items: RunItem[]) =>
-  render(
-    <ThemeProvider>
-      <SummaryBody
-        items={items}
-        stopped={false}
-        onAccept={() => undefined}
-        onRelevel={() => undefined}
-      />
-    </ThemeProvider>,
-  );
 
 describe("Summary true-peak warn chip", () => {
   it("flags a row predicted to clip", () => {

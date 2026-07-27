@@ -1216,7 +1216,14 @@ pub fn probe_set_scene_param(
         verify: false,
         ..Default::default()
     };
-    let (saved, _) = leveller::apply_level(slot, &[], &knob, value, opts, true)?;
+    // A SCENE write refuses without the saved document (it decides per node whether Scene
+    // Edit must be enabled — both write shapes corrupt the overlay when guessed), so the
+    // field-8 read is mandatory there; a base write never consults it, so it is skipped
+    // rather than paying ~4 s on this arm. `confirm_slot_name` already slept the reconnect
+    // gap, which is the read's own gap contract.
+    let saved_doc = scene.and_then(|_| crate::read_saved_preset(slot));
+    let (saved, _) =
+        leveller::apply_levels(slot, &[], &[(&knob, value)], opts, true, saved_doc.as_ref())?;
     Ok(format!(
         "[probe --set-scene-param] slot {} · scene {} · {group}/{node}.{param} = {value:.4}  ⇒  {}\n",
         slot + 1,

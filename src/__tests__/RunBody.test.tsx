@@ -15,7 +15,7 @@ import type { RunItem } from "../views/level/leveling";
 const activeItem: RunItem = {
   key: "k0",
   slot: 27,
-  presetName: "JFF LP Hiwatt",
+  presetName: "E2E Hiwatt 3S",
   isBase: false,
   sceneSlot: 1,
   sceneName: "Rhythm Crunch",
@@ -105,9 +105,9 @@ describe("RunBody columned rows", () => {
     render(runBody(null));
     // The sound's own name owns the column; its preset is the mono sub-line.
     expect(screen.getByText("Rhythm Crunch")).toBeInTheDocument();
-    expect(screen.getByText("028 · JFF LP Hiwatt")).toBeInTheDocument();
+    expect(screen.getByText("028 · E2E Hiwatt 3S")).toBeInTheDocument();
     expect(
-      screen.queryByText("JFF LP Hiwatt · Rhythm Crunch"),
+      screen.queryByText("E2E Hiwatt 3S · Rhythm Crunch"),
     ).not.toBeInTheDocument();
     // Every row states what it is aiming at.
     expect(screen.getByText("Stage · −26.0")).toBeInTheDocument();
@@ -126,5 +126,20 @@ describe("RunBody columned rows", () => {
     for (const head of ["Sound", "Instrument", "Target", "Result"]) {
       expect(screen.getByText(head)).toBeInTheDocument();
     }
+  });
+
+  // The Result cell is an if-chain whose fallthrough is "done", so a miss state with no
+  // branch of its own reports as LEVELED — the reason unconverged needs one here too.
+  it("states an unconverged row as off target, not done and not clamped", () => {
+    const missed: RunItem = {
+      ...activeItem,
+      status: "result",
+      outcome: "unconverged",
+      value: -24.3,
+    };
+    render(runBody(null, [missed]));
+    expect(screen.getByText("off target · −24.3")).toBeInTheDocument();
+    expect(screen.queryByText("done · −24.3")).not.toBeInTheDocument();
+    expect(screen.queryByText(/clamped/)).not.toBeInTheDocument();
   });
 });

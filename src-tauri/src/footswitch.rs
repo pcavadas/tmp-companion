@@ -547,12 +547,17 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
             .map(|j| j.switch)
             .collect();
         let sole_owner = activators.iter().all(|sw| group.contains(sw));
-        // PER-NODE scene gate: only a scene overlay that carries THIS node's `bypass` can flip
-        // the block on in a state the leveler never measured and render the baked value there.
-        // (A whole-preset "has any scenes" gate sent every switch of every scened preset down
-        // the Assign path, which adds a second function to the switch → the unit relabels it
+        // PER-NODE scene gate, by VALUE (a device-authored overlay carries every param of every
+        // node, so key presence proves nothing): a scene that FLIPS this node's bypass renders
+        // the baked value in a state the leveler never measured, and a scene that overlays the
+        // LEVELED param with its own value would not render the baked one at all. Either way →
+        // Assign. (A whole-preset "has any scenes" gate sent every switch of every scened preset
+        // down the Assign path, which adds a second function to the switch → the unit relabels it
         // "MULTI".) Conservative by construction: a truncated/absent `scenes` answers true.
-        if !sole_owner || crate::scene_overlays_touch_bypass(preset, job.lev_node) {
+        if !sole_owner
+            || crate::scene_overlays_change_param(preset, job.lev_node, "bypass")
+            || crate::scene_overlays_change_param(preset, job.lev_node, job.lev_param)
+        {
             // Can't bake safely → engaged-measured param assignment (best-effort fallback).
             plans.push(FsLevelPlan::Assign { engaged });
             continue;
@@ -777,7 +782,7 @@ mod tests {
         assert_eq!(sw2.functions[0].value_b, Some(0.4));
     }
 
-    // Regression fixture for the reported bug: preset 28 ("JFF LP  Hiwatt 3 scenes")'s full
+    // Regression fixture for the reported bug: preset 28 (the e2e `E2E Hiwatt 3S` fixture)'s full
     // real 20-slot `ftsw` + real block params — 4 `func:"scene"` entries (one of them
     // literally named "Base Scene", at switch 1; the enumerator skips it by `func`, never by
     // name — no code path here reads scene names at all) interleaved with 4 block-acting
@@ -1027,19 +1032,17 @@ mod tests {
         }
     }
 
-    /// The reported bug: a preset WITH scenes whose overlays never touch the leveled node's
-    /// `bypass` must still BAKE. The old whole-preset `has_fs_scenes` gate routed EVERY switch
+    /// The reported bug: a preset WITH scenes whose overlays never CHANGE the leveled node
+    /// must still BAKE. The old whole-preset `has_fs_scenes` gate routed EVERY switch
     /// of ANY scened preset to Assign, which adds a second function to the switch — and a
     /// multi-function switch with an empty `customLabel` displays "MULTI" on the unit.
     #[test]
     fn plan_bakes_when_scenes_do_not_touch_the_node_bypass() {
         let p = with_scene_overlay_on_n(
             preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
-            serde_json::json!({ "gain": 0.7 }),
-        );
-        assert!(
-            !crate::scene_overlays_touch_bypass(&p, "N"),
-            "fixture precondition: the scene overlay must NOT carry N's bypass"
+            // A param that is neither `bypass` nor the leveled one (`gain`) — the overlay is
+            // irrelevant to the bake either way.
+            serde_json::json!({ "level": 0.7 }),
         );
         match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
             // `clear_stale: None` IS the "no `ftsw` write at all" invariant: `FsWrite::Bake`
@@ -1055,6 +1058,41 @@ mod tests {
         }
     }
 
+    /// The DEVICE-AUTHORED preset shape, and why key-presence semantics were not enough: a
+    /// preset the unit itself wrote carries the FULL param set for every node in every scene
+    /// overlay, `bypass` included. Presence of the key therefore proves nothing — only a
+    /// VALUE that differs from base changes what the scene renders, so an overlay that
+    /// merely restates base must still BAKE (else every switch of every real scened preset
+    /// takes the Assign path and the "MULTI" symptom survives).
+    #[test]
+    fn plan_bakes_when_a_full_scene_overlay_restates_the_base_values() {
+        let p = with_scene_overlay_on_n(
+            preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
+            // base is `{ "gain": 0.4, "bypass": true }` — restated verbatim.
+            serde_json::json!({ "bypass": true, "gain": 0.4 }),
+        );
+        match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
+            FsLevelPlan::Bake { clear_stale, .. } => assert_eq!(*clear_stale, None),
+            other => panic!("expected Bake, got {other:?}"),
+        }
+    }
+
+    /// The reason Assign IS correct on the reported preset: a scene overlays the very param
+    /// the bake would write with a DIFFERENT value, so the baked base value would simply not
+    /// render in that scene. `bypass` is restated (unchanged), so only the leveled-param
+    /// divergence can decide this one.
+    #[test]
+    fn plan_assigns_when_a_scene_overlay_changes_the_leveled_param() {
+        let p = with_scene_overlay_on_n(
+            preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
+            serde_json::json!({ "bypass": true, "gain": 0.7 }),
+        );
+        match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
+            FsLevelPlan::Assign { engaged } => assert!(!engaged.is_empty()),
+            other => panic!("expected engaged Assign, got {other:?}"),
+        }
+    }
+
     #[test]
     fn plan_assigns_when_a_scene_overlay_touches_the_node_bypass() {
         // The real hazard the gate exists for: a scene can flip this block ON, and it would
@@ -1064,7 +1102,7 @@ mod tests {
             serde_json::json!({ "bypass": false, "gain": 0.7 }),
         );
         assert!(
-            crate::scene_overlays_touch_bypass(&p, "N"),
+            crate::scene_overlays_change_param(&p, "N", "bypass"),
             "fixture precondition: the scene overlay carries N's bypass"
         );
         match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
@@ -1085,7 +1123,7 @@ mod tests {
             ),
             serde_json::json!({ "gain": 0.7 }),
         );
-        assert!(!crate::scene_overlays_touch_bypass(&p, "N"));
+        assert!(!crate::scene_overlays_change_param(&p, "N", "bypass"));
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         assert!(matches!(plans[0], FsLevelPlan::Assign { .. }));
     }
@@ -1096,7 +1134,7 @@ mod tests {
         // a scene-less preset (which reads `"scenes":[]`). Unknown must never authorise a bake.
         let mut p = preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]]));
         p.as_object_mut().expect("preset object").remove("scenes");
-        assert!(crate::scene_overlays_touch_bypass(&p, "N"));
+        assert!(crate::scene_overlays_change_param(&p, "N", "bypass"));
         let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         assert!(matches!(plans[0], FsLevelPlan::Assign { .. }));
     }

@@ -141,4 +141,40 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 
     await expectReampBalanced(page, reampBase);
   });
+
+  // BUG→GATE (2026-07-27 report — the corruption-class preset's SHAPE). SCENARIO[4]
+  // "E2E Hiwatt 3S" is a real unit's preset: 3 tone scenes + a 4th literally named
+  // "Base Scene" (a real overlay, NOT the base sentinel) and 4 block-acting footswitches,
+  // saved `lastLoadedScene = 3`. Its outcomes are command-level gates (the per-scene/
+  // per-footswitch Channel is a no-op offline — see level-defaults.spec.ts's header); what
+  // ONLY the UI can prove is that the backup scan ENUMERATES this shape: 4 scene children
+  // (not 3 + a swallowed "Base Scene", and not 5 with base double-counted) plus 4 footswitch
+  // children. No leveling run — list rendering only, so it costs seconds.
+  test("enumerates the 3-scene + Base-Scene + 4-footswitch preset in the list", async ({
+    page,
+  }) => {
+    await ensureScenario(page);
+    await page.goto("/");
+    await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
+    await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    await filter.fill(SCENARIO[4].name);
+    // The collapsed breakdown — the scan's own count, before any expansion.
+    await expect(page.getByText("4 scenes · 4 footswitches")).toBeVisible({
+      timeout: 60_000,
+    });
+
+    await page.getByTitle(/Show Base/).click();
+    // Base + 4 footswitch scenes + 4 block-acting footswitches = 9 child rows.
+    await expect(page.getByText("main preset sound")).toHaveCount(1);
+    await expect(page.getByText("footswitch scene")).toHaveCount(4);
+    await expect(page.getByText("footswitch", { exact: true })).toHaveCount(4);
+    // The 4th scene is a real overlay named "Base Scene" — it must appear as its OWN row,
+    // distinct from the "Base Preset" row (the sentinel).
+    await expect(page.getByText("Base Scene", { exact: true })).toHaveCount(1);
+    await expect(page.getByText("Base Preset", { exact: true })).toHaveCount(1);
+  });
 });

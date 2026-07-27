@@ -14,7 +14,7 @@
 # SimDevice e2e_server + vite). ONLINE is fully managed: it pre-flights the device via a
 # handshake-verified server start, runs each heavy spec in its own invocation (the device is
 # exclusive-seize and the level spec is two ~3-min tests), and ALWAYS recovers the unit on
-# exit — reamp-off + guarded scratch-clear (400/401/402) + recall 001 — even on Ctrl-C or a
+# exit — reamp-off + guarded scratch-clear (400-404) + recall 001 — even on Ctrl-C or a
 # failed/killed run (a killed level run otherwise strands the unit re-amp-engaged / input-muted).
 #
 # Both modes first kill any stale e2e_server on :7600, so neither can silently reuse a
@@ -116,6 +116,7 @@ recover_device() {
   post '{"cmd":"e2e_clear_preset","args":{"slot":401,"expectName":"E2E Target 1"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":402,"expectName":"E2E Target 2"}}'
   post '{"cmd":"e2e_clear_preset","args":{"slot":403,"expectName":"E2E Realistic"}}'
+  post '{"cmd":"e2e_clear_preset","args":{"slot":404,"expectName":"E2E Hiwatt 3S"}}'
   # Sweep stray scenario imports an aborted seed stranded elsewhere in the bank
   # (imports land at the first EMPTY slot anywhere; guarded, fail-closed). Long
   # timeout: N strays × clear can exceed the default 60 s cap.

@@ -1,11 +1,13 @@
 // src/views/overlays/SummaryBody.tsx — wizard step 3, "Summary".
 //
 // Reports a run's outcome and routes the user to the RIGHT next action. Sounds land in
-// one of four classes, ordered by the action they need:
+// one of five classes, ordered by the action they need:
 //   • offbranch — the amp doesn't reach the USB 1/2 capture; only a ROUTING change on
 //     the unit fixes it (a re-level can't). Marked with the `x` icon in WARN color
 //     (same icon as skipped, distinguished by color) and never offered to re-level.
 //   • clamped   — headroom: already as loud as the preset allows; lower the target + re-level.
+//   • unconverged — off target with knob room LEFT: the measurement ran out of tries, not
+//     of headroom, so the same target re-run improves it. None of the clamp remedies apply.
 //   • done      — hit target; may carry a "by ear" caveat (dynamic peaks or rebalanced mix).
 //   • skipped   — couldn't be read/levelled.
 // A stopped run can leave items un-leveled (no outcome) → the "Not leveled" group.
@@ -173,6 +175,14 @@ function ResultRow({ it, restore }: ResultRowProps) {
     );
     statusColor = t.sevWarn;
     status = `clamped · ${fmtLufs(it.value)}`;
+  } else if (it.outcome === "unconverged") {
+    icon = (
+      <Icon name="refresh" size={13} stroke={t.sevWarn} strokeWidth={1.7} />
+    );
+    statusColor = t.sevWarn;
+    // The value WAS written (the best point found), so the number is real — it just
+    // isn't on target, and unlike a clamp another run can close the gap.
+    status = `off target · ${fmtLufs(it.value)} · re-run to improve`;
   } else if (it.outcome === "done") {
     icon = <Icon name="check" size={14} stroke={t.good} strokeWidth={2} />;
     statusColor = t.good;
@@ -396,6 +406,10 @@ export function SummaryBody({
   const offbrExpMute = offbr.filter((it) => it.silenceHint === "exp_mute");
   const offbrRouting = offbr.filter((it) => it.silenceHint == null);
   const clamped = items.filter((it) => it.outcome === "clamped"); // HEADROOM clamps only
+  // Deliberately NOT folded into `clamped`: these sounds still have knob room, so none of
+  // the clamp remedies below (headroom redistribution, a lower common target) apply — the
+  // remedy is simply another run.
+  const unconverged = items.filter((it) => it.outcome === "unconverged");
   // What a gain-budget redistribution would rewrite (loud-preset class, single-amp) — null
   // when it doesn't apply (multi-amp, no headroom, or nothing clamped).
   const redistPlan = redistribution?.plan(items) ?? null;
@@ -416,6 +430,7 @@ export function SummaryBody({
   const allGood =
     offbr.length === 0 &&
     clamped.length === 0 &&
+    unconverged.length === 0 &&
     skipped.length === 0 &&
     notrun.length === 0 &&
     !stopped;
@@ -442,12 +457,14 @@ export function SummaryBody({
   if (stopped) bits.push("stopped");
   if (offbr.length) bits.push(`${String(offbr.length)} silent`);
   if (clamped.length) bits.push(`${String(clamped.length)} clamped`);
+  if (unconverged.length) bits.push(`${String(unconverged.length)} off target`);
   if (skipped.length) bits.push(`${String(skipped.length)} skipped`);
 
   // Result groups, ordered by the action they need (routing first, leveled/skipped last).
   const groups: { label: string; color: string; rows: RunItem[] }[] = [
     { label: "No signal", color: t.warn, rows: offbr },
     { label: "Clamped", color: t.sevWarn, rows: clamped },
+    { label: "Off target", color: t.sevWarn, rows: unconverged },
     { label: "Leveled", color: t.good, rows: leveled },
     { label: "Skipped", color: t.faint, rows: skipped },
     { label: "Not leveled", color: t.faint, rows: notrun },
