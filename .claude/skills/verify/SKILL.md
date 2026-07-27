@@ -61,6 +61,10 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
   open-lockout note for why (tolerant reads are correct there; strict is snapshot/monitor-only).
 - **A soak/online run needs the unit rested and Pro Control closed** — same preconditions as any
   online `e2e.sh` invocation; a handshake failure reports the "close Pro Control" hint.
+- **A docs-only change gets NO automated gate**, so nothing catches a stray non-ASCII character
+  landing in committed prose — a generated CJK glyph reached this public repo that way. Eyeball a
+  docs diff (or grep it for CJK/Cyrillic) before calling a docs-only change done; a real
+  pre-commit check belongs in `scripts/leak-guard.sh` but that script is high-risk to edit.
 
 ## 4. Standing rules
 
@@ -78,6 +82,14 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
    identified bug class gets a non-regression gate.
 4. **Evidence over assertion.** A completion report pastes the actual check output (the gate
    name + pass/fail, the online seeded-marker line, the soak ledger) — never a bare "tests pass."
+5. **A fix is not done until the module is swept for the same defect shape, and every part of a
+   multi-part finding has landed.** A guard added at the cited line usually has an un-cited twin
+   nearby — the same missing check in a sibling branch or fall-through (a `bypass-nodes`
+   empty-list fix shipped while its exact `bypass_all` twin sat 40 lines away in the same
+   function). And a multi-ask finding can be half-applied and still reported fixed (a `Critical`
+   asked for an identity guard AND a scratch-zone restriction; only the guard landed). Grep the
+   module for the shape, and re-read the finding's full body, before calling it done. This is the
+   author-side counterpart of `.coderabbit.yaml`'s `Behavioral parity` pre-merge check.
 
 See `notes/user-journeys.md` for the journey-coverage map + the bug→gate registry this rule
 enforces, and `notes/e2e-test-plan.md` for the full per-tab scenario inventory.
