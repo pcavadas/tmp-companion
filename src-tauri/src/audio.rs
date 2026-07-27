@@ -147,10 +147,12 @@ impl Capture {
             .collect()
     }
 
-    /// The channel index carrying the most energy (the processed output, vs the
-    /// silent/dry channels), with its RMS — robust to exact channel mapping.
+    /// The louder of the two PROCESSED channels (USB-Out 1/2 = capture channels
+    /// 0/1), with its RMS. Channel 2+ (the dry instrument send) is excluded on
+    /// purpose: a guitar plugged in during a leveling run would win a full
+    /// argmax and every measurement would read the dry DI instead of the amp.
     pub fn loudest_channel(&self) -> (usize, f32) {
-        (0..self.channels)
+        (0..self.channels.min(2))
             .map(|c| (c, self.channel_rms(c)))
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .unwrap_or((0, 0.0))
@@ -1246,6 +1248,29 @@ mod tests {
             sample_rate: 48_000,
         };
         assert_eq!(cap.stereo_mix(), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn loudest_channel_never_picks_the_dry_send() {
+        // ch2 (dry DI tap) is the loudest — a plugged-in guitar during a run.
+        // The argmax must stay on the processed pair (ch0/ch1).
+        let cap = Capture {
+            interleaved: vec![1.0, 0.5, 9.0, 1.0, 0.5, 9.0],
+            channels: 3,
+            sample_rate: 48_000,
+        };
+        let (ch, _) = cap.loudest_channel();
+        assert!(ch < 2, "argmax picked the dry send channel {ch}");
+    }
+
+    #[test]
+    fn loudest_channel_picks_the_louder_processed_channel() {
+        let cap = Capture {
+            interleaved: vec![0.1, 0.8, 0.1, 0.8],
+            channels: 2,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.loudest_channel().0, 1);
     }
 
     #[test]

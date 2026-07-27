@@ -32,10 +32,12 @@ pub(crate) fn cancel_footswitch_leveling() {
     FOOTSWITCH_LEVEL_CANCEL.store(true, SeqCst);
 }
 
-/// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, the
-/// scene gate (`Some(empty)` = definitely no FS scenes; truncated/unknown or non-empty →
-/// conservative `true`), and the raw byte length. Shared by the footswitch leveling command +
-/// probes (the connect→drain→read→parse→scene-check boilerplate).
+/// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, a
+/// DIAGNOSTIC "has FS scenes" flag (`Some(empty)` = definitely no FS scenes; truncated/unknown or
+/// non-empty → conservative `true`) and the raw byte length. Shared by the footswitch leveling
+/// command + probes (the connect→drain→read→parse→scene-check boilerplate). The flag is NO LONGER
+/// a gate: `footswitch::plan_footswitch_jobs` decides bake-vs-assign PER NODE off this same parsed
+/// document (`scene_jobs::scene_overlays_touch_bypass`) — only `probe --fs-list` still prints it.
 pub(crate) fn read_slot_preset_parsed(
     slot: u32,
 ) -> Result<(serde_json::Value, bool, usize), String> {
@@ -193,16 +195,18 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
-        // Read the preset once (resolve every job) + whether it has FS scenes (the bake gate).
-        let (preset, has_fs_scenes, _) = read_slot_preset_parsed(slot)?;
+        // THE single field-8 read: it resolves every job AND is the planner's scene-overlay
+        // source (per-node bake gate) — never add a second read here.
+        let (preset, _, _) = read_slot_preset_parsed(slot)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let ftsw = preset
             .get("ftsw")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        // Plan bake-vs-assign for the whole batch (pure) — block-off-in-base + sole-owner +
-        // no-scenes ⇒ bake straight onto the block; otherwise the (engaged-measured) param fn.
+        // Plan bake-vs-assign for the whole batch (pure) — block-off-in-base + sole-owner + no
+        // scene overlay on THAT node's bypass ⇒ bake straight onto the block (no `ftsw` write, so
+        // the switch keeps its single function and its label); otherwise the param assignment.
         let keys: Vec<footswitch::FsJobKey> = jobs
             .iter()
             .map(|j| footswitch::FsJobKey {
@@ -212,7 +216,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 target_bits: j.target_lufs.to_bits(),
             })
             .collect();
-        let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys, has_fs_scenes);
+        let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys);
 
         // Load the preset ONCE for the whole batch — `measure_footswitch`'s caller
         // contract. Every job's sweep runs against this load (its pollution is

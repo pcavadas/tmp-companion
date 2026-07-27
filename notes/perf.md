@@ -45,20 +45,30 @@ below trims the waits _around_ it.
    `Session` stored-preset mutation choke points (`save_current_preset` /
    `clear_user_preset` / `move_user_preset` / `import_preset`) + device detach.
    Saves ~11 s per 2nd+ apply on a sound.
-5. **FS isolation-once**: `measure_footswitch` sends the forced engaged-bypass list
-   only on the first successful capture; the working copy persists across reconnects.
-   `TMP_FS_ISOLATION_EVERY` restores the per-capture re-send.
+5. **FS isolation-once — REVERTED (was a correctness bug), do not re-attempt.**
+   `measure_footswitch` used to send the forced engaged-bypass list only on the first
+   successful capture, reasoning from the working-copy persistence below. The premise was
+   incomplete: every capture now recalls BASE first (a preset loads into its saved
+   `lastLoadedScene`, so an unrecalled sweep measured the wrong sound entirely), and
+   `loadScene` RE-ASSERTS that scene's own bypass state — so the once-only forced write was
+   reverted for captures 2..N and every later point measured a NON-isolated sound. The list
+   is re-sent on every capture (`leveller::arm_measurement`; the `TMP_FS_ISOLATION_EVERY`
+   kill-switch is gone with the optimization). Guarded by
+   `solve_footswitch_resends_the_isolation_list_on_every_capture`.
 
-Measured effect: preset 26.7 → 24.2 s, Doctor sound 19.2 → 17.4 s, FS job 30.1 →
-25.8 s; Doctor multi-scene presets and repeat prescription-applies save several
-seconds more per item (skip-reload / cache).
+Measured effect (items 1–4; item 5 reverted): preset 26.7 → 24.2 s, Doctor sound
+19.2 → 17.4 s; Doctor multi-scene presets and repeat prescription-applies save several
+seconds more per item (skip-reload / cache). The FS-job figure (30.1 → 25.8 s) included
+item 5 and no longer holds.
 
 ## Working-copy persistence (the fact behind 3–5)
 
 Working-copy edits survive HID disconnect/reconnect: after a session forced
 `bypass=false` and dropped, a fresh zero-write connection measured the forced state
 exactly (−25.285 vs base −23.78, `probe --measure-forced` + `--measure-current`).
-Only a `loadPreset` (or save) resets it.
+Only a `loadPreset` (or save) resets it — **and a `loadScene`, for the params that scene
+overlays**: a recall re-asserts the recalled scene's own bypass/param state, which is why
+persistence alone does NOT let a measurement loop force isolation just once (see item 5).
 
 ## Refuted / dead ends — do NOT re-attempt as drop-ins
 

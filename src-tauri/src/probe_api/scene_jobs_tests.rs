@@ -476,267 +476,201 @@ fn scene_jobs_saved_fallback_without_template_still_errors() {
     assert!(err.contains("routing"), "got: {err}");
 }
 
-// B1: `SetNodeSceneEdit(node, true)` reseeds a node's ENTIRE scene overlay from base (HW
-// 3-cell isolation matrix, `probe_api/slot_write.rs`), so `build_scene_jobs` must compute a
-// repair diff for every OTHER param that scene has already scene-edited — not just leave
-// them to the reseed. `gain` diverges (repair candidate); `outputLevel` also diverges but is
-// the param being leveled (excluded); `bypass` matches base (no repair needed).
-#[test]
-fn scene_jobs_repair_diff_covers_a_diverging_sibling_param() {
-    let amp = |gain: f64, output_level: f64| {
-        serde_json::json!({
-            "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
-            "dspUnitParameters": { "bypass": false, "gain": gain, "outputLevel": output_level }
-        })
-    };
-    let scene_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [amp(0.4, 1.0)] } }
-    });
-    let base_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [amp(0.7, 0.5)] } }
-    });
-    let candidates = vec![LevelBlockArg {
-        group_id: "G1".into(),
-        node_id: "ACD_HiwattDR103CanMod".into(),
-        parameter_id: "outputLevel".into(),
-        value: 1.0,
-    }];
-    let jobs = build_scene_jobs(
-        &[2],
-        &candidates,
-        &[(2, Some(scene_doc)), (8, Some(base_doc))],
-        -23.0,
-        None,
-    )
-    .unwrap();
-    assert_eq!(jobs[0].repair.len(), 1, "repair: {:?}", jobs[0].repair);
-    let (knob, value) = &jobs[0].repair[0];
-    let leveller::LevelKnob::Block {
-        parameter_id,
-        scene_slot,
-        ..
-    } = knob
-    else {
-        panic!("expected block knob");
-    };
-    assert_eq!(parameter_id, "gain");
-    assert_eq!(*scene_slot, Some(2));
-    assert_eq!(*value, 0.4);
-}
+// ── raw scene-overlay presence (the SceneEdit-enable + bake gates) ──────────────────────
+// `scene_overlay` answers from the RAW saved scene, never the merged graph: enabling Scene
+// Edit on a node that already HAS an overlay reseeds (wipes) it, and omitting the enable on
+// a node that has none leaks the write to base — so Present/Absent/Unknown must be exact.
 
-// A base-only job (no scene doc requested — the whole preset is base) never enables Scene
-// Edit, so there is nothing to reseed and no repair to compute.
 #[test]
-fn scene_jobs_repair_diff_empty_without_a_base_doc() {
-    let doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
-            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
-              "dspUnitParameters": { "bypass": false, "gain": 0.4, "outputLevel": 1.0 } }
-        ] } }
-    });
-    let candidates = vec![LevelBlockArg {
-        group_id: "G1".into(),
-        node_id: "ACD_HiwattDR103CanMod".into(),
-        parameter_id: "outputLevel".into(),
-        value: 1.0,
-    }];
-    // No base doc supplied (docs holds only scene 2) — repair must default empty, not panic
-    // or guess.
-    let jobs = build_scene_jobs(&[2], &candidates, &[(2, Some(doc))], -23.0, None).unwrap();
-    assert!(jobs[0].repair.is_empty());
-}
-
-// The repair cap: more than `SCENE_REPAIR_MAX_PARAMS` diverging float params keeps only the
-// top-K most-divergent by |Δ|; `bypass` always survives the cap since it travels a separate
-// wire call, not the float `dspUnitParameters` budget the cap protects.
-#[test]
-fn scene_jobs_repair_diff_caps_float_params_but_always_keeps_bypass() {
-    // The amp is ACTIVE (unbypassed) in the scene — bypassed amps aren't classifiable
-    // leveling candidates at all (`classify_scene_knobs` filters them out) — but bypassed
-    // in BASE: exactly the disaster case B0 investigated, where a naive reseed would
-    // silently RE-BYPASS the very amp being leveled.
-    let scene_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
-            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
-              "dspUnitParameters": {
-                  "bypass": false, "outputLevel": 1.0,
-                  "a": 0.9, "b": 0.7, "c": 0.5, "d": 0.1
-              } }
-        ] } }
-    });
-    let base_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
-            { "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
-              "dspUnitParameters": {
-                  "bypass": true, "outputLevel": 0.5,
-                  "a": 0.0, "b": 0.0, "c": 0.0, "d": 0.0
-              } }
-        ] } }
-    });
-    let candidates = vec![LevelBlockArg {
-        group_id: "G1".into(),
-        node_id: "ACD_HiwattDR103CanMod".into(),
-        parameter_id: "outputLevel".into(),
-        value: 1.0,
-    }];
-    let jobs = build_scene_jobs(
-        &[2],
-        &candidates,
-        &[(2, Some(scene_doc)), (8, Some(base_doc))],
-        -23.0,
-        None,
-    )
-    .unwrap();
-    // a/b/c (|Δ| 0.9/0.7/0.5) survive the top-3 cap; d (|Δ| 0.1) is dropped; bypass always
-    // rides along despite the cap already being full.
-    let names: Vec<&str> = jobs[0]
-        .repair
-        .iter()
-        .map(|(k, _)| match k {
-            leveller::LevelKnob::Block { parameter_id, .. } => parameter_id.as_str(),
-            leveller::LevelKnob::PresetLevel => "presetLevel",
-        })
-        .collect();
-    assert_eq!(jobs[0].repair.len(), 4, "repair: {names:?}");
-    assert!(names.contains(&"a"));
-    assert!(names.contains(&"b"));
-    assert!(names.contains(&"c"));
-    assert!(
-        !names.contains(&"d"),
-        "d should be dropped past the cap: {names:?}"
-    );
-    assert!(
-        names.contains(&"bypass"),
-        "bypass must survive the cap: {names:?}"
-    );
-    let bypass_value = jobs[0]
-        .repair
-        .iter()
-        .find(|(k, _)| matches!(k, leveller::LevelKnob::Block { parameter_id, .. } if parameter_id == "bypass"))
-        .map(|(_, v)| *v);
+fn scene_overlay_present_carries_bypass() {
+    let p = saved_preset();
+    // Base node is "ampA"; the scene-0 overlay is keyed by its FenderId.
+    let SceneOverlay::Present(params) = scene_overlay(&p, 0, "ampA") else {
+        panic!("scene 0 overlays ampA");
+    };
+    assert_eq!(params.get("bypass").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(
-        bypass_value,
-        Some(0.0),
-        "scene bypass=false must encode as 0.0"
+        params.get("outputLevel").and_then(|v| v.as_f64()),
+        Some(0.9)
     );
+    assert!(params.contains_key("bypass"));
 }
 
-// A parallel (2-amp) scene's per-node repair cap must SHRINK — the ~700 ms post-loadScene
-// write window is a per-BATCH budget, not per-node (CodeRabbit #117 finding: unshrunk, 2
-// nodes at the top-3 cap could add up to 8 repair writes on top of 2 leveled knobs).
+// The FenderId is accepted as the node key too (callers hold either id).
 #[test]
-fn scene_jobs_repair_diff_shrinks_per_node_cap_for_a_multi_node_scene() {
-    let amp = |fid: &str, a: f64, b: f64, c: f64| {
-        serde_json::json!({
-            "nodeId": fid, "FenderId": fid,
-            "dspUnitParameters": { "bypass": false, "outputLevel": 0.5, "a": a, "b": b, "c": c }
-        })
+fn scene_overlay_resolves_by_fender_id() {
+    let p = saved_preset();
+    assert!(matches!(
+        scene_overlay(&p, 0, "ACD_TwinReverb"),
+        SceneOverlay::Present(_)
+    ));
+}
+
+// An overlay that does NOT carry bypass: Present, but the bake gate must not trip.
+#[test]
+fn scene_overlay_present_without_bypass() {
+    let mut p = saved_preset();
+    p["scenes"][1]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+        serde_json::json!({ "dspUnitParameters": { "outputLevel": 0.7 } });
+    let SceneOverlay::Present(params) = scene_overlay(&p, 1, "ampA") else {
+        panic!("scene 1 overlays ampA");
     };
-    let scene_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
-            "G1": [],
-            "G2": [ amp("ACD_TM59Bassman", 0.9, 0.7, 0.5) ],
-            "G3": [ amp("ACD_HiwattDR103CanMod", 0.9, 0.7, 0.5) ]
-        } }
-    });
-    let base_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrParallel1", "guitarNodes": {
-            "G1": [],
-            "G2": [ amp("ACD_TM59Bassman", 0.0, 0.0, 0.0) ],
-            "G3": [ amp("ACD_HiwattDR103CanMod", 0.0, 0.0, 0.0) ]
-        } }
-    });
-    let candidates = vec![
-        LevelBlockArg {
-            group_id: "G2".into(),
-            node_id: "ACD_TM59Bassman".into(),
-            parameter_id: "outputLevel".into(),
-            value: 0.5,
-        },
-        LevelBlockArg {
-            group_id: "G3".into(),
-            node_id: "ACD_HiwattDR103CanMod".into(),
-            parameter_id: "outputLevel".into(),
-            value: 0.5,
-        },
-    ];
-    let jobs = build_scene_jobs(
-        &[7],
-        &candidates,
-        &[(7, Some(scene_doc)), (8, Some(base_doc))],
-        -23.0,
-        None,
-    )
-    .unwrap();
-    // Each node diverges on 3 floats; the top-3 cap would keep all 6. The halved cap
-    // (3 / 2 = 1, at least 1) keeps only the single most-divergent float per node.
+    assert!(!params.contains_key("bypass"));
     assert_eq!(
-        jobs[0].repair.len(),
-        2,
-        "repair: {:?} — the per-node cap must shrink for a 2-node scene",
-        jobs[0].repair
+        params.get("outputLevel").and_then(|v| v.as_f64()),
+        Some(0.7)
     );
 }
 
-// Regression fixture for the reported bug: preset 28 ("JFF LP  Hiwatt 3 scenes"), scene 0
-// ("Clean") vs base — real field-8 values, not synthetic. The Hiwatt amp's "Clean" overlay
-// diverges on 7 sibling params besides the leveled `outputLevel`; the cap (3) must keep the
-// 3 largest by |Δ| (normalvolume 0.22, middle 0.20, mastervolume 0.18) and drop the rest
-// (bass 0.16, presence 0.16, brightvolume 0.11, treble 0.10) — this is the actual overlay
-// shape that a naive reseed (no repair) silently wiped on hardware.
+// The scene exists and carries no entry for the node → Absent (the enable is REQUIRED).
 #[test]
-fn scene_jobs_repair_diff_on_preset28_hiwatt_overlay_keeps_top3_by_real_divergence() {
-    let hiwatt = |p: serde_json::Value| {
-        serde_json::json!({
-            "nodeId": "ACD_HiwattDR103CanMod", "FenderId": "ACD_HiwattDR103CanMod",
-            "dspUnitParameters": p
-        })
-    };
-    let base_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [hiwatt(serde_json::json!({
-            "bass": 0.47999998927116394, "brightvolume": 0.41999998688697815, "bypass": false,
-            "gatePreset": "off", "mastervolume": 0.41999998688697815, "middle": 0.5899999737739563,
-            "normalvolume": 0.5600000023841858, "outputLevel": 0.6899999976158142,
-            "presence": 0.47999998927116394, "treble": 0.27000001072883606
-        }))] } }
-    });
-    let scene_doc = serde_json::json!({
-        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [hiwatt(serde_json::json!({
-            "bass": 0.3199999928474426, "brightvolume": 0.3100000023841858, "bypass": false,
-            "gatePreset": "off", "mastervolume": 0.6000000238418579, "middle": 0.38999998569488525,
-            "normalvolume": 0.3400000035762787, "outputLevel": 0.9599999785423279,
-            "presence": 0.6399999856948853, "treble": 0.3700000047683716
-        }))] } }
-    });
-    let candidates = vec![LevelBlockArg {
-        group_id: "G1".into(),
-        node_id: "ACD_HiwattDR103CanMod".into(),
-        parameter_id: "outputLevel".into(),
-        value: 1.0,
-    }];
-    let jobs = build_scene_jobs(
-        &[0],
-        &candidates,
-        &[(0, Some(scene_doc)), (8, Some(base_doc))],
-        -23.0,
-        None,
-    )
-    .unwrap();
-    let names: Vec<&str> = jobs[0]
-        .repair
-        .iter()
-        .map(|(k, _)| match k {
-            leveller::LevelKnob::Block { parameter_id, .. } => parameter_id.as_str(),
-            leveller::LevelKnob::PresetLevel => "presetLevel",
-        })
-        .collect();
-    // len == 3 + these 3 positive names already fully pins the set; the one negative
-    // check below targets the tightest real competitor (bass, tied with presence at
-    // |Δ| 0.16, both just under mastervolume's 0.18) — the case an off-by-one or a
-    // wrong-direction sort would actually get wrong.
-    assert_eq!(jobs[0].repair.len(), 3, "repair: {names:?}");
-    assert!(names.contains(&"normalvolume"), "repair: {names:?}");
-    assert!(names.contains(&"middle"), "repair: {names:?}");
-    assert!(names.contains(&"mastervolume"), "repair: {names:?}");
-    assert!(!names.contains(&"bass"), "dropped past cap: {names:?}");
+fn scene_overlay_absent_when_node_not_in_scene() {
+    let p = saved_preset();
+    assert!(matches!(scene_overlay(&p, 1, "ampA"), SceneOverlay::Absent));
+}
+
+// A node that isn't in the graph at all is still Absent for that scene (nothing to reseed).
+#[test]
+fn scene_overlay_absent_for_unknown_node() {
+    let p = saved_preset();
+    assert!(matches!(scene_overlay(&p, 0, "nope"), SceneOverlay::Absent));
+}
+
+// Scene index past `scenes[]` (the field-8 tail truncation class) → Unknown, NOT Absent.
+#[test]
+fn scene_overlay_unknown_when_scene_index_missing() {
+    let p = saved_preset();
+    assert!(matches!(
+        scene_overlay(&p, 5, "ampA"),
+        SceneOverlay::Unknown
+    ));
+}
+
+// `scenes` cut off entirely (it sits at the document tail) → Unknown.
+#[test]
+fn scene_overlay_unknown_when_scenes_key_absent() {
+    let mut p = saved_preset();
+    p.as_object_mut().unwrap().remove("scenes");
+    assert!(matches!(
+        scene_overlay(&p, 0, "ampA"),
+        SceneOverlay::Unknown
+    ));
+}
+
+// A truncated scene entry (non-object) → Unknown.
+#[test]
+fn scene_overlay_unknown_when_scene_entry_truncated() {
+    let mut p = saved_preset();
+    p["scenes"][0] = serde_json::json!("truncated");
+    assert!(matches!(
+        scene_overlay(&p, 0, "ampA"),
+        SceneOverlay::Unknown
+    ));
+}
+
+// An overlay entry whose body isn't a param object is a truncated read, not "no overlay".
+#[test]
+fn scene_overlay_unknown_when_params_not_object() {
+    let mut p = saved_preset();
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"] = serde_json::json!("cut");
+    assert!(matches!(
+        scene_overlay(&p, 0, "ampA"),
+        SceneOverlay::Unknown
+    ));
+}
+
+// Base is not an overlay context: Unknown, so no caller can derive an enable from it.
+#[test]
+fn scene_overlay_base_slot_is_unknown() {
+    let p = saved_preset();
+    assert!(matches!(
+        scene_overlay(&p, session::BASE_SCENE_SLOT, "ampA"),
+        SceneOverlay::Unknown
+    ));
+}
+
+// ── per-node bake gate: does ANY scene overlay touch this node's bypass ────────────────
+
+// `saved_preset`'s `lastLoadedScene` (2) is out of range for its 2-entry `scenes[]`, which the
+// bake gate correctly reads as a cut tail — so the gate's own fixture pins it in range.
+fn bake_gate_preset() -> serde_json::Value {
+    let mut p = saved_preset();
+    p["lastLoadedScene"] = serde_json::json!(0);
+    p
+}
+
+// Strip scene 0's `bypass` (keeping the overlay) so only a truncation signal can trip the gate.
+fn without_scene0_bypass() -> serde_json::Value {
+    let mut p = bake_gate_preset();
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
+        serde_json::json!({ "outputLevel": 0.9 });
+    p
+}
+
+#[test]
+fn touch_bypass_true_when_a_scene_overlays_bypass() {
+    assert!(scene_overlays_touch_bypass(&bake_gate_preset(), "ampA"));
+}
+
+#[test]
+fn touch_bypass_false_when_no_scene_overlays_bypass() {
+    assert!(!scene_overlays_touch_bypass(
+        &without_scene0_bypass(),
+        "ampA"
+    ));
+}
+
+#[test]
+fn touch_bypass_false_for_a_sceneless_preset() {
+    let mut p = bake_gate_preset();
+    p["scenes"] = serde_json::json!([]);
+    // A preset with no scenes sits on base, which is not a `scenes[]` index.
+    p["lastLoadedScene"] = serde_json::json!(session::BASE_SCENE_SLOT);
+    assert!(!scene_overlays_touch_bypass(&p, "ampA"));
+}
+
+// The truncation case the bake gate exists for: `scenes` absent → unknown → never bake.
+#[test]
+fn touch_bypass_true_when_scenes_key_absent() {
+    let mut p = bake_gate_preset();
+    p.as_object_mut().unwrap().remove("scenes");
+    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+}
+
+#[test]
+fn touch_bypass_true_when_a_scene_entry_is_truncated() {
+    let mut p = without_scene0_bypass();
+    p["scenes"][1] = serde_json::json!("truncated");
+    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+}
+
+// The tail cut that SHORTENS `scenes[]`: the dropped scenes are invisible to a plain
+// `0..len` walk, so the gate must catch them via the indices the document still references
+// (`lastLoadedScene` here — scene 1 with only scene 0 left in the array).
+#[test]
+fn touch_bypass_true_when_scenes_array_is_cut_short() {
+    let mut p = without_scene0_bypass();
+    let scene0 = p["scenes"][0].clone();
+    p["scenes"] = serde_json::json!([scene0]);
+    p["lastLoadedScene"] = serde_json::json!(1);
+    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+}
+
+// Same cut, evidenced by a FOOTSWITCH scene assignment instead of `lastLoadedScene`.
+#[test]
+fn touch_bypass_true_when_a_footswitch_references_a_dropped_scene() {
+    let mut p = without_scene0_bypass();
+    let scene0 = p["scenes"][0].clone();
+    p["scenes"] = serde_json::json!([scene0]);
+    p["ftsw"] = serde_json::json!([[{ "func": "scene", "sceneSlot": 3, "isActive": true }]]);
+    assert!(scene_overlays_touch_bypass(&p, "ampA"));
+}
+
+// A node no scene mentions is bakeable (a plain preset whose scenes touch other blocks).
+#[test]
+fn touch_bypass_false_for_a_node_no_scene_mentions() {
+    assert!(!scene_overlays_touch_bypass(
+        &bake_gate_preset(),
+        "otherNode"
+    ));
 }

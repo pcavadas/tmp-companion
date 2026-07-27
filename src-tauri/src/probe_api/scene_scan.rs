@@ -39,7 +39,16 @@ pub fn probe_level_scenes_oneshot(
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, restore_scene) = prepass_scene_docs(list_index, &scene_slots)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, target_lufs, None)?;
+    // THE field-8 read for this run: the routing-structure fallback AND the raw scene
+    // overlays `set_knobs` needs for its Scene Edit decision.
+    let saved = super::scene_jobs::read_saved_preset(list_index);
+    let jobs = build_scene_jobs(
+        &scene_slots,
+        &candidates,
+        &docs,
+        target_lufs,
+        saved.as_ref(),
+    )?;
     // `commit` = repro instrumentation: run the REAL deferred-save path (the app's shape).
     let outcomes = if rebalance {
         leveller::level_scenes_rebalance(
@@ -48,6 +57,7 @@ pub fn probe_level_scenes_oneshot(
             &stim,
             commit,
             restore_scene.filter(|_| commit),
+            saved.as_ref(),
             |_, _| {},
             || false,
         )
@@ -58,6 +68,7 @@ pub fn probe_level_scenes_oneshot(
             &stim,
             commit,
             restore_scene.filter(|_| commit),
+            saved.as_ref(),
             |_, _| {},
             || false,
         )

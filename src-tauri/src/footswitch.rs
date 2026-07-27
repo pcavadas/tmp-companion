@@ -506,16 +506,10 @@ pub enum FsLevelPlan {
     Clamp(String),
 }
 
-/// Decide bake-vs-assign for every job in a batch (PURE — no device I/O). `has_fs_scenes` is the
-/// whole-preset gate (any/unknown scenes → never bake; conservative because a sparse scene
-/// overlay can turn a base-off block ON and would then render the baked value, and the field-8
-/// read can truncate scene bodies). Returns one plan per job, aligned to `jobs`.
-pub fn plan_footswitch_jobs(
-    ftsw: &Value,
-    preset: &Value,
-    jobs: &[FsJobKey],
-    has_fs_scenes: bool,
-) -> Vec<FsLevelPlan> {
+/// Decide bake-vs-assign for every job in a batch (PURE — no device I/O). `preset` is the SAVED
+/// (field-8) document — the scene gate reads its per-node overlays, so pass the read straight
+/// through, never a live field-3 graph. Returns one plan per job, aligned to `jobs`.
+pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> Vec<FsLevelPlan> {
     let mut plans = Vec::with_capacity(jobs.len());
     let mut bake_rep: std::collections::HashMap<(&str, &str, u64), usize> =
         std::collections::HashMap::new();
@@ -553,7 +547,12 @@ pub fn plan_footswitch_jobs(
             .map(|j| j.switch)
             .collect();
         let sole_owner = activators.iter().all(|sw| group.contains(sw));
-        if has_fs_scenes || !sole_owner {
+        // PER-NODE scene gate: only a scene overlay that carries THIS node's `bypass` can flip
+        // the block on in a state the leveler never measured and render the baked value there.
+        // (A whole-preset "has any scenes" gate sent every switch of every scened preset down
+        // the Assign path, which adds a second function to the switch → the unit relabels it
+        // "MULTI".) Conservative by construction: a truncated/absent `scenes` answers true.
+        if !sole_owner || crate::scene_overlays_touch_bypass(preset, job.lev_node) {
             // Can't bake safely → engaged-measured param assignment (best-effort fallback).
             plans.push(FsLevelPlan::Assign { engaged });
             continue;
@@ -894,7 +893,9 @@ mod tests {
     // ── Bake-vs-assign planning ──
 
     /// A preset graph with one guitar block `N` and an optional sibling `M`, each with a
-    /// `bypass` flag; `ftsw` is supplied by the caller per case.
+    /// `bypass` flag; `ftsw` is supplied by the caller per case. `scenes: []` is the DEVICE
+    /// shape for a scene-less preset (`session.rs`'s `{"scenes":[]}` case) — a MISSING key
+    /// means a truncated read, which the bake gate must treat as unknown.
     fn preset_with(n_bypass: bool, m: Option<bool>, ftsw: Value) -> Value {
         let mut nodes = vec![serde_json::json!({
             "nodeId": "N", "FenderId": "N",
@@ -909,7 +910,18 @@ mod tests {
         serde_json::json!({
             "audioGraph": { "guitarNodes": { "G1": nodes }, "micNodes": {} },
             "ftsw": ftsw,
+            "scenes": [],
         })
+    }
+
+    /// Give the preset ONE scene whose overlay carries `params` for node `N` — the sparse
+    /// per-node shape `scenes[i].guitarNodes.<group>.<id>.dspUnitParameters`.
+    fn with_scene_overlay_on_n(mut p: Value, params: Value) -> Value {
+        p["scenes"] = serde_json::json!([{
+            "guitarNodes": { "G1": { "N": { "dspUnitParameters": params } } },
+            "micNodes": {},
+        }]);
+        p
     }
 
     fn onoff(nodes: &[&str], active: bool) -> Value {
@@ -940,7 +952,7 @@ mod tests {
             None,
             serde_json::json!([[onoff(&["N"], false)], [onoff(&["M"], true)]]),
         );
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         match &plans[0] {
             FsLevelPlan::Bake {
                 engaged,
@@ -965,7 +977,7 @@ mod tests {
             None,
             serde_json::json!([[onoff(&["N"], true)], [onoff(&["M"], true)]]),
         );
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         match &plans[0] {
             FsLevelPlan::Assign { engaged } => {
                 assert_eq!(engaged, &vec![("G1".into(), "M".into(), true)]);
@@ -978,7 +990,7 @@ mod tests {
     fn plan_clamps_off_in_base_with_no_enabler() {
         // N off in base but switch 0 has no on-off for it → can never be heard → Clamp.
         let p = preset_with(true, None, serde_json::json!([[]]));
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         assert!(matches!(plans[0], FsLevelPlan::Clamp(_)));
     }
 
@@ -988,7 +1000,7 @@ mod tests {
         // block's switch reads isActive=false). So an `isActive:false` on-off is STILL an enabler →
         // off-in-base + sole owner + no scenes → Bake.
         let p = preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]]));
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         assert!(matches!(plans[0], FsLevelPlan::Bake { .. }));
     }
 
@@ -1002,7 +1014,7 @@ mod tests {
             None,
             serde_json::json!([[onoff(&["N"], false)], [onoff(&["N"], false)]]),
         );
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         match &plans[0] {
             FsLevelPlan::Assign { engaged } => {
                 assert!(!engaged.is_empty());
@@ -1015,15 +1027,78 @@ mod tests {
         }
     }
 
+    /// The reported bug: a preset WITH scenes whose overlays never touch the leveled node's
+    /// `bypass` must still BAKE. The old whole-preset `has_fs_scenes` gate routed EVERY switch
+    /// of ANY scened preset to Assign, which adds a second function to the switch — and a
+    /// multi-function switch with an empty `customLabel` displays "MULTI" on the unit.
     #[test]
-    fn plan_assigns_when_preset_has_scenes() {
-        // Off in base + sole owner BUT the preset has scenes → conservative: engaged Assign.
-        let p = preset_with(true, None, serde_json::json!([[onoff(&["N"], true)]]));
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], true);
-        match &plans[0] {
+    fn plan_bakes_when_scenes_do_not_touch_the_node_bypass() {
+        let p = with_scene_overlay_on_n(
+            preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
+            serde_json::json!({ "gain": 0.7 }),
+        );
+        assert!(
+            !crate::scene_overlays_touch_bypass(&p, "N"),
+            "fixture precondition: the scene overlay must NOT carry N's bypass"
+        );
+        match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
+            // `clear_stale: None` IS the "no `ftsw` write at all" invariant: `FsWrite::Bake`
+            // only ever touches `ftsw` to clear a stale `param` fn, and this switch has none.
+            FsLevelPlan::Bake {
+                engaged,
+                clear_stale,
+            } => {
+                assert_eq!(*clear_stale, None);
+                assert!(engaged.contains(&("G1".into(), "N".into(), false)));
+            }
+            other => panic!("expected Bake, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_assigns_when_a_scene_overlay_touches_the_node_bypass() {
+        // The real hazard the gate exists for: a scene can flip this block ON, and it would
+        // then render the baked value in a state the leveler never measured → Assign.
+        let p = with_scene_overlay_on_n(
+            preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
+            serde_json::json!({ "bypass": false, "gain": 0.7 }),
+        );
+        assert!(
+            crate::scene_overlays_touch_bypass(&p, "N"),
+            "fixture precondition: the scene overlay carries N's bypass"
+        );
+        match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
             FsLevelPlan::Assign { engaged } => assert!(!engaged.is_empty()),
             other => panic!("expected engaged Assign, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn plan_assigns_a_shared_block_even_when_scenes_are_clean() {
+        // Sole-ownership is unchanged by the per-node narrowing: switch 1 also enables N, so
+        // baking would move switch 1's sound too — Assign regardless of the scene overlays.
+        let p = with_scene_overlay_on_n(
+            preset_with(
+                true,
+                None,
+                serde_json::json!([[onoff(&["N"], false)], [onoff(&["N"], false)]]),
+            ),
+            serde_json::json!({ "gain": 0.7 }),
+        );
+        assert!(!crate::scene_overlays_touch_bypass(&p, "N"));
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
+        assert!(matches!(plans[0], FsLevelPlan::Assign { .. }));
+    }
+
+    #[test]
+    fn plan_assigns_when_the_saved_scene_data_is_unreadable() {
+        // No `scenes` key = a truncated field-8 read (`scenes` sits at the document tail), NOT
+        // a scene-less preset (which reads `"scenes":[]`). Unknown must never authorise a bake.
+        let mut p = preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]]));
+        p.as_object_mut().expect("preset object").remove("scenes");
+        assert!(crate::scene_overlays_touch_bypass(&p, "N"));
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
+        assert!(matches!(plans[0], FsLevelPlan::Assign { .. }));
     }
 
     #[test]
@@ -1036,7 +1111,7 @@ mod tests {
             serde_json::json!([[onoff(&["N"], true)], [onoff(&["N"], true)]]),
         );
         let jobs = [key(0, -23.0), key(1, -23.0)];
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &jobs, false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &jobs);
         assert!(matches!(plans[0], FsLevelPlan::Bake { .. }));
         assert_eq!(plans[1], FsLevelPlan::BakeShared { rep: 0 });
     }
@@ -1051,7 +1126,7 @@ mod tests {
             serde_json::json!([[onoff(&["N"], true)], [onoff(&["N"], true)]]),
         );
         let jobs = [key(0, -23.0), key(1, -18.0)];
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &jobs, false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &jobs);
         assert!(matches!(plans[0], FsLevelPlan::Assign { .. }));
         assert!(matches!(plans[1], FsLevelPlan::Assign { .. }));
     }
@@ -1065,7 +1140,7 @@ mod tests {
               "valueA": 0.9, "valueB": 0.4 }
         ]]);
         let p = preset_with(true, None, ftsw);
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         match &plans[0] {
             FsLevelPlan::Bake { clear_stale, .. } => assert_eq!(*clear_stale, Some(1)),
             other => panic!("expected Bake with clear_stale, got {other:?}"),
@@ -1084,7 +1159,7 @@ mod tests {
             Some(false),
             serde_json::json!([[onoff(&["N", "M"], false)], [onoff(&["P"], true)]]),
         );
-        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)], false);
+        let plans = plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)]);
         match &plans[0] {
             FsLevelPlan::Bake { engaged, .. } => {
                 // bypass to write: N off→on = false ; M on→off = true.

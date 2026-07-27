@@ -123,6 +123,11 @@ pub enum SimEvent {
         param: String,
         value: f32,
     },
+    /// `changeParameter` on `bypass` via the BOOL path (`ChangeParameter.boolVal`, field 7).
+    /// Separate from [`SimEvent::ChangeParameter`] (a float `dspUnitParameters` write) because
+    /// the WIRE MESSAGE differs — and because the leveler's isolation bypasses must be
+    /// order-checkable against the scene recalls that revert them.
+    Bypass { node: String, on: bool },
     /// `setNodeSceneEdit`(107).
     SceneEdit {
         group: String,
@@ -325,6 +330,25 @@ impl SimDevice {
             .copied()
     }
 
+    /// The value `(scene, group, node, param)` currently holds — the post-reseed STATE, not
+    /// the event log. Distinct on purpose: enabling Scene Edit rewrites `param_writes`
+    /// entries no `changeParameter` ever touched (the reseed), so only this can tell whether
+    /// a scene param SURVIVED. `scene` is the `param_writes` key ([`SCENE_BASE`] for base).
+    #[cfg(test)]
+    pub fn param_write(&self, scene: i64, group: &str, node: &str, param: &str) -> Option<f32> {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .param_writes
+            .get(&(
+                scene,
+                group.to_string(),
+                node.to_string(),
+                param.to_string(),
+            ))
+            .copied()
+    }
+
     /// Parse one request body and produce the device's framed reply reports.
     fn handle(&self, body: &[u8]) -> Vec<Vec<u8>> {
         let top = proto::parse(body);
@@ -480,6 +504,10 @@ impl SimDevice {
                 st.param_writes.insert((scene, group, node, param), v);
             } else if param == "bypass" {
                 let on = proto::first_varint(&inner, 7).unwrap_or(0) != 0;
+                st.events.push(SimEvent::Bypass {
+                    node: node.clone(),
+                    on,
+                });
                 st.bypass_writes.insert(node, on);
             }
             return Vec::new();

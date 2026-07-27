@@ -592,7 +592,7 @@ pub fn probe_jointk_scenes(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let saved = super::scene_jobs::saved_structure_fallback(list_index, &docs);
+        let saved = super::scene_jobs::read_saved_preset(list_index);
         let jobs = match build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref()) {
             Ok(j) => j,
             Err(e) => {
@@ -622,6 +622,7 @@ pub fn probe_jointk_scenes(
             &stim,
             save,
             restore_scene,
+            saved.as_ref(),
             |_, _| {},
             || false,
         ) {
@@ -660,7 +661,7 @@ pub fn probe_redistribute(
     std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
     std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    let saved = super::scene_jobs::saved_structure_fallback(list_index, &docs);
+    let saved = super::scene_jobs::read_saved_preset(list_index);
     let jobs = build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref())?;
     let pl = docs
         .iter()
@@ -682,6 +683,7 @@ pub fn probe_redistribute(
         &jobs,
         &stim,
         restore_scene,
+        saved.as_ref(),
         |_, _| {},
         || false,
     ) {

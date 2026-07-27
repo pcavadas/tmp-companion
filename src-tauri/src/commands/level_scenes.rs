@@ -280,14 +280,23 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let mut scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
-        // Force-append base so `build_scene_jobs` always has a base doc to diff a scene's
-        // OTHER params against (the scene-edit-enable reseed repair, `SceneJob::repair`) —
-        // stripped back out below (before the wire-job match) when the user never asked to
-        // level base itself.
+        // Force-append base so the prepass always harvests a base doc — one more chance at a
+        // complete `audioGraph.template` for `build_scene_jobs`' routing classification (the
+        // scene-vs-base repair diff it was originally added for is gone: `set_knobs` now
+        // enables Scene Edit only where the node has no overlay, so nothing gets reseeded
+        // away). Stripped back out below (before the wire-job match) when the user never
+        // asked to level base itself.
         let base_requested = scene_slots.contains(&session::BASE_SCENE_SLOT);
         if !base_requested {
             scene_slots.push(session::BASE_SCENE_SLOT);
         }
+        // THE field-8 read for this preset (one per run, before any other session — nothing
+        // has just closed one here, and it leaves the validated prepass→runner boundary
+        // below untouched). Feeds the raw per-node scene overlays (`scene_jobs::
+        // scene_overlay`, the Scene Edit enable + bake gates) AND `build_scene_jobs`'
+        // routing-structure fallback — which still only fills in for a live doc set that
+        // lacks `audioGraph.template`, so an unconditional `Some` changes no classification.
+        let saved = crate::read_saved_preset(slot);
         let run_batched = |save_run: bool| -> Result<Vec<leveller::BatchedSceneOutcome>, String> {
             // Un-engaged pre-pass (scene docs → jobs), then the ONE-SHOT runner:
             // amp `outputLevel` is linear in dB, so each scene is measured once at a
@@ -309,7 +318,6 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
             // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
             let base_target = jobs[0].target_lufs + offset;
-            let saved = crate::probe_api::scene_jobs::saved_structure_fallback(slot, &docs);
             let mut scene_jobs = build_scene_jobs(
                 &scene_slots,
                 &candidates,
@@ -360,6 +368,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     &stim,
                     save_run,
                     restore_scene,
+                    saved.as_ref(),
                     on_scene,
                     cancelled,
                 )
@@ -370,6 +379,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     &stim,
                     save_run,
                     restore_scene,
+                    saved.as_ref(),
                     on_scene,
                     cancelled,
                 )
@@ -546,12 +556,14 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
         let scene_slots: Vec<u32> = jobs.iter().map(|j| j.scene_slot).collect();
 
+        // THE field-8 read for this preset (see `level_scenes_apply_batched`): raw scene
+        // overlays + the routing-structure fallback, once, ahead of the prepass session.
+        let saved = crate::read_saved_preset(slot);
         // Prepass: ONE rich session loads the preset + harvests each sound's live doc (the
         // pre-raise presetLevel + per-sound current outputLevel). No re-amp yet.
         let (docs, restore_scene) = prepass_scene_docs_via(slot, &scene_slots, false)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let base_target = jobs[0].target_lufs + offset;
-        let saved = crate::probe_api::scene_jobs::saved_structure_fallback(slot, &docs);
         let mut scene_jobs =
             build_scene_jobs(&scene_slots, &candidates, &docs, base_target, saved.as_ref())?;
         // Stamp each job with its OWN (offset-adjusted) target.
@@ -630,6 +642,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
             &scene_jobs,
             &stim,
             restore_scene,
+            saved.as_ref(),
             on_scene,
             cancelled,
         );

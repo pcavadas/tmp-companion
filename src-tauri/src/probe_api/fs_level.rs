@@ -223,7 +223,9 @@ pub fn probe_bake_validate(
 
 /// Probe (read-only): list a slot's block-acting footswitches with each acted-on block's base
 /// bypass + the bake/assign classification for its first level param — to find bake-eligible
-/// presets (an active on-off enabling an OFF-in-base block).
+/// presets (an active on-off enabling an OFF-in-base block). `has_fs_scenes` is printed as a raw
+/// read DIAGNOSTIC only — the bake/assign gate is per-node (a scene overlay on THAT block's
+/// `bypass`), so a `has_fs_scenes=true` preset can still classify as Bake.
 pub fn probe_fs_list(slot: u32) -> Result<String, String> {
     let (preset, has_fs_scenes, json_len) = read_slot_preset_parsed(slot)?;
     let ftsw = preset
@@ -254,7 +256,6 @@ pub fn probe_fs_list(slot: u32) -> Result<String, String> {
                     lev_param: &lp.parameter_id,
                     target_bits: (-23.0f64).to_bits(),
                 }],
-                has_fs_scenes,
             );
             out += &format!(
                 "      → level {}.{}  ⇒  {:?}\n",
@@ -355,7 +356,7 @@ pub fn probe_level_footswitch(
         .and_then(|v| v.parse::<f32>().ok());
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
-    let (preset, has_fs_scenes, _) = read_slot_preset_parsed(slot)?;
+    let (preset, _, _) = read_slot_preset_parsed(slot)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let ftsw = preset
         .get("ftsw")
@@ -377,7 +378,6 @@ pub fn probe_level_footswitch(
             lev_param,
             target_bits: target_lufs.to_bits(),
         }],
-        has_fs_scenes,
     )
     .into_iter()
     .next()
@@ -462,7 +462,7 @@ pub fn probe_level_footswitch(
 /// (`write_footswitch_values`). Verify persistence with `--export` afterwards.
 /// Point it at a SCRATCH preset: it persists.
 pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, String> {
-    let (preset, has_fs_scenes, _) = read_slot_preset_parsed(list_index)?;
+    let (preset, _, _) = read_slot_preset_parsed(list_index)?;
     let ftsw = preset
         .get("ftsw")
         .cloned()
@@ -499,7 +499,7 @@ pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, Strin
             target_bits: j.target_lufs.to_bits(),
         })
         .collect();
-    let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys, has_fs_scenes);
+    let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys);
 
     let mut pends: Vec<leveller::FsPendingWrite> = Vec::new();
     for (idx, (job, plan)) in jobs.iter().zip(&plans).enumerate() {

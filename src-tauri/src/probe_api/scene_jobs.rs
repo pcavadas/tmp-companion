@@ -305,108 +305,6 @@ pub(crate) fn classify_scene_knobs(
 /// any finite value serves.
 pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 
-/// Cap on [`leveller::SceneJob::repair`]'s float params (excludes `bypass`, which always
-/// survives): the repair writes ride the SAME ~700 ms post-`loadScene` acceptance window
-/// as the leveled knob itself (HW-bisected, `probe --bisect-scene`), so an unbounded diff
-/// risks silently dropping writes past the cliff instead of repairing anything. A partial
-/// repair (the top-K most-divergent) is strictly better than none. `3` landed inside the
-/// window on a single-node scene (HW-confirmed 2026-07-26, scratch slot 35 — see
-/// `notes/leveling.md`). Callers shrink the effective per-node cap for a multi-node
-/// (parallel-amp) scene via this function's `max_params` param, so the MERGED batch across
-/// all nodes — not each node alone — stays inside the window; that halving
-/// (`build_scene_jobs`) is offline-tested only, not itself HW-bisected.
-const SCENE_REPAIR_MAX_PARAMS: usize = 3;
-
-/// `group_id`/`node_id`'s `dspUnitParameters` object in `doc` (`audioGraph.guitarNodes`
-/// only — leveling is guitar-chain only). Matches by `nodeId` (see `audiograph::node_id`).
-fn node_dsp_params<'a>(
-    doc: &'a serde_json::Value,
-    group_id: &str,
-    node_id: &str,
-) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
-    crate::scenes::guitar_node(doc, group_id, node_id)?
-        .get("dspUnitParameters")?
-        .as_object()
-}
-
-/// Params on `group_id`/`node_id` that diverge between this scene's materialized doc and
-/// base, excluding `leveled_param` — the repair diff `SetNodeSceneEdit(node, true)`'s reseed
-/// (HW 3-cell isolation matrix, `probe_api/slot_write.rs`) makes necessary. `bypass` (bool,
-/// 0.0/1.0-encoded — see `leveller`'s `set_knob_value_only` dispatch) always survives; the
-/// remaining float params are capped at `max_params` most-divergent by `|Δ|`, anything past
-/// the cap named in a `log::warn` and dropped (the caller shrinks `max_params` below
-/// [`SCENE_REPAIR_MAX_PARAMS`] for a multi-node scene, so the ~700 ms per-BATCH write window
-/// — not per-node — stays the real budget). A non-numeric/non-bool diverging param (e.g. an
-/// enum/string) is not repairable through this `(LevelKnob, f32)` wire; it's named in its own
-/// `log::warn` rather than silently lost. A node missing from either doc (truncated read)
-/// yields no repair for that node — never a partial/wrong guess.
-fn scene_repair_diff(
-    scene_doc: &serde_json::Value,
-    base_doc: &serde_json::Value,
-    group_id: &str,
-    node_id: &str,
-    leveled_param: &str,
-    scene_slot: u32,
-    max_params: usize,
-) -> Vec<(leveller::LevelKnob, f32)> {
-    let Some(scene_params) = node_dsp_params(scene_doc, group_id, node_id) else {
-        return Vec::new();
-    };
-    let Some(base_params) = node_dsp_params(base_doc, group_id, node_id) else {
-        return Vec::new();
-    };
-    let knob = |parameter_id: &str| leveller::LevelKnob::Block {
-        group_id: group_id.to_string(),
-        node_id: node_id.to_string(),
-        parameter_id: parameter_id.to_string(),
-        scene_slot: Some(scene_slot),
-    };
-    let mut bypass = None;
-    let mut floats: Vec<(&str, f32, f64)> = Vec::new(); // (param, value, |Δ|)
-    for (pname, sval) in scene_params {
-        if pname == leveled_param {
-            continue;
-        }
-        let Some(bval) = base_params.get(pname) else {
-            continue; // base has no such key — nothing to have been reseeded FROM
-        };
-        if pname == "bypass" {
-            if let (Some(s), Some(b)) = (sval.as_bool(), bval.as_bool()) {
-                if s != b {
-                    bypass = Some((knob("bypass"), if s { 1.0 } else { 0.0 }));
-                }
-            }
-        } else if let (Some(s), Some(b)) = (sval.as_f64(), bval.as_f64()) {
-            if (s - b).abs() > 1e-6 {
-                floats.push((pname, s as f32, (s - b).abs()));
-            }
-        } else if sval != bval {
-            log::warn!(
-                "scene repair: {group_id}/{node_id} scene {scene_slot} param {pname} diverges \
-                 from base but isn't numeric/bool — not repairable, base value is lost if this \
-                 node's Scene Edit gets enabled"
-            );
-        }
-    }
-    floats.sort_by(|a, b| b.2.total_cmp(&a.2));
-    if floats.len() > max_params {
-        let dropped: Vec<&str> = floats[max_params..].iter().map(|(p, ..)| *p).collect();
-        log::warn!(
-            "scene repair: {group_id}/{node_id} scene {scene_slot} dropped {} diverging \
-             param(s) past the top-{max_params} cap: {}",
-            dropped.len(),
-            dropped.join(", ")
-        );
-    }
-    let mut out: Vec<(leveller::LevelKnob, f32)> = floats
-        .into_iter()
-        .take(max_params)
-        .map(|(pname, val, _)| (knob(pname), val))
-        .collect();
-    out.extend(bypass);
-    out
-}
-
 /// Build per-scene [`leveller::SceneJob`]s from the pre-pass docs, ROUTING-AWARE:
 /// classify each scene's amp set by position in the route graph (series=last amp;
 /// parallel-merged=one amp per lane → joint-k) via [`classify_scene_knobs`], taking
@@ -452,10 +350,6 @@ pub(crate) fn build_scene_jobs(
     // error — the whole preset can't be scene-leveled. Per-SCENE issues below become skip
     // jobs so one bad scene doesn't abort the batch.
     check_levelable_routing(&structure)?;
-    let base_doc = docs
-        .iter()
-        .find(|(s2, _)| *s2 >= session::BASE_SCENE_SLOT)
-        .and_then(|(_, d)| d.as_ref());
     let jobs = scene_slots
         .iter()
         .map(|scene| {
@@ -471,35 +365,6 @@ pub(crate) fn build_scene_jobs(
             };
             match classify_scene_knobs(&structure, &doc, candidates) {
                 Ok((triples, kind)) => {
-                    // Repair diff BEFORE `knobs` consumes `triples` — base itself never
-                    // needs one (`set_knobs` never enables Scene Edit for a base-only
-                    // target, so there's nothing to reseed). The per-node cap shrinks for a
-                    // multi-node (parallel) scene so the merged batch — not each node alone —
-                    // stays inside the ~700 ms post-loadScene write window.
-                    let repair: Vec<(leveller::LevelKnob, f32)> = match (scene_slot, base_doc) {
-                        (Some(s), Some(base_doc)) => {
-                            let per_node_cap = if triples.len() > 1 {
-                                (SCENE_REPAIR_MAX_PARAMS / 2).max(1)
-                            } else {
-                                SCENE_REPAIR_MAX_PARAMS
-                            };
-                            triples
-                                .iter()
-                                .flat_map(|(group_id, node_id, _)| {
-                                    scene_repair_diff(
-                                        &doc,
-                                        base_doc,
-                                        group_id,
-                                        node_id,
-                                        "outputLevel",
-                                        s,
-                                        per_node_cap,
-                                    )
-                                })
-                                .collect()
-                        }
-                        _ => Vec::new(),
-                    };
                     let knobs = triples
                         .into_iter()
                         .map(|(group_id, node_id, current)| {
@@ -526,7 +391,6 @@ pub(crate) fn build_scene_jobs(
                         knobs,
                         skip: None,
                         rebalanceable,
-                        repair,
                     }
                 }
                 Err(reason) => leveller::SceneJob {
@@ -535,7 +399,6 @@ pub(crate) fn build_scene_jobs(
                     knobs: Vec::new(),
                     skip: Some(reason),
                     rebalanceable: false,
-                    repair: Vec::new(),
                 },
             }
         })
@@ -543,38 +406,23 @@ pub(crate) fn build_scene_jobs(
     Ok(jobs)
 }
 
-/// The routing-STRUCTURE fallback fetch for [`build_scene_jobs`]'s `saved_fallback`:
-/// fires ONLY when no live doc carries a complete `audioGraph.template` (the
-/// oversized-audioGraph class — the LEAN-session field-3 push truncates at ~3.4 KB
-/// (HW-observed on fw 1.8.45; a dense session can push the full doc, but the prepass
-/// sessions empirically get the lean cut), and a big graph overruns it in every scene doc). Reads the slot's
-/// field-8 saved JSON on a fresh session — every call site already sleeps `RECONNECT_GAP_MS`
-/// right before calling this (the prepass session it just closed), so this function does NOT
-/// sleep again before its own read: doing so doubled the gap to 800 ms, landing right at the
-/// edge of the documented HID open-lockout window instead of safely under it. It sleeps ONCE,
-/// AFTER its own read, so the runner that opens next (`build_scene_jobs` is pure CPU) still
-/// gets a properly-spaced session boundary. A failed read returns `None` — the caller then
-/// fails with the same honest "can't classify" error as before this fallback existed.
-pub(crate) fn saved_structure_fallback(
-    list_index: u32,
-    docs: &[(u32, Option<serde_json::Value>)],
-) -> Option<serde_json::Value> {
-    if structure_graph(docs).is_some() {
-        return None;
-    }
+/// The ONE field-8 saved-preset read a leveling run gets, THE source for everything the
+/// saved document answers: the raw per-node scene overlays ([`scene_overlay`],
+/// [`scene_overlays_touch_bypass`]) and [`build_scene_jobs`]'s routing-structure fallback.
+/// Read it once per preset and thread the document — never add a second read.
+///
+/// GAP CONTRACT (the HID open-lockout is real: every failed exclusive open resets it, so
+/// hammering never recovers): this function does NOT sleep before its own read — the call
+/// sites place it where nothing has just closed a session, or where the caller already slept
+/// `RECONNECT_GAP_MS`; sleeping here as well doubled the gap to 800 ms, landing at the edge of
+/// the lockout window instead of safely under it. It sleeps ONCE, AFTER the read, so whoever
+/// opens next gets a properly-spaced session boundary. A failed read returns `None` and every
+/// consumer degrades to its pre-read behaviour.
+pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
     let result = match crate::commands::level_footswitch::read_slot_preset_parsed(list_index) {
-        Ok((preset, _, _)) => {
-            log::info!(
-                "scene jobs slot {list_index}: live docs missed audioGraph.template — \
-                 using the field-8 saved graph for routing structure"
-            );
-            Some(preset)
-        }
+        Ok((preset, _, _)) => Some(preset),
         Err(e) => {
-            log::warn!(
-                "scene jobs slot {list_index}: template missing from live docs and the \
-                 field-8 fallback read failed ({e})"
-            );
+            log::warn!("scene jobs slot {list_index}: field-8 saved-preset read failed ({e})");
             None
         }
     };
@@ -745,6 +593,125 @@ fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::V
             }
         }
     }
+}
+
+/// One node's RAW scene-overlay state in one FS scene — the provenance
+/// [`overlay_scene_onto_graph`] destroys (after the merge a base value is indistinguishable
+/// from an overlaid one, so overlay presence can only be read from the raw scene).
+///
+/// Load-bearing for the scene-write rule (HW-proven, fw 1.8.45 scratch slot 30; the isolation
+/// matrix is written up in `slot_write::probe_set_scene_param`): `set_node_scene_edit(node,
+/// true)` RESEEDS that node's overlay from base, so it must be enabled ONLY for a node with
+/// no overlay in the target scene — with an overlay present the enable WIPES the scene's
+/// stored params, without one the write LEAKS TO BASE. Both mistakes corrupt the preset, so
+/// "can't tell" is its own state and never collapses into `Absent`.
+///
+/// Consumed by `leveller::set_knobs`' Scene Edit enable decision and by the footswitch bake
+/// gate (`footswitch::plan_footswitch_jobs`, via [`scene_overlays_touch_bypass`]).
+pub(crate) enum SceneOverlay<'a> {
+    /// The scene carries params for this node — write WITHOUT the Scene Edit enable.
+    Present(&'a serde_json::Map<String, serde_json::Value>),
+    /// The scene exists and carries no entry for this node — the enable is what materialises
+    /// the overlay, so it is REQUIRED here.
+    Absent,
+    /// Presence unknown: a base slot (base has no overlay concept) or a truncated field-8
+    /// read (`scenes` sits at the document tail, so a cut takes it first — HW: 22/25 presets
+    /// read "scenes unknown"). Neither write shape is safe; the caller must refuse.
+    Unknown,
+}
+
+/// Read `scenes[scene].{guitarNodes,micNodes}.<group>.<FenderId|nodeId>.dspUnitParameters`
+/// for `node` (its `nodeId` or `FenderId`) out of a saved (field-8) preset. Pure — no device
+/// I/O. See [`SceneOverlay`] for why the three states must stay distinct.
+pub(crate) fn scene_overlay<'a>(
+    preset: &'a serde_json::Value,
+    scene: u32,
+    node: &str,
+) -> SceneOverlay<'a> {
+    if scene >= session::BASE_SCENE_SLOT {
+        return SceneOverlay::Unknown;
+    }
+    let Some(body) = preset
+        .get("scenes")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.get(scene as usize))
+        .filter(|s| s.is_object())
+    else {
+        return SceneOverlay::Unknown;
+    };
+    // The overlay is keyed by FenderId with a nodeId fallback (exactly like
+    // `overlay_scene_onto_graph`), so resolve both ids — and the node's group — from the
+    // base graph roster.
+    let Some((group, node_id, fender_id)) = crate::audiograph::roster(preset)
+        .into_iter()
+        .find(|(_, node_id, fender_id)| node_id == node || fender_id == node)
+    else {
+        return SceneOverlay::Absent;
+    };
+    // Group ids are disjoint across the two graphs (G1..G7 guitar / M1..M4 mic), so the
+    // group key alone picks the right one.
+    let entry = ["guitarNodes", "micNodes"].iter().find_map(|graph| {
+        let nodes = body.get(graph)?.get(&group)?;
+        nodes.get(&fender_id).or_else(|| nodes.get(&node_id))
+    });
+    match entry {
+        None => SceneOverlay::Absent,
+        Some(e) => match e.get("dspUnitParameters").and_then(|p| p.as_object()) {
+            Some(params) => SceneOverlay::Present(params),
+            // An overlay entry whose body isn't a param object is a cut read, not "no overlay".
+            None => SceneOverlay::Unknown,
+        },
+    }
+}
+
+/// The highest `scenes[]` index the document REFERENCES elsewhere: `lastLoadedScene` plus
+/// every footswitch scene assignment (base — `session::BASE_SCENE_SLOT` — is not an index and
+/// is excluded). A `scenes` array shorter than this is a TRUNCATED read, not a preset with
+/// fewer scenes: the tolerant parse drops the cut entries and the array length alone can't
+/// tell the two apart. Both references sit BEFORE `scenes` in the document (HW field-8 order:
+/// `ftsw`, `lastLoadedScene`, `scenes`), so a tail cut that shortens `scenes` always leaves
+/// this evidence intact.
+///
+/// ponytail: a scene bound to NO footswitch and not the last-loaded one is unreferenced, so a
+/// cut that takes only such scenes is undetectable. Upgrade path if that matters: thread
+/// `session::scene_names_from_slot_json`'s count (it recovers names from a cut document) out
+/// of `read_slot_preset_parsed`, which already computes and discards it.
+fn max_referenced_scene(preset: &serde_json::Value) -> Option<u32> {
+    let switch_scenes = preset
+        .get("ftsw")
+        .map(crate::footswitch::scene_fs_map)
+        .unwrap_or_default();
+    switch_scenes
+        .into_keys()
+        .chain(
+            preset
+                .get("lastLoadedScene")
+                .and_then(serde_json::Value::as_u64)
+                .map(|v| v as u32),
+        )
+        .filter(|s| *s < session::BASE_SCENE_SLOT)
+        .max()
+}
+
+/// Does ANY scene overlay carry `node`'s `bypass`? The per-node footswitch bake gate: a
+/// scene that flips the block's bypass can render a baked value in a state the leveler never
+/// measured, so such a node must take the assign path instead. Conservative — an unreadable
+/// `scenes` answers `true`, because "unknown" must never authorise a bake: the key absent, a
+/// truncated entry, or an array cut SHORT of the scenes the document still references
+/// ([`max_referenced_scene`] — a `false` derived from scenes we can't see is exactly what this
+/// gate exists to prevent).
+pub(crate) fn scene_overlays_touch_bypass(preset: &serde_json::Value, node: &str) -> bool {
+    let Some(scenes) = preset.get("scenes").and_then(|s| s.as_array()) else {
+        return true;
+    };
+    if max_referenced_scene(preset).is_some_and(|m| m as usize >= scenes.len()) {
+        return true;
+    }
+    (0..scenes.len() as u32).any(|scene| match scene_overlay(preset, scene, node) {
+        SceneOverlay::Present(params) => params.contains_key("bypass"),
+        SceneOverlay::Unknown => true,
+        SceneOverlay::Absent => false,
+    })
 }
 
 /// SAVED-JSON alternative to the live `prepass_scene_docs`: derive each requested scene's
