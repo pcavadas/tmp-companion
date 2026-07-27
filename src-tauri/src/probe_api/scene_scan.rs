@@ -127,6 +127,72 @@ pub fn probe_knob_sweep(
     Ok(out)
 }
 
+/// `probe --scene-doc <listIdx> <scene…>` — repro instrumentation: load the preset,
+/// then recall the given scenes IN ORDER on ONE held session, harvesting the device's
+/// RENDERED field-3 doc after each recall and printing the amp/vibe param values.
+/// Lets the caller control the arrival order, to catch rendered-vs-stored divergence
+/// (scene-materialization infidelity) deterministically. NON-DESTRUCTIVE: no writes.
+pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String> {
+    const NODES: [(&str, &str); 2] = [("G1", "ACD_HiwattDR103CanMod"), ("G4", "ACD_UniVibe")];
+    fn fmt_doc(label: &str, doc: &serde_json::Value) -> String {
+        let mut out = format!(
+            "[{label}] lastLoadedScene={:?}\n",
+            doc.get("lastLoadedScene")
+        );
+        for (g, n) in NODES {
+            match crate::scenes::guitar_node(doc, g, n)
+                .and_then(|node| node.get("dspUnitParameters"))
+                .and_then(|p| p.as_object())
+            {
+                Some(params) => {
+                    let mut kv: Vec<String> = params
+                        .iter()
+                        .filter_map(|(k, v)| v.as_f64().map(|f| format!("{k}={f:.4}")))
+                        .collect();
+                    kv.sort();
+                    out += &format!("  {g}/{n}: {}\n", kv.join(" "));
+                }
+                None => out += &format!("  {g}/{n}: <absent/truncated>\n"),
+            }
+        }
+        out
+    }
+    let mut s = Session::connect()?;
+    for _ in 0..8 {
+        s.heartbeat()?;
+        s.pump_collect(120)?;
+    }
+    s.raw.clear();
+    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 300)?;
+    for _ in 0..6 {
+        s.heartbeat()?;
+        s.pump_collect(200)?;
+    }
+    let mut out = format!("[probe --scene-doc] list_index={list_index}\n");
+    match s.current_preset_value() {
+        Ok(d) => out += &fmt_doc("post-load", &d),
+        Err(e) => out += &format!("[post-load] no doc: {e}\n"),
+    }
+    for &sc in scenes {
+        s.raw.clear();
+        s.send_and_collect(&proto::load_scene(sc as u64), 300)?;
+        let mut doc = None;
+        for _ in 0..4 {
+            s.heartbeat()?;
+            s.pump_collect(150)?;
+            if let Ok(v) = s.current_preset_value() {
+                doc = Some(v);
+                break;
+            }
+        }
+        match doc {
+            Some(d) => out += &fmt_doc(&format!("recall scene {sc}"), &d),
+            None => out += &format!("[recall scene {sc}] NO DOC harvested\n"),
+        }
+    }
+    Ok(out)
+}
+
 /// NON-DESTRUCTIVE classifier check (`probe --classify <listIdx> [scene…]`): load the
 /// preset, harvest the pre-pass scene docs, and print how `build_scene_jobs` classifies
 /// each scene's amp-knob set (routing → series last-amp / parallel joint-k / skip).

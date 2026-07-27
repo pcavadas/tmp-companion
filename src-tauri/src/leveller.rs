@@ -606,7 +606,18 @@ pub fn capture_loudness_asis(
     scene: Option<u32>,
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, String> {
-    let cap = capture_full_at(
+    loudest_loudness(capture_asis_full(slot, scene, stimulus))
+}
+
+/// Repro instrumentation: the FULL multi-channel as-is capture behind
+/// [`capture_loudness_asis`], so a probe can report EVERY channel's loudness and
+/// make the loudest-channel argmax observable instead of inferred.
+pub fn capture_asis_full(
+    slot: Option<u32>,
+    scene: Option<u32>,
+    stimulus: &[f32],
+) -> Result<audio::Capture, String> {
+    capture_full_at(
         slot.unwrap_or(0), // unused when skip_load
         scene,
         &[],
@@ -614,8 +625,7 @@ pub fn capture_loudness_asis(
         None,
         CAPTURE_TAIL_MS,
         slot.is_none(),
-    );
-    loudest_loudness(cap)
+    )
 }
 
 /// MEASURE seam for analysis (spectrum / audit): load `slot`, re-amp the

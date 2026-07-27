@@ -97,12 +97,36 @@ pub fn probe_measure_current_lufs(
 ) -> Result<String, String> {
     let stim_path = probe_stimulus_path(topology_id)?;
     let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
-    let loud = leveller::require_live(
-        || leveller::capture_loudness_asis(slot, scene_slot, &stim),
-        &stim,
-    )?;
+    // Repro instrumentation: ONE capture, everything derived from it — the headline
+    // (loudest channel, matching production's pick) PLUS every channel's loudness,
+    // so the argmax (broadband RMS across ALL channels incl. the ch2 dry DI tap)
+    // is observable per measurement. No floor-guard retry (diagnostic seam).
+    let cap = leveller::capture_asis_full(slot, scene_slot, &stim)?;
+    let (win, _) = cap.loudest_channel();
+    let loud = crate::lufs::measure_mono(&cap.channel(win), cap.sample_rate)
+        .map_err(|e| format!("loudest-channel measure failed: {e}"))?;
+    let mut per_channel = String::new();
+    for c in 0..cap.channels {
+        let rms = cap.channel_rms(c);
+        let line = match crate::lufs::measure_mono(&cap.channel(c), cap.sample_rate) {
+            Ok(l) if l.integrated_lufs.is_finite() => format!(
+                "  ch{c}: lufs={:.3} stm={:.3} rms_dbfs={:.1}{}",
+                l.integrated_lufs,
+                l.short_term_max_lufs,
+                20.0 * f32::max(rms, 1e-9).log10(),
+                if c == win { "  <-- argmax winner" } else { "" }
+            ),
+            _ => format!(
+                "  ch{c}: silent/unmeasurable rms_dbfs={:.1}{}",
+                20.0 * f32::max(rms, 1e-9).log10(),
+                if c == win { "  <-- argmax winner" } else { "" }
+            ),
+        };
+        per_channel.push_str(&line);
+        per_channel.push('\n');
+    }
     Ok(format!(
-        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}",
+        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}\n{per_channel}",
         slot.map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string()),
         scene_slot

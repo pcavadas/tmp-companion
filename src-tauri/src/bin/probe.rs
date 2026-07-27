@@ -226,6 +226,34 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--scene-doc") {
+        // --scene-doc <listIdx> <scene…>  — rendered field-3 amp params after each
+        // recall, in the given order (arrival-order-controlled; non-destructive).
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let scenes: Vec<u32> = args
+            .iter()
+            .skip(i + 2)
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if idx == u32::MAX || scenes.is_empty() {
+            eprintln!("usage: probe --scene-doc <listIdx> <scene…>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_scene_doc(idx, &scenes) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--knob-sweep") {
         // --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)
         let idx: u32 = args
