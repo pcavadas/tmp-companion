@@ -178,7 +178,7 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S4  | `REVIEWED` and (`ACTIONABLE_THREADS` non-empty OR any unaddressed `ACTIONABLE_OUTSIDE_DIFF`)                  | Run §4 on every `ACTIONABLE_THREADS` entry AND every unaddressed `ACTIONABLE_OUTSIDE_DIFF` finding. One commit, one push. Then S1.                                                                     |
 | S5  | `REVIEWED`, `ACTIONABLE_THREADS` empty, `ACTIONABLE_OUTSIDE_DIFF` all addressed, `reviewDecision != APPROVED` | **Wait ONLY IF `OPEN_THREADS` is empty** — approval follows thread state within seconds. If ANY thread is still open (even one CodeRabbit chose to defer), waiting is futile: go to §4.1 and clear it. |
 | S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                              | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                                                       |
-| SD  | `OPEN_THREADS` non-empty but `ACTIONABLE_THREADS` empty (a deferred/settled thread is the only one left)      | **Clear it via §4.1.** Not a wait state — this is the deadlock that cost ~5h on PR #119. Never resolve it yourself (N3); make CodeRabbit resolve it.                                                   |
+| SD  | `OPEN_THREADS` non-empty but `ACTIONABLE_THREADS` empty (a deferred/settled thread is the only one left)      | **Clear it via §4.1** — the deadlock its PR #119 walkthrough exists to prevent. Never resolve it yourself (N3); make CodeRabbit resolve it.                                                            |
 | S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads)                                           | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                                                             |
 
 `mergeStateStatus: DIRTY` is not in this table because it is not a review state — it means `main`
@@ -263,9 +263,8 @@ not (N3) — so give it a close-out it can accept:
    focused commit stating the mechanism and the remediation, then reply pointing at it. That is the
    pattern that cleared 22 of the 23 threads on #119.
 
-A reply is free — answered in ~15-30s even while review quota is exhausted, and it spends no quota
-(§5). Clearing a thread therefore costs nothing, while waiting for a review to clear it costs ~40
-minutes and cannot work.
+A reply is free and spends no quota (§5). Clearing a thread therefore costs nothing, while waiting
+for a review to clear it costs ~40 minutes and cannot work.
 
 ## 5. Facts that change how you read a review
 
@@ -297,10 +296,10 @@ minutes and cannot work.
 - **THE APPROVAL GATE IS ZERO UNRESOLVED THREADS — and it is CodeRabbit's gate, not GitHub's.**
   The "protect main" ruleset sets `required_review_thread_resolution: false`, which makes an open
   thread look harmless. It is not: measured across this repo's whole history, **49 of 49 CodeRabbit
-  approvals landed with exactly 0 unresolved threads**, and PR #119 — the only PR ever carrying a
-  permanently unresolved one — sat un-approvable for ~5 hours with green CI and every other thread
-  closed. Checking GitHub's rules and concluding "the open thread is merge-safe" is the single most
-  expensive mistake made on this repo. **One open thread = no approval = no merge, full stop.**
+  approvals landed with exactly 0 unresolved threads** — the one PR that ever broke that streak paid
+  for it in stuck-approval time (§4.1's PR #119 walkthrough). Checking GitHub's rules and concluding
+  "the open thread is merge-safe" is the single most expensive mistake made on this repo. **One open
+  thread = no approval = no merge, full stop.**
 - **The approval that merges must postdate the final commit** (`dismiss_stale_reviews_on_push` +
   `require_last_push_approval`). So the last thing you do to a PR is stop pushing. A push while
   awaiting an approval is doubly costly: it voids the approval you are waiting for AND can re-arm

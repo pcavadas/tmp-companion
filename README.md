@@ -49,9 +49,6 @@ bun run build            # production frontend bundle
 bun run tauri build      # package the macOS app
 ```
 
-Plug in your Tone Master Pro and close Fender's Pro Control first — the app needs
-exclusive access to the unit.
-
 ### Tests
 
 ```bash
@@ -66,11 +63,7 @@ cd src-tauri && cargo test --lib      # Rust unit tests
 
 ## For contributors & agents
 
-Working in this repo (human or AI agent)? Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), then:
-
-- [`CLAUDE.md`](CLAUDE.md) — the architecture map + the running log of load-bearing invariants and gotchas.
-- [`notes/`](notes/) — topic deep-dives (protocol, leveling, write-safety, block-copy, songs).
-- [`INTEROP.md`](INTEROP.md) — the interoperability / legal posture.
+Working in this repo (human or AI agent)? Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) — it links the architecture map, the topic deep-dives, and the legal posture.
 
 Behaviour is firmware-version dependent; validated on Tone Master Pro firmware **1.7.75** and **1.8.45**.
 

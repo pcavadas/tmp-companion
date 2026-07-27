@@ -270,8 +270,8 @@ These are validation rules the firmware imposes — useful when mutating presets
 6. **Loops 1 and 2 are fixed at the start of the Instrument path, BEFORE A/D**. They cannot be moved or placed in mic/line paths — they're for analog pedals that need to interact with pickup impedance (fuzz, Rangemaster-style boost, vintage wah).
 7. **Loops 3 + 4** pair as a single stereo loop OR two mono loops — per-preset choice (`Loop 3 mono`, `Loop 4 mono`, `Loop 3+4 stereo`). Placeable anywhere in the digital signal path after Loop 2. Both inputs cannot be set to off (`Both inputs cannot be set to off.`).
 8. **IR blocks placement**: only after Loop 2 (because they're digital). Count is governed by the cabinet limit above.
-9. **Scenes share blocks**: all scenes in a preset share the same block list, same block order, same signal-path template. Adding/removing/reordering blocks affects all scenes uniformly. Scene slots are capped (`All scene slots full`).
-10. **Splitter/Mixer are template-fixed**: they appear at predetermined positions for parallel templates and cannot be user-added or removed independently. To change parallel topology, change the signal-path template (which repopulates the path).
+9. **Scenes share blocks** — see the Scenes section above; scene slots are capped (`All scene slots full`).
+10. **Splitter/Mixer are template-fixed** — see Signal-path templates section above.
 11. **Other capacity caps** surfaced as firmware rejections: `Cannot add new user preset in populated slot.`, saved block-presets (`BlockPresetLimitReached`), cloud/downloaded presets (`Downloaded Presets Limit Reached`).
 
 ## Operating modes
@@ -283,7 +283,7 @@ Six navigation modes via the left-side touchscreen icons:
 | My Presets      | 504      | user-editable; drag-and-drop reorderable on touchscreen; reachable via MIDI Bank+PC                                                                                                                                                                                                                                                |
 | Favorites       | subset   | star-marked subset of My Presets; separately reorderable but keeps original preset number                                                                                                                                                                                                                                          |
 | Factory Presets | factory  | unnumbered, not directly editable; load → modify → "Save to My Presets"                                                                                                                                                                                                                                                            |
-| Cloud Presets   | 100      | downloaded via the TMP Control desktop app; newest first; not numbered                                                                                                                                                                                                                                                             |
+| Cloud Presets   | 100      | see Store table above (same facts)                                                                                                                                                                                                                                                                                                 |
 | Songs           | 200      | each = up to 6 presets with labeled sections (intro/verse/chorus/solo/outro/…); per-song BPM available (wire mechanism: no dedicated setter — it's the global `SettingsMessage.tapTempoBpm` applied to the active song; song/setlist CRUD is `SongMessage`/`SetlistMessage` field-numbered setters — see `tmp-companion-protocol`) |
 | Setlists        | 50       | each = an **ordered** list of up to 99 Songs (position matters); a song may belong to **many** setlists; add / remove-from / reorder-within a setlist are all supported (wire: `addSetlistSong` (global slot) / `removeSetlistSong` / `moveSetlistSong` (1-based position) — see `tmp-companion-protocol`)                         |
 
@@ -334,7 +334,7 @@ The firmware exposes the following screens / modals. Each is a _product surface_
 
 ## Sources
 
-- `Tone Master Pro` Interactive Owner's Manual — structural facts here verified against **firmware v1.8** (rev. J, 49 pp), read end to end as both text and rendered imagery; the model inventory below remains v1.7-pinned
+- `Tone Master Pro` Interactive Owner's Manual — structural facts here verified against **firmware v1.8** (rev. J, 49 pp), read end to end as both text and rendered imagery; the model inventory below remains v1.7-pinned (firmware 1.8 ships 31 new models the guide doesn't cover)
 - `Tone Master Pro` Model Guide (firmware v1.7, 127 pp)
 
-Re-fetch from Fender's product page when firmware revs (new models, MIDI-map changes, capacity-cap changes). Firmware 1.8 ships 31 new models, so this v1.7-pinned snapshot is one generation behind on the model inventory — the structural model above (templates, scenes, footswitch/EXP, constraints) is stable across 1.7→1.8.
+Re-fetch from Fender's product page when firmware revs (new models, MIDI-map changes, capacity-cap changes) — the structural model above (templates, scenes, footswitch/EXP, constraints) is stable across 1.7→1.8.
