@@ -49,11 +49,11 @@ Only TWO commands are ever postable on this repo: **`@coderabbitai review`** (§
 
 ```bash
 gh pr view <n> --json state,isDraft,reviewDecision,mergeStateStatus,headRefOid,reviews
-gh api graphql --paginate -f query='query($c:String){repository(owner:"<owner>",name:"<repo>"){
-  pullRequest(number:<n>){ reviewThreads(first:100, after:$c){
+gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"<owner>",name:"<repo>"){
+  pullRequest(number:<n>){ reviewThreads(first:100, after:$endCursor){
     pageInfo{hasNextPage endCursor}
     nodes{id isResolved isOutdated path
-      comments(first:100){nodes{author{login} createdAt}}}}}}}'  # threads — NOT a --json field
+      comments(first:100){pageInfo{hasNextPage} nodes{author{login} createdAt}}}}}}}'
 gh api repos/<owner>/<repo>/issues/<n>/comments --jq \
   '.[] | select(.user.login=="coderabbitai[bot]") | {updated_at, body: .body[0:400]}' | tail -3
 gh pr view <n> --comments                                # FULL bodies — see below
@@ -83,8 +83,12 @@ Before trusting any `gh` field in a loop, run it once bare and look at the outpu
 `reviewThreads(last:40)` is a sliding window — on a long-running PR the older threads fall out and
 silently stop existing as far as the loop is concerned. Worse, `comments(last:1)` shows only the
 newest comment, which cannot tell you whether YOU replied earlier in that thread — and "have I
-replied" is exactly what `ACTIONABLE` turns on. Page until `hasNextPage == false` on the threads and
-pull the full comment list per thread, or the state you compute is a guess about a subset.
+replied" is exactly what `ACTIONABLE` turns on. The cursor variable MUST be named `$endCursor` — `gh api graphql --paginate` looks for that exact
+name to inject the next cursor, so calling it `$c` (or anything else) silently returns page one and
+stops, which looks identical to "there was only one page". Comments are a NESTED connection and
+`--paginate` drives only the outer one, so select `comments(first:100){pageInfo{hasNextPage} ...}`
+and treat any thread reporting `hasNextPage: true` as unclassifiable until you fetch its remaining
+comments explicitly — do not silently derive `ACTIONABLE` from a truncated comment list.
 
 Six observations decide everything:
 
