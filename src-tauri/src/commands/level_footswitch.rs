@@ -344,6 +344,19 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     }
                 }
             };
+            // A Stop mid-sweep surfaces as the CANCELLED sentinel, not a failure — report
+            // it like the top-of-loop check would rather than as an errored switch.
+            if let Err(e) = &outcome {
+                if *e == leveller::CANCELLED {
+                    let _ = on_result.send(FootswitchLevelProgressItem {
+                        switch: job.switch,
+                        status: "cancelled".into(),
+                        result: None,
+                        message: None,
+                    });
+                    break;
+                }
+            }
             let item = match outcome {
                 Ok(r) => {
                     results[idx] = Some(r.clone());

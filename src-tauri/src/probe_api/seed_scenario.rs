@@ -130,20 +130,40 @@ pub(crate) fn forget_seeded(list_index: u32) {
 
 fn write_manifest(map: &std::collections::BTreeMap<String, String>) {
     let path = manifest_path();
+    let tmp = path.with_extension("json.tmp");
+    // Write-then-rename (atomic within a directory): a plain `fs::write` truncates in
+    // place, so a kill mid-write (this harness does get killed) would leave partial JSON
+    // that reads back as "nothing was ever seeded" — dropping every lease at once, the
+    // exact stranding this manifest exists to prevent, just for all slots instead of one.
     let ok = path
         .parent()
         .is_none_or(|d| std::fs::create_dir_all(d).is_ok())
-        && serde_json::to_vec(map).is_ok_and(|b| std::fs::write(&path, b).is_ok());
+        && serde_json::to_vec(map).is_ok_and(|b| std::fs::write(&tmp, b).is_ok())
+        && std::fs::rename(&tmp, &path).is_ok();
     if !ok {
+        let _ = std::fs::remove_file(&tmp);
         eprintln!("[seed] could not write the seed manifest at {path:?} — a fixture saved by a spec may need a manual clear");
     }
 }
 
 fn read_manifest() -> std::collections::BTreeMap<String, String> {
-    std::fs::read(manifest_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    let path = manifest_path();
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Default::default();
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(map) => map,
+        Err(e) => {
+            // Distinct from "no manifest file yet": a CORRUPT manifest silently treated as
+            // empty would drop every recorded claim at once, same failure mode the atomic
+            // write above closes for the write side.
+            eprintln!(
+                "[seed] seed manifest at {path:?} is unreadable ({e}) — treating every slot \
+                 as un-owned; seeded fixtures may need a manual clear"
+            );
+            Default::default()
+        }
+    }
 }
 
 /// Did THIS machine's harness seed `list_index` under `name`? Pure given the file.
@@ -372,11 +392,24 @@ mod tests {
     /// later online run dies at the seed step. The manifest is what survives that
     /// save, so it must bless the slot with NO readable marker in the body at all.
     /// Name-keyed, so a slot whose name has since changed stays fail-closed.
+    /// Restores `TMP_E2E_SEED_MANIFEST` + removes the temp dir on drop, so a panic
+    /// mid-test (an assert failing) can't leak the override into later tests in the
+    /// same process — `std::env::set_var` is process-wide, and this file's `record_seeded`
+    /// / `forget_seeded` calls in OTHER tests would otherwise silently target it too.
+    struct EnvGuard(std::path::PathBuf);
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("TMP_E2E_SEED_MANIFEST");
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn manifest_owns_a_fixture_whose_body_no_longer_carries_a_marker() {
         let dir =
             std::env::temp_dir().join(format!("tmp-companion-seedmanifest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("tmp dir");
+        let _guard = EnvGuard(dir.clone());
         let path = dir.join("seeded-slots.json");
         std::env::set_var("TMP_E2E_SEED_MANIFEST", &path);
         let _ = std::fs::remove_file(&path);
@@ -400,9 +433,6 @@ mod tests {
         // the fixture and bless whatever occupies the scratch slot next.
         forget_seeded(400);
         assert!(!manifest_owns(400, "E2E Reference"));
-
-        std::env::remove_var("TMP_E2E_SEED_MANIFEST");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The stray classifier flags scenario names at the WRONG slot only — the

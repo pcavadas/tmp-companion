@@ -490,7 +490,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     });
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+            // Abortable: a Stop landing in this exact window (after the last item's own
+            // success, with no further loop-header check ahead of it) would otherwise
+            // finish the run silently instead of reporting it stopped.
+            if crate::sleep_abortable(leveller::RECONNECT_GAP_MS) {
+                stopped = true;
+                break;
+            }
         }
 
         // Group results per preset, in first-seen item order. Each sound is

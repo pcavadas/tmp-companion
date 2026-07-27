@@ -435,17 +435,24 @@ async fn e2e_clear_preset(
         // reached from the other direction. Re-read and only release once the slot reads
         // empty; still occupied means the harness KEEPS the claim, so the next seed's
         // "ours but dirty" arm reimports it fresh instead of refusing forever.
+        //
+        // `clear_user_preset` is fire-and-forget with no ACK, so read immediately and the
+        // list can still show pre-clear state (the same reason `replace_inplace_with`
+        // settles 800ms after its own clear). And an ABSENT entry — a truncated list, or
+        // a failed read — is UNKNOWN, not empty: only a POSITIVELY observed empty name
+        // releases the claim, so a degraded read keeps it instead of stranding the slot.
+        std::thread::sleep(std::time::Duration::from_millis(800));
         let now_empty = s
             .list_my_presets()
             .ok()
             .and_then(|list| list.get(slot as usize).map(|e| e.name.clone()))
-            .is_none_or(|name| session::is_empty_slot_name(&name));
+            .is_some_and(|name| session::is_empty_slot_name(&name));
         if now_empty {
             probe_api::seed_scenario::forget_seeded(slot);
             e2e_patch_snapshot_slot(slot, "Empty");
         } else {
             log::warn!(
-                "e2e_clear_preset: slot {slot} still occupied right after a successful \
+                "e2e_clear_preset: slot {slot} not observed empty after a successful \
                  clear_user_preset — keeping the seed manifest claim so the next seed can \
                  reimport it instead of stranding it"
             );

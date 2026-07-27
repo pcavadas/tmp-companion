@@ -3,20 +3,30 @@
 use crate::session::Session;
 use crate::{backup, read_song_presets, session};
 
-/// The tolerant list read, retried until it reaches `orig_list_index` (or a fresh
+/// The tolerant list read, retried on a fresh reconnect until `pred` is satisfied (or a
 /// reconnect stops helping). A single short read is the common case; the retry only
-/// engages for the high-index tail-truncation class documented above.
-fn read_list_reaching(orig_list_index: u32) -> Result<Vec<session::PresetEntry>, String> {
+/// engages for the high-index tail-truncation class documented on `replace_inplace_with`.
+fn read_list_until(
+    pred: impl Fn(&[session::PresetEntry]) -> bool,
+) -> Result<Vec<session::PresetEntry>, String> {
     const ATTEMPTS: u32 = 4;
     let mut list = Vec::new();
     for attempt in 1..=ATTEMPTS {
         list = Session::connect()?.list_my_presets()?;
-        if list.len() > orig_list_index as usize || attempt == ATTEMPTS {
+        if pred(&list) || attempt == ATTEMPTS {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1_500));
     }
     Ok(list)
+}
+
+/// Retried until the list actually reaches `orig_list_index` — tests the SAME condition
+/// the caller looks the entry up by (`find(|p| p.slot == orig_list_index)`), not merely
+/// `list.len()`: a dropped INTERIOR entry can make the list longer than the index while
+/// the target itself is still missing, which a length-only check would treat as reached.
+fn read_list_reaching(orig_list_index: u32) -> Result<Vec<session::PresetEntry>, String> {
+    read_list_until(|list| list.iter().any(|p| p.slot == orig_list_index))
 }
 
 /// Probe (AC7 positive case): edit a preset IN PLACE on its original slot and
@@ -124,8 +134,14 @@ pub(crate) fn replace_inplace_with(
     // 2) Observe where it landed: a slot that was EMPTY before and is now occupied.
     // Keying on the previously-empty set (not a name diff) means a flaky/partial
     // baseline list can't misidentify a *real* pre-existing preset as the scratch
-    // and get it cleared in step 3.
-    let after_import = Session::connect()?.list_my_presets()?;
+    // and get it cleared in step 3. Same retry as the baseline read above — the scratch
+    // itself lands at a high, previously-empty index, so it's exposed to the identical
+    // tail-truncation chop; a single-attempt read here would burn the run's import on
+    // the first short response instead of giving the reconnect-retry a chance to land it.
+    let after_import = read_list_until(|list| {
+        list.iter()
+            .any(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))
+    })?;
     let (scratch_slot, scratch_name) = after_import
         .iter()
         .find(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))
