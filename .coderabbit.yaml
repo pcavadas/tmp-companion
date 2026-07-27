@@ -105,6 +105,10 @@ knowledge_base:
     # The rest self-govern their own directories (used when a skill/note is edited);
     # the real src/ enforcement is the path_instructions above.
     # Enumerated explicitly — never a .claude/skills/** wildcard.
+    # Consequence of listing CLAUDE.md: it is an AUTHORITATIVE guideline when reviewing every
+    # other doc, so at profile: assertive a prose-doc PR has no fixed point — each rewrite
+    # yields fresh nits (#119: 19 of 24 commits touched one skill file). Reply-with-reason on
+    # doc nits instead of re-editing the prose.
     filePatterns:
       - "REVIEW.md" # reviewer-facing: bug shape, ungated surfaces, what not to guess
       - "CLAUDE.md"
