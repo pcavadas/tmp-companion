@@ -79,16 +79,16 @@ in a poll loop turns each into a silent "no" that never fires:**
 
 Before trusting any `gh` field in a loop, run it once bare and look at the output.
 
-**Paginate both connections, and never derive `ACTIONABLE` from a truncated read.** A bare
+**Paginate both connections, and never derive `ACTIONABLE_THREADS` from a truncated read.** A bare
 `reviewThreads(last:40)` is a sliding window — on a long-running PR the older threads fall out and
 silently stop existing as far as the loop is concerned. Worse, `comments(last:1)` shows only the
 newest comment, which cannot tell you whether YOU replied earlier in that thread — and "have I
-replied" is exactly what `ACTIONABLE` turns on. The cursor variable MUST be named `$endCursor` — `gh api graphql --paginate` looks for that exact
+replied" is exactly what `ACTIONABLE_THREADS` turns on. The cursor variable MUST be named `$endCursor` — `gh api graphql --paginate` looks for that exact
 name to inject the next cursor, so calling it `$c` (or anything else) silently returns page one and
 stops, which looks identical to "there was only one page". Comments are a NESTED connection and
 `--paginate` drives only the outer one, so select `comments(first:100){pageInfo{hasNextPage} ...}`
 and treat any thread reporting `hasNextPage: true` as unclassifiable until you fetch its remaining
-comments explicitly — do not silently derive `ACTIONABLE` from a truncated comment list.
+comments explicitly — do not silently derive `ACTIONABLE_THREADS` from a truncated comment list.
 
 Six observations decide everything:
 
@@ -110,10 +110,10 @@ Six observations decide everything:
   as a finding of record: fix it, or state the reason in the commit message, since there is no
   thread to reply on.
 - **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
-- **`ACTIONABLE`** — the subset of `OPEN_THREADS` that still needs something from you: either you
+- **`ACTIONABLE_THREADS`** — the subset of `OPEN_THREADS` that still needs something from you: either you
   have never replied in the thread, or CodeRabbit's latest comment asks a question or requests a
   change. An open thread where you have replied and CodeRabbit's answer asks for nothing is
-  **settled** and is NOT actionable, however long it stays open. Only `ACTIONABLE` drives §4;
+  **settled** and is NOT actionable, however long it stays open. `ACTIONABLE_THREADS` drives lane 5a of §4;
   keying the loop on `OPEN_THREADS` instead makes a deliberately-deferred thread re-enter §4
   forever. Some acks carry a `<!-- <review_comment_addressed> -->` or `<!-- <review_comment_withdrawn> -->` marker,
   which is a useful hint — but it is applied inconsistently (3 of 15 acks on PR #119), so it
@@ -168,27 +168,35 @@ Two more traps that make observation lie:
 
 Evaluate top to bottom; take the FIRST matching row and only that action.
 
-| Row | State                                                                                      | Action                                                                                                                                                              |
-| --- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S0  | PR is a draft                                                                              | Nothing. Drafts are skipped entirely and spend no quota. Mark ready when settled.                                                                                   |
-| SP  | `PAUSED` (§2) and no open `LIMITED` window                                                 | Post exactly ONE `@coderabbitai resume`. Then go to S1. ONE per head commit — a pause re-declared after a `resume` on the same head is S7, never a second `resume`. |
-| S1  | Not `REVIEWED`, no `LIMITED` message                                                       | **Wait.** Re-observe later. Post nothing — this includes an hours-long quiet spell.                                                                                 |
-| S2  | `LIMITED(t, n)` and `now < t + n`                                                          | **Wait** until `t + n`. Any command before then is wasted.                                                                                                          |
-| S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                                       | Post exactly ONE `@coderabbitai review`. Then go to S1.                                                                                                             |
-| S4  | `REVIEWED` and (`ACTIONABLE` non-empty OR any unaddressed `OUTSIDE_DIFF`)                  | Run §4 on every ACTIONABLE thread AND every unaddressed OUTSIDE_DIFF finding. One commit, one push. Then S1.                                                        |
-| S5  | `REVIEWED`, `ACTIONABLE` empty, `OUTSIDE_DIFF` all addressed, `reviewDecision != APPROVED` | **Wait** — it re-approves on its own. Do not reach this row without having swept the review bodies.                                                                 |
-| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                           | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                    |
-| S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads)                        | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                          |
+| Row | State                                                                                                         | Action                                                                                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S0  | PR is a draft                                                                                                 | Nothing. Drafts are skipped entirely and spend no quota. Mark ready when settled.                                                                                   |
+| SP  | `PAUSED` (§2) and no open `LIMITED` window                                                                    | Post exactly ONE `@coderabbitai resume`. Then go to S1. ONE per head commit — a pause re-declared after a `resume` on the same head is S7, never a second `resume`. |
+| S1  | Not `REVIEWED`, no `LIMITED` message                                                                          | **Wait.** Re-observe later. Post nothing — this includes an hours-long quiet spell.                                                                                 |
+| S2  | `LIMITED(t, n)` and `now < t + n`                                                                             | **Wait** until `t + n`. Any command before then is wasted.                                                                                                          |
+| S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                                                          | Post exactly ONE `@coderabbitai review`. Then go to S1.                                                                                                             |
+| S4  | `REVIEWED` and (`ACTIONABLE_THREADS` non-empty OR any unaddressed `ACTIONABLE_OUTSIDE_DIFF`)                  | Run §4 on every `ACTIONABLE_THREADS` entry AND every unaddressed `ACTIONABLE_OUTSIDE_DIFF` finding. One commit, one push. Then S1.                                  |
+| S5  | `REVIEWED`, `ACTIONABLE_THREADS` empty, `ACTIONABLE_OUTSIDE_DIFF` all addressed, `reviewDecision != APPROVED` | **Wait** — it re-approves on its own. Do not reach this row without having swept the review bodies.                                                                 |
+| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                              | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                    |
+| S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads)                                           | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                          |
 
 `mergeStateStatus: DIRTY` is not in this table because it is not a review state — it means `main`
 moved and the branch now conflicts. Merge `origin/main` in (never rebase + force-push a PR branch),
 resolve, and re-enter at S1. Preserve what the incoming side added: a conflict in a file both
 branches edited is two sessions' findings, not yours versus noise.
 
-## 4. Handling one thread (deterministic)
+## 4. Handling one finding (deterministic)
 
-Runs on ACTIONABLE threads (§2) **and on every `OUTSIDE_DIFF` finding**. A settled thread is
-terminal even while open — do not re-reply to it, and do not let it hold up S5/S6.
+Findings arrive on two lanes and they close differently. Work BOTH; never let one lane's rule leak
+into the other:
+
+| Lane                      | Source                             | How it closes                                                                                                                                                                             |
+| ------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ACTIONABLE_THREADS`      | `reviewThreads` (§2)               | Fix and/or reply ON the thread (step 5a). CodeRabbit resolves it itself.                                                                                                                  |
+| `ACTIONABLE_OUTSIDE_DIFF` | review BODIES, `OUTSIDE_DIFF` (§2) | Fix and/or record the outcome in the COMMIT MESSAGE (step 5b). There is no thread, so there is nothing to reply to and nothing to resolve — it closes when the next review sees the code. |
+
+A settled thread is terminal even while open — do not re-reply to it, and do not let it hold up
+S5/S6.
 
 **Enumerate before fixing.** List every finding from both sources first — threads and all review
 bodies — and work the list. Anything not on the list does not get fixed, and a thread-only list is
@@ -216,10 +224,15 @@ Per finding, in order:
    is the agent-side counterpart of the `Behavioral parity` `pre_merge_check` in `.coderabbit.yaml`,
    which exists because omissions — a guard present next door and absent here — are this repo's
    recurring bug shape.
-5. **Reply once** on the thread (OUTSIDE_DIFF findings have no thread — put the reasoning in the
-   commit message instead), including `@coderabbitai` so it engages, citing `file:line`, and
-   **stating the reason** it isn't being fixed. A reply without a reason gives it nothing to
-   evaluate and the thread stays open. No second reply, no argument.
+5. **Close the loop on the finding's own lane.**
+   - **5a — `ACTIONABLE_THREADS`:** reply ONCE on the thread, including `@coderabbitai` so it
+     engages, citing `file:line`, and **stating the reason** when it isn't being fixed. A reply
+     without a reason gives it nothing to evaluate and the thread stays open. No second reply, no
+     argument.
+   - **5b — `ACTIONABLE_OUTSIDE_DIFF`:** do NOT try to reply — there is no thread id, and
+     `@coderabbitai` commands are top-level-only, so there is no per-finding channel at all. Record
+     the outcome (fixed, or refused and why) in the COMMIT MESSAGE, which is what the next review
+     reads. A refusal with no written reason is indistinguishable from having missed the finding.
 6. **Resolve nothing** (N2, N3). Stop and re-observe.
 
 Match threads by **stable thread id**, never by `(path, line)` — line numbers shift with the push
