@@ -142,7 +142,7 @@ src-tauri/src/
   lib.rs          Slim crate hub: the mod tree, re-export seams, AppState, MONITOR_* statics, lock_ok.
   commands/       The #[tauri::command]s, one file per feature area (device/presets/level_preset/
                   level_scenes/level_footswitch/songs/setlists/copy_apply/bulk_replace/held_edit/
-                  library/edit_tools/media/migration/settings/doctor); 86 commands total incl. the
+                  library/edit_tools/media/migration/settings/doctor); 92 commands total incl. the
                   bulk-feature set below. Registered in bootstrap.rs (run() + generate_handler).
   probe_api/      The probe entry points, one file per cluster (replace/insert/inspect/ftsw/
                   fs_level/scene_*/doctor_*/mixer/stimulus/level/slot_*/songs/setlists),
@@ -338,6 +338,10 @@ src/                React UI — the 6-tab view (Level · Doctor · Copy · Song
                                 ByEarChip (shared by SetupBody's Run-option caveat + SummaryBody);
                                 the run bar uses ui/ProgressBar.tsx (the shell is the scrim).
                                 plus views/Disclaimer.tsx (startup gate, storage keys in src/lib/gates.ts)
+                      Support/gating (flat): BugReportDialog.tsx + sendReport.ts (+ `lib/reportEndpoint.ts`,
+                      backend `commands/support.rs`) — the support-bundle / bug-report path;
+                      FirmwareGate.tsx + LoadErrorPane.tsx + PageNotice.tsx — the pre-flight firmware
+                      gate and the error / notice panes.
                       Flat (shared/chain infra): CatalogView.tsx, PresetList.tsx, ActiveSignalChainView.tsx
                       (renders the device's ordered series/split `stages` — N sequential splits, not
                       positional), SignalChainView.tsx (shared strip geometry; a `StripBlock.halfStack`
