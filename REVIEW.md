@@ -20,6 +20,7 @@ from the changed one:
 | #110 | Escape-to-close survived in an app that is click-only by design                                                                                                      |
 | #112 | A bare device write/measure with no preceding `loadScene` omitted the base recall present in a sibling path, landing in whatever scene the connection currently held |
 | #112 | A new footswitch assignment hardcoded 5 switch-owned fields instead of inheriting them from a sibling function on the same switch                                    |
+| #119 | A `bypass-nodes` empty-list guard was added while its twin `bypass_all` fall-through, 40 lines away in the SAME function, kept the omission                          |
 
 Reading a hunk in isolation cannot catch any of these. So when a diff touches one
 stage, branch, or case, name its siblings and compare. The sets that keep drifting:

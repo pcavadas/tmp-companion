@@ -91,7 +91,7 @@ Six observations decide everything:
   `⚠️ Outside diff range comments (N)` heading, because they sit on lines the diff didn't touch.
   They are NOT threads: they never appear in `reviewThreads`, have no thread id, and cannot be
   replied to or resolved per-thread. A triage loop keyed on threads is structurally blind to them —
-  on PR #119 there were 16 across 6 review bodies and 5 went unfixed, including a `Critical`
+  on PR #119 there were 20 across 5 review bodies and 5 went unfixed, including a `Critical`
   destructive-save guard, while the thread view read "no actionable threads". Sweep EVERY review
   body (they accumulate; a finding raised in review 2 is not repeated in review 5), and treat each
   as a finding of record: fix it, or state the reason in the commit message, since there is no
