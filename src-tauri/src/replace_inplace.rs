@@ -3,6 +3,22 @@
 use crate::session::Session;
 use crate::{backup, read_song_presets, session};
 
+/// The tolerant list read, retried until it reaches `orig_list_index` (or a fresh
+/// reconnect stops helping). A single short read is the common case; the retry only
+/// engages for the high-index tail-truncation class documented above.
+fn read_list_reaching(orig_list_index: u32) -> Result<Vec<session::PresetEntry>, String> {
+    const ATTEMPTS: u32 = 4;
+    let mut list = Vec::new();
+    for attempt in 1..=ATTEMPTS {
+        list = Session::connect()?.list_my_presets()?;
+        if list.len() > orig_list_index as usize || attempt == ATTEMPTS {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+    }
+    Ok(list)
+}
+
 /// Probe (AC7 positive case): edit a preset IN PLACE on its original slot and
 /// report whether the slot, its Song assignment, and scene binding survive.
 /// Compare against `--import` (bare append) as the negative control — that one
@@ -70,7 +86,16 @@ pub(crate) fn replace_inplace_with(
     // never enters `empty_before` — landing detection misses it and aborts, it can
     // never mis-clear), and the fail-closed `confirm_active` below still gates the
     // save before any damage.
-    let before = Session::connect()?.list_my_presets()?;
+    //
+    // A high scratch-zone target (the e2e seed's slots 400+) makes tail-truncation the
+    // COMMON case rather than a rare tail: several fresh connects in quick succession
+    // (this function's own multi-step sequence, on top of the caller's own reads) can
+    // reliably chop the tolerant read well short of a high index (HW-observed 2026-07-27:
+    // ~310-350/504 across many back-to-back attempts, independent of rest time — this
+    // is the documented interleave/pump-window chop, not the open lockout, so waiting
+    // doesn't help but a bounded reconnect-retry does). Retry a few times before giving
+    // up, rather than erroring on the first short read.
+    let before = read_list_reaching(orig_list_index)?;
     let orig_name_before = before
         .iter()
         .find(|p| p.slot == orig_list_index)
