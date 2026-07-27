@@ -242,7 +242,10 @@ Enter by **holding the FS Mode and Tap Tempo footswitches together for two secon
 
 `EXIT` takes the MODE-switch position; the TAP/TUNER switch is unchanged. **DAW Mode does not take over the touchscreen** — the ordinary Preset View stays on screen.
 
-> The PDF's text layer for this page contains strings that are **not rendered on the page** — `DAW 99 Studio Pro`, `VOLUME UP/DOWN`, `MUTE TRACK`, `SOLO TRACK`, `ARM TRACK`, `FOOTSWITCH ASSIGNMENT`. They describe a different, track-oriented layout the published manual does not show. The eight transport functions named in the page's own prose match the **visible** layout above. Treat the ghost strings as non-authoritative.
+> The PDF's text layer for this page carries non-rendered "ghost" strings describing a different,
+> track-oriented layout — see `references/open-questions.md` F1 for the full list and the
+> corroboration. Treat the ghost strings as non-authoritative; the **visible** layout above is
+> correct.
 
 ---
 

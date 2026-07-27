@@ -33,7 +33,7 @@ Both outputs carry an independent **instrument / line** switch and an independen
 | FR cabinet (Fender FR-10 / FR-12), PA, studio monitors, recording interface | **LINE** (default) | manual states it explicitly for "optimal signal-to-noise ratio" (pp. 40–41) |
 | Instrument amplifier (front end, or its FX return)                          | **INSTRUMENT**     | pp. 40–41                                                                   |
 
-Effects loops 3/4 have their own instrument/line switch (default **INSTRUMENT**, "typical for stompbox pedals"; choose **LINE** for rack effects).
+Effects loops 3/4 default to **INSTRUMENT** level — see `global-settings.md` §2 Inputs for the rack-effects override.
 
 **Headroom is not symmetric between the two outputs** (p.46) — relevant whenever you split a rig across both:
 

@@ -22,14 +22,9 @@ Saving runs live, link-safe, in-place edits on a held session, re-armed per pres
 
 Confirm each edit on its acknowledgement (`nodeReplaced` / `nodeInserted` / `nodeRemoved`); **never save on `presetError` or an unconfirmed edit** (a wrong-content save corrupts the slot). The first edit after a fresh load can be dropped — retry it once. `cancel_copy_apply` stops a run.
 
-## Block-mutation invariants (`audiograph.rs`)
+## Block-mutation invariants
 
-A block lives in three differently-keyed places — touch all or leave dangling state:
-
-1. `audioGraph.{guitarNodes,micNodes}` — the roster, by FenderId.
-2. `scenes[].<group>.<FenderId>` — per-scene overrides, by FenderId.
-3. `ftsw[i][].nodes[].nodeId` — footswitch assignments, by exact nodeId.
-
-`drop_scene_overrides` + `retarget_ftsw` keep 2 and 3 consistent on replace/remove. The backend matches by exact FenderId — frontend suffix-normalization (CabIR/ConvRvb) must not leak into a backend op or it silently fail-matches.
-
-The firmware-aware palette filters stock models to those available on the connected firmware; user IRs and saved blocks are read live, so they are inherently firmware-correct. Saved blocks are metadata-only, so a faithful saved-block insert is live-only (there is no offline payload to reconstruct).
+The three-keyed-places rule, the exact-FenderId matching rule, and the firmware-aware-palette /
+offline-impossible notes are common to ALL block-mutation code (bulk-replace and Copy alike) —
+see `notes/gotchas.md#live-per-node-structural-edits-the-protocol-behind-the-block-edit-features`,
+not restated here.

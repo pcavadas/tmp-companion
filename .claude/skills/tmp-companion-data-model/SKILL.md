@@ -74,7 +74,7 @@ There is no `Mic/Line Parallel 2` and no 13th/14th template.
 - **Output Assign**: 3×3 matrix `[Upper Path / Lower Path / USB 1-2] × [Headphones / Output 1 / Output 2]` — independently togglable
 - **Preset MIDI**: up to 5 messages sent on preset load, each = `(channel, PC#, CC#, CC value)`
 - **Preset Spillover**: on/off — do delay/reverb tails continue across preset changes
-- **AMP CTRL 1/2**: maps to the rear-panel AMP CTRL TRS jack (tip=AC1, ring=AC2 — two independent latching contact closures, used as a TRS-to-dual-TS insert cable)
+- **AMP CTRL 1/2**: maps to the rear-panel AMP CTRL TRS jack (tip=AC1, ring=AC2) — see `references/setup-recipes.md` §6 for the wiring/insert-cable detail
 - **Tap tempo scope**: per-preset BPM OR global tempo (Global Settings → Footswitch → Tap Tempo)
 
 ## Cabinet sub-model

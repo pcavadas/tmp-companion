@@ -51,13 +51,10 @@ Consult that table rather than trusting CI.
 
 ## 3. Destructive and in-flight actions
 
-The unit holds irreplaceable user presets and a save is permanent. In any diff:
-
-- an in-flight device run (leveling, Doctor, a Copy save) must not be abortable by a
-  backdrop click or an unguarded close
-- a stop control must acknowledge immediately, not only after the in-flight capture ends
-- a destructive op keyed on a slot mapping needs a non-destructive read confirming that
-  mapping in the **same address space** as the mutation
+The unit holds irreplaceable user presets and a save is permanent. `.coderabbit.yaml`'s
+`path_instructions` enforce the destructive-slot-mapping guard (scoped to `session.rs`) and the
+in-flight-abort guard (scoped to `src/**/*.{ts,tsx}`); `notes/write-safety.md` and CLAUDE.md's
+Gotchas carry the full rule.
 
 ## 4. What cannot be verified from a diff — flag it, don't guess
 

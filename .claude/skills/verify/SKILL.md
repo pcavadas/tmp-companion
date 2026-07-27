@@ -51,9 +51,9 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   always — in a worktree that's the per-worktree DERIVED port (`TMP_E2E_PORT`, offset off 7600
   since the port-isolation PR), not necessarily 7600; check `$TMP_E2E_PORT` or the e2e.sh log
   line before killing a hardcoded port.
-- **Fresh worktree needs deps before checks, not just before dev.** `bun install` (node_modules
-  is gitignored) before `bunx tsc --noEmit`/`bun run test`; `bun run build` (or stub
-  `dist/index.html`) before any `cargo` gate — `generate_context!` panics without `./dist`.
+- **Fresh worktree needs deps before checks, not just before dev** (CLAUDE.md's "Fresh-clone /
+  worktree traps" section) — `bun install` before typecheck/test, `bun run build` before any
+  `cargo` gate.
 - **Online false-green tell:** confirm the server log prints `seeded snapshot from the real
 device` (or `/health` reports `online: true`) before trusting a pass — a stale offline server
   reused under `TMP_E2E_ONLINE=1` looks identical until you check.

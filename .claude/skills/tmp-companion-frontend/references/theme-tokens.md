@@ -41,7 +41,7 @@ Styling is **inline `style={{}}` objects** read off `t`. No CSS modules, no styl
 | `info`                          | `#6b7280`                                            | == `mutedInk` (severity)                                              |
 | `ok`                            | `#d97757`                                            | == `accent` (severity "ok"; green status uses `good`)                 |
 
-Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` / `t.ok` semantically — but for green status badges use `good`/`goodSoft`/`goodBorder`, not `ok`.
+Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` / `t.ok` semantically. **Handoff green maps to `good`, not `ok`** — see `SKILL.md`'s handoff step 3 (Severity-token trap).
 
 ## Fonts
 

@@ -15,8 +15,7 @@ The leveller and the Doctor both measure **USB 1/2**. Per the manual (p.36) that
 **Measured (fw 1.8.45):**
 
 - **Readable, but only from a device backup.** `settingsBackup.mixerSaveData` carries the full per-channel strip. The live path (`MixerMessage`, TMS 5) reads as unserved and no write route has been confirmed either. `probe --mixer` implements the read sweep.
-- **The master knob is OUT of the measurement path** (0.001 LU across 50 %→80 %); **the USB 1/2 fader is IN it** (−6.48 LU at its −10 dB mark). A non-unity fader silently biases every solved `presetLevel`; the knob does not.
-- **Routing is per-preset, not global.** Loading a preset overwrites the output-assign matrix from its own `outputMixerSettings`, so a pre-flight must run **per preset**, not once at startup.
+- **The USB 1/2 fader (not the master knob) is in the measurement path, and routing is per-preset** — full figures and the per-preset-recheck requirement are in `notes/gotchas.md#output-assign-is-per-preset-and-is-applied-to-the-global-mixer-on-every-preset-load`.
 - **Mute, solo-elsewhere and AUX** all measured: muting or having another channel soloed (with `usb12` itself not soloed) both produce `no signal captured`; also-soloing `usb12` restores the reading (solo is additive, p.36); AUX with nothing physically connected is silent. **Solo-elsewhere does NOT flip `usb12`'s own `soloActive` flag** — a pre-flight must check "is any _other_ channel's `soloActive` true", not just `usb12`'s own booleans. BT injection is untested but schema-identical to AUX.
 
 Failure modes still undetectable at runtime:
@@ -89,13 +88,10 @@ p.17 documents a per-preset on/off for hearing delay and reverb tails when chang
 
 ## 7. 48 kHz is a USB rate, not the device's internal rate
 
-`leveller.rs` hardcodes `RATE = 48_000` and used to comment it as "the device clock". The spec sheet (p.46) lists the internal A/D–D/A at **44.1 kHz** and the USB audio clock as DAW-selectable 44.1/48/88.2/96. The precise claim is _"the macOS Core Audio device must be set to 48 kHz"_ — not _"the device clock is 48 kHz"_.
+`leveller.rs` hardcodes `RATE = 48_000`. The spec sheet (p.46) lists the internal A/D–D/A at **44.1 kHz** and the USB audio clock as DAW-selectable 44.1/48/88.2/96. The precise claim is _"the macOS Core Audio device must be set to 48 kHz"_ — not _"the device clock is 48 kHz"_. Measured and confirmed — see `notes/gotchas.md#48-khz-stimulus-required` for the spectral evidence.
 
-**Measured (fw 1.8.45): the capture is band-limited near 22 kHz.** Flat-noise re-amp captures on two presets with opposite spectral tilts both collapse to the float noise floor above ~22.05 kHz, with macOS CoreAudio confirmed at 48 000 Hz (so no host-side resampling). A bit-transparent 48 kHz digital path would be flat to 24 kHz. **There is a 44.1 kHz stage in USB-in → DSP → USB-out.**
+Still open:
 
-Consequences for this repo:
-
-- The 48 kHz constant is still **correct** as the Core Audio negotiation rate — keep it. The `leveller.rs` comments justifying it were fixed to say "the required host Core Audio rate" instead of "the device clock".
 - Anything reasoning about capture content above ~22 kHz (spectrum reports, the Doctor's fine-PSD `peaks`, EQ-match) is reading the anti-alias skirt, not preset tone. Worth an upper bound on analysed bandwidth.
 - The device carries a global `sampleRate` setting (`settingsBackup.sampleRate`, `0` here). Whether the band limit moves with it is untested — do not assume 22 kHz is fixed.
 

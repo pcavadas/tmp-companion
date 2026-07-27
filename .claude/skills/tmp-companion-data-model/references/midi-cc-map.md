@@ -62,8 +62,6 @@ From OM p.43.
 | 109  | 64–127                                    | Looper VOLUME UP                                        |
 | 110  | 64–127                                    | Looper VOLUME DOWN                                      |
 
-CC 25 is intentionally skipped (no Effects Footswitch 5 at CC 25 in the chart — Fender uses CC 26 for FS 5).
-
 ## MIDI Out jack modes
 
 Configurable in Global Settings → I/O → MIDI → "MIDI OUT":
@@ -100,7 +98,7 @@ Global Settings → I/O → MIDI:
 
 4. **CC 25 is skipped** between FS 4 (CC 24) and FS 5 (CC 26). The convention is asymmetric — don't assume contiguous CC# assignment.
 
-5. **AMP CTRL 1 and 2 are tip/ring of a single TRS jack.** Use a TRS-to-dual-TS insert cable to wire them to two separate amp control inputs (e.g. amp channel select + reverb toggle).
+5. **AMP CTRL 1 and 2 are tip/ring of a single TRS jack** — see `references/setup-recipes.md` §6 for the wiring cable.
 
 6. **Bank Select changes do not take effect until a PC arrives.** Standard MIDI bank-select behavior. Send Bank Select first, then PC.
 
@@ -108,4 +106,4 @@ Global Settings → I/O → MIDI:
 
 Fender Tone Master Pro Owner's Manual, pp. 42-43 (MIDI section + MIDI Implementation Chart).
 
-**Re-verified against the v1.8 manual (rev. J)** by rendering p.43 as an image and comparing row by row: the chart is IDENTICAL between v1.7 and v1.8 — 31 rows, same CC numbers, same value classes, same function names. Confirmed in print, not extraction artefacts: CC 25 is genuinely absent (Effects FS run 21-24, 26-29); CC 30's value cell really does read `0-7` / `10-17` with an 8-9 gap; and CC gaps 5-6, 8-19, 31-63, 71-102 are real, with nothing above CC 110. Re-fetch from `www.fender.com/tonemaster_pro` when firmware revs (the CC map has been extended in past firmware releases).
+**Re-verified against the v1.8 manual (rev. J):** the chart is IDENTICAL between v1.7 and v1.8 — 31 rows, same CC numbers, same value classes, same function names. CC 25 is genuinely absent (Effects FS run 21-24, 26-29); CC 30's value cell reads `0-7` / `10-17` with an 8-9 gap; CC gaps 5-6, 8-19, 31-63, 71-102 are real, with nothing above CC 110. Re-fetch from `www.fender.com/tonemaster_pro` when firmware revs (the CC map has been extended in past firmware releases).

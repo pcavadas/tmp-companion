@@ -16,7 +16,7 @@ The TMP speaks **Protocol Buffers (FenderMessageTMS) over USB HID**, and its exp
 
 ## Block-mutation wire API
 
-Live per-node structural edits (insert / replace / remove a signal-chain block) drive `session::{replace_node,insert_node,remove_node}` and confirm on `nodeReplaced(40)` / `nodeInserted(33)` / `nodeRemoved(36)`; a `presetError(53)` or an unconfirmed edit must **never** be saved. The exact wire shapes (`replaceNode` 39, `replaceNodeWithBlock` 100, `insertNode` 34 sent bare, `removeNode` 35, the `nodeJsonRequest`(119) edit-context preamble, 60-byte chunking) are in **`references/replacenode-family.md`**. The write-safety rules around these ops (the three keyed places, exact-FenderId matching) live in `notes/write-safety.md` + `notes/block-copy.md`.
+Live per-node structural edits (insert / replace / remove a signal-chain block) drive `session::{replace_node,insert_node,remove_node}` and confirm on `nodeReplaced(40)` / `nodeInserted(33)` / `nodeRemoved(36)`; a `presetError(53)` or an unconfirmed edit must **never** be saved. The exact wire shapes (`replaceNode` 39, `replaceNodeWithBlock` 100, `insertNode` 34 sent bare, `removeNode` 35, the `nodeJsonRequest`(119) edit-context preamble, 60-byte chunking) are in **`references/replacenode-family.md`**. The write-safety rules around these ops (the three keyed places, exact-FenderId matching) live in `notes/gotchas.md`.
 
 ## Preset `.preset` codec
 
