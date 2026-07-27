@@ -168,17 +168,18 @@ Two more traps that make observation lie:
 
 Evaluate top to bottom; take the FIRST matching row and only that action.
 
-| Row | State                                                                                                         | Action                                                                                                                                                              |
-| --- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S0  | PR is a draft                                                                                                 | Nothing. Drafts are skipped entirely and spend no quota. Mark ready when settled.                                                                                   |
-| SP  | `PAUSED` (§2) and no open `LIMITED` window                                                                    | Post exactly ONE `@coderabbitai resume`. Then go to S1. ONE per head commit — a pause re-declared after a `resume` on the same head is S7, never a second `resume`. |
-| S1  | Not `REVIEWED`, no `LIMITED` message                                                                          | **Wait.** Re-observe later. Post nothing — this includes an hours-long quiet spell.                                                                                 |
-| S2  | `LIMITED(t, n)` and `now < t + n`                                                                             | **Wait** until `t + n`. Any command before then is wasted.                                                                                                          |
-| S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                                                          | Post exactly ONE `@coderabbitai review`. Then go to S1.                                                                                                             |
-| S4  | `REVIEWED` and (`ACTIONABLE_THREADS` non-empty OR any unaddressed `ACTIONABLE_OUTSIDE_DIFF`)                  | Run §4 on every `ACTIONABLE_THREADS` entry AND every unaddressed `ACTIONABLE_OUTSIDE_DIFF` finding. One commit, one push. Then S1.                                  |
-| S5  | `REVIEWED`, `ACTIONABLE_THREADS` empty, `ACTIONABLE_OUTSIDE_DIFF` all addressed, `reviewDecision != APPROVED` | **Wait** — it re-approves on its own. Do not reach this row without having swept the review bodies.                                                                 |
-| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                              | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                    |
-| S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads)                                           | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                          |
+| Row | State                                                                                                         | Action                                                                                                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S0  | PR is a draft                                                                                                 | Nothing. Drafts are skipped entirely and spend no quota. Mark ready when settled.                                                                                                                      |
+| SP  | `PAUSED` (§2) and no open `LIMITED` window                                                                    | Post exactly ONE `@coderabbitai resume`. Then go to S1. ONE per head commit — a pause re-declared after a `resume` on the same head is S7, never a second `resume`.                                    |
+| S1  | Not `REVIEWED`, no `LIMITED` message                                                                          | **Wait.** Re-observe later. Post nothing — this includes an hours-long quiet spell.                                                                                                                    |
+| S2  | `LIMITED(t, n)` and `now < t + n`                                                                             | **Wait** until `t + n`. Any command before then is wasted.                                                                                                                                             |
+| S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                                                          | Post exactly ONE `@coderabbitai review`. Then go to S1.                                                                                                                                                |
+| S4  | `REVIEWED` and (`ACTIONABLE_THREADS` non-empty OR any unaddressed `ACTIONABLE_OUTSIDE_DIFF`)                  | Run §4 on every `ACTIONABLE_THREADS` entry AND every unaddressed `ACTIONABLE_OUTSIDE_DIFF` finding. One commit, one push. Then S1.                                                                     |
+| S5  | `REVIEWED`, `ACTIONABLE_THREADS` empty, `ACTIONABLE_OUTSIDE_DIFF` all addressed, `reviewDecision != APPROVED` | **Wait ONLY IF `OPEN_THREADS` is empty** — approval follows thread state within seconds. If ANY thread is still open (even one CodeRabbit chose to defer), waiting is futile: go to §4.1 and clear it. |
+| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                              | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                                                       |
+| SD  | `OPEN_THREADS` non-empty but `ACTIONABLE_THREADS` empty (a deferred/settled thread is the only one left)      | **Clear it via §4.1.** Not a wait state — this is the deadlock that cost ~5h on PR #119. Never resolve it yourself (N3); make CodeRabbit resolve it.                                                   |
+| S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads)                                           | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                                                             |
 
 `mergeStateStatus: DIRTY` is not in this table because it is not a review state — it means `main`
 moved and the branch now conflicts. Merge `origin/main` in (never rebase + force-push a PR branch),
@@ -245,6 +246,27 @@ comment; `approve` and `resolve` are documented top-level-ONLY and do not work i
 `resume` is top-level too, and it DOES clear the AUTOMATIC pause (§2 `PAUSED`, §3 row SP) — it is a
 PR-level lever, not a thread-level one. A reply is the only thread-level lever that exists.
 
+### 4.1 Clearing a thread CodeRabbit deferred
+
+A thread it "left open to track deferred work" still blocks approval. It has to close it — you must
+not (N3) — so give it a close-out it can accept:
+
+1. **Re-read the thread for an offer you declined.** Its standard close-out is _"Would you like me
+   to open a follow-up GitHub issue?"_ On PR #119 it offered exactly that, I said no (arguing a
+   notes file already tracked the risk), and that single refusal removed the only mechanism it had
+   to resolve the thread — costing ~5 hours. **Never argue CodeRabbit out of its own close-out.**
+   Reply accepting it, with concrete scope so the issue is actionable.
+2. **Then satisfy that close-out's own acceptance criteria.** The issue it opens usually asks for a
+   backlink from the doc or code the finding came from. Landing that link is what turns
+   deferred-and-untracked into deferred-and-tracked, which is what it needs in order to resolve.
+3. **If there is no offer to accept**, convert the finding from _deferred_ to _addressed_: one
+   focused commit stating the mechanism and the remediation, then reply pointing at it. That is the
+   pattern that cleared 22 of the 23 threads on #119.
+
+A reply is free — answered in ~15-30s even while review quota is exhausted, and it spends no quota
+(§5). Clearing a thread therefore costs nothing, while waiting for a review to clear it costs ~40
+minutes and cannot work.
+
 ## 5. Facts that change how you read a review
 
 - **`.coderabbit.yaml` does not enumerate CodeRabbit's static-analysis integrations.** This repo
@@ -253,6 +275,15 @@ PR-level lever, not a thread-level one. A reply is the only thread-level lever t
   on a `SKILL.md` diff. Identify an unfamiliar tool from CodeRabbit's tools reference; a grep of
   the repo config cannot tell you whether it is real. Padding inside a finding does not invalidate
   the finding above it.
+- **Approval is a verdict flip on THREAD STATE, not the outcome of a review round.** PR #118
+  approved 14 seconds after its last thread cleared; #119, 19 seconds. No re-review runs that fast —
+  it is not re-reading the diff, it is re-evaluating whether anything is open. Consequence:
+  **`@coderabbitai review` can only ADD threads and can never clear one**, so a "wait out the rate
+  limit, post review, hope it approves" loop cannot terminate. If the blocker is an open thread, a
+  review round is not a slow fix — it is not a fix.
+- **Thread replies are free; pushes are not.** A reply is answered in ~15-30s and spends no review
+  quota. A push trips a fresh rate-limit window, and the windows lengthen under sustained use
+  (33 -> 41 -> 42 minutes on #119). When both would work, reply.
 - **Processed-commits trap.** A rate-limited attempt can mark head commits _processed_, so a later
   plain `review` "finishes" in seconds having reviewed nothing. That is row S7, not a retry.
 - **Quota (free/OSS: small, shared, adaptive).** Spent by every push to a main-targeted PR, every
@@ -263,12 +294,13 @@ PR-level lever, not a thread-level one. A reply is the only thread-level lever t
 - **Only main-targeted PRs are auto-reviewed** (unless `base_branches` extends it). A stacked
   child meets CodeRabbit for the first time when it retargets to main after its parent merges —
   budget one review per cascade step; pushes to non-main-based descendants are quota-free.
-- **An unresolved thread does NOT block merge here.** The "protect main" ruleset has
-  `required_review_thread_resolution: false` — what gates the merge is
-  `required_approving_review_count: 1` plus `require_last_push_approval: true`. CodeRabbit will
-  sometimes deliberately leave a thread open to track deferred work ("I'll leave this finding
-  unresolved for the deferred implementation"). That is its choice and it is merge-safe: leave it
-  open (N3) and do not chase it.
+- **THE APPROVAL GATE IS ZERO UNRESOLVED THREADS — and it is CodeRabbit's gate, not GitHub's.**
+  The "protect main" ruleset sets `required_review_thread_resolution: false`, which makes an open
+  thread look harmless. It is not: measured across this repo's whole history, **49 of 49 CodeRabbit
+  approvals landed with exactly 0 unresolved threads**, and PR #119 — the only PR ever carrying a
+  permanently unresolved one — sat un-approvable for ~5 hours with green CI and every other thread
+  closed. Checking GitHub's rules and concluding "the open thread is merge-safe" is the single most
+  expensive mistake made on this repo. **One open thread = no approval = no merge, full stop.**
 - **The approval that merges must postdate the final commit** (`dismiss_stale_reviews_on_push` +
   `require_last_push_approval`). So the last thing you do to a PR is stop pushing. A push while
   awaiting an approval is doubly costly: it voids the approval you are waiting for AND can re-arm
