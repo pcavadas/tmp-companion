@@ -116,7 +116,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
   - **`restrict-template-expressions`** (allowNumber:false) → `String(x)` for numbers in template strings; **`no-confusing-void-expression`** → brace-wrap void-returning arrow handlers (`onClick={() => { f(); }}`); **`no-misused-promises`** → wrap async handlers `() => { void asyncFn(); }`; **`react-refresh/only-export-components`** → move the **MINORITY** export to a sibling file (a component-less file isn't a refresh boundary).
 - **`bunx tsc --noEmit`** also catches what the Vite build won't (the build transpiles without typechecking).
 - **Fresh worktree needs deps before checks** (CLAUDE.md's "Fresh-clone / worktree traps" section)
-  — `bun install` before typecheck/lint/test, `bun run build` before any `cargo` gate.
+  — `bun install` before typecheck/lint/test/build, `bun run build` before any `cargo` gate.
 - **TypeScript 6** no longer resolves `node:` imports from `@types/node` alone — `tsconfig.json` needs `"types": ["node"]`.
 - The IDE/LSP emits **stale phantom diagnostics during rapid file moves or while another editor/agent rewrites a file concurrently** — `bunx tsc --noEmit` from the CLI is authoritative; trust it over live editor squiggles mid-refactor. A concurrent save can also silently REVERT a tool write with no error — after a multi-file edit, re-grep a distinctive symbol to confirm each write LANDED.
 

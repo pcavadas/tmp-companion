@@ -243,7 +243,7 @@ Enter by **holding the FS Mode and Tap Tempo footswitches together for two secon
 `EXIT` takes the MODE-switch position; the TAP/TUNER switch is unchanged. **DAW Mode does not take over the touchscreen** — the ordinary Preset View stays on screen.
 
 > The PDF's text layer for this page carries non-rendered "ghost" strings describing a different,
-> track-oriented layout — see `references/open-questions.md` F1 for the full list and the
+> track-oriented layout — see `open-questions.md` F1 for the full list and the
 > corroboration. Treat the ghost strings as non-authoritative; the **visible** layout above is
 > correct.
 
