@@ -1010,6 +1010,19 @@ fn main() {
             .and_then(|j| args.get(j + 1))
             .and_then(|s| s.parse().ok())
             .unwrap_or(150);
+        // The device silently DROPS a scene write past ~700-750 ms after `loadScene`
+        // (leveller.rs `SETTLE_AFTER_SCENE_EDIT_MS`), with no `presetError` and nothing
+        // persisted. A `--recall-settle` at or beyond that cliff can only produce a
+        // misleading "wrote but nothing changed" cell, so refuse it instead of running
+        // the matrix arm and reporting a result the cliff, not the hypothesis, explains.
+        const RECALL_SETTLE_MAX_MS: u64 = 700;
+        if recall_settle >= RECALL_SETTLE_MAX_MS {
+            eprintln!(
+                "[probe] --recall-settle {recall_settle} is at/over the ~{RECALL_SETTLE_MAX_MS} ms \
+                 scene-write acceptance cliff — the write would be silently dropped"
+            );
+            std::process::exit(2);
+        }
         // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — not a real scene overlay.
         if slot == u32::MAX
             || expect_name.is_empty()
@@ -1046,7 +1059,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--set-scene-param") {
-        // --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>
+        // --set-scene-param <listIdx> <expectName> <sceneSlot|base> <group> <node> <param> <value>
         // Pure WRITE (no measurement, no re-amp): set one block param and save. A
         // numeric sceneSlot writes that scene's overlay (recall + Scene Edit); "base"
         // writes the base/global value.
@@ -1054,20 +1067,25 @@ fn main() {
             .get(i + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let scene = match args.get(i + 2).map(String::as_str) {
+        // Name of the preset EXPECTED at `slot`, checked against a non-destructive
+        // read before this saves — same guard shape as `--scene-write-cell`.
+        let expect_name = args.get(i + 2).cloned().unwrap_or_default();
+        let scene = match args.get(i + 3).map(String::as_str) {
             Some("base") => Some(None),
             Some(s) => s.parse::<u32>().ok().map(Some),
             None => None,
         };
-        let group = args.get(i + 3).cloned().unwrap_or_default();
-        let node = args.get(i + 4).cloned().unwrap_or_default();
-        let param = args.get(i + 5).cloned().unwrap_or_default();
+        let group = args.get(i + 4).cloned().unwrap_or_default();
+        let node = args.get(i + 5).cloned().unwrap_or_default();
+        let param = args.get(i + 6).cloned().unwrap_or_default();
         let value: f32 = args
-            .get(i + 6)
+            .get(i + 7)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
         // 8 = session::BASE_SCENE_SLOT (private to the lib crate) — use "base", not "8".
         if slot == u32::MAX
+            || expect_name.is_empty()
+            || expect_name.starts_with("--")
             || scene.is_none()
             || scene == Some(Some(8))
             || group.is_empty()
@@ -1076,12 +1094,20 @@ fn main() {
             || param.starts_with("--")
             || !value.is_finite()
         {
-            eprintln!("usage: probe --set-scene-param <listIdx> <sceneSlot|base> <group> <node> <param> <value>");
+            eprintln!("usage: probe --set-scene-param <listIdx> <expectName> <sceneSlot|base> <group> <node> <param> <value>");
             std::process::exit(2);
         }
         // Outer Option = "arg present and parseable"; inner = None for base, Some(n) for scene n.
         let scene = scene.flatten();
-        match tmp_companion_lib::probe_set_scene_param(slot, scene, &group, &node, &param, value) {
+        match tmp_companion_lib::probe_set_scene_param(
+            slot,
+            &expect_name,
+            scene,
+            &group,
+            &node,
+            &param,
+            value,
+        ) {
             Ok(r) => {
                 print!("{r}");
                 return;

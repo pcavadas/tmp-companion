@@ -94,6 +94,15 @@ pub fn probe_set_param(
     let mut s = Session::connect()?;
     s.load_preset(slot)?;
     std::thread::sleep(std::time::Duration::from_millis(700));
+    // Recall BASE explicitly before the write. A preset loads into its SAVED
+    // `lastLoadedScene`, so a bare `changeParameter` lands in whatever scene overlay
+    // that happens to be — never base by default (HW-confirmed, fw 1.8.45). Hoisted
+    // ABOVE the first write of this connection: a recall AFTER a write reverts it.
+    // Same fix `set_knob`/`set_knobs`/`capture_full_at` already carry.
+    s.load_scene(session::BASE_SCENE_SLOT)?;
+    std::thread::sleep(std::time::Duration::from_millis(
+        leveller::SETTLE_AFTER_SCENE_RECALL_MS,
+    ));
     // Use the SESSION method, not a hand-rolled `send_and_dump(proto::change_parameter(..))`.
     // The session wrapper is the path the leveller drives on every run; sending the
     // bare message skipped its bookkeeping and the edit silently did not land — the
@@ -1144,12 +1153,29 @@ fn restore_scratch(
 /// actually needs it.
 pub fn probe_set_scene_param(
     slot: u32,
+    expect_name: &str,
     scene: Option<u32>,
     group: &str,
     node: &str,
     param: &str,
     value: f32,
 ) -> Result<String, String> {
+    // This SAVES (`save: true` below), so it is destructive on a mis-typed index.
+    // Confirm the list-index -> preset mapping with a non-destructive read FIRST, in the
+    // SAME address space as the mutation — the guard `probe_scene_write_cell` already
+    // carries, and the lesson behind it: a `clear` once deleted a real preset because the
+    // guard checked a different index space than the op.
+    let before = Session::connect()?.list_my_presets()?;
+    let cur = before
+        .iter()
+        .find(|p| p.slot == slot)
+        .map(|p| p.name.clone());
+    if cur.as_deref() != Some(expect_name) {
+        return Err(format!(
+            "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let knob = leveller::LevelKnob::Block {
         group_id: group.to_string(),
         node_id: node.to_string(),
@@ -1212,6 +1238,11 @@ pub fn probe_scene_write_cell(
             "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
         ));
     }
+    // The guard session above is dropped at the end of its statement; give the device
+    // the same recycle gap every other hop here uses before re-opening. Without it the
+    // load session re-opens immediately after a close, which is the shape that lands in
+    // the exclusive-open lockout (`0xe00002c5`).
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;

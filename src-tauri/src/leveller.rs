@@ -144,7 +144,7 @@ const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 300;
 // fire-and-forget, so nothing surfaced). HW-bisected lower edge (`probe
 // --bisect-scene`, fw 1.8.45): scene_settle 150, 100, and even 50 all land ON the
 // scene overlay (never leak to base) and persist — 150 keeps ~2× margin on both sides.
-const SETTLE_AFTER_SCENE_RECALL_MS: u64 = 150;
+pub(crate) const SETTLE_AFTER_SCENE_RECALL_MS: u64 = 150;
 const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
 const LEVEL_MAX: f32 = 1.0;

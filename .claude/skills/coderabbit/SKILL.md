@@ -49,7 +49,9 @@ Only TWO commands are ever postable on this repo: **`@coderabbitai review`** (§
 
 ```bash
 gh pr view <n> --json state,isDraft,reviewDecision,mergeStateStatus,headRefOid,reviews
-gh pr view <n> --json reviewThreads                      # thread count on the CURRENT head
+gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){
+  reviewThreads(last:40){nodes{id isResolved isOutdated path
+    comments(last:1){nodes{author{login} createdAt}}}}}}}'   # threads — NOT a --json field
 gh api repos/<owner>/<repo>/issues/<n>/comments --jq \
   '.[] | select(.user.login=="coderabbitai[bot]") | {updated_at, body: .body[0:400]}' | tail -3
 gh pr view <n> --comments                                # FULL bodies — see below
@@ -61,9 +63,15 @@ Its state declarations (rate limit, pause) sit in the body, not in headers, labe
 hundred characters. On PR #119, grepping it for rate-limit strings and reading ~150 chars hid a
 self-declared pause for 7 hours. The `[0:400]` slice above is for timestamps only.
 
-There is **no `merged` field** on `gh pr view --json` — asking for one is a hard error, so a poll
-loop that does `--json merged --jq .merged || echo false` reads as "not merged" forever and never
-fires. Detect a merge with `state == "MERGED"` (or a non-null `mergedAt`).
+**Two `gh pr view --json` fields that do not exist — both fail as hard errors, so a `|| fallback`
+in a poll loop turns each into a silent "no" that never fires:**
+
+- **`merged`** — detect a merge with `state == "MERGED"` (or a non-null `mergedAt`) instead.
+- **`reviewThreads`** — there is no REST/`--json` accessor; threads come only from the GraphQL query
+  above. This one bit twice on PR #119: once in a watcher, once written into this very file three
+  lines under the warning about `merged`.
+
+Before trusting any `gh` field in a loop, run it once bare and look at the output.
 
 Five observations decide everything:
 
