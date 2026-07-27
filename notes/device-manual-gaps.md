@@ -58,6 +58,8 @@ Tier-2 calibration captures the dry instrument from `DRY_INSTRUMENT_IN_CH = 2` (
 
 Worth stating the `PRE` assumption explicitly in `notes/leveling.md`, and worth checking first the next time a calibration reads implausibly quiet.
 
+**Tracked as [#124](https://github.com/pcavadas/tmp-companion/issues/124)** — validate the USB 3 state (Pre/Post, fader, mute) before `calibrate_profile()` / `capture_dry_di()` persist `calibration_lufs`, by decoding `settingsBackup.mixerSaveData` and either refusing or compensating. That is runtime feature work needing hardware validation, so it is deliberately out of scope here; this section documents the device behaviour, and the issue owns the fix. Update or remove this note when #124 lands.
+
 _(Note: the manual's "at 0dBfs (maximum level)" describes the send's full-scale reference for an unattenuated, fader-bypassed signal. It does not document the absence of a limiter — that remains our own HW observation, not a manual-derived fact.)_
 
 ---
