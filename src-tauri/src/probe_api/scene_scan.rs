@@ -24,6 +24,7 @@ pub fn probe_level_scenes_oneshot(
     topology_id: String,
     scene_slots: Vec<u32>,
     rebalance: bool,
+    commit: bool,
 ) -> Result<String, String> {
     let scene_slots = if scene_slots.is_empty() {
         vec![session::BASE_SCENE_SLOT]
@@ -36,14 +37,30 @@ pub fn probe_level_scenes_oneshot(
         .and_then(|v| v.parse::<f32>().ok());
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
     let candidates = load_and_filter_amp_candidates(list_index)?;
-    let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
+    let (docs, restore_scene) = prepass_scene_docs(list_index, &scene_slots)?;
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let jobs = build_scene_jobs(&scene_slots, &candidates, &docs, target_lufs, None)?;
-    // NO SAVE — restores the stored preset after measuring.
+    // `commit` = repro instrumentation: run the REAL deferred-save path (the app's shape).
     let outcomes = if rebalance {
-        leveller::level_scenes_rebalance(list_index, &jobs, &stim, false, None, |_, _| {}, || false)
+        leveller::level_scenes_rebalance(
+            list_index,
+            &jobs,
+            &stim,
+            commit,
+            restore_scene.filter(|_| commit),
+            |_, _| {},
+            || false,
+        )
     } else {
-        leveller::level_scenes_oneshot(list_index, &jobs, &stim, false, None, |_, _| {}, || false)
+        leveller::level_scenes_oneshot(
+            list_index,
+            &jobs,
+            &stim,
+            commit,
+            restore_scene.filter(|_| commit),
+            |_, _| {},
+            || false,
+        )
     };
     // Guaranteed re-amp OFF regardless of outcome (a stranded re-amp mutes the input).
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
@@ -66,6 +83,47 @@ pub fn probe_level_scenes_oneshot(
             }
         }
     }
+    Ok(out)
+}
+
+/// `probe --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>` — repro
+/// instrumentation: measure the captured loudness at each knob value on isolated fresh
+/// re-amp captures (the `measure_fs_at` recipe, no bypass forcing), in the preset's
+/// natural post-load state at its stored presetLevel. Working-copy writes are discarded
+/// by a final reload; ends with a guaranteed re-amp OFF. Stimulus via
+/// TMP_LEVELLER_STIMULUS (injected verbatim).
+pub fn probe_knob_sweep(
+    list_index: u32,
+    group: &str,
+    node: &str,
+    param: &str,
+    values: &[f32],
+) -> Result<String, String> {
+    let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
+        .map_err(|_| "set TMP_LEVELLER_STIMULUS to the stimulus WAV".to_string())?;
+    let stim = read_stimulus_calibrated(&stim_path, None)?;
+    {
+        let mut s = Session::connect_lean()?;
+        s.load_preset(list_index)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::settle_after_load_ms(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    let mut out = format!("[probe --knob-sweep] list_index={list_index} {group}/{node}.{param}\n");
+    for v in values {
+        let l = leveller::measure_fs_at((group, node, param), &[], &stim, *v)?;
+        out += &format!(
+            "  {param}={v:.3} → integrated {:.3} LUFS  short-term-max {:.3}\n",
+            l.integrated_lufs, l.short_term_max_lufs
+        );
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    }
+    // Discard the sweep pollution, then the guaranteed OFF.
+    if let Ok(mut s) = Session::connect_lean() {
+        let _ = s.load_preset(list_index);
+    }
+    leveller::reamp_off_guaranteed("knob-sweep");
     Ok(out)
 }
 

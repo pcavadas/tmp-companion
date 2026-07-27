@@ -91,7 +91,7 @@ pub use replace::*;
 pub use scene_bench::*;
 pub use scene_level::*;
 pub use scene_scan::*;
-pub use seed_scenario::{probe_clear_strays, probe_seed_scenario};
+pub use seed_scenario::{probe_clear_strays, probe_import_file, probe_seed_scenario};
 pub use setlists::*;
 pub use slot_read::*;
 pub use slot_write::*;

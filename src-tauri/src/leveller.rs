@@ -1584,8 +1584,15 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
             scene.unwrap_or_default()
         ));
     }
+    // Repro instrumentation: wall-clock every step relative to the loadScene recall,
+    // to observe writes crossing the ~700-750 ms post-loadScene acceptance cliff.
+    let t0 = std::time::Instant::now();
     if let Some(scene) = scene {
         s.load_scene(scene)?;
+        log::info!(
+            "set_knobs[t] scene {scene}: loadScene returned at {} ms",
+            t0.elapsed().as_millis()
+        );
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         // Dedupe by (group_id, node_id): a repair target adds MORE entries for the SAME
         // node as its leveled knob, and re-enabling Scene Edit on an already-enabled node
@@ -1602,6 +1609,10 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
                 let key = (group_id.as_str(), node_id.as_str());
                 if !enabled.contains(&key) {
                     s.set_node_scene_edit(group_id, node_id, true)?;
+                    log::info!(
+                        "set_knobs[t]: SceneEdit({node_id}) returned at {} ms",
+                        t0.elapsed().as_millis()
+                    );
                     enabled.push(key);
                 }
             }
@@ -1612,6 +1623,11 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
     }
     for (k, v) in targets {
         set_knob_value_only(s, k, *v)?;
+        log::info!(
+            "set_knobs[t]: write {}={v:.4} returned at {} ms",
+            k.label(),
+            t0.elapsed().as_millis()
+        );
     }
     Ok(())
 }

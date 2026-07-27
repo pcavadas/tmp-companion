@@ -202,6 +202,64 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--import-file") {
+        // --import-file <path> <listIdx>  — import a .preset FILE into an EMPTY 0-based
+        // list index (repro instrumentation; refuses an occupied target).
+        let path = args.get(i + 1).cloned().unwrap_or_default();
+        let idx: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        if path.is_empty() || idx == u32::MAX {
+            eprintln!("usage: probe --import-file <path> <listIdx>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_import_file(&path, idx) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--knob-sweep") {
+        // --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 2).cloned().unwrap_or_default();
+        let node = args.get(i + 3).cloned().unwrap_or_default();
+        let param = args.get(i + 4).cloned().unwrap_or_default();
+        let values: Vec<f32> = args
+            .get(i + 5)
+            .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        if idx == u32::MAX
+            || group.is_empty()
+            || node.is_empty()
+            || param.is_empty()
+            || values.is_empty()
+        {
+            eprintln!("usage: probe --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_knob_sweep(idx, &group, &node, &param, &values) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--dump-currentpresetdata") {
         // --dump-currentpresetdata [slot]  — Tier-4: capture the live field-3
         // currentPresetDataChanged on a dense-heartbeat session, dump the full
@@ -1270,8 +1328,9 @@ fn main() {
             .iter()
             .filter_map(|s| s.parse().ok())
             .collect();
+        let commit = args.iter().any(|a| a == "--commit");
         match tmp_companion_lib::probe_level_scenes_oneshot(
-            list_index, target, topology, scenes, rebalance,
+            list_index, target, topology, scenes, rebalance, commit,
         ) {
             Ok(report) => {
                 print!("{report}");

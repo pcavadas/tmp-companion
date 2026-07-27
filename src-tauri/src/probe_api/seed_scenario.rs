@@ -217,6 +217,30 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
     Ok(SeedOutcome { swept, seeded })
 }
 
+/// `probe --import-file <path> <listIdx>` — repro instrumentation: import an arbitrary
+/// `.preset` FILE (raw xor_jld bytes on disk) into an EMPTY target list index via the
+/// production `replace_inplace_with` machinery. Refuses an occupied target.
+pub fn probe_import_file(path: &str, list_index: u32) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    let mut s = Session::connect()?;
+    let list = read_full_list(&mut s)?;
+    if let Some(e) = list.iter().find(|e| e.slot == list_index) {
+        if !session::is_empty_slot_name(&e.name) {
+            return Err(format!(
+                "target list index {list_index} is occupied by {:?} — refusing to import over it",
+                e.name
+            ));
+        }
+    }
+    drop(s);
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    replace_inplace_with(list_index, &bytes, false)?;
+    Ok(format!(
+        "[probe --import-file] imported {path} → list index {list_index} (device slot {})\n",
+        list_index + 1
+    ))
+}
+
 /// `probe --seed-scenario` — fresh-process seed for the online e2e runner.
 pub fn probe_seed_scenario() -> Result<String, String> {
     let o = seed_scenario_core()?;
