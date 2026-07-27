@@ -426,10 +426,30 @@ async fn e2e_clear_preset(
         }
         SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         s.clear_user_preset(slot)?;
-        // Cleared — release the manifest claim so it can never outlive the fixture and
-        // bless whatever occupies this scratch slot next. Only after the `?` above.
-        probe_api::seed_scenario::forget_seeded(slot);
-        e2e_patch_snapshot_slot(slot, "Empty");
+        // Verify before releasing: `clear_user_preset` returning Ok is not proof the slot
+        // is actually empty — HW-observed (2026-07-27) a preset with scene+footswitch
+        // leveling left its slot still holding real content right after a successful-
+        // looking clear (a dropped write, or a deferred save landing late; either way the
+        // clear didn't take). Releasing on that would strand the slot with NEITHER
+        // manifest NOR marker — the original bug `forget_seeded` exists to prevent, just
+        // reached from the other direction. Re-read and only release once the slot reads
+        // empty; still occupied means the harness KEEPS the claim, so the next seed's
+        // "ours but dirty" arm reimports it fresh instead of refusing forever.
+        let now_empty = s
+            .list_my_presets()
+            .ok()
+            .and_then(|list| list.get(slot as usize).map(|e| e.name.clone()))
+            .is_none_or(|name| session::is_empty_slot_name(&name));
+        if now_empty {
+            probe_api::seed_scenario::forget_seeded(slot);
+            e2e_patch_snapshot_slot(slot, "Empty");
+        } else {
+            log::warn!(
+                "e2e_clear_preset: slot {slot} still occupied right after a successful \
+                 clear_user_preset — keeping the seed manifest claim so the next seed can \
+                 reimport it instead of stranding it"
+            );
+        }
         Ok(())
     })
     .await
