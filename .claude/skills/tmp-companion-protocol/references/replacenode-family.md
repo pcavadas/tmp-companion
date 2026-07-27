@@ -117,7 +117,7 @@ Surfaced as `PresetMessage.insertNode = 34`; the device confirms with `PresetMes
 
 ## Live edit sequence — HW-validated on a real TMP (fw 1.8.45, 2026-06-12/13)
 
-This family is the SHIPPED mechanism behind the companion's live block editing. **Two consumers** (`apps/tmp-companion`): `bulk_replace_live` (one replace across a selection — the Bulk Block Edit WIZARD UI was deleted on branch `worktree-copy-feature`, but the command stays registered) and **`copy_apply`** (the Copy tab — an ordered replace/insert/remove op list PER target preset, same held-session + confirm-gate machinery). The load-bearing wire facts (each cost a debugging round):
+This family is the SHIPPED mechanism behind the companion's live block editing. **Two consumers:** `bulk_replace_live` (one replace across a selection — the Bulk Block Edit WIZARD UI was deleted on branch `worktree-copy-feature`, but the command stays registered) and **`copy_apply`** (the Copy tab — an ordered replace/insert/remove op list PER target preset, same held-session + confirm-gate machinery). The load-bearing wire facts (each cost a debugging round):
 
 - **Two-opposite framing rules coexist:** structural MUTATIONS (`replaceNode`=39, `removeNode`=35, `replaceNodeWithBlock`=100) carry **NO `batchStatus`** (field 10); request/response messages **REQUIRE** it. Wrong choice EITHER way = the device SILENTLY DROPS the message (empty `connectionError` ack, no error). Mirror Pro Control.
 - **Pro Control's persist sequence (per node):** `nodeJsonRequest`(119) edit-context preamble → the no-batch mutation → `renameCurrentPreset`(13) → `saveCurrentPreset`(14). The rename is structural (preserves identity); **save alone does not persist.** Without the 119 preamble fw 1.8.45 drops the mutation.
