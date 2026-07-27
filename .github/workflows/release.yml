@@ -1,15 +1,16 @@
 name: release
 
 on:
-  push:
-    branches: [main]
-  # Manual fallback: token-armed auto-merge pushes to main run as GITHUB_TOKEN,
-  # which GitHub does NOT re-trigger workflows for, so the push trigger above
-  # silently skips auto-merged releases. Run this from the Actions tab to cut
-  # the pending release. (Proper fix: arm auto-merge with a PAT/App token.)
+  # Weekly cadence: Thursdays 19:00 CEST. GitHub Actions cron is UTC-only (no
+  # IANA timezone support), so this is pinned to 17:00 UTC — correct during
+  # CEST (UTC+2, summer); drifts to 18:00 local once clocks fall back to CET
+  # (UTC+1) in late October. A known, accepted 1h drift, not a bug.
+  schedule:
+    - cron: "0 17 * * 4"
+  # On-demand: run from the Actions tab to cut a release between scheduled runs.
   workflow_dispatch:
 
-# Serialize releases: a manual dispatch could overlap a push-triggered run (or
+# Serialize releases: a manual dispatch could overlap the scheduled run (or
 # another dispatch), racing semantic-release on release creation. Queue instead
 # of cancel so an in-flight signing/notarization is never aborted mid-run.
 concurrency:
