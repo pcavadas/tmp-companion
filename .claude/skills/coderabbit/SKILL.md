@@ -151,7 +151,7 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                | Post exactly ONE `@coderabbitai review`. Then go to S1.                                                                                                             |
 | S4  | `REVIEWED` and `ACTIONABLE` non-empty                               | Run §4 on every ACTIONABLE thread. One commit, one push. Then S1.                                                                                                   |
 | S5  | `REVIEWED`, `ACTIONABLE` empty, `reviewDecision != APPROVED`        | **Wait** — it re-approves on its own after accepting the last thread.                                                                                               |
-| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                    | Done. Auto-merge takes it; report the merge.                                                                                                                        |
+| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                    | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                    |
 | S7  | S3 was taken and the review provably no-oped (0 reviews, 0 threads) | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                          |
 
 `mergeStateStatus: DIRTY` is not in this table because it is not a review state — it means `main`

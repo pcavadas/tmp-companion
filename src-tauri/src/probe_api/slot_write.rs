@@ -245,14 +245,10 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     // Substring-scan rather than JSON-parse: currentPresetDataJson is TRUNCATED on
     // this firmware (~5 KB), so serde would fail on a reply that still carries the
     // one field being measured.
-    let tpl = |j: &str| {
-        j.find("\"template\":\"")
-            .and_then(|i| {
-                let r = &j[i + 12..];
-                r.find('"').map(|e| r[..e].to_string())
-            })
-            .unwrap_or_else(|| "<absent>".into())
-    };
+    // Reuses `field_of` above rather than re-deriving the scan: the old copy carried a
+    // hand-counted `i + 12` offset for `"template":"` that would silently mis-slice if
+    // the key were ever renamed. Same unterminated-value-reads-as-absent semantics.
+    let tpl = |j: &str| field_of(j, "template").unwrap_or_else(|| "<absent>".into());
     let (b, a) = (tpl(&before), tpl(&after));
     // An absent read is NOT evidence of "unchanged" — two failed reads compare
     // equal and would otherwise manufacture a false negative. Say inconclusive.
@@ -1161,10 +1157,20 @@ pub fn probe_set_scene_param(
     value: f32,
 ) -> Result<String, String> {
     // This SAVES (`save: true` below), so it is destructive on a mis-typed index.
-    // Confirm the list-index -> preset mapping with a non-destructive read FIRST, in the
-    // SAME address space as the mutation — the guard `probe_scene_write_cell` already
-    // carries, and the lesson behind it: a `clear` once deleted a real preset because the
-    // guard checked a different index space than the op.
+    // TWO independent guards, because the identity check alone still lets a correct name
+    // authorise a write anywhere in the bank:
+    //   1. scratch-zone restriction — the same allowlist every other destructive probe
+    //      path checks, opt-out-able for the deliberate case;
+    //   2. list-index -> preset mapping confirmed by a non-destructive read, in the SAME
+    //      address space as the mutation (a `clear` once deleted a real preset because
+    //      its guard checked a different index space than the op).
+    if !SCRATCH_SLOTS.contains(&slot) && std::env::var("TMP_ALLOW_NONSCRATCH_WRITE").is_err() {
+        return Err(format!(
+            "refusing --set-scene-param on list index {slot}: outside the scratch zone \
+             {SCRATCH_SLOTS:?} and this SAVES. Re-run with TMP_ALLOW_NONSCRATCH_WRITE=1 if \
+             writing this preset is intended."
+        ));
+    }
     let before = Session::connect()?.list_my_presets()?;
     let cur = before
         .iter()

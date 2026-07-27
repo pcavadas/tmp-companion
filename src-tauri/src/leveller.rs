@@ -1539,13 +1539,29 @@ fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<
 ///   `changeParameter`, so a recall there would only risk reverting an unsaved
 ///   presetLevel write for no benefit.
 fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), String> {
-    let scene = targets.iter().find_map(|(k, _)| match k {
-        LevelKnob::Block {
-            scene_slot: Some(slot),
-            ..
-        } => Some(*slot),
-        _ => None,
-    });
+    // ONE scene per batch, ENFORCED not just documented: only the first scene found is
+    // recalled below, so a batch mixing two scenes would land every write in that first
+    // scene's overlay — silently, with each write confirming normally. Refuse instead.
+    let mut scenes: Vec<u32> = targets
+        .iter()
+        .filter_map(|(k, _)| match k {
+            LevelKnob::Block {
+                scene_slot: Some(slot),
+                ..
+            } => Some(*slot),
+            _ => None,
+        })
+        .collect();
+    scenes.sort_unstable();
+    scenes.dedup();
+    if scenes.len() > 1 {
+        return Err(format!(
+            "set_knobs: batch mixes scenes {scenes:?}; only one scene may be recalled per batch, \
+             so the others would silently write into scene {}",
+            scenes[0]
+        ));
+    }
+    let scene = scenes.first().copied();
     let has_base_block = targets.iter().any(|(k, _)| {
         matches!(
             k,
@@ -4834,6 +4850,35 @@ mod tests {
 
     // Same fix, batched path: a base-only `set_knobs` target set must ALSO recall
     // base explicitly, not rely on the connection's default scene.
+    #[test]
+    fn set_knobs_refuses_a_batch_that_mixes_scenes() {
+        // Only the FIRST scene found is recalled, so a mixed batch would land every
+        // write in that scene's overlay — silently, each write confirming normally.
+        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        let mk = |scene: u32| LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "outputLevel".into(),
+            scene_slot: Some(scene),
+        };
+        let (a, b) = (mk(1), mk(2));
+        let err = set_knobs(&mut s, &[(&a, 0.6), (&b, 0.4)])
+            .expect_err("a batch mixing scenes 1 and 2 must be refused, not silently merged");
+        assert!(
+            err.contains("mixes scenes"),
+            "error should name the mixed-scene cause: {err}"
+        );
+        assert!(
+            !sim.events()
+                .iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::ChangeParameter { .. })),
+            "nothing may be written when the batch is refused: {:?}",
+            sim.events()
+        );
+    }
+
     #[test]
     fn set_knobs_base_only_batch_recalls_base_explicitly() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));

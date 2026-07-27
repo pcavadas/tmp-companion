@@ -229,6 +229,17 @@ pub fn probe_reamp_wav(
                 forced.push(pair);
             }
         }
+        // Discovery returning nothing is NOT "nothing to bypass" — it means the
+        // level-control enumeration failed or the preset exposes none. Falling through
+        // would run `capture_samples` and label an UN-bypassed capture as bypassed,
+        // exactly the silent-wrong-measurement the `bypass-nodes` empty-list check
+        // rejects. Refuse instead.
+        if forced.is_empty() {
+            return Err(format!(
+                "bypass: no level-control blocks discovered on slot {slot}, so nothing would be \
+                 bypassed — refusing rather than capturing an unbypassed take labelled bypassed"
+            ));
+        }
         std::thread::sleep(std::time::Duration::from_millis(400));
     }
 
