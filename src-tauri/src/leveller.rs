@@ -1571,6 +1571,19 @@ fn set_knobs(s: &mut Session, targets: &[(&LevelKnob, f32)]) -> Result<(), Strin
             }
         )
     });
+    // ...and no BASE block may ride along with a scene block, for the same reason one step
+    // removed: the branch below recalls the scene whenever `scene` is Some, so a base-scoped
+    // knob (`scene_slot: None`) in that batch would be written under the scene overlay
+    // instead of base — silently, confirming normally, exactly like the two-scene case.
+    // One connection can hold one scene context, so base and scene targets cannot share a
+    // batch; split them into two calls.
+    if scene.is_some() && has_base_block {
+        return Err(format!(
+            "set_knobs: batch mixes base and scene {} targets; the scene recall would capture \
+             the base write too — split them into separate calls",
+            scene.unwrap_or_default()
+        ));
+    }
     if let Some(scene) = scene {
         s.load_scene(scene)?;
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
@@ -4869,6 +4882,35 @@ mod tests {
         assert!(
             err.contains("mixes scenes"),
             "error should name the mixed-scene cause: {err}"
+        );
+        assert!(
+            !sim.events()
+                .iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::ChangeParameter { .. })),
+            "nothing may be written when the batch is refused: {:?}",
+            sim.events()
+        );
+    }
+
+    #[test]
+    fn set_knobs_refuses_a_batch_mixing_base_and_scene() {
+        // The scene branch recalls the scene whenever ANY scene target is present, so a
+        // base-scoped knob riding along would be written under that overlay, not base.
+        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        let mk = |scene: Option<u32>| LevelKnob::Block {
+            group_id: "G1".into(),
+            node_id: "amp".into(),
+            parameter_id: "outputLevel".into(),
+            scene_slot: scene,
+        };
+        let (base, scened) = (mk(None), mk(Some(2)));
+        let err = set_knobs(&mut s, &[(&base, 0.6), (&scened, 0.4)])
+            .expect_err("a batch mixing a base target with a scene target must be refused");
+        assert!(
+            err.contains("mixes base and scene"),
+            "error should name the base/scene mix: {err}"
         );
         assert!(
             !sim.events()

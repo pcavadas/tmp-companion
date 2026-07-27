@@ -541,7 +541,13 @@ pub fn probe_clear_preset(slot: u32, expect_name: &str) -> Result<String, String
             "[probe --clear] slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)\n"
         ));
     }
+    // Deliberately NOT `confirm_slot_name`: this path reports a refusal as an `Ok`
+    // message so `probe --clear` exits 0 on a mismatch. Only the recycle gaps are
+    // shared — three back-to-back `connect()`s with no gap is the shape that lands in
+    // the exclusive-open lockout (`0xe00002c5`).
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     Session::connect()?.clear_user_preset(slot)?;
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let after = Session::connect()?.list_my_presets()?;
     let now = after
         .iter()
@@ -1095,6 +1101,33 @@ fn restore_scratch(
     )
 }
 
+/// Confirm `slot` still holds `expect_name` before a destructive write, then wait the
+/// device's session-recycle gap.
+///
+/// Shared by every slot-keyed destructive probe path so the guard cannot drift between
+/// copies — the same consolidation `SCRATCH_SLOTS` got. The read is non-destructive and
+/// happens in the SAME address space as the mutation it protects, which is the whole
+/// point: a `clear` once deleted a real preset because its guard checked list-index
+/// space while the op acted in device-slot space.
+///
+/// The trailing sleep is part of the contract, not a caller's concern: the guard session
+/// is dropped at the end of the read, and re-opening immediately after a close is the
+/// shape that lands in the exclusive-open lockout (`0xe00002c5`).
+fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), String> {
+    let before = Session::connect()?.list_my_presets()?;
+    let cur = before
+        .iter()
+        .find(|p| p.slot == slot)
+        .map(|p| p.name.clone());
+    if cur.as_deref() != Some(expect_name) {
+        return Err(format!(
+            "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    Ok(())
+}
+
 /// Write ONE block parameter to a preset and persist it (`probe --set-scene-param`) —
 /// the repair seam for a preset whose scene overlay drifted. Routes through the
 /// leveller's own [`leveller::apply_level`] write path, so `scene = Some(n)` gets the
@@ -1171,17 +1204,7 @@ pub fn probe_set_scene_param(
              writing this preset is intended."
         ));
     }
-    let before = Session::connect()?.list_my_presets()?;
-    let cur = before
-        .iter()
-        .find(|p| p.slot == slot)
-        .map(|p| p.name.clone());
-    if cur.as_deref() != Some(expect_name) {
-        return Err(format!(
-            "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
-        ));
-    }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    confirm_slot_name(slot, expect_name)?;
     let knob = leveller::LevelKnob::Block {
         group_id: group.to_string(),
         node_id: node.to_string(),
@@ -1234,21 +1257,7 @@ pub fn probe_scene_write_cell(
     // Non-destructive read-back BEFORE any write: confirm the list-index mapping in the
     // SAME address space as the mutation below, so an index mistake refuses instead of
     // silently saving over a real preset (the write-safety lesson this PR series is about).
-    let before = Session::connect()?.list_my_presets()?;
-    let cur = before
-        .iter()
-        .find(|p| p.slot == slot)
-        .map(|p| p.name.clone());
-    if cur.as_deref() != Some(expect_name) {
-        return Err(format!(
-            "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
-        ));
-    }
-    // The guard session above is dropped at the end of its statement; give the device
-    // the same recycle gap every other hop here uses before re-opening. Without it the
-    // load session re-opens immediately after a close, which is the shape that lands in
-    // the exclusive-open lockout (`0xe00002c5`).
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    confirm_slot_name(slot, expect_name)?;
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;

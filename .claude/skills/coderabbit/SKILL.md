@@ -49,9 +49,11 @@ Only TWO commands are ever postable on this repo: **`@coderabbitai review`** (§
 
 ```bash
 gh pr view <n> --json state,isDraft,reviewDecision,mergeStateStatus,headRefOid,reviews
-gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){
-  reviewThreads(last:40){nodes{id isResolved isOutdated path
-    comments(last:1){nodes{author{login} createdAt}}}}}}}'   # threads — NOT a --json field
+gh api graphql --paginate -f query='query($c:String){repository(owner:"<owner>",name:"<repo>"){
+  pullRequest(number:<n>){ reviewThreads(first:100, after:$c){
+    pageInfo{hasNextPage endCursor}
+    nodes{id isResolved isOutdated path
+      comments(first:100){nodes{author{login} createdAt}}}}}}}'  # threads — NOT a --json field
 gh api repos/<owner>/<repo>/issues/<n>/comments --jq \
   '.[] | select(.user.login=="coderabbitai[bot]") | {updated_at, body: .body[0:400]}' | tail -3
 gh pr view <n> --comments                                # FULL bodies — see below
@@ -76,6 +78,13 @@ in a poll loop turns each into a silent "no" that never fires:**
   lines under the warning about `merged`.
 
 Before trusting any `gh` field in a loop, run it once bare and look at the output.
+
+**Paginate both connections, and never derive `ACTIONABLE` from a truncated read.** A bare
+`reviewThreads(last:40)` is a sliding window — on a long-running PR the older threads fall out and
+silently stop existing as far as the loop is concerned. Worse, `comments(last:1)` shows only the
+newest comment, which cannot tell you whether YOU replied earlier in that thread — and "have I
+replied" is exactly what `ACTIONABLE` turns on. Page until `hasNextPage == false` on the threads and
+pull the full comment list per thread, or the state you compute is a guess about a subset.
 
 Six observations decide everything:
 
