@@ -392,15 +392,22 @@ mod tests {
     /// later online run dies at the seed step. The manifest is what survives that
     /// save, so it must bless the slot with NO readable marker in the body at all.
     /// Name-keyed, so a slot whose name has since changed stays fail-closed.
-    /// Restores `TMP_E2E_SEED_MANIFEST` + removes the temp dir on drop, so a panic
-    /// mid-test (an assert failing) can't leak the override into later tests in the
-    /// same process — `std::env::set_var` is process-wide, and this file's `record_seeded`
-    /// / `forget_seeded` calls in OTHER tests would otherwise silently target it too.
-    struct EnvGuard(std::path::PathBuf);
+    /// Restores `TMP_E2E_SEED_MANIFEST` to whatever it held before (not just unset)
+    /// and removes the temp dir on drop, so a panic mid-test (an assert failing)
+    /// can't leak the override into later tests in the same process —
+    /// `std::env::set_var` is process-wide, and this file's `record_seeded` /
+    /// `forget_seeded` calls in OTHER tests would otherwise silently target it too.
+    struct EnvGuard {
+        dir: std::path::PathBuf,
+        prev: Option<std::ffi::OsString>,
+    }
     impl Drop for EnvGuard {
         fn drop(&mut self) {
-            std::env::remove_var("TMP_E2E_SEED_MANIFEST");
-            let _ = std::fs::remove_dir_all(&self.0);
+            match self.prev.take() {
+                Some(prev) => std::env::set_var("TMP_E2E_SEED_MANIFEST", prev),
+                None => std::env::remove_var("TMP_E2E_SEED_MANIFEST"),
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
@@ -409,7 +416,11 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("tmp-companion-seedmanifest-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("tmp dir");
-        let _guard = EnvGuard(dir.clone());
+        let prev = std::env::var_os("TMP_E2E_SEED_MANIFEST");
+        let _guard = EnvGuard {
+            dir: dir.clone(),
+            prev,
+        };
         let path = dir.join("seeded-slots.json");
         std::env::set_var("TMP_E2E_SEED_MANIFEST", &path);
         let _ = std::fs::remove_file(&path);
