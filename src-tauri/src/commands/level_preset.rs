@@ -200,13 +200,22 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
-        let opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
+        let mut opts = leveller::LevelOptions { save, verify: true, ..Default::default() };
         let cancelled = || PRESET_LEVEL_CANCEL.load(SeqCst);
         let mut previous_level: Option<f32> = None;
         let result = match block {
             Some((group_id, node_id, parameter_id)) => {
                 let (lo, hi) = knob_bounds(block_value.unwrap_or(0.5));
                 let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
+                // A saving block-knob run measures/applies in base context too, so its save
+                // must re-stamp the original `lastLoadedScene` like the whole-preset arm —
+                // this arm has no other preset read to fold the lookup into, so pay one
+                // field-8 read only when actually saving.
+                if save {
+                    opts.restore_scene =
+                        read_slot_preset_parsed(slot).ok().and_then(|(p, _, _)| crate::last_loaded_scene(&p));
+                    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                }
                 // Pre-dispatch cancel: nothing has touched the device yet — early-return
                 // (the leveller bails at its own pre-measure checkpoint) so the run-end
                 // backstop below is skipped, mirroring the None arm's cancel path.
@@ -243,8 +252,12 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
                 {
                     Ok((preset, _, _)) => {
-                        // The same read carries the pre-run presetLevel — the revert anchor.
+                        // The same read carries the pre-run presetLevel — the revert anchor —
+                        // and the original `lastLoadedScene`, which the save must re-stamp
+                        // (the base-context measurement leaves base active; saving there
+                        // rewrites the preset's on-load scene to base — HW, Hiwatt slot 31).
                         previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
+                        opts.restore_scene = crate::last_loaded_scene(&preset);
                         footswitch::all_onoff_blocks(
                             preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
                         )

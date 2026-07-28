@@ -260,11 +260,18 @@ pub fn probe_level_preset(
         .and_then(|v| v.parse::<f32>().ok());
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
-    let opts = leveller::LevelOptions {
+    let mut opts = leveller::LevelOptions {
         save,
         verify,
         ..Default::default()
     };
+    // A saving run must re-stamp the preset's original `lastLoadedScene` (the base-context
+    // measurement leaves base active at save time); a dry run never saves, so skip the read.
+    if save {
+        opts.restore_scene =
+            crate::read_saved_preset(slot).and_then(|doc| crate::last_loaded_scene(&doc));
+        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    }
     // probe = raw benchmark behavior: no idempotency skip, always measure+apply+save.
     let result = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false);
     // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the

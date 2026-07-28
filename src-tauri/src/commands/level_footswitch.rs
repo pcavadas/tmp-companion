@@ -295,6 +295,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 footswitch::FsLevelPlan::Bake {
                     engaged,
                     clear_stale,
+                    mirror_scenes,
                 } => leveller::measure_footswitch(
                     job.switch,
                     lev,
@@ -313,6 +314,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                                 lev: lev_owned(),
                                 write: leveller::FsWrite::Bake {
                                     clear_stale: *clear_stale,
+                                    mirror_scenes: mirror_scenes.clone(),
                                 },
                                 value: r.final_value,
                             },
@@ -389,7 +391,11 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         let write_result = if save && !pending.is_empty() {
             let (idxs, writes): (Vec<usize>, Vec<leveller::FsPendingWrite>) =
                 pending.into_iter().unzip();
-            leveller::write_footswitch_values(slot, &writes).map(|()| {
+            // Re-stamp the preset's original `lastLoadedScene`: the write session's base
+            // recall (and any bake-mirror scene recalls) leave the wrong scene active, and
+            // the save records the active one (HW: the FS save stamped 8 over scene 3).
+            let restore = crate::last_loaded_scene(&preset);
+            leveller::write_footswitch_values(slot, &writes, restore).map(|()| {
                 let written: std::collections::HashSet<usize> = idxs.iter().copied().collect();
                 for &idx in &idxs {
                     if let Some(r) = &mut results[idx] {

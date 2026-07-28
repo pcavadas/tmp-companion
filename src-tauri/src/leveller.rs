@@ -126,25 +126,23 @@ pub fn doctor_signal_start(onset: usize, confident: bool) -> usize {
 /// since `washed` is inapplicable by construction; the R4/R5 hardware sweeps
 /// re-baseline the OTHER thresholds against this shorter recipe.
 pub const DOCTOR_TAIL_DRY_MS: u32 = 300;
-// Scene mode (`SetNodeSceneEdit`) MUST be enabled before the value write, or the
-// write hits the BASE/global value and leaks across scenes (HW). But the settle must
-// stay SHORT: the device accepts the scene write only within ~700–750 ms of the
-// `loadScene` recall (HW-bisected, `probe --bisect-scene` on fw 1.8.45 —
-// load_scene→300→edit→400→write lands; …→450→write is SILENTLY DROPPED, no
-// presetError, nothing persists). The old "generous" 600 ms put every production
-// scene write past that cliff — 100% dropped — which surfaced as false "clamped at
-// (as-is)" rows and zero persistence while every 300 ms probe path worked. The rare
-// leak-to-base race a longer settle targeted is covered by the verify + correction
-// pass instead. Keep load_scene→edit→write gaps ≤300 ms.
+// The device silently DROPS a scene-context write when the session sat IDLE too long
+// immediately before it — a PER-COMMAND idle-gap cliff at ~400–450 ms, NOT a
+// "time since loadScene" window (the earlier reading of the same bisect data). The
+// discriminating HW run (Hiwatt slot 31, fw 1.8.45): the enable-dropped branch's
+// back-to-back 150+300 ms sleeps formed ONE 450 ms idle gap and 6/6 bare scene
+// writes vanished (no presetError, nothing in the working copy, nothing persisted)
+// even though only ~450 ms had passed since `loadScene` — while the bisect's
+// load_scene→300→edit→400→write (max single gap 400 ms) lands and …→450→write
+// drops. Same cliff family as the idle re-amp-OFF drop (`reamp_off_guaranteed`).
+// So: keep EVERY pre-write idle gap ≤~300 ms, and never sleep a settle for a
+// command that wasn't sent (the conditional in `set_knobs`).
 const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 300;
-// Gap between the `loadScene` recall and `SetNodeSceneEdit` in a scene write. 150 (not
-// the general 300 `SETTLE_AFTER_SET_MS`) CENTERS the value write ~450 ms after
-// `loadScene` — the old 300+300 put it at ~600–650 ms nominal, riding the ~700–750 ms
-// silent-drop cliff above, so command-latency jitter occasionally pushed a production
-// write over it (the user-reported non-deterministic false clamp; the write itself is
-// fire-and-forget, so nothing surfaced). HW-bisected lower edge (`probe
-// --bisect-scene`, fw 1.8.45): scene_settle 150, 100, and even 50 all land ON the
-// scene overlay (never leak to base) and persist — 150 keeps ~2× margin on both sides.
+// Gap between the `loadScene` recall and the next command (`SetNodeSceneEdit`, or the
+// value write itself when the enable is dropped). 150 (not the general 300
+// `SETTLE_AFTER_SET_MS`) keeps the gap far under the ~400–450 ms idle cliff above.
+// HW-bisected lower edge (`probe --bisect-scene`, fw 1.8.45): scene_settle 150, 100,
+// and even 50 all land ON the scene overlay (never leak to base) and persist.
 pub(crate) const SETTLE_AFTER_SCENE_RECALL_MS: u64 = 150;
 const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
@@ -213,6 +211,14 @@ pub struct LevelOptions {
     /// `saveCurrentPreset` persists every accumulated overlay (HW,
     /// `probe --defer-scenes`). Meaningless with `save: true`.
     pub defer: bool,
+    /// Scene to recall right before a `save: true` save, so the save re-stamps the
+    /// preset's ORIGINAL `lastLoadedScene` (0-based scene index, or
+    /// `session::BASE_SCENE_SLOT`). The base-context measurement recalls base (issue:
+    /// base must measure base, not the saved scene), which leaves base active at save
+    /// time — without this the save silently rewrites `lastLoadedScene` to 8 (HW,
+    /// Hiwatt slot 31: pre 3 → post 8), changing which scene the preset loads into on
+    /// the pedalboard. `None` = save whatever context is active (old behavior).
+    pub restore_scene: Option<u32>,
 }
 
 impl Default for LevelOptions {
@@ -222,6 +228,7 @@ impl Default for LevelOptions {
             verify: false,
             ref_level: 0.5,
             defer: false,
+            restore_scene: None,
         }
     }
 }
@@ -1027,8 +1034,11 @@ pub fn apply_levels(
             // reconnects, so save on a FRESH connection.
             drop(s);
             std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
-            Session::connect()?.save_current_preset(slot)?;
+            let mut s2 = Session::connect()?;
+            recall_original_scene(&mut s2, opts.restore_scene)?;
+            s2.save_current_preset(slot)?;
         } else {
+            recall_original_scene(&mut s, opts.restore_scene)?;
             s.save_current_preset(slot)?;
         }
     } else if opts.defer {
@@ -1570,6 +1580,20 @@ fn recall_base(s: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
+/// Recall the preset's ORIGINAL `lastLoadedScene` right before a save, so the save
+/// re-stamps it instead of whatever scene the run left active (HW: a base-context
+/// leveling save silently rewrote the preset's on-load scene, 3 → 8). Unsaved writes
+/// survive the recall (HW, `probe --defer-scenes`). `None` = no recall (old behavior).
+/// The ONE pre-save recall shared by `apply_levels`, `save_deferred_scene_writes`, and
+/// `write_fs_values_on_session` — a settle-timing fix here fixes all three.
+fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<(), String> {
+    if let Some(scene) = restore_scene {
+        s.load_scene(scene)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+    Ok(())
+}
+
 /// Set the chosen knob to `value` on an open session (before re-amp engage). The
 /// single-knob case of `set_knobs` — see its doc for the recall/write ordering
 /// rules and what `saved` is for. Must be the FIRST write on the connection when
@@ -1650,9 +1674,11 @@ fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<
 ///   follows it inside the same batch — do NOT "optimise" it into a cached
 ///   per-node enabled set, which would drop the enable on a later connection where
 ///   the device no longer has scene edit armed.
-///   The settles must stay SHORT: the device silently drops the write past
-///   ~700 ms after `loadScene` (see `SETTLE_AFTER_SCENE_EDIT_MS`); the rare
-///   too-fast leak-to-base race is covered by the verify + correction pass.
+///   The settles must stay SHORT: the device silently drops a write after a
+///   ~400–450 ms pre-write IDLE gap (see `SETTLE_AFTER_SCENE_EDIT_MS` — a
+///   per-command cliff, so a settle is slept ONLY when its command was sent);
+///   the rare too-fast leak-to-base race is covered by the verify + correction
+///   pass.
 /// * A base-only target set (`Block { scene_slot: None, .. }`, no `Some`) gets
 ///   an explicit base recall — a bare write with no preceding `loadScene` lands
 ///   in whatever scene the connection defaults to (the preset's saved
@@ -1753,7 +1779,8 @@ fn set_knobs(
         }
     }
     // Repro instrumentation: wall-clock every step relative to the loadScene recall,
-    // to observe writes crossing the ~700-750 ms post-loadScene acceptance cliff.
+    // to observe idle gaps crossing the ~400-450 ms silent-drop cliff (see
+    // `SETTLE_AFTER_SCENE_EDIT_MS`).
     let t0 = std::time::Instant::now();
     if let Some(scene) = scene {
         s.load_scene(scene)?;
@@ -1769,7 +1796,12 @@ fn set_knobs(
                 t0.elapsed().as_millis()
             );
         }
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
+        // Settle ONLY when an enable was actually sent — a settle for a command that
+        // wasn't is pure idle and rides the ~400-450 ms silent-drop cliff (see
+        // `SETTLE_AFTER_SCENE_EDIT_MS`'s doc for the HW evidence).
+        if !needs_enable.is_empty() {
+            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
+        }
     } else if has_base_block {
         recall_base(s)?;
     }
@@ -1963,7 +1995,14 @@ pub enum FsWrite {
     },
     /// Bake the solved value straight onto the block (`change_parameter`), and clear a
     /// now-redundant `param` function at `clear_stale` so the bake is the single source.
-    Bake { clear_stale: Option<u32> },
+    Bake {
+        clear_stale: Option<u32>,
+        /// Scenes whose overlay restates the base value of the leveled param — the solved
+        /// value is also written into each (scene recall + bare write; the overlay exists,
+        /// so no Scene Edit enable), else the full-param overlay masks the bake whenever
+        /// a scene is active. See `footswitch::FsLevelPlan::Bake::mirror_scenes`.
+        mirror_scenes: Vec<u32>,
+    },
 }
 
 /// Adopt `(v, l)` as the new best-so-far when it beats `*best_lufs`'s distance to
@@ -2335,6 +2374,7 @@ pub fn level_footswitch(
     target_lufs: f64,
     save: bool,
     verify: bool,
+    restore_scene: Option<u32>,
 ) -> Result<FootswitchLevelResult, String> {
     let body = || -> Result<FootswitchLevelResult, String> {
         // Load the preset in its own connection (re-amp latch workaround), then measure on
@@ -2382,7 +2422,7 @@ pub fn level_footswitch(
                 write: write.clone(),
                 value: result.final_value,
             }];
-            write_footswitch_values(slot, &pending)?;
+            write_footswitch_values(slot, &pending, restore_scene)?;
             result.saved = true;
             if verify {
                 std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
@@ -2436,7 +2476,11 @@ pub fn level_footswitch(
 /// SAVED `lastLoadedScene`, not base (HW). Hence the mandatory base recall: without it a
 /// scened preset's bake landed in that scene's overlay while BASE — the state the leveler
 /// measured, and the one the switch's off position renders — kept its old value.
-pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<(), String> {
+pub fn write_footswitch_values(
+    slot: u32,
+    pending: &[FsPendingWrite],
+    restore_scene: Option<u32>,
+) -> Result<(), String> {
     if pending.is_empty() {
         return Ok(());
     }
@@ -2444,7 +2488,7 @@ pub fn write_footswitch_values(slot: u32, pending: &[FsPendingWrite]) -> Result<
     let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
     std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
-    write_fs_values_on_session(&mut s, slot, pending)
+    write_fs_values_on_session(&mut s, slot, pending, restore_scene)
 }
 
 /// [`write_footswitch_values`]' body on an ALREADY-OPEN session — split out so the write
@@ -2462,6 +2506,7 @@ fn write_fs_values_on_session(
     s: &mut Session,
     slot: u32,
     pending: &[FsPendingWrite],
+    restore_scene: Option<u32>,
 ) -> Result<(), String> {
     s.begin_live_edit()?;
     s.load_preset(slot)?;
@@ -2527,7 +2572,7 @@ fn write_fs_values_on_session(
                     ));
                 }
             }
-            FsWrite::Bake { clear_stale } => {
+            FsWrite::Bake { clear_stale, .. } => {
                 // Clear a now-redundant param fn FIRST (a chunked `ftsw` edit — done while the
                 // session is freshest), confirming it's gone (else its valueA would override the
                 // baked value when engaged). Then bake the value onto the block. Abort before
@@ -2565,6 +2610,29 @@ fn write_fs_values_on_session(
         let _ = s.heartbeat();
         let _ = s.pump_collect(150);
     }
+    // Mirror each bake into the scenes whose overlay restated the base value (grouped by
+    // scene: one recall, then that scene's writes back-to-back — the write must follow its
+    // recall inside the ~400 ms idle-gap acceptance window; the overlay exists by
+    // construction, so no Scene Edit enable). Unsaved writes survive the recalls (HW,
+    // `probe --defer-scenes`); the single save below persists base + every overlay.
+    let mut by_scene: std::collections::BTreeMap<u32, Vec<&FsPendingWrite>> =
+        std::collections::BTreeMap::new();
+    for p in pending {
+        if let FsWrite::Bake { mirror_scenes, .. } = &p.write {
+            for &scene in mirror_scenes {
+                by_scene.entry(scene).or_default().push(p);
+            }
+        }
+    }
+    for (scene, writes) in &by_scene {
+        s.load_scene(*scene)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+        for p in writes {
+            s.change_parameter(&p.lev.0, &p.lev.1, &p.lev.2, p.value)?;
+        }
+        let _ = s.heartbeat();
+    }
+    recall_original_scene(s, restore_scene)?;
     s.save_current_preset(slot)?;
     Ok(())
 }
@@ -3256,10 +3324,7 @@ fn save_deferred_scene_writes(slot: u32, restore_scene: Option<u32>) -> Result<(
     let attempt = || -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
-        if let Some(scene) = restore_scene {
-            s.load_scene(scene)?;
-            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
-        }
+        recall_original_scene(&mut s, restore_scene)?;
         s.save_current_preset(slot)
     };
     attempt().or_else(|e| {
@@ -5786,10 +5851,13 @@ mod tests {
                 "amp".to_string(),
                 "outputLevel".to_string(),
             ),
-            write: FsWrite::Bake { clear_stale: None },
+            write: FsWrite::Bake {
+                clear_stale: None,
+                mirror_scenes: vec![],
+            },
             value: 0.42,
         }];
-        write_fs_values_on_session(&mut s, 30, &pending).expect("write");
+        write_fs_values_on_session(&mut s, 30, &pending, None).expect("write");
         let ev = sim.events();
         let baked: Vec<i64> = ev
             .iter()
@@ -5806,6 +5874,61 @@ mod tests {
             baked,
             vec![crate::sim_device::SCENE_BASE],
             "the bake must land in BASE, not the saved scene 3: {ev:?}"
+        );
+    }
+
+    // A bake on a device-authored scened preset is MASKED by every full-param scene overlay
+    // (HW, Hiwatt slot 31: the overlays governed the DSP while base stayed untouched), so the
+    // solved value must ALSO be written into each overlay that restated the base value —
+    // after the base write, one recall per mirror scene, then the ORIGINAL `lastLoadedScene`
+    // recalled so the save re-stamps it (HW: the FS save stamped 8 over the user's scene 3).
+    #[test]
+    fn write_fs_values_mirrors_the_bake_and_restores_the_saved_scene() {
+        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let pending = vec![FsPendingWrite {
+            switch: 1,
+            lev: (
+                "G1".to_string(),
+                "amp".to_string(),
+                "outputLevel".to_string(),
+            ),
+            write: FsWrite::Bake {
+                clear_stale: None,
+                mirror_scenes: vec![0, 2],
+            },
+            value: 0.42,
+        }];
+        write_fs_values_on_session(&mut s, 30, &pending, Some(3)).expect("write");
+        let ev = sim.events();
+        let writes: Vec<i64> = ev
+            .iter()
+            .filter_map(|e| match e {
+                crate::sim_device::SimEvent::ChangeParameter { scene, param, .. }
+                    if param == "outputLevel" =>
+                {
+                    Some(*scene)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            writes,
+            vec![crate::sim_device::SCENE_BASE, 0, 2],
+            "bake writes base first, then each mirror scene's overlay: {ev:?}"
+        );
+        // The LAST scene recall before the save must be the preset's original scene 3.
+        let last_recall = ev
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                crate::sim_device::SimEvent::LoadScene(scene) => Some(*scene),
+                _ => None,
+            })
+            .expect("a scene recall");
+        assert_eq!(
+            last_recall, 3,
+            "the save must re-stamp the original lastLoadedScene: {ev:?}"
         );
     }
 

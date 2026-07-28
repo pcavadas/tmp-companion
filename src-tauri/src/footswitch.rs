@@ -493,6 +493,12 @@ pub enum FsLevelPlan {
     Bake {
         engaged: Vec<(String, String, bool)>,
         clear_stale: Option<u32>,
+        /// Scenes whose overlay restates the base value of the leveled param
+        /// ([`crate::scenes_restating_base`]) — the solved value is ALSO written into these
+        /// overlays, because a full-param overlay MASKS base (the bake would otherwise be
+        /// inert whenever a scene is active). Scenes that authored their OWN value are never
+        /// listed — their divergence is intent and stays untouched.
+        mirror_scenes: Vec<u32>,
     },
     /// Same `(node, param, target)` as job index `rep`, which bakes — no extra device work.
     BakeShared { rep: usize },
@@ -549,15 +555,15 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
         let sole_owner = activators.iter().all(|sw| group.contains(sw));
         // PER-NODE scene gate, by VALUE (a device-authored overlay carries every param of every
         // node, so key presence proves nothing): a scene that FLIPS this node's bypass renders
-        // the baked value in a state the leveler never measured, and a scene that overlays the
-        // LEVELED param with its own value would not render the baked one at all. Either way →
-        // Assign. (A whole-preset "has any scenes" gate sent every switch of every scened preset
-        // down the Assign path, which adds a second function to the switch → the unit relabels it
-        // "MULTI".) Conservative by construction: a truncated/absent `scenes` answers true.
-        if !sole_owner
-            || crate::scene_overlays_change_param(preset, job.lev_node, "bypass")
-            || crate::scene_overlays_change_param(preset, job.lev_node, job.lev_param)
-        {
+        // the baked value in a state the leveler never measured → Assign. A scene that overlays
+        // the LEVELED param does NOT force Assign: the overlay MASKS base (HW, Hiwatt slot 31),
+        // so a bake never leaks into it — a restating overlay gets the solved value MIRRORED
+        // (`mirror_scenes`), and a diverging one keeps its authored value (an Assign's single
+        // `valueA` would trample exactly those per-scene mixes). (A whole-preset "has any
+        // scenes" gate sent every switch of every scened preset down the Assign path, which
+        // adds a second function to the switch → the unit relabels it "MULTI".) Conservative by
+        // construction: a truncated/absent `scenes` answers true.
+        if !sole_owner || crate::scene_overlays_change_param(preset, job.lev_node, "bypass") {
             // Can't bake safely → engaged-measured param assignment (best-effort fallback).
             plans.push(FsLevelPlan::Assign { engaged });
             continue;
@@ -570,6 +576,7 @@ pub fn plan_footswitch_jobs(ftsw: &Value, preset: &Value, jobs: &[FsJobKey]) -> 
             plans.push(FsLevelPlan::Bake {
                 engaged,
                 clear_stale: existing_param_fn_index(ftsw, job.switch, job.lev_node, job.lev_param),
+                mirror_scenes: crate::scenes_restating_base(preset, job.lev_node, job.lev_param),
             });
         }
     }
@@ -962,12 +969,14 @@ mod tests {
             FsLevelPlan::Bake {
                 engaged,
                 clear_stale,
+                mirror_scenes,
             } => {
                 // tuple bool = the `bypass` to WRITE: base off (bypass=true) → engaged un-bypass (false).
                 assert!(engaged.contains(&("G1".into(), "N".into(), false)));
                 // sibling switch's block M forced off (bypass=true).
                 assert!(engaged.contains(&("G1".into(), "M".into(), true)));
                 assert_eq!(*clear_stale, None);
+                assert!(mirror_scenes.is_empty(), "no scenes → nothing to mirror");
             }
             other => panic!("expected Bake, got {other:?}"),
         }
@@ -1050,9 +1059,13 @@ mod tests {
             FsLevelPlan::Bake {
                 engaged,
                 clear_stale,
+                mirror_scenes,
             } => {
                 assert_eq!(*clear_stale, None);
                 assert!(engaged.contains(&("G1".into(), "N".into(), false)));
+                // The overlay omits the leveled param (`gain`) → the scene inherits base,
+                // so the bake propagates by itself — nothing to mirror.
+                assert!(mirror_scenes.is_empty());
             }
             other => panic!("expected Bake, got {other:?}"),
         }
@@ -1072,24 +1085,39 @@ mod tests {
             serde_json::json!({ "bypass": true, "gain": 0.4 }),
         );
         match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
-            FsLevelPlan::Bake { clear_stale, .. } => assert_eq!(*clear_stale, None),
+            FsLevelPlan::Bake {
+                clear_stale,
+                mirror_scenes,
+                ..
+            } => {
+                assert_eq!(*clear_stale, None);
+                // The overlay restates base's `gain` verbatim → mirror the solved value
+                // there, else the full-param overlay masks the bake in that scene.
+                assert_eq!(mirror_scenes, &vec![0]);
+            }
             other => panic!("expected Bake, got {other:?}"),
         }
     }
 
-    /// The reason Assign IS correct on the reported preset: a scene overlays the very param
-    /// the bake would write with a DIFFERENT value, so the baked base value would simply not
-    /// render in that scene. `bypass` is restated (unchanged), so only the leveled-param
-    /// divergence can decide this one.
+    /// A scene that overlays the leveled param with its OWN value still BAKES — the overlay
+    /// MASKS base (HW, Hiwatt slot 31), so the bake cannot leak into it, while an Assign's
+    /// single `valueA` would trample exactly that authored per-scene mix (the user's Hiwatt
+    /// mutes its trem in one scene with `level: 0.0`). The divergent scene is simply NOT
+    /// mirrored: it keeps its authored value, unleveled by design.
     #[test]
-    fn plan_assigns_when_a_scene_overlay_changes_the_leveled_param() {
+    fn plan_bakes_but_never_mirrors_a_scene_that_authored_its_own_value() {
         let p = with_scene_overlay_on_n(
             preset_with(true, None, serde_json::json!([[onoff(&["N"], false)]])),
             serde_json::json!({ "bypass": true, "gain": 0.7 }),
         );
         match &plan_footswitch_jobs(&p["ftsw"], &p, &[key(0, -23.0)])[0] {
-            FsLevelPlan::Assign { engaged } => assert!(!engaged.is_empty()),
-            other => panic!("expected engaged Assign, got {other:?}"),
+            FsLevelPlan::Bake { mirror_scenes, .. } => {
+                assert!(
+                    mirror_scenes.is_empty(),
+                    "a diverging overlay is authored intent — never mirrored"
+                );
+            }
+            other => panic!("expected Bake, got {other:?}"),
         }
     }
 

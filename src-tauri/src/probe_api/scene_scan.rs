@@ -77,7 +77,8 @@ pub fn probe_level_scenes_oneshot(
     let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
     let outcomes = outcomes?;
     let mut out = format!(
-        "NO-SAVE leveling preset list_index={list_index} → target {target_lufs:.1} LUFS (topology {topology_id})\n"
+        "{} leveling preset list_index={list_index} → target {target_lufs:.1} LUFS (topology {topology_id})\n",
+        if commit { "COMMIT" } else { "NO-SAVE" },
     );
     for o in &outcomes {
         match &o.failure {

@@ -778,6 +778,55 @@ pub(crate) fn scene_overlays_change_param(
     })
 }
 
+/// The saved document's `lastLoadedScene` (0-based scene index, or the base wire slot) —
+/// the value every save path must re-stamp via a pre-save recall (`LevelOptions::
+/// restore_scene` / the footswitch writer's restore param). One helper because the
+/// extraction now has a call site per save-capable entry point.
+pub(crate) fn last_loaded_scene(preset: &serde_json::Value) -> Option<u32> {
+    preset
+        .get("lastLoadedScene")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as u32)
+}
+
+/// The scenes whose overlay CARRIES `param` on `node` with the BASE value (within
+/// [`SCENE_PARAM_EPS`]) — the safe targets for a bake MIRROR write. A device-authored
+/// full-param overlay MASKS base (HW, Hiwatt slot 31: scene overlays governed the DSP while
+/// base stayed untouched), so a baked base value is inert in any scene whose overlay restates
+/// the param — mirroring the solved value there makes the bake effective, and is loss-free
+/// because the overlay held exactly the base value. A scene that authored its OWN value is
+/// NEVER mirrored (the divergence is intent — e.g. the Hiwatt's "Base Scene" mutes its trem
+/// with `level: 0.0`), and a scene whose overlay omits the param inherits base, so there is
+/// nothing to write. Guards mirror [`scene_overlays_change_param`]: anything unreadable ⇒
+/// empty (a mirror is an optimization, never worth a blind write).
+pub(crate) fn scenes_restating_base(
+    preset: &serde_json::Value,
+    node: &str,
+    param: &str,
+) -> Vec<u32> {
+    let Some(scenes) = preset.get("scenes").and_then(|s| s.as_array()) else {
+        return Vec::new();
+    };
+    if max_referenced_scene(preset).is_some_and(|m| m as usize >= scenes.len()) {
+        return Vec::new();
+    }
+    let mut base = base_node_matches(preset, node);
+    if base.len() > 1 {
+        return Vec::new();
+    }
+    let Some(base_v) = base.pop().flatten().and_then(|b| b.get(param).cloned()) else {
+        return Vec::new();
+    };
+    (0..scenes.len() as u32)
+        .filter(|&scene| match scene_overlay(preset, scene, node) {
+            SceneOverlay::Present(params) => params
+                .get(param)
+                .is_some_and(|overlay| !values_differ(&base_v, overlay)),
+            SceneOverlay::Absent | SceneOverlay::Unknown => false,
+        })
+        .collect()
+}
+
 /// SAVED-JSON alternative to the live `prepass_scene_docs`: derive each requested scene's
 /// synthetic field-3 doc from a field-8 read instead of recalling scenes on the unit (no
 /// user-visible scene-hopping). Each doc is `{ "audioGraph": ... }` shaped exactly like the

@@ -310,11 +310,15 @@ fn level_defaults_403_base_clamps_and_footswitch_is_offbranch() {
         0,
         ("G3", "ACD_TubeScreamer", "level"),
         &[("G3".into(), "ACD_TubeScreamer".into(), false)],
-        &crate::leveller::FsWrite::Bake { clear_stale: None },
+        &crate::leveller::FsWrite::Bake {
+            clear_stale: None,
+            mirror_scenes: vec![],
+        },
         &stim,
         -24.0,
         false,
         true,
+        None,
     )
     .expect("level 403 fs");
     assert!(fs.clamped, "the off-branch footswitch clamps");
@@ -1013,7 +1017,7 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
 /// wrote — it collapsed to the whole-preset gate and the added-function / "MULTI" symptom
 /// survived. Pure planner test (no device): `plan_footswitch_jobs` is the whole decision.
 #[test]
-fn hiwatt_footswitch_plan_is_assign_because_scenes_overlay_the_leveled_param() {
+fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
     let _serial = serial(); // pure, but it writes the shared scenario-path env
     set_e2e_env(&[(
         "TMP_E2E_SCENARIO_PRESETS",
@@ -1050,29 +1054,48 @@ fn hiwatt_footswitch_plan_is_assign_because_scenes_overlay_the_leveled_param() {
     let plans = crate::footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys);
     assert_eq!(plans.len(), jobs.len());
     for ((switch, node, param), plan) in jobs.iter().zip(&plans) {
-        assert!(
-            matches!(plan, crate::footswitch::FsLevelPlan::Assign { .. }),
-            "switch {switch} ({node}.{param}): a scene overlays this exact param with a \
-             different value, so the solved value must be ASSIGNED to the switch, never baked \
-             onto the block (a bake is overridden in those scenes): {plan:?}"
-        );
-        // And the reason is real, not incidental: some scene's overlay for this node carries
-        // `param` with a value differing from base.
+        // Per-scene ground truth from the fixture: which overlays restate base's value and
+        // which authored their own (this preset varies each pedal's level param in exactly
+        // one scene — e.g. its trem is MUTED in one scene with `level: 0.0`).
         let base = crate::commands::level_footswitch::node_param_f64(&preset, node, param)
             .unwrap_or_else(|| panic!("{node}.{param} exists at base"));
         let scenes = preset["scenes"].as_array().expect("scenes");
+        let overlay_value = |scene: u32| match crate::scene_overlay(&preset, scene, node) {
+            crate::SceneOverlay::Present(p) => p.get(*param).and_then(serde_json::Value::as_f64),
+            _ => None,
+        };
+        let restating: Vec<u32> = (0..scenes.len() as u32)
+            .filter(|&sc| overlay_value(sc).is_some_and(|v| (v - base).abs() <= 1e-6))
+            .collect();
+        let diverging: Vec<u32> = (0..scenes.len() as u32)
+            .filter(|&sc| overlay_value(sc).is_some_and(|v| (v - base).abs() > 1e-6))
+            .collect();
         assert!(
-            (0..scenes.len() as u32).any(|scene| {
-                match crate::scene_overlay(&preset, scene, node) {
-                    crate::SceneOverlay::Present(p) => p
-                        .get(*param)
-                        .and_then(serde_json::Value::as_f64)
-                        .is_some_and(|v| (v - base).abs() > 1e-6),
-                    _ => false,
-                }
-            }),
-            "{node}.{param}: at least one scene overlay must differ from base ({base}) — \
-             otherwise the Assign above is the bypass-key gate, not the param one"
+            !diverging.is_empty(),
+            "{node}.{param}: fixture precondition — at least one scene authored its own value"
         );
+        // The user-reported expectation (issues 3/4): leveling this preset's switches must
+        // NOT touch `ftsw` at all — no Assign, no added function, no MULTI. A scene that
+        // overlays the leveled param can never make a bake unsafe (the overlay MASKS base,
+        // HW slot 31), so the plan BAKES, mirroring the solved value only into the scenes
+        // that restated base and leaving each authored per-scene mix untouched.
+        match plan {
+            crate::footswitch::FsLevelPlan::Bake { mirror_scenes, .. } => {
+                assert_eq!(
+                    mirror_scenes, &restating,
+                    "switch {switch} ({node}.{param}): mirror exactly the restating scenes"
+                );
+                for sc in &diverging {
+                    assert!(
+                        !mirror_scenes.contains(sc),
+                        "switch {switch} ({node}.{param}): scene {sc} authored its own value \
+                         and must never be mirrored"
+                    );
+                }
+            }
+            other => panic!(
+                "switch {switch} ({node}.{param}): expected Bake (ftsw untouched), got {other:?}"
+            ),
+        }
     }
 }
