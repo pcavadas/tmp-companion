@@ -659,6 +659,85 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--amp-recipe") {
+        // --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>
+        // Measure one amp operating point across the whole footswitch set (base + each switch),
+        // to read the base↔boost GAP. Read-only (working-copy writes discarded by the reload).
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 2).cloned().unwrap_or_default();
+        let node = args.get(i + 3).cloned().unwrap_or_default();
+        let gain: Option<f32> = args.get(i + 4).and_then(|s| s.parse().ok());
+        let out_level: Option<f32> = args.get(i + 5).and_then(|s| s.parse().ok());
+        let (Some(gain), Some(out_level)) = (gain, out_level) else {
+            eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>  (TMP_LEVELLER_STIMULUS=<wav>)");
+            std::process::exit(2);
+        };
+        if idx == u32::MAX || node.is_empty() {
+            eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>  (TMP_LEVELLER_STIMULUS=<wav>)");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_amp_recipe(idx, &group, &node, gain, out_level) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("probe --amp-recipe failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--fs-sweep") {
+        // --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,…>
+        // The solver's own response curve: sweep <node>.<param> under <switch>'s engaged
+        // isolation. Read-only (working-copy writes discarded by the final reload).
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let switch: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let node = args.get(i + 4).cloned().unwrap_or_default();
+        let param = args.get(i + 5).cloned().unwrap_or_default();
+        // Strict CSV parse: one bad token empties the list and lands in the usage error
+        // below, never a silently shortened sweep that still reports success.
+        let values: Vec<f32> = args
+            .get(i + 6)
+            .and_then(|s| {
+                s.split(',')
+                    .map(|t| t.trim().parse())
+                    .collect::<Result<Vec<f32>, _>>()
+                    .ok()
+            })
+            .unwrap_or_default();
+        if idx == u32::MAX
+            || switch == u32::MAX
+            || node.is_empty()
+            || param.is_empty()
+            || values.is_empty()
+        {
+            eprintln!("usage: probe --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_fs_sweep(idx, switch, &group, &node, &param, &values) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--fs-list") {
         // --fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)
         let slot: u32 = args
