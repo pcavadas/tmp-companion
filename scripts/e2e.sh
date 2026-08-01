@@ -110,18 +110,25 @@ post() { # POST one /invoke command, best-effort (recovery must never fail the s
 # shellcheck disable=SC2329  # invoked from the trap handler (cleanup), not statically traced
 recover_device() {
   curl -fsS -m 5 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 || return 0  # server gone, nothing to do
-  log "recovering device — reamp-off + guarded scratch-clear + recall 001"
+  log "recovering device — reamp-off + stray sweep + recall 001"
   post '{"cmd":"e2e_reamp_off","args":{}}'
-  post '{"cmd":"e2e_clear_preset","args":{"slot":400,"expectName":"E2E Reference"}}'
-  post '{"cmd":"e2e_clear_preset","args":{"slot":401,"expectName":"E2E Target 1"}}'
-  post '{"cmd":"e2e_clear_preset","args":{"slot":402,"expectName":"E2E Target 2"}}'
-  post '{"cmd":"e2e_clear_preset","args":{"slot":403,"expectName":"E2E Realistic"}}'
-  post '{"cmd":"e2e_clear_preset","args":{"slot":404,"expectName":"E2E Hiwatt 3S"}}'
+  # The scenario fixtures stay RESIDENT in the scratch slots between runs (the run-start
+  # pristine-checking seed self-repairs anything a run leveled; clearing here only forced
+  # the next run to re-import all 5 — ~2 min of device churn per run). Set
+  # TMP_E2E_CLEAR_SCENARIO=1 for the on-demand net-zero clean.
+  if [ "${TMP_E2E_CLEAR_SCENARIO:-}" = "1" ]; then
+    post '{"cmd":"e2e_clear_preset","args":{"slot":400,"expectName":"E2E Reference"}}'
+    post '{"cmd":"e2e_clear_preset","args":{"slot":401,"expectName":"E2E Target 1"}}'
+    post '{"cmd":"e2e_clear_preset","args":{"slot":402,"expectName":"E2E Target 2"}}'
+    post '{"cmd":"e2e_clear_preset","args":{"slot":403,"expectName":"E2E Realistic"}}'
+    post '{"cmd":"e2e_clear_preset","args":{"slot":404,"expectName":"E2E Hiwatt 3S"}}'
+  fi
   # Sweep stray scenario imports an aborted seed stranded elsewhere in the bank
   # (imports land at the first EMPTY slot anywhere; guarded, fail-closed). Long
   # timeout: N strays × clear can exceed the default 60 s cap.
   post '{"cmd":"e2e_clear_strays","args":{}}' 300
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
+  touch "${TMPDIR:-/tmp/}tmp-companion-device.lastop"  # feed the idle-aware pre-seed rest
 }
 
 # shellcheck disable=SC2329  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
@@ -202,7 +209,8 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed atte
   local attempt
   for attempt in 1 2 3 4; do
     log "seeding the scenario presets (attempt $attempt)…"
-    if seed_scenario "$1"; then return 0; fi
+    if seed_scenario "$1"; then touch "${TMPDIR:-/tmp/}tmp-companion-device.lastop"; return 0; fi
+    touch "${TMPDIR:-/tmp/}tmp-companion-device.lastop"
     if [ "$attempt" -lt 4 ]; then
       log "seed attempt $attempt failed — resting 120 s (open lockout) before retry"
       sleep 120
@@ -216,11 +224,18 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed atte
 # device-open-rest-window + seed-race + fail-loud mark-seeded sequence must not drift between
 # the two callers. Sets SERVER_PID; exits 1 (recoverable via the trap) on a seed/handshake failure.
 start_online_server() {
-  # Initial quiet rest: a previous run that just ended (its recovery, or an aborted
-  # seed) arms the device's open lockout, and a failed first attempt re-arms it —
-  # back-to-back runs need the line quiet BEFORE the first open, not after a failure.
-  log "resting the unit before the first seed…"
-  sleep 60
+  # Initial quiet rest, IDLE-AWARE: the lockout only threatens when the device was
+  # touched recently (a run that just ended / an aborted seed) — an attended start
+  # minutes later needs no rest at all. The stamp file records the last device op
+  # (written by the recovery trap + after each seed); rest only the REMAINDER.
+  local stamp="${TMPDIR:-/tmp/}tmp-companion-device.lastop" idle=999 rest=60
+  if [ -f "$stamp" ]; then idle=$(( $(date +%s) - $(stat -f %m "$stamp" 2>/dev/null || echo 0) )); fi
+  if [ "$idle" -lt "$rest" ]; then
+    log "resting the unit before the first seed ($(( rest - idle )) s — device idle only ${idle}s)…"
+    sleep $(( rest - idle ))
+  else
+    log "device idle ${idle}s ≥ ${rest}s — skipping the pre-seed rest"
+  fi
   if ! seed_with_retry pre; then
     err "scenario seed failed after 4 attempts — aborting (nothing to recover: no server ran)"
     err "  → check nothing else holds the device (Pro Control, a stale server/app), rest a minute, rerun"
@@ -317,15 +332,14 @@ for s in "${SPECS[@]}"; do
     log "resting the unit before the first spec (post-handshake settle)…"
     sleep 60
   else
-    # Later specs need a fresh seed (each spec's teardown clears the scenario). Their
-    # seed runs minutes after the server handshake — outside the degraded window.
+    # ONE pristine-checking seed per run serves every spec: teardowns no longer clear
+    # the scenario (fixtures stay RESIDENT; TMP_E2E_CLEAR_SCENARIO=1 for net-zero),
+    # so nothing invalidates the fixtures between specs. ORDERING is load-bearing:
+    # doctor must run BEFORE level-strict — leveling equalizes the relative scene
+    # loudness the doctor's consistency check keys on. The rest stays: spec
+    # teardown/startup device ops sit right in the lockout's danger window.
     log "resting the unit between specs…"
     sleep 60
-    if ! seed_with_retry mid; then
-      err "inter-spec scenario seed failed after 4 attempts — aborting (device recovery runs on exit)"
-      fail=1
-      break
-    fi
   fi
   first=0
   log "running specs/$s.spec.ts (online)"

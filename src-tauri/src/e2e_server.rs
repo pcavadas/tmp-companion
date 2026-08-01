@@ -324,7 +324,9 @@ async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
         return e2e_mark_seeded_snapshot();
     }
     with_released_seize(state.session.clone(), move || {
-        let o = probe_api::seed_scenario::seed_scenario_core()?;
+        // Pristine self-repair is ONLINE-only (see `seed_scenario_core`): offline the
+        // suite's own leveling drifts the sim's slots by design.
+        let o = probe_api::seed_scenario::seed_scenario_core(e2e_online())?;
         e2e_patch_swept(&o.swept);
         e2e_mark_seeded_snapshot()?;
         SCENARIO_VERIFIED.store(true, Ordering::SeqCst);

@@ -167,12 +167,24 @@ export async function isOnline(page: Page): Promise<boolean> {
   return ((await res.json()) as { online?: boolean }).online === true;
 }
 
-/** End-of-scenario teardown: clear any scenario slot we wrote (net-zero) and leave the unit
- *  on preset 001 (list index 0). Best-effort — the backend guard refuses any slot not holding
- *  the scenario name, so a real preset is never cleared. */
+/** End-of-scenario teardown. ONLINE the fixtures stay RESIDENT in the scratch slots
+ *  (400-404): the run-start pristine-checking seed self-repairs anything a run leveled,
+ *  so clearing here only forces the next run to re-import everything (~2 min of device
+ *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
+ *  TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per slot) for the
+ *  on-demand net-zero clean. OFFLINE the clears stay (SimDevice isolation, milliseconds).
+ *  Recovery always runs: stray sweep + recall 001 + re-amp OFF. Best-effort — the backend
+ *  guard refuses any slot not holding the scenario name, so a real preset is never cleared. */
 export async function clearScenario(page: Page): Promise<void> {
-  for (const s of SCENARIO) {
-    await quiet(page, "e2e_clear_preset", { slot: s.slot, expectName: s.name });
+  const resident =
+    (await isOnline(page)) && process.env.TMP_E2E_CLEAR_SCENARIO !== "1";
+  if (!resident) {
+    for (const s of SCENARIO) {
+      await quiet(page, "e2e_clear_preset", {
+        slot: s.slot,
+        expectName: s.name,
+      });
+    }
   }
   // Sweep any stray scenario imports an aborted seed stranded in the user's bank
   // (imports land at the FIRST EMPTY slot anywhere; guarded per slot, fail-closed).

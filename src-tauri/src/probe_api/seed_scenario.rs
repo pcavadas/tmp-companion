@@ -54,6 +54,15 @@ fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Ve
 /// (the latter also covers pre-stamp legacy copies).
 const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
 
+/// The CURRENT fixture revision (`info.source_id`, which survives a device import).
+/// BUMP the `#rN` suffix on ANY fixture regen: with the fixtures RESIDENT on the unit
+/// between runs, a resident copy of an older rev fails the pristine check below and
+/// self-migrates via one re-import — even when its `presetLevel` happens to match.
+/// The ownership probe ([`FIXTURE_MARKERS`]) matches the version-less prefix, so
+/// old-rev copies stay clearable/overwritable. `committed_fixtures_carry_an_ownership_marker`
+/// pins every committed fixture to this exact stamp.
+pub(crate) const FIXTURE_SOURCE_STAMP: &str = "tmp-companion-e2e-fixture#r2";
+
 /// Substring probe (truncation-proof vs the field-8 partial). Pure.
 fn is_fixture_body(bytes: &[u8]) -> bool {
     let body = String::from_utf8_lossy(bytes);
@@ -90,6 +99,11 @@ fn extract_preset_level(body: &[u8]) -> Option<f64> {
 /// Unreadable/truncated-past-the-level bodies count as NOT pristine: ownership
 /// is already proven, so the worst case is a redundant re-import.
 fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
+    // Rev gate first: a resident copy of an OLDER fixture revision is never pristine,
+    // whatever its levels read (see `FIXTURE_SOURCE_STAMP`).
+    if !String::from_utf8_lossy(body).contains(FIXTURE_SOURCE_STAMP) {
+        return false;
+    }
     match (
         extract_preset_level(body),
         extract_preset_level(fixture_json.as_bytes()),
@@ -181,7 +195,12 @@ pub(crate) struct SeedOutcome {
 }
 
 /// Sweep strays, then place each missing scenario preset in-place at its slot.
-pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
+/// `check_pristine` — ONLINE-only self-repair: re-import a marker-owned slot whose
+/// saved `presetLevel` drifted from the fixture's (a prior attended run leveled it).
+/// OFFLINE the specs level the SimDevice's slots as part of normal coverage, so the
+/// same check would re-import mid-suite on every seed — polluting the events-equality
+/// oracle and churning the sim — hence the flag, not an unconditional check.
+pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, String> {
     let spec = scenario_spec()?;
     let mut s = Session::connect()?;
     let list = read_full_list(&mut s)?;
@@ -223,7 +242,9 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
         // body that IDENTIFIES as this preset may drive the decision — a wrong-slot
         // body falls back to the marker-skip (the pre-pristine-check behavior)
         // instead of churning a redundant ~30 s re-import every seed.
-        if !body_names(&body, &p.name) {
+        if !check_pristine {
+            // Marker-verified and pristine-checking is off — the pre-check skip.
+        } else if !body_names(&body, &p.name) {
             eprintln!(
                 "[seed] slot {} ({:?}): field-8 body does not identify itself as this \
                  preset (stale/mismatched read) — keeping the marker-skip",
@@ -310,7 +331,7 @@ pub fn probe_import_file(path: &str, list_index: u32) -> Result<String, String> 
 
 /// `probe --seed-scenario` — fresh-process seed for the online e2e runner.
 pub fn probe_seed_scenario() -> Result<String, String> {
-    let o = seed_scenario_core()?;
+    let o = seed_scenario_core(true)?;
     Ok(format!(
         "[probe --seed-scenario] swept strays at {:?}; imported slots {:?}\n",
         o.swept, o.seeded
@@ -372,9 +393,9 @@ mod tests {
     /// skip handed the next run pre-leveled state.
     #[test]
     fn pristine_check_flags_leveled_bodies() {
-        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684}}"#;
+        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684},"info":{"source_id":"tmp-companion-e2e-fixture#r2"}}"#;
         let same = fixture.as_bytes();
-        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495}}"#.as_bytes();
+        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495},"info":{"source_id":"tmp-companion-e2e-fixture#r2"}}"#.as_bytes();
         assert!(body_is_pristine(same, fixture));
         assert!(!body_is_pristine(leveled, fixture));
         // Tail-truncated AFTER presetLevel → still comparable.
@@ -383,6 +404,9 @@ mod tests {
         // Truncated BEFORE the level (or unreadable) → NOT pristine, fail-open
         // to a redundant re-import (ownership is already proven by the marker).
         assert!(!body_is_pristine(b"{\"audioGraph\":{\"nod", fixture));
+        // An OLDER-rev resident copy is never pristine, whatever its level reads.
+        let old_rev = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684},"info":{"source_id":"tmp-companion-e2e-fixture"}}"#;
+        assert!(!body_is_pristine(old_rev.as_bytes(), fixture));
         assert_eq!(extract_preset_level(b"junk"), None);
         // The identity guard that gates the pristine decision: a wrong-slot body
         // names a DIFFERENT preset and must not drive a re-import.
@@ -401,6 +425,12 @@ mod tests {
             assert!(
                 is_fixture_body(p.preset_json.as_bytes()),
                 "{} carries no fixture marker",
+                p.name
+            );
+            assert!(
+                p.preset_json.contains(FIXTURE_SOURCE_STAMP),
+                "{} does not carry the CURRENT fixture rev stamp {FIXTURE_SOURCE_STAMP:?} — \
+                 bump the stamp (and this const) on every fixture regen",
                 p.name
             );
         }
