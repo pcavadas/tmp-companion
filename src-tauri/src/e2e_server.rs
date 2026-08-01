@@ -469,6 +469,18 @@ async fn e2e_reamp_off(state: State<'_, AppState>) -> Result<(), String> {
 /// can assert the SAVED preset actually renders at the leveling target. ONLINE-only:
 /// the offline fake has no audio path (its capture is a stimulus passthrough — every
 /// sound would "measure" identically, a vacuous gate).
+/// The leveled-param coordinates a footswitch re-measure replays (see
+/// `e2e_measure_sound` — the SPEC owns these, mirroring what it fed the leveling
+/// lane, so no server-side picker exists to diverge from the wizard's choice).
+#[cfg(feature = "e2e")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FsLevRef {
+    group_id: String,
+    node_id: String,
+    parameter_id: String,
+}
+
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_measure_sound(
@@ -478,9 +490,7 @@ async fn e2e_measure_sound(
     scene: Option<u32>,
     footswitch: Option<u32>,
     topology_id: String,
-    lev_group_id: Option<String>,
-    lev_node_id: Option<String>,
-    lev_parameter_id: Option<String>,
+    lev: Option<FsLevRef>,
 ) -> Result<f64, String> {
     if !e2e_online() {
         return Err("e2e_measure_sound is online-only (the offline fake has no audio path)".into());
@@ -503,11 +513,14 @@ async fn e2e_measure_sound(
         // from the CALLER — the spec owns the same pinned coordinates it fed the leveling
         // lane — so there is no second in-server param picker to diverge from the wizard's
         // `defaultParamIndex` choice.
-        let fs_value = match (footswitch, lev_group_id, lev_node_id, lev_parameter_id) {
-            (Some(sw), Some(g), Some(n), Some(p)) => {
-                footswitch::existing_param_fn_value_a(&saved["ftsw"], sw, &n, &p)
-                    .map(|v| ((g, n, p), v as f32))
-            }
+        let fs_value = match (footswitch, lev) {
+            (Some(sw), Some(l)) => footswitch::existing_param_fn_value_a(
+                &saved["ftsw"],
+                sw,
+                &l.node_id,
+                &l.parameter_id,
+            )
+            .map(|v| ((l.group_id, l.node_id, l.parameter_id), v as f32)),
             _ => None,
         };
         leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim)

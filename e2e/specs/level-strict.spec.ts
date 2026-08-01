@@ -115,9 +115,13 @@ test.describe("Level — strict output harness (Hiwatt corruption-class preset)"
           scene: args.scene ?? null,
           footswitch: args.footswitch?.switch ?? null,
           topologyId: "guitar-humbucker",
-          levGroupId: args.footswitch?.levGroupId ?? null,
-          levNodeId: args.footswitch?.levNodeId ?? null,
-          levParameterId: args.footswitch?.levParameterId ?? null,
+          lev: args.footswitch
+            ? {
+                groupId: args.footswitch.levGroupId,
+                nodeId: args.footswitch.levNodeId,
+                parameterId: args.footswitch.levParameterId,
+              }
+            : null,
         },
         T,
       ) as Promise<number>;
