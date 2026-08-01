@@ -829,6 +829,55 @@ pub fn doctor_capture_on_session(
     )?))
 }
 
+/// STRICT-HARNESS measure (the online e2e's post-leveling audio gate,
+/// `level-strict.spec.ts`): re-measure one leveled sound of `slot` AS-IS on the
+/// production capture path and the LEVELING metric (loudest channel,
+/// floor-guarded), so the spec can assert the SAVED state actually renders at the
+/// leveling target — not merely that the run reported success. Context mirrors
+/// the leveling lanes exactly:
+/// * scene sound — pure as-is (`loadScene` applies the scene's own `ftswStates`);
+///   `force_bypass` empty;
+/// * base sound — fresh load + base recall + the base isolation (every
+///   block-acting switch's block forced off) in `force_bypass`;
+/// * footswitch sound — fresh load + base recall + siblings-off + own engaged
+///   flip in `force_bypass`, plus `fs_value` re-playing an ASSIGN switch's saved
+///   `valueA` onto the leveled param (a BAKED switch needs no write — its engaged
+///   sound IS the base value).
+pub fn measure_sound_asis_strict(
+    slot: u32,
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
+    fs_value: Option<((String, String, String), f32)>,
+    stimulus: &[f32],
+) -> Result<lufs::Loudness, String> {
+    if let Some(((g, n, p), v)) = fs_value {
+        {
+            let mut s = Session::connect_lean()?;
+            s.load_preset(slot)?;
+            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+        }
+        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        return require_live(
+            || measure_fs_at((&g, &n, &p), force_bypass, stimulus, v),
+            stimulus,
+        );
+    }
+    require_live(
+        || {
+            loudest_loudness(capture_full_at(
+                slot,
+                scene,
+                force_bypass,
+                stimulus,
+                None,
+                CAPTURE_TAIL_MS,
+                false,
+            ))
+        },
+        stimulus,
+    )
+}
+
 /// MEASURE seam for scene leveling: load `slot`, then for each scene in
 /// `0..scene_count` activate it (`loadScene`) and capture its ceiling loudness at
 /// `presetLevel = 1.0`. Returns per-scene loudness (LUFS) — feed to
@@ -1025,6 +1074,15 @@ pub fn apply_levels(
         }
     }
 
+    // Any unsaved `presetLevel` must ride through the pre-save recall via
+    // `recall_reassert_save` (see its doc for the load-level-apply clobber this
+    // guards). The re-assert value is the PresetLevel target when one is in the
+    // batch; Block-knob targets need none (overlay writes persist through the
+    // recall — the footswitch `switch_at_target` re-run spec proves it).
+    let reassert_pl = targets
+        .iter()
+        .find(|(k, _)| matches!(k, LevelKnob::PresetLevel))
+        .map(|(_, v)| *v);
     if opts.save {
         if opts.verify {
             // A session that has toggled re-amp silently DROPS the save (HW: after the
@@ -1035,11 +1093,9 @@ pub fn apply_levels(
             drop(s);
             std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
             let mut s2 = Session::connect()?;
-            recall_original_scene(&mut s2, opts.restore_scene)?;
-            s2.save_current_preset(slot)?;
+            recall_reassert_save(&mut s2, slot, opts.restore_scene, reassert_pl)?;
         } else {
-            recall_original_scene(&mut s, opts.restore_scene)?;
-            s.save_current_preset(slot)?;
+            recall_reassert_save(&mut s, slot, opts.restore_scene, reassert_pl)?;
         }
     } else if opts.defer {
         // Deferred mode: leave the write UNSAVED in the working copy — the scene
@@ -1592,6 +1648,37 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
         std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
     Ok(())
+}
+
+/// The ONE pre-save sequence every batch/deferred save shares: recall the preset's
+/// original scene, re-assert any unsaved `presetLevel` the recall just reverted,
+/// then save. The recall's `loadScene` — base included — runs the device's own
+/// level-apply (the same mechanism as the "`load_preset` + `set_preset_level` in
+/// one connection → the set is overridden" gotcha), so an unsaved working-copy
+/// `presetLevel` is silently reverted to the SAVED value right before the save
+/// persists it (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
+/// doc still read the prior 0.32; caught by the online `level-rerun` base
+/// idempotency spec). Node/overlay writes are immune (the footswitch
+/// `switch_at_target` re-run spec proves `valueA` persists through the recall), so
+/// only `reassert_pl` — the unsaved level a caller solved (`apply_levels`) or
+/// raised (`redistribute_clamped_headroom`) — needs re-writing, and only when a
+/// recall actually ran. Timing stays under the idle-gap cliff: recall +
+/// `SETTLE_AFTER_SET_MS` → set + `SETTLE_AFTER_SET_MS` → save. The re-assert
+/// deliberately does NOT defeat the restore: `setPresetLevel` emits no
+/// `loadScene`, so the scene the save stamps is still the recalled one (pinned by
+/// `recall_reassert_save_replays_the_unsaved_level_after_the_recall`).
+fn recall_reassert_save(
+    s: &mut Session,
+    slot: u32,
+    restore_scene: Option<u32>,
+    reassert_pl: Option<f32>,
+) -> Result<(), String> {
+    recall_original_scene(s, restore_scene)?;
+    if let (Some(pl), Some(_)) = (reassert_pl, restore_scene) {
+        s.set_preset_level(pl)?;
+        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+    s.save_current_preset(slot)
 }
 
 /// Set the chosen knob to `value` on an open session (before re-amp engage). The
@@ -2270,7 +2357,7 @@ fn solve_footswitch(
     if err(best_lufs) > KNOB_TOL_LU {
         let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
         let mut p1 = (v_hi as f64, l_hi.integrated_lufs);
-        // Bracket before falling to the plain secant — see `fs_bracket_expansion`'s doc.
+        // Bracket before falling to the correction loop — see `fs_bracket_expansion`'s doc.
         if let Some(v_extreme) = fs_bracket_expansion(
             v_lo,
             l_lo.integrated_lufs,
@@ -2296,11 +2383,26 @@ fn solve_footswitch(
                 }
             }
         }
-        // Run the secant only when not already converged AND the (possibly expanded) pair
-        // has authority (still flat → the knob truly can't move loudness here — an honest,
-        // reason-less clamp).
+        // Bracket-aware secant, gated on the pair having authority (still flat → the
+        // knob truly can't move loudness here — an honest, reason-less clamp). Each
+        // iterate interpolates the SAME `fs_secant_next` step; only the endpoint-update
+        // rule differs by pair shape:
+        //   * pair STRADDLES the target → keep the bracket (replace the same-side
+        //     endpoint) with Illinois damping — a repeat on one side halves the retained
+        //     endpoint's offset so a stale far end can't pin the interpolation. This is
+        //     what converges on a steep-taper cliff (HW, Hiwatt fs12: the UniVibe
+        //     `volume` measures −45.6 LUFS at 0.25 but −16.9 at 0.61, a >60 LU/knob-unit
+        //     cliff around the −20 target; the plain sliding secant zig-zagged across it
+        //     and stopped 3.1 LU hot — caught by the strict e2e re-measure).
+        //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
+        //     from the validated behavior; the first crossing iterate forms a straddling
+        //     consecutive pair, which flips the loop into bracket mode by itself.
         if err(best_lufs) > KNOB_TOL_LU && (p1.1 - p0.1).abs() >= KNOB_TOL_LU {
-            for _ in 0..MEASURE_CORRECT_MAX {
+            // −1 / +1: which side of the target the previous bracket-mode iterate
+            // landed on (0 until the pair straddles).
+            let mut last_side = 0i8;
+            for _ in 0..FS_CORRECT_MAX {
+                let straddles = (p0.1 - target_lufs) * (p1.1 - target_lufs) < 0.0;
                 let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
                     break; // flat response — the knob can't move loudness here
                 };
@@ -2318,8 +2420,26 @@ fn solve_footswitch(
                 if err(l2.integrated_lufs) <= KNOB_TOL_LU {
                     break;
                 }
-                p0 = p1;
-                p1 = (v2 as f64, l2.integrated_lufs);
+                let p2 = (v2 as f64, l2.integrated_lufs);
+                if straddles {
+                    if (p2.1 - target_lufs) * (p0.1 - target_lufs) > 0.0 {
+                        if last_side == -1 {
+                            p1.1 = target_lufs + (p1.1 - target_lufs) / 2.0;
+                        }
+                        p0 = p2;
+                        last_side = -1;
+                    } else {
+                        if last_side == 1 {
+                            p0.1 = target_lufs + (p0.1 - target_lufs) / 2.0;
+                        }
+                        p1 = p2;
+                        last_side = 1;
+                    }
+                } else {
+                    p0 = p1;
+                    p1 = p2;
+                    last_side = 0;
+                }
             }
         }
     }
@@ -3159,8 +3279,10 @@ pub fn redistribute_clamped_headroom(
         });
     }
 
-    // ONE save — new pl + every compensated outputLevel together, base scene recalled.
-    save_deferred_scene_writes(slot, restore_scene)?;
+    // ONE save — new pl + every compensated outputLevel together, original scene
+    // recalled and the UNSAVED raised pl re-asserted after it (the recall would
+    // otherwise revert it to the saved value — see `recall_reassert_save`).
+    save_deferred_scene_writes(slot, restore_scene, Some(new_preset_level))?;
 
     // Post-save AUDIO spot-verify at the PERSISTED pl (the wrong-pl-solve guard). Pick a
     // compensated sound that actually moved (writes > 0); re-measure it as-is. Advisory —
@@ -3293,11 +3415,11 @@ fn run_scene_jobs(
             // The callee already warns internally on its own first failure; this
             // catches the case where its retry ALSO failed (cancelled path only —
             // the non-cancelled `?` below still surfaces a hard error to the caller).
-            if let Err(e) = save_deferred_scene_writes(slot, restore_scene) {
+            if let Err(e) = save_deferred_scene_writes(slot, restore_scene, None) {
                 log::warn!("save_deferred_scene_writes failed on cancel (slot {slot}): {e}");
             }
         } else {
-            save_deferred_scene_writes(slot, restore_scene)?;
+            save_deferred_scene_writes(slot, restore_scene, None)?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
             // after every audio step. A stopped run returns CANCELLED below and its outcomes
             // are discarded, so it is not worth a read.
@@ -3320,12 +3442,15 @@ fn run_scene_jobs(
 /// retry on a fresh connection (the realistic failure is the HID open lockout, not
 /// the save itself). The connection never toggles re-amp, so the post-re-amp
 /// save-drop cannot bite.
-fn save_deferred_scene_writes(slot: u32, restore_scene: Option<u32>) -> Result<(), String> {
+fn save_deferred_scene_writes(
+    slot: u32,
+    restore_scene: Option<u32>,
+    reassert_pl: Option<f32>,
+) -> Result<(), String> {
     let attempt = || -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
-        recall_original_scene(&mut s, restore_scene)?;
-        s.save_current_preset(slot)
+        recall_reassert_save(&mut s, slot, restore_scene, reassert_pl)
     };
     attempt().or_else(|e| {
         log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
@@ -3518,6 +3643,15 @@ struct SceneSolve {
 /// re-inflate per-scene cost toward the legacy 80–93 s regime. (NOT `KNOB_MAX_ITERS`, which
 /// counts 2 seed measurements in its budget.)
 const MEASURE_CORRECT_MAX: u32 = 3;
+
+/// Capture budget for the footswitch solve's bracket-aware secant (see
+/// `solve_footswitch`). Larger than the scene path's `MEASURE_CORRECT_MAX`
+/// because arbitrary block params (a `volume` audio taper, a `drive` knob) can
+/// put the target on a steep cliff that needs several Illinois-damped bracket
+/// iterates (HW, Hiwatt fs12: ~4 from a 21-LU-wide bracket) — converged solves
+/// still exit on the first in-tolerance iterate, so the extra headroom costs
+/// well-behaved knobs nothing.
+const FS_CORRECT_MAX: u32 = 8;
 /// An `outputLevel` change of at least this many dB that moves the captured loudness by
 /// less than `KNOB_TOL_LU` means the amp has no authority over the USB 1/2 capture
 /// (off-branch / off-USB output, or hard-limited downstream).
@@ -5593,6 +5727,55 @@ mod tests {
         );
     }
 
+    // The pre-save recall reverts an UNSAVED `presetLevel` to the saved value (the
+    // load-level-apply gotcha), so every recalling save must replay it between the
+    // recall and the save — the exact op order is the invariant (HW: a solved
+    // 0.3096 "[SAVED]" persisted the prior 0.32 until this re-assert existed;
+    // caught live by the online level-rerun base idempotency spec).
+    #[test]
+    fn recall_reassert_save_replays_the_unsaved_level_after_the_recall() {
+        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        recall_reassert_save(&mut s, 30, Some(3), Some(0.42)).expect("save");
+        let tail: Vec<String> = sim
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                crate::sim_device::SimEvent::LoadScene(n) => Some(format!("scene{n}")),
+                crate::sim_device::SimEvent::PresetLevel(v) => Some(format!("level{v}")),
+                crate::sim_device::SimEvent::Saved(n) => Some(format!("save{n}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            vec!["scene3", "level0.42", "save30"],
+            "order must be recall → re-assert → save"
+        );
+    }
+
+    // Without a recall there is nothing to revert — the re-assert must NOT fire
+    // (an unconditional extra write would be a behavior change for plain saves).
+    #[test]
+    fn recall_reassert_save_skips_the_reassert_without_a_recall() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        recall_reassert_save(&mut s, 30, None, Some(0.42)).expect("save");
+        let ev = sim.events();
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::PresetLevel(_))),
+            "no recall → no re-assert: {ev:?}"
+        );
+        assert!(
+            ev.iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::Saved(30))),
+            "the save itself must still land: {ev:?}"
+        );
+    }
+
     // A multi-lane redistribution restore (≥2 base knobs, e.g. a parallel-merged
     // preset's two amps) must recall base ONCE for the whole group, not once per
     // knob — a per-knob `set_knob` loop would re-`load_scene(BASE)` between
@@ -5804,6 +5987,56 @@ mod tests {
             "every capture must carry the full isolation list, not just the first: {calls:?}"
         );
         assert_eq!(r.switch, 2);
+    }
+
+    /// The HW curve that beat the plain secant (Hiwatt fs12, UniVibe `volume` —
+    /// measured points from the strict-harness post-mortem, 3/3 reproducible):
+    /// a steep audio-taper cliff (~90 LU/knob-unit) under a shallow top (~10),
+    /// modeled as the monotone piecewise-linear interpolant of the captures.
+    fn univibe_volume_curve(v: f32) -> f64 {
+        const ANCHORS: [(f64, f64); 8] = [
+            (0.0, -80.0),
+            (0.25, -45.6),
+            (0.3207, -38.0),
+            (0.45, -32.0),
+            (0.6146, -16.94),
+            (0.6758, -16.2),
+            (0.75, -15.5),
+            (1.0, -14.5),
+        ];
+        let v = f64::from(v).clamp(0.0, 1.0);
+        for w in ANCHORS.windows(2) {
+            let ((v0, l0), (v1, l1)) = (w[0], w[1]);
+            if v <= v1 {
+                return l0 + (v - v0) / (v1 - v0) * (l1 - l0);
+            }
+        }
+        ANCHORS[ANCHORS.len() - 1].1
+    }
+
+    /// On the UniVibe cliff the plain sliding secant provably stops ~3 LU hot
+    /// (it did on HW, and the strict e2e re-measure caught the miss); the
+    /// bracket-aware loop must converge inside `KNOB_TOL_LU` — the seed pair
+    /// already straddles the target, so Illinois-damped bracket retention owns
+    /// the endgame instead of the slide.
+    #[test]
+    fn solve_footswitch_bracket_mode_converges_on_the_univibe_cliff() {
+        let mut captures = 0u32;
+        let r = solve_footswitch(12, &[], &[], -20.0, "baked", None, |_, v| {
+            captures += 1;
+            Ok(fs_loud(univibe_volume_curve(v)))
+        })
+        .expect("solve");
+        assert!(
+            (r.predicted_lufs - -20.0).abs() <= KNOB_TOL_LU,
+            "bracket mode must land within KNOB_TOL_LU: best {} LUFS at v={} ({} captures)",
+            r.predicted_lufs,
+            r.final_value,
+            captures
+        );
+        assert!(!r.clamped && !r.unconverged, "converged solve: {r:?}");
+        // Budget sanity: seeds + expansion + bounded correction, never unbounded.
+        assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
     }
 
     // The three-state split (was ONE `clamped` flag with `clamp_reason: None` for both the

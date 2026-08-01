@@ -207,14 +207,16 @@ mod fixture_gates {
     /// identity is "a UUID, unique per preset" and the join key for host-side
     /// metadata). Four presets sharing a key makes that mapping ambiguous.
     ///
-    /// Skips when the fixture is absent (fresh `git worktree`), per repo convention.
     #[test]
     fn e2e_fixtures_use_device_product_id_and_unique_preset_ids() {
         let path = std::path::Path::new("../e2e/fixtures/scenario-presets.json");
-        if !path.is_file() {
-            eprintln!("skip: {} not present", path.display());
-            return;
-        }
+        assert!(
+            path.is_file(),
+            "{} is missing — it is git-tracked, so absence means a moved/renamed \
+             fixture or a wrong relative path, and skipping would pass this gate \
+             vacuously",
+            path.display()
+        );
         let raw = std::fs::read_to_string(path).expect("read fixture");
         let doc: serde_json::Value = serde_json::from_str(&raw).expect("fixture is JSON");
         let entries = doc.as_array().cloned().unwrap_or_else(|| {
@@ -290,10 +292,13 @@ mod fixture_gates {
         use std::io::Read;
 
         let path = std::path::Path::new("../e2e/fixtures/backup-fixture.bin");
-        if !path.is_file() {
-            eprintln!("skip: {} not present", path.display());
-            return;
-        }
+        assert!(
+            path.is_file(),
+            "{} is missing — it is git-tracked, so absence means a moved/renamed \
+             fixture or a wrong relative path, and skipping would pass this gate \
+             vacuously",
+            path.display()
+        );
         let blob = std::fs::read(path).expect("read backup-fixture.bin");
 
         let mut tar_bytes = Vec::new();
@@ -387,5 +392,112 @@ mod fixture_gates {
                 );
             }
         }
+    }
+
+    /// NON-REGRESSION GATE for the fixture-scene corruption class (real 1.8.45 unit,
+    /// 2026-07-28). The device silently DROPS a preset's ENTIRE `scenes[]` (and
+    /// re-stamps `info.source_id` to its placeholder) the first time a scene is
+    /// materialised (`loadScene`) and the preset saved, when the scenes are not
+    /// fully device-conformant. HW isolation (`probe --scene-write-cell`, recall-only,
+    /// no scene-edit, no write): the hand-built "E2E Reference" wiped on every
+    /// recall+save while the device-authored "E2E Hiwatt 3S" survived identical ops;
+    /// conformance-rebuilding Reference/Realistic made them survive. This corrupted
+    /// the on-device fixture after every ONLINE level run (specs green, slot 400
+    /// marker-less, teardown's guarded clear refusing) — the failure mode this gate
+    /// exists to keep dead.
+    ///
+    /// What "conformant" means (oracle: the device-authored Hiwatt scenes):
+    ///   * every scene carries the full 12-key shape (a 3-key sparse scene wipes);
+    ///   * `splitMix` holds BOTH `mixPoints` and `splitPoints` (scene shape: objects
+    ///     keyed by nodeId — the missing `splitPoints` was the final discriminator);
+    ///   * overlay numerics are floats (the device authors no int scene params);
+    ///   * `ftswStates` is exactly as long as the preset's `ftsw` switch list.
+    #[test]
+    fn e2e_fixture_scenes_are_device_conformant() {
+        const SCENE_KEYS: [&str; 12] = [
+            "ampControl",
+            "ftswStates",
+            "fxLoop",
+            "fxLoop1SceneEdit",
+            "fxLoop2SceneEdit",
+            "guitarNodes",
+            "micNodes",
+            "midi",
+            "sceneName",
+            "spillover",
+            "splitMix",
+            "uuid",
+        ];
+        let path = std::path::Path::new("../e2e/fixtures/scenario-presets.json");
+        assert!(
+            path.is_file(),
+            "{} is missing — it is git-tracked, so absence means a moved/renamed \
+             fixture or a wrong relative path, and skipping would pass this gate \
+             vacuously",
+            path.display()
+        );
+        let raw = std::fs::read_to_string(path).expect("read fixture");
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&raw).expect("fixture is JSON");
+        let mut scenes_checked = 0usize;
+        for e in &entries {
+            let js = e["presetJson"].as_str().expect("presetJson is text");
+            let p: serde_json::Value = serde_json::from_str(js).expect("presetJson parses");
+            let name = p["info"]["displayName"].as_str().unwrap_or("<unnamed>");
+            let ftsw_len = p["ftsw"].as_array().map_or(0, Vec::len);
+            for scene in p["scenes"].as_array().into_iter().flatten() {
+                scenes_checked += 1;
+                let sn = scene["sceneName"].as_str().unwrap_or("<unnamed scene>");
+                let mut keys: Vec<&str> = scene
+                    .as_object()
+                    .expect("scene is an object")
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys, SCENE_KEYS,
+                    "{name:?} scene {sn:?}: must carry exactly the 12-key device scene \
+                     shape — a sparse scene makes the unit wipe the whole scenes[] on \
+                     the first loadScene+save"
+                );
+                for part in ["mixPoints", "splitPoints"] {
+                    assert!(
+                        scene["splitMix"][part]
+                            .as_object()
+                            .is_some_and(|m| !m.is_empty()),
+                        "{name:?} scene {sn:?}: splitMix.{part} must be a non-empty \
+                         nodeId-keyed object (missing splitPoints was the HW-isolated \
+                         wipe trigger)"
+                    );
+                }
+                assert_eq!(
+                    scene["ftswStates"].as_array().map_or(0, Vec::len),
+                    ftsw_len,
+                    "{name:?} scene {sn:?}: ftswStates must be as long as ftsw"
+                );
+                for group in ["guitarNodes", "micNodes"] {
+                    for (gid, nodes) in scene[group].as_object().into_iter().flatten() {
+                        for (nid, body) in nodes.as_object().into_iter().flatten() {
+                            for (pk, pv) in
+                                body["dspUnitParameters"].as_object().into_iter().flatten()
+                            {
+                                assert!(
+                                    !pv.is_i64() && !pv.is_u64(),
+                                    "{name:?} scene {sn:?} {group}/{gid}/{nid}.{pk}: \
+                                     int-typed overlay param {pv} — the device authors \
+                                     floats in scenes; write {pv}.0"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            scenes_checked >= 10,
+            "expected the scenario fixtures' scene set (Reference 2 + Realistic 4 + \
+             Hiwatt 4 = 10) — checked {scenes_checked}; a schema rename that hid the \
+             scenes would pass this gate vacuously"
+        );
     }
 }

@@ -95,6 +95,26 @@ export const reampOff = (page: Page): Promise<void> =>
 /** The process-global session::REAMP_*_COUNT engage/disengage counters off the bridge.
  *  Cumulative across the server process — capture a baseline at test start and diff it
  *  (see `expectReampBalanced`) so an earlier surplus OFF can't mask a later unpaired ON. */
+// Real re-amp (measure + verify captures + save) runs well past the invoke helper's
+// 30 s default, so every ONLINE leveling/measure invoke gets a long request timeout.
+export const LEVEL_T = 280_000;
+
+// A base-leveling `level_preset` job (snake_case wire shape) — shared by the online
+// leveling specs so the job literal exists once.
+export const baseLevelJob = (slot: number, target: number) => ({
+  slot,
+  target_lufs: target,
+  save: true,
+  topology_id: "guitar-humbucker",
+  calibration_lufs: null,
+  stimulus_path: null,
+  profile_id: null,
+  block_group_id: null,
+  block_node_id: null,
+  block_parameter_id: null,
+  block_value: null,
+});
+
 export async function reampCounters(
   page: Page,
 ): Promise<{ on: number; off: number }> {

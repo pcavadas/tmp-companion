@@ -180,7 +180,7 @@ if ! device_lock_acquire "$REPO"; then
 fi
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level level-rerun) ;; esac
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level level-rerun level-strict) ;; esac
 
 # Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
 # never from inside a spec: Playwright's per-test budget (300 s) can't absorb seed

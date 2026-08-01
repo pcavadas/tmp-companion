@@ -68,6 +68,47 @@ pub(crate) fn slot_is_fixture_owned(s: &mut Session, device_slot: u32) -> bool {
     matches!(s.read_slot_preset_json(device_slot), Ok(Some(bytes)) if is_fixture_body(&bytes))
 }
 
+/// Substring-extract `audioGraph.presetLevel` (the one `presetLevel` key a
+/// preset body carries). Substring, not serde: the field-8 read can return a
+/// TAIL-TRUNCATED partial, and a full parse would fail on it even though the
+/// early `audioGraph` object made it through. `None` on a body the level
+/// never reached.
+fn extract_preset_level(body: &[u8]) -> Option<f64> {
+    let body = String::from_utf8_lossy(body);
+    let rest = &body[body.find("\"presetLevel\":")? + "\"presetLevel\":".len()..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c)))
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+/// Pristine = the on-device body's `presetLevel` still matches the fixture's.
+/// A strict-harness run LEVELS the fixtures with save — the ownership marker
+/// survives that, so a marker-only skip hands the NEXT run pre-leveled state
+/// (HW: the Hiwatt at 404 carried presetLevel 0.37495 vs the fixture's 0.5999
+/// → the base lane skipped as "already at target" and the spec fast-failed).
+/// Unreadable/truncated-past-the-level bodies count as NOT pristine: ownership
+/// is already proven, so the worst case is a redundant re-import.
+fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
+    match (
+        extract_preset_level(body),
+        extract_preset_level(fixture_json.as_bytes()),
+    ) {
+        (Some(dev), Some(fix)) => (dev - fix).abs() < 1e-3,
+        _ => false,
+    }
+}
+
+/// Does the field-8 body identify itself as `name`? Back-to-back slot reads on one
+/// session can deliver the PREVIOUS request's body (HW: the unpaced classify loop
+/// re-imported 400/401/402 on every seed from false `presetLevel` mismatches while a
+/// genuinely drifted 404 once read "pristine" — wrong-slot bodies both ways). The
+/// marker probe never noticed (every fixture body carries the marker); the pristine
+/// compare is slot-SENSITIVE, so it may only act on a body that names this preset.
+fn body_names(body: &[u8], name: &str) -> bool {
+    String::from_utf8_lossy(body).contains(&format!("\"displayName\":\"{name}\""))
+}
+
 /// Clear every stray on the GIVEN session — but only after a per-candidate
 /// field-8 read finds a [`FIXTURE_MARKERS`] hit (a name is not ownership; a
 /// user preset coincidentally named "E2E Reference" is skipped, fail-closed).
@@ -161,15 +202,41 @@ pub(crate) fn seed_scenario_core() -> Result<SeedOutcome, String> {
             continue;
         }
         let e = entry.expect("occupied entries exist in the floored list");
-        let owned = e.name == p.name && slot_is_fixture_owned(&mut s, p.list_index + 1);
-        if !owned {
+        let body = if e.name == p.name {
+            // Pace the loop's reads apart — an immediate follow-on field-8 read can
+            // answer with the PREVIOUS slot's body (see `body_names`).
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            s.read_slot_preset_json(p.list_index + 1).ok().flatten()
+        } else {
+            None
+        };
+        let Some(body) = body.filter(|b| is_fixture_body(b)) else {
             return Err(format!(
                 "target slot {} is occupied by {:?} and does not carry a fixture \
                  content marker — refusing to seed over it (move that preset, then rerun)",
                 p.list_index, e.name
             ));
+        };
+        // Verified fixture in place — but a PRIOR run may have leveled it with
+        // save (the marker survives). Re-import a drifted body over itself; the
+        // per-target `still_safe` recheck below already licenses that write. Only a
+        // body that IDENTIFIES as this preset may drive the decision — a wrong-slot
+        // body falls back to the marker-skip (the pre-pristine-check behavior)
+        // instead of churning a redundant ~30 s re-import every seed.
+        if !body_names(&body, &p.name) {
+            eprintln!(
+                "[seed] slot {} ({:?}): field-8 body does not identify itself as this \
+                 preset (stale/mismatched read) — keeping the marker-skip",
+                p.list_index, p.name
+            );
+        } else if !body_is_pristine(&body, &p.preset_json) {
+            eprintln!(
+                "[seed] slot {} ({:?}) is fixture-owned but not pristine \
+                 (presetLevel drifted) — re-importing",
+                p.list_index, p.name
+            );
+            to_seed.push(p);
         }
-        // Verified fixture already in place — nothing to redo for this slot.
     }
     drop(s);
 
@@ -297,6 +364,31 @@ mod tests {
         );
         // No spec → nothing is ever a stray.
         assert!(scenario_strays(&list, &[]).is_empty());
+    }
+
+    /// The pristine probe must survive tail-truncated field-8 partials and flag
+    /// a leveled (drifted-presetLevel) body — the HW incident: a prior strict
+    /// run left the Hiwatt at 0.37495 vs the fixture's 0.5999 and the marker-only
+    /// skip handed the next run pre-leveled state.
+    #[test]
+    fn pristine_check_flags_leveled_bodies() {
+        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684}}"#;
+        let same = fixture.as_bytes();
+        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495}}"#.as_bytes();
+        assert!(body_is_pristine(same, fixture));
+        assert!(!body_is_pristine(leveled, fixture));
+        // Tail-truncated AFTER presetLevel → still comparable.
+        let truncated = &fixture.as_bytes()[..fixture.len() - 3];
+        assert!(body_is_pristine(truncated, fixture));
+        // Truncated BEFORE the level (or unreadable) → NOT pristine, fail-open
+        // to a redundant re-import (ownership is already proven by the marker).
+        assert!(!body_is_pristine(b"{\"audioGraph\":{\"nod", fixture));
+        assert_eq!(extract_preset_level(b"junk"), None);
+        // The identity guard that gates the pristine decision: a wrong-slot body
+        // names a DIFFERENT preset and must not drive a re-import.
+        let named = br#"{"info":{"displayName":"E2E Target 2"}}"#;
+        assert!(body_names(named, "E2E Target 2"));
+        assert!(!body_names(named, "E2E Hiwatt 3S"));
     }
 
     /// A fixture regen that drops the `source_id` stamp must fail here, not on

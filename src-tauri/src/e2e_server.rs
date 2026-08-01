@@ -122,7 +122,8 @@ pub fn run_e2e_server() {
             e2e_clear_strays,
             e2e_clear_preset,
             e2e_load_preset,
-            e2e_reamp_off
+            e2e_reamp_off,
+            e2e_measure_sound
         ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build e2e mock app");
@@ -457,6 +458,60 @@ async fn e2e_reamp_off(state: State<'_, AppState>) -> Result<(), String> {
     }
     with_released_seize(state.session.clone(), move || {
         Session::connect()?.set_reamp_mode(false).map(|_| ())
+    })
+    .await
+}
+
+/// STRICT-HARNESS measure for the online post-leveling audio gate
+/// (`level-strict.spec.ts`): re-measure one sound of `slot` exactly as the leveling
+/// lane measured it (scene as-is / base isolation / footswitch engaged state with
+/// the saved ASSIGN `valueA` re-played) and return its integrated LUFS, so the spec
+/// can assert the SAVED preset actually renders at the leveling target. ONLINE-only:
+/// the offline fake has no audio path (its capture is a stimulus passthrough — every
+/// sound would "measure" identically, a vacuous gate).
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_measure_sound(
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    state: State<'_, AppState>,
+    slot: u32,
+    scene: Option<u32>,
+    footswitch: Option<u32>,
+    topology_id: String,
+    lev_group_id: Option<String>,
+    lev_node_id: Option<String>,
+    lev_parameter_id: Option<String>,
+) -> Result<f64, String> {
+    if !e2e_online() {
+        return Err("e2e_measure_sound is online-only (the offline fake has no audio path)".into());
+    }
+    let stim_path = resolve_stimulus(&app, None, Some(topology_id))?;
+    with_released_seize(state.session.clone(), move || {
+        let stim = read_stimulus_calibrated(&stim_path, None)?;
+        if scene.is_some() {
+            return leveller::measure_sound_asis_strict(slot, scene, &[], None, &stim)
+                .map(|l| l.integrated_lufs);
+        }
+        // Base / footswitch context: the ONE shared isolation derivation the leveling +
+        // Doctor lanes use (`doctor_force_bypass` over the SAVED doc) — not a private copy.
+        let saved = read_saved_preset(slot)
+            .ok_or_else(|| format!("field-8 read failed for slot {slot}"))?;
+        let force =
+            crate::commands::doctor::doctor_force_bypass(&saved["ftsw"], &saved, footswitch);
+        // An ASSIGN switch's engaged sound = the leveled param at its saved `valueA`; a
+        // BAKED (or assignment-less) switch needs no write. The leveled param TRIPLE comes
+        // from the CALLER — the spec owns the same pinned coordinates it fed the leveling
+        // lane — so there is no second in-server param picker to diverge from the wizard's
+        // `defaultParamIndex` choice.
+        let fs_value = match (footswitch, lev_group_id, lev_node_id, lev_parameter_id) {
+            (Some(sw), Some(g), Some(n), Some(p)) => {
+                footswitch::existing_param_fn_value_a(&saved["ftsw"], sw, &n, &p)
+                    .map(|v| ((g, n, p), v as f32))
+            }
+            _ => None,
+        };
+        leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim)
+            .map(|l| l.integrated_lufs)
     })
     .await
 }

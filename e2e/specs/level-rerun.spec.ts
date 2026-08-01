@@ -10,6 +10,8 @@ import {
   reampCounters,
   reampOff,
   simEvents,
+  baseLevelJob,
+  LEVEL_T,
 } from "../fixtures/scenario";
 
 // Consecutive-runs idempotency gate — the PR #74 requirement ("2 consecutive leveling runs
@@ -35,23 +37,8 @@ interface FootswitchLevelResult {
 }
 
 // A plain preset's base-leveling job (no scenes/footswitches → whole-preset = Base only).
-const baseJob = (slot: number, target: number) => ({
-  slot,
-  target_lufs: target,
-  save: true,
-  topology_id: "guitar-humbucker",
-  calibration_lufs: null,
-  stimulus_path: null,
-  profile_id: null,
-  block_group_id: null,
-  block_node_id: null,
-  block_parameter_id: null,
-  block_value: null,
-});
-
-// Real re-amp (measure + verify captures + save) runs well past the invoke helper's 30 s
-// default, so every ONLINE leveling invoke gets a long request timeout.
-const T = 280_000;
+const baseJob = baseLevelJob;
+const T = LEVEL_T;
 
 // ───────────────────────────── OFFLINE: events-equality ─────────────────────────────
 test.describe("Level re-run — offline events-equality (no drift)", () => {

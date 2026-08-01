@@ -1386,6 +1386,27 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--reamp-multi-engage") {
+        // DIAGNOSTIC: --reamp-multi-engage <cycles> [topology]
+        // N × engage→capture→disengage on ONE connection, idle-gap-safe pacing;
+        // re-tests the "re-amp engages reliably only ONCE per connection" gotcha.
+        let cycles: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(4);
+        let topology = args
+            .get(i + 2)
+            .filter(|s| !s.starts_with("--"))
+            .map_or("guitar-humbucker", String::as_str);
+        match tmp_companion_lib::probe_reamp_multi_engage(topology, cycles) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--reamp-toggle-test") {
         // DIAGNOSTIC (reamp-stuck investigation): --reamp-toggle-test <idle_ms> [hb]
         let idle_ms: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);

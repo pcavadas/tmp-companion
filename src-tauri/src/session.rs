@@ -1169,7 +1169,13 @@ impl Session {
 
     /// Enumerate the "My Presets" list (listEnum = 1). The response can be
     /// large and multi-packet, so we accumulate raw reports across pump windows
-    /// and reassemble cumulatively until a `PresetListResponse` appears.
+    /// and reassemble cumulatively until the harvest stops GROWING — a mid-flood
+    /// partial reassembly DECODES under the tolerant rule, so the first decodable
+    /// harvest can be a tail-cut of a response still arriving (HW: 277–328 of 504
+    /// records after back-to-back lean sessions, while the same device answered
+    /// Pro Control's single long session in full — the flood streams slower under
+    /// session churn; accepting the first decode was the truncation, not the
+    /// device). Two consecutive no-growth pump windows = complete.
     pub fn list_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
         // The handshake already issued preset_list_request(1) and accumulated
         // its reply; check that first. Only re-query if it isn't there yet.
@@ -1178,15 +1184,37 @@ impl Session {
             let b = self.next_batch();
             self.send_and_collect(&proto::preset_list_request(1, b), 1000)?;
         }
-        for _ in 0..8 {
-            if names.is_some() {
-                break;
-            }
+        // Growth metric = record count + total content bytes, not count alone:
+        // the tolerant decode's final-frame tail case can GROW IN CONTENT at a
+        // constant count (the historical `"Empty"`-decoded-as-`"Empt"` garble),
+        // and a count-only check would accept mid-tail.
+        let weigh = |n: &Option<Vec<String>>| -> usize {
+            n.as_ref()
+                .map_or(0, |v| v.len() + v.iter().map(String::len).sum::<usize>())
+        };
+        let (mut stable, mut grew) = (0u32, false);
+        for _ in 0..12 {
+            let prev = weigh(&names);
+            self.pump_collect(700)?;
             if let Some(found) = self.best_preset_list() {
                 names = Some(found);
-                break;
             }
-            self.pump_collect(700)?;
+            let cur = weigh(&names);
+            if cur > 0 && cur == prev {
+                stable += 1;
+                // A list that was already complete before this call (the common
+                // case — the handshake's reply fully accumulated) needs only ONE
+                // quiet confirm window; the two-window rule applies when this
+                // call actually watched the flood grow. Keeps the truncation fix
+                // without taxing every tolerant read a flat 1.4 s — the read sits
+                // in a 3×-per-preset loop under bulk runs (`replace_inplace_with`).
+                if stable >= if grew { 2 } else { 1 } {
+                    break;
+                }
+            } else {
+                grew = grew || cur > prev;
+                stable = 0;
+            }
         }
         let names =
             names.ok_or_else(|| "no PresetListResponse received from device".to_string())?;
@@ -1215,9 +1243,12 @@ impl Session {
     }
 
     /// Completeness-validated My-Presets list for the snapshot path. The tolerant
-    /// `list_my_presets` harvest accepts a tail-truncated multi-packet response
-    /// (observed: 371 of 504 records when the monitor reconnected right after a
-    /// heavy field-8 sweep left the line flooded). This variant:
+    /// `list_my_presets` now waits out growth (its stability harvest), but its
+    /// completeness is still judged by TIME, not evidence — a mid-flood stall
+    /// longer than a pump window can still return a tail-truncated response
+    /// (historically: 371 of 504 records when the monitor reconnected right after
+    /// a heavy field-8 sweep left the line flooded). This variant proves
+    /// completeness by the terminal 0x35 frame instead:
     /// 1. tries the strict harvest on the already-accumulated handshake reports;
     /// 2. retries by RE-ARMING the open session (the `read_slot_preset_json`
     ///    recipe: quiet line → `connection_request` → `preset_list_request`) —

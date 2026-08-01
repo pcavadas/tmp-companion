@@ -81,6 +81,110 @@ pub fn probe_reamp_toggle_test(idle_ms: u64, heartbeat: bool) -> Result<String, 
     ))
 }
 
+/// DIAGNOSTIC (re-test of the "re-amp engages reliably only ONCE per connection"
+/// gotcha): run `cycles` × (engage → capture → disengage) on ONE session, judging
+/// each engage by the only trustworthy signal — a finite captured loudness (the
+/// `ReAmpModeChanged` echo is documented flaky). Each cycle's engage+capture is
+/// PRODUCTION-IDENTICAL (`engage_measure_disengage`'s shape: quiet engage,
+/// `SETTLE_AFTER_REAMP_MS`, fully idle capture — a v1 of this arm that
+/// heartbeat-paced the capture and pre-toggled a heartbeat read FLOOR from cycle 1
+/// while the production path measured perfectly back-to-back, so extra HID traffic
+/// around the engage is itself inject-hostile). Only the post-capture OFF gets a
+/// heartbeat burst first (the post-idle command-drop rescue), and inter-cycle gaps
+/// stay under the idle cliff. NB an all-cycles-ENGAGED result transfers to
+/// production ONLY for this exact quiet shape; a later-cycle floor confirms the
+/// once-per-connection rule under the best-known-safe pacing.
+pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String, String> {
+    let stim_path = probe_stimulus_path(topology_id)?;
+    let stim = read_stimulus_48k(&stim_path)?;
+    // Engagement proof only — a short slice keeps per-cycle idle small; loudness
+    // comparability across cycles matters, absolute LUFS does not.
+    let stim = &stim[..stim.len().min(3 * 48_000)];
+
+    let run = || -> Result<String, String> {
+        // Fresh preset load in its OWN connection before the multi-engage session —
+        // the arm-per-load hypothesis: every working production engage follows a
+        // fresh `load_preset` on a prior connection (v4 without this floored from
+        // cycle 1 even with the production setter+engage pair, while the setter
+        // observably landed — the floor scaled with it). If the load re-arms
+        // exactly one engage, cycle 1 ENGAGES and later cycles floor.
+        {
+            let mut s = Session::connect_lean()?;
+            s.load_preset(400)?;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let mut s = Session::connect_lean()?;
+        let mut report = String::new();
+        let mut engaged_cycles = 0u32;
+        for cycle in 1..=cycles {
+            // Each cycle re-plays `arm_measurement`'s EXACT pre-engage triple —
+            // recall base → set level → settle → engage. Nothing weaker armed the
+            // engage on this arm's session shape: a bare engage (v2), heartbeat+
+            // engage (v1), recall+engage (v3), and setter+engage (v4/v5, where the
+            // floor SCALED with the setter, proving the write landed) ALL read
+            // floor from cycle 1 while `--levelpreset` measured perfectly in the
+            // same minutes. The 0.5 ref is a working-copy write, never saved.
+            s.load_scene(8)?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            s.set_preset_level(0.5)?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            s.set_reamp_mode(true)?;
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Production-identical capture: the session idles for the full drain.
+            let cap = audio::reamp_capture(stim, 48_000, 800)?;
+
+            let (ch, _) = cap.loudest_channel();
+            let verdict = match lufs::measure_mono(&cap.channel(ch), cap.sample_rate) {
+                Ok(l) if l.integrated_lufs > -50.0 && l.spread_lu() > 0.5 => {
+                    engaged_cycles += 1;
+                    format!(
+                        "ENGAGED  {:.2} LUFS  spread {:.2} LU",
+                        l.integrated_lufs,
+                        l.spread_lu()
+                    )
+                }
+                Ok(l) => format!(
+                    "floor    {:.2} LUFS  spread {:.2} LU",
+                    l.integrated_lufs,
+                    l.spread_lu()
+                ),
+                Err(e) => format!("OFF      silent capture ({e})"),
+            };
+            report.push_str(&format!("cycle {cycle}/{cycles}: {verdict}\n"));
+
+            // The OFF follows a capture-length idle, which drops bare commands —
+            // burst heartbeats first (the documented post-idle rescue), then
+            // disengage and give the DSP a beat before the next cycle's engage.
+            for _ in 0..3 {
+                let _ = s.heartbeat();
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            s.set_reamp_mode(false)?;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        report.push_str(&format!(
+            "verdict: {engaged_cycles}/{cycles} cycles engaged on ONE connection — {}\n",
+            if engaged_cycles == cycles {
+                "re-engage WORKED under this exact quiet shape (production would have to \
+                 adopt it verbatim to inherit the result)"
+            } else if engaged_cycles <= 1 {
+                "the once-per-connection rule STANDS (quiet production-shaped cycles do \
+                 not rescue re-engage)"
+            } else {
+                "PARTIAL — re-engage is unreliable, not impossible; keep \
+                 fresh-connect-per-engage"
+            }
+        ));
+        Ok(report)
+    };
+    // Run-end backstop, success or failure: any early `?` above can exit with
+    // re-amp engaged, the documented input-muted strand.
+    let out = run();
+    leveller::reamp_off_guaranteed("probe --reamp-multi-engage");
+    out
+}
+
 /// Measure the currently selected preset/scene through re-amp without changing
 /// preset level or block parameters. Optional `slot` loads a preset first in its
 /// own connection; optional `scene_slot` recalls a scene before capture. No save.

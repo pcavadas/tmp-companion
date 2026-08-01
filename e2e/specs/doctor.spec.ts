@@ -4,6 +4,7 @@ import {
   clearScenario,
   ensureScenario,
   expectReampBalanced,
+  isOnline,
   reampCounters,
   reampOff,
 } from "../fixtures/scenario";
@@ -70,9 +71,48 @@ test.describe("Doctor — select, check, results", () => {
       page.getByText(/presets? need a look|All clear/).first(),
     ).toBeVisible({ timeout: 240_000 });
 
-    // Every checked preset renders on Results — a card (flagged) or "All clear".
+    // The default "Needs a look" filter HIDES fully-clean presets (DoctorResults
+    // `shown`), so flip to "Everything" first when the filter strip is present (it
+    // only renders when there is a clean preset to hide; on all-clear every card
+    // already shows). The pill is a SegmentedControl → role="radio", not "button".
+    const everything = page.getByRole("radio", { name: "Everything" });
+    if (await everything.isVisible().catch(() => false)) {
+      await everything.click();
+    }
+
+    // Every checked preset renders on Results — a card, flagged or clean.
     for (const p of picked) {
       await expect(page.getByText(p.name).first()).toBeVisible();
+    }
+
+    // STRICT diagnosis oracle (online-only — the offline fake capture is a
+    // stimulus passthrough, so no real spectrum exists to diagnose): the checked
+    // set carries one KNOWN defect and two known-healthy controls, and the
+    // Doctor must call both sides correctly.
+    //  * "E2E Target 2" ships a fixture-injected post-cab EQ-5 parametric with
+    //    two stacked +12 dB Q14 peaks at 2.6 kHz — the calibration suite's
+    //    `resonant_peq` DefectRecipe (its Q14 saturation ceiling ≈17 dB clears
+    //    the resonant height gate on any chain) — and MUST be flagged with the
+    //    localized "Rings at N kHz" resonant chip. Resonant is the tilt-robust
+    //    oracle: it fires on the transfer's LOCAL octave-median-envelope excess,
+    //    so the bright/scooped broadband sweep every scenario chain measures
+    //    (which silences broadband verdicts like Muddy) cannot mask it. The
+    //    anchored regex tolerates PSD peak-fit wobble in the decimal and skips
+    //    the Rx title (which embeds the same phrase); broadband side-effects of
+    //    the +12 dB stack (harsh/fizzy) may co-fire and stay unasserted.
+    //  * The two healthy presets must produce NO resonant chip anywhere, so
+    //    exactly ONE renders in Everything view (HW sweep: resonant fired on
+    //    Target 2 alone — 22 dB, Q 24 — across all five scenario presets).
+    //  * Opening the defect preset's own sound row must surface the RIGHT
+    //    prescription — the cut at the EQ-10 band nearest the MEASURED ring
+    //    (2.5–2.7 kHz all map log-nearest to the 2 kHz band; the chain owns a
+    //    parametric EQ, so the Rx is the point-at-your-EQ advisory).
+    if (await isOnline(page)) {
+      await expect(page.getByText(/^Rings at 2\.\d kHz$/)).toHaveCount(1);
+      await page.getByText(picked[2].name).last().click();
+      await expect(
+        page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/).first(),
+      ).toBeVisible();
     }
 
     // Expanding any measured sound row surfaces the cut-through estimate —
