@@ -1113,7 +1113,7 @@ fn restore_scratch(
 /// The trailing sleep is part of the contract, not a caller's concern: the guard session
 /// is dropped at the end of the read, and re-opening immediately after a close is the
 /// shape that lands in the exclusive-open lockout (`0xe00002c5`).
-fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), String> {
+pub(crate) fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), String> {
     let before = Session::connect()?.list_my_presets()?;
     let cur = before
         .iter()
@@ -1211,17 +1211,21 @@ pub fn probe_set_scene_param(
         parameter_id: param.to_string(),
         scene_slot: scene,
     };
-    let opts = leveller::LevelOptions {
-        save: true,
-        verify: false,
-        ..Default::default()
-    };
     // A SCENE write refuses without the saved document (it decides per node whether Scene
     // Edit must be enabled — both write shapes corrupt the overlay when guessed), so the
     // field-8 read is mandatory there; a base write never consults it, so it is skipped
     // rather than paying ~4 s on this arm. `confirm_slot_name` already slept the reconnect
     // gap, which is the read's own gap contract.
     let saved_doc = scene.and_then(|_| crate::read_saved_preset(slot));
+    let opts = leveller::LevelOptions {
+        save: true,
+        verify: false,
+        // The save must re-stamp the preset's ORIGINAL `lastLoadedScene` — the scene
+        // recall the write performs otherwise leaves the written scene active at save
+        // time (the same clobber `probe_level_preset` guards against).
+        restore_scene: saved_doc.as_ref().and_then(crate::last_loaded_scene),
+        ..Default::default()
+    };
     let (saved, _) =
         leveller::apply_levels(slot, &[], &[(&knob, value)], opts, true, saved_doc.as_ref())?;
     Ok(format!(

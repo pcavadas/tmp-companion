@@ -181,8 +181,9 @@ function ResultRow({ it, restore }: ResultRowProps) {
     );
     statusColor = t.sevWarn;
     // The value WAS written (the best point found), so the number is real — it just
-    // isn't on target, and unlike a clamp another run can close the gap.
-    status = `off target · ${fmtLufs(it.value)} · re-run to improve`;
+    // isn't on target. Matches RunBody's copy exactly (one phrase across both
+    // tables); the remedy wording lives on the footer's re-run control.
+    status = `off target · ${fmtLufs(it.value)}`;
   } else if (it.outcome === "done") {
     icon = <Icon name="check" size={14} stroke={t.good} strokeWidth={2} />;
     statusColor = t.good;
@@ -768,6 +769,19 @@ export function SummaryBody({
                 style={{ height: 32, padding: `0 ${String(t.space7)}px` }}
               >
                 Re-level clamped…
+              </Button>
+            )}
+            {unconverged.length > 0 && (
+              <Button
+                variant="ghost"
+                small
+                icon="refresh"
+                onClick={() => {
+                  onRelevel(unconverged);
+                }}
+                style={{ height: 32, padding: `0 ${String(t.space7)}px` }}
+              >
+                Re-run off target…
               </Button>
             )}
             <Button

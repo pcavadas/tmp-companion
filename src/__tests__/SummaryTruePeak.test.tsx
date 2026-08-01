@@ -5,25 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { screen } from "@testing-library/react";
 
-import type { RunItem } from "../views/level/leveling";
-import { renderSummary } from "./summaryTestUtils";
-
-const base = (over: Partial<RunItem>): RunItem => ({
-  key: "p3",
-  slot: 3,
-  presetName: "Guitar",
-  isBase: true,
-  sceneSlot: null,
-  sceneName: "Whole preset",
-  tag: null,
-  footswitch: null,
-  instId: "none",
-  targetName: "Lead",
-  status: "result",
-  outcome: "done",
-  value: -22,
-  ...over,
-});
+import { base, renderSummary } from "./summaryTestUtils";
 
 describe("Summary true-peak warn chip", () => {
   it("flags a row predicted to clip", () => {

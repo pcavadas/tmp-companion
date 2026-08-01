@@ -195,6 +195,12 @@ pub struct LevelResult {
     /// never a re-measurement. Only the one-shot `presetLevel` path (`level_preset`)
     /// sets this; `None` for scene/block/footswitch paths this cycle.
     pub true_peak_dbtp: Option<f64>,
+    /// Post-save param-level verify, forwarded from the batched scene runner's
+    /// [`BatchedSceneOutcome::persist_mismatch`]: `Some(true)` = the saved preset does
+    /// NOT hold the value this result reports (do not trust the number); `Some(false)`
+    /// = re-read and confirmed; `None` = not checked (no save, nothing written, the
+    /// re-read failed, or a path without the verify).
+    pub persist_mismatch: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -1330,6 +1336,7 @@ pub fn level_preset(
                     verify_by_ear: false,
                     previous_level: None,
                     true_peak_dbtp: None,
+                    persist_mismatch: None,
                 });
             }
             Err(e) => return Err(e),
@@ -1373,6 +1380,7 @@ pub fn level_preset(
                         ref_level,
                         final_level,
                     )),
+                    persist_mismatch: None,
                 });
             }
         }
@@ -1416,6 +1424,7 @@ pub fn level_preset(
                 ref_level,
                 final_level,
             )),
+            persist_mismatch: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -1513,6 +1522,7 @@ pub fn level_setlist(
             verify_by_ear: false,
             previous_level: None,
             true_peak_dbtp: None,
+            persist_mismatch: None,
         });
     }
 
@@ -2368,6 +2378,10 @@ fn solve_footswitch(
         } else {
             (v_hi, l_hi.integrated_lufs, l_hi.spread_lu())
         };
+    // A seed pair that cannot move loudness is a physical dead end, not an exhausted
+    // search — it must never advertise a re-run. Set ONLY where no-authority is proven
+    // (the seed/expansion pair below); a mid-loop stall keeps `unconverged`.
+    let mut flat_response = false;
     if err(best_lufs) > KNOB_TOL_LU {
         let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
         let mut p1 = (v_hi as f64, l_hi.integrated_lufs);
@@ -2411,56 +2425,77 @@ fn solve_footswitch(
         //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
         //     from the validated behavior; the first crossing iterate forms a straddling
         //     consecutive pair, which flips the loop into bracket mode by itself.
-        if err(best_lufs) > KNOB_TOL_LU && (p1.1 - p0.1).abs() >= KNOB_TOL_LU {
-            // −1 / +1: which side of the target the previous bracket-mode iterate
-            // landed on (0 until the pair straddles).
-            let mut last_side = 0i8;
-            for _ in 0..FS_CORRECT_MAX {
-                let straddles = (p0.1 - target_lufs) * (p1.1 - target_lufs) < 0.0;
-                let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
-                    break; // flat response — the knob can't move loudness here
-                };
-                let v2 = raw.clamp(0.0, 1.0) as f32;
-                let l2 = require_live(|| measure_at(v2), stimulus)?;
-                iterations += 1;
-                improve_best(
-                    target_lufs,
-                    v2,
-                    &l2,
-                    &mut best_v,
-                    &mut best_lufs,
-                    &mut best_spread,
-                );
-                if err(l2.integrated_lufs) <= KNOB_TOL_LU {
-                    break;
-                }
-                let p2 = (v2 as f64, l2.integrated_lufs);
-                if straddles {
-                    if (p2.1 - target_lufs) * (p0.1 - target_lufs) > 0.0 {
-                        if last_side == -1 {
-                            p1.1 = target_lufs + (p1.1 - target_lufs) / 2.0;
-                        }
-                        p0 = p2;
-                        last_side = -1;
-                    } else {
-                        if last_side == 1 {
-                            p0.1 = target_lufs + (p0.1 - target_lufs) / 2.0;
-                        }
-                        p1 = p2;
-                        last_side = 1;
+        if err(best_lufs) > KNOB_TOL_LU {
+            if (p1.1 - p0.1).abs() < KNOB_TOL_LU {
+                // The seed pair itself is flat (and the expansion probe didn't land
+                // it): the knob demonstrably can't move loudness, the correction loop
+                // has nothing to interpolate on, and best_v sits mid-range. This is
+                // the ONE place no-authority is proven — the noise-robust KNOB_TOL_LU
+                // band over the widest pair the solve ever holds.
+                flat_response = true;
+            } else {
+                // −1 / +1: which side of the target the previous bracket-mode iterate
+                // landed on (0 until the pair straddles).
+                let mut last_side = 0i8;
+                for _ in 0..FS_CORRECT_MAX {
+                    let straddles = (p0.1 - target_lufs) * (p1.1 - target_lufs) < 0.0;
+                    let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
+                        // NOT a no-authority verdict: this loop is only entered after
+                        // the seeds proved ≥ KNOB_TOL_LU of authority, so a mid-loop
+                        // flat/degenerate pair (e.g. both endpoints clamped onto the
+                        // same bound on a non-monotone response) means the SEARCH is
+                        // stuck, not that the knob is dead — keep the honest
+                        // `unconverged` from classify_fs_outcome below.
+                        break;
+                    };
+                    let v2 = raw.clamp(0.0, 1.0) as f32;
+                    let l2 = require_live(|| measure_at(v2), stimulus)?;
+                    iterations += 1;
+                    improve_best(
+                        target_lufs,
+                        v2,
+                        &l2,
+                        &mut best_v,
+                        &mut best_lufs,
+                        &mut best_spread,
+                    );
+                    if err(l2.integrated_lufs) <= KNOB_TOL_LU {
+                        break;
                     }
-                } else {
-                    p0 = p1;
-                    p1 = p2;
-                    last_side = 0;
+                    let p2 = (v2 as f64, l2.integrated_lufs);
+                    if straddles {
+                        if (p2.1 - target_lufs) * (p0.1 - target_lufs) > 0.0 {
+                            if last_side == -1 {
+                                p1.1 = target_lufs + (p1.1 - target_lufs) / 2.0;
+                            }
+                            p0 = p2;
+                            last_side = -1;
+                        } else {
+                            if last_side == 1 {
+                                p0.1 = target_lufs + (p0.1 - target_lufs) / 2.0;
+                            }
+                            p1 = p2;
+                            last_side = 1;
+                        }
+                    } else {
+                        p0 = p1;
+                        p1 = p2;
+                        last_side = 0;
+                    }
                 }
             }
         }
     }
     // Signal is present past the seed probe, so a miss is a headroom or convergence limit,
     // never a routing error → `clamp_reason` stays None (that reason belongs to the seed's
-    // routing probe alone).
-    let (clamped, unconverged) = classify_fs_outcome(best_v, best_lufs, target_lufs);
+    // routing probe alone). A FLAT response is the exception: the knob has no authority
+    // over loudness, so a re-run repeats the same miss — report it as the reason-less
+    // clamp (the scene lane's precedent), never as `unconverged`.
+    let (clamped, unconverged) = if flat_response {
+        (true, false)
+    } else {
+        classify_fs_outcome(best_v, best_lufs, target_lufs)
+    };
     Ok(FootswitchLevelResult {
         switch,
         measured_lufs: l_lo.integrated_lufs,
@@ -4523,6 +4558,7 @@ pub fn level_preset_block(
             verify_by_ear: false,
             previous_level: None,
             true_peak_dbtp: None,
+            persist_mismatch: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -6052,6 +6088,25 @@ mod tests {
         );
         assert!(!r.clamped && !r.unconverged, "converged solve: {r:?}");
         // Budget sanity: seeds + expansion + bounded correction, never unbounded.
+        assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
+    }
+
+    // A knob with NO authority over loudness (every capture measures the same
+    // off-target LUFS) is a physical dead end: a re-run repeats the identical miss,
+    // so the verdict must be the reason-less clamp — never "unconverged", whose UI
+    // copy advertises a re-run that cannot help.
+    #[test]
+    fn solve_footswitch_flat_response_reports_clamped_not_unconverged() {
+        let mut captures = 0u32;
+        let r = solve_footswitch(12, &[], &[], -20.0, "baked", None, |_, _| {
+            captures += 1;
+            Ok(fs_loud(-27.0))
+        })
+        .expect("solve");
+        assert!(
+            r.clamped && !r.unconverged,
+            "flat response must clamp, not advertise a re-run: {r:?}"
+        );
         assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
     }
 

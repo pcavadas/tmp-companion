@@ -410,7 +410,16 @@ export function useLevelingFlow({
         publish(idx, false, false);
       };
       const sweepUnresolved = <K>(entries: Map<K, BatchEntry>) => {
-        if (isCancelled()) return;
+        if (isCancelled()) {
+          // A cancelled batch keeps un-run rows queued (still selected for a
+          // follow-up run), but the optimistic `markGroupActive` row never got a
+          // backend result — revert it or it spins "stopping…" forever on the
+          // finished run (the final done publish picks this mutation up).
+          for (const entry of entries.values()) {
+            if (entry.item.status === "active") entry.item.status = "queued";
+          }
+          return;
+        }
         for (const entry of entries.values()) {
           if (entry.item.status !== "result") {
             entry.item.outcome = "skipped";

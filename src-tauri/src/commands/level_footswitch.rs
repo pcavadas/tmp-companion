@@ -410,6 +410,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
             // recall (and any bake-mirror scene recalls) leave the wrong scene active, and
             // the save records the active one (HW: the FS save stamped 8 over scene 3).
             let restore = crate::last_loaded_scene(&preset);
+            crate::warn_missing_restore_scene("level_footswitches", slot, &preset, restore);
             leveller::write_footswitch_values(slot, &writes, restore).map(|()| {
                 let written: std::collections::HashSet<usize> = idxs.iter().copied().collect();
                 for &idx in &idxs {

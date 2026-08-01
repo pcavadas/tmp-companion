@@ -80,7 +80,7 @@ pub(crate) use probe_api::scene_bench::knob_bounds;
 pub(crate) use probe_api::scene_jobs::{
     build_scene_jobs, is_amp_model_id, is_amp_output_level_param, last_loaded_scene,
     prepass_scene_docs_via, read_saved_preset, scene_overlay, scene_overlays_change_param,
-    scenes_restating_base, SceneOverlay,
+    scenes_restating_base, warn_missing_restore_scene, SceneOverlay,
 };
 pub(crate) use probe_api::setlists::{read_setlist_list, read_setlist_songs};
 pub(crate) use probe_api::slot_write::{discover_active_graph, load_then_discover_blocks};

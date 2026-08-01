@@ -1001,14 +1001,16 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
 /// BUG→GATE (2026-07-27 report, the FOOTSWITCH "MULTI" class): pin the bake-vs-assign PLAN the
 /// reported preset produces, so a change to the discriminator has to face this fixture.
 ///
-/// All four of its block-acting switches take the ASSIGN path, and the load-bearing reason is
-/// the LEVELED PARAM, not the bypass key: each scene overlays the very param the leveler would
-/// bake with a value that differs from base (MythicDrive `output` 0.55 → 0.78 in scene 3;
-/// TremoloBias `level` 0.5 → 0.0; UniVibe `volume` 0.49 → 0.54; Lightspeed `loudness` 0.47 →
-/// 0.26 in scene 2), so a baked value would be silently overridden in those scenes — scene 3
-/// being this preset's own `lastLoadedScene`. Assign is therefore CORRECT here, and this gate
-/// stays green under a value-based bypass discriminator while going red if anything makes a
-/// scened preset bake unconditionally.
+/// All four of its block-acting switches must take the BAKE path (no `ftsw` touch, no added
+/// function, no MULTI — the user-reported expectation, issues 3/4), even though each scene
+/// overlays the very param the leveler bakes with a value that differs from base (MythicDrive
+/// `output` 0.55 → 0.78 in scene 3; TremoloBias `level` 0.5 → 0.0; UniVibe `volume` 0.49 →
+/// 0.54; Lightspeed `loudness` 0.47 → 0.26 in scene 2 — scene 3 being this preset's own
+/// `lastLoadedScene`). A diverging overlay can never make the bake unsafe: it MASKS base (HW,
+/// Hiwatt slot 31), so the plan bakes, MIRRORS the solved value only into the scenes that
+/// restated base, and leaves each authored per-scene mix untouched. This gate goes red if
+/// anything sends these switches down Assign (the MULTI regression) or mirrors a diverging
+/// scene.
 ///
 /// The shipped discriminator is `scene_jobs::scene_overlays_change_param`, asked once for
 /// `bypass` and once for the LEVELED param, by VALUE. Key presence was not enough: this

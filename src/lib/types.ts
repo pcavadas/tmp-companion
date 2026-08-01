@@ -143,6 +143,10 @@ export interface LevelResult {
    * capture's measured true peak — an ESTIMATE, never a re-measurement. Only the
    * one-shot presetLevel path (level_preset) sets this; null otherwise. */
   true_peak_dbtp: number | null;
+  /** Post-save param-level verify (batched scene runner): true = the saved preset
+   * does NOT hold the value this result reports (do not trust the number);
+   * false = re-read and confirmed; null = not checked. */
+  persist_mismatch: boolean | null;
 }
 
 /** Result of leveling one block-acting footswitch's engaged state

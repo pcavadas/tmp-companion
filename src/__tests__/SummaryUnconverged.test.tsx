@@ -36,11 +36,11 @@ const fsRow = (over: Partial<RunItem>): RunItem => ({
 });
 
 describe("Summary unconverged row", () => {
-  it("reports it off target with a re-run prompt, never as clamped or done", () => {
+  it("reports it off target, never as clamped or done", () => {
     renderSummary([fsRow({})]);
-    expect(
-      screen.getByText(/off target · −24\.3 · re-run to improve/),
-    ).toBeTruthy();
+    // Exact copy pin — matches RunBody's phrase for the same state; the remedy
+    // wording lives on the footer's re-run control, not this 104px cell.
+    expect(screen.getByText("off target · −24.3")).toBeTruthy();
     // The clamp copy must not leak onto a row that still has knob room.
     expect(screen.queryByText(/clamped · /)).toBeNull();
   });
@@ -54,8 +54,13 @@ describe("Summary unconverged row", () => {
     expect(screen.getByText(/0 of 1 leveled/)).toBeTruthy();
   });
 
-  it("offers no clamp remedy — the fix is another run, not a lower target", () => {
+  it("offers the re-run control, not the clamp remedy", () => {
     renderSummary([fsRow({})]);
+    // The advertised follow-up: another run at the same target.
+    expect(
+      screen.getByRole("button", { name: /Re-run off target/ }),
+    ).toBeTruthy();
+    // No clamp remedy — the fix is another run, not a lower target.
     expect(
       screen.queryByRole("button", { name: /Re-level clamped/ }),
     ).toBeNull();

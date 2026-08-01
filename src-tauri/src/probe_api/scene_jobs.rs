@@ -730,9 +730,10 @@ fn base_node_matches(
 }
 
 /// Does ANY scene overlay CHANGE `param` on `node` relative to base? The per-node footswitch
-/// bake gate, called once for `bypass` (a scene that flips the block on renders a baked value
-/// in a state the leveler never measured) and once for the LEVELED param (a scene that
-/// overlays it with its own value would simply not render the baked one).
+/// bake gate (`footswitch::plan_footswitch_jobs`), asked for `bypass`: a scene that flips the
+/// block on renders a baked value in a state the leveler never measured → Assign. The LEVELED
+/// param takes the separate [`scenes_restating_base`] path instead — a restating overlay gets
+/// the solved value MIRRORED, a diverging one keeps its authored value.
 ///
 /// VALUE semantics, not key presence: a DEVICE-AUTHORED preset carries the full param set for
 /// every node in every scene overlay, so "the key is there" is true of every node of every
@@ -787,6 +788,28 @@ pub(crate) fn last_loaded_scene(preset: &serde_json::Value) -> Option<u32> {
         .get("lastLoadedScene")
         .and_then(serde_json::Value::as_u64)
         .map(|v| v as u32)
+}
+
+/// Trace when a save path's `lastLoadedScene` re-stamp is silently disarmed: `restore`
+/// resolved to `None` on a preset that HAS scenes, so the save may rewrite the on-load
+/// scene. Fine (and silent) for a scene-less preset. `tag` names the calling lane.
+pub(crate) fn warn_missing_restore_scene(
+    tag: &str,
+    slot: u32,
+    preset: &serde_json::Value,
+    restore: Option<u32>,
+) {
+    if restore.is_none()
+        && preset
+            .get("scenes")
+            .and_then(|s| s.as_array())
+            .is_some_and(|s| !s.is_empty())
+    {
+        log::warn!(
+            "{tag} slot={slot}: preset has scenes but no readable lastLoadedScene — \
+             the save may re-stamp the on-load scene"
+        );
+    }
 }
 
 /// The scenes whose overlay CARRIES `param` on `node` with the BASE value (within

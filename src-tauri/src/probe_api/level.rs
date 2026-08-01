@@ -14,6 +14,13 @@ use crate::session;
 use crate::session::Session;
 use crate::LevelBlockArg;
 
+/// The one engaged/floor criterion the diagnostic arms share: finite chain audio
+/// meaningfully above the stationary floor, with real dynamics (a floor read is
+/// near-flat). NaN comparisons are false, so a failed measure reads "not engaged".
+fn is_engaged(l: &lufs::Loudness) -> bool {
+    l.integrated_lufs.is_finite() && l.integrated_lufs > -50.0 && l.spread_lu() > 0.5
+}
+
 /// DIAGNOSTIC (reamp-stuck investigation): PASSIVE re-amp state read — zero HID
 /// traffic. Plays the stimulus into USB-In 3 and captures USB-Out WITHOUT sending
 /// any device command: chain audio in the capture (finite LUFS, real spread) means
@@ -43,7 +50,7 @@ pub fn probe_reamp_state(topology_id: &str) -> Result<String, String> {
             l.integrated_lufs,
             l.spread_lu(),
             peak_db,
-            if l.integrated_lufs.is_finite() && l.integrated_lufs > -50.0 && l.spread_lu() > 0.5 {
+            if is_engaged(&l) {
                 "ENGAGED (stimulus audible through chain)"
             } else {
                 "off/floor (no chain audio)"
@@ -109,6 +116,11 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
         // observably landed — the floor scaled with it). If the load re-arms
         // exactly one engage, cycle 1 ENGAGES and later cycles floor.
         {
+            // The verdict below compares loudness ACROSS cycles, so it only means
+            // anything on the known scenario preset — a unit without the seeded
+            // fixture at 400 (empty slot, or some unrelated user preset) could
+            // invert it. Name-confirm in the same list space before loading.
+            super::slot_write::confirm_slot_name(400, "E2E Reference")?;
             let mut s = Session::connect_lean()?;
             s.load_preset(400)?;
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -125,7 +137,7 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
             // floor SCALED with the setter, proving the write landed) ALL read
             // floor from cycle 1 while `--levelpreset` measured perfectly in the
             // same minutes. The 0.5 ref is a working-copy write, never saved.
-            s.load_scene(8)?;
+            s.load_scene(session::BASE_SCENE_SLOT)?;
             std::thread::sleep(std::time::Duration::from_millis(300));
             s.set_preset_level(0.5)?;
             std::thread::sleep(std::time::Duration::from_millis(300));
@@ -136,7 +148,7 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
 
             let (ch, _) = cap.loudest_channel();
             let verdict = match lufs::measure_mono(&cap.channel(ch), cap.sample_rate) {
-                Ok(l) if l.integrated_lufs > -50.0 && l.spread_lu() > 0.5 => {
+                Ok(l) if is_engaged(&l) => {
                     engaged_cycles += 1;
                     format!(
                         "ENGAGED  {:.2} LUFS  spread {:.2} LU",
@@ -189,10 +201,10 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
 /// preset level or block parameters. Optional `slot` loads a preset first in its
 /// own connection; optional `scene_slot` recalls a scene before capture. No save.
 ///
-/// Floor-guarded (`leveller::require_live`): a failed inject reads as the device's
-/// stationary output floor — finite, but not a real measurement — so a flat-spread
-/// capture is retried once on a FRESH connection (never a disengage→re-engage on a
-/// held one; re-amp only engages reliably once per connection) before erroring.
+/// NOT floor-guarded (deliberately — this is the repro instrumentation seam, one
+/// capture with everything derived from it): a failed inject reads as the device's
+/// stationary output floor, so the headline is stamped FLOOR/SILENT when the capture
+/// fails `probe_reamp_state`'s engaged criterion instead of being retried.
 pub fn probe_measure_current_lufs(
     topology_id: &str,
     slot: Option<u32>,
@@ -229,8 +241,16 @@ pub fn probe_measure_current_lufs(
         per_channel.push_str(&line);
         per_channel.push('\n');
     }
+    // No floor-guard retry on this diagnostic seam, so a silent/failed inject WOULD
+    // print the device's stationary floor as if it were a measurement — stamp the
+    // headline with `probe_reamp_state`'s engaged/floor criterion instead.
+    let verdict = if is_engaged(&loud) {
+        ""
+    } else {
+        "  << FLOOR/SILENT — not a valid measurement (failed inject?)"
+    };
     Ok(format!(
-        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}\n{per_channel}",
+        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}{verdict}\n{per_channel}",
         slot.map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string()),
         scene_slot

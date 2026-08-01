@@ -189,6 +189,19 @@ fi
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
 case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level level-rerun level-strict) ;; esac
 
+# ORDERING GUARD (enforced, not just documented): doctor must run BEFORE any leveling
+# spec — every level* spec writes (the wizard always saves post-disclaimer), and
+# leveling equalizes the relative scene loudness the doctor's consistency check keys
+# on, so the reverse order silently weakens the doctor oracle.
+seen_leveling=0
+for s in "${SPECS[@]:-}"; do
+  case "$s" in level|level-*) seen_leveling=1 ;; esac
+  if [ "$s" = "doctor" ] && [ "$seen_leveling" -eq 1 ]; then
+    err "spec order error: doctor must come BEFORE every level* spec in '${SPECS[*]:-}' — reorder the arguments"
+    exit 2
+  fi
+done
+
 # Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
 # never from inside a spec: Playwright's per-test budget (300 s) can't absorb seed
 # (~90–150 s) + retries, and the seed self-repairs (sweeps stray imports from any

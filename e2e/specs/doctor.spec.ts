@@ -113,6 +113,12 @@ test.describe("Doctor — select, check, results", () => {
       await expect(
         page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/).first(),
       ).toBeVisible();
+      // Collapse the defect row again so the cut-through assertion below can only
+      // resolve against picked[1]'s freshly expanded row, never this one.
+      await page.getByText(picked[2].name).last().click();
+      await expect(
+        page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/),
+      ).toHaveCount(0);
     }
 
     // Expanding any measured sound row surfaces the cut-through estimate —

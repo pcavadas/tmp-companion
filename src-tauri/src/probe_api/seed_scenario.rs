@@ -349,12 +349,21 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
         let e = entry.expect("occupied entries exist in the floored list");
         let body = if e.name == p.name {
             // Pace the loop's reads apart — an immediate follow-on field-8 read can
-            // answer with the PREVIOUS slot's body (see `body_names`).
+            // answer with the PREVIOUS slot's body (see `body_names`). `Ok(None)` is
+            // "the device did not answer this read" (documented back-to-back read
+            // unreliability), not "the slot is empty" — retry once, paced, before
+            // treating the slot as unreadable.
             std::thread::sleep(std::time::Duration::from_millis(300));
-            s.read_slot_preset_json(p.list_index + 1).ok().flatten()
+            let mut b = s.read_slot_preset_json(p.list_index + 1).ok().flatten();
+            if b.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                b = s.read_slot_preset_json(p.list_index + 1).ok().flatten();
+            }
+            b
         } else {
             None
         };
+        let read_missed = e.name == p.name && body.is_none();
         let Some(body) = body.filter(|b| is_fixture_body(b)) else {
             // Marker gone or unreadable — the seed-manifest lease is the one remaining
             // license: we RECORDED seeding this slot and a spec's save stripped the
@@ -368,10 +377,14 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
                 to_seed.push(p);
                 continue;
             }
+            let cause = if read_missed {
+                "its body could not be read (the device did not answer field-8 twice)"
+            } else {
+                "it does not carry a fixture content marker"
+            };
             return Err(format!(
-                "target slot {} is occupied by {:?} and carries neither a fixture \
-                 content marker nor a seed-manifest claim — refusing to seed over it \
-                 (move that preset, then rerun)",
+                "target slot {} is occupied by {:?} and {cause}, with no seed-manifest \
+                 claim — refusing to seed over it (move that preset, then rerun)",
                 p.list_index, e.name
             ));
         };

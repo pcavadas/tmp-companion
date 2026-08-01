@@ -639,6 +639,26 @@ fn change_param_false_when_a_full_overlay_restates_the_base_values() {
     assert!(!scene_overlays_change_param(&p, "ampA", "outputLevel"));
 }
 
+// Pin the `SCENE_PARAM_EPS` (1e-6) tolerance itself: the restating test above uses exact
+// values, so it would stay green if the compare silently became `!=`. A float-noise delta
+// (1e-7) must read unchanged; a real (if small) authored delta (1e-4) must read changed.
+#[test]
+fn change_param_tolerance_splits_float_noise_from_a_real_delta() {
+    let mut p = bake_gate_preset();
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
+        serde_json::json!({ "bypass": true, "outputLevel": 0.400_000_1 });
+    assert!(
+        !scene_overlays_change_param(&p, "ampA", "outputLevel"),
+        "1e-7 off base is float noise, not an authored change"
+    );
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
+        serde_json::json!({ "bypass": true, "outputLevel": 0.4001 });
+    assert!(
+        scene_overlays_change_param(&p, "ampA", "outputLevel"),
+        "1e-4 off base is a real authored delta"
+    );
+}
+
 // The leveled-param check the footswitch gate's second call makes: base 0.4 → scene 0.9.
 #[test]
 fn change_param_true_when_a_scene_changes_a_non_bypass_param() {

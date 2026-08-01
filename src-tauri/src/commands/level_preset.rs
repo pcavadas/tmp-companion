@@ -212,9 +212,18 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // this arm has no other preset read to fold the lookup into, so pay one
                 // field-8 read only when actually saving.
                 if save {
-                    opts.restore_scene =
-                        read_slot_preset_parsed(slot).ok().and_then(|(p, _, _)| crate::last_loaded_scene(&p));
-                    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                    // `read_saved_preset` owns this exact sequence: one field-8 read
+                    // (logged on failure) + the single post-read reconnect gap.
+                    let saved = crate::read_saved_preset(slot);
+                    opts.restore_scene = saved.as_ref().and_then(crate::last_loaded_scene);
+                    if let Some(p) = saved.as_ref() {
+                        crate::warn_missing_restore_scene(
+                            "level_preset(block)",
+                            slot,
+                            p,
+                            opts.restore_scene,
+                        );
+                    }
                 }
                 // Pre-dispatch cancel: nothing has touched the device yet — early-return
                 // (the leveller bails at its own pre-measure checkpoint) so the run-end
@@ -258,6 +267,12 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                         // rewrites the preset's on-load scene to base — HW, Hiwatt slot 31).
                         previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
                         opts.restore_scene = crate::last_loaded_scene(&preset);
+                        crate::warn_missing_restore_scene(
+                            "level_preset",
+                            slot,
+                            &preset,
+                            opts.restore_scene,
+                        );
                         footswitch::all_onoff_blocks(
                             preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
                         )

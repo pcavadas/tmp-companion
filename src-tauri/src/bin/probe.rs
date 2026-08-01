@@ -263,9 +263,17 @@ fn main() {
         let group = args.get(i + 2).cloned().unwrap_or_default();
         let node = args.get(i + 3).cloned().unwrap_or_default();
         let param = args.get(i + 4).cloned().unwrap_or_default();
+        // Strict CSV parse: a typo'd token ("0.2x") empties the whole list (Result
+        // collect), landing in the usage error below — never a silently shortened
+        // sweep that still reports success.
         let values: Vec<f32> = args
             .get(i + 5)
-            .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+            .and_then(|s| {
+                s.split(',')
+                    .map(|t| t.trim().parse())
+                    .collect::<Result<Vec<f32>, _>>()
+                    .ok()
+            })
             .unwrap_or_default();
         if idx == u32::MAX
             || group.is_empty()
@@ -1390,7 +1398,19 @@ fn main() {
         // DIAGNOSTIC: --reamp-multi-engage <cycles> [topology]
         // N × engage→capture→disengage on ONE connection, idle-gap-safe pacing;
         // re-tests the "re-amp engages reliably only ONCE per connection" gotcha.
-        let cycles: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(4);
+        // Default 4 only when the argument is genuinely omitted; a present-but-invalid
+        // value (zero or non-numeric) must error — `cycles = 0` runs no cycle yet the
+        // `engaged_cycles == cycles` verdict would report success.
+        let cycles: u32 = match args.get(i + 1).filter(|s| !s.starts_with("--")) {
+            None => 4,
+            Some(s) => match s.parse() {
+                Ok(n) if n >= 1 => n,
+                _ => {
+                    eprintln!("usage: probe --reamp-multi-engage <cycles ≥ 1> [topology]");
+                    std::process::exit(2);
+                }
+            },
+        };
         let topology = args
             .get(i + 2)
             .filter(|s| !s.starts_with("--"))

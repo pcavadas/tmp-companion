@@ -481,6 +481,7 @@ fn outcome_to_level_result(
         // Scene path: no predicted true peak this cycle (only the one-shot presetLevel
         // path in `level_preset` estimates it).
         true_peak_dbtp: None,
+        persist_mismatch: o.persist_mismatch,
     }
 }
 

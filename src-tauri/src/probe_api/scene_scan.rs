@@ -74,7 +74,7 @@ pub fn probe_level_scenes_oneshot(
         )
     };
     // Guaranteed re-amp OFF regardless of outcome (a stranded re-amp mutes the input).
-    let _ = Session::connect().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    leveller::reamp_off_guaranteed("scene-level");
     let outcomes = outcomes?;
     let mut out = format!(
         "{} leveling preset list_index={list_index} → target {target_lufs:.1} LUFS (topology {topology_id})\n",
