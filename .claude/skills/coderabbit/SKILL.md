@@ -26,15 +26,15 @@ nothing.
 Standing owner decisions — don't re-litigate them per-PR. They bind the agent, not the user: an
 explicit user instruction supersedes any row.
 
-| #   | Never                                                                                                            | Because                                                                                                                                                                                                  |
-| --- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| N1  | `@coderabbitai full review`                                                                                      | Standing instruction. Not as escalation, not for a no-op, not in a quiet window.                                                                                                                         |
-| N2  | `@coderabbitai resolve`                                                                                          | Resolves ALL threads at once; resolution is CodeRabbit's acknowledgment, so doing it by hand forges it. Changes NO formal review state — it cannot turn `CHANGES_REQUESTED` into `APPROVED`.             |
-| N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2. CodeRabbit resolves its own threads once it accepts a fix or a rebuttal.                                                                                                                     |
-| N4  | `@coderabbitai approve`                                                                                          | Resolves all threads AND submits a REAL approval: `.coderabbit.yaml:13` sets `request_changes_workflow: true`, so it lands as the formal review this repo's merge gate needs — self-approving the merge. |
-| N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).                                                                                                   |
-| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state; the command spends a quota unit for nothing. See §3 row S1.                                                                                                           |
-| N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                                                                                                                    |
+| #   | Never                                                                                                            | Because                                                                                                                                                                       |
+| --- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1  | `@coderabbitai full review`                                                                                      | Standing instruction. Not as escalation, not for a no-op, not in a quiet window.                                                                                              |
+| N2  | `@coderabbitai resolve`                                                                                          | Resolves ALL threads at once; resolution is CodeRabbit's acknowledgment, so doing it by hand forges it. Changes NO formal review state — it cannot clear `CHANGES_REQUESTED`. |
+| N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2. CodeRabbit resolves its own threads once it accepts a fix or a rebuttal.                                                                                          |
+| N4  | `@coderabbitai approve`                                                                                          | Resolves all threads AND submits a REAL approval (`request_changes_workflow: true`, `.coderabbit.yaml:13`) — self-approving the merge this repo gates on.                     |
+| N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).                                                                        |
+| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state; the command spends a quota unit for nothing. See §3 row S1.                                                                                |
+| N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                                                                                         |
 
 Only TWO commands are ever postable on this repo: **`@coderabbitai review`** (§3 row S3) and
 **`@coderabbitai resume`** (§3 row SP). Nothing else, ever.
@@ -55,7 +55,8 @@ Eight observations decide everything:
 - **`ACTIONABLE_OUTSIDE_DIFF`** — the `OUTSIDE_DIFF` subset not yet dealt with. One is **addressed**
   once the fix, or a written refusal reason, lands in a commit message on this PR (step 5b) — with
   no thread, that commit is the only record.
-- **`UNTRIAGED_RESOLVED`** — threads resolved or outdated that you never fixed and never replied to.
+- **`UNTRIAGED_RESOLVED`** — threads resolved or outdated that never got an OUTCOME from you: a
+  landed fix, or a written reason for not fixing. A bare acknowledging reply does not clear one.
   A thread can resolve because the diff moved under it, so these left `OPEN_THREADS` on their own.
   Treat each as actionable on the merits; never reopen it (N3).
 - **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
@@ -76,7 +77,7 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S3  | `LIMITED(t, n)` and `now ≥ t + n` and not `REVIEWED`                                                                           | Post exactly ONE `@coderabbitai review`. Then go to S1.                                                                                                                                          |
 | S4  | `REVIEWED` and (`ACTIONABLE_THREADS` non-empty OR `ACTIONABLE_OUTSIDE_DIFF` non-empty OR `UNTRIAGED_RESOLVED` non-empty)       | Run §4 on every entry of all three. One commit, one push. Then S1.                                                                                                                               |
 | S5  | `REVIEWED`, `ACTIONABLE_THREADS` empty, `ACTIONABLE_OUTSIDE_DIFF` all addressed, `reviewDecision != APPROVED`                  | **Wait ONLY IF `OPEN_THREADS` is empty** — approval follows thread state within seconds. If ANY thread is still open (even one CodeRabbit deferred), waiting is futile: go to §4.1 and clear it. |
-| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                                               | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `state == "MERGED"` (§2), never from an approval.                                                 |
+| S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                                               | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `gh pr view --json state` reading `MERGED`, never from an approval.                               |
 | S7  | A posted lever provably failed — S3's `review` no-oped (0 reviews, 0 threads), or SP's `resume` left `PAUSED` on the same head | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                                                       |
 
 `mergeStateStatus: DIRTY` is not a review state — `main` moved and the branch now conflicts. Merge
@@ -92,7 +93,8 @@ Findings arrive on two lanes that close differently. Work BOTH; never mix their 
 | `ACTIONABLE_THREADS`      | `reviewThreads` (§2)               | Fix and/or reply ON the thread (5a). CodeRabbit resolves it itself.                                                    |
 | `ACTIONABLE_OUTSIDE_DIFF` | review BODIES, `OUTSIDE_DIFF` (§2) | Fix and/or record the outcome in the COMMIT MESSAGE (5b). No thread exists, so it closes when the next review sees it. |
 
-A settled thread is terminal even while open — don't re-reply, don't let it hold up S5/S6.
+A settled thread needs nothing more FROM YOU — don't re-reply. It is still an approval blocker while
+it stays open (§5), so clear it through §4.1 rather than waiting on it.
 
 **Enumerate before fixing.** List every finding from both sources first — threads and all review
 bodies — then work the list.
@@ -102,9 +104,10 @@ Per finding, in order:
 1. **Re-verify against current code** (`grep`/`sed` the cited `file:line`) — reviews lag pushes and
    rebases, so a finding can already be fixed or have moved.
 2. **Classify from the finding's BODY, not its title.** A finding often asks for more than one thing:
-   enumerate every requirement, then satisfy or refuse each explicitly. Valid ⇒ 3. Invalid or out of
-   scope ⇒ skip 3 and 4, go straight to 5 and record the refusal REASON there. No third branch, and a
-   refused finding never gets a code change.
+   enumerate every requirement, then satisfy or refuse each explicitly. THREE outcomes, no others:
+   valid ⇒ 3; already addressed per step 1 ⇒ skip 3 and 4, go to 5 citing the current-code evidence;
+   invalid or out of scope ⇒ skip 3 and 4, go to 5 recording the refusal REASON. A refused or
+   already-addressed finding never gets a code change.
 3. **Fix the root cause**, on the branch the findings were actually posted on. Batch every fix into
    ONE commit + ONE push (N7). Confirm you're on the PR's real head — stacked-PR trap in
    `references/handling-findings.md`.
@@ -134,8 +137,3 @@ not (N3). Recipe: `references/handling-findings.md`.
 - **Thread replies are free; pushes are not.** A reply is answered in ~15-30 s and spends no quota; a
   push trips a fresh rate-limit window, and the windows lengthen under sustained use. When both
   would work, reply.
-
-## References
-
-- `references/observing-state.md` — the command toolkit and every trap in reading its output.
-- `references/handling-findings.md` — the §4.1 recipe, thread-matching, the stacked-PR head trap, §5.

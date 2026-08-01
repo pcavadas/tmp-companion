@@ -1,7 +1,7 @@
 # Observing CodeRabbit review state
 
 Reference for `../SKILL.md` §2. This is the full command toolkit plus every trap in reading
-its output, and the long-form definitions of the six states §2 summarizes. Read `SKILL.md` §1-§3
+its output, and the long-form definitions of the eight observations §2 summarizes. Read `SKILL.md` §1-§3
 first — this file is supporting detail, not the decision procedure.
 
 ## Command toolkit
@@ -53,7 +53,7 @@ stops, which looks identical to "there was only one page". Comments are a NESTED
 and treat any thread reporting `hasNextPage: true` as unclassifiable until you fetch its remaining
 comments explicitly — do not silently derive `ACTIONABLE_THREADS` from a truncated comment list.
 
-## The six states, in full
+## The eight observations, in full
 
 - **`REVIEWED`** — a formal review exists whose `submittedAt` is after the current head was pushed.
 - **`LIMITED(t, n)`** — a CodeRabbit **comment** says "Review limit reached … next review available
@@ -70,8 +70,11 @@ comments explicitly — do not silently derive `ACTIONABLE_THREADS` from a trunc
   on PR #119 there were 20 across 5 review bodies and 5 went unfixed, including a `Critical`
   destructive-save guard, while the thread view read "no actionable threads". Sweep EVERY review
   body (they accumulate; a finding raised in review 2 is not repeated in review 5), and treat each
-  as a finding of record: fix it, or state the reason in the commit message, since there is no
-  thread to reply on.
+  as a finding of record.
+- **`ACTIONABLE_OUTSIDE_DIFF`** — the `OUTSIDE_DIFF` subset you have not yet dealt with. One becomes
+  **addressed** when the fix, or a written refusal reason, lands in a commit message on this PR
+  (§4 lane 5b). There is no thread to reply on, so that commit is the ONLY record — an unexplained
+  refusal is indistinguishable from a finding you never read.
 - **`OPEN_THREADS`** — unresolved threads from `reviewThreads`.
 - **`ACTIONABLE_THREADS`** — the subset of `OPEN_THREADS` that still needs something from you: either you
   have never replied in the thread, or CodeRabbit's latest comment asks a question or requests a
@@ -82,7 +85,7 @@ comments explicitly — do not silently derive `ACTIONABLE_THREADS` from a trunc
   which is a useful hint — but it is applied inconsistently (3 of 15 acks on PR #119), so it
   confirms settledness and never establishes actionability.
 
-**A resolved thread is not necessarily an addressed one.** A thread can resolve because the diff
+**`UNTRIAGED_RESOLVED` — a resolved thread is not necessarily an addressed one.** A thread can resolve because the diff
 moved under it (`isOutdated`), not because anyone answered it — so a finding you never triaged can
 leave `OPEN_THREADS` on its own and never reappear. Once per review round, list the RESOLVED threads
 too and check each for a finding that got no fix and no reply from you; judge those on the merits

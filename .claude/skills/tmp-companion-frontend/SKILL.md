@@ -13,7 +13,7 @@ TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` com
 
 `src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/` for the leveling wizard), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
 
-The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose). Don't add them back.
+The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose).
 
 ## When you're handed a Claude-Design handoff
 
@@ -61,7 +61,7 @@ Two load-bearing rules:
 - **Casing:** top-level arg keys passed to `invoke` are **camelCase** (Tauri converts them to the Rust handler's snake_case params), but keys _inside_ a JSON payload struct stay **snake_case** to match `serde` (e.g. `target_lufs`, `topology_id`). Get this wrong and the command silently receives `undefined`.
 - **The type mirror:** `src/lib/types.ts` mirrors the Rust `serde` structs by hand — adding a Rust field without updating it **fails silently** (test mocks are untyped). `invoke.test.ts` asserts the exact wrapper count (`Object.keys(cmd).length`, hardcoded) — update it when you add **or remove** a wrapper IN the `cmd` namespace. Named-export-only wrappers outside `cmd` (the fire-and-forget leveling cancel lane `cancel{Preset,Scene,Footswitch}Leveling`) don't move the count — assert those with their own `expectCall`.
 
-If a command doesn't exist yet, that's a backend change — coordinate it, don't fake data on the frontend. Grep the existing seams first before assuming one's missing. Detail: `references/gotchas.md`.
+If a command doesn't exist yet, that's a backend change — coordinate it, don't fake data. Grep the existing seams before assuming one's missing. Detail: `references/gotchas.md`.
 
 ### Shared device data: the `libraryScan` store (App-owned, ONE scan/connection)
 
@@ -85,7 +85,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
 - **Use REAL timers, not fake ones.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and hang forever polling a frozen clock.
 - After adding a test, run the suite (`bun run test`) — a green `tsc` + build does **not** run your test.
 
-**Full UI journeys** (connect → navigate → edit → save) are covered above Vitest by the dual-mode Playwright e2e harness in `e2e/` (`bun run e2e` offline / `bun run e2e online`) — reach for it when a change spans the click→invoke→device round trip. Full detail: `references/gotchas.md`.
+**Full UI journeys** (connect → navigate → edit → save) are covered above Vitest by the dual-mode Playwright e2e harness in `e2e/` (`bun run e2e` offline / `bun run e2e online`) — reach for it when a change spans the click→invoke→device round trip.
 
 ## Lint & typecheck traps
 
@@ -108,7 +108,7 @@ bun run format        # prettier --write — run before calling a change "done"
 bun run build         # Vite production build
 ```
 
-Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export; for a cleanup/refactor, confirm the diff is net-negative (`git diff --stat`). State plainly what you verified.
+Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export; for a cleanup/refactor, the criterion is the **loaded-content budget** — tokens in the always-loaded and skill-body tiers went down, and every deliverable and link still resolves. `git diff --stat` is supporting evidence only: a docs or component split legitimately adds files while cutting loaded tokens. State plainly what you verified.
 
 ## References
 
