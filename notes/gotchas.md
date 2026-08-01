@@ -9,7 +9,8 @@ Where a rule is stated in more than one place, the split is deliberate:
   crashes). Always loaded, re-injected after compaction.
 - **`CLAUDE.md`** — the traps that fire while _running_ a command rather than editing a file,
   plus a one-line index of the rules below.
-- **`.claude/rules/*.md`** — path-scoped conventions that load when you edit matching files.
+- **the OTHER `.claude/rules/*.md`** (every one except `danger.md` above) — path-scoped
+  conventions that load only when you edit a file the rule's `paths:` glob matches.
 - **This file** — the long form. Where both state a rule, this one is the fuller text; they do
   not contradict.
 

@@ -5,19 +5,19 @@ description: "Product-facing data model for the Fender Tone Master Pro, from the
 
 # TMP product-facing data model
 
-The domain dictionary for TMP's ubiquitous language — what a preset, scene or block _is_ in product terms — from Fender's Owner's Manual + Model Guide, so the companion code named here (`audiograph.rs`, `leveller.rs`, `audio.rs`, `models/`) carries the right meaning. `CLAUDE.md` is the authoritative index and wins any disagreement with this file; `notes/protocol.md` + `notes/write-safety.md` carry the wire and write facts.
+The domain dictionary for TMP's ubiquitous language — what a preset, scene or block _is_ in product terms — from Fender's Owner's Manual + Model Guide, so the companion code (`audiograph.rs`, `leveller.rs`, `models/`) carries the right meaning. `CLAUDE.md` is the index and wins any disagreement here; `notes/protocol.md` + `notes/write-safety.md` carry the wire and write facts.
 
 ## Preset object
 
 A preset = signal-path template + blocks + per-preset settings + footswitch assigns + EXP assigns + scenes.
 
-> **Preset identity = `presetJson.info.preset_id`**, a per-preset UUID — NOT the user-editable `displayName`, NOT the positional slot. It is the join key for host-side metadata, and that metadata belongs in a **sidecar**: the firmware re-serializes `info` to a fixed baseline field set on every save, so injected keys survive an import but vanish on the first on-device edit+save (HW round-trip, fw 1.8.45). The on-device DB stores `presetJson` as **plaintext JSON** — the XOR+LZ4 encoding is only the exported `.preset` file. Field list: `references/preset-model.md`; in-place-edit rule: `notes/write-safety.md`.
+> **Preset identity = `presetJson.info.preset_id`**, a per-preset UUID — NOT the user-editable `displayName`, NOT the positional slot. It is the join key for host-side metadata, which belongs in a **sidecar**: the firmware re-serializes `info` to a fixed baseline field set on every save, so injected keys survive an import but vanish on the first on-device edit+save (HW round-trip, fw 1.8.45). The on-device DB stores `presetJson` as **plaintext JSON**; only the exported `.preset` file is encoded, and that is **XOR-only** (LZ4 wraps the bytes solely inside `importPresetRequest.presetJson`). Field list: `references/preset-model.md`; in-place-edit rule: `notes/write-safety.md`.
 
 Capacities: **504** user presets (4 MIDI banks — 128/128/128/120) · **200** Songs (each an ordered preset bank with labelled sections) · **50** Setlists (≤99 Songs each) · **100** Cloud presets · **500** User Block Presets, a **separate persistence store** of per-block user defaults reached from the Add Block menu behind a ▾ affordance.
 
 ### Signal-path templates (12)
 
-Choose ONE template per preset, then populate. Splitter and Mixer are **template-fixed** — predetermined positions in the parallel templates, not independently addable or removable. Changing the template after the path is populated **repopulates** the existing blocks into the new shape (p.18).
+Choose ONE template per preset, then populate. Splitter and Mixer are **template-fixed** — fixed positions in the parallel templates, not independently addable or removable. Changing the template after the path is populated **repopulates** the existing blocks into the new shape (p.18).
 
 There are **twelve**: do not collapse the three `Mix` rows when counting, which is how this list was previously mis-stated as 11 and elsewhere as 14. Topology table: `references/preset-model.md`; block types: `references/workflows.md` §2.
 
@@ -38,15 +38,15 @@ Invariants (firmware-enforced):
 
 What a scene _can_ differ in: each block's bypass state; per-block parameter values, gated by the per-block **Scene Edit flag** (`ENABLED`, the default, applies a change only to the active scene; `DISABLED` shares it across all scenes); and its own Amp Control / MIDI PC / MIDI CC messages.
 
-Whether a recalled scene keeps unsaved edits is the global **Scene Change Behavior** setting, default `MAINTAIN CHANGES` (`references/global-settings.md` flags it as the one to watch). The serialization is a sparse diff — `ftswStates` plus scene-keyed override maps (`tmp-companion-protocol`).
+Whether a recalled scene keeps unsaved edits is the global **Scene Change Behavior** setting, default `MAINTAIN CHANGES` (`references/global-settings.md`). The serialization is a sparse diff — `ftswStates` plus scene-keyed override maps (`tmp-companion-protocol`).
 
 ## Footswitch Assign (Effects FS mode, per preset)
 
 8 of 10 physical footswitches are assignable (FS Mode toggle and Tap/Tuner are fixed), each carrying up to **5 functions simultaneously**. Type-picker and field-scope tables: `references/workflows.md` §4.
 
-**Field scope — switch-level vs function-level.** `Type` and `Block` are **per function**; `Color (Active/Inactive)`, `Switch` (latching/momentary) and `Custom Label` are **switch-level**, one value shared by every function on that footswitch. Getting this backwards produces per-function colour/label writes the device silently resolves at switch level.
+**Field scope — switch-level vs function-level.** `Type` and `Block` are **per function**; `Color (Active/Inactive)`, `Switch` (latching/momentary) and `Custom Label` are **switch-level**, one value shared by every function on that footswitch. Backwards, this produces per-function colour/label writes the device silently resolves at switch level.
 
-**Switch Link** is a mutual-exclusion group of up to **8 footswitches** — pressing a linked switch turns off every other active switch in the link. Its scope is **unresolved**: it is the one row on that screen lacking the "common to all five" sentence (`references/open-questions.md`).
+**Switch Link** is a mutual-exclusion group of up to **8 footswitches** — pressing a linked switch turns off every other active switch in the link. Its scope is **unresolved**: the one row on that screen lacking the "common to all five" sentence (`references/open-questions.md`).
 
 **Footswitch-gated parameters default to OFF** — a block parameter can store `0` and only reach its real value via a `Parameter Change` function, so a "silent" effect in the preset JSON may be _gated off_, not absent.
 
@@ -56,7 +56,7 @@ Five expression sources (Toe Switch, EXP 1, EXP 2, MIDI EXP 3, MIDI EXP 4), each
 
 ## Block inventory
 
-Don't duplicate the catalog here — it stales on every firmware update. **Source precedence is scoped per fact:** the Model Guide wins on official names, real-unit attributions and appearance; the firmware's `product_profile.json` outranks it on on-device availability and menu category (guide and app both include unavailable leaks). `tmp-companion-catalog` operationalizes this and owns the shipped `tmp-model-guide.json`. Category counts: `references/preset-model.md`.
+Don't duplicate the catalog here — it stales on every firmware update. **Source precedence is scoped per fact:** the Model Guide wins on official names, attributions and appearance; the firmware's `product_profile.json` outranks it on on-device availability and menu category (guide and app both leak unavailable models). `tmp-companion-catalog` owns the shipped `tmp-model-guide.json`. Category counts: `references/preset-model.md`.
 
 ## MIDI implementation
 
@@ -66,11 +66,11 @@ All of it — CC chart, bank/PC preset addressing, MIDI Out modes, receive chann
 
 A **4-in / 4-out** USB 2.0 audio interface, 44.1 / 48 / 88.2 / 96 kHz DAW-selectable. Channel maps for standard vs reamp mode, the reamp/AGC model and the PRE/POST fader detail: `references/setup-recipes.md` §4.
 
-> **The USB clock rate is not the internal rate.** A **44.1 kHz stage sits inside the USB-in → DSP → USB-out path** (HW-measured, fw 1.8.45), so re-amp capture content above ~22 kHz is anti-alias skirt, not preset tone — load-bearing for spectrum / EQ-match / Doctor-PSD work. The **host Core Audio rate stays 48 kHz**: that is what `audio.rs` requires and is not a bug to "fix". Evidence and method traps: `references/open-questions.md` A2.
+> **The USB clock rate is not the internal rate.** A **44.1 kHz stage sits inside the USB-in → DSP → USB-out path** (HW-measured, fw 1.8.45), so re-amp capture above ~22 kHz is anti-alias skirt, not preset tone — load-bearing for spectrum / EQ-match / Doctor-PSD work. The **host Core Audio rate stays 48 kHz**: what `audio.rs` requires, not a bug to "fix". Evidence and method traps: `references/open-questions.md` A2.
 
 ## Firmware-enforced constraints
 
-What the firmware won't accept when mutating presets. The placement/count caps are enforced by the firmware's **control app**, not the audio engine — which independently enforces only the CPU budget. The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`. Values are fw 1.8.45, identical back to 1.7.75. **Full text of each is in `references/preset-model.md`; the numbering below is cited externally, so never renumber it.**
+The caps below are **client-side validation only**: enforced by the firmware's **control app**, while the device's audio engine does **not** reject an over-cap edit — it enforces only the CPU budget. Any new apply path must call the cap check itself, because nothing downstream will. The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`. Values are fw 1.8.45, identical back to 1.7.75. **Full text in `references/preset-model.md`; the numbering below is cited externally, so never renumber it.**
 
 1. **Convolution reverb — 1 per preset.** The cap is on the shared FFT convolution engine, so it also catches amps with baked-in spring reverb (`…CabIRConvRvb`), which is why those ship `NoFx`/`Normal` variants.
 2. **Cabinets — 2 per preset.** Combo amps, half-stacks, Cabinet blocks and IR blocks share the 2 slots; a dual-cab counts as 2.
@@ -86,9 +86,9 @@ What the firmware won't accept when mutating presets. The placement/count caps a
 
 ## Operating modes
 
-Six navigation modes via the left-side touchscreen icons: My Presets, Favorites, Factory Presets, Cloud Presets, Songs, Setlists. Capacity/behaviour table: `references/workflows.md` §1; DAW Mode and Looper entry gestures §10 and §8; the screen/modal index is that file's trailing section.
+Six navigation modes via the left-side touchscreen icons: My Presets, Favorites, Factory Presets, Cloud Presets, Songs, Setlists. Capacity/behaviour table: `references/workflows.md` §1; DAW Mode and Looper entry gestures §10 and §8; the screen/modal index is that file's tail.
 
-Each mode has a `tabEnum` on the wire (`tmp-companion-protocol`). One product consequence: **the cursive "F" top-bar badge is the Factory badge (`tabEnum=4`), not Favorites** — it means the preset came from the factory tab, so the brand mark shows instead of a numeric slot. My-Presets selections (`tabEnum=1`) render the slot number.
+Each mode has a `tabEnum` on the wire (`tmp-companion-protocol`). One product consequence: **the cursive "F" top-bar badge is Factory (`tabEnum=4`), not Favorites** — the preset came from the factory tab, so the brand mark shows instead of a numeric slot. My-Presets selections (`tabEnum=1`) render the slot number.
 
 ## Why this matters for the companion
 
@@ -103,6 +103,6 @@ Each mode has a `tabEnum` on the wire (`tmp-companion-protocol`). One product co
 - `setup-recipes.md` — rear-panel jacks as silkscreened, output levels, USB channel maps, the reamp/AGC model, the four documented rigs (incl. 4CM cable-by-cable).
 - `global-settings.md` — all seven Global Settings tabs and **every default**, Global EQ bands, Output Mixer, tuner, override precedence.
 - `workflows.md` — every on-device procedure (song BPM, backup, firmware update, …), the **cabinet sub-model** (mic models, the 32-slot position grid, axis/filters, dual-cab/dual-mic Blend+Pan, External Cabinet/SIC — §3), the operating-modes capacity table, the screen index.
-- `open-questions.md` — what the manual does and doesn't settle, tagged RESOLVED (HW/FW-derived) / UNDOCUMENTED / AMBIGUOUS / INFERRED, plus its contradictions and the real-unit measurements. **Read before asserting a device behaviour this skill does not state.**
+- `open-questions.md` — what the manual does and doesn't settle, tagged RESOLVED / UNDOCUMENTED / AMBIGUOUS / INFERRED, plus its contradictions and the real-unit measurements. **Read before asserting a device behaviour this skill does not state.**
 
-Sources: the Interactive Owner's Manual (structural facts verified against **firmware v1.8**, rev. J) and the Model Guide (v1.7). The model inventory stays v1.7-pinned — 1.8 ships 31 models the guide doesn't cover. Re-fetch when firmware revs; the structural model is stable across 1.7→1.8.
+Sources: the Interactive Owner's Manual (structural facts verified against **firmware v1.8**, rev. J) and the Model Guide (v1.7). The inventory stays v1.7-pinned — 1.8 ships 31 models the guide doesn't cover. The structural model is stable across 1.7→1.8.

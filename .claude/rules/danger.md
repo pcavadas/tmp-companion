@@ -16,7 +16,7 @@ Full hardware evidence for the linked entries is in [`notes/gotchas.md`](../../n
 
 ## Re-amp and measurement
 
-- **DANGER** — **NEVER re-engage re-amp on a held connection** (disengage → settle → re-engage). HW-observed to wedge the device's re-amp **and trigger a USB crash that rebooted the Mac**. Only the measurement prepass reconnects (one engage per scene); the leveling apply — set `presetLevel`, per-scene `outputLevel`, save, all pure sends — runs on ONE persistent session. See `notes/protocol.md`.
+- **DANGER** — **NEVER re-engage re-amp on a held connection** (disengage → settle → re-engage). HW-observed to wedge the device's re-amp **and trigger a USB crash that rebooted the Mac**. `leveller::level_preset` therefore uses **three fresh connections** (load / measure / apply). For SCENE and footswitch leveling only the measurement prepass reconnects (one engage per scene); that path's apply — per-scene `outputLevel` + save, all pure SENDS with no engage — runs on ONE persistent session. Either way the run must still end with a guaranteed re-amp OFF on its own fresh connection. See `notes/protocol.md`.
 
 - **DANGER** — **A silent/failed re-amp inject reads as the device's STATIONARY OUTPUT FLOOR**, and `measure_c` would accept it as a valid `C` without the production floor guards. In a rapid 20-engage `probe --stim-ab` sweep, **19 of 20** captures measured the post-DSP floor rather than the stimulus. [→ evidence](../../notes/gotchas.md#a-silentfailed-re-amp-inject-reads-as-the-devices-stationary-output-floor-and-measure_c-would-accept-it-as-a-valid-c-without-the-production-floor-guards-below)
 

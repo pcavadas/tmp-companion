@@ -2,7 +2,8 @@
 
 TMP Companion is a macOS-only Tauri 2 app (Rust backend + React/TypeScript frontend) that talks to a Fender Tone Master Pro over USB. This file is the onramp; the depth lives elsewhere:
 
-- **Start here:** [`CLAUDE.md`](CLAUDE.md) — the index, the always-loaded danger rules, and the traps that fire while running a command.
+- **Before touching the device:** [`.claude/rules/danger.md`](.claude/rules/danger.md) — the always-loaded danger rules (data loss, device wedging, machine crashes).
+- **Start here:** [`CLAUDE.md`](CLAUDE.md) — the index to those rules, plus the traps that fire while running a command.
 - **Architecture map:** [`notes/overview.md`](notes/overview.md); the hardware evidence behind every rule: [`notes/gotchas.md`](notes/gotchas.md).
 - **Topic deep-dives:** [`notes/`](notes/) — protocol, leveling, write-safety, block-copy, songs.
 - **Legal posture:** [`INTEROP.md`](INTEROP.md) + [`NOTICE`](NOTICE).

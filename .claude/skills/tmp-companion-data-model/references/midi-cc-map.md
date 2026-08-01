@@ -94,7 +94,7 @@ Global Settings → I/O → MIDI:
 - `CC 3` / `CC 4` = MIDI EXP 3 / MIDI EXP 4 (virtual, no jack)
 - `CC 7` = Master Volume
 - `CC 20` = FS Mode enable
-- `CC 21–29` = Effects FS 1–8 toggles
+- `CC 21–24` and `CC 26–29` = Effects FS 1–8 toggles — **`CC 25` is skipped**, the range is not contiguous (gotcha 4)
 - `CC 30` = bulk FS 1–8 enable/disable (values 0–7 enable, 10–17 disable)
 - `CC 64` = Tap Tempo
 - `CC 65` = Toe Switch

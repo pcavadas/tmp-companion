@@ -12,7 +12,11 @@ gh api graphql --paginate -f query='query($endCursor:String){repository(owner:"<
   pullRequest(number:<n>){ reviewThreads(first:100, after:$endCursor){
     pageInfo{hasNextPage endCursor}
     nodes{id isResolved isOutdated path
-      comments(first:100){pageInfo{hasNextPage} nodes{author{login} createdAt}}}}}}}'
+      comments(first:100){pageInfo{hasNextPage endCursor} nodes{author{login} createdAt body}}}}}}}'
+# --paginate advances ONLY the outer reviewThreads connection. Any thread reporting
+# comments.pageInfo.hasNextPage:true is UNCLASSIFIABLE until you fetch its remaining
+# comments explicitly (re-query that thread id with comments(after:<endCursor>)).
+# `body` is required: "has CodeRabbit asked for something" cannot be read from authors alone.
 gh api repos/<owner>/<repo>/issues/<n>/comments --jq \
   '.[] | select(.user.login=="coderabbitai[bot]") | {updated_at, body: .body[0:400]}' | tail -3
 gh pr view <n> --comments                                # FULL bodies — see below

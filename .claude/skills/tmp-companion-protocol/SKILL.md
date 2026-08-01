@@ -5,7 +5,7 @@ description: "The USB wire-protocol and `.preset` codec reference for the Tone M
 
 # TMP Companion — wire protocol & preset codec
 
-The TMP speaks **Protocol Buffers (FenderMessageTMS) over USB HID**, and its exported presets are XOR+LZ4-encoded JSON. This skill is the wire-format _reference_; the operational rules (what wedges the device, batch grouping, slot addressing, re-amp latching) live in **`notes/protocol.md`**, **`.claude/rules/danger.md`** (device-destructive) and **`.claude/rules/rust-backend.md`** (wire framing) — when this skill and `CLAUDE.md` disagree, `CLAUDE.md` wins. The shipped implementation is `src-tauri/src/proto.rs` (byte-exact vs golden vectors captured from the real device), `session.rs`, and `backup.rs`.
+The TMP speaks **Protocol Buffers (FenderMessageTMS) over USB HID**, and its exported `.preset` files are **XOR-only** (the 3-byte JLD cipher) JSON — LZ4 is applied only when building `importPresetRequest.presetJson`, never to the file. This skill is the wire-format _reference_; the operational rules (what wedges the device, batch grouping, slot addressing, re-amp latching) live in **`notes/protocol.md`**, **`.claude/rules/danger.md`** (device-destructive) and **`.claude/rules/rust-backend.md`** (wire framing) — when this skill and `CLAUDE.md` disagree, `CLAUDE.md` wins. The shipped implementation is `src-tauri/src/proto.rs` (byte-exact vs golden vectors captured from the real device), `session.rs`, and `backup.rs`.
 
 ## Wire envelope (the load-bearing bytes)
 

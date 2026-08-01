@@ -1,6 +1,8 @@
 ---
 paths:
   - "src/models/**"
+  # The catalog skill also governs the block-art engine, so the rule must load there too.
+  - "src/ui/blockart/**"
 ---
 
 # Catalog and block-art rules

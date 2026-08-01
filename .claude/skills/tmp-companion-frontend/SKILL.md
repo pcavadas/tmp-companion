@@ -5,23 +5,23 @@ description: "How to build and change the TMP Companion app's React/TypeScript f
 
 # TMP Companion frontend
 
-TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` commands and a React 18 + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions every time — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold, and lint traps.
+TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` commands and a React 18 + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
 
 **Orient first.** [`notes/overview.md`](../../../notes/overview.md) is the architecture map (_what is where_) and [`.claude/rules/frontend.md`](../../rules/frontend.md) carries the edit-time lint/contract rules, loading automatically when you open a `src/` file. This skill is the _how-to_. `CLAUDE.md` is the index and wins on any rule it states; tell the user if you spot drift.
 
 ## Layout at a glance
 
-`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (the 6-tab feature folders + `views/overlays/` for the leveling wizard), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
+`src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/` for the leveling wizard), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
 
 The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose). Don't add them back.
 
 ## When you're handed a Claude-Design handoff
 
-A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prototype + a written spec — the work is landing its design in real components wired to the real backend. Steps that pay off (detail for steps 1, 2, 4, 5: `references/gotchas.md`):
+A handoff is usually a folder (often `~/Downloads/design_handoff_*`) with a prototype + a written spec; the work is landing its design in real components wired to the real backend. Detail for steps 1, 2, 4, 5: `references/gotchas.md`.
 
 1. **Read the whole handoff first**, and enumerate every deliverable it lists.
 2. **Reconcile the design against the codebase before coding.** A handoff may **refine an already-shipped feature**, not add a new one.
-3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. If a design color has no token, that's a signal to either pick the closest token or ask — not to hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green usually means GREEN, but this DS's `t.ok`/`t.okSoft` are the terracotta ACCENT — map a handoff's green→`good`/`goodSoft`/`goodBorder`, amber→`sevWarn` (see Theme tokens below). A literal `t.ok` renders terracotta where green was intended — a silent visual bug.
+3. **Map the design's palette/typography to real tokens** (next section) rather than pasting raw hex. A design color with no token means pick the closest one or ask — never hardcode `#c0392b`. **Severity-token trap:** a handoff's `ok`/green means GREEN, but this DS's `t.ok`/`t.okSoft` are the terracotta ACCENT — map green→`good`/`goodSoft`/`goodBorder`, amber→`sevWarn` (see Theme tokens below). A literal `t.ok` renders terracotta where green was intended — a silent visual bug.
 4. **One component per file.** Split a multi-component prototype into focused files under the right feature folder, each re-exported from the folder's `index.ts`.
 5. **A Catalog-tab handoff that changes catalog DATA must keep the test oracles in sync.**
 
@@ -65,7 +65,7 @@ If a command doesn't exist yet, that's a backend change — coordinate it, don't
 
 ### Shared device data: the `libraryScan` store (App-owned, ONE scan/connection)
 
-Some device data (scenes, blocks, graphs, footswitches, the song↔preset map) is too expensive to read per-tab, so it's read ONCE per connection into a **module-scoped store**, `src/views/level/libraryScan.ts`, consumed by **Level, Copy, and Songs**. The scan TRIGGER is **App-owned**: `App.tsx` fires `ensureLibraryScan()` once on the connect edge and `resetLibraryScan()` on detach — so every device tab shares ONE scan and a tab switch NEVER re-triggers it. A new tab that needs backup-sourced data **CONSUMES the store** (`useSyncExternalStore(subscribeLibraryScan, getLibraryScan)`); it does NOT add its own trigger — that re-introduces the per-tab-rescan bug this layout exists to prevent.
+Some device data (scenes, blocks, graphs, footswitches, the song↔preset map) is too expensive to read per-tab, so it's read ONCE per connection into a **module-scoped store**, `src/views/level/libraryScan.ts`, consumed by **Level, Copy, and Songs**. The scan TRIGGER is **App-owned**: `App.tsx` fires `ensureLibraryScan()` once on the connect edge and `resetLibraryScan()` on detach — so every device tab shares ONE scan and a tab switch NEVER re-triggers it. A new tab that needs backup-sourced data **CONSUMES the store** (`useSyncExternalStore(subscribeLibraryScan, getLibraryScan)`); it does NOT add its own trigger — that re-introduces the per-tab-rescan bug this layout prevents.
 
 The SAME module-store pattern (not component `useState`) backs `src/views/level/useLiveDevice.ts` — the app-global LIVE device state (active preset/scene/graph from the 5 `tmp://` monitor events), for the same tab-switch-remount reason. The hero SLOT badge reads the frontend `activeListIndex`, not `graph.slot`. Deep-dive on both stores: `references/gotchas.md`.
 
@@ -108,7 +108,7 @@ bun run format        # prettier --write — run before calling a change "done"
 bun run build         # Vite production build
 ```
 
-Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export; for a cleanup/refactor, confirm the diff is net-negative (`git diff --stat`) — a de-bloat that adds more than it removes isn't done. State plainly what you verified.
+Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export; for a cleanup/refactor, confirm the diff is net-negative (`git diff --stat`). State plainly what you verified.
 
 ## References
 
