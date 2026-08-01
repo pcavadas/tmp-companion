@@ -420,16 +420,50 @@ async fn e2e_clear_preset(
         }
         if e2e_online() {
             s.drain_until_quiet(250, 20)?;
-            if !probe_api::seed_scenario::slot_is_fixture_owned(&mut s, slot + 1) {
+            // Manifest OR content marker: a fixture a spec has levelled+saved has lost
+            // its injected markers (the device rewrites the body on save), and a
+            // marker-only check would refuse to clean up the harness's OWN preset —
+            // stranding it and blocking the next run's seed.
+            if !probe_api::seed_scenario::slot_is_ours(&mut s, slot, &expect_name) {
                 return Err(format!(
-                    "refusing to clear slot {slot}: '{expect_name}' matches by name but does \
-                     not carry the fixture content marker — not seed-owned"
+                    "refusing to clear slot {slot}: '{expect_name}' matches by name but this \
+                     harness has no record of seeding it — not seed-owned"
                 ));
             }
         }
         SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         s.clear_user_preset(slot)?;
-        e2e_patch_snapshot_slot(slot, "Empty");
+        // Verify before releasing: `clear_user_preset` returning Ok is not proof the slot
+        // is actually empty — HW-observed (2026-07-27) a preset with scene+footswitch
+        // leveling left its slot still holding real content right after a successful-
+        // looking clear (a dropped write, or a deferred save landing late; either way the
+        // clear didn't take). Releasing on that would strand the slot with NEITHER
+        // manifest NOR marker — the original bug `forget_seeded` exists to prevent, just
+        // reached from the other direction. Re-read and only release once the slot reads
+        // empty; still occupied means the harness KEEPS the claim, so the next seed's
+        // "ours but dirty" arm reimports it fresh instead of refusing forever.
+        //
+        // `clear_user_preset` is fire-and-forget with no ACK, so read immediately and the
+        // list can still show pre-clear state (the same reason `replace_inplace_with`
+        // settles 800ms after its own clear). And an ABSENT entry — a truncated list, or
+        // a failed read — is UNKNOWN, not empty: only a POSITIVELY observed empty name
+        // releases the claim, so a degraded read keeps it instead of stranding the slot.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let now_empty = s
+            .list_my_presets()
+            .ok()
+            .and_then(|list| list.get(slot as usize).map(|e| e.name.clone()))
+            .is_some_and(|name| session::is_empty_slot_name(&name));
+        if now_empty {
+            probe_api::seed_scenario::forget_seeded(slot);
+            e2e_patch_snapshot_slot(slot, "Empty");
+        } else {
+            log::warn!(
+                "e2e_clear_preset: slot {slot} not observed empty after a successful \
+                 clear_user_preset — keeping the seed manifest claim so the next seed can \
+                 reimport it instead of stranding it"
+            );
+        }
         Ok(())
     })
     .await

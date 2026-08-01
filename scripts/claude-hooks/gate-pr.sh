@@ -9,11 +9,11 @@
 # Exit 2 = block + show stderr to Claude.
 #
 # Reads the tool-call JSON on stdin. bash 3.2-safe. Resolves the repo from the
-# INVOKING cwd's git top level, because gates.sh stamps are per-worktree: in a
-# worktree session CLAUDE_PROJECT_DIR still points at the MAIN checkout, so
-# using it checked a tree that wasn't the one being PR'd — a green worktree got
-# blocked by the main checkout's missing stamp. CLAUDE_PROJECT_DIR stays the
-# fallback for a hook fired from outside any repo.
+# hook payload's own `cwd` (falling back to the process cwd, then
+# CLAUDE_PROJECT_DIR), because gates.sh stamps are per-worktree: in a worktree
+# session CLAUDE_PROJECT_DIR still points at the MAIN checkout, so using it
+# checked a tree that wasn't the one being PR'd — a green worktree got blocked
+# by the main checkout's missing stamp.
 
 set -euo pipefail
 
@@ -33,7 +33,20 @@ if ! printf '%s' "$cmd" | grep -Eq 'gh[[:space:]]+([^[:space:]]+[[:space:]]+)*pr
   exit 0
 fi
 
-repo="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+# Prefer the hook payload's own `cwd` (the session dir = the worktree actually being
+# PR'd) over the process cwd, so this doesn't rest on an unverified assumption about
+# which directory Claude Code spawns PreToolUse hooks in — if it spawns them in the
+# project dir instead, resolving via process cwd alone would be a silent no-op that
+# still gates the wrong tree while looking correct. Both fall back to
+# CLAUDE_PROJECT_DIR when neither is inside a repo.
+hook_cwd="$(printf '%s' "$input" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cwd",""))' 2>/dev/null || true)"
+repo=""
+for cand in "$hook_cwd" "$PWD"; do
+  if [ -n "$cand" ]; then
+    repo="$(cd "$cand" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$repo" ]; then break; fi
+  fi
+done
 [ -n "$repo" ] || repo="${CLAUDE_PROJECT_DIR:-.}"
 gates="$repo/scripts/gates.sh"
 if [ ! -x "$gates" ]; then

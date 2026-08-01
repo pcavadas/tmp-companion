@@ -19,6 +19,61 @@ use std::sync::{Arc, Mutex};
 /// (recovered via `into_inner`, never permanently bricking device IO).
 static DEVICE_OP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Cooperative abort for the in-flight device op's long WAITS. The per-lane cancel flags
+/// (`PRESET_LEVEL_CANCEL`, `SCENE_LEVEL_CANCEL`, `FOOTSWITCH_LEVEL_CANCEL`, `DOCTOR_CANCEL`)
+/// decide which *step* bails; they are only read at step seams, so a Stop pressed during
+/// the ~6 s re-amp capture (or the settles around it) used to sit out the whole thing —
+/// 10 s of dead time, ~22 s when the floor guard's 5 s retry gap fired. This flag makes
+/// those waits interruptible: every sleep on a leveling/Doctor path polls it and bails
+/// with [`crate::leveller::CANCELLED`].
+///
+/// ponytail: ONE process-global flag, not one per lane — [`DEVICE_OP_LOCK`] serializes
+/// device work, so exactly one operation can ever observe it. Per-lane abort flags if a
+/// second concurrent device op ever becomes a thing.
+static OP_ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Poll cadence for [`sleep_abortable`] — the worst-case overshoot after a Stop.
+const ABORT_POLL_MS: u64 = 50;
+
+/// Request the in-flight device op abandon its waits — called by every `cancel_*` command.
+pub(crate) fn request_op_abort() {
+    OP_ABORT.store(true, SeqCst);
+}
+
+/// Has an abort been requested? Polled inside the re-amp capture window.
+pub(crate) fn op_aborted() -> bool {
+    OP_ABORT.load(SeqCst)
+}
+
+/// Sleep up to `ms`, waking early if an abort is requested. Returns `true` if it aborted
+/// (the caller bails), `false` if the full duration elapsed. Drop-in for the settle
+/// `thread::sleep`s on the leveling/Doctor paths — the settle semantics are unchanged for
+/// a run nobody stopped.
+pub(crate) fn sleep_abortable(ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    loop {
+        if op_aborted() {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(ABORT_POLL_MS)));
+    }
+}
+
+/// [`sleep_abortable`] as a `?`-able step: `Ok(())` if the wait completed, the
+/// [`crate::leveller::CANCELLED`] sentinel if a Stop landed. The shape of nearly every
+/// settle on a leveling/Doctor path — `sleep_or_cancel(SETTLE_X)?;`.
+pub(crate) fn sleep_or_cancel(ms: u64) -> Result<(), String> {
+    if sleep_abortable(ms) {
+        Err(crate::leveller::CANCELLED.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Bounded wait for the monitor to ack a pause (≈ `PAUSE_WAIT_TRIES × 25 ms`). The
 /// monitor pumps in ~120 ms windows, so it checks the flag ~8×/sec; 40 × 25 ms = 1 s
 /// is generous. If the budget is exceeded (monitor mid-connect on a flooded
@@ -54,6 +109,10 @@ impl Drop for MonitorPauseGuard {
 /// owns only the device, which the pause protocol forces it to release.
 pub(crate) fn lock_device_op() -> MonitorPauseGuard {
     let g = lock_ok(&DEVICE_OP_LOCK);
+    // Every device op starts with a clean abort flag, by construction — arming here rather
+    // than at each run command means a new command can never inherit a stale Stop (and a
+    // command QUEUED behind this lock can't clear the flag of the op currently running).
+    OP_ABORT.store(false, SeqCst);
     MONITOR_PAUSE_REQ.store(true, SeqCst); // ask the monitor to yield its seize
                                            // Only wait for the ack while the monitor is actually enabled — a disabled
                                            // monitor never acks (it idles in its disabled branch), so waiting would burn
@@ -139,4 +198,29 @@ where
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The stop-latency contract: an armed wait runs its full duration, an aborted one
+    /// returns within a poll interval no matter how long it was asked to sleep. This is
+    /// what collapses a Stop pressed mid-capture from ~10 s to ~0.2 s.
+    #[test]
+    fn sleep_abortable_wakes_early_on_abort() {
+        OP_ABORT.store(false, SeqCst);
+        let t = std::time::Instant::now();
+        assert!(!sleep_abortable(150), "no abort → sleeps the full duration");
+        assert!(t.elapsed() >= std::time::Duration::from_millis(140));
+
+        request_op_abort();
+        let t = std::time::Instant::now();
+        assert!(sleep_abortable(10_000), "abort → reports it bailed");
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(500),
+            "a 10 s wait must not be sat out after a Stop"
+        );
+        OP_ABORT.store(false, SeqCst);
+    }
 }

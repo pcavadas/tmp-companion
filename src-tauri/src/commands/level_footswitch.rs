@@ -37,6 +37,8 @@ static FOOTSWITCH_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 pub(crate) fn cancel_footswitch_leveling() {
     FOOTSWITCH_LEVEL_CANCEL.store(true, SeqCst);
+    // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
+    crate::request_op_abort();
 }
 
 /// Read a slot's field-8 preset JSON on a fresh quiet session and return the parsed preset, a
@@ -364,6 +366,19 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     }
                 }
             };
+            // A Stop mid-sweep surfaces as the CANCELLED sentinel, not a failure — report
+            // it like the top-of-loop check would rather than as an errored switch.
+            if let Err(e) = &outcome {
+                if *e == leveller::CANCELLED {
+                    let _ = on_result.send(FootswitchLevelProgressItem {
+                        switch: job.switch,
+                        status: "cancelled".into(),
+                        result: None,
+                        message: None,
+                    });
+                    break;
+                }
+            }
             let item = match outcome {
                 Ok(r) => {
                     results[idx] = Some(r.clone());

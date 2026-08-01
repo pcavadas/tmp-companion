@@ -3,6 +3,32 @@
 use crate::session::Session;
 use crate::{backup, read_song_presets, session};
 
+/// The tolerant list read, retried on a fresh reconnect until `pred` is satisfied (or a
+/// reconnect stops helping). A single short read is the common case; the retry only
+/// engages for the high-index tail-truncation class documented on `replace_inplace_with`.
+fn read_list_until(
+    pred: impl Fn(&[session::PresetEntry]) -> bool,
+) -> Result<Vec<session::PresetEntry>, String> {
+    const ATTEMPTS: u32 = 4;
+    let mut list = Vec::new();
+    for attempt in 1..=ATTEMPTS {
+        list = Session::connect()?.list_my_presets()?;
+        if pred(&list) || attempt == ATTEMPTS {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1_500));
+    }
+    Ok(list)
+}
+
+/// Retried until the list actually reaches `orig_list_index` — tests the SAME condition
+/// the caller looks the entry up by (`find(|p| p.slot == orig_list_index)`), not merely
+/// `list.len()`: a dropped INTERIOR entry can make the list longer than the index while
+/// the target itself is still missing, which a length-only check would treat as reached.
+fn read_list_reaching(orig_list_index: u32) -> Result<Vec<session::PresetEntry>, String> {
+    read_list_until(|list| list.iter().any(|p| p.slot == orig_list_index))
+}
+
 /// Probe (AC7 positive case): edit a preset IN PLACE on its original slot and
 /// report whether the slot, its Song assignment, and scene binding survive.
 /// Compare against `--import` (bare append) as the negative control — that one
@@ -70,7 +96,16 @@ pub(crate) fn replace_inplace_with(
     // never enters `empty_before` — landing detection misses it and aborts, it can
     // never mis-clear), and the fail-closed `confirm_active` below still gates the
     // save before any damage.
-    let before = Session::connect()?.list_my_presets()?;
+    //
+    // A high scratch-zone target (the e2e seed's slots 400+) makes tail-truncation the
+    // COMMON case rather than a rare tail: several fresh connects in quick succession
+    // (this function's own multi-step sequence, on top of the caller's own reads) can
+    // reliably chop the tolerant read well short of a high index (HW-observed 2026-07-27:
+    // ~310-350/504 across many back-to-back attempts, independent of rest time — this
+    // is the documented interleave/pump-window chop, not the open lockout, so waiting
+    // doesn't help but a bounded reconnect-retry does). Retry a few times before giving
+    // up, rather than erroring on the first short read.
+    let before = read_list_reaching(orig_list_index)?;
     let orig_name_before = before
         .iter()
         .find(|p| p.slot == orig_list_index)
@@ -99,8 +134,14 @@ pub(crate) fn replace_inplace_with(
     // 2) Observe where it landed: a slot that was EMPTY before and is now occupied.
     // Keying on the previously-empty set (not a name diff) means a flaky/partial
     // baseline list can't misidentify a *real* pre-existing preset as the scratch
-    // and get it cleared in step 3.
-    let after_import = Session::connect()?.list_my_presets()?;
+    // and get it cleared in step 3. Same retry as the baseline read above — the scratch
+    // itself lands at a high, previously-empty index, so it's exposed to the identical
+    // tail-truncation chop; a single-attempt read here would burn the run's import on
+    // the first short response instead of giving the reconnect-retry a chance to land it.
+    let after_import = read_list_until(|list| {
+        list.iter()
+            .any(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))
+    })?;
     let (scratch_slot, scratch_name) = after_import
         .iter()
         .find(|p| empty_before.contains(&p.slot) && !session::is_empty_slot_name(&p.name))

@@ -239,6 +239,8 @@ static DOCTOR_CANCEL: AtomicBool = AtomicBool::new(false);
 #[tauri::command]
 pub(crate) fn cancel_doctor_check() {
     DOCTOR_CANCEL.store(true, SeqCst);
+    // Also wake the in-flight capture/settle waits (see `device_gate::OP_ABORT`).
+    crate::request_op_abort();
 }
 
 /// The Doctor RUN: capture every selected sound (Doctor tail), then diagnose
@@ -445,9 +447,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                                 "doctor_check: floor-suspect capture for {} (spread {:.2} LU ≤ stimulus {:.2} LU) — retrying once",
                                 item.key, profile.spread_lu, stim_spread
                             );
-                            std::thread::sleep(std::time::Duration::from_millis(
-                                leveller::FLOOR_RETRY_GAP_MS,
-                            ));
+                            crate::sleep_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
                             let (profile, cov) = capture_profile(false, stim)?;
                             match floor_error_for(profile.spread_lu, stim_spread) {
                                 None => Ok((profile, cov)),
@@ -471,6 +471,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         message: None,
                     });
                 }
+                // A Stop that landed mid-capture surfaces as the CANCELLED sentinel, not a
+                // failure: end the run like the top-of-loop check would have, leaving this
+                // sound un-run rather than reporting it as an errored sound.
+                Err(e) if e == leveller::CANCELLED => {
+                    stopped = true;
+                    break;
+                }
                 Err(e) => {
                     errors.push((i, e.clone()));
                     // A failed sound may have left the unit on ANY preset (e.g. its
@@ -483,7 +490,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     });
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+            // Abortable: a Stop landing in this exact window (after the last item's own
+            // success, with no further loop-header check ahead of it) would otherwise
+            // finish the run silently instead of reporting it stopped.
+            if crate::sleep_abortable(leveller::RECONNECT_GAP_MS) {
+                stopped = true;
+                break;
+            }
         }
 
         // Group results per preset, in first-seen item order. Each sound is
