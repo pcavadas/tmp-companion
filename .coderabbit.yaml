@@ -104,7 +104,9 @@ knowledge_base:
     # do not remove them on the assumption that the defaults still apply.
     # The rest self-govern their own directories (used when a skill/note is edited);
     # the real src/ enforcement is the path_instructions above.
-    # Enumerated explicitly — never a .claude/skills/** wildcard.
+    # Enumerated explicitly — never a .claude/skills/** wildcard. The per-skill references/**
+    # entries are listed because the skill bodies were split: lookup-shaped content moved there
+    # to stay under the 5,000-token compaction re-injection cap, so review must follow it.
     # Consequence of listing CLAUDE.md: it is an AUTHORITATIVE guideline when reviewing every
     # other doc, so at profile: assertive a prose-doc PR has no fixed point — each rewrite
     # yields fresh nits (#119: 19 of 24 commits touched one skill file). Reply-with-reason on
@@ -112,10 +114,14 @@ knowledge_base:
     filePatterns:
       - "REVIEW.md" # reviewer-facing: bug shape, ungated surfaces, what not to guess
       - "CLAUDE.md"
+      - ".claude/rules/**" # always-loaded danger rules + the path-scoped edit-time rules
       - ".claude/skills/tmp-companion-frontend/SKILL.md"
+      - ".claude/skills/tmp-companion-frontend/references/**"
       - ".claude/skills/tmp-companion-catalog/SKILL.md"
       - ".claude/skills/tmp-companion-protocol/SKILL.md"
+      - ".claude/skills/tmp-companion-protocol/references/**"
       - ".claude/skills/tmp-companion-data-model/SKILL.md"
+      - ".claude/skills/tmp-companion-data-model/references/**"
       - "notes/**"
 
 chat:

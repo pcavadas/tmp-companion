@@ -9,7 +9,8 @@ import type { ToneId } from "../ui/BlockArt";
 
 // Partial<Record<…>> so an indexed lookup is honestly `ToneId | undefined`
 // (the repo has no noUncheckedIndexedAccess; a plain Record would make the
-// resolver's `?.` lint as no-unnecessary-condition — see CLAUDE.md).
+// resolver's `?.` lint as no-unnecessary-condition — see
+// .claude/rules/frontend.md).
 export const CAB_COVERING: Partial<
   Record<string, Partial<Record<string, ToneId>>>
 > = {

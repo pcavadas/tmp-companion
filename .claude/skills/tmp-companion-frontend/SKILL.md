@@ -7,7 +7,7 @@ description: "How to build and change the TMP Companion app's React/TypeScript f
 
 TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` commands and a React 18 + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions every time — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold, and lint traps.
 
-**Orient first.** `CLAUDE.md` is the authoritative architecture index — skim its `UI (src/)` bullet and Testing/Gotchas paragraph before a non-trivial change; this skill is the _how-to_, `CLAUDE.md` is the _what-is-where_ and the latest dated traps. When they disagree, `CLAUDE.md` wins; tell the user if you spot drift.
+**Orient first.** [`notes/overview.md`](../../../notes/overview.md) is the architecture map (_what is where_) and [`.claude/rules/frontend.md`](../../rules/frontend.md) carries the edit-time lint/contract rules, loading automatically when you open a `src/` file. This skill is the _how-to_. `CLAUDE.md` is the index and wins on any rule it states; tell the user if you spot drift.
 
 ## Layout at a glance
 

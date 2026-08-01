@@ -42,7 +42,7 @@ export interface ScanState {
   percent: number;
 }
 
-// The list's empty-slot marker (CLAUDE.md): "--" / "Empty" / "—".
+// The list's empty-slot markers, as the device reports them: "--" / "Empty" / "—".
 export function isEmptyName(name: string): boolean {
   const n = name.trim();
   return n === "" || n === "--" || n === "—" || n.toLowerCase() === "empty";

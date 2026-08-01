@@ -14,7 +14,7 @@ exists so nobody re-attempts a refuted optimization or re-measures a settled bud
 | Doctor prescription apply      | ≈ 26 s     | 2        | fresh before + after A/B clips                                                                                                               |
 
 The capture window itself (6 s stimulus + 0.8 s / 2.5 s tail) is 40–60 % of every path
-and is LOAD-BEARING (see the capture-window gotcha in CLAUDE.md) — everything adopted
+and is LOAD-BEARING (see the capture-window rule in `.claude/rules/leveling-dsp.md`) — everything adopted
 below trims the waits _around_ it.
 
 ## Adopted (the 2026-07 speedup set — all HW-validated)
@@ -84,7 +84,7 @@ persistence alone does NOT let a measurement loop force isolation just once (see
 - **Adaptive early-exit capture**: −3.8 s/capture but +0.17 LU on slot 11
   (`probe --measure-adaptive`) — a re-baseline, product decision, not a drop-in
   (see the capture-window gotcha).
-- **Capture-window / tail trims**: re-baseline (documented in CLAUDE.md).
+- **Capture-window / tail trims**: re-baseline (documented in `.claude/rules/leveling-dsp.md`).
 - **Doctor tail is graph-aware?** Untried: 0.8 s tail when the chain has no time-based
   blocks would save 1.7 s/sound but changes `washed`'s calibrated measurement space.
 

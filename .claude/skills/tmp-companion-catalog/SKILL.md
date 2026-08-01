@@ -7,7 +7,7 @@ description: "The data contract for the TMP Companion model catalog and block ar
 
 The Catalog tab and the signal-chain strip render from a shipped model catalog. This skill is the data contract for editing it without introducing a change that passes locally but is wrong.
 
-**Orient first.** `CLAUDE.md`'s `models/` bullet is the authoritative map; this skill is the short checklist. When they disagree, `CLAUDE.md` wins — tell the user if you spot drift.
+**Orient first.** [`.claude/rules/models-catalog.md`](../../rules/models-catalog.md) carries the edit-time invariants for `src/models/` and loads automatically when you open one of those files; this skill is the longer checklist. `CLAUDE.md` is the index and wins on any rule it states — tell the user if you spot drift.
 
 ## The four invariants (each breaks silently)
 

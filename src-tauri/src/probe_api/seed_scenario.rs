@@ -295,7 +295,7 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
 
 /// TOLERANT list read + an EXACT-bank-size gate. Tolerant because the strict
 /// harvest fails on interleaved back-to-back-session responses (see the
-/// CLAUDE.md 0xe00002c5 entry); the size gate is the real safety — a partial
+/// .claude/rules/danger.md, HID open-lockout); the size gate is the real safety — a partial
 /// view must never drive clears or imports (truncation is tail-only, so a
 /// length check IS the completeness check), and a LARGER bank means a fw rev
 /// moved the slot layout out from under our destructive slot assumptions.

@@ -8,7 +8,7 @@
 //! 3 s stim + a GRAPH-GATED tail (`leveller::DOCTOR_STIM_MS`/`doctor::doctor_tail_ms`
 //! — 300 ms `DOCTOR_TAIL_DRY_MS` for a known-dry chain, else the full 1500 ms
 //! `DOCTOR_TAIL_MS`); re-run this arm against the SAME original oracle to
-//! re-validate any future window change. Per the repo's hard-won lesson (CLAUDE.md's leveling
+//! re-validate any future window change. Per the repo's hard-won lesson (.claude/rules/leveling-dsp.md's
 //! capture-window note): a capture-window change is a RE-BASELINE, validated
 //! only against a full-capture oracle — never self-consistently (a level→verify
 //! round-trip that reuses the same short method would hide the very offset it's

@@ -3,8 +3,8 @@
 Guidance for automated reviewers. CodeRabbit reads this path by default; Claude's
 `/code-review` can be pointed at it too.
 
-Written for a **reviewer**, not an implementer. `CLAUDE.md` is the build guide and is
-deliberately not summarised here. Mechanical invariants live in `.coderabbit.yaml`
+Written for a **reviewer**, not an implementer. `CLAUDE.md` is the index and the danger
+list, and is deliberately not summarised here. Mechanical invariants live in `.coderabbit.yaml`
 `path_instructions`, are injected per-file, and are not restated below — this file
 covers what that per-hunk channel structurally cannot see.
 
@@ -53,8 +53,8 @@ Consult that table rather than trusting CI.
 
 The unit holds irreplaceable user presets and a save is permanent. `.coderabbit.yaml`'s
 `path_instructions` enforce the destructive-slot-mapping guard (scoped to `session.rs`) and the
-in-flight-abort guard (scoped to `src/**/*.{ts,tsx}`); `notes/write-safety.md` and CLAUDE.md's
-Gotchas carry the full rule.
+in-flight-abort guard (scoped to `src/**/*.{ts,tsx}`); `notes/write-safety.md` and
+`.claude/rules/danger.md` carry the full rule.
 
 ## 4. What cannot be verified from a diff — flag it, don't guess
 

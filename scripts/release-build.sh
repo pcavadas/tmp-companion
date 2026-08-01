@@ -7,7 +7,8 @@
 # Args: $1 = release version (e.g. 1.6.0); $2 = base64-encoded release notes.
 # Apple creds come from the release-job env: APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID.
 #
-# bash-3.2-safe: /bin/bash on macos-14 is 3.2.57 (see CLAUDE.md). No arrays / mapfile —
+# bash-3.2-safe: /bin/bash on macos-14 is 3.2.57 (see .claude/rules/shell-scripts.md).
+# No arrays / mapfile —
 # positional params only.
 set -euo pipefail
 

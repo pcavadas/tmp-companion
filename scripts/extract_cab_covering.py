@@ -128,7 +128,8 @@ def main() -> None:
         'import type { ToneId } from "../ui/BlockArt";\n\n'
         "// Partial<Record<…>> so an indexed lookup is honestly `ToneId | undefined`\n"
         "// (the repo has no noUncheckedIndexedAccess; a plain Record would make the\n"
-        "// resolver's `?.` lint as no-unnecessary-condition — see CLAUDE.md).\n"
+        "// resolver's `?.` lint as no-unnecessary-condition — see\n"
+        "// .claude/rules/frontend.md).\n"
         "export const CAB_COVERING: Partial<\n"
         "  Record<string, Partial<Record<string, ToneId>>>\n"
         "> = {\n"

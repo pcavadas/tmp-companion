@@ -1,505 +1,76 @@
 # tmp-companion
 
-Tauri 2 (Rust backend + React/TypeScript frontend) **macOS-only** desktop app that auto-levels real Fender Tone Master Pro presets to a LUFS loudness target by driving the device over USB in **re-amp mode** — no guitar plugged in. It plays a synthetic guitar-like sample through a preset's full DSP chain, captures the processed USB-Out, measures loudness, computes the `presetLevel` that hits the target, and (opt-in) saves it back to the preset. Renders its **own** UI (this app is a USB host controller that draws its own interface).
+A **macOS-only** Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that auto-levels real Fender Tone Master Pro presets to a LUFS target by driving the device over USB in **re-amp mode** — no guitar plugged in. It plays a synthetic guitar-like sample through a preset's full DSP chain, captures the processed USB-Out, measures loudness, computes the `presetLevel` that hits the target, and (opt-in) saves it back. It renders its **own** UI: this is a USB host controller that draws its own interface, not a plugin.
 
-> **Architecture.** Click-only **6-tab UI** — Level · Doctor · Copy · Songs · Catalog · Settings (`src/views/`, route keys `level`/`doctor`/`copy`/`songs`/`catalog`/`settings`). Feature docs: `notes/`.
-> - **Backend (`src-tauri/src/`):** `hid.rs` exclusive HID seize on a dedicated CFRunLoop thread; `session.rs` handshake + device commands; `proto.rs` FenderMessageTMS codec (golden-tested); `monitor.rs` the live ~250 ms-heartbeat session + startup snapshot; `leveller.rs`/`lufs.rs`/`audio.rs` re-amp measurement; `audiograph.rs` node ops; `library.rs` (OFFLINE `.preset` folder ingestion + `decode_preset_bytes` + device reconciliation with a duplicate-name ambiguity guard) / `preset_io.rs` (`OfflineIo` in-place re-import + identity guard; `LiveIo` diff→`changeParameter`+save) / `bulk_cmd.rs` (enum-tagged `OpSpec` + `build_operation` + `IoPath` + `RunRegistry`) the bulk-run engine; `commands/` the Tauri commands (one file per feature area, registered in `bootstrap.rs`) + `probe_api/` the `probe` entry points (`lib.rs` is the slim crate hub: mod tree + re-export seams + `AppState` + the `MONITOR_*` statics). Backend modules beyond the UI's commands (the bulk engine, re-amp analysis, library import/search) are reachable via the `probe` bin + tests.
-> - **Frontend (`src/`):** `theme/` (light-only `tokens.ts` + `styles.ts` `buildStyles(t)` via `useStyles()`), `ui/` (`Icon`, `BlockArt` + `blockart/` per-family SVG renderers (~31 files split by form/tone family — amps + ampsCombo\*/ampsHead\*, pedals + pedalsMotif\*/pedalsSpecial/pedalKnobs, mics + micBodies\*, forms → formsPedal/formsRack, parts → partsCloth/partsPanel, cabs, `shared.ts` barrel over sharedIds/sharedTones/sharedCloth; + generated `blockColors.generated.ts` — produced by the maintainer-machine catalog pipeline (not in this repo), never hand-edit; component files export only components so the data/helper modules keep Fast Refresh), `primitives`, `ActionBar`, `Skeleton`, + the DS atoms/scaffolds — full list in the `ui/` tree below; REUSE these, don't hand-roll a chip/spinner/empty-state/meter/run-row), `lib/` (typed `invoke` wrappers + `types.ts` wire mirror + `format.ts` + `useDeviceLoad`), `views/` (feature folders `level/` · `doctor/` · `copy/` · `songs/` · `settings/` · `overlays/`, one component per file; flat `CatalogView`/`PresetList`/`ActiveSignalChainView`/`SignalChainView`/`EmptyState`), `models/` (`catalog.ts` + `lineage.ts` + `blockArt.ts` (resolvers only — the `TMP_CATALOG` rows live in `blockArtCatalog/`, one file per category) + the bundled `tmp-model-guide.json`). Block art is original SVG through the BlockArt engine, shared by the signal chain and the Catalog tab — never `<img>` photo tiles (Fender IP; the photo PNGs are not bundled). `App.tsx` routes the 6 tabs; the app is **click-only** (no keyboard shortcuts, no command palette). Catalog is device-independent (`deviceIndependent` on `TABS`). Values with no backing command render explicit empty / "—" / disabled states; slow regions render `.tmp-skel` skeletons (keyframes in `index.html`). The Songs tab is device-backed (the unit is the source of truth; every CRUD action is a read-back-after-write command); its **Presets axis** (the rail's "Setlists ⇄ Presets" pivot) is READ-ONLY and sourced from the shared startup backup scan (the song↔preset map decoded from `normalDb.db3`'s `SongPresets` table), not live reads — song↔preset assignments are unit-owned (edited in Pro Control).
-> - **UX north-star:** fewest possible clicks per action; the audience is thousands of users, many of them not comfortable with computers; every feature ships whole in v1 (no subsetting).
-> - **Shared seams:** `backup::xor_jld` (`pub(crate)`, the `.preset` codec) + `library::decode_preset_bytes`; `crate::replace_inplace_core` (in-place re-import); `audiograph::for_each_node` / `for_each_node_mut` + `node_id` — the node-walk helpers the scan/edit modules share.
+**UX north-star:** fewest possible clicks per action. The audience is thousands of users, many not comfortable with computers. Every feature ships whole in v1 — no subsetting. The app is **click-only**: no keyboard shortcuts, no command palette.
+
+**Architecture map: [`notes/overview.md`](notes/overview.md).** There is deliberately no module tree here — 88 of 93 backend files carry a `//!` header and 175 of 198 frontend files carry a `//` header, and those are the authority. Feature docs live in [`notes/`](notes/).
+
+## Where the rules live
+
+| File | Loads | Carries |
+| --- | --- | --- |
+| [`.claude/rules/danger.md`](.claude/rules/danger.md) | always | **Read this before touching the device.** Data loss, device wedging, machine crashes. |
+| `.claude/rules/*.md` | when you edit matching files | Path-scoped conventions — frontend, theme/DS, models/catalog, Rust backend, leveling/DSP, e2e, shell |
+| [`notes/gotchas.md`](notes/gotchas.md) | on reference | The hardware evidence behind every rule |
+| `.claude/skills/` | on task match | Product data model, wire protocol, catalog contract, frontend how-to, `/verify`, CodeRabbit |
+
+Path-scoped rules only load once Claude **reads** a matching file, so anything that must hold while *running* a command lives below instead.
+
+## Traps that fire when you run something
+
+- **`git push` RUNS the gates synchronously.** The pre-push hook is `gates.sh --check || gates.sh`, and the green stamp is keyed to a CONTENT hash of the whole worktree — any edit orphans it, and only ONE stamp is kept. So **every** push after an edit pays the full multi-minute run inside the push. Run `bash scripts/gates.sh` from the repo root yourself first. **A tool-level timeout (143) on `git push` is that gate being slow, NOT a failed push** — check `git ls-remote origin <branch>` before retrying.
+- **Stale e2e server = false-green or fake-online.** An orphaned `e2e_server` plus Playwright's `reuseExistingServer` makes a `TMP_E2E_ONLINE=1` run silently REUSE the old server. If that one was offline (SimDevice), the "online" suite passes green **without ever touching the device**. Always `lsof -ti tcp:${TMP_E2E_PORT:-7600} | xargs kill` first, and confirm the log prints `ONLINE — seeded snapshot from the real device`. The port is per-worktree derived, not always 7600.
+- **A leveling run must end with re-amp OFF.** A dropped OFF strands the unit input-muted. Recovery: `cargo run --bin probe -- --reamp-off`.
+- **commitlint rejects ANY capitalized first word** after `type(scope):` — including an acronym. `docs(device): HW-validated the …` reads correct and is rejected all the same. Lowercase the lead word. Check with `echo "<subject>" | bunx commitlint` instead of burning a commit attempt.
+- **Fresh clone or worktree:** `cargo {test,clippy,build}` runs `tauri-build`, whose `generate_context!` panics if `./dist` is absent — which it is in a fresh worktree (dist is gitignored). Run `bun run build` first, or stub `dist/index.html`. Likewise run `bun install` before `bunx tsc --noEmit` / `bun run test`, or you get hundreds of phantom "Cannot find module 'react'" errors.
+- **Worktrees share ONE stash stack.** A `git stash apply/pop` can restore an *older* version of a committed branch file, silently reverting it mid-session. Never bare `git stash` in a worktree — use `git stash push -u -m "<tag>"` and `apply` by SHA. NB `lint-staged` pushes and drops a transient stash on every commit; benign, but it rides the same stack, so don't mis-blame it in a pollution audit.
+
+## Invariants no single module can state
+
+- **`blockcaps.rs` is the SOLE enforcement of the 5 block-count caps.** The device audio engine does NOT reject an over-cap edit and cannot return a `presetError` for one — the cap code is client-side only. Any new apply path must call it, because nothing downstream will.
+- **`SCRATCH_SLOTS` (`probe_api/mod.rs`) is the ONE declaration** every destructive or working-copy-writing probe guard checks. Widening the scratch zone is one edit, not four.
+- **Block art is original SVG through the BlockArt engine — never an `<img>` photo tile.** The copyrighted vendor PNGs are not bundled and must not be reintroduced (Fender IP).
+- **`ui/primitives.tsx` is deliberately NOT split** — `Modal` renders `Button`, so splitting reintroduces a circular import.
+- **`blockArt.ts` must NOT import `catalog.ts`** — it closes a module-init cycle (a TDZ crash). Enforced by `no-restricted-imports` in `eslint.config.js`.
 
 ## Commands
 
-Run from the repo root:
-
 ```bash
 bun install                                   # first-time deps
-bun run tauri dev                             # launch the app (relies on default-run in Cargo.toml)
+bun run tauri dev                             # launch the app
 bun run test                                  # frontend Vitest
 bunx tsc --noEmit                             # frontend typecheck
 bun run lint                                  # strict eslint (--max-warnings 0)
-bun run format                                # prettier --write (run before calling a change "done")
+bun run format                                # prettier --write
 bun run build                                 # vite production bundle
-bun run screenshots                           # marketing screenshots: cargo `--features e2e` fixture build + the Playwright showcase suite (e2e/showcase/)
-bun run leak-guard                            # scripts/leak-guard.sh --all
+bun run e2e                                   # offline Playwright (SimDevice, ~1.5 min)
+bash scripts/gates.sh                         # everything the pre-push hook runs
 
-cd src-tauri && cargo test --lib              # Rust unit tests (proto golden vectors, lufs, leveller)
+cd src-tauri && cargo test --lib              # Rust unit tests
 cargo clippy --all-targets                    # lint
-cargo run --bin gen_samples                   # regenerate resources/samples/*.wav (deterministic)
+cargo fmt                                     # nothing else formats Rust — on you
+cargo run --bin probe                         # headless HW re-validation (device plugged in, Pro Control CLOSED)
 ```
 
-> **Fresh-clone / worktree traps:**
-> - **Build:** `cargo {test,clippy,build}` runs `tauri-build`; `generate_context!` panics if `frontendDist` (`./dist`) is absent — which it is in a fresh `git worktree` (dist is gitignored). Run `bun run build` first, or stub `dist/index.html`, before the Rust checks.
-> - **Deps:** run `bun install` before `bunx tsc --noEmit` / `bun run test` in a fresh worktree — `node_modules` is gitignored, else hundreds of phantom "Cannot find module 'react'" errors.
->
-> **Test infra:**
-> - RTL `waitFor`/`findBy` **hang forever under vitest fake timers** (RTL's fake-timer detection checks the `jest` global, so its poll interval AND its own timeout run on the frozen clock) — use real timers; `T_LOAD`-scale delays are fine to wait out.
-> - TypeScript 6 no longer resolves `node:` imports from an installed `@types/node` alone — `tsconfig.json` needs `"types": ["node"]`.
-> - **jsdom lacks `localStorage`** here (Node warns "localStorage is not available") — `src/__tests__/setup.ts` shims an in-memory one so the gate helpers (`gates.ts`, read at render in LevelView) don't crash; clear it per-describe when a test needs the disclaimer-dismiss flag reset.
-> - **Shell scripts must survive bash 3.2.** macOS system `/bin/bash` is 3.2.57; under `set -euo pipefail` an empty-array expansion `"${arr[@]}"` ABORTS ("unbound variable") — guard with `"${arr[@]:-}"`, a length check, or the positional params `"$@"` (always empty-safe). And TEST under `/bin/bash` explicitly, not the dev's newer PATH bash (which masks it). This bit `scripts/e2e.sh` twice (the default no-arg run aborted; `online all` silently ran one spec).
-> - **GUI e2e:** Tauri's `tauri-driver`/WebdriverIO can't drive this app (macOS WKWebView has no WebDriver), so the dual-mode Playwright harness drives the **real React UI in headless Chromium** → an HTTP bridge → a windowless Rust backend (`tauri::test::mock_builder` MockRuntime, `bin/e2e_server.rs`) → `SimDevice` offline / the real device online (`TMP_E2E_ONLINE=1`) — one spec set (`e2e/specs/{copy,doctor,level,songs}.spec.ts`) under two configs (`e2e/playwright.config.ts`, `e2e/playwright.online.config.ts`); only the new `@playwright/test` dep. Vitest owns component-level coverage with the invoke/event bridge mocked (see `LevelView.test.tsx`'s setup→run→summary walk); use the `probe` bin for real-HID paths; only literal native-window pixels stay manual (see the "Driving this app's native window" note below). **Turn-key runner:** `scripts/e2e.sh` (= `bun run e2e`) — offline (SimDevice, default, ~1.5 min) / `online` (real device); it kills any stale bridge server on the per-worktree DERIVED port first (`TMP_E2E_PORT`, not always 7600 — see the stale-fake-online trap below) so neither mode false-greens and on the online path seeds the scenario presets via a FRESH `probe --seed-scenario` process BEFORE the server starts (dodges the in-process `0xe00002c5` open lockout that aborted in-spec seeds; the seed self-repairs by sweeping stray imports — aborted seeds strand copies at the first empty slot ANYWHERE in the bank), then handshake-preflights and recovers the unit on exit (reamp-off + guarded scratch-clear + stray sweep + recall 001). NB seed-path list reads are TOLERANT + a completeness floor, never `list_my_presets_strict` — strict decodes only terminal-frame streams, fails/garbles on back-to-back lean sessions (HW: tolerant 504/504 while strict returned truncated 190–236 fallbacks), and its re-arm retries themselves arm the lockout. **UI copy is e2e-load-bearing:** the specs regex-match user-facing strings (`doctor.spec.ts` matches `/presets? need a look|All clear/`) — before rewording any view label/heading (e.g. on a design handoff), grep `e2e/specs/` for the old phrase first.
->
-> **Definition of done:** `/verify` (`.claude/skills/verify/SKILL.md`) is the per-change-class runbook (docs/frontend/backend/device-facing/leveling-math → which gates, plus the false-green traps); `scripts/gates.sh` + the pre-push/PreToolUse hooks are what actually enforce it (a red tree can't push or open a PR). `notes/user-journeys.md` tracks the journey-coverage map + the bug→gate registry it references. **`git push` RUNS the gates synchronously** (the pre-push hook is `gates.sh --check || gates.sh`), and the green stamp is keyed to a CONTENT hash of the whole worktree (`compute_key` — commit-invariant, so committing the same bytes keeps the hit, but ANY edit orphans it, and only ONE stamp is kept). So EVERY push that follows an edit pays the full multi-minute run inside the push, not just the session's first — run `bash scripts/gates.sh` from the repo root yourself first, then push. A tool-level timeout (143) on `git push` is that gate run being slow, NOT a failed push: check `git ls-remote origin <branch>` before retrying.
->
-> **IDE / editor:** the IDE/LSP emits **stale phantom diagnostics during rapid file moves OR while an external editor holds a file open and rewrites it concurrently** (e.g. flagging a `shared.ts` that is really `shared.tsx`, a path a file just moved away from, or a stale import/prop on a file being edited live) — `bunx tsc --noEmit` is authoritative; trust the CLI over live editor diagnostics mid-refactor. After a multi-file edit verify each write actually LANDED (disk `grep` of a distinctive symbol) — a concurrent editor save can silently revert a tool write with no error (an `Edit` can report success while the bytes get clobbered). **But shifting diagnostics aren't always phantom:** new errors on a file `git status` shows modified (+ a changing mtime) mean a REAL concurrent author — possibly a still-running agent from an interrupted parallel session cwd'd in this shared worktree (`ps`/`lsof` confirm). Then audit-then-adopt: wait for it to finish, verify its work (tests/clippy + full-tree diff vs HEAD), and adopt rather than redo or `git restore` it away.
->
-> **Git history:**
-> - Local `main` is a single squashed root ("chore: initial public release of TMP Companion"), pushed as `origin/main` + tag `v0.1.0-beta.1`, so `git rev-parse HEAD`, `git diff HEAD`, and `EnterWorktree` all work (the historical "ZERO commits → base-commit ops fail" caveat is obsolete). A background job's worktree-isolation guard can still block shared-checkout edits (opt out with `.claude/settings.local.json` `"worktree": {"bgIsolation": "none"}`).
-> - Local `main` and `origin/main` started as DISJOINT root commits (a local amend vs the pushed release share no merge-base) — to fold a worktree branch onto a sibling root, `git rebase --onto <newbase> <upstream> <branch>` (replay only the real commits), never a plain `git rebase <sibling>` (it replays the entire other root → add/add conflict storm). `git ls-remote` is authoritative for remote state; the `origin/*` tracking refs go stale between fetches.
-> - **Worktrees share ONE stash stack** — a `git stash apply/pop` can restore an *older* version of a committed branch file, silently reverting it to its `main` content mid-session (pollution masquerading as edits; it bit a doctor-tab session for 3 files). Never bare `git stash` in a worktree (use `git stash push -u -m "<tag>"` + `apply` by SHA if you must), and after any agent/session reports stash use, diff-audit the whole tree against HEAD before proceeding. NB: `lint-staged` pushes+drops a TRANSIENT stash on every commit ("Backing up original state… git stash") — benign on its own, but it rides the same shared stack, so don't mis-blame it in a pollution audit (and avoid committing simultaneously in two worktrees).
->
-> **Strict lint + typecheck:** `bun run lint` (eslint `--max-warnings 0`) + `bunx tsc --noEmit`. The flat config is the STRICTEST typescript-eslint presets (`strictTypeChecked` + `stylisticTypeChecked`, type-aware via `projectService`) + `eslint-plugin-react` (recommended + jsx-runtime). **No escape hatches anywhere in `src/`:** no `eslint-disable`/`@ts-nocheck`/`@ts-ignore`/`@ts-expect-error`, no `any`/`as any`, no non-null `!`. `react/prop-types` + `react-in-jsx-scope` are off because TypeScript / the new JSX transform supersede them. Fix findings by changing CODE, never by silencing:
-> - `no-unnecessary-condition` on a Record/array index is the no-`noUncheckedIndexedAccess` lie: express the real `T | undefined` (Partial-cast a map, length-guard an array, ternary), don't keep a redundant `??`.
-> - `optionalArr?.length > 0` does NOT compile (`number | undefined > 0` is a type error) — write `arr && arr.length > 0`, not the `?.` short form.
-> - `Array.prototype.at()` is absent from the ES2020 lib target (`tsc` errors `Property 'at' does not exist`) — use a bounds-guarded `[i]` index.
-> - `react-hooks/refs` errors on reading/writing `ref.current` during render — sync such refs in an EFFECT (after commit); `set-state-in-effect` errors on a synchronous `setState` in an effect — use the "adjust state during render when an input changes" pattern (a `prev*` compare) or move the work to a render-phase derivation.
-> - **Legit exception — DOM measurement:** a `useLayoutEffect` that measures the COMMITTED DOM (`getBoundingClientRect`/`getBBox`) then `setState`s the measurement is the one case the `setState` must stay in the effect (the node isn't laid out yet); guard it with a prev-value compare (`setX(p => close(p, next) ? p : next)`) so it converges. Instances: `SignalChainView`'s measured `SplitGroup` brackets, `ui/BlockArt.tsx` `HalfStackArt`, `overlays/Pick.tsx`, `settings/TargetRow.tsx`.
->
-> **Contract mirrors:** serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts` — adding a Rust field without updating the mirror fails SILENTLY (test mocks are untyped; same blind spot as the fixture drift-lock trap below — a check that goes through a typed struct can't see the fields that struct omits). `invoke.test.ts` asserts the EXACT `cmd` wrapper count (`Object.keys(cmd).length`, hardcoded) — extend it when you add/remove a wrapper IN the `cmd` namespace, BUT some wrappers are deliberately named-export-only and OUTSIDE `cmd` (the fire-and-forget cancel lane `cancel{Preset,Scene,Footswitch}Leveling`), so adding those does NOT move the count (cover them with their own `expectCall`). `liveEvents.test.ts` asserts the WHOLE `LIVE_EVENT` registry via an exact `toEqual` — adding a `tmp://` event (registry entry + `onXxx` wrapper + `types.ts` payload mirror) must extend that `toEqual` too. **Serde casing exception (Copy):** `copy_apply`'s `CopyJob`/`CopyOp`/`CopyRepl` use **camelCase** nested keys (`listIndex`/`nodeId`/`beforeFenderId`/`fenderId`) because each field carries an explicit `#[serde(rename = "…")]` that OVERRIDES the enum's `rename_all = "snake_case"` — verify a wire shape against the per-field attrs, not just the enum-level `rename_all`.
->
-> **Formatting (enforced since the format-baseline PR):** `main` is fmt/prettier-clean and CI's build-test gate runs `cargo fmt --check` (+ prettier `--check`), so run `cargo fmt` before pushing any Rust change — extracted/moved code inherits its old nesting indentation and fails the gate otherwise. The pre-commit hook prettier-formats staged TS files, but nothing formats Rust locally: `cargo fmt` is on you. Single-file `rustfmt <file>` ERRORS on `async fn` without `--edition 2021` (bare rustfmt defaults to edition 2015) — pass the flag.
+**Definition of done:** the `/verify` skill is the per-change-class runbook; `scripts/gates.sh` plus the pre-push and PreToolUse hooks are what actually enforce it. `notes/user-journeys.md` tracks journey coverage and the bug→gate registry.
 
-> **Driving this app's native window from a Claude session:**
-> - **Click with `cliclick`, not `osascript`:** macOS System Events `click at` is rejected (`error -25208`). Use `cliclick c:x,y` with **logical points** — `screencapture -R x,y,w,h` is logical but the PNG is 2× retina (a 900×680 window → 1800×1360 px), so never derive coords by dividing pixel positions.
-> - **Click by FRACTION, not raw pixels:** the `screencapture -R` PNG renders at varying scale, so derive coords from the element's *fractional position within the captured region* (`abs_x = origin_x + fx·w`, `abs_y = origin_y + fy·h`), never from displayed-pixel offsets.
-> - **Raise frontmost BEFORE clicking:** `cliclick` posts to whatever app has focus, so a tap silently MISSES (lands on the terminal) when the companion window isn't frontmost — run `osascript -e 'tell application "System Events" to tell (first process whose name contains "tmp-companion") to set frontmost to true'` first, then re-query the bounds (raising can move it), then click.
-> - **Secondary-display caveat:** `cliclick` taps don't land when the window sits on a left/negative-x secondary display — move it to the primary display first.
-> - **Click cadence:** ~500 ms between clicks is enough for the WKWebView to settle.
-> - **Keyboard input doesn't reach WKWebView:** `cliclick kp:return` does NOT fire a React inline-form's `onKeyDown` submit, and neither `cliclick t:<text>` nor `osascript … keystroke` enters TEXT into a focused field — **form fields can't be filled headlessly** (open + cancel a form to verify it renders; you can't submit one with input). Click the explicit ✓ / submit affordance.
-> - **No scroll in `cliclick`** — warp the cursor over the pane then post a Quartz line-scroll: `python3 -c 'import Quartz; Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, -3))'` (negative = down).
-> - **Locked-screen signature:** a locked Mac makes `screencapture -R` print "could not create image from rect" and the front-window bounds query return "Invalid index. window 1" — that's a locked screen, not a crashed app (`pgrep` it to confirm).
-> - **Stale-dev caveats:** a `tauri dev` left running from a prior session holds **port 1421** (vite's bind), so a fresh `bun run tauri dev` silently fails to start — kill the stale tree first (`pkill -f "node_modules/.bin/vite"` + the `target/debug/tmp-companion` app), then relaunch. Same-session: the dev file-watcher can die silently after a couple of hours — a src-tauri edit then produces NO "Rebuilding application" line and the running binary stays stale; after any src-tauri edit confirm the rebuild line appears, else kill + relaunch.
-> - **Stale-server FAKE-ONLINE trap (e2e):** an orphaned `e2e_server` on **port 7600** + Playwright's `reuseExistingServer: true` makes a `TMP_E2E_ONLINE=1` run silently REUSE the old server — if that stale one was OFFLINE (SimDevice), the "online" suite passes GREEN without ever touching the device (worst kind of false confidence; the converse strands the device seized). ALWAYS `lsof -ti tcp:${TMP_E2E_PORT:-7600} | xargs kill` before an online run (the per-worktree derived port when `scripts/e2e.sh` set one, else the 7600 fallback), and confirm the log prints `ONLINE — seeded snapshot from the real device`. When pre-starting servers to reuse across single-spec runs, the device handshake happens ONCE at `e2e_server` startup, so verify it landed before trusting any spec result. **Per-worktree port isolation (best-effort):** `scripts/e2e.sh` derives a stable per-worktree bridge/vite port pair (offset = `cksum(worktree-path) % 200` off 7600/1421) and exports `TMP_E2E_PORT`/`TMP_E2E_VITE_PORT` — the Playwright configs, vite, the bridge-client, and the Rust `e2e_server` all read them (default 7600/1421 when unset, so a bare `bunx playwright test` is unchanged), so parallel offline runs in sibling worktrees usually don't kill each other's server. The offset is a `% 200` hash with no occupied-port retry, so two worktree paths can still collide onto the same pair — it reduces contention, it doesn't guarantee isolation. Override either var to pin a port. The ONE real device stays serialized by a machine-global `mkdir` lock (`scripts/device-lock.sh`, `${TMPDIR}/tmp-companion-device.lock`) that the ONLINE `e2e.sh` path + `hw-e2e.sh` acquire before any device work.
+**Every user-reported bug becomes a gate.** Each bug class gets a non-regression spec plus fixture, landing with or before the fix. Never characterize or expected-fail a product bug to keep CI green.
 
-### Hardware re-validation (`probe` bin — device plugged in, Pro Control CLOSED)
+## Rules with no other home
 
-```bash
-cd src-tauri
-cargo run --bin probe                                       # connect + list My Presets (HID sanity)
-cargo run --bin probe -- --lufs resources/samples/guitar-humbucker.wav   # validate lufs.rs vs an oracle
-TMP_LEVELLER_STIMULUS=$PWD/resources/samples/guitar-humbucker.wav \
-  cargo run --bin probe -- --levelpreset 11 -30            # full one-shot leveling (add `save` to persist)
-```
+- **App icon (level-meter mark):** flat terracotta (`#d97757`) macOS-squircle tile, 3 white bottom-aligned level bars in a 6:11:8 height rhythm. [→ evidence](notes/gotchas.md#app-icon-level-meter-mark)
+- **Marketing site** (`docs/index.html` + `.nojekyll` + `assets/`): GitHub Pages branch-deploy from `main` `/docs`. It is a PROJECT repo, so the URL is a `/tmp-companion/` **subpath** — all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml-nojekyll-assets)
+- **CodeRabbit: progressive review is automatic — post NO command on a reviewed PR.** Pushing fix commits or replying to threads is enough. [→ evidence](notes/gotchas.md#coderabbit-progressive-review-is-automatic-post-no-command-on-a-reviewed-pr)
+- **Auto-merge arms ONLY for `main`-targeted PRs.** [→ evidence](notes/gotchas.md#auto-merge-arms-only-for-main-targeted-prs)
+- **Connection is fully automatic** — there are no manual Connect/Disconnect buttons. [→ evidence](notes/gotchas.md#fully-automatic-connection)
+- **Editing `index.html` triggers a FULL webview reload** (not HMR) in `tauri dev`, re-running connect-on-mount. Reload via the UI instead.
+- **Shared seams** — the cross-module reuse contracts: `backup::xor_jld` (the `.preset` codec) + `library::decode_preset_bytes`; `crate::replace_inplace_core` (in-place re-import); `audiograph::for_each_node` / `for_each_node_mut` + `node_id` (the node-walk helpers the scan and edit modules share).
 
-> **Device-free e2e + the HW e2e script.** A `HidTransport` trait seam (`hid.rs`; `Session.hid` is `Box<dyn HidTransport>`) lets a `#[cfg(test)]` `SimDevice` fake (`sim_device.rs`) stand in for the unit, so the held-session Copy/Level orchestration runs end-to-end with NO hardware — see the `copy_apply_one` e2e tests in `lib.rs` (`Session::from_transport` + `SimDevice` asserting op order, never-save-on-`presetError`, and retry-the-dropped-first-edit). For the on-device counterpart, `scripts/hw-e2e.sh` runs the full Level + Copy happy paths NON-DESTRUCTIVELY (dry `--levelpreset` no-save, `--replace-held` no-commit, `--device-backup` read, `--reamp-off`); override its `LEVEL_SLOT`/`COPY_*` env vars per unit. Attended, not a CI gate. The **UI-journey** layer above both is the dual-mode Playwright harness in `e2e/` (see the **GUI e2e** note above): the same `specs/{copy,doctor,level,songs}.spec.ts` run offline against `SimDevice` (headless, ~21 s, no hardware) and online against the real device (`TMP_E2E_ONLINE=1` — the five scenario presets live in the empty scratch zone at list indices 400/401/402/403/404 and stay RESIDENT between runs by default (the pristine-checking seed re-imports any drifted/stale-rev slot); teardown unconditionally disables re-amp, sweeps strays and recalls preset 001, and clears the scenario slots only with `TMP_E2E_CLEAR_SCENARIO=1` for an on-demand net-zero run). **Scenario-preset shapes are deliberate:** `E2E Reference` (400) carries Base + 2 footswitch SCENES (amp `ACD_TweedDeluxe` `outputLevel`) + block-acting FOOTSWITCHES (the both-kinds leveling case); `Target 1/2` (401/402) are PLAIN (no scenes/footswitches → whole-preset checkbox = Base only); `E2E Realistic` (403, gtrParallel1 + scenes + an off-branch footswitch) is the physics-spec fixture; `E2E Hiwatt 3S` (404) is the sanitized user-reported corruption preset (3 scenes + a scene literally named "Base Scene" as `lastLoadedScene`, 4 block-acting footswitches, full-param device-authored overlays) backing the wipe/bake/measurement-context gates. The offline `backup-fixture.bin` (= LZ4-frame(tar(`normalDb.db3`)), only a `UserPresets(slot,displayName,presetJson)` table, slot = listIndex+1) and `scenario-presets.json` (online import) must stay in sync — regen both from one script. **Two e2e gotchas:** (1) the offline `copy.spec.ts` "Insert before" timeout (which also blocked the online run) was a SPEC bug — the edit-mode pills are a `SegmentedControl` rendering `role="radio"`, but the spec queried `getByRole("button")`; FIXED by querying `role="radio"` (both modes now pass offline + online). (2) online seeding (`e2e_seed_scenario`) used to panic on a fresh headless server ("preset codec key not recovered") because nothing decoded a `.preset` to learn the XOR key — FIXED by committing the key as `const PRESET_XOR_KEY: [u8;3] = *b"JLD"` in `backup.rs` (the runtime `derive_key`/`learn_key`/panic recovery was deleted; do NOT reintroduce it). **Fixture drift-lock trap:** a drift-lock / round-trip test that compares the two fixtures THROUGH A TYPED STRUCT silently covers only the fields that struct carries — `info.product_id` and `info.preset_id` drifted while the lock test stayed GREEN, because `BackupPresetRow` surfaces neither. Assert fixture invariants against the RAW JSON (`lib.rs`'s `fixture_gates` mod — deliberately OUTSIDE `#[cfg(feature = "e2e")]`, since a gate that only compiles in a build nobody may make is not a gate). What it now pins: `product_id` must be `"tmStomp"` (what the device itself writes — a `"pro"` preset is rejected on the unit as "created using a newer firmware revision" and its scene ribbon refuses to open), and every fixture preset needs its OWN `preset_id` (it is the documented per-preset identity + host-metadata join key).
+## How leveling works
 
-## Architecture
+`presetLevel` is a **linear amplitude** control: `captured_LUFS = 20·log10(presetLevel) + C`. So `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply), forced by the re-amp rules in `danger.md`.
 
-```
-src-tauri/src/
-  hid.rs          IOKit exclusive-seize HID (kIOHIDOptionsTypeSeizeDevice) on a dedicated
-                  CFRunLoop thread; commands via channel. Hand-declared IOKit externs — no
-                  Rust crate exposes device seize. (Highest-risk module.)
-  watcher.rs      Hotplug watcher: a NON-seizing IOHIDManager (matching/removal callbacks only,
-                  no IOHIDManagerOpen) on its own CFRunLoop thread; emits Tauri events
-                  tmp://device-{attached,detached} + clears AppState.session on detach. Its FFI
-                  externs intentionally duplicate hid.rs's (separate thread, no I/O). Spawned from
-                  the Builder.setup().
-  dock.rs         macOS Dock icon for `tauri dev` (raw objc NSApplication.applicationIconImage —
-                  the dev binary has no bundle .icns). Embeds icons/dock.png, the baked
-                  full-bleed squircle at 256 (rounding baked in — the dev Dock won't auto-round).
-  proto.rs        Hand-rolled FenderMessageTMS encode/decode (varint/len-delim/fixed32);
-                  byte-exact vs golden vectors captured from the real device.
-  session.rs      Handshake + list_my_presets / load_preset / set_reamp_mode /
-                  set_preset_level / save_current_preset. fetch_current_preset_json +
-                  LZ4 decode are reserved (uncalled) for the planned revert/backup.
-                  connect_with_firmware() requests the fw version in-burst (extract_fw_version).
-  audio.rs        cpal (CoreAudio AUHAL): re-amp playback into USB-In 3 + capture of the
-                  processed USB-Out; loudest-channel pick.
-  lufs.rs         ebur128 integrated (gated) + short-term-max. Validated vs pyloudnorm ≤0.04 LU.
-  leveller.rs     Leveling seams: measure_c / solve_level / apply_level (composed by level_preset)
-                  + level_setlist (common-target). Self-contained: opens its own connections.
-  doctor.rs       The Doctor diagnosis engine — PURE rules (no device I/O): capture measurements
-                  (SoundProfile, incl. its fine-PSD `peaks`) → 13 diagnoses (band rules muddy/boomy/
-                  harsh/lost/thin/buried fire only on the TWO-SPACE CONSENSUS — Theil–Sen tilt-split
-                  local AND median-centered deviation vs the AUTHORED factory-median target; tilt
-                  dark/bright; fizzy/washed/spiky; localized resonant/boxy off the TRANSFER's
-                  (capture−stimulus, `Psd::transfer_db`) one-octave-median-envelope excess —
-                  ENABLED with matrix-calibrated gates (freq ≤ 4 kHz, h ≥ 13.5/7.5, q ∈ [2,40] +
-                  band corroboration; the `ACD_FiveBandParamEQ` height×Q injection round, defects
-                  suite 7/7 HIT incl. the wah must-NOT-fire-resonant physics guard; see
-                  notes/doctor.md)) + graph-derived Rx prescriptions (EQ-10 notch
-                  at the MEASURED freq for resonant/boxy) + the scene-loudness consistency check +
-                  the cut-through estimate (presence contrast vs the pinned factory distribution).
-                  Device work lives in leveller::doctor_capture + commands/doctor.rs (doctor_check/
-                  apply/save/discard/cancel); families Guitar/Bass/BassVi (7-band Bass VI layout);
-                  thresholds are DUAL per StimulusKind — synthetic HW-calibrated
-                  (notes/doctor-calibration.md; defect-injection validated via `probe
-                  --doctor-inject`/`--doctor-defects`) + provisional capture tables pending the
-                  attended `probe --doctor-calib` DI sweep. SPEED: ~5 s/sound — 3 s stimulus +
-                  200 ms pad + graph-aware 1.5 s/0.3 s tail, isolation derived OFFLINE from the
-                  backup scan (no per-preset field-8 read). Feature doc: notes/doctor.md.
-  blockcaps.rs    Firmware-faithful pre-flight guard for the 5 block-count caps — the SOLE
-                  enforcement (the device engine does NOT reject over-cap edits with a
-                  presetError; the cap code is client-side only), gating the live apply paths.
-  topologies.rs   Shared pickup-topology catalog (id/label/instrument + synth params, incl. `peak`
-                  = output level as amp-input drive) + ALIASES (familiar pickup names — P90,
-                  Filter'Tron… — resolving to a parent topology via canonical_id; assignment
-                  methodology in notes/pickup-topologies.md). Used by gen_samples (synth, TOPOLOGIES
-                  only — aliases have no WAV) + lib (list/resolve).
-  profiles.rs     Instrument profiles {name, topology_id, calibration_lufs} + per-slot assignment,
-                  persisted as JSON in the app config dir (load/save; pure *_from_path helpers tested).
-  lib.rs          Slim crate hub: the mod tree, re-export seams, AppState, MONITOR_* statics, lock_ok.
-  commands/       The #[tauri::command]s, one file per feature area (device/presets/level_preset/
-                  level_scenes/level_footswitch/songs/setlists/copy_apply/bulk_replace/held_edit/
-                  library/edit_tools/media/migration/settings/doctor); 92 commands total incl. the
-                  bulk-feature set below. Registered in bootstrap.rs (run() + generate_handler).
-  probe_api/      The probe entry points, one file per cluster (replace/insert/inspect/ftsw/
-                  fs_level/scene_*/doctor_*/mixer/stimulus/level/slot_*/songs/setlists),
-                  re-exported at the crate root so bin/probe.rs is untouched by the split.
-                  mod.rs owns SCRATCH_SLOTS = [400,401,402,403,404] — the ONE declaration every
-                  destructive / working-copy-writing probe guard checks.
-  device_gate.rs  DEVICE_OP_LOCK + MonitorPauseGuard + with_released_seize (device-op serialization).
-  backup_read.rs  read_backup_archive + the Backup* row structs (the startup backup scan decode).
-  saved_blocks.rs / replace_inplace.rs   saved-block/user-IR parsing · in-place .preset re-import.
-  bin/gen_samples.rs   Synthetic stimulus generator (iterates topologies::TOPOLOGIES) → resources/samples/*.wav
-  bin/probe.rs         Headless re-validation kit (list / --lufs / --levelpreset / --fw)
-  --- bulk/offline feature modules (probe + test-reachable; NOT in the 6-tab UI; module //! docs are authoritative) ---
-  bulkrun.rs      Bulk-run engine: selection · dry-run · safe apply · before/after report · revert
-  rename.rs       Bulk display-name rename (find-replace / template / numbering)
-  paramedit.rs    Bulk single-param set/offset/scale across presets
-  ir.rs           IR bulk relink (swap IR file, preserve cuts)
-  blocklib.rs     Save/copy a block's full param set (block library)
-  variants.rs     Clone a preset + apply a named recipe of edits
-  migration.rs    Firmware migration assistant (diff two fw effect catalogs)
-  footswitch.rs   Footswitch / EXP / MIDI assignment batch editor
-  scenes.rs       Per-scene amp pick (live-graph bypass read) for leveling
-  spectrum.rs     Spectrum report · EQ-match · best-SIC
-  search.rs       Advanced search: index + filter intrinsic preset facets
-  lint.rs         Gain-stage audit & preset lint
-  presetmeta.rs   OFFLINE preset-level field edits (bpm, on-load scene)
-  audition.rs     Audition clip cache (re-audition returns rendered clip)
-src/                React UI — the 6-tab view (Level · Doctor · Copy · Songs · Catalog · Settings):
-  theme/              tokens.ts (LIGHT-ONLY scalar+color+letter-spacing tokens — incl. rDialog=14 (the
-                      DS Dialog card radius) + the plainInput(t,extra) inline-edit input-style helper
-                      lifted here from songs/songUtil.ts) + styles.ts
-                      (buildStyles(t) composed-style registry, incl. the shared `kickerWide` micro-label) + ThemeContext (useTheme()→{t},
-                      useStyles()→composed styles). Dark mode removed; call-site pattern is
-                      `const { t } = useTheme(); const s = useStyles();`
-                      SPACING: ALL spacing uses the `t.space1..13` Tailwind scale (ordinal,
-                      value-hidden, px in the tokens.ts comments — space1=2 · space4=8 · space8=16
-                      · space13=48; NOTE the `spaceN = 2N` mnemonic only holds through space8).
-                      The DS is FULLY EVEN — no odd/fractional spacing anywhere; new spacing snaps
-                      to the nearest step. A value that must AGREE across surfaces gets a role-named
-                      const (the `DIALOG_PAD_X = 22` pattern), NOT a primitive. Only rare >32 even
-                      structural one-offs (36/40/54/58) stay literal. The old `density` tokens were
-                      dead and were removed.
-  ui/                 Icon.tsx + iconNames.ts (line icons), BlockArt.tsx (engine dispatch) +
-                      blockart/ (per-family split: amps + ampsCombo*/ampsHead* · pedals +
-                      pedalsMotif*/pedalsSpecial/pedalKnobs · mics + micBodies* · forms →
-                      formsPedal/formsRack · parts → partsCloth/partsPanel · cabs · shared.ts +
-                      sharedIds/sharedTones/sharedCloth — the SVG illustration engine, shared
-                      chain+Models),
-                      ErrorBoundary.tsx (top-level + per-tab, log sink), log.ts (frontend→plugin-log),
-                      DeviceStatus.tsx (top-bar 3-phase indicator: hollow disconnected →
-                      amber-pulse "reading firmware…" → green "connected · <fw>"; tmp-fwpulse
-                      keyframes live in index.html),
-                      DS atoms Tag.tsx (chip — own file now, extracted FROM primitives) / Spinner.tsx /
-                      Dot.tsx / SlotLabel.tsx / Meter.tsx (STATIC track+fill CPU meter — deliberately
-                      NOT ProgressBar, whose 0.4s transition would lag the paint; don't "consolidate"
-                      them) / PaneEmpty.tsx (medallion detail-pane empty state) + wizard/table
-                      scaffolds ConfirmBar.tsx (run stop-confirm) / RunRow.tsx (run progress row —
-                      opaque icon/status ReactNode slots, Doctor + Leveling share it) /
-                      SetupGroupHeader.tsx / PresetOptionRow.tsx / ApplyToBar.tsx / Rail.tsx (the
-                      210px left rail: Songs setlists + Settings categories),
-                      primitives (Dialog — the ONE DS dialog shell: position-FIXED blurred backdrop
-                      (covers the whole window incl. the tab bar) + DialogHeader/DialogBody (scrolls)/
-                      DialogFooter slots, sm/md size scale, viewport-capped maxHeight; Modal +
-                      SaveOverlay + WizardShell + HowLevelingSheet ALL route through it / Menu (+
-                      MenuDivider) the ONE anchored dropdown/context menu (Scrim + anchored card) /
-                      Modal/Button/Scrim/Slider/Toast/Select/SearchInput/Panel/
-                      Checkbox/Toggle/MenuItem/AlertBanner/SegmentedControl (generic radio pill)) —
-                      every prop-bearing component declares a
-                      named XxxProps interface. DialogCardCtx (the Pick-portal context) lives in
-                      ui/dialogContext.ts, re-exported from views/overlays/wizardContext.ts
-  lib/                typed invoke wrappers + types.ts + format.ts (DASH, pad2, pad3, slotLabel)
-                      + useDeviceLoad.ts (shared loading→ready|error state machine for the views)
-                      + connectError.ts (classifies a connect failure → red banner vs friendly gate)
-                      + useAutoAdvance.ts (run-wizard auto-advance to summary; a manual stop
-                      suppresses it) + usePickedRows.ts (the setup steps' shared bulk-pick selection)
-  views/            the 6-tab IA bodies, named per the TMP ubiquitous language (Domain noun + View).
-                      The 3 large views are FEATURE FOLDERS,
-                      each a re-export index.ts over one file per substantial component + a private
-                      feature-named shared module (NOT in index, never imports a sub-component):
-                      level/    Presets leveling. LevelView
-                                orchestrator (hero + list + leveling flow) + per-concern hooks:
-                                  · usePresetData — read-path list/store/selection + SUBSCRIBER of the ONE
-                                    shared library backup scan (the module-scoped `libraryScan` store; ~22 s,
-                                    pauses the monitor). The scan is App-OWNED: `App.tsx` fires `ensureLibraryScan()`
-                                    once on the connect edge (reset on detach), so Level/Copy/Songs share ONE scan
-                                    and a tab switch never re-triggers it. It drives a determinate scan strip from
-                                    tmp://backup-progress and populates per-preset scene names + FS tags +
-                                    levelable footswitches (`footswitchesPerIndex`, the backup's
-                                    `BackupPresetRow.footswitches` filtered to non-empty `level_params` — the
-                                    Level wizard's third dispatch reads it, NO extra device read) + the
-                                    song↔preset map (`presets` + `songPresetSlots`, keyed by 0-based list index)
-                                    for the WHOLE library. Consumers SUBSCRIBE via useSyncExternalStore; a NEW
-                                    device tab needing backup data consumes the store — it does NOT add its own trigger.
-                                  · useLiveDevice — subscriber of the 5 tmp:// monitor events (hero live
-                                    preset/scene/graph; App connect starts the monitor in src-tauri/src/monitor.rs).
-                                    Backed by a MODULE-SCOPED store (the `libraryScan` pattern via useSyncExternalStore),
-                                    NOT component `useState` — a LevelView tab-switch remount would reset component state
-                                    to INITIAL and, since the monitor only pushes on a CHANGE, revert the hero to the
-                                    stale connect-time preset. The hero SLOT badge reads the frontend `activeListIndex`
-                                    (live-preset event), NOT `graph.slot` (field-3 carries no slot; `PresetLoaded` lags
-                                    field-3, so backend slot-stamping is racy). `resetLiveDevice()` is a test-only full
-                                    reset (bridge teardown) since prod never remounts the bridge.
-                                  · useLevelingFlow — the flow state machine + run orchestrator.
-                                  + leveling.ts (SetupOption/RunItem/Overlay types + setupOptionsFor/
-                                    optionToRunItem + buildLevelJob).
-                                The list is a SCENE TREE (`PresetRow`/`SceneRow`): each preset row has an expand
-                                caret revealing its children — Base (`p${slot}`), each FS scene (`s${slot}:${i}`),
-                                and each levelable block-acting FOOTSWITCH (`f${slot}:${i}`, tag `FS${switch+1}`,
-                                name = the footswitch `customLabel` or — when blank — the toggled block's name via
-                                `footswitchName`/`shortFallback`). The row checkbox selects the WHOLE preset (ALL
-                                children); an individual child row toggles one key; the COLLAPSED row shows a
-                                "N scenes · M footswitches" breakdown (nothing when it has neither). Footswitch rows
-                                REUSE `SceneRow` (accent FS chip) — no separate component. Row click = SELECTION
-                                only (toggles the preset's child keys); it does NOT recall the preset on the unit —
-                                app-driven preset recall was REMOVED (recall is owned by Pro Control / the
-                                footswitches; see `PresetRow.tsx:12`). The hero (ActiveSignalChainView)
-                                renders the live active preset + scene tag.
-                                Leveling flow (useLevelingFlow) is ONE
-                                persistent frame (overlays/WizardShell) with a 3-step rail (Set up · Level ·
-                                Summary) whose BODY swaps per stage — the frame never resizes/re-centers.
-                                Stages: SetupBody
-                                (set instrument/target for everything picked in the list, apply-to-all + per-row
-                                overrides + the opt-in "Even out parallel amps" RUN-OPTION band — a pill `Toggle`
-                                mirroring the apply-to bar, ALWAYS visible/default-off since the engine no-ops on
-                                non-merged sounds + setup does no device reads; the backup acknowledgment is an
-                                INLINE checkbox in the Set-up footer that gates the run, NOT a separate stage;
-                                Back closes Set up, or Cancel in re-level) → RunBody (auto-advances to Summary 650 ms after a NATURAL finish showing
-                                a static "✓ done" marker — Continue appears ONLY after a manual Stop; Stop flips a `stopping` flag for immediate "Stopping…" feedback and fires all three cancel lanes `cancel_{preset,scene,footswitch}_leveling` (per-lane AtomicBools read via a `cancelled` closure threaded into the leveller) PLUS a process-global `device_gate::OP_ABORT` that `sleep_abortable`/`sleep_or_cancel` poll on every long wait on the path (the capture window + its bracketing settles + the floor-retry gaps), so a tripped flag lands the stop in well under a second instead of sitting out the in-flight ~6–8 s capture — except past the re-amp engage (no early return; a dropped OFF strands the unit input-muted) and the post-cancel restore/deferred-save cleanup, both of which always run to completion; a tripped flag returns the `leveller::CANCELLED` sentinel which the runner treats as a skip) → SummaryBody
-                                (clamped → Re-level clamped subset; off-branch uses the `x` glyph in WARN color;
-                                REASON-AWARE by-ear footnote — one `by ear` chip per row, the
-                                closing line spelling out only the causes present joined by "; ": dynamic = "loud/
-                                quiet swings make the number an average", rebalance = "parallel amps balanced by
-                                approximate isolation", driven from `RunItem.verifyByEar`). Backdrop
-                                click closes on every stage EXCEPT run. Per step: BASE scene → level_preset (presetLevel,
-                                preset-to-preset); FS scenes → list_level_blocks (amp candidates, once/preset,
-                                cached) + level_scenes_apply_batched (amp outputLevel, scene-to-scene; ADJACENT
-                                same-preset rows sharing instrument+target go in ONE call, per-scene progress on
-                                the channel — per-scene calls re-loaded the preset and flashed base twice per
-                                scene); FOOTSWITCH (`RunItem.footswitch != null`) → levelFootswitchesApply
-                                (a preset's ADJACENT FS rows sharing an instrument go in ONE call — the backend
-                                measures every switch, then writes them all on ONE live-edit session and saves
-                                the preset ONCE; per-job targets ride the jobs array; jobs sourced from
-                                `footswitchesPerIndex`; bake-vs-assign `method` is internal, never surfaced
-                                to the user). Footswitch + Base jobs level in ISOLATION:
-                                every OTHER block-acting footswitch's on/off block is forced off during measurement
-                                ("Base" = ALL footswitches off, NOT as-saved), the target switch's own blocks get
-                                their switch-ACTIVE state (`engaged_bypass_for_switch` is isActive-AWARE, not a
-                                flip-of-saved — a preset saved WITH the switch engaged stores the block ON +
-                                `isActive:true`, HW preset 024's BD2; the Doctor shares this helper), and the apply
-                                reloads first so forced bypasses are NEVER persisted (mechanism: `notes/leveling.md`).
-                                `clamp_reason` on `LevelResult`/`FootswitchLevelResult` means ONLY "no
-                                signal on USB 1/2" (silent capture → UI `offbranch`); headroom clamps are reason-less
-                                → "clamped at X" (the scene path's no-authority off-branch stamp is the one other
-                                `clamp_reason` producer — see the BatchedLive scene-leveling gotcha). Always WRITES (post-disclaimer run); a per-item
-                                failure → "skipped", never aborts. HW-validated full flow (level_preset verified −22.0 LUFS).
-                                LOAD-BEARING engine facts: the ACTIVE preset's scene names + LIVE
-                                scene + FS tags come from the field-3 currentPresetDataChanged JSON
-                                (scenes[].sceneName slot-ordered + lastLoadedScene + ftsw); WIRE SCENE ADDRESSING
-                                — loadScene/lastLoadedScene are 0-BASED scenes[] indices, base = CONSTANT slot 8
-                                (NOT count+1), loadScene must emit sceneSlot explicitly even for 0. Per-scene
-                                leveling picks the amp PER SCENE from the live audioGraph (a bypassed amp's knob
-                                measures flat → clamps) and changes ONLY the amp outputLevel (preamp/master/
-                                volume forbidden). OPEN scene-0 anomaly (do not trust scene-0 leveling until
-                                resolved): on the 2-amp Guitar preset, USB loadScene(0) materializes a different
-                                amp state than the physical footswitch tap. Leveling runs end with a GUARANTEED
-                                re-amp OFF on a fresh connection (a dropped OFF strands the unit input-muted;
-                                recovery: probe --reamp-off). The backup scene-load source is the
-                                `read_library_via_backup` command (verify with `probe --device-backup`).
-                      doctor/   Tone diagnosis (DoctorView + useDoctorFlow: Select → Setup → Run →
-                                Results). Re-amps each selected sound (Base/scene/footswitch, the
-                                same isolation rules as leveling), renders spectral DiagnosisChips +
-                                BandMeter/BandSpark, and offers one-click PrescriptionCard fixes
-                                (doctor_apply → save/discard) + SceneConsistency + ABAudition;
-                                severity.ts ranks findings, applyLock.ts serializes applies.
-                      songs/    SongsView (device-backed songs+setlists CRUD + a "Setlists ⇄ Presets" rail
-                                pivot whose Presets axis is a READ-ONLY songs-per-preset view sourced from the
-                                shared backup scan, not live reads) + SongForm / SongList (+ ListHeader /
-                                SongRow) / AddSongs / SetlistDetail / PresetDetail (+UnitBadge) /
-                                skeletons + shared.tsx; the pivot toggle is the primitives SegmentedControl
-                                (the songs-local Seg is gone)
-                      settings/ SettingsView (user-owned loudness targets + playback level + instrument
-                                profiles + Tier-2 calibration) + TargetRow (editable: drag-reorder / inline-
-                                rename / draggable slider · TMIN −32 TMAX −16, NO upper ceiling/clamp · ⋯
-                                Rename/Delete) + PlaybackLevelSection (Fletcher–Munson note + dynamic comp
-                                caption) over SegmentedControl (generic radio pill) + InstrumentRow /
-                                InstrumentForm.
-                      overlays/ the leveling flow: LevelingWizard (the stage switch) +
-                                WizardShell (now a thin wrapper over the DS Dialog — size md + height
-                                512, viewport-capped so it scrolls on a short window; StepRail +
-                                WizardFooter (itself a thin DialogFooter adapter) + BackBtn + WizTitle)
-                                + the three bodies SetupBody · RunBody · SummaryBody + Pick
-                                (dropdown — PORTALS into the card via `DialogCardCtx` + flips ABOVE near the
-                                bottom edge so a per-row menu never clips past the fixed-height frame) +
-                                ByEarChip (shared by SetupBody's Run-option caveat + SummaryBody);
-                                the run bar uses ui/ProgressBar.tsx (the shell is the scrim).
-                                plus views/Disclaimer.tsx (startup gate, storage keys in src/lib/gates.ts)
-                      Support/gating (flat): BugReportDialog.tsx + sendReport.ts (+ `lib/reportEndpoint.ts`,
-                      backend `commands/support.rs`) — the support-bundle / bug-report path;
-                      FirmwareGate.tsx + LoadErrorPane.tsx + PageNotice.tsx — the pre-flight firmware
-                      gate and the error / notice panes.
-                      Flat (shared/chain infra): CatalogView.tsx, PresetList.tsx, ActiveSignalChainView.tsx
-                      (renders the device's ordered series/split `stages` — N sequential splits, not
-                      positional), SignalChainView.tsx (shared strip geometry; a `StripBlock.halfStack`
-                      (`HalfStackSpec` from `models/blockArt.ts`) draws a stacked head-on-cab tile via
-                      `HalfStackArt`. The half-stack/dual-cab CREATE decision is DEVICE-DRIVEN (keys on `cabsimid` presence), NOT catalog `form` — but catalog `form` (`catalog.ts::isComboBid`) IS now used to SUPPRESS the stack for combo-form amps
-                      (`models/halfStack.ts` was DELETED — keying on `form` always drew phantom cabs onto bare
-                      heads): `models/blockArt.ts::nodeTileArt(model, cabSimId, isCombo)` branches by node — a standalone
-                      `ACD_CabSimTMS` block names its cab (and `stripExpand.ts::expandDualCab` splits it into
-                      two parallel cab tiles when `cabsim2enabled`); a HEAD-form AMP node carrying its own `cabsimid`
-                      (e.g. preset 003's HIWAY `…CabIR`) becomes ONE head-over-cab tile via `ampCabHalfStack` —
-                      UNLESS it is a COMBO (its modeled built-in speaker is also a `cabsimid`, e.g. blonde '65
-                      Twin `ACD_TwinReverb65BlondeNoFx`), where the REQUIRED `isCombo` arg (`catalog.ts::isComboBid(model)`,
-                      passed by both strip sites; no default so a new caller can't silently re-stack a combo)
-                      SUPPRESSES the stack so it stays a single combo tile; a bare head (no `cabsimid`, e.g.
-                      preset 001's heads feeding a separate dual cab) is a plain glyph. So the strip MIRRORS THE UNIT — wired app-wide via the shared
-                      `toStripBlock`/`mkTile` → `nodeTileArt` path; matches the Catalog tab's `HalfStackArt`),
-                      EmptyState.tsx.
-                      ui/primitives.tsx is deliberately NOT split (Modal renders Button → circular-import
-                      risk). App.tsx routes Level/Copy/Songs/Catalog/Settings (route keys = the labels, no Presets/Models discrepancy).
-                      copy/      Copy blocks between presets (software-green): CopyView state machine → ChoosePresets
-                                (Step 1: reference + targets) → PlaceBlocks (Step 2: per-target edit) with
-                                TargetEditCard / CopyPath / BlockEditor / CpuMeter / SaveOverlay; copyModel.ts
-                                (the editable EditGraph + edit→device-op diff: editGraphFromActive / applyEditOp /
-                                removeEditBlock / diffToOps) + useCopyLibrary (reuses the ONE
-                                module-scoped libraryScan backup — its graphByIndex + BackupPresetRow.graph —
-                                so NO second device read). CopyPath has NO renderer of its own: it adapts an
-                                EditGraph → the Level page's SignalChainView (the one strip engine — real inline
-                                series→SPLIT[a∥b]→MIX→series, GUITAR/MIC + OUT nodes, diamonds, brackets);
-                                SignalChainView's StripBlock/BlockTile gained backward-compatible interactive
-                                props (onClick/selected/change) — the Level page passes none, so it renders
-                                unchanged. Step 2 has offline undo/redo (a CopyView snapshot history + toolbar
-                                buttons, click-only — no keyboard shortcuts); edit badges are +/⟲ (added/replaced).
-                                Save = the live copy_apply command (replace/insert/remove on held sessions, gated
-                                on nodeReplaced/Inserted/Removed, never save on presetError) — once written it's
-                                not undoable from the app (the done summary points to a Pro Control backup
-                                restore); HW deferred.
-  models/             CatalogView data layer — catalog.ts (ingest + taxonomy), lineage.ts (bid→brand),
-                      blockArt.ts (id→BlockArt art/tone/short caption + `nodeTileArt` strip-tile
-                      resolution; the TMP_CATALOG rows live in blockArtCatalog/, one file per
-                      category; form lookups `isComboBid`/`isHalfStackBid` live in `catalog.ts`).
-                      **`blockArt.ts` must NOT import `catalog.ts`** — that closes a cycle
-                      blockArt→catalog→cpu→blockArt (catalog `toRecord`→`cpuForBid`→`resolveDeviceId`), a
-                      module-init TDZ "cannot access before initialization" crash. The SAFE direction is
-                      catalog→blockArt (`isComboBid` imports `resolveDeviceId`); cross-cutting form+art
-                      decisions resolve at the VIEW call site (which may import both — `toStripBlock`/`mkTile`
-                      pass `isComboBid(model)` into `nodeTileArt`), never inside a core model module,
-                      cpu.ts + model-cpu.json (REAL per-block DSP cost + 76.5% per-preset budget,
-                      baked from the tm-stomp-server 1.8.45 binary `utilizationBudget`/`utilizationPercentage`
-                      blob — NOT product_profile.json; surfaced in the Catalog tab + the HeroCpu signal-chain
-                      readout. Regenerate model-cpu.json on a firmware rev),
-                      tmp-model-guide.json (unified catalog object with `blocks[]` — all firmware versions,
-                      inline `since` field per row.
-                      GENERATED OUTPUT: a row-data change (form/category/glyph-source) must ALSO edit the
-                      generator source — e.g. `expand_catalog.py`'s `BASS_FORM` map for a bass amp's `form` —
-                      or the next `pipeline.py` regen silently reverts the JSON edit AND breaks
-                      `models-catalog.test.tsx`'s count oracles. (e.g. the '66 Flip Top `combo`/`half_stack`
-                      form lives in both the JSON and `BASS_FORM`.))
-(block art is original BlockArt SVG — the copyrighted public/tmp_blocks/ PNGs were removed; see UI note above)
-> **Block-art resolution gotcha:** `resolveBlockArt(bid)` keys art by FenderId; catalog rows with `block_id=null` (the 7 Microphones) have no `bid` and fall through to the generic `knobs2` pedal glyph unless resolved by NAME via `resolveBlockArtByName` (the `BY_NAME` secondary index). A coverage test over EVERY catalog row (`models-catalog.test.tsx` — not spot-checks) is the guard; it also caught FX Loop 1 & 2 missing entirely from `blockArt.ts`. Any new null-`bid` block needs the name fallback + the row in the coverage test.
-resources/samples/  7 committed per-topology shaped-noise WAVs — one per pickup *character*
-                    (guitar/bass × single-coil/humbucker + active + acoustic; the stimulus-amplitude
-                    axis was removed once calibration measured real output). Calibration sets
-                    stimulus amplitude; the topology is the spectral template. Regenerate via `cargo run --bin gen_samples`.
-```
+`C` is each preset's **max reachable** loudness. A louder target clamps, and the ceiling is preset- and model-specific — there is no hard `−20 LUFS` rule (a maxed 65 Twin reached `−14 LUFS` comfortably). For relative leveling, pick a target below the quietest preset's measured max.
 
-> **Instrument-aware leveling:** a profile (e.g. "Telecaster") links a real instrument to a shipped
-> pickup topology; the re-amped stimulus is the profile's Tier-2 DI CAPTURE when present (see the
-> Tier-2 block below), else the topology's synthetic WAV (whose `peak` is a per-character
-> uncalibrated default drive, scaled to a calibrated profile's measured loudness). "Level all to common target" measures
-> every preset's ceiling `C` and levels them all to `min(C) − headroom` so switching presets/instruments
-> on stage causes no loudness jump.
->
-> **Tier-2 real-guitar calibration** (`calibrate_profile`): captures the dry instrument (USB-Out 3 =
-> input ch `audio::DRY_INSTRUMENT_IN_CH`) while you play, stores its **K-weighted loudness (LUFS)** on
-> `Profile.calibration_lufs`, **and stores the capture itself** at `<app_config>/captures/<profile_id>.wav` —
-> **the capture IS the leveling stimulus** when present (`resolve_stimulus` precedence: e2e env → explicit →
-> profile capture → topology WAV → env → default), injected **VERBATIM** (`calibration_lufs` nulled when
-> `from_capture` — no scaling, killing the scalar/WAV-mismatch bug class). HW-justified: a `probe --stim-ab`
-> A/B (Tele DI vs the LUFS-matched synthetic) measured preset-dependent errors of −5.4…+2.2 LU that no
-> constant offset absorbs. Consistency rules: unlink-first + temp+rename in `store_capture`; a CLIPPED
-> capture stores nothing (scalar-only, old behavior); `save_profiles` unlinks captures for removed ids AND
-> topology-changed profiles; an activity-ratio gate rejects mostly-silent takes. The **Doctor diagnoses a
-> calibrated profile's DI capture against the SAME per-family threshold table a synthetic stimulus uses**
-> (`StimulusKind::Capture` no longer selects a distinct table — only the fizzy flatness gate still branches
-> on it, `doctor.rs::FIZZY_MIN_FLATNESS`). For legacy/capture-less calibrated profiles `read_stimulus_calibrated` still scales the topology
-> WAV to the stored loudness (capping peak ≤ 0.99) so the amp is driven like the real instrument. K-weighted, not flat RMS/peak:
-> peak is pick-transient-dominated and barely tracks output; flat RMS under-counts bright pickups (a
-> bright guitar that drives the preamp hard reads low in broadband RMS) — K-weighting matches perceived
-> drive and unifies the metric with the leveler's output target (loudness in → loudness out). **Validated on hardware** (both gates passed): the dry instrument is capturable
-> (`probe --capture-input`), and the re-amp inject is NOT AGC'd — its amplitude drives the chain, with
-> the apparent compression being the amp's own nonlinearity (`probe --agc-test <clean-slot>` sweep
-> linearizes at low drive; a clean Twin gave ~1.65 LU output per 6 dB input). Re-validate either with
-> those `probe` subcommands.
-> **Clipping caveat:** the dry-instrument tap (USB-Out 3) has no limiter and **clips at 0 dBFS** for
-> hot guitars / hard playing. **Play EXACTLY as you really play — NEVER roll the guitar volume back:**
-> it under-drives the amp vs reality AND darkens the tone (volume-pot HF rolloff), corrupting the very
-> brightness K-weighting captures. Clipping is a capture-path / gain-staging fix, never a playing
-> instruction. `calibrate_profile` now clip-gates with a **flat-top run-length detector** (≥4 consecutive
-> full-scale samples, commit `c4cc680`) — a lone pick transient at 0 dBFS is NOT clipping (the DI tap is a
-> bit-exact USB bus, no analog gain to lose). It still guards the too-quiet case.
-
-## How leveling works (one-shot open-loop — validated on hardware)
-
-The full model — the preset/scene/footswitch recipes, parallel-amp rebalance, and the outcome taxonomy — lives in **`notes/leveling.md`**. The contract in brief: `presetLevel` is a **linear amplitude** control (`captured_LUFS = 20·log10(presetLevel) + C`), so `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply, forced by the re-amp gotchas below). Per-scene leveling is the same one-shot on the active amp's `outputLevel` (`level_scenes_oneshot`, bounded secant correction + off-branch clamp — see the BatchedLive gotcha for why the closed-loop shared-stream approach mis-measures). `C` is each preset's **max reachable** loudness; a louder target clamps (surfaced in the UI), and the ceiling is preset/model-specific, not a hard `−20 LUFS` rule (maxed 65 Twin / 65 Deluxe NBC reached `−14 LUFS` comfortably, clamping only ~`−8.6`) — for relative leveling pick a target below the quietest preset's measured max.
-
-**Fletcher–Munson playback compensation (software-green):** equal-LUFS is equal-loudness only near the SPL K-weighting approximates (~stage volume); below that the equal-loudness contours steepen and K-weighting under-credits bass presets' low-frequency energy. The store carries `playback_level` (Quiet/Rehearsal/Stage, Settings → PlaybackLevelSection, `set_playback_level`); `commands/level_preset.rs::playback_offset_for` adds `profiles::playback_offset_lu(level, instrument)` (bass & bass-vi: +1.5/+0.5/0 LU; guitar always 0) to the target inside `level_preset` / `level_scenes_apply{,_batched}` / `level_setlist` (per-entry: common target solved in offset-adjusted ceiling space, `min(C − offset) − headroom`). Stage (the serde default) is 0; `probe` paths bypass the offset (explicit targets, keeps HW benchmarks raw). The result's `target_lufs` echoes the EFFECTIVE (offset) target.
-
-**Dynamics-spread flag:** every full-capture measure also reports `dynamic_spread_lu` = short-term-max − integrated (gain-invariant, threaded `lufs::Loudness` → `MeasuredC` → `LevelResult`/`BatchedSceneOutcome`; `None` on the live-window runner). The flow stores it on `RunItem.spreadLu`; SummaryDialog marks rows ≥ `DYNAMIC_SPREAD_LU` (6 LU, `leveling.ts`) "dynamic" with a verify-by-ear explainer — it surfaces the relative-gate bias (a dynamic clean tone at equal integrated LUFS carries hotter peaks than a compressed one) instead of silently absorbing it. The leveler still SOLVES on integrated only.
-
-## Gotchas (the non-obvious, load-bearing protocol facts)
-
-Rules are stated here in full. Entries marked **→ evidence** have their hardware proof, protocol
-detail and failure history in [`notes/gotchas.md`](notes/gotchas.md) — read that before changing
-the behaviour a rule governs.
-
-- **Setters/commands + the heartbeat OMIT `batchStatus`** (only *requests* include it). SetReAmpMode, SetPresetLevel, LoadPreset, SaveCurrentPreset with a `batchStatus` are **silently ignored** by the device.
-- **LIVE per-node structural edits (the protocol behind the block-edit features).** These wire facts are driven by **TWO** commands: `bulk_replace_live` (one replace across a selection) and **`copy_apply`** (the Copy tab — an ordered replace/insert/remove op list PER target preset, from `copyModel.diffToOps`; reuses `session::{replace_node,insert_node,remove_node}` + the held-session machinery, same `nodeReplaced(40)`/`nodeRemoved(36)`/`nodeInserted(33)` confirm gate, never-save-on-`presetError`(53), first-edit-after-load retry-harden). [→ evidence](notes/gotchas.md#live-per-node-structural-edits-the-protocol-behind-the-block-edit-features)
-- **Requests must REUSE `batchStatus` in Pro Control's groups, not increment per request.** The handshake grouping is `preset_list(1)=1`, then favorite/preset_list(4)/preset_list(3)/product_profile/current_preset_info/settings66/userir all=`2`, `current_preset_data_request=3`, `current_preset_data_json_request=4`. [→ evidence](notes/gotchas.md#requests-must-reuse-batchstatus-in-pro-controls-groups-not-increment-per-request)
-- **Live setters + import framing (byte-exact from a real Pro Control capture):** `renameCurrentPreset`(13){displayName=f1} — and a PC rename is **rename(13) + saveCurrentPreset(14){slot=f1}** (save-under-new-name; send both to persist); `moveUserPreset`(16){old=f1,new=f2} (persists alone); `clearUserPreset`(15){slot=f1}; all single-packet no-batch. [→ evidence](notes/gotchas.md#live-setters-import-framing-byte-exact-from-a-real-pro-control-capture)
-- **Slot addressing: device userSlot = list index + 1** (HW-confirmed 1.7.75). [→ evidence](notes/gotchas.md#slot-addressing-device-userslot-list-index-1)
-- **Destructive HW ops + slot mappings (process lesson):** before any destructive op (`clear`/`move`/`save`-over) keyed on a slot/index mapping, confirm the mapping with a **non-destructive read first**, and put the guard in the **same address space as the mutation**. A `clear` once deleted a real preset because the guard checked list-index space while `clear` acted in 1-based device-slot space (the same off-by-one fixed above). On real hardware with irreplaceable presets, an unconfirmed mapping + a wrong-space guard = silent data loss.
-- **Re-amp toggle** = `SettingsMessage(3) → reampModeActive(30)` (NOT MixerMessage). ON=`1a05f201020801`, OFF=`1a03f20100`.
-- **Re-amp latches preset state at engage** — the captured tap reflects only the `presetLevel` set BEFORE engaging. Set level → then engage.
-- **Re-amp latch nuances (fw 1.8.45):** `changeParameter` IS audible mid-engage (live knob nudges work — the whole live-leveling family rests on this), but `loadScene` mid-engage is INAUDIBLE (the ACTIVE SCENE latches at engage: all 9 scene rows of an 8-scene preset measured the identical audio on one engage) — per-scene leveling therefore REQUIRES one engage per scene. Also `load_preset` + engage in the SAME connection captures pure silence — load in its own connection, then fresh-connect to set + engage (the `measure_knob_at` shape).
-- **The scene-context rule: a bare write/measure with no preceding `loadScene` lands in whatever scene the connection currently holds, never base by default.** A preset loads into its SAVED `lastLoadedScene` (HW-confirmed, fw 1.8.45: scratch slot 30 with `lastLoadedScene = 3` — a bare `changeParameter` landed in scene 3's overlay, untouched base). [→ evidence](notes/gotchas.md#the-scene-context-rule-a-bare-writemeasure-with-no-preceding-loadscene-lands-in-whatever-scene-the-connection-currently-holds-never-base-by-default)
-- **Scene leveling is ONE-SHOT open-loop on the active amp's `outputLevel`** — the app command `level_scenes_apply_batched` calls `leveller::level_scenes_oneshot` (measure each scene AS-IS via an ISOLATED fresh re-amp capture → `solve_level` → `apply_level`, bounded secant correction that always lands the best point). [→ evidence](notes/gotchas.md#scene-leveling-is-one-shot-open-loop-on-the-active-amps-outputlevel)
-- **`audio::LiveReamp` is ring-buffered (`LIVE_RING_SECS`)** — its capture buffer once grew unboundedly (multi-channel 48 kHz × minutes × dozens of rows) and OOM'd the whole Mac. Never re-introduce unbounded capture accumulation; reuse ONE stream pair per preset rather than rebuilding per scene (coreaudiod churn).
-- **`outputLevel`=0 is DEEP DIGITAL SILENCE on the real TMP, and `leveller::loudest_loudness` ERRORS ("no signal captured") on a silent capture** — a finite LUFS isn't recoverable from silence. [→ evidence](notes/gotchas.md#outputlevel0-is-deep-digital-silence-on-the-real-tmp-and-levellerloudest_loudness-errors-no-signal-captured-on-a-silent-capture)
-- **Re-amp engages reliably only ONCE per connection.** Fresh-connect per engage. Its `ReAmpModeChanged` echo is flaky and is NOT proof of engagement — a finite captured loudness is. [→ evidence](notes/gotchas.md#re-amp-engages-reliably-only-once-per-connection)
-- **A silent/failed re-amp inject reads as the device's STATIONARY OUTPUT FLOOR, and `measure_c` would accept it as a valid `C` without the production floor guards below.** In a rapid 20-engage `probe --stim-ab` sweep, 19/20 captures measured the post-DSP floor, not the stimulus. [→ evidence](notes/gotchas.md#a-silentfailed-re-amp-inject-reads-as-the-devices-stationary-output-floor-and-measure_c-would-accept-it-as-a-valid-c-without-the-production-floor-guards-below)
-- **Amp-id matching must be CHECK-FIRST then strip (CabIR/ConvRvb).** A discovered amp block can carry merged cab/IR/convolution suffixes the catalog's bare bid lacks. [→ evidence](notes/gotchas.md#amp-id-matching-must-be-check-first-then-strip-cabirconvrvb)
-- **`load_preset` + `set_preset_level` in the SAME connection → the set is overridden** by the load's own level-apply. Load in its own connection; a no-load set on the already-current preset (which persists across USB reconnects) sticks.
-- **Exclusive HID seize blocks Pro Control** — `IOHIDDeviceOpen` fails if Pro Control is running; the app surfaces a "close Pro Control" error.
-- **App icon (level-meter mark):** a flat terracotta (`#d97757`) macOS-squircle tile with **3 white bottom-aligned level bars** in a 6:11:8 height rhythm (replaced the old cream-on-terracotta plug). [→ evidence](notes/gotchas.md#app-icon-level-meter-mark)
-- **Marketing site (`docs/index.html` + `.nojekyll` + `assets/`):** static GitHub Pages page (branch-deploy: Settings → Pages → `main` `/docs`) at `https://pcavadas.github.io/tmp-companion/` — a PROJECT repo, so the URL is a `/tmp-companion/` SUBPATH (a bare `pcavadas.github.io` would need a separate repo named that), hence all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml-nojekyll-assets)
-- **macOS-only**: `core-foundation` / `core-foundation-sys` / `libc` deps are `cfg(target_os = "macos")`; the IOKit + cpal CoreAudio paths don't build elsewhere.
-- **48 kHz stimulus required** — that is the **host Core Audio rate** the device must be set to, NOT "the device clock". [→ evidence](notes/gotchas.md#48-khz-stimulus-required)
-- **Output Assign is per-preset and is applied to the global mixer on every preset LOAD.** Loading a preset overwrites the unit's output-assign matrix from that preset's `outputMixerSettings` (`USB12Input→usb12Active`, `instrumentOutput→instrumentActive`, `comboOutput→micActive`; all 9 cells verified). [→ evidence](notes/gotchas.md#output-assign-is-per-preset-and-is-applied-to-the-global-mixer-on-every-preset-load)
-- **The leveling capture WINDOW (6 s stimulus + 0.8 s tail) is LOAD-BEARING — trimming it is a ≤0.3 LU re-baseline, not a free speedup (HW-A/B'd, `probe --measure-adaptive`).** TMP presets are NOT stationary under gated-integrated LUFS: time-effect/reverb presets have a quiet delay/reverb BUILDUP at the start AND a decay TAIL the full capture integrates, so early-exit, tail-drop, OR a preroll-skip each shift the measured loudness preset-dependently (clean +0.30 / delay +0.16 / reverb −0.02 LU; saving 2.4–4.7 s). [→ evidence](notes/gotchas.md#the-leveling-capture-window-6-s-stimulus-08-s-tail-is-load-bearing-trimming-it-is-a-03-lu-re-baseline-not-a-free-speedup-hw-abd-probe---measure-adaptive)
-- **Saving permanently alters a preset** — it's opt-in via the "Save leveled value to preset" checkbox (the only gate; a `window.confirm` guard was removed, see next bullet). Revert/backup of the original `presetLevel` is still TODO (the reserved `fetch_current_preset_json` + LZ4 path is the intended foundation).
-- **`Pick`/`BlockPick` DISPLAY `options[0]` when `value` isn't in `options`** (`options.find(...) ?? options[0]`) — the UI shows one thing while the submitted value is another. Defaults must be derived from the live option source, never hard-coded ids: a store without a Crunch target would display "Rhythm" while the run got `"crunch"` → silent −30 fallback, so the LevelDialog default is store-backed + a case-insensitive `targetLufsByName`.
-- **Dialogs/overlays go through the ONE DS `Dialog` (`ui/Dialog.tsx`) — never roll a per-view `position:absolute` scrim.** An `absolute, inset:0` backdrop resolves against the nearest positioned ancestor (the view body BELOW the 46px tab bar), so it fails to cover the menu AND the flex-centered card gets pushed off a too-tall parent and CROPS (this was a real bug across all 4 dialogs). [→ evidence](notes/gotchas.md#dialogsoverlays-go-through-the-one-ds-dialog-uidialogtsx-never-roll-a-per-view-positionabsolute-scrim)
-- **`window.confirm()` / `window.alert()` silently no-op in Tauri's WKWebView** (no JS-dialog delegate) — `confirm` returns `false`, so never gate logic on them. This blocked calibration until found. Use inline UI / a countdown instead (see `SettingsView.tsx` calibrate countdown; the save-guard `confirm` in `App.tsx` was removed for this reason).
-- **Tauri 2 `core:default` does NOT grant window creation** (historical) — the app once opened a second Settings `WebviewWindow` via the `#settings` hash; that window plus its `core:webview:allow-create-webview-window` + `core:window:allow-{create,show,set-focus,close}` capabilities were **removed** (Settings is now an in-app tab, `SettingsView`). Kept as a Tauri caveat: any future second `WebviewWindow` silently fails unless those capabilities are re-added to `capabilities/default.json`.
-- **`connect_device` releases any old HID seize before enabling the monitor.** It does not acquire a UI-owned session; it clears `AppState.session`, sets `MONITOR_ENABLED`, and waits for the monitor's startup snapshot. [→ evidence](notes/gotchas.md#connect_device-releases-any-old-hid-seize-before-enabling-the-monitor)
-- **HID open-lockout model (HW-isolated, fw 1.8.45):** after a session closes, the device accepts a QUICK re-open (≤~800 ms — the leveller's 400 ms gaps and the bench's 800 ms gaps both work) but then LOCKS OUT exclusive opens (`0xe00002c5`) for tens of seconds, and **every failed open attempt appears to RESET the lockout** — hammering retries NEVER recovered across hundreds of HW attempts while a long quiet did. [→ evidence](notes/gotchas.md#hid-open-lockout-model-hw-isolated-fw-1845)
-- **`connect_for_discovery` (field-78) is effectively DEAD on fw 1.8.45** — beyond drowning the field-3 push at connect, field-78 kills field-3 delivery for its WHOLE session (3/3 handshakes + a re-load + dense-heartbeat coax all failed to produce field-3 on a field-78 session). [→ evidence](notes/gotchas.md#connect_for_discovery-field-78-is-effectively-dead-on-fw-1845)
-- **Boot-window `IOHIDDeviceSetReport failed: 0xe00002d6` (kIOReturnTimeout) is NOT an error — it's "device not ready yet".** On a cold boot the TMP's HID interface enumerates (so `IOHIDDeviceOpen`/seize succeeds AND the hotplug watcher fires) ~20 s before its USB stack accepts reports, so the first handshake *send* times out (observed live: 3 such failures over ~20 s, then connect). [→ evidence](notes/gotchas.md#boot-window-iohiddevicesetreport-failed-0xe00002d6-kioreturntimeout-is-not-an-error-its-device-not-ready-yet)
-- **Connection-perf fast paths** (lane-by-lane detail + HW status: `notes/protocol.md`): **(1) startup snapshot** — `connect_device` only enables the monitor and waits for `StartupSnapshot { firmware, presets, graph }` from its single `connect_with_firmware()` handshake; `list_presets` answers from the snapshot with no HID or device-op lock (HW-green; idempotent vs an already-running monitor — a webview reload gets the CACHED snapshot, kept current by `monitor::refresh_snapshot_graph`; `graph=none` self-heals via bounded re-snapshot retries, `GRAPH_RETRY_MAX`=2). [→ evidence](notes/protocol.md#connection-perf-fast-paths)
-- **Scene policy is pure-lazy, no cache.** There is no eager `scan_all_scenes` startup sweep and non-active preset rows show no scene badge. [→ evidence](notes/gotchas.md#scene-policy-is-pure-lazy-no-cache)
-- **Preset-list reassembly also needs both stream rules.** `list_my_presets` tries `streams()` (interleaved-0x35-safe mid-flood) and `streams_final()` (terminal 0x35 tail frame) and keeps the longest decoded record set. [→ evidence](notes/gotchas.md#preset-list-reassembly-also-needs-both-stream-rules)
-- **Firmware version read = in-burst `currentFwRequest`, NO batchStatus, in the batch-2 group** (sent after `userir_field2`, BEFORE `current_preset_data_request(batch=3)` — sending it after batch-3 makes the device drop the reply; standalone after the burst → ConnectionError). `Session::connect_with_firmware` (used by `connect_device` + `probe --fw`, not the lean leveling `connect`) requests it; `extract_fw_version` harvests `currentFwResponse.data`. (Earlier "arrives unsolicited" belief was a one-off that did not reproduce after a reboot.)
-- **Editing `index.html` triggers a FULL webview page-reload (not HMR)** in `tauri dev`, which re-runs connect-on-mount — a common trigger for the self-seize collision above. To test `index.html` changes, reload via the UI, not by re-saving the file mid-session.
-- **React hooks must precede any conditional early return.** `LevelView.tsx` once declared `useMemo`s after the `loading`/`error` returns → "Rendered more hooks than during the previous render" on the first `error→ready` transition, which (with no ErrorBoundary) unmounted the whole tree → **blank window**. Fixed by hoisting the hooks; defended by a top-level + per-tab `ErrorBoundary` (themed fallback + Reload, not blank).
-- **Logging:** `tauri-plugin-log` (Rust `LogDir`+`Stdout`) writes to `~/Library/Logs/dev.cavadas.tmp-companion/` — caveat: `Builder::new()` already ships the **default** `[Stdout, LogDir]` targets and `.target()` **APPENDS**, so you must `.clear_targets()` before re-adding them or every line double-logs; the frontend routes `window.onerror`/`unhandledrejection` + ErrorBoundary catches there via `ui/log.ts` (guarded by `isTauri()` so Vitest/browser don't call the plugin). Runtime backend logging uses `log::*`; the `probe`/`gen_samples` CLIs keep `println!`/`eprintln!` (stdout *is* their interface).
-- **commitlint's `subject-case` rejects ANY capitalized first word after `type(scope):`** — config-conventional bans sentence/start/pascal/upper case (`commitlint.config.js`; a REQUIRED `main` check). The trap is the ACRONYM-led subject: `docs(device): HW-validated the …` reads correct and is rejected all the same (verified, same failure as a plain `Add the …`). Lowercase the lead word (`hw-validate the …`) or reword so a lowercase word leads. Dependabot commits are skipped WHOLESALE (the `ignores` predicate drops the whole commit, not one rule — motivated by `body-max-line-length`).
-- **CodeRabbit: progressive review is automatic — post NO command on a reviewed PR.** Pushing fix commits or replying to threads is enough; the incremental review picks them up on its own. [→ evidence](notes/gotchas.md#coderabbit-progressive-review-is-automatic-post-no-command-on-a-reviewed-pr)
-- **Auto-merge arms ONLY for `main`-targeted PRs** (`.github/workflows/arm-auto-merge.yml`, since PR #52). [→ evidence](notes/gotchas.md#auto-merge-arms-only-for-main-targeted-prs)
-- **Device-tab loads are connection-gated, not mount-only.** LevelView (Presets) + SongsScreen refresh on the `connected` flag flipping true (`useEffect(..., [connected, refresh])`), so plugging the TMP in after launch auto-populates the body — no "Try again" needed. App owns the auto-retry loop and threads `connected` down as a prop.
-
-- **Fully automatic connection** — there are no manual Connect/Disconnect buttons. [→ evidence](notes/gotchas.md#fully-automatic-connection)
+Full model — scene/footswitch recipes, parallel-amp rebalance, Fletcher–Munson playback compensation, the dynamics-spread flag, and the outcome taxonomy: **[`notes/leveling.md`](notes/leveling.md)**.

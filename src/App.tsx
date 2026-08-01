@@ -1,6 +1,6 @@
-// src/App.tsx — TMP Companion shell (click-only, 5-tab IA).
+// src/App.tsx — TMP Companion shell (click-only, 6-tab IA).
 //
-// A click-only 5-tab shell — Level / Copy / Songs / Catalog / Settings — routing to one
+// A click-only 6-tab shell — Level / Doctor / Copy / Songs / Catalog / Settings — routing to one
 // self-gating <…View/> per tab under views/:
 //   • Level    → <LevelView/>   now-playing strip + preset list + the §4
 //                destructive-write ritual, bound to real invoke wrappers.

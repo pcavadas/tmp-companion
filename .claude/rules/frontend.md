@@ -1,6 +1,9 @@
 ---
 paths:
-  - "src/**/*.{ts,tsx}"
+  # Listed separately rather than as "*.{ts,tsx}" — brace expansion is not portable
+  # across glob matchers, and a rule whose pattern never matches never loads.
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
 ---
 
 # Frontend rules

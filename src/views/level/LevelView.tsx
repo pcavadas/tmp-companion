@@ -171,7 +171,7 @@ export function LevelView({
     setPrevPresetNonce(live.presetNonce);
     if (live.presetNonce !== 0) {
       // Optimistic default, corrected below once tmp://live-scene reports
-      // the actual scene — see the scene-context rule (CLAUDE.md).
+      // the actual scene — see the scene-context rule (.claude/rules/danger.md).
       setLiveScene("base");
       setDiagError(false);
     }
