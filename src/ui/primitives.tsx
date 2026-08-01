@@ -2,6 +2,10 @@
 //
 // All primitives read the active token object via useTheme(); none hold a private
 // palette. Spacing / hairline / radius come from the theme tokens.
+//
+// This file is deliberately NOT split into one-component-per-file, unlike the rest
+// of ui/. Modal renders Button, so splitting them reintroduces a circular import
+// between the resulting modules. Keep them co-located.
 
 import { useState } from "react";
 import type { CSSProperties, ReactNode } from "react";

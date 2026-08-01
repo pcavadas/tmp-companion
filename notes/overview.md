@@ -2,6 +2,8 @@
 
 A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that controls a Fender Tone Master Pro over USB. It renders its own UI and talks to the device with an exclusive-seize HID session.
 
+> **This file is the architecture map.** `CLAUDE.md` deliberately does not carry a module tree — the per-module docs are the authority (see [Where things live](#where-things-live)). The UI is **click-only**: no keyboard shortcuts, no command palette.
+
 ## Tabs
 
 - **Level** — measures a preset's loudness by re-amping a synthetic stimulus through its DSP chain, then sets the `presetLevel` (and, per scene, the active amp's `outputLevel`) to hit a target LUFS. See `leveling.md`.
@@ -29,3 +31,15 @@ A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that
 - Backend: `src-tauri/src/` — `hid.rs` (seize), `session.rs` (handshake + commands), `proto.rs` (wire codec), `monitor.rs` (live session + startup snapshot), `leveller.rs` / `lufs.rs` / `audio.rs` (measurement), `audiograph.rs` (node ops), `commands/*.rs` (the `#[tauri::command]`s, one module per feature area), `bootstrap.rs` (builder/registration), `probe_api/*.rs` (probe entry points), `device_gate.rs` (device-op serialization), `lib.rs` (module wiring + a few e2e-feature-gated commands).
 - Frontend: `src/` — `views/` (one folder per tab), `lib/invoke.ts` (typed command wrappers) + `lib/types.ts` (wire types), `ui/` (primitives + block art), `models/` (catalog data).
 - The `probe` and `gen_samples` binaries (`src-tauri/src/bin/`) are the headless hardware-revalidation and stimulus-generation tools.
+
+### Module docs are the authority
+
+**Read the module's own header rather than any prose summary.** 88 of 93 backend files carry a `//!` header and 175 of 198 frontend files carry a `//` header — between them that is the per-module documentation, kept next to the code it describes so it cannot drift the way a central tree does.
+
+### Modules beyond the 6-tab UI
+
+A set of bulk/offline feature modules is reachable via the `probe` bin and the tests, but is **not** wired into any tab: bulk-run engine, bulk rename, bulk param edit, IR relink, block library, variants, firmware-migration diff, footswitch batch edit, per-scene amp pick, spectrum/EQ-match, advanced search, gain-stage lint, offline preset-meta edits, and the audition clip cache. Their `//!` docs are authoritative; there is no summary of them elsewhere.
+
+### Reserved, uncalled
+
+`fetch_current_preset_json` plus the LZ4 decode path exist but have **no call sites** — they are the intended foundation for the planned revert/backup of a preset's original `presetLevel`. Do not delete them as dead code.

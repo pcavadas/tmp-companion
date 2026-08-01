@@ -1,6 +1,6 @@
 ---
 name: tmp-companion-catalog
-description: "The data contract for the TMP Companion model catalog and block art. Use this skill whenever editing src/models/ — adding or changing a catalog row, touching block artwork (blockArt.ts / ui/blockart), the CPU-cost table, or the amp-id matching logic, or when reviewing a change to tmp-model-guide.json or a *.generated.ts file. Covers the four load-bearing invariants that break silently: the catalog is GENERATED (hand-edits are reverted + break the count oracle), block_id is non-unique across form so you must key by (block_id, form), the amp-id suffix-collapse must stay in lockstep between the TS and Rust sides, and null-bid blocks (the microphones) need a name-based art fallback."
+description: "The data contract for the TMP Companion model catalog and block art. Use whenever editing `src/models/` — adding or changing a catalog row, touching block artwork (`blockArt.ts` / `ui/blockart`), the CPU-cost table, or the amp-id matching logic — or when reviewing a change to `tmp-model-guide.json` or a `*.generated.ts` file. Covers the four load-bearing invariants that break silently rather than loudly: catalog generation, block-id keying, amp-id suffix collapse, and art fallback for blocks with no block_id."
 ---
 
 # TMP Companion catalog

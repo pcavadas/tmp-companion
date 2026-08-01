@@ -39,6 +39,21 @@ Two rules that bite:
 - **Search:** the magnifier searches **within the current mode only**. (p.9)
 - Turning the navigation control **loads** the next/previous preset — it does not merely highlight it. (p.9)
 
+### Operating modes — capacity & behavior (moved from `SKILL.md`)
+
+Six navigation modes via the left-side touchscreen icons:
+
+| Mode            | Capacity | Behavior                                                                                                                                                                                                                                                                                                                           |
+| --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| My Presets      | 504      | user-editable; drag-and-drop reorderable on touchscreen; reachable via MIDI Bank+PC                                                                                                                                                                                                                                                |
+| Favorites       | subset   | star-marked subset of My Presets; separately reorderable but keeps original preset number                                                                                                                                                                                                                                          |
+| Factory Presets | factory  | unnumbered, not directly editable; load → modify → "Save to My Presets"                                                                                                                                                                                                                                                            |
+| Cloud Presets   | 100      | see `SKILL.md`'s Preset object capacity table (same facts)                                                                                                                                                                                                                                                                         |
+| Songs           | 200      | each = up to 6 presets with labeled sections (intro/verse/chorus/solo/outro/…); per-song BPM available (wire mechanism: no dedicated setter — it's the global `SettingsMessage.tapTempoBpm` applied to the active song; song/setlist CRUD is `SongMessage`/`SetlistMessage` field-numbered setters — see `tmp-companion-protocol`) |
+| Setlists        | 50       | each = an **ordered** list of up to 99 Songs (position matters); a song may belong to **many** setlists; add / remove-from / reorder-within a setlist are all supported (wire: `addSetlistSong` (global slot) / `removeSetlistSong` / `moveSetlistSong` (1-based position) — see `tmp-companion-protocol`)                         |
+
+The `tabEnum` wire encoding for these tabs is in `SKILL.md`'s Operating modes section. DAW Mode / Looper mode-entry gestures are in this file's §8 and §10 below.
+
 ---
 
 ## 2. Blocks
@@ -79,6 +94,20 @@ Drag a block to any available `⊕` node; the drop target renders as a filled bl
 
 Capacity is **500 Block Presets** device-wide. User block presets for **dual cabs** appear at the **top** of the cabinet list.
 
+### Block types (reference, moved from `SKILL.md`)
+
+| Type                 | Notes                                                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Combo Amp            | model + Cabinet sub-block (default cab pairing per amp; user can swap)                                                                                                                                                                      |
+| Half-Stack           | model + Cabinet sub-block                                                                                                                                                                                                                   |
+| Bass Amp             | model + Cabinet sub-block                                                                                                                                                                                                                   |
+| Amp Head             | cab-less; allows manual cab pairing or no cab (driving a real cab via AMP/instrument-level output)                                                                                                                                          |
+| Cabinet (standalone) | IR collection with mic config (see Cabinet sub-model, §3 below)                                                                                                                                                                             |
+| Effect               | one of ~150 models in 9 categories. Use the **Model Guide PDF** for Fender's user-facing names + real-unit attributions. The `tmp-companion-catalog` skill owns the shipped id→name/category catalog + the `available`/`subcategory` facts. |
+| FX Loop 1–4          | physical loop placement marker                                                                                                                                                                                                              |
+| Splitter / Mixer     | template-fixed, not user-addable/removable                                                                                                                                                                                                  |
+| Impulse Response     | shares the 2 cabinet-category slots (`ComboHalfStackCabinetsLimit`), placement only after Loop 2 — see `SKILL.md` constraints 2 and 8                                                                                                       |
+
 ---
 
 ## 3. Cabinets and microphones (pp. 16–17)
@@ -97,6 +126,23 @@ Control tiles: cabinet · mic model · `AXIS` (value renders as `ON` for on-axis
 
 **External Cabinet** sits at the **bottom of the cabinet select list** — for driving a real (non-FR) cab from a solid-state power amp. It exposes a **Speaker Impedance Curve (SIC)** that changes how the amp model interacts with the connected cab.
 
+### Cabinet sub-model (reference, moved from `SKILL.md`)
+
+Applies per amp block (combo/half-stack/bass) OR per standalone Cabinet block.
+
+- 1 or 2 cabinets. Combos/half-stacks ship with 1 by default; "+ Add Cab" makes it 2.
+- Per cab: 1 or 2 mics. "+ Add Mic" enables dual-mic.
+- Per mic:
+  - **Mic model** (7 options): `Condenser C414`, `Condenser M23`, `Dynamic MD421`, `Ribbon R121`, `Dynamic RE20`, `Dynamic SM7B`, `Dynamic SM57`
+  - **Mic position**: **32-slot grid** = 4 vertical positions (`cap` / `cap edge` / `cone` / `cone edge`) × 8 distances (`0"` / `0.5"` / `1"` / `2"` / `3"` / `4"` / `5"` / `6"`). Each cell loads a distinct IR.
+  - **Axis**: on-axis (straight) or off-axis (45° to reduce treble)
+  - **Low-cut filter**: gradient 20 Hz–20 kHz
+  - **High-cut filter**: gradient 20 Hz–20 kHz
+- Dual-mic / dual-cab adds: **Blend** (mic1 vs mic2 mix), **Pan 1**, **Pan 2** (stereo placement of each)
+- **External Cabinet** option: bypass internal IR. Exposes a **Speaker Impedance Curve (SIC)** parameter that tunes the modeled amp's interaction with a real cab connected via a non-FR solid-state power amp. Pick the SIC option appropriate for the cab type, or by ear.
+
+The on-disk IR file naming (`{Cabinet}_{Speaker}_{mic}_{position}_{axis}_{distance}.wav`) indexes exactly this user-facing grid.
+
 ---
 
 ## 4. Footswitch assignments (pp. 19–23)
@@ -113,13 +159,38 @@ The screen is a 5 × 2 virtual grid. Columns 1–4 of both rows are the **eight 
 
 Touching an on-screen footswitch toggles it between active and inactive so you can preview colours.
 
+### Assignment types (reference, moved from `SKILL.md`)
+
+8 of 10 physical footswitches are assignable (2 are fixed: FS Mode toggle, Tap/Tuner). Each assignable footswitch can carry up to **5 functions simultaneously**.
+
+**On-screen picker order (p.23), six types:** `ON/OFF` · `PARAMETER CHANGE` · `SCENE` · `LOOPER` · `MIDI` · `AMP CONTROL`. `MIDI` is ONE on-screen type whose own config screen lets you choose CC or PC — the table below splits it into two rows because the two sends configure disjoint fields (a CC has channel+CC#+active/inactive values; a PC has channel+program number), not because the manual lists them separately:
+
+| Type               | Purpose                                                                                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ON/OFF`           | toggle one or more blocks; multi-block = `MULTI` label; A/B selection via per-block Bypass switch                                                                                                                  |
+| `Parameter Change` | toggle a single block parameter between two values                                                                                                                                                                 |
+| `Scene`            | recall a scene                                                                                                                                                                                                     |
+| `Looper`           | assign one Looper transport action (Record/Overdub, Play/Stop, Reverse, ½ Speed, 1-Shot, Undo, or EZ Looper) to this footswitch — distinct from the separate modal Looper layout (hold `FS Mode` 2s), see §8 below |
+| `MIDI CC`          | send a CC message (channel + CC# + active/inactive values + latching/momentary)                                                                                                                                    |
+| `MIDI PC`          | send a Program Change                                                                                                                                                                                              |
+| `Amp Control`      | drive AMP CTRL 1 or AMP CTRL 2 (tip/ring of the rear-panel TRS jack)                                                                                                                                               |
+
 ### The settings screen
 
 Left pane: the footswitch with its LED ring, and a **five-slot stack** — one slot per function, `+` to add. Right pane rows, with observed defaults:
 
 `Type` → e.g. `ON/OFF` · `Block` → e.g. `GREENBOX 8` · `Color (Active/Inactive)` → `RED/DIM` · `Switch` → `LATCHING` · `Custom Label` → _(empty, shows `+`)_ · `Switch Link` → `OFF`. A trash can deletes the assignment.
 
-Field scope (which are switch-level vs per-function) is in `SKILL.md`.
+**Field scope — switch-level vs function-level.** The manual (p.23) marks three rows verbatim "Common to all five footswitch assignments"; the rest are per-function. Getting this backwards produces per-function colour/label writes that the device silently resolves at switch level:
+
+| Field                                 | Scope                  | Note                                                                                  |
+| ------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------- |
+| `Type`                                | **per function**       | the assignment type of that one slot                                                  |
+| `Block` (assigned block(s))           | **per function**       | shows `MULTI` when a slot drives more than one block                                  |
+| `Color (Active)` / `Color (Inactive)` | **switch-level**       | one active/inactive pair per footswitch — rendered as `RED/DIM`, `DEFAULT/DEFAULT`    |
+| `Switch` (latching / momentary)       | **switch-level**       | default `LATCHING`                                                                    |
+| `Custom Label`                        | **switch-level**       | the scribble-strip text; shows `MULTI` by default on a combined switch                |
+| `Switch Link`                         | **scope UNDOCUMENTED** | default `OFF` — see `SKILL.md`'s Footswitch Assign section for the Switch Link gotcha |
 
 ### Per type
 
@@ -131,6 +202,10 @@ Field scope (which are switch-level vs per-function) is in `SKILL.md`.
 - **AMP CONTROL 1 / 2** — the rear-panel contact closures. Configurable: colours, switch type, custom label.
 
 Combining functions on one switch displays as **`MULTI`** in the scribble strip (renameable via Custom Label).
+
+### Footswitch-gated parameters default to OFF (reference, moved from `SKILL.md`)
+
+A modulation/tremolo block parameter (e.g. the '65 Deluxe Reverb's tremolo **Intensity**) can store `0` in the block's `dspUnitParameters` and only reach its real value via a footswitch **Parameter Change** function (`func:"param"` in the top-level `ftsw` array, `valueA` = engaged value). With the footswitch **disengaged** (`ftsw[N].isActive=false`, the default), the param stays at its stored 0 — so a "silent" effect in the preset JSON may be _gated off_, not absent. Don't read a block's presence as "it's audibly doing something."
 
 ---
 
@@ -148,6 +223,26 @@ Observed defaults in the assignment editor: `Heel` **0 %**, `Toe` **100 %**, `Ta
 - **EXP Live Mode** — on preset change, read the pedal's **live physical position**. The documented use: put a Volume Pedal block in every preset and enable this for a global volume pedal.
 
 Classic wah recipe: toe switch toggles the wah on/off, EXP controls its position.
+
+### EXP Assign — data model (reference, moved from `SKILL.md`)
+
+Five expression sources, each independently configurable:
+
+- `Toe Switch` (rear-panel TS jack — latching or momentary)
+- `EXP 1` (rear-panel TRS jack — Fender Tread-Light or any 10k–500k pedal)
+- `EXP 2` (rear-panel TRS jack)
+- `MIDI EXP 3` — virtual, no physical jack, driven via MIDI CC 3
+- `MIDI EXP 4` — virtual, no physical jack, driven via MIDI CC 4
+
+Per source: up to **5 parameter targets**. Each target carries:
+
+- Assigned block + parameter
+- Heel value, Toe value
+- **Taper**: 5 options (`slower` / `slow` / `normal` / `fast` / `faster`) — pedal-feel curve
+- **Switchless Bypass**: off / heel-down / toe-down (300 ms hysteresis) — auto-bypass when pedal moves off a selected position
+- Can also send External MIDI CC alongside the parameter change
+
+**EXP Live Mode**: when enabled, TMP reads the live pedal position at preset load. Pattern: add a Volume Pedal block in every preset, enable EXP Live Mode → global volume that survives preset changes.
 
 ---
 
@@ -285,3 +380,28 @@ Global Settings → Preferences → **Factory Reset** — restores **all presets
 - **Every subsequent power-on:** restores the **last used mode, setlist, song and preset**.
 
 Two globals deliberately do **not** persist: **Reamp mode** resets to OFF, and **Global EQ** returns to flat unless `Retain Global EQ` is on.
+
+---
+
+## Screen index (moved from `SKILL.md`)
+
+The firmware exposes the following screens / modals. Each is a _product surface_ — a defined view the user can be inside.
+
+| Surface                | Purpose                                                                                                                                                                      |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `List View`            | scrollable preset/song/setlist list (any of the 6 operating modes)                                                                                                           |
+| `Preset View`          | current preset's signal chain, upper ribbon (List View / star / number box / Save / gear), lower ribbon (EXP Assign / Footswitch Assign / Preset Settings / Add Block / Tap) |
+| `Gig View`             | fullscreen preset name + number (preset mode) OR song list (Songs/Setlists mode) — minimal, accident-resistant performance view                                              |
+| `Block Edit`           | zoomed-in view of one block with 6 visible parameters + PAGE footswitch for additional pages                                                                                 |
+| `Cabinet Settings`     | 32-position mic grid + cab/mic selectors + axis/filters + dual-cab/dual-mic Blend+Pan + External Cabinet + SIC                                                               |
+| `Add Block` menu       | category list + model list with audition + Block Preset expand                                                                                                               |
+| `Move/Delete`          | block reorder mode (long-press triggered), drag-to-bottom to remove                                                                                                          |
+| `Footswitch Assign`    | 8-footswitch panel for editing Effects FS mode assignments                                                                                                                   |
+| `EXP Assign`           | 5-source panel for editing pedal/toe/MIDI-EXP parameter targets                                                                                                              |
+| `Preset Settings menu` | Preset Volume / Signal Path Type / Input Impedance / Output Assign / Preset MIDI / Preset Spillover / Amp Control                                                            |
+| `Save dialog`          | name field + Save Location list + "select next empty preset" shortcut                                                                                                        |
+| `Global Settings`      | gear-accessed, with 7 bottom tabs: Preferences / I/O / Footswitch / Bluetooth / EQ / Mixer / Tuner                                                                           |
+| `Tuner`                | full-screen chromatic tuner with reference frequency + mute toggle + INSTRUMENT/MIC-LINE selector                                                                            |
+| `Mixer`                | per-output faders (Headphones / OUT 1 / OUT 2 / USB 1-2 / USB 3 / USB 4) with AUX, Bluetooth, Mute, Solo, PRE/POST                                                           |
+| `Looper`               | modal — looper transport footswitch layout (hold-2s entry)                                                                                                                   |
+| `DAW Mode`             | modal — Fender Studio Pro transport footswitch layout (hold-2s entry)                                                                                                        |

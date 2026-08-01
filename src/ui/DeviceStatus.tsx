@@ -1,3 +1,9 @@
+// src/ui/DeviceStatus.tsx — the top-bar device indicator.
+//
+// Three phases: hollow (disconnected) → amber-pulse ("reading firmware…") →
+// green ("connected · <fw>"). The tmp-fwpulse keyframes live in index.html.
+// Connection is fully automatic; there are no Connect/Disconnect controls.
+
 import { useEffect, useState } from "react";
 import { useTheme } from "../theme/ThemeContext";
 import { Icon } from "./Icon";

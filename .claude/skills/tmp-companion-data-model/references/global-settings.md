@@ -8,7 +8,7 @@ Reached via the **gear** at upper right. Seven categories on a persistent bottom
 
 The bar is global chrome — it stays visible inside the EQ, Mixer and Tuner screens.
 
-**Everything here is device-global** unless a row says otherwise. For what is per-preset, per-scene or per-block, see `SKILL.md`; for the override precedence between the two, see §8 below.
+**Everything here is device-global** unless a row says otherwise. For what is per-preset or per-scene, see `SKILL.md`; for what is per-block, see `references/workflows.md`; for the override precedence between the two, see §8 below.
 
 ---
 

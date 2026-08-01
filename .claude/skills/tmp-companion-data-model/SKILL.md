@@ -1,98 +1,29 @@
 ---
 name: tmp-companion-data-model
-description: "The product-facing data model for the Fender Tone Master Pro, from the official Owner's Manual + Model Guide. Use whenever you need what a preset, scene, block, signal-path template, cabinet/mic grid, footswitch or EXP assign, MIDI mapping, USB-audio/reamp route, or operating mode (My Presets / Favorites / Factory / Cloud / Songs / Setlists / DAW Mode / Looper) *means* in product terms — as opposed to the wire serialization (`tmp-companion-protocol`) or the catalog data contract (`tmp-companion-catalog`). Owns the 12 signal-path templates, scene-overlay semantics, the firmware-enforced constraints, per-preset settings, the screen inventory, and the MIDI chart. Also answers device *behaviour* and *operating* questions — how switch link works, how to set a song's tempo, how to back up, how to wire 4CM or feed a stage amp and the PA at once, what every Global Setting defaults to, and which questions the manual leaves unanswered (many since closed by HW measurement on a real 1.8.45 unit — see open-questions.md's RESOLVED entries). Bundled: references/midi-cc-map.md (full CC chart), references/setup-recipes.md (jacks, USB routing, the four documented rigs), references/global-settings.md (every global setting + default), references/workflows.md (on-device procedures), references/open-questions.md (documented unknowns + HW/FW-resolved answers + the manual's own contradictions). Grounds a Level/Copy/Songs feature so it is implemented semantically correctly (e.g. all scenes share one block list, reamp bypasses the analog Loops 1–2, presetLevel is a global multiplier while a scene is leveled on its amp's outputLevel)."
+description: "Product-facing data model for the Fender Tone Master Pro, from the official Owner's Manual and Model Guide. Use for what a preset, scene, block, signal-path template, cabinet/mic grid, footswitch or EXP assign, MIDI mapping, USB-audio or reamp route, or operating mode (My Presets, Favorites, Factory, Cloud, Songs, Setlists, DAW Mode, Looper) means in product terms — rather than the wire serialization (`tmp-companion-protocol`) or the catalog contract (`tmp-companion-catalog`). Also covers device behaviour and operating questions: switch link, song tempo, backup and firmware update, 4CM wiring, feeding a stage amp and the PA together, Global Settings defaults, and the questions the manual leaves open."
 ---
 
 # TMP product-facing data model
 
-Source: Fender's v1.7 Owner's Manual (49 pp) + Model Guide (127 pp) — the public product documentation. This skill captures what the device _models_: what a preset/scene/block _is_ in product terms. It is the domain dictionary for TMP's ubiquitous language, so the companion code named in it (`audiograph.rs` `FenderId`/`scenes[]`/`ftsw`, `leveller.rs` `presetLevel` vs per-scene `outputLevel`, `audio.rs` USB routing, `models/` catalog) is implemented with the right meaning.
-
-**Orient first.** `CLAUDE.md` is the authoritative architecture index; `notes/protocol.md` + `notes/write-safety.md` carry the wire/write facts. This skill is the _product_ reference — when it and `CLAUDE.md` disagree, `CLAUDE.md` wins.
+The domain dictionary for TMP's ubiquitous language — what a preset, scene or block _is_ in product terms — from Fender's Owner's Manual + Model Guide, so the companion code named here (`audiograph.rs`, `leveller.rs`, `audio.rs`, `models/`) carries the right meaning. `CLAUDE.md` is the authoritative index and wins any disagreement with this file; `notes/protocol.md` + `notes/write-safety.md` carry the wire and write facts.
 
 ## Preset object
 
 A preset = signal-path template + blocks + per-preset settings + footswitch assigns + EXP assigns + scenes.
 
-> **Preset identity = `presetJson.info.preset_id`** (a UUID, unique per preset; verified unique across all factory presets). It is the stable join key for host-side per-preset metadata — NOT the user-editable `displayName`, NOT the positional slot. The on-device DB stores `presetJson` as PLAINTEXT JSON (the XOR+LZ4 encoding is only the exported `.preset` file). The firmware re-serializes `info` to a FIXED baseline field set (`author, created_at, displayName, preset_id, product_id, source_id, timestamp, version`) on every save — so extra keys injected into `info` survive an import/restore but are DROPPED on the first on-device edit+save (HW round-trip, fw 1.8.45). Durable host metadata therefore lives in a companion sidecar keyed by `preset_id`, not in the preset. (See `notes/write-safety.md` for why an in-place edit must preserve `preset_id`.)
+> **Preset identity = `presetJson.info.preset_id`**, a per-preset UUID — NOT the user-editable `displayName`, NOT the positional slot. It is the join key for host-side metadata, and that metadata belongs in a **sidecar**: the firmware re-serializes `info` to a fixed baseline field set on every save, so injected keys survive an import but vanish on the first on-device edit+save (HW round-trip, fw 1.8.45). The on-device DB stores `presetJson` as **plaintext JSON** — the XOR+LZ4 encoding is only the exported `.preset` file. Field list: `references/preset-model.md`; in-place-edit rule: `notes/write-safety.md`.
 
-| Store                       | Capacity | Addressing                                                                                                                                   |
-| --------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| User presets ("My Presets") | 504      | 4 MIDI banks: banks 0–2 = 128 each, bank 3 = 120 — Bank Select CC0=0..3 + PC 1..128                                                          |
-| Songs                       | 200      | each = ordered preset bank for one song, sections labeled (intro/verse/chorus/solo/outro/…)                                                  |
-| Setlists                    | 50       | each = up to 99 Songs in sequence                                                                                                            |
-| Cloud presets               | 100      | not numbered, newest first, downloaded via the TMP Control desktop app                                                                       |
-| User Block Presets          | 500      | **separate persistence store** — per-block factory-style defaults saved by the user; appear in the Add Block menu with a ▾ expand affordance |
+Capacities: **504** user presets (4 MIDI banks — 128/128/128/120) · **200** Songs (each an ordered preset bank with labelled sections) · **50** Setlists (≤99 Songs each) · **100** Cloud presets · **500** User Block Presets, a **separate persistence store** of per-block user defaults reached from the Add Block menu behind a ▾ affordance.
 
 ### Signal-path templates (12)
 
-Choose ONE template per preset, then populate. Splitter and Mixer are template-fixed — they exist at predetermined positions for parallel templates and cannot be added or removed independently. Changing the template after the path is populated **repopulates** the existing blocks into the new shape (p.18).
+Choose ONE template per preset, then populate. Splitter and Mixer are **template-fixed** — predetermined positions in the parallel templates, not independently addable or removable. Changing the template after the path is populated **repopulates** the existing blocks into the new shape (p.18).
 
-Reached via `Preset Settings → Signal Path Type`, **or** by touching `INSTRUMENT` / `MIC/LINE` at the far left of Preset View.
-
-**All twelve, enumerated** — do not collapse the three `Mix` rows when counting; that is how this list was previously mis-stated as 11 and elsewhere as 14. Topologies are read off the p.18 thumbnails: `■` = one element, `[a/b]` = a parallel group (upper lane / lower lane), `⇒` = lanes merge.
-
-| #   | Template                         | Lanes       | Topology                                                                                     |
-| --- | -------------------------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| 1   | `Instrument Series`              | 1           | `■–■–■–■–■` — pure series                                                                    |
-| 2   | `Instrument Parallel 1`          | 1           | `■–■–[■/■]–■–■` — one split→mix section                                                      |
-| 3   | `Instrument Parallel 2`          | 1           | `■–[■/■]–■–[■/■]–■` — **two** split→mix sections                                             |
-| 4   | `Instrument Split`               | 1 in, 2 out | `■–` then two lanes of 3 that **never merge** (no mixer)                                     |
-| 5   | `Mic/Line Series`                | 1           | identical shape to #1                                                                        |
-| 6   | `Mic/Line Parallel 1`            | 1           | identical shape to #2                                                                        |
-| 7   | `Mic/Line Split`                 | 1 in, 2 out | identical shape to #4                                                                        |
-| 8   | `Instrument + Mic/Line Series`   | 2           | two rows of 5, fully independent, **never merge**                                            |
-| 9   | `Instrument + Mic/Line Parallel` | 2           | two independent rows, each `■–■–[■/■]–■–■`, **never merge**                                  |
-| 10  | `Instrument + Mic/Line Mix 1`    | 2 ⇒ 1       | two rows of 3 `⇒` one shared final element                                                   |
-| 11  | `Instrument + Mic/Line Mix 2`    | 2 ⇒ 1       | **asymmetric** — instrument lane `■–[■/■]–■`, mic lane `■–■–■`, `⇒` one shared final element |
-| 12  | `Instrument + Mic/Line Mix 3`    | 2 ⇒ 1       | **symmetric** — both lanes `■–[■/■]–■`, `⇒` one shared final element                         |
-
-There is no `Mic/Line Parallel 2` and no 13th/14th template.
-
-> The thumbnails are **schematic, not capacity diagrams** — the squares do not encode a block limit, and they do not distinguish a terminal (`INSTRUMENT`/`OUTPUT`) from a block. Real capacity is the CPU budget (constraint 5 below).
-
-**Splitter vs Mixer glyph.** The prose implies two distinguishable symbols ("the symbol on the left … the symbol on the right"), but both the p.12 margin art and the p.18 Components diagram render the **same** 3-fader tile for each. Position in the chain is the only differentiator — relevant to `SignalChainView`, which must not rely on glyph identity.
-
-### Block types
-
-| Type                 | Notes                                                                                                                                                                                                                                       |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Combo Amp            | model + Cabinet sub-block (default cab pairing per amp; user can swap)                                                                                                                                                                      |
-| Half-Stack           | model + Cabinet sub-block                                                                                                                                                                                                                   |
-| Bass Amp             | model + Cabinet sub-block                                                                                                                                                                                                                   |
-| Amp Head             | cab-less; allows manual cab pairing or no cab (driving a real cab via AMP/instrument-level output)                                                                                                                                          |
-| Cabinet (standalone) | IR collection with mic config (see below)                                                                                                                                                                                                   |
-| Effect               | one of ~150 models in 9 categories. Use the **Model Guide PDF** for Fender's user-facing names + real-unit attributions. The `tmp-companion-catalog` skill owns the shipped id→name/category catalog + the `available`/`subcategory` facts. |
-| FX Loop 1–4          | physical loop placement marker                                                                                                                                                                                                              |
-| Splitter / Mixer     | template-fixed, not user-addable/removable                                                                                                                                                                                                  |
-| Impulse Response     | shares the 2 cabinet-category slots (`ComboHalfStackCabinetsLimit`), placement only after Loop 2 — see constraints below                                                                                                                    |
+There are **twelve**: do not collapse the three `Mix` rows when counting, which is how this list was previously mis-stated as 11 and elsewhere as 14. Topology table: `references/preset-model.md`; block types: `references/workflows.md` §2.
 
 ## Per-preset settings
 
-- **Preset Volume**: 0–100% normalization
-- **Input Impedance**: `Auto` (default — picks based on first active amp/effect) | `22k` | `22k+330pF` | `330k` | `330k+330pF` | `1M` | `1M+330pF` (6 explicit options simulate the input impedance the modeled amp/effect would present)
-- **Signal Path Type**: one of the 12 templates above
-- **Output Assign**: 3×3 matrix `[Upper Path / Lower Path / USB 1-2] × [Headphones / Output 1 / Output 2]` — independently togglable
-- **Preset MIDI**: up to 5 messages sent on preset load, each = `(channel, PC#, CC#, CC value)`
-- **Preset Spillover**: on/off — do delay/reverb tails continue across preset changes
-- **AMP CTRL 1/2**: maps to the rear-panel AMP CTRL TRS jack (tip=AC1, ring=AC2) — see `references/setup-recipes.md` §6 for the wiring/insert-cable detail
-- **Tap tempo scope**: per-preset BPM OR global tempo (Global Settings → Footswitch → Tap Tempo)
-
-## Cabinet sub-model
-
-Applies per amp block (combo/half-stack/bass) OR per standalone Cabinet block.
-
-- 1 or 2 cabinets. Combos/half-stacks ship with 1 by default; "+ Add Cab" makes it 2.
-- Per cab: 1 or 2 mics. "+ Add Mic" enables dual-mic.
-- Per mic:
-  - **Mic model** (7 options): `Condenser C414`, `Condenser M23`, `Dynamic MD421`, `Ribbon R121`, `Dynamic RE20`, `Dynamic SM7B`, `Dynamic SM57`
-  - **Mic position**: **32-slot grid** = 4 vertical positions (`cap` / `cap edge` / `cone` / `cone edge`) × 8 distances (`0"` / `0.5"` / `1"` / `2"` / `3"` / `4"` / `5"` / `6"`). Each cell loads a distinct IR.
-  - **Axis**: on-axis (straight) or off-axis (45° to reduce treble)
-  - **Low-cut filter**: gradient 20 Hz–20 kHz
-  - **High-cut filter**: gradient 20 Hz–20 kHz
-- Dual-mic / dual-cab adds: **Blend** (mic1 vs mic2 mix), **Pan 1**, **Pan 2** (stereo placement of each)
-- **External Cabinet** option: bypass internal IR. Exposes a **Speaker Impedance Curve (SIC)** parameter that tunes the modeled amp's interaction with a real cab connected via a non-FR solid-state power amp. Pick the SIC option appropriate for the cab type, or by ear.
-
-The on-disk IR file naming (`{Cabinet}_{Speaker}_{mic}_{position}_{axis}_{distance}.wav`) indexes exactly this user-facing grid.
+Preset Volume, Input Impedance (`Auto` + 6 explicit values), Signal Path Type, the 3×3 Output Assign matrix, up to 5 Preset MIDI messages, Preset Spillover, AMP CTRL 1/2, and tap-tempo scope. Values and defaults: `references/preset-model.md`.
 
 ## Scenes
 
@@ -105,236 +36,73 @@ Invariants (firmware-enforced):
 - Replacing a block in any scene replaces it in all scenes
 - Changing block order or signal-path template affects all scenes
 
-Per-scene differences:
+What a scene _can_ differ in: each block's bypass state; per-block parameter values, gated by the per-block **Scene Edit flag** (`ENABLED`, the default, applies a change only to the active scene; `DISABLED` shares it across all scenes); and its own Amp Control / MIDI PC / MIDI CC messages.
 
-- Bypass state of each block
-- Per-block parameter values, gated by the per-block **Scene Edit flag**:
-  - `ENABLED` (default): parameter changes apply only to the active scene
-  - `DISABLED`: parameter changes are shared across all scenes
-- Scene-specific Amp Control / MIDI PC / MIDI CC messages (each scene can send its own)
-
-**Scene Change Behavior** (Global Settings → Footswitch):
-
-- `Maintain Changes` (default) — reload preserves unsaved edits within the scene being recalled
-- `Discard Changes` — reload reverts to the last-saved scene state
-
-The serialization is a sparse diff (`ftswStates` array + scene-keyed override maps) — see `tmp-companion-protocol` / `notes/protocol.md`.
+Whether a recalled scene keeps unsaved edits is the global **Scene Change Behavior** setting, default `MAINTAIN CHANGES` (`references/global-settings.md` flags it as the one to watch). The serialization is a sparse diff — `ftswStates` plus scene-keyed override maps (`tmp-companion-protocol`).
 
 ## Footswitch Assign (Effects FS mode, per preset)
 
-8 of 10 physical footswitches are assignable (2 are fixed: FS Mode toggle, Tap/Tuner). Each assignable footswitch can carry up to **5 functions simultaneously**.
+8 of 10 physical footswitches are assignable (FS Mode toggle and Tap/Tuner are fixed), each carrying up to **5 functions simultaneously**. Type-picker and field-scope tables: `references/workflows.md` §4.
 
-**On-screen picker order (p.23), six types:** `ON/OFF` · `PARAMETER CHANGE` · `SCENE` · `LOOPER` · `MIDI` · `AMP CONTROL`. `MIDI` is ONE on-screen type whose own config screen lets you choose CC or PC — the table below splits it into two rows because the two sends configure disjoint fields (a CC has channel+CC#+active/inactive values; a PC has channel+program number), not because the manual lists them separately:
+**Field scope — switch-level vs function-level.** `Type` and `Block` are **per function**; `Color (Active/Inactive)`, `Switch` (latching/momentary) and `Custom Label` are **switch-level**, one value shared by every function on that footswitch. Getting this backwards produces per-function colour/label writes the device silently resolves at switch level.
 
-| Type               | Purpose                                                                                                                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ON/OFF`           | toggle one or more blocks; multi-block = `MULTI` label; A/B selection via per-block Bypass switch                                                                                                                               |
-| `Parameter Change` | toggle a single block parameter between two values                                                                                                                                                                              |
-| `Scene`            | recall a scene                                                                                                                                                                                                                  |
-| `Looper`           | assign one Looper transport action (Record/Overdub, Play/Stop, Reverse, ½ Speed, 1-Shot, Undo, or EZ Looper) to this footswitch — distinct from the separate modal Looper layout (hold `FS Mode` 2s), see Operating modes below |
-| `MIDI CC`          | send a CC message (channel + CC# + active/inactive values + latching/momentary)                                                                                                                                                 |
-| `MIDI PC`          | send a Program Change                                                                                                                                                                                                           |
-| `Amp Control`      | drive AMP CTRL 1 or AMP CTRL 2 (tip/ring of the rear-panel TRS jack)                                                                                                                                                            |
+**Switch Link** is a mutual-exclusion group of up to **8 footswitches** — pressing a linked switch turns off every other active switch in the link. Its scope is **unresolved**: it is the one row on that screen lacking the "common to all five" sentence (`references/open-questions.md`).
 
-**Field scope — switch-level vs function-level.** The manual (p.23) marks three rows verbatim "Common to all five footswitch assignments"; the rest are per-function. Getting this backwards produces per-function colour/label writes that the device silently resolves at switch level:
-
-| Field                                 | Scope                  | Note                                                                               |
-| ------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------- |
-| `Type`                                | **per function**       | the assignment type of that one slot                                               |
-| `Block` (assigned block(s))           | **per function**       | shows `MULTI` when a slot drives more than one block                               |
-| `Color (Active)` / `Color (Inactive)` | **switch-level**       | one active/inactive pair per footswitch — rendered as `RED/DIM`, `DEFAULT/DEFAULT` |
-| `Switch` (latching / momentary)       | **switch-level**       | default `LATCHING`                                                                 |
-| `Custom Label`                        | **switch-level**       | the scribble-strip text; shows `MULTI` by default on a combined switch             |
-| `Switch Link`                         | **scope UNDOCUMENTED** | default `OFF` — see below                                                          |
-
-**Switch Link.** A mutual-exclusion group of up to **8 footswitches**: pressing a linked switch turns off every other active switch in that link. Documented uses are fast A/B between two drives, and linking two or more `MULTI` switches for larger tone changes.
-
-> The manual does **not** state whether Switch Link is switch-level or per-function — it is the one row on that screen lacking the "common to all five" sentence. Do not assume it is inherited; treat it as unresolved (`references/open-questions.md`).
+**Footswitch-gated parameters default to OFF** — a block parameter can store `0` and only reach its real value via a `Parameter Change` function, so a "silent" effect in the preset JSON may be _gated off_, not absent.
 
 ## EXP Assign (per preset)
 
-Five expression sources, each independently configurable:
+Five expression sources (Toe Switch, EXP 1, EXP 2, MIDI EXP 3, MIDI EXP 4), each independently configurable, up to 5 parameter targets per source. Taper, Switchless Bypass, EXP Live Mode: `references/workflows.md` §5.
 
-- `Toe Switch` (rear-panel TS jack — latching or momentary)
-- `EXP 1` (rear-panel TRS jack — Fender Tread-Light or any 10k–500k pedal)
-- `EXP 2` (rear-panel TRS jack)
-- `MIDI EXP 3` — virtual, no physical jack, driven via MIDI CC 3
-- `MIDI EXP 4` — virtual, no physical jack, driven via MIDI CC 4
+## Block inventory
 
-Per source: up to **5 parameter targets**. Each target carries:
-
-- Assigned block + parameter
-- Heel value, Toe value
-- **Taper**: 5 options (`slower` / `slow` / `normal` / `fast` / `faster`) — pedal-feel curve
-- **Switchless Bypass**: off / heel-down / toe-down (300 ms hysteresis) — auto-bypass when pedal moves off a selected position
-- Can also send External MIDI CC alongside the parameter change
-
-**EXP Live Mode**: when enabled, TMP reads the live pedal position at preset load. Pattern: add a Volume Pedal block in every preset, enable EXP Live Mode → global volume that survives preset changes.
-
-## Block inventory pointer
-
-Don't duplicate the catalog in this skill — it stales on every firmware update. Source precedence is scoped per fact: the **Model Guide wins on official names, real-unit attributions, and appearance**; the firmware's **`product_profile.json` outranks both on on-device availability + menu category** (the guide and app both include unavailable leaks — the `tmp-companion-catalog` skill operationalizes this hierarchy and owns the shipped `tmp-model-guide.json`).
-
-Category counts for orientation (firmware 1.7):
-
-| Category             | Models                   | Notes                                                                                                                               |
-| -------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Combo Amps           | 25+                      | Fender '57 Deluxe → Twin Reverb + JC Clean + Brit Breaker + UK 30 + Marksman                                                        |
-| Half-Stack Amps      | 20+                      | British 45/Plexi/800/Jubilee, Hiway, FBE-100, EVH 5150 IIIS variants, Solo 100, Tangerine, Marksman CH2, Double Wreck, Petrol, Uber |
-| Bass Amps            | 8                        | Bassman TV, Super Bassman, SWR Redhead, Rampage Blueline, '66 Flip Top, Rock-Bottom 400                                             |
-| Amp Heads (cab-less) | every combo + half-stack | + Acoustasonic, Studio Preamp, Tube Preamp                                                                                          |
-| Cabinets             | ~60                      | 1x10 through 8x10                                                                                                                   |
-| Effects: Stompbox    | ~30                      | OD/distortion/fuzz                                                                                                                  |
-| Effects: Modulation  | ~25                      | chorus/flanger/phaser/tremolo/rotary/vibe                                                                                           |
-| Effects: Delay       | ~25                      | incl. Glooper, Arctic/Antarctic Sustainer, Stereo Doubler                                                                           |
-| Effects: Reverb      | ~22                      | many **convolution** — see constraint below                                                                                         |
-| Effects: Dynamics    | ~11                      | compressors, gates, volume swell, slow attack                                                                                       |
-| Effects: EQ          | ~10                      | 5/7/10-band graphic, 3/5-band parametric, LP/HP/notch filters                                                                       |
-| Effects: Filter      | 5                        | 3 wahs + Filtron + Enigma envelope                                                                                                  |
-| Effects: Pitch       | 10                       | Micro/Chromatic/Polygon/Polyvoice/Diatonic, Pedal Detune/Shifter, Virtual Capo, Granular Arpeggiator, Feedback Generator            |
-| Effects: Synth       | 3                        | Cerberus + Aethon polysynths, Wavemorph                                                                                             |
+Don't duplicate the catalog here — it stales on every firmware update. **Source precedence is scoped per fact:** the Model Guide wins on official names, real-unit attributions and appearance; the firmware's `product_profile.json` outranks it on on-device availability and menu category (guide and app both include unavailable leaks). `tmp-companion-catalog` operationalizes this and owns the shipped `tmp-model-guide.json`. Category counts: `references/preset-model.md`.
 
 ## MIDI implementation
 
-Full table: **`references/midi-cc-map.md`**.
-
-Headline facts:
-
-- **Preset addressing**: 504 presets across 4 banks — banks 0–2 hold 128 each, bank 3 holds 120 (see the bank table in `references/midi-cc-map.md`). Bank Select = CC 0 with value `0`/`1`/`2`/`3`. Program Change = `1..128` within the selected bank (`1..120` in bank 3).
-- **Receive channel**: 1–16 or Omni (default Omni). Set in Global Settings → I/O → MIDI.
-- **MIDI Out jack mode**: `Out` (TMP-generated only) | `Thru` (received-only passthrough) | `Merge` (both).
-- **MIDI Receive PC/CC/Clock**: each independently enableable for the MIDI 5-pin jack and/or USB-C (default MIDI+USB).
-- **MIDI Clock**: send + receive both available. **Gotcha**: when receive-clock is ON, the tap-tempo footswitch is disabled and per-preset saved tempos are overridden.
-- **Channel rename**: outgoing MIDI channels can carry custom labels stored in user prefs (Global Settings → I/O → MIDI → Rename MIDI Channels).
-
-Most load-bearing CCs for automation:
-
-- `CC 1` / `CC 2` = EXP 1 / EXP 2 (physical jacks)
-- `CC 3` / `CC 4` = MIDI EXP 3 / MIDI EXP 4 (virtual, no jack)
-- `CC 7` = Master Volume
-- `CC 20` = FS Mode enable
-- `CC 21–29` = Effects FS 1–8 toggles
-- `CC 30` = bulk FS 1–8 enable/disable (values 0–7 enable, 10–17 disable)
-- `CC 64` = Tap Tempo
-- `CC 65` = Toe Switch
-- `CC 66` / `CC 67` = Amp Control 1 / 2 (tip/ring)
-- `CC 68` = Tuner
-- `CC 69` / `CC 70` = Next Song / Previous Song
-- `CC 103–110` = Looper transport (REC/DUB, PLAY/STOP, 1-SHOT, UNDO, 1/2 SPEED, REVERSE, VOL UP, VOL DOWN)
+All of it — CC chart, bank/PC preset addressing, MIDI Out modes, receive channel and filtering, clock, and six gotchas (receive-clock disables the tap footswitch; CC 25 is skipped; CC 30 is a bulk control) — is in **`references/midi-cc-map.md`**.
 
 ## USB audio routing
 
-TMP enumerates as a **4-in / 4-out** USB 2.0 audio interface. Sample rates 44.1 / 48 / 88.2 / 96 kHz DAW-selectable. Bit depth 32 (engine internal). Set mode in Global Settings → I/O → USB.
+A **4-in / 4-out** USB 2.0 audio interface, 44.1 / 48 / 88.2 / 96 kHz DAW-selectable. Channel maps for standard vs reamp mode, the reamp/AGC model and the PRE/POST fader detail: `references/setup-recipes.md` §4.
 
-> **The USB clock rate is not the internal rate.** A **44.1 kHz stage sits inside the USB-in → DSP → USB-out path** (HW-measured, fw 1.8.45): re-amp captures collapse to the float noise floor above ~22.05 kHz on two presets with _opposite_ spectral tilts. The **host Core Audio rate stays 48 kHz** — that is what `audio.rs` requires and is not a bug to "fix" to 44.1 — so capture content above ~22 kHz is anti-alias skirt, not preset tone. Load-bearing for spectrum / EQ-match / Doctor-PSD work. The limit is **not proven fixed in firmware**: the global `sampleRate` setting was never varied. Evidence + method traps: `references/open-questions.md` A2.
-
-### Standard mode (default)
-
-| USB Out | Source                                                                                                    |
-| ------- | --------------------------------------------------------------------------------------------------------- |
-| 1 / 2   | Processed stereo (instrument channel, mic/line channel, or both summed depending on signal-path template) |
-| 3       | Dry instrument channel (pre-DSP, pre-Loops-1/2)                                                           |
-| 4       | Dry mic/line channel (pre-DSP)                                                                            |
-
-| USB In | Routing                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------- |
-| 1 / 2  | Stereo signal from DAW → assignable to OUT 1 / OUT 2 / Headphones via per-preset Output Assign |
-| 3 / 4  | Disabled                                                                                       |
-
-PRE/POST toggle in the Output Mixer controls whether USB 3/4 sends are pre- or post-fader.
-
-> **USB Out 3 (dry instrument) has no limiter** — it carries the instrument at its actual level and **clips at 0 dBFS** for hot pickups played hard (live-confirmed). From the Mac's perspective it's input channel index 2; useful for measuring a real instrument's output level (the Tier-2 calibration path).
-
-### Reamp mode (per-preset, manually toggled)
-
-| USB In | Routing                                                                                                |
-| ------ | ------------------------------------------------------------------------------------------------------ |
-| 3      | DAW reamp track → instrument channel's **first signal-path block** (mutes rear-panel instrument input) |
-| 4      | DAW reamp track → mic/line channel's **first signal-path block** (mutes rear-panel mic/line input)     |
-
-Resets to OFF on power cycle. **Loops 1 and 2 are bypassed in reamp mode** — they're analog pre-A/D, so a USB-injected dry track can't reach them. Loops 3/4 are digital and remain active.
-
-> **The reamp inject is NOT AGC'd** — the injected track's amplitude directly drives the block's nonlinearity. Any apparent flattening of input-level changes is the amp model's own compression, not normalization (live-confirmed via a re-amp amplitude sweep: a clean preset gave ~1.65 LU output per 6 dB input, linearizing toward −6 LU/6 dB at low drive). So a hotter instrument genuinely drives the chain harder. This is the foundation of instrument-aware leveling.
-
-> **Footswitch-gated parameters default to OFF.** A modulation/tremolo block parameter (e.g. the '65 Deluxe Reverb's tremolo **Intensity**) can store `0` in the block's `dspUnitParameters` and only reach its real value via a footswitch **Parameter Change** function (`func:"param"` in the top-level `ftsw` array, `valueA` = engaged value). With the footswitch **disengaged** (`ftsw[N].isActive=false`, the default), the param stays at its stored 0 — so a "silent" effect in the preset JSON may be _gated off_, not absent. Don't read a block's presence as "it's audibly doing something."
+> **The USB clock rate is not the internal rate.** A **44.1 kHz stage sits inside the USB-in → DSP → USB-out path** (HW-measured, fw 1.8.45), so re-amp capture content above ~22 kHz is anti-alias skirt, not preset tone — load-bearing for spectrum / EQ-match / Doctor-PSD work. The **host Core Audio rate stays 48 kHz**: that is what `audio.rs` requires and is not a bug to "fix". Evidence and method traps: `references/open-questions.md` A2.
 
 ## Firmware-enforced constraints
 
-These are validation rules the firmware imposes — useful when mutating presets to know what won't be accepted. The block placement/count caps are enforced by the firmware's control app (as a set of per-restriction check functions the "can be selected" property runs on-read); the audio engine independently enforces only the CPU budget. The companion mirrors the same caps in `src-tauri/src/blockcaps.rs` / `src/views/copy/validateBlockEdit.ts` (see also `src/models/block-classification.md`). The values below are product facts (fw 1.8.45; the rule set is identical back to 1.7.75).
+What the firmware won't accept when mutating presets. The placement/count caps are enforced by the firmware's **control app**, not the audio engine — which independently enforces only the CPU budget. The companion mirrors them in `blockcaps.rs` / `validateBlockEdit.ts`. Values are fw 1.8.45, identical back to 1.7.75. **Full text of each is in `references/preset-model.md`; the numbering below is cited externally, so never renumber it.**
 
-1. **Convolution-reverb limit — 1 per preset**. The cap is on the shared **FFT convolution engine**, broader than "reverb". Membership is an `acdCategory` union: standalone convolutions (`ACD_TMSpring63/65`, `Cathedral`, `HallOfDoom`, `EtherealHall`, room/plate/chamber) **and** amps with baked-in convolution spring reverb (Deluxe/Princeton/Twin/Super Reverb blackface/brownface — the `…CabIRConvRvb` ids). Total 19 members in 1.8.45, 16 in 1.7.75. That is why those amps ship `NoFx`/`Normal` (reverb-free) variants — to free the one convolution slot.
-2. **Cabinet limit — 2 cabinet-category blocks per preset**. Combo amps, half-stacks, standalone Cabinet blocks, and IR blocks share the same 2 slots. A **dual-cab counts as 2 slots**. This is the firmware truth behind the Owner's-Manual "max 2 IR blocks" line.
-3. **Glooper limit — 2 `ACD_Glooper` blocks per preset** (counted across both signal-chain rows).
-4. **FX-loop coexistence — a rule, not a count.** A per-line-type slot-permission mask (Guitar path → all slots, Mic path → slots 0,1 denied, Split/Mix → all denied) plus a pairwise coexistence matrix (the stereo `FxLoop3_4` excludes individual `FxLoop3`/`FxLoop4`) gate whether a candidate FX-loop block may sit at its slot. The "loops 1–2 before A/D, loops 3–4 after loop 2" ordering is **structural, not a runtime check**: Loops 1–2 are rear-panel fixed loops (not add-block candidates; only `ACD_FxLoop3/4/3_4` have selectable profiles) and the Mic mask denies slots 0–1.
-5. **Processor utilization — CPU budget, no fixed block count.** The **Add Block menu greys out** when adding a block would exceed the per-preset budget (76.5%, summed per-block `utilizationPercentage`; the numbers ship in `src/models/model-cpu.json`). Rejection strings: `Can't add/insert/replace node to guitar/mic group: over cpu budget`. This is the real "path is full" cap; the count limits above stack on top of it.
-6. **Loops 1 and 2 are fixed at the start of the Instrument path, BEFORE A/D**. They cannot be moved or placed in mic/line paths — they're for analog pedals that need to interact with pickup impedance (fuzz, Rangemaster-style boost, vintage wah).
-7. **Loops 3 + 4** pair as a single stereo loop OR two mono loops — per-preset choice (`Loop 3 mono`, `Loop 4 mono`, `Loop 3+4 stereo`). Placeable anywhere in the digital signal path after Loop 2. Both inputs cannot be set to off (`Both inputs cannot be set to off.`).
-8. **IR blocks placement**: only after Loop 2 (because they're digital). Count is governed by the cabinet limit above.
-9. **Scenes share blocks** — see the Scenes section above; scene slots are capped (`All scene slots full`).
-10. **Splitter/Mixer are template-fixed** — see Signal-path templates section above.
-11. **Other capacity caps** surfaced as firmware rejections: `Cannot add new user preset in populated slot.`, saved block-presets (`BlockPresetLimitReached`), cloud/downloaded presets (`Downloaded Presets Limit Reached`).
+1. **Convolution reverb — 1 per preset.** The cap is on the shared FFT convolution engine, so it also catches amps with baked-in spring reverb (`…CabIRConvRvb`), which is why those ship `NoFx`/`Normal` variants.
+2. **Cabinets — 2 per preset.** Combo amps, half-stacks, Cabinet blocks and IR blocks share the 2 slots; a dual-cab counts as 2.
+3. **Glooper — 2 per preset**, across both rows.
+4. **FX-loop coexistence — a rule, not a count.** A slot-permission mask per line type plus a pairwise exclusion matrix.
+5. **Processor utilization — a CPU budget, not a block count** (76.5% per preset). This is the real "path is full" cap; the count limits stack on top of it.
+6. **Loops 1 and 2 are fixed at the start of the Instrument path, BEFORE A/D** — unmovable, and absent from mic/line paths.
+7. **Loops 3 + 4** are one stereo loop or two mono loops, per preset, anywhere after Loop 2.
+8. **IR blocks** may only sit after Loop 2. Count is governed by constraint 2.
+9. **Scenes share blocks** (see Scenes above); scene slots are capped.
+10. **Splitter/Mixer are template-fixed** (see Signal-path templates above).
+11. **Other capacity caps** surface as rejection strings: populated slot, block-preset limit, downloaded-preset limit.
 
 ## Operating modes
 
-Six navigation modes via the left-side touchscreen icons:
+Six navigation modes via the left-side touchscreen icons: My Presets, Favorites, Factory Presets, Cloud Presets, Songs, Setlists. Capacity/behaviour table: `references/workflows.md` §1; DAW Mode and Looper entry gestures §10 and §8; the screen/modal index is that file's trailing section.
 
-| Mode            | Capacity | Behavior                                                                                                                                                                                                                                                                                                                           |
-| --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| My Presets      | 504      | user-editable; drag-and-drop reorderable on touchscreen; reachable via MIDI Bank+PC                                                                                                                                                                                                                                                |
-| Favorites       | subset   | star-marked subset of My Presets; separately reorderable but keeps original preset number                                                                                                                                                                                                                                          |
-| Factory Presets | factory  | unnumbered, not directly editable; load → modify → "Save to My Presets"                                                                                                                                                                                                                                                            |
-| Cloud Presets   | 100      | see Store table above (same facts)                                                                                                                                                                                                                                                                                                 |
-| Songs           | 200      | each = up to 6 presets with labeled sections (intro/verse/chorus/solo/outro/…); per-song BPM available (wire mechanism: no dedicated setter — it's the global `SettingsMessage.tapTempoBpm` applied to the active song; song/setlist CRUD is `SongMessage`/`SetlistMessage` field-numbered setters — see `tmp-companion-protocol`) |
-| Setlists        | 50       | each = an **ordered** list of up to 99 Songs (position matters); a song may belong to **many** setlists; add / remove-from / reorder-within a setlist are all supported (wire: `addSetlistSong` (global slot) / `removeSetlistSong` / `moveSetlistSong` (1-based position) — see `tmp-companion-protocol`)                         |
-
-The `tabEnum` wire encoding for these tabs is `NotSet=0`, `UserPresets=1`, `FavoritePresets=2`, `CloudPresets=3`, `FactoryPresets=4`, `Songs=5`, `Setlists=6`. Product note: the cursive "F" top-bar badge is the **Factory** badge (`tabEnum=4`), not Favorites — it means "this preset came from the factory tab, so the badge shows the brand mark instead of a numeric slot". My-Presets selections (`tabEnum=1`) render the slot number ("01", "02", …).
-
-**DAW Mode** (separate, modal): hold `FS Mode` + `Tap Tempo` footswitches for 2 s. Footswitches rebind to **Fender Studio Pro** transport — `Play` / `Stop` / `Record` / `Return to Zero` / `Click` / `Pre-Roll` / `Punch In` / `Loop`. Press `EXIT` footswitch to leave.
-
-**Looper** (also modal): hold `FS Mode` for 2 s. Footswitches rebind to `LOOP VOL UP/DOWN`, `UNDO`, `1/2 SPEED`, `REVERSE`, `EXIT`, `RECORD/OVERDUB`, `PLAY/STOP`, `1-SHOT`, `TAP TEMPO`. Stereo loops up to 3 min at full speed. Tap tempo and tuner remain accessible. Loop playback continues across preset changes.
-
-## Screen inventory & UI surfaces
-
-The firmware exposes the following screens / modals. Each is a _product surface_ — a defined view the user can be inside.
-
-| Surface                | Purpose                                                                                                                                                                      |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `List View`            | scrollable preset/song/setlist list (any of the 6 operating modes)                                                                                                           |
-| `Preset View`          | current preset's signal chain, upper ribbon (List View / star / number box / Save / gear), lower ribbon (EXP Assign / Footswitch Assign / Preset Settings / Add Block / Tap) |
-| `Gig View`             | fullscreen preset name + number (preset mode) OR song list (Songs/Setlists mode) — minimal, accident-resistant performance view                                              |
-| `Block Edit`           | zoomed-in view of one block with 6 visible parameters + PAGE footswitch for additional pages                                                                                 |
-| `Cabinet Settings`     | 32-position mic grid + cab/mic selectors + axis/filters + dual-cab/dual-mic Blend+Pan + External Cabinet + SIC                                                               |
-| `Add Block` menu       | category list + model list with audition + Block Preset expand                                                                                                               |
-| `Move/Delete`          | block reorder mode (long-press triggered), drag-to-bottom to remove                                                                                                          |
-| `Footswitch Assign`    | 8-footswitch panel for editing Effects FS mode assignments                                                                                                                   |
-| `EXP Assign`           | 5-source panel for editing pedal/toe/MIDI-EXP parameter targets                                                                                                              |
-| `Preset Settings menu` | Preset Volume / Signal Path Type / Input Impedance / Output Assign / Preset MIDI / Preset Spillover / Amp Control                                                            |
-| `Save dialog`          | name field + Save Location list + "select next empty preset" shortcut                                                                                                        |
-| `Global Settings`      | gear-accessed, with 7 bottom tabs: Preferences / I/O / Footswitch / Bluetooth / EQ / Mixer / Tuner                                                                           |
-| `Tuner`                | full-screen chromatic tuner with reference frequency + mute toggle + INSTRUMENT/MIC-LINE selector                                                                            |
-| `Mixer`                | per-output faders (Headphones / OUT 1 / OUT 2 / USB 1-2 / USB 3 / USB 4) with AUX, Bluetooth, Mute, Solo, PRE/POST                                                           |
-| `Looper`               | modal — looper transport footswitch layout (hold-2s entry)                                                                                                                   |
-| `DAW Mode`             | modal — Fender Studio Pro transport footswitch layout (hold-2s entry)                                                                                                        |
+Each mode has a `tabEnum` on the wire (`tmp-companion-protocol`). One product consequence: **the cursive "F" top-bar badge is the Factory badge (`tabEnum=4`), not Favorites** — it means the preset came from the factory tab, so the brand mark shows instead of a numeric slot. My-Presets selections (`tabEnum=1`) render the slot number.
 
 ## Why this matters for the companion
 
-- **Copy** (`src/views/copy/copyModel.ts` + `audiograph.rs`): a preset is a signal-path template + block list + per-block `(model_id, params, bypass, scene_edit_flag)` + scenes (a sparse bypass+parameter overlay) + footswitch/EXP assigns. Because **all scenes share one block list**, a Copy insert/remove must land in every scene, and the block lives in three keyed places (see `notes/gotchas.md`).
-- **Leveling** (`leveller.rs` / `audio.rs`): `presetLevel` is a **global multiplier** over all scenes → level the base scene first; each footswitch scene is leveled on its **active amp's `outputLevel`**. Block-acting footswitches level in ISOLATION: engage only that footswitch's on/off block(s), force every sibling footswitch's block OFF, and measure "Base" with ALL footswitches off (not as-saved) — otherwise sibling blocks bleed into the capture and inflate the reading. Reamp routes the DAW track into the chain's first block and bypasses the analog Loops 1–2, and the inject is not AGC'd — the model above is why.
-- **Signal chain + Catalog** (`SignalChainView` / `models/`): the 12 templates + block types + the cabinet sub-model are what the strip renders; `tmp-companion-catalog` owns the id→art/name mapping.
+- **Copy**: because **all scenes share one block list**, an insert or remove must land in every scene, and the block lives in three keyed places (`notes/gotchas.md`).
+- **Leveling**: `presetLevel` is a **global multiplier** over all scenes, so the base scene is levelled first; each footswitch scene is levelled on its **active amp's `outputLevel`**. Reamp bypasses the analog Loops 1–2. Mechanism: `notes/leveling.md`.
+- **Signal chain + Catalog**: the 12 templates, block types and cabinet sub-model are what the strip renders; `tmp-companion-catalog` owns the id→art/name mapping.
 
 ## References
 
-| File                            | Answers                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `references/midi-cc-map.md`     | the full CC chart, bank/PC preset addressing, MIDI Out modes, clock. _"What CC toggles effects footswitch 5?"_                                                                                                                                                                                                                                                                             |
-| `references/setup-recipes.md`   | rear-panel jacks as silkscreened, output-level guidance, USB channel maps, and the four documented rigs — FR cabinet, pedalboard + amp, **4CM cable-by-cable**, studio/PA — plus stage-amp-and-PA-together. _"How do I do 4CM?"_                                                                                                                                                           |
-| `references/global-settings.md` | all seven Global Settings tabs, **every default**, the Global EQ band frequencies, the six-channel Output Mixer, the tuner, and cross-scope override precedence. _"What happens to Global EQ on power-cycle?"_                                                                                                                                                                             |
-| `references/workflows.md`       | on-device procedures — create/save/clear a preset, add and edit blocks, block presets, dual cab/mic, footswitch and EXP assignment, songs and setlists, **song BPM**, looper, DAW mode, **backup and firmware update**. _"How do I set the tempo of a song?"_                                                                                                                              |
-| `references/open-questions.md`  | what the manual does or doesn't settle — tagged RESOLVED (HW-derived) / RESOLVED (FW-derived) / UNDOCUMENTED / AMBIGUOUS / INFERRED — plus the manual's own internal contradictions. Real-unit measurements (mixer routing, template switching, scene/preset discard behaviour, spillover, sample-rate) live here. **Read before asserting a device behaviour this skill does not state.** |
+- `preset-model.md` — 12-template topology table, per-preset settings, the numbered constraints in full, block category counts.
+- `midi-cc-map.md` — full CC chart, bank/PC addressing, Out modes, clock, six gotchas.
+- `setup-recipes.md` — rear-panel jacks as silkscreened, output levels, USB channel maps, the reamp/AGC model, the four documented rigs (incl. 4CM cable-by-cable).
+- `global-settings.md` — all seven Global Settings tabs and **every default**, Global EQ bands, Output Mixer, tuner, override precedence.
+- `workflows.md` — every on-device procedure (song BPM, backup, firmware update, …), the **cabinet sub-model** (mic models, the 32-slot position grid, axis/filters, dual-cab/dual-mic Blend+Pan, External Cabinet/SIC — §3), the operating-modes capacity table, the screen index.
+- `open-questions.md` — what the manual does and doesn't settle, tagged RESOLVED (HW/FW-derived) / UNDOCUMENTED / AMBIGUOUS / INFERRED, plus its contradictions and the real-unit measurements. **Read before asserting a device behaviour this skill does not state.**
 
-## Sources
-
-- `Tone Master Pro` Interactive Owner's Manual — structural facts here verified against **firmware v1.8** (rev. J, 49 pp), read end to end as both text and rendered imagery; the model inventory below remains v1.7-pinned (firmware 1.8 ships 31 new models the guide doesn't cover)
-- `Tone Master Pro` Model Guide (firmware v1.7, 127 pp)
-
-Re-fetch from Fender's product page when firmware revs (new models, MIDI-map changes, capacity-cap changes) — the structural model above (templates, scenes, footswitch/EXP, constraints) is stable across 1.7→1.8.
+Sources: the Interactive Owner's Manual (structural facts verified against **firmware v1.8**, rev. J) and the Model Guide (v1.7). The model inventory stays v1.7-pinned — 1.8 ships 31 models the guide doesn't cover. Re-fetch when firmware revs; the structural model is stable across 1.7→1.8.

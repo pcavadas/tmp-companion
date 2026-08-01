@@ -31,6 +31,18 @@ export default tseslint.config(
 
   {
     files: ["src/**/*.{ts,tsx}"],
+    // No escape hatches in src/. `any` and non-null `!` are already errors via
+    // strictTypeChecked; these two close the remaining holes so the rule is
+    // enforced by the linter rather than by prose someone has to have read:
+    //   - noInlineConfig makes an `eslint-disable` comment unable to silence
+    //     anything, and reportUnusedDisableDirectives then flags it as an error.
+    //   - ban-ts-comment below rejects @ts-expect-error too, which the preset
+    //     default would otherwise allow when it carries a description.
+    // Fix findings by changing code, never by silencing.
+    linterOptions: {
+      noInlineConfig: true,
+      reportUnusedDisableDirectives: "error",
+    },
     languageOptions: {
       ecmaVersion: "latest",
       globals: globals.browser,
@@ -60,6 +72,17 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+      // The preset default permits @ts-expect-error when it has a description;
+      // this repo permits none of the three.
+      "@typescript-eslint/ban-ts-comment": [
+        "error",
+        {
+          "ts-expect-error": true,
+          "ts-ignore": true,
+          "ts-nocheck": true,
+          "ts-check": false,
+        },
       ],
     },
   },

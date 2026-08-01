@@ -61,9 +61,19 @@ Severity aliases exist so status code can read `t.err` / `t.sevWarn` / `t.info` 
 
 `rSm` 3 (chips/tags) · `rMenuItem` 5 (popover row) · `rBtn` 6 (small/icon buttons) · `rMd` 7 (buttons/inputs/fields) · `rCard` 8 (cards/popovers — distinct from `rLg`, do not fold) · `rLg` 9 (cards/rows/modals) · `rWin` 11 (window chrome) · `rPopover` 12 (large pickers) · `rDialog` 14 (the DS `Dialog` card) · `rPill` 999 (pills/switches)
 
-## Density (px)
+## Spacing (px)
 
-`row` 30 (table-row height) · `pad` 16 (pane padding) · `rowPadY` 6 · `paneY` 20 (section paddingY) · `sectionGap` 16
+The Tailwind ramp — 2px steps to 16, 4px to 32, then 48 (`src/theme/tokens.ts`):
+
+`space1` 2 · `space2` 4 · `space3` 6 · `space4` 8 · `space5` 10 · `space6` 12 · `space7` 14 · `space8` 16 · `space9` 20 · `space10` 24 · `space11` 28 · `space12` 32 · `space13` 48
+
+Three rules that follow from it:
+
+- **The DS is FULLY EVEN.** All spacing is one of these tokens; odd or off-grid values snap to the nearest step.
+- **The `spaceN = 2N` mnemonic holds only through `space8`.** Do not guess past there — `space10` is 24, not 20.
+- **A value that must AGREE across surfaces gets a role-named const, not a primitive** — e.g. `DIALOG_PAD_X` (`src/ui/Dialog.tsx`). Role-named constants live beside their component, not in a central density map.
+
+There is no `density` token group. An earlier revision of this file documented `row` / `pad` / `rowPadY` / `paneY` / `sectionGap`; none of those ever existed in `tokens.ts` and they must not be reintroduced. (`Density` in `src/views/CatalogView.tsx` is an unrelated component-local display-mode prop.)
 
 ## Letter-spacing
 

@@ -1,6 +1,6 @@
 ---
 name: verify
-description: "The definition-of-done runbook for tmp-companion. Use before declaring ANY change done — it maps the change class (docs / frontend / backend / device-facing / leveling-math) to the checks that must be green, names the traps that produce a false-green result (stale :7600, fresh-worktree deps, online seeding), and states the standing rules for shipping an invariant, deferring a fix, or closing a user-reported bug. Advisory: `scripts/gates.sh` + the pre-push/PreToolUse hooks are what actually block a red push or PR — this skill is the checklist a zero-context session follows to get there without re-deriving it."
+description: "The definition-of-done runbook for tmp-companion. Use before declaring ANY change done — it maps the change class (docs / frontend / backend / device-facing / leveling-math) to the checks that must be green, names the traps that produce a false-green result, and states the standing rules for shipping an invariant, deferring a fix, or closing a user-reported bug. Advisory: `scripts/gates.sh` plus the pre-push and PreToolUse hooks are what actually block a red push or PR — this skill is the checklist a zero-context session follows to get there."
 ---
 
 # /verify — definition of done
