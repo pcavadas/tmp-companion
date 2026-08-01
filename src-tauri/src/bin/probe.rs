@@ -738,6 +738,40 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--set-param-save") {
+        // --set-param-save <listIdx> <group> <node> <param> <value> [save]
+        // Write ONE numeric block param + persist with `save`; DRY by default (prints the
+        // slot's displayName + current value so identity is verified before the save re-run).
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 2).cloned().unwrap_or_default();
+        let node = args.get(i + 3).cloned().unwrap_or_default();
+        let param = args.get(i + 4).cloned().unwrap_or_default();
+        let value: f32 = args
+            .get(i + 5)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f32::NAN);
+        let save = args.iter().any(|a| a == "save");
+        if idx == u32::MAX || node.is_empty() || param.is_empty() || value.is_nan() {
+            eprintln!(
+                "usage: probe --set-param-save <listIdx> <group> <node> <param> <value> [save]"
+            );
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_set_param_save(idx, &group, &node, &param, value, save) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--fs-list") {
         // --fs-list <slot>   (read-only: footswitch blocks + bake/assign classification)
         let slot: u32 = args

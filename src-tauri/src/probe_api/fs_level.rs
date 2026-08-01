@@ -769,3 +769,74 @@ pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, Strin
     );
     Ok(out)
 }
+
+/// `probe --set-param-save <listIdx> <group> <node> <param> <value> [save]` — write ONE
+/// numeric block parameter and (with `save`) PERSIST it to any slot — unlike `--set-param`
+/// (slot_write.rs), which is scratch-zone-only and working-copy-only. DRY by default: prints
+/// the preset's displayName + the param's current value and exits without touching the
+/// working copy, so the slot identity can be eyeballed before the destructive re-run. The
+/// save path reuses the `--bake-validate` write+save shape (heartbeat-live session, never
+/// re-amped, BASE recalled before the write per the scene-context rule) and
+/// read-back-verifies the stored value. Scene-overlay mirroring is out of scope (this is a
+/// probe diagnostic, not the product write path) — on a preset WITH scenes, overlays that
+/// restate the param keep their authored values.
+pub fn probe_set_param_save(
+    list_index: u32,
+    group: &str,
+    node: &str,
+    param: &str,
+    value: f32,
+    save: bool,
+) -> Result<String, String> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(format!(
+            "refusing value {value}: block parameters are normalised 0.0..=1.0"
+        ));
+    }
+    let (preset, _, _) = read_slot_preset_parsed(list_index)?;
+    let name = preset
+        .get("info")
+        .and_then(|i| i.get("displayName"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let before = node_param_f64(&preset, node, param)
+        .ok_or_else(|| format!("{node}.{param} not found in slot {}", list_index + 1))?;
+    let mut out = format!(
+        "[probe --set-param-save] slot {} \u{201c}{name}\u{201d} \u{b7} {group}/{node}.{param}\n  before: {before:.4}\n",
+        list_index + 1
+    );
+    if !save {
+        out += &format!("  DRY \u{2014} would write {value:.4} (re-run with `save` to persist)\n");
+        return Ok(out);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    {
+        let mut s = Session::connect()?;
+        s.begin_live_edit()?;
+        s.load_preset(list_index)?;
+        for _ in 0..8 {
+            let _ = s.heartbeat();
+            let _ = s.pump_collect(150);
+        }
+        s.load_scene(crate::session::BASE_SCENE_SLOT)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::SETTLE_AFTER_SCENE_RECALL_MS,
+        ));
+        s.change_parameter(group, node, param, value)?;
+        s.save_current_preset(list_index)?;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    let (after_preset, _, _) = read_slot_preset_parsed(list_index)?;
+    let after = node_param_f64(&after_preset, node, param)
+        .ok_or_else(|| format!("{node}.{param} vanished after save"))?;
+    out += &format!(
+        "  after : {after:.4}  \u{21d2}  {}\n",
+        if (after - value as f64).abs() < 1e-3 {
+            "SAVED"
+        } else {
+            "MISMATCH \u{2014} verify the slot manually"
+        }
+    );
+    Ok(out)
+}
