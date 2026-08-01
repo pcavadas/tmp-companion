@@ -329,7 +329,9 @@ pub fn probe_fs_sweep(
 /// `probe --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>` — measure a candidate
 /// AMP operating point across a preset's whole footswitch set in ONE pass: writes the two amp
 /// knobs, then captures base (every block-acting switch forced OFF) and each switch engaged in
-/// turn, under exactly the isolation the production footswitch lane uses.
+/// turn, under the production force-list (`doctor_force_bypass` — the off-in-base/
+/// switch-enables-it composition; a PARAM-only footswitch has no on-off flip, so its isolation
+/// collapses to base and its gap row is structurally ≈0, not evidence about that switch).
 ///
 /// This exists because the base↔boost GAP is a property of the amp's operating point, not of any
 /// one switch — a per-knob sweep can't show it. Diagnostic only: nothing is saved (the final
@@ -354,13 +356,10 @@ pub fn probe_amp_recipe(
     if infos.is_empty() {
         return Err("preset has no block-acting footswitches".to_string());
     }
-    // Base = every block-acting switch's acted node forced OFF — the same definition the Base
-    // leveling job uses ("all footswitches off", NOT as-saved).
-    let base_off: Vec<(String, String, bool)> = infos
-        .iter()
-        .flat_map(|i| &i.functions)
-        .map(|f| (f.group_id.clone(), f.node_id.clone(), true))
-        .collect();
+    // Base = every block-acting switch's ON-OFF node forced OFF — `doctor_force_bypass(None)`,
+    // the one cross-module owner of this force-list (same definition the Base leveling job
+    // uses: "all footswitches off", NOT as-saved).
+    let base_off = crate::commands::doctor::doctor_force_bypass(&ftsw, &preset, None);
 
     {
         let mut s = Session::connect_lean()?;
@@ -373,6 +372,13 @@ pub fn probe_amp_recipe(
 
     let measure = |engaged: &[(String, String, bool)]| -> Result<f64, String> {
         let mut s = Session::connect_lean()?;
+        // Recall base FIRST: a load activates the saved `lastLoadedScene`, and the recall also
+        // re-asserts base's own bypass state — wiping the previous iteration's forced writes so
+        // nothing leaks between measurements. Every write below lands after it.
+        s.load_scene(crate::session::BASE_SCENE_SLOT)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::SETTLE_AFTER_SCENE_RECALL_MS,
+        ));
         s.change_parameter(group, amp_node, "gain", gain)?;
         s.change_parameter(group, amp_node, "outputLevel", output_level)?;
         for (g, n, byp) in engaged {
@@ -394,7 +400,11 @@ pub fn probe_amp_recipe(
     }
     for info in &infos {
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        let engaged = footswitch::engaged_bypass_for_switch(&ftsw, &preset, info.switch);
+        // The production composition (siblings forced off PLUS this switch's own engaged
+        // flip) via its one cross-module owner — never the flip alone, which would leave
+        // earlier iterations' pedals audible in this switch's capture.
+        let engaged =
+            crate::commands::doctor::doctor_force_bypass(&ftsw, &preset, Some(info.switch));
         let label = info
             .functions
             .first()
@@ -770,18 +780,20 @@ pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, Strin
     Ok(out)
 }
 
-/// `probe --set-param-save <listIdx> <group> <node> <param> <value> [save]` — write ONE
-/// numeric block parameter and (with `save`) PERSIST it to any slot — unlike `--set-param`
-/// (slot_write.rs), which is scratch-zone-only and working-copy-only. DRY by default: prints
-/// the preset's displayName + the param's current value and exits without touching the
-/// working copy, so the slot identity can be eyeballed before the destructive re-run. The
-/// save path reuses the `--bake-validate` write+save shape (heartbeat-live session, never
-/// re-amped, BASE recalled before the write per the scene-context rule) and
-/// read-back-verifies the stored value. Scene-overlay mirroring is out of scope (this is a
-/// probe diagnostic, not the product write path) — on a preset WITH scenes, overlays that
-/// restate the param keep their authored values.
+/// `probe --set-param-save <listIdx> <expectName> <group> <node> <param> <value> [save]` —
+/// write ONE numeric block parameter and (with `save`) PERSIST it to any slot — unlike
+/// `--set-param` (slot_write.rs), which is scratch-zone-only and working-copy-only. The
+/// mandatory `expectName` is checked against the slot's non-destructive `displayName` read
+/// INSIDE this function (the destructive-op guard rule: same address space as the mutation —
+/// a dry-run eyeball is not a guard, since the save re-run is a separate invocation that can
+/// carry a different index). DRY by default; the save path reuses the `--bake-validate`
+/// write+save shape (heartbeat-live session, never re-amped, BASE recalled before the write
+/// per the scene-context rule) and read-back-verifies the stored value. Scene-overlay
+/// mirroring is out of scope (this is a probe diagnostic, not the product write path) — on a
+/// preset WITH scenes, overlays that restate the param keep their authored values.
 pub fn probe_set_param_save(
     list_index: u32,
+    expect_name: &str,
     group: &str,
     node: &str,
     param: &str,
@@ -800,6 +812,12 @@ pub fn probe_set_param_save(
         .and_then(|v| v.as_str())
         .unwrap_or("?")
         .to_string();
+    if name != expect_name {
+        return Err(format!(
+            "refusing slot {}: reads \u{201c}{name}\u{201d}, expected \u{201c}{expect_name}\u{201d}",
+            list_index + 1
+        ));
+    }
     let before = node_param_f64(&preset, node, param)
         .ok_or_else(|| format!("{node}.{param} not found in slot {}", list_index + 1))?;
     let mut out = format!(

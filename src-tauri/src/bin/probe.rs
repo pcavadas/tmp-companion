@@ -163,6 +163,11 @@ fn parse_target_overrides(args: &[String], from: usize) -> Vec<(String, f64)> {
         .collect()
 }
 
+/// A normalised block-parameter value: finite and inside the device's 0.0..=1.0 range.
+fn is_unit_knob(v: f32) -> bool {
+    v.is_finite() && (0.0..=1.0).contains(&v)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if log::set_logger(&StderrLog).is_ok() {
@@ -675,8 +680,13 @@ fn main() {
             eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         };
-        if idx == u32::MAX || node.is_empty() {
-            eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain> <outputLevel>  (TMP_LEVELLER_STIMULUS=<wav>)");
+        if idx == u32::MAX
+            || group.is_empty()
+            || node.is_empty()
+            || !is_unit_knob(gain)
+            || !is_unit_knob(out_level)
+        {
+            eprintln!("usage: probe --amp-recipe <listIdx> <group> <ampNode> <gain 0..=1> <outputLevel 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
         match tmp_companion_lib::probe_amp_recipe(idx, &group, &node, gain, out_level) {
@@ -685,7 +695,7 @@ fn main() {
                 return;
             }
             Err(e) => {
-                eprintln!("probe --amp-recipe failed: {e}");
+                eprintln!("[probe] FAILED: {e}");
                 std::process::exit(1);
             }
         }
@@ -719,11 +729,13 @@ fn main() {
             .unwrap_or_default();
         if idx == u32::MAX
             || switch == u32::MAX
+            || group.is_empty()
             || node.is_empty()
             || param.is_empty()
             || values.is_empty()
+            || values.iter().any(|v| !is_unit_knob(*v))
         {
-            eprintln!("usage: probe --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)");
+            eprintln!("usage: probe --fs-sweep <listIdx> <switch> <group> <node> <param> <v1,v2,… each 0..=1>  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
         match tmp_companion_lib::probe_fs_sweep(idx, switch, &group, &node, &param, &values) {
@@ -739,28 +751,45 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--set-param-save") {
-        // --set-param-save <listIdx> <group> <node> <param> <value> [save]
-        // Write ONE numeric block param + persist with `save`; DRY by default (prints the
-        // slot's displayName + current value so identity is verified before the save re-run).
+        // --set-param-save <listIdx> <expectName> <group> <node> <param> <value> [save]
+        // Write ONE numeric block param + persist with `save`; DRY by default. `expectName`
+        // is checked against the slot's displayName INSIDE the mutating function (the
+        // destructive-op name guard), and `save` is read from its positional slot only.
         let idx: u32 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(u32::MAX);
-        let group = args.get(i + 2).cloned().unwrap_or_default();
-        let node = args.get(i + 3).cloned().unwrap_or_default();
-        let param = args.get(i + 4).cloned().unwrap_or_default();
+        let expect_name = args.get(i + 2).cloned().unwrap_or_default();
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let node = args.get(i + 4).cloned().unwrap_or_default();
+        let param = args.get(i + 5).cloned().unwrap_or_default();
         let value: f32 = args
-            .get(i + 5)
+            .get(i + 6)
             .and_then(|s| s.parse().ok())
             .unwrap_or(f32::NAN);
-        let save = args.iter().any(|a| a == "save");
-        if idx == u32::MAX || node.is_empty() || param.is_empty() || value.is_nan() {
+        let save = args.get(i + 7).is_some_and(|a| a == "save");
+        if idx == u32::MAX
+            || expect_name.is_empty()
+            || expect_name.starts_with("--")
+            || group.is_empty()
+            || node.is_empty()
+            || param.is_empty()
+            || value.is_nan()
+        {
             eprintln!(
-                "usage: probe --set-param-save <listIdx> <group> <node> <param> <value> [save]"
+                "usage: probe --set-param-save <listIdx> <expectName> <group> <node> <param> <value> [save]"
             );
             std::process::exit(2);
         }
-        match tmp_companion_lib::probe_set_param_save(idx, &group, &node, &param, value, save) {
+        match tmp_companion_lib::probe_set_param_save(
+            idx,
+            &expect_name,
+            &group,
+            &node,
+            &param,
+            value,
+            save,
+        ) {
             Ok(report) => {
                 print!("{report}");
                 return;
