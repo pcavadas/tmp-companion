@@ -104,9 +104,9 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
    while the write landed in a scene overlay (passed falsely); a fixture drift-lock compared a
    typed struct that omitted the two fields that drifted (stayed green); a device-error cause was
    asserted from the message text without reproducing it. Before trusting any read-back or
-   drift-lock, state which address space it reads (base vs scene overlay, list-index vs 1-based
-   device slot, typed struct vs raw JSON) and which fields it covers — and check that a deliberate
-   mismatch actually turns it red.
+   drift-lock, state the address space it reads (base vs scene overlay, list-index vs 1-based
+   device slot), the data representation it reads (typed struct or raw JSON), and the fields it
+   covers — then check that a deliberate mismatch actually turns it red.
 
 See `notes/user-journeys.md` for the journey-coverage map + the bug→gate registry this rule
 enforces, and `notes/e2e-test-plan.md` for the full per-tab scenario inventory.

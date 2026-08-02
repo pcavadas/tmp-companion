@@ -17,7 +17,7 @@ Every rule below is HW/OS-verified on this app (Tauri 2 WKWebView, macOS). The f
 
 ## Keyboard and scroll
 
-- **Keyboard input doesn't reach WKWebView:** `cliclick kp:return` does NOT fire a React inline-form's `onKeyDown` submit, and neither `cliclick t:<text>` nor `osascript … keystroke` enters TEXT into a focused field — **form fields can't be filled headlessly** (open + cancel a form to verify it renders; you can't submit one with input). Click the explicit ✓ / submit affordance.
+- **Keyboard input doesn't reach WKWebView:** `cliclick kp:return` does NOT fire a React inline-form's `onKeyDown` submit, and neither `cliclick t:<text>` nor `osascript … keystroke` enters TEXT into a focused field — **form fields can't be filled through these native-window tools** (the Playwright harness fills them fine; here, open + cancel a form to verify it renders). Click the explicit ✓ / submit affordance.
 - **No scroll in `cliclick`** — warp the cursor over the pane then post a Quartz line-scroll: `python3 -c 'import Quartz; Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 1, -3))'` (negative = down).
 
 ## Reading the screen
@@ -26,5 +26,5 @@ Every rule below is HW/OS-verified on this app (Tauri 2 WKWebView, macOS). The f
 
 ## Launching / stale `tauri dev`
 
-- A `tauri dev` left running from a prior session holds **port 1421** (vite's bind), so a fresh `bun run tauri dev` silently fails to start — kill the stale tree first (`pkill -f "node_modules/.bin/vite"` + the `target/debug/tmp-companion` app), then relaunch.
+- A `tauri dev` left running from a prior session holds **port 1421** (vite's bind), so a fresh `bun run tauri dev` silently fails to start — kill the stale processes first, scoped by port so sibling worktrees' servers survive (`lsof -ti tcp:1421 | xargs kill`, then the `target/debug/tmp-companion` app), then relaunch.
 - Same-session: the dev file-watcher can die silently after a couple of hours — a src-tauri edit then produces NO "Rebuilding application" line and the running binary stays stale. After any src-tauri edit confirm the rebuild line appears, else kill + relaunch.
