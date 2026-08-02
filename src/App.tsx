@@ -4,6 +4,8 @@
 // self-gating <…View/> per tab under views/:
 //   • Level    → <LevelView/>   now-playing strip + preset list + the §4
 //                destructive-write ritual, bound to real invoke wrappers.
+//   • Doctor   → <DoctorView/>   tone diagnosis: re-amp captures, spectral
+//                findings, one-click prescriptions.
 //   • Copy     → <CopyView/>     copy blocks between presets (staged off-device).
 //   • Songs    → <SongsView/>    device-backed songs + setlists CRUD; renders its
 //                own in-body EmptyState until the unit is connected.
@@ -46,7 +48,7 @@ import type { ActiveGraph } from "./lib/types";
 import { actionableError } from "./lib/connectError";
 import { DISCLAIMER_PERM_KEY, DISCLAIMER_SESSION_KEY } from "./lib/gates";
 
-const RETRY_MS = 3000; // legacy auto-connect retry cadence.
+const RETRY_MS = 3000; // auto-connect retry interval (armed while disconnected).
 
 // Route keys, labels, and view components all agree (no Presets/Models discrepancy):
 // Level · Doctor · Copy · Songs · Catalog · Settings — the leveling page is `level` →

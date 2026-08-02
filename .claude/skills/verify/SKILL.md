@@ -99,5 +99,14 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
    23 items against a page size of 100, so its cursor bug could not manifest. Confirm the fixture
    crosses the threshold that would trip the bug before trusting green.
 
+7. **A verifier covers only what it actually reads — name the address space AND the fields, then
+   prove it can fail.** Three real incidents of the same shape: a read-back checked the base graph
+   while the write landed in a scene overlay (passed falsely); a fixture drift-lock compared a
+   typed struct that omitted the two fields that drifted (stayed green); a device-error cause was
+   asserted from the message text without reproducing it. Before trusting any read-back or
+   drift-lock, state which address space it reads (base vs scene overlay, list-index vs 1-based
+   device slot, typed struct vs raw JSON) and which fields it covers — and check that a deliberate
+   mismatch actually turns it red.
+
 See `notes/user-journeys.md` for the journey-coverage map + the bug→gate registry this rule
 enforces, and `notes/e2e-test-plan.md` for the full per-tab scenario inventory.

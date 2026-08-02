@@ -13,7 +13,7 @@ A **macOS-only** Tauri 2 desktop app (Rust backend + React/TypeScript frontend) 
 | [`.claude/rules/danger.md`](.claude/rules/danger.md) | always | **Read this before touching the device.** Data loss, device wedging, machine crashes. |
 | `.claude/rules/*.md` | when you edit matching files | Path-scoped conventions — frontend, theme/DS, models/catalog, Rust backend, leveling/DSP, e2e, shell |
 | [`notes/gotchas.md`](notes/gotchas.md) | on reference | The hardware evidence behind every rule |
-| `.claude/skills/` | on task match | Product data model, wire protocol, catalog contract, frontend how-to, `/verify`, CodeRabbit |
+| `.claude/skills/` | on task match | Product data model, wire protocol, catalog contract, frontend how-to, `/verify`, CodeRabbit, native-window driving |
 
 Path-scoped rules only load once Claude **reads** a matching file, so anything that must hold while *running* a command lives below instead.
 
@@ -60,8 +60,8 @@ cargo run --bin probe                         # headless HW re-validation (devic
 ## Rules with no other home
 
 - **App icon (level-meter mark):** flat terracotta (`#d97757`) macOS-squircle tile, 3 white bottom-aligned level bars in a 6:11:8 height rhythm. [→ evidence](notes/gotchas.md#app-icon-level-meter-mark)
-- **Marketing site** (`docs/index.html` + `.nojekyll` + `assets/`): GitHub Pages branch-deploy from `main` `/docs`. It is a PROJECT repo, so the URL is a `/tmp-companion/` **subpath** — all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml-nojekyll-assets)
-- **CodeRabbit: progressive review is automatic — post NO command on a reviewed PR.** Pushing fix commits or replying to threads is enough. [→ evidence](notes/gotchas.md#coderabbit-progressive-review-is-automatic-post-no-command-on-a-reviewed-pr)
+- **Marketing site** (`docs/index.html` + `.nojekyll` + `assets/`): GitHub Pages branch-deploy from `main` `/docs`. It is a PROJECT repo, so the URL is a `/tmp-companion/` **subpath** — all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml--nojekyll--assets)
+- **CodeRabbit: progressive review is automatic — post NO command on a reviewed PR.** Pushing fix commits or replying to threads is enough. [→ evidence](notes/gotchas.md#coderabbit-progressive-review-is-automatic--post-no-command-on-a-reviewed-pr)
 - **Auto-merge arms ONLY for `main`-targeted PRs.** [→ evidence](notes/gotchas.md#auto-merge-arms-only-for-main-targeted-prs)
 - **Connection is fully automatic** — there are no manual Connect/Disconnect buttons. [→ evidence](notes/gotchas.md#fully-automatic-connection)
 - **Editing `index.html` triggers a FULL webview reload** (not HMR) in `tauri dev`, re-running connect-on-mount. Reload via the UI instead.

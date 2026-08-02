@@ -4,8 +4,6 @@
 // the enum-tagged payloads it accepts. Field names are snake_case because that
 // is exactly how serde serializes them (the Rust structs use no `rename_all`).
 //
-// Mirrors the serde types the Rust backend returns/accepts.
-//
 // WIRE-CASING RULE (load-bearing): top-level invoke arg KEYS are camelCase
 // (Tauri auto-converts to the Rust snake_case param); field keys NESTED inside a
 // JSON payload object (job/op/spec/recipe/filter/edit/store) stay snake_case and

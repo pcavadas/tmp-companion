@@ -8,7 +8,7 @@ Full hardware evidence for the linked entries is in [`notes/gotchas.md`](../../n
 
 ## Destructive writes
 
-- **DANGER** — **Slot addressing: device `userSlot` = list index + 1** (HW-confirmed 1.7.75). [→ evidence](../../notes/gotchas.md#slot-addressing-device-userslot-list-index-1)
+- **DANGER** — **Slot addressing: device `userSlot` = list index + 1** (HW-confirmed 1.7.75). [→ evidence](../../notes/gotchas.md#slot-addressing-device-userslot--list-index--1)
 
 - **DANGER** — **Confirm a slot mapping with a non-destructive READ first, and put the guard in the SAME ADDRESS SPACE as the mutation.** Before any destructive op (`clear` / `move` / `save`-over) keyed on a slot/index mapping. A `clear` once **deleted a real preset** because the guard checked list-index space while `clear` acted in 1-based device-slot space. On real hardware with irreplaceable presets, an unconfirmed mapping plus a wrong-space guard equals silent data loss.
 

@@ -31,7 +31,7 @@ Serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts`. Addi
 ## Platform and framework traps
 
 - **`window.confirm()` / `window.alert()` silently no-op in Tauri's WKWebView** (no JS-dialog delegate) — `confirm` returns `false`, so never gate logic on them. Use inline UI or a countdown.
-- **Dialogs/overlays go through the ONE DS `Dialog` (`ui/Dialog.tsx`)** — never roll a per-view `position:absolute` scrim. An `absolute, inset:0` backdrop resolves against the nearest positioned ancestor (the view body BELOW the 46px tab bar), so it fails to cover the menu and the flex-centered card crops. This was a real bug across all four dialogs. [→ evidence](../../notes/gotchas.md#dialogsoverlays-go-through-the-one-ds-dialog-uidialogtsx-never-roll-a-per-view-positionabsolute-scrim)
+- **Dialogs/overlays go through the ONE DS `Dialog` (`ui/Dialog.tsx`)** — never roll a per-view `position:absolute` scrim. An `absolute, inset:0` backdrop resolves against the nearest positioned ancestor (the view body BELOW the 46px tab bar), so it fails to cover the menu and the flex-centered card crops. This was a real bug across all four dialogs. [→ evidence](../../notes/gotchas.md#dialogsoverlays-go-through-the-one-ds-dialog-uidialogtsx--never-roll-a-per-view-positionabsolute-scrim)
 - **Tauri 2 `core:default` does NOT grant window creation.** Any future second `WebviewWindow` silently fails unless `core:webview:allow-create-webview-window` + `core:window:allow-{create,show,set-focus,close}` are re-added to `capabilities/default.json`.
 - **Device-tab loads are connection-gated, not mount-only.** Views refresh on the `connected` flag flipping true, so plugging the TMP in after launch auto-populates the body.
 

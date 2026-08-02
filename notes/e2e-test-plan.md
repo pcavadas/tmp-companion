@@ -4,8 +4,11 @@
 > useful; §8's doc-correction items are resolved unless marked open — do not treat them as
 > current bugs.
 
-Discovery-only artifact (no implementation). Maps **every** interactive surface, state
-machine, edge state, and chaos sequence across the 5 tabs, consolidates them into a runnable
+Discovery-only artifact (no implementation). **Currency rule:** the operational
+instructions (runner invocations, preconditions, recovery) are kept current; the
+scenario inventory and automation backlog are a snapshot as of the date above — check
+`notes/user-journeys.md` + `ls e2e/specs/` for today's coverage. Maps **every** interactive surface, state
+machine, edge state, and chaos sequence across the tabs (5 at snapshot time; Doctor landed after — its journeys are tracked in `notes/user-journeys.md` and gated by `doctor.spec.ts` + `doctor-apply.online.spec.ts`), consolidates them into a runnable
 scenario set, and tags each scenario with a regression-automation recommendation.
 
 Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,ErrorBoundary}`,
@@ -22,7 +25,7 @@ Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,Err
 - **`bash scripts/e2e.sh online`** — ONLINE against the real unit (songs → copy → level, one at a
   time, ~9 min). Preconditions: the unit plugged in + **rested**, and **Pro Control closed** (it
   holds the exclusive HID seize). The script pre-flights the handshake, runs each spec in its own
-  invocation, and ALWAYS recovers the unit on exit (reamp-off + guarded scratch-clear 400/401/402 +
+  invocation, and ALWAYS recovers the unit on exit (reamp-off + guarded scratch-clear of the scenario slots (`SCRATCH_SLOTS`, 400–404) +
   recall 001) — even on Ctrl-C or a killed run.
 
 Add `copy` / `level` / `songs` to run a single spec (e.g. `bash scripts/e2e.sh online level`).
@@ -72,7 +75,7 @@ gate keys live there — `gates.ts`).
   DeviceStatus shows persistent "untested ⚠". "Use it anyway" unlocks per-mount.
 - **C6 — Hot-plug detach.** While connected on Level, unplug → DeviceStatus→hollow, body→EmptyState,
   firmware/graph cleared, retry loop stays armed. Replug → auto-reconnects, body repopulates.
-- **C7 — Tab routing.** Click through all 5 tabs; each body wrapped in `ErrorBoundary key={tab}` —
+- **C7 — Tab routing.** Click through all 6 tabs (incl. Doctor, post-snapshot); each body wrapped in `ErrorBoundary key={tab}` —
   a crash in one tab shows its fallback ("Try again"/"Reload") without killing the tab bar or
   connection. Catalog/Settings render disconnected (deviceIndependent).
 
