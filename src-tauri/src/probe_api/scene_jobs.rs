@@ -426,7 +426,7 @@ pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
             None
         }
     };
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     result
 }
 

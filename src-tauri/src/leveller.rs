@@ -26,7 +26,7 @@ use serde::Serialize;
 use crate::audio;
 use crate::lufs;
 use crate::session::Session;
-use crate::{read_saved_preset, scene_overlay, sleep_abortable, sleep_or_cancel, SceneOverlay};
+use crate::{read_saved_preset, scene_overlay, settle_abortable, settle_or_cancel, SceneOverlay};
 
 // Post-load DSP settle before a capture. Was a conservative 1200; HW-bisected to 400
 // on fw 1.8.45 (dry slot 11 + wet delay slot 5): measured C, presetLevel, and verify
@@ -414,7 +414,7 @@ pub(crate) fn measure_floor_guarded(
     } else {
         return Ok(GuardOutcome::Live(first));
     }
-    sleep_or_cancel(gap.as_millis() as u64)?;
+    settle_or_cancel(gap.as_millis() as u64)?;
     let second = measure()?;
     if floor_suspect(second.spread_lu(), stimulus_spread_lu) {
         return Ok(GuardOutcome::StillFlat(second));
@@ -491,9 +491,9 @@ pub fn measure_c(
     {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
-        sleep_or_cancel(settle_after_load_ms())?;
+        settle_or_cancel(settle_after_load_ms())?;
     }
-    sleep_or_cancel(RECONNECT_GAP_MS)?;
+    settle_or_cancel(RECONNECT_GAP_MS)?;
     let gap = Duration::from_millis(FLOOR_RETRY_GAP_MS);
     // No load → the set inside measure_at_level sticks on the now-current preset.
     let outcome = measure_floor_guarded(
@@ -509,7 +509,7 @@ pub fn measure_c(
             let confirm_level = confirm_ref_level(ref_level);
             // The 5 s confirm gap is the single longest non-capture wait in a run — a Stop
             // here used to cost the gap PLUS a second full capture.
-            sleep_or_cancel(gap.as_millis() as u64)?;
+            settle_or_cancel(gap.as_millis() as u64)?;
             let confirm = measure_at_level(stimulus, confirm_level, force_bypass)?;
             if tracks_level_shift(
                 l.integrated_lufs,
@@ -584,9 +584,9 @@ fn capture_full_at(
     if !skip_load {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
-        sleep_or_cancel(settle_after_load_ms())?;
+        settle_or_cancel(settle_after_load_ms())?;
         drop(s);
-        sleep_or_cancel(RECONNECT_GAP_MS)?;
+        settle_or_cancel(RECONNECT_GAP_MS)?;
     }
     let mut s = Session::connect_lean()?;
     let recall = if skip_load {
@@ -599,7 +599,7 @@ fn capture_full_at(
     // level write, not follow it.
     if let Some(scene) = recall {
         s.load_scene(scene)?;
-        sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
+        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     }
     capture_on_session(&mut s, force_bypass, stimulus, ref_level, tail_ms)
 }
@@ -632,13 +632,13 @@ pub(crate) fn capture_on_session(
     // leaving the edit buffer's presetLevel untouched.
     if let Some(ref_level) = ref_level {
         set_knob(s, &LevelKnob::PresetLevel, ref_level.clamp(0.05, 1.0), None)?;
-        sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
+        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     }
     let _ = s.set_reamp_mode(true)?;
     // Past the engage there is NO early return: re-amp is on, and leaving it on strands the
     // unit input-muted. So this settle only wakes early — `reamp_capture` then bails on its
     // own up-front abort check, and the OFF below still goes out on this open session.
-    let _ = sleep_abortable(SETTLE_AFTER_REAMP_MS);
+    let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
     let cap = audio::reamp_capture(stimulus, RATE, tail_ms);
     let _ = s.set_reamp_mode(false);
     cap
@@ -1966,7 +1966,7 @@ pub(crate) fn engage_measure_disengage(
 ) -> Result<lufs::Loudness, String> {
     let _ = s.set_reamp_mode(true)?;
     // Same no-early-return rule as `capture_full_at`: re-amp is engaged, the OFF must fire.
-    let _ = sleep_abortable(SETTLE_AFTER_REAMP_MS);
+    let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
     let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
     let _ = s.set_reamp_mode(false);
     loudest_loudness(cap)
@@ -1991,7 +1991,7 @@ pub(crate) fn reamp_off_guaranteed(tag: &str) {
 fn measure_scene_asis(scene_slot: u32, stimulus: &[f32]) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
-    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -2024,7 +2024,7 @@ fn arm_measurement(
     }
     // Cancellable: nothing is engaged yet and the connection is throwaway, so a Stop
     // here bails cleanly (the same settle #128 made interruptible pre-refactor).
-    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     Ok(())
 }
 
@@ -4145,7 +4145,7 @@ fn measure_knobs_at(
 ) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     set_knobs(&mut s, targets, saved)?;
-    sleep_or_cancel(SETTLE_AFTER_SET_MS)?;
+    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 

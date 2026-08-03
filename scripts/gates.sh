@@ -223,6 +223,12 @@ if [ "$want_rust" -eq 1 ]; then
   run_gate "clippy (e2e feature)" sh -c 'cd src-tauri && cargo clippy --all-targets --features e2e -- -D warnings'
   run_gate "rustfmt --check"      sh -c 'cd src-tauri && cargo fmt --check'
   run_gate "rust tests"           sh -c 'cd src-tauri && cargo test --lib'
+  # ALSO under `--features e2e`: some guards only COMPILE there. `settle_ms`'s offline-collapse
+  # branch is the one that matters — regress its predicate to `!e2e_online()` and the settles
+  # would silently zero on real hardware, yet the default-feature run above still passes (it
+  # compiles the identity path) and the offline suite stays green (it wants zeros). Without
+  # this lane the guard exists but nothing ever executes it.
+  run_gate "rust tests (e2e feature)" sh -c 'cd src-tauri && cargo test --lib --features e2e'
 fi
 
 if [ "$want_e2e" -eq 1 ]; then

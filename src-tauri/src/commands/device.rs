@@ -82,7 +82,7 @@ pub(crate) async fn connect_device(state: State<'_, AppState>) -> Result<Connect
             if t0.elapsed() >= deadline {
                 return Err("monitor startup timed out waiting for TMP handshake".to_string());
             }
-            crate::settle(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     })
     .await

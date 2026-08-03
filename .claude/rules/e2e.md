@@ -37,4 +37,11 @@ Runs the full Level + Copy happy paths against the real unit **non-destructively
 
 ## Ports
 
-`scripts/e2e.sh` derives a stable per-worktree bridge/vite port pair (offset = `cksum(worktree-path) % 200` off 7600/1421) and exports `TMP_E2E_PORT` / `TMP_E2E_VITE_PORT`. It is a `% 200` hash with no occupied-port retry, so two worktree paths can still collide — it reduces contention, it does not guarantee isolation. The one real device is serialized by a machine-global `mkdir` lock (`scripts/device-lock.sh`).
+`scripts/e2e.sh` derives a stable per-worktree bridge/vite pair (offset = `cksum(worktree-path) % 200`) and exports `TMP_E2E_PORT` / `TMP_E2E_VITE_PORT` / `TMP_E2E_WORKERS`.
+
+**Offline claims a RANGE, not one port.** Each Playwright worker runs its own `e2e_server` on `TMP_E2E_PORT + parallelIndex` (`e2e/fixtures/port.ts` reads `TEST_PARALLEL_INDEX`), so the bridge base is `7800 + offset*8` — a fixed stride of 8 per worktree. Two properties are load-bearing and worth preserving:
+
+- **The base is 7800, above the 7600-7799 window the old single-port scheme used.** Disjoint bands mean a worktree still running the old script cannot collide with a strided one during the migration. Two concurrent offline runs must never interfere.
+- **`kill_port` filters by process name** (`ps -o comm=` matching `e2e_server`) before killing. `lsof -i tcp:N` matches either endpoint and cannot tell whose server it found; sweeping 8 ports unfiltered could kill a sibling worktree's live run or an unrelated dev server.
+
+Still a `% 200` hash with no occupied-port retry, so two worktree paths can collide — it reduces contention, it does not guarantee isolation. The one real device is serialized by a machine-global `mkdir` lock (`scripts/device-lock.sh`).

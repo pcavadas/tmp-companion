@@ -80,15 +80,15 @@ pub(crate) fn settle(d: std::time::Duration) {
 }
 
 /// Sleep up to `ms`, waking early if an abort is requested. Returns `true` if it aborted
-/// (the caller bails), `false` if the full duration elapsed. Drop-in for the settle
-/// `thread::sleep`s on the leveling/Doctor paths — the settle semantics are unchanged for
-/// a run nobody stopped.
+/// (the caller bails), `false` if the full duration elapsed.
 ///
-/// The wait is [`settle_ms`]-scaled, so offline it collapses to a single abort check and
-/// returns. The `op_aborted()` probe stays FIRST in the loop so a Stop still wins even at a
-/// zero duration — cancellation semantics are identical in both tiers.
+/// Sleeps the FULL duration in every tier. Scaling is opt-in via [`settle_abortable`] /
+/// [`settle_or_cancel`], deliberately: some callers are a POLL CADENCE, not a settle, and
+/// for them the sleep is the only thing bounding a loop. `audio.rs`'s capture-hop loop is
+/// the example — `while Instant::now() < deadline { sleep_or_cancel(hop)? … }`, where a
+/// zero hop would busy-spin for the whole capture hammering the sample-buffer mutex. Making
+/// the collapse opt-in means a NEW caller is correct by default and only settles opt in.
 pub(crate) fn sleep_abortable(ms: u64) -> bool {
-    let ms = settle_ms(ms);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
     loop {
         if op_aborted() {
@@ -111,6 +111,19 @@ pub(crate) fn sleep_or_cancel(ms: u64) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// [`sleep_abortable`] for a HARDWARE SETTLE: [`settle_ms`]-scaled, so it collapses to a
+/// single abort check offline. Use for a wait that exists to let the device catch up; use
+/// the unscaled `sleep_abortable` for a poll cadence.
+pub(crate) fn settle_abortable(ms: u64) -> bool {
+    sleep_abortable(settle_ms(ms))
+}
+
+/// [`sleep_or_cancel`] for a HARDWARE SETTLE — the `?`-able form of [`settle_abortable`].
+/// The abort check runs before the (possibly zero) wait, so Stop still wins in both tiers.
+pub(crate) fn settle_or_cancel(ms: u64) -> Result<(), String> {
+    sleep_or_cancel(settle_ms(ms))
 }
 
 /// Bounded wait for the monitor to ack a pause (≈ `PAUSE_WAIT_TRIES × 25 ms`). The

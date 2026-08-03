@@ -17,7 +17,8 @@
 # exit — reamp-off + guarded scratch-clear (400-404) + recall 001 — even on Ctrl-C or a
 # failed/killed run (a killed level run otherwise strands the unit re-amp-engaged / input-muted).
 #
-# Both modes first kill any stale e2e_server on :7600, so neither can silently reuse a
+# Both modes first kill any stale e2e_server across this worktree's whole port stride (filtered
+# to e2e_server processes, so a sibling worktree's run is never touched), so neither can reuse a
 # wrong-mode server (`reuseExistingServer: true` would otherwise make an "online" run hit
 # SimDevice — a false-green pass — or vice-versa), and pre-build the binary so the cold compile
 # is out of the timed path (it would otherwise blow the config's 180 s webServer timeout).
@@ -49,16 +50,31 @@ cd "$REPO"
 # could not clean up after a 3-worker one and would strand orphaned servers. Fixed stride ⇒ a
 # worktree's range is stable, and the stale-kill below always covers all of it.
 # Vite stays one port per worktree (a single shared asset server).
+#
+# PORT_BASE is 7800, ABOVE the 7600-7799 window the previous single-port scheme could occupy
+# (7600 + cksum%200). Two concurrent offline runs must never interfere, and during the window
+# where some worktrees still run the OLD script that is only true if the two schemes cannot
+# overlap at all: a strided range based at 7600 would have put THIS worktree at 7704-7711,
+# squarely inside the legacy band, so a run here could kill a sibling's live server and vice
+# versa. Disjoint bands make that structurally impossible rather than merely unlikely.
 PORT_STRIDE=8
+PORT_BASE=7800
 WORKERS="${TMP_E2E_WORKERS:-3}"
 # NB printf, not err() — the helpers are defined further down and this runs before them.
-if [ "$WORKERS" -gt "$PORT_STRIDE" ]; then
-  printf '\033[31m✗ TMP_E2E_WORKERS=%s exceeds the per-worktree port stride (%s) — raise PORT_STRIDE\033[0m\n' \
+# The `case` rejects a non-numeric value FIRST: `[ x -gt y ]` on a non-integer errors out
+# under `set -e` with bash's own message instead of this one.
+case "$WORKERS" in
+  ''|*[!0-9]*)
+    printf '\033[31m✗ TMP_E2E_WORKERS=%s is not a positive integer\033[0m\n' "$WORKERS" >&2
+    exit 2 ;;
+esac
+if [ "$WORKERS" -lt 1 ] || [ "$WORKERS" -gt "$PORT_STRIDE" ]; then
+  printf '\033[31m✗ TMP_E2E_WORKERS=%s outside 1..%s (the per-worktree port stride) — raise PORT_STRIDE\033[0m\n' \
     "$WORKERS" "$PORT_STRIDE" >&2
   exit 2
 fi
 PORT_OFFSET=$(( $(printf '%s' "$REPO" | cksum | cut -d' ' -f1) % 200 ))
-PORT="${TMP_E2E_PORT:-$((7600 + PORT_OFFSET * PORT_STRIDE))}"
+PORT="${TMP_E2E_PORT:-$((PORT_BASE + PORT_OFFSET * PORT_STRIDE))}"
 VITE_PORT="${TMP_E2E_VITE_PORT:-$((1421 + PORT_OFFSET))}"
 export TMP_E2E_PORT="$PORT" TMP_E2E_VITE_PORT="$VITE_PORT" TMP_E2E_WORKERS="$WORKERS"
 # shellcheck source=scripts/device-lock.sh disable=SC1091
@@ -113,7 +129,20 @@ prebuild() {
 
 PROBE_BIN="src-tauri/target/debug/probe"
 
-kill_port() { lsof -ti "tcp:$1" 2>/dev/null | xargs kill 2>/dev/null || true; }
+# Kill ONLY an `e2e_server` on a port — never a bystander.
+#
+# `lsof -ti tcp:N` is indiscriminate twice over: it lists any process with N on EITHER
+# endpoint (so an outbound connection to a remote :N counts), and it cannot tell our server
+# from someone else's. That was tolerable when the script killed ONE port; now it sweeps a
+# whole stride, across a band that can reach ports other tools use. Filtering by process name
+# keeps the sweep from ever reaching another worktree's run — or an unrelated dev server.
+kill_port() {
+  for pid in $(lsof -ti "tcp:$1" 2>/dev/null || true); do
+    case "$(ps -o comm= -p "$pid" 2>/dev/null || true)" in
+      *e2e_server) kill "$pid" 2>/dev/null || true ;;
+    esac
+  done
+}
 
 # Clear this worktree's whole bridge STRIDE (PORT .. PORT+PORT_STRIDE-1). Killing only the
 # base port would leave workers 1..N-1 stale, and `reuseExistingServer` would silently adopt

@@ -447,7 +447,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                                 "doctor_check: floor-suspect capture for {} (spread {:.2} LU ≤ stimulus {:.2} LU) — retrying once",
                                 item.key, profile.spread_lu, stim_spread
                             );
-                            crate::sleep_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
+                            crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
                             let (profile, cov) = capture_profile(false, stim)?;
                             match floor_error_for(profile.spread_lu, stim_spread) {
                                 None => Ok((profile, cov)),
@@ -493,7 +493,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             // Abortable: a Stop landing in this exact window (after the last item's own
             // success, with no further loop-header check ahead of it) would otherwise
             // finish the run silently instead of reporting it stopped.
-            if crate::sleep_abortable(leveller::RECONNECT_GAP_MS) {
+            if crate::settle_abortable(leveller::RECONNECT_GAP_MS) {
                 stopped = true;
                 break;
             }

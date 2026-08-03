@@ -23,10 +23,14 @@ pub(crate) fn e2e_online() -> bool {
 ///
 /// Deliberately NOT `!e2e_online()` (what `audio::reamp_capture` uses). That predicate is
 /// true in ANY `--features e2e` build with `TMP_E2E_ONLINE` unset — including
-/// `cargo test --lib --features e2e`, where zeroing the settles would break
-/// `device_gate`'s `sleep_abortable_wakes_early_on_abort`. The unit tests install their
-/// fake through raw `set_factory`/`set_live`, never through `e2e_install_offline_fake`,
-/// so this flag stays FALSE there and the timing semantics they assert are preserved.
+/// `cargo test --lib --features e2e`, where it would zero the settles for the whole test
+/// binary. The unit tests install their fake through raw `set_factory`/`set_live`, never
+/// through `e2e_install_offline_fake`, so this flag stays FALSE there.
+///
+/// `device_gate`'s `settles_are_full_length_unless_the_offline_fake_is_installed` is the
+/// gate on exactly that, and `gates.sh` + `ci.yml` run `cargo test --lib` BOTH with and
+/// without `--features e2e` so the guarded branch is actually executed somewhere — without
+/// the e2e lane the guard compiles but never runs.
 #[cfg(feature = "e2e")]
 static OFFLINE_FAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -165,8 +169,9 @@ pub fn run_e2e_server() {
         "offline / SimDevice"
     };
     eprintln!("e2e_server: listening on http://127.0.0.1:{port} ({mode})");
-    // Single-threaded serial accept: Playwright runs `workers:1` (the device is
-    // exclusive-seize), and the webview handle stays on this one thread.
+    // Single-threaded serial accept: the webview handle stays on this one thread. Offline
+    // runs N of these PROCESSES (one per Playwright worker, `e2e/fixtures/port.ts`); the
+    // parallelism is across processes, never inside one server.
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         e2e_handle_conn(&webview, &mut stream);

@@ -46,7 +46,14 @@ jobs:
 
       - name: Rust tests
         working-directory: src-tauri
-        run: cargo test --lib
+        # Two lanes, for the same reason clippy runs two: a guard whose branch only
+        # compiles under `e2e` is never executed by the default-feature run. The
+        # settle-collapse guard (`device_gate::settles_are_full_length_…`) is exactly
+        # that — without the second lane a regression that zeroed hardware settles
+        # would pass here and stay green in the offline suite too.
+        run: |
+          cargo test --lib
+          cargo test --lib --features e2e
 
       - name: Rust clippy
         working-directory: src-tauri
