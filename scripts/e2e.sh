@@ -412,11 +412,15 @@ for s in "${SPECS[@]}"; do
     sleep 60
   else
     # ONE pristine-checking seed per run serves every spec: teardowns no longer clear
-    # the scenario (fixtures stay RESIDENT; TMP_E2E_CLEAR_SCENARIO=1 for net-zero),
-    # so nothing invalidates the fixtures between specs. ORDERING is load-bearing:
-    # doctor must run BEFORE level-strict — leveling equalizes the relative scene
-    # loudness the doctor's consistency check keys on. The rest stays: spec
-    # teardown/startup device ops sit right in the lockout's danger window.
+    # the scenario (fixtures stay RESIDENT; TMP_E2E_CLEAR_SCENARIO=1 for net-zero). A
+    # spec that persists a STRUCTURAL edit over a fixture slot (copy, doctor-save)
+    # clears the server's SCENARIO_VERIFIED flag on success, so the NEXT spec's
+    # ensureScenario re-verifies the device and re-imports only what drifted — it does
+    # not trust a fixture that's since been mutilated. Value-only drift (leveling
+    # saves) is NOT in that set and is still handled by ORDERING: doctor must run
+    # BEFORE level-strict — leveling equalizes the relative scene loudness the
+    # doctor's consistency check keys on. The rest stays: spec teardown/startup
+    # device ops sit right in the lockout's danger window.
     log "resting the unit between specs…"
     sleep 60
   fi

@@ -241,6 +241,35 @@ fn offline_level_preset_runs_against_the_fake_audio() {
     );
 }
 
+/// `note_structural_save` flips `SCENARIO_VERIFIED` false for a `STRUCTURAL_SAVE_CMDS`
+/// member and leaves it untouched for anything else — pins the set's intent in BOTH
+/// directions. Root cause (2026-08-01, `notes/user-journeys.md` bug→gate registry):
+/// online `copy.spec.ts` saved a structural edit (dropping a block) over the resident
+/// `E2E Target 2` fixture with nothing clearing `SCENARIO_VERIFIED`, so the next spec's
+/// `ensureScenario` hit the fast path, skipped the device re-verify, and asserted on the
+/// mutilated fixture. Value-only leveling saves are deliberately excluded from the set
+/// (within-run value drift is handled by spec ORDERING — doctor before level-strict —
+/// not by paying a device re-verify per spec inside the HID open-lockout window).
+#[test]
+fn note_structural_save_flags_structural_saves_only() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let _serial = serial();
+
+    super::SCENARIO_VERIFIED.store(true, SeqCst);
+    super::note_structural_save("copy_apply");
+    assert!(
+        !super::SCENARIO_VERIFIED.load(SeqCst),
+        "a structural save (copy_apply) must invalidate the verified flag"
+    );
+
+    super::SCENARIO_VERIFIED.store(true, SeqCst);
+    super::note_structural_save("level_preset");
+    assert!(
+        super::SCENARIO_VERIFIED.load(SeqCst),
+        "a value-only leveling save must NOT invalidate the verified flag"
+    );
+}
+
 /// The physics that drives `level-defaults.spec.ts`: slot 403 (E2E Realistic) at a
 /// SHIPPED DEFAULT target (Crunch -24) produces the first-session outcome set — a Base that
 /// CLAMPS at its ceiling (headroom, reason-less) and an off-branch footswitch (its block sits

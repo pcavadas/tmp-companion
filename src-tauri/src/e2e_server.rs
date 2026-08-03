@@ -46,8 +46,42 @@ pub(crate) fn e2e_offline_fake() -> bool {
 /// clear. Lets every `ensureScenario` call after the first skip the multi-second (and
 /// lockout-prone — the reason `scripts/e2e.sh` seeds out-of-process) in-process re-verify:
 /// nothing between specs can change scenario ownership without going through a clear.
+///
+/// Also invalidated by [`note_structural_save`] — a same-run STRUCTURAL save (copy,
+/// doctor-save) over a resident fixture slot changes what's actually on the device
+/// without going through a clear, so the fast path above would otherwise assert on
+/// mutilated fixture content for every spec after the one that saved.
 #[cfg(feature = "e2e")]
 static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Commands whose SUCCESS persists a STRUCTURAL/body mutation over a resident fixture
+/// slot — as opposed to a value-only write (e.g. leveling's `presetLevel`/`outputLevel`
+/// saves), which within-run drift is deliberately tolerated via spec ORDERING (doctor
+/// must run before level-strict — see `scripts/e2e.sh`). A structural save invalidates
+/// [`SCENARIO_VERIFIED`] so the NEXT spec's `ensureScenario` re-verifies the device and
+/// re-imports only what drifted, rather than trusting a fixture that's since been
+/// mutilated (root cause: `copy.spec.ts` stripping E2E Target 2's trailing EQ block,
+/// then `doctor.spec.ts` asserting on the resonance that block used to carry).
+///
+/// Any new command that saves structural edits to a fixture slot must join this list —
+/// nothing else invalidates the fast path for it. Pinned by
+/// `e2e_server_tests::note_structural_save_flags_structural_saves_only`.
+#[cfg(feature = "e2e")]
+const STRUCTURAL_SAVE_CMDS: [&str; 2] = ["copy_apply", "doctor_save"];
+
+/// Clear [`SCENARIO_VERIFIED`] when `cmd` is a [`STRUCTURAL_SAVE_CMDS`] member. Call
+/// ONLY after a command's invoke SUCCEEDED — an `Err` means the command aborted before
+/// its save (e.g. `copy_apply` bailing before `copy_apply_one` reaches the save), so
+/// nothing persisted and there is nothing to invalidate. Value-only leveling saves are
+/// deliberately excluded from the set: adding them would cost a device re-verify per
+/// spec inside the HID open-lockout danger window (`.claude/rules/danger.md`), and
+/// within-run value drift is already handled by ordering doctor before level-strict.
+#[cfg(feature = "e2e")]
+fn note_structural_save(cmd: &str) {
+    if STRUCTURAL_SAVE_CMDS.contains(&cmd) {
+        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// SHOWCASE mode (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): serves the curated
 /// `e2e/fixtures/showcase/` library AND lets `doctor_check` inject curated `SoundProfile`s
@@ -763,6 +797,7 @@ fn e2e_route(
                 .unwrap_or("")
                 .to_string();
             let args = req.get("args").cloned().unwrap_or(json!({}));
+            let cmd_for_save_check = cmd.clone();
             let request = tauri::webview::InvokeRequest {
                 cmd,
                 callback: tauri::ipc::CallbackFn(0),
@@ -774,6 +809,9 @@ fn e2e_route(
             };
             let env = match tauri::test::get_ipc_response(webview, request) {
                 Ok(b) => {
+                    // Success only — an Err means the command aborted before its save,
+                    // so there is nothing persisted to invalidate the flag for.
+                    note_structural_save(&cmd_for_save_check);
                     let data = b
                         .deserialize::<serde_json::Value>()
                         .unwrap_or(serde_json::Value::Null);

@@ -63,10 +63,22 @@ export async function listPresets(page: Page): Promise<Preset[]> {
  *  named "E2E Target 1" fails the seed loudly instead of being blessed and later
  *  saved-over / cleared), imports only what's missing, and fast-no-ops when the
  *  server's verified-seed flag is armed (the runner's `e2e_mark_seeded` POST after its
- *  fresh-process seed, or a prior verified call this run) — so per-spec calls don't
- *  re-pay the multi-second, lockout-prone in-process device verify. */
+ *  fresh-process seed, or a prior verified call this run — cleared by a STRUCTURAL
+ *  spec save, see `e2e_server.rs`'s `note_structural_save`) — so per-spec calls don't
+ *  re-pay the multi-second, lockout-prone in-process device verify.
+ *
+ *  Mode is read from the SERVER via `isOnline`, never `process.env.TMP_E2E_ONLINE` —
+ *  the same trap `clearScenario` below already avoids (its own comment: "Ask the
+ *  SERVER, never `process.env.TMP_E2E_ONLINE`"). `scripts/e2e.sh` sets that var ONLY
+ *  on the server's `cargo run` invocation, so the Playwright process never inherits
+ *  it — a `process.env` read here always took the offline branch online too, a
+ *  presence-only check that a structurally mutilated preset trivially passes, so
+ *  `e2e_seed_scenario` (and its re-verify) was never even invoked online
+ *  (2026-08-01 incident, third and final link — see the registry in
+ *  `notes/user-journeys.md`; `doctor-apply.online.spec.ts`'s own comment records the
+ *  first occurrence of this class). */
 export async function ensureScenario(page: Page): Promise<void> {
-  if (!process.env.TMP_E2E_ONLINE) {
+  if (!(await isOnline(page))) {
     const list = await listPresets(page);
     const bySlot = new Map(list.map((p) => [p.slot, p.name]));
     const present = SCENARIO.every((s) => bySlot.get(s.slot) === s.name);
