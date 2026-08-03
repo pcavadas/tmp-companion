@@ -13,7 +13,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 /// How many presets `e2e/fixtures/scenario-presets.json` ships (= the offline snapshot list
 /// + the backup-fixture row count). One constant so adding a scenario preset is one edit.
-const SCENARIO_PRESETS: usize = 5;
+const SCENARIO_PRESETS: usize = 6;
 
 /// Invoke a command through the SAME IPC path the HTTP bridge uses: a JSON body in,
 /// the command's JSON response out (or its error value).
@@ -78,7 +78,7 @@ fn offline_copy_journey_through_real_backend() {
         ),
     );
     // Pre-fill the startup snapshot so connect/list serve it with no monitor thread —
-    // the 5 scenario presets at slots 400-404 (matching the backup fixture).
+    // the 6 scenario presets at slots 400-405 (matching the backup fixture).
     let presets = vec![
         crate::session::PresetEntry {
             slot: 400,
@@ -99,6 +99,10 @@ fn offline_copy_journey_through_real_backend() {
         crate::session::PresetEntry {
             slot: 404,
             name: "E2E Hiwatt 3S".into(),
+        },
+        crate::session::PresetEntry {
+            slot: 405,
+            name: "E2E Preset24".into(),
         },
     ];
     MONITOR_ENABLED.store(true, SeqCst);
@@ -1100,4 +1104,150 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
             ),
         }
     }
+}
+
+// ─── ensure_fresh_load barrier, end-to-end against the sim lazy-commit model ─────────────
+//
+// These are the tests `leveller::fresh_load_registry_tests` points at: the barrier owns its
+// own `Session::connect()`, so the only way to put a sim behind it is the process-global
+// transport factory — which this module's serial harness already owns.
+
+/// Clear the save registry when the test ends — INCLUDING on a panicking assert. A leaked
+/// witness would send any later serial test that levels the same slot into the barrier's
+/// full commit-window wait against a doc that can never match.
+struct RegistryReset;
+impl Drop for RegistryReset {
+    fn drop(&mut self) {
+        crate::leveller::clear_slot_save_registry();
+    }
+}
+
+/// Route every `Session::connect()` at one shared sim with the given commit latency, and
+/// start from a clean save registry.
+fn install_barrier_sim(latency_ms: u64) -> crate::sim_device::SimDevice {
+    let sim = crate::sim_device::SimDevice::new().with_commit_latency(latency_ms);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    crate::leveller::clear_slot_save_registry();
+    sim
+}
+
+/// Save `level` to slot 401 through the real session wire path (the sim's F_SAVE handler
+/// records it as the slot's pending lazy-commit doc).
+fn save_level_401(sim: &crate::sim_device::SimDevice, level: f32) {
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(401).unwrap();
+    s.set_preset_level(level).unwrap();
+    s.save_current_preset(401).unwrap();
+}
+
+#[test]
+fn fresh_load_barrier_passes_on_a_committed_witness_match() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let sim = install_barrier_sim(0); // 0 ms: the save commits immediately
+    save_level_401(&sim, 0.81);
+    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.81));
+    let start = std::time::Instant::now();
+    let result = crate::leveller::ensure_fresh_load(401, &mut || false);
+    assert!(result.is_ok(), "{result:?}");
+    // First-harvest pass: the sim's pumps are instant, so anything near the production
+    // retry cadence (10 s) means the loop waited against an already-fresh doc.
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "a matching committed witness must pass on the FIRST harvest, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn fresh_load_barrier_waits_out_a_pending_commit_then_passes() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let sim = install_barrier_sim(1_500);
+    save_level_401(&sim, 0.81);
+    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.81));
+    let start = std::time::Instant::now();
+    // The sim's pumps return instantly, so pace the loop from the cancel hook (50 ms per
+    // probe) — otherwise the retry wait is a busy spin and the log drowns in warns.
+    let result = crate::leveller::ensure_fresh_load_paced(
+        401,
+        &mut || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            false
+        },
+        200,
+    );
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(1_200),
+        "the barrier must have genuinely waited for the sim's 1.5 s commit, took {:?}",
+        start.elapsed()
+    );
+    // The barrier's final load materialized the COMMITTED doc — the caller's own load now
+    // sees the saved value, which is the entire point of the wait.
+    assert!(
+        (sim.preset_level() - 0.81).abs() < 1e-3,
+        "post-barrier the sim must hold the committed level, got {}",
+        sim.preset_level()
+    );
+}
+
+#[test]
+fn fresh_load_barrier_cancel_mid_wait_returns_cancelled() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let sim = install_barrier_sim(600_000); // never commits during this test
+    save_level_401(&sim, 0.9);
+    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.9));
+    let mut calls = 0u32;
+    let result = crate::leveller::ensure_fresh_load_paced(
+        401,
+        &mut || {
+            calls += 1;
+            calls > 1 // first probe (loop top) proceeds; the wait-loop probe cancels
+        },
+        600_000,
+    );
+    assert_eq!(
+        result,
+        Err(crate::leveller::CANCELLED.to_string()),
+        "a Stop during the stale wait must surface as the CANCELLED sentinel"
+    );
+}
+
+#[test]
+fn fresh_load_barrier_time_gate_proceeds_on_an_unharvestable_witness() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let sim = install_barrier_sim(600_000); // the pending save never commits
+    save_level_401(&sim, 0.9);
+    // Backdate the registration to the commit-window edge: the barrier engages (elapsed is
+    // not yet PAST the window) but the witness can never match — the time-gate must let the
+    // run proceed within ~a second rather than hard-erroring or hanging.
+    crate::leveller::register_slot_save_at(
+        401,
+        crate::leveller::SaveWitness::PresetLevel(0.9),
+        std::time::Instant::now()
+            - std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS),
+    );
+    let result = crate::leveller::ensure_fresh_load_paced(
+        401,
+        &mut || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            false
+        },
+        200,
+    );
+    assert!(
+        result.is_ok(),
+        "time-gate must proceed, not error: {result:?}"
+    );
+    // Proof it exited via the TIME-GATE, not a witness match: the sim still materializes
+    // the pre-save committed level (the fixture's own 0.32).
+    assert!(
+        (sim.preset_level() - 0.32).abs() < 1e-3,
+        "the pending save must still be uncommitted, got {}",
+        sim.preset_level()
+    );
 }

@@ -187,6 +187,10 @@ fn e2e_install_offline_fake() {
     // any device work can run: from this point every "device" op is an in-process SimDevice
     // call, so hardware settles and the monitor pause-ack have nothing to wait for.
     OFFLINE_FAKE.store(true, std::sync::atomic::Ordering::SeqCst);
+    // A fresh sim device gets a fresh save registry: a witness left over from a previous
+    // spec's save would make the next spec's first leveling load wait out the whole commit
+    // window against a doc that can never match it (`/sim/reset` is the between-spec seam).
+    crate::leveller::clear_slot_save_registry();
     // SHOWCASE (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): drive the whole app
     // from the curated, non-personal `e2e/fixtures/showcase/` library instead of the
     // 3-preset test scenario. The committed `.bin` (built from `showcase.json` by the
@@ -200,7 +204,7 @@ fn e2e_install_offline_fake() {
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim); // expose its event log to /sim/events
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
-    // The 5 scenario presets at slots 400-404 — same slots the online tier seeds by
+    // The 6 scenario presets at slots 400-405 — same slots the online tier seeds by
     // cloning, and the same presets baked into the backup fixture, so one set of specs
     // runs in both modes. `ensureScenario` finds them present offline and skips seeding.
     let presets = vec![
@@ -223,6 +227,10 @@ fn e2e_install_offline_fake() {
         session::PresetEntry {
             slot: 404,
             name: "E2E Hiwatt 3S".into(),
+        },
+        session::PresetEntry {
+            slot: 405,
+            name: "E2E Preset24".into(),
         },
     ];
     // Hero graph, decoded from the SAME backup fixture `read_library_via_backup` already
@@ -358,7 +366,7 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
 /// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place EVERY
 /// committed scenario preset (`e2e/fixtures/scenario-presets.json` — the SAME
 /// presetJsons baked into the offline backup fixture) at its list index
-/// (400-404; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
+/// (400-405; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
 /// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
 /// before the server starts, dodges the in-process `0xe00002c5` open lockout that
 /// aborted in-spec seeds). This command is the fallback for specs run without the
@@ -547,13 +555,17 @@ async fn e2e_reamp_off(state: State<'_, AppState>) -> Result<(), String> {
     .await
 }
 
-/// STRICT-HARNESS measure for the online post-leveling audio gate
-/// (`level-strict.spec.ts`): re-measure one sound of `slot` exactly as the leveling
-/// lane measured it (scene as-is / base isolation / footswitch engaged state with
-/// the saved ASSIGN `valueA` re-played) and return its integrated LUFS, so the spec
-/// can assert the SAVED preset actually renders at the leveling target. ONLINE-only:
-/// the offline fake has no audio path (its capture is a stimulus passthrough — every
-/// sound would "measure" identically, a vacuous gate).
+/// STRICT-HARNESS measure for the post-leveling audio gate (`level-strict.spec.ts`
+/// online, `level-fs-preset24.spec.ts` offline): re-measure one sound of `slot` exactly
+/// as the leveling lane measured it (scene as-is / base isolation / footswitch engaged
+/// state with the saved ASSIGN `valueA` re-played) and return its integrated LUFS, so
+/// the spec can assert the SAVED preset actually renders at the leveling target. USABLE
+/// OFFLINE now that `sim_device`'s capture model is physics-faithful (base/scene C +
+/// the leveled-param drive-pedal curve) — a stale comment here once called the offline
+/// fake "a stimulus passthrough" (true before that model existed; every sound would
+/// have "measured" identically, a vacuous gate). Any slot the loudness sidecar doesn't
+/// cover still measures a flat default C, which is deterministic but not physically
+/// meaningful — fine for a spec that only exercises a covered scenario slot.
 /// The leveled-param coordinates a footswitch re-measure replays (see
 /// `e2e_measure_sound` — the SPEC owns these, mirroring what it fed the leveling
 /// lane, so no server-side picker exists to diverge from the wizard's choice).
@@ -577,9 +589,6 @@ async fn e2e_measure_sound(
     topology_id: String,
     lev: Option<FsLevRef>,
 ) -> Result<f64, String> {
-    if !e2e_online() {
-        return Err("e2e_measure_sound is online-only (the offline fake has no audio path)".into());
-    }
     let stim_path = resolve_stimulus(&app, None, Some(topology_id))?;
     with_released_seize(state.session.clone(), move || {
         let stim = read_stimulus_calibrated(&stim_path, None)?;
@@ -716,6 +725,25 @@ fn e2e_route(
                 None => (
                     "400 Bad Request",
                     b"{\"ok\":false,\"error\":\"missing slot\"}".to_vec(),
+                ),
+            }
+        }
+        // Lazy-commit latency override (stale-load incident spec): arm the ALREADY-running
+        // offline fake's commit latency, since a per-test env var can't reach a server
+        // process that started before the test did (`sim_device::set_commit_latency`'s
+        // doc). Body: {"ms": N}. No-op online (no fake installed).
+        ("POST", "/sim/commit-latency") => {
+            let ms = serde_json::from_slice::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("ms").and_then(serde_json::Value::as_u64));
+            match ms {
+                Some(n) => {
+                    crate::sim_device::set_commit_latency(n);
+                    ("200 OK", b"{\"ok\":true}".to_vec())
+                }
+                None => (
+                    "400 Bad Request",
+                    b"{\"ok\":false,\"error\":\"missing ms\"}".to_vec(),
                 ),
             }
         }

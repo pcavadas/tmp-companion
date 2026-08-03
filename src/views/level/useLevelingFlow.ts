@@ -376,19 +376,31 @@ export function useLevelingFlow({
           entries: Map<K, BatchEntry>,
           causeOf: (r: LevelOutcomeFields) => RunItem["verifyByEar"],
         ) =>
-        (key: K, status: string, result: LevelOutcomeFields | null) => {
+        (
+          key: K,
+          status: string,
+          result: LevelOutcomeFields | null,
+          message?: string | null,
+        ) => {
           const entry = entries.get(key);
           if (!entry) return;
           if (status === "active") {
             entry.item.status = "active";
+            // e.g. the freshness barrier's "waiting for the device to commit the previous
+            // save…" — shown verbatim while no capture is streaming yet (see RunBody's
+            // rowStatus). Cleared once the row resolves so a later re-run's default
+            // "connecting…" isn't shadowed by a stale message.
+            entry.item.activeMessage = message ?? null;
             publish(entry.idx, false, false);
           } else if (status === "done" && result) {
+            entry.item.activeMessage = null;
             entry.item.outcome = outcomeOf(result);
             entry.item.value = valueOf(result);
             entry.item.spreadLu = result.dynamic_spread_lu;
             entry.item.verifyByEar = causeOf(result);
             finishItem(entry.item, entry.idx);
           } else if (status === "error") {
+            entry.item.activeMessage = null;
             entry.item.outcome = "skipped";
             finishItem(entry.item, entry.idx);
           }
@@ -531,7 +543,7 @@ export function useLevelingFlow({
                 profileId: profile?.id ?? null,
               },
               (item) => {
-                resolveFs(item.switch, item.status, item.result);
+                resolveFs(item.switch, item.status, item.result, item.message);
               },
             );
           } catch {
@@ -606,7 +618,12 @@ export function useLevelingFlow({
               profileId: profile?.id ?? null,
             },
             (item) => {
-              resolveScene(item.sceneSlot, item.status, item.result);
+              resolveScene(
+                item.sceneSlot,
+                item.status,
+                item.result,
+                item.message,
+              );
             },
           );
         } catch {

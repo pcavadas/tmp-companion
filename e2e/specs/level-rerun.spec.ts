@@ -17,8 +17,13 @@ import {
 // Consecutive-runs idempotency gate — the PR #74 requirement ("2 consecutive leveling runs
 // must produce the same result") that lived only in a session prompt, never as executable
 // infrastructure. Split oracles by mode:
-//   OFFLINE = events-equality (run 2's device-write sequence must equal run 1's — no drift).
-//   ONLINE  = the true skip-branch gate (run 2 makes ZERO new writes for in-tolerance sounds).
+//   OFFLINE = the skip-branch gate on the BASE lane, driven through the real UI (below).
+//   ONLINE  = the same base-lane gate via raw `invoke` (cheaper, no UI wait) PLUS the
+//             footswitch (Assign) lane, which needs a live field-54 echo/read-back the
+//             offline fake does not model.
+// The UI-driven offline test below is BASE-lane-only and mode-guarded (`isOnline`) so it
+// doesn't also run online and double up on the raw-invoke base test three blocks down —
+// same slot (401), same assertion, just a slower path.
 // Mode is read from the server (/health) at runtime, NOT process.env — the Playwright process
 // does not inherit TMP_E2E_ONLINE (only the server subprocess does), so a describe-level env
 // check misfires (offline test runs online, online tests skip). Each test skips on the wrong
@@ -40,22 +45,29 @@ interface FootswitchLevelResult {
 const baseJob = baseLevelJob;
 const T = LEVEL_T;
 
-// ───────────────────────────── OFFLINE: events-equality ─────────────────────────────
-test.describe("Level re-run — offline events-equality (no drift)", () => {
+// ───────────────────────── OFFLINE + ONLINE: the base skip-branch gate ─────────────────────────
+test.describe("Level re-run — base skip-branch idempotency", () => {
   test.afterEach(async ({ page }) => {
     await reampOff(page);
   });
 
-  // OFFLINE the `level_unchanged` skip branch is STRUCTURALLY UNREACHABLE: it needs the
-  // pre-run `presetLevel` from a field-8 preset read that the SimDevice does not model, so
-  // `previous_level` is always None and BOTH runs write the full sequence. That is exactly
-  // why offline only asserts events-EQUALITY (the write sequence never drifts) — the
-  // skip-branch itself is an online-only oracle (below). This is a harness limitation, not
-  // a product bug: the fake models device wire ops, not the field-8 read the skip depends on.
-  test("two identical base runs emit the same device-write sequence", async ({
+  // The SimDevice's field-8 read (a `loadPreset`-independent `currentPresetDataRequest`
+  // echo) is now READ-YOUR-WRITES — it reflects a save's PENDING doc immediately, exactly
+  // like the real device — so `commands/level_preset.rs`'s pre-run `read_slot_preset_parsed`
+  // populates a real, non-None `previous_level` offline too, and `leveller::level_unchanged`
+  // is reachable in both modes. Was offline-only "events-equality" (no drift) before this
+  // fidelity fix landed, when `previous_level` was structurally always `None` offline and
+  // the skip branch could never fire — see git history for that shape if reviving it.
+  test("two identical base runs: run 2 makes no new Saved write (level_unchanged skip)", async ({
     page,
   }) => {
-    test.skip(await isOnline(page), "offline-only events-equality oracle");
+    // Same oracle as "base: run 2 makes zero new writes" below, just driven through the
+    // real UI instead of raw `invoke` — skip online to avoid paying two full 240 s UI
+    // waits + a second device seize for a result the online raw-invoke test already covers.
+    test.skip(
+      await isOnline(page),
+      "covered online by the raw-invoke base test below",
+    );
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
@@ -76,7 +88,9 @@ test.describe("Level re-run — offline events-equality (no drift)", () => {
       await page.locator(`[data-pick="target:${preset.name}"]`).click();
       await page.getByText(/Crunch/).click();
       await page.getByRole("button", { name: /Level 1 sound/ }).click();
-      await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
+      await expect(
+        page.getByRole("button", { name: /^(Done|Accept)$/ }),
+      ).toBeVisible({
         timeout: 240_000,
       });
     };
@@ -84,16 +98,37 @@ test.describe("Level re-run — offline events-equality (no drift)", () => {
     // /sim/reset (test fixture) cleared the event log, so run 1's log is the whole prefix.
     await runBaseLevel(SCENARIO[1]);
     const afterRun1 = await simEvents(page);
-    expect(afterRun1.length).toBeGreaterThan(0);
+    // Non-vacuous: run 1 must actually solve + write a PresetLevel and Saved this slot,
+    // else the "no new writes" check below proves nothing.
+    expect(
+      afterRun1.some(
+        (e) => typeof e === "object" && e !== null && "PresetLevel" in e,
+      ),
+      "run 1 must write a PresetLevel",
+    ).toBe(true);
+    expect(
+      afterRun1.some(
+        (e) => typeof e === "object" && e !== null && "Saved" in e,
+      ),
+      "run 1 must save",
+    ).toBe(true);
 
     // page.goto resets the UI (selection cleared) but NOT the SimDevice — events accumulate.
     await runBaseLevel(SCENARIO[1]);
     const afterRun2 = await simEvents(page);
-
-    // Run 2's DELTA must byte-equal run 1's whole log: same loads, same solved presetLevel,
-    // same save — a re-run that drifted (re-clamped, or wrote a different value) fails here.
     const run2Delta = afterRun2.slice(afterRun1.length);
-    expect(run2Delta).toEqual(afterRun1);
+
+    // A real idempotency skip: run 2 still RE-MEASURES (a reference-level `PresetLevel`
+    // probe write to solve C is legitimate and expected even on a skip — see
+    // `leveller::measure_c`), but must write no NEW `Saved` for this slot — the
+    // `level_unchanged` branch calls `restore_saved_preset` (a plain reload) instead of
+    // `apply_level` + save. `Saved` is the one event a skip can never emit.
+    expect(
+      run2Delta.some(
+        (e) => typeof e === "object" && e !== null && "Saved" in e,
+      ),
+      "run 2 solved the same value already saved → must skip the save",
+    ).toBe(false);
 
     await expectReampBalanced(page, reampBase);
   });

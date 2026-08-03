@@ -22,6 +22,16 @@
       "_comment": "E2E Hiwatt 3S — the CORRUPTION-CLASS fixture (a real 1.8.45 unit's 3-scene + 'Base Scene' preset, saved lastLoadedScene=3, 4 block-acting footswitches). Base C=-20 and scene 3 C=-34 are the MEASUREMENT-CONTEXT discriminator: a base run recalled to base solves -26 (presetLevel ~0.5, done), while the pre-fix unrecalled run measures scene 3 (its saved lastLoadedScene) and CLAMPS (-26 is 8 dB above that ceiling). Scenes 0/1/2 are authored ABOVE -26 so the scene-wipe run converges on amp outputLevel; scene 3 is excluded from that job list (its ceiling is the context probe, not a levelable sound).",
       "base": -20.0,
       "scenes": [-20.0, -18.0, -22.0, -34.0]
+    },
+    "405": {
+      "_comment": "E2E Preset24 — the STALE-LOAD-INCIDENT fixture (notes/leveling.md's 'Saturated-amp response shape', preset 024 'TR+BD2+BMP'): 4 drive pedals (Plumes/BluesDriver/ObsessiveDrive/Rat, ftsw 5-8) feeding a saturated amp, no scenes. Base C=-24 puts base leveling to -26 at presetLevel≈0.794 (PT=20*log10(0.794)≈-2 LU) — NOT exactly 1.0, so the base solve is a genuine (non-boundary) solve. Each pedal's OWN knob overrides the flat C law via `leveledParams` (see `saturated_pedal_lufs`): silent ≤0.10, a ~42 LU cliff 0.10→0.20, a compressed plateau above 0.3. The FS targets (-26 Plumes/BluesDriver, -24 ObsessiveDrive/Rat) sit ON the cliff (required curve value = target − PT = -24/-22), inside the linear segment a bracketed secant solves in one step — this is the exact HW pathology `fs_bracket_expansion` was added for (seeds 0.25/0.75 both land in the flat plateau, short of both targets).",
+      "base": -24.0,
+      "leveledParams": [
+        { "group": "G1", "node": "ACD_Plumes", "param": "level" },
+        { "group": "G1", "node": "ACD_BluesDriver", "param": "level" },
+        { "group": "G1", "node": "ACD_ObsessiveDrive", "param": "level" },
+        { "group": "G1", "node": "ACD_Rat", "param": "volume" }
+      ]
     }
   },
   "default": -18.0

@@ -16,15 +16,18 @@ export interface Preset {
 }
 
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
-// (401/402/403/404/405), so a slot-numbered name would read off-by-one in the backup view. The
-// Reference is the Copy source; Target 1/2 are the edited presets; Realistic (gtrParallel1,
-// scenes + an off-branch footswitch) is the physics-spec fixture (level-defaults.spec.ts).
+// (401/402/403/404/405/406), so a slot-numbered name would read off-by-one in the backup view.
+// The Reference is the Copy source; Target 1/2 are the edited presets; Realistic (gtrParallel1,
+// scenes + an off-branch footswitch) is the physics-spec fixture (level-defaults.spec.ts);
+// Preset24 (4 drive pedals into a saturated amp, no scenes) is the stale-load-incident fixture
+// (level-fs-preset24.spec.ts) — see e2e/fixtures/scenario-loudness.json's "405" entry.
 export const SCENARIO: Preset[] = [
   { slot: 400, name: "E2E Reference" },
   { slot: 401, name: "E2E Target 1" },
   { slot: 402, name: "E2E Target 2" },
   { slot: 403, name: "E2E Realistic" },
   { slot: 404, name: "E2E Hiwatt 3S" },
+  { slot: 405, name: "E2E Preset24" },
 ];
 
 export async function invoke(
@@ -53,7 +56,7 @@ export async function listPresets(page: Page): Promise<Preset[]> {
   return (await invoke(page, "list_presets")) as Preset[];
 }
 
-/** Ensure every scenario preset exists at its slot (400-404). Offline: baked into the
+/** Ensure every scenario preset exists at its slot (400-405). Offline: baked into the
  *  fixture + snapshot, so a name check suffices (SimDevice state is disposable).
  *  ONLINE: always route through the ownership-verified seed — it verifies every
  *  occupied target by fixture CONTENT MARKER (not name; a user preset coincidentally
@@ -159,6 +162,19 @@ export async function armCaptureFault(page: Page, slot: number): Promise<void> {
   expect(res.ok(), "POST /sim/fault").toBeTruthy();
 }
 
+/** Arm the offline fake's lazy-commit latency (POST /sim/commit-latency) — the bug→gate
+ *  regression for the same-slot stale-load incident (`level-fs-preset24.spec.ts`'s second
+ *  test). MUST be called AFTER the per-test `/sim/reset` (the `page` fixture's own
+ *  beforeEach) — a fresh fake always re-arms latency back at 0. No-op online (no fake
+ *  installed): `TMP_SIM_COMMIT_LATENCY_MS` is offline-only, matching the whole lazy-commit
+ *  model it configures. */
+export async function armCommitLatency(page: Page, ms: number): Promise<void> {
+  const res = await page.request.post(`${SERVER}/sim/commit-latency`, {
+    data: { ms },
+  });
+  expect(res.ok(), "POST /sim/commit-latency").toBeTruthy();
+}
+
 /** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE:
  *  the Playwright process does not inherit TMP_E2E_ONLINE, so a mode-split spec must ask the
  *  server, not process.env. */
@@ -168,7 +184,7 @@ export async function isOnline(page: Page): Promise<boolean> {
 }
 
 /** End-of-scenario teardown. ONLINE the fixtures stay RESIDENT in the scratch slots
- *  (400-404): the run-start pristine-checking seed self-repairs anything a run leveled,
+ *  (400-405): the run-start pristine-checking seed self-repairs anything a run leveled,
  *  so clearing here only forces the next run to re-import everything (~2 min of device
  *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
  *  TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per slot) for the

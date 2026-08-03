@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn committed_fixtures_carry_an_ownership_marker() {
         let spec = scenario_spec().expect("committed spec parses");
-        assert_eq!(spec.len(), 5, "every committed scenario preset is checked");
+        assert_eq!(spec.len(), 6, "every committed scenario preset is checked");
         for p in &spec {
             assert!(
                 is_fixture_body(p.preset_json.as_bytes()),

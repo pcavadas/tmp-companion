@@ -525,6 +525,28 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--verify-fresh-load") {
+        // E0: fresh-equality invariant for `leveller::ensure_fresh_load` (the stale-load
+        // freshness barrier). NON-DESTRUCTIVE — loads only, no set/save.
+        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None => {
+                eprintln!("usage: probe --verify-fresh-load <listIdx>   (0-based list index)");
+                std::process::exit(2);
+            }
+        };
+        match tmp_companion_lib::probe_verify_fresh_load(slot) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--replace-held") {
         // E1: --replace-held FROM TO SLOTS [--commit]   (held-session decider)
         let from = args.get(i + 1).cloned().unwrap_or_default();
@@ -3369,11 +3391,18 @@ fn main() {
     match tmp_companion_lib::probe_connect_and_list() {
         Ok(presets) => {
             println!("[probe] OK — {} presets in My Presets:", presets.len());
-            for p in presets.iter().take(20) {
+            // TMP_LIST_ALL=1 prints the whole list (finding a preset's current slot);
+            // default keeps the 20-row sanity-check summary.
+            let shown = if std::env::var_os("TMP_LIST_ALL").is_some() {
+                presets.len()
+            } else {
+                20
+            };
+            for p in presets.iter().take(shown) {
                 println!("  idx {:>3} · slot {:>3}  {}", p.slot, p.slot + 1, p.name);
             }
-            if presets.len() > 20 {
-                println!("  … and {} more", presets.len() - 20);
+            if presets.len() > shown {
+                println!("  … and {} more", presets.len() - shown);
             }
             if presets.is_empty() {
                 eprintln!("[probe] WARNING: connected but the list was empty");

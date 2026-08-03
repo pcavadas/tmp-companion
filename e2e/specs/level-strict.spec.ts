@@ -95,7 +95,12 @@ test.describe("Level — strict output harness (Hiwatt corruption-class preset)"
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    test.setTimeout(1_800_000); // 3 leveling lanes + 9 re-measures of ~6 s captures
+    // 3 leveling lanes + 9 re-measures of ~6 s captures. Checked against the freshness
+    // barrier's own worst case (`ensure_fresh_load`, danger.md): a single wait is bounded by
+    // `COMMIT_WINDOW_SECS` (150 s, leveller.rs), and this run makes at most 2 same-slot loads
+    // that could race a prior save (the scene lane's prepass, the FS batch's own load) — 300 s
+    // of pure barrier stall in the worst case, comfortably inside this 1_800_000 ms budget.
+    test.setTimeout(1_800_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 

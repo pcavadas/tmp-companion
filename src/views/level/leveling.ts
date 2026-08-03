@@ -317,6 +317,11 @@ export interface RunItem {
   targetName: string;
   // live + final:
   status: "queued" | "active" | "result";
+  /** Backend-supplied reason the row is active with no capture yet (e.g. the freshness
+   *  barrier's "waiting for the device to commit the previous save…" — a same-slot load can
+   *  land inside the TMP's lazy `saveCurrentPreset` commit window). Scene/footswitch channel
+   *  items only; null/undefined falls back to the row's generic "connecting…". */
+  activeMessage?: string | null;
   outcome?: Outcome;
   /** Measured loudness (verify/predicted), or null. */
   value?: number | null;

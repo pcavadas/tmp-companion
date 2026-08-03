@@ -19,6 +19,20 @@
 //! (the reports land in `Session::raw`); the subsequent heartbeat `pump`s return empty,
 //! exactly as the confirm loop expects.
 //!
+//! **Lazy-commit saved doc (e2e only, HW-confirmed 1.8.45):** the real device's
+//! `saveCurrentPreset` commits 45-100 s LATE — a same-slot `loadPreset` inside that
+//! window materializes the PRE-save preset, while a field-8 saved-preset READ is
+//! read-your-writes (immediately fresh). This corrupted a footswitch leveling run
+//! offline-invisibly until now: a save's `(pending_doc, commit_deadline)` is tracked
+//! per slot ([`SimState::saved_levels`] via `TMP_SIM_COMMIT_LATENCY_MS` / the
+//! `/sim/commit-latency` bridge route, default 0 ms) — even 0 ms changes LOAD's
+//! semantics from "preserve whatever `presetLevel` was last set" to "materialize this
+//! slot's own committed doc", which is what makes the stale-load class reproducible
+//! offline at all. The doc is `presetLevel` PLUS a footswitch bake's own baked param
+//! (`SavedDoc`) — narrower than a full merged presetJson (scene overlays and `ftsw`
+//! ASSIGN edits do NOT round-trip through a save; `SavedDoc`'s doc comment has the
+//! deviation rationale). See `saved_levels`' field doc for the exact read/load asymmetry.
+//!
 //! [`Session`]: crate::session::Session
 //! [`HidTransport`]: crate::hid::HidTransport
 
@@ -179,13 +193,14 @@ struct SimState {
     /// drive a save first.
     saved_scene: HashMap<u32, Option<u32>>,
     /// The last `setPresetLevel` — the linear global multiplier the model shifts by
-    /// `20·log10`. SIMPLIFICATION: a real `loadPreset` restores the slot's SAVED
-    /// presetLevel, but the sim tracks no per-slot saved value, so it just PRESERVES the
-    /// last-set value across a load. Faithful for the leveling flow (every `measure_c`
-    /// re-sets a reference before it's ever read, and a load right after a base save leaves
-    /// the last-set == the saved value), but a `ref_level = None` capture (the Doctor A/B)
-    /// after leveling a DIFFERENT slot would read a leaked multiplier — add a per-slot
-    /// `stored_preset_level` map when an offline Doctor spec needs cross-slot fidelity.
+    /// `20·log10`. PLAIN (non-e2e) BUILD: a real `loadPreset` restores the slot's SAVED
+    /// presetLevel, but this sim tracks no per-slot saved value here, so it just
+    /// PRESERVES the last-set value across a load — a `ref_level = None` capture (the
+    /// Doctor A/B) after leveling a DIFFERENT slot would read a leaked multiplier.
+    /// E2E BUILD: superseded — `loadPreset` sets this from [`SimState::saved_levels`]'s
+    /// per-slot lazy-commit store instead (module header), so a load DOES restore the
+    /// right slot's value, faithfully INCLUDING the stale-load corruption window while a
+    /// save is still pending.
     preset_level: f32,
     /// Scene-scoped knob writes: `(scene, group, node, param) → value`. The model reads
     /// the `outputLevel` entry for the scene under measurement (see [`SCENE_BASE`]).
@@ -203,6 +218,66 @@ struct SimState {
     /// e2e-only — its only reader is the offline capture model.
     #[cfg(feature = "e2e")]
     fail_capture_slot: Option<u32>,
+    /// Per-slot lazy-commit `presetLevel` store (the same-slot stale-load corruption
+    /// mechanism — module header). Absent entry = never touched (read OR saved) this
+    /// run. Seeded lazily from the slot's own scenario JSON (or 1.0 for a non-scenario
+    /// slot) on first touch by EITHER `record_save` or the field-3/field-8 echo readers
+    /// (`load_echo_json`/`saved_slot_json_body`) — NOT by `F_LOAD_PRESET` itself, which
+    /// only ever READS this map (see [`SimState::ever_saved`] for why). e2e-only: a
+    /// plain build has no per-slot scenario doc to seed from.
+    #[cfg(feature = "e2e")]
+    saved_levels: HashMap<u32, PendingLevel>,
+    /// Slots `record_save` has actually committed a pending doc for THIS run — the ONLY
+    /// reliable "has this slot been saved" signal (`saved_levels.contains_key` is NOT
+    /// one: the read-only echo paths lazily insert into that map too). `F_LOAD_PRESET`
+    /// gates its `preset_level`/baked-param restore on this set, not on `saved_levels`,
+    /// so a slot that's merely been LOOKED AT (echoed) but never saved keeps the old
+    /// "preserve the last-set value" behavior — restoring unconditionally on every load
+    /// (this fix's first cut) broke scene/base-only offline specs on OTHER scenario
+    /// slots that never save a presetLevel at all, caught only by the full offline
+    /// Playwright e2e suite, not `cargo test --lib` alone.
+    #[cfg(feature = "e2e")]
+    ever_saved: std::collections::HashSet<u32>,
+    /// Test/spec override for [`SimState::commit_latency`] — bypasses
+    /// `TMP_SIM_COMMIT_LATENCY_MS` so parallel unit tests never race each other over a
+    /// shared env var, and so a single Playwright spec can arm latency on the ONE
+    /// already-running offline server process (`POST /sim/commit-latency`) without an
+    /// env var set before that process started ever reaching it.
+    #[cfg(feature = "e2e")]
+    commit_latency_override: Option<std::time::Duration>,
+}
+
+/// Lazy-commit state for ONE slot's SAVED doc (module header): `presetLevel` plus the
+/// baked (base-scene) block params a footswitch bake has written onto it — the two
+/// fields a footswitch-leveling save can actually change offline. `committed` is what
+/// LOAD (and the field-3 graph echo) sees until `pending`'s deadline passes; a field-8
+/// READ always sees `pending` immediately when one exists (read-your-writes — mirrors
+/// the real device's field-8/load asymmetry). Lives on [`SimState`] — per SimDevice
+/// INSTANCE, never the process-global scenario `OnceLock`s: a save mutates one slot's
+/// own copy, never the shared immutable fixture text.
+///
+/// DEVIATION from the plan's full "merged presetJson" (module header, `record_save`'s
+/// doc): scene-overlay writes and `ftsw` ASSIGNMENT edits are NOT merged in — only a
+/// BAKED (`func: "on-off"`, no assign) footswitch's own leveled param survives a
+/// save→load round trip. No offline spec exercises a scene-outputLevel or an ASSIGN
+/// switch's `valueA` through a save→load round trip (the ASSIGN wire op itself,
+/// `SetFootswitchAssignment`, isn't modeled by `handle` at all — an assign write falls
+/// through to a silent no-op reply, same as today), so widening past what
+/// `level-fs-preset24.spec.ts` actually needs was left undone rather than half-built.
+#[cfg(feature = "e2e")]
+#[derive(Clone, Default)]
+struct SavedDoc {
+    preset_level: f32,
+    /// Baked `(group, node, param) → value` overlay — a footswitch bake's own knob,
+    /// SCENE_BASE-scoped only (see the deviation note above).
+    params: HashMap<(String, String, String), f32>,
+}
+
+#[cfg(feature = "e2e")]
+#[derive(Clone, Default)]
+struct PendingLevel {
+    committed: SavedDoc,
+    pending: Option<(SavedDoc, std::time::Instant)>,
 }
 
 impl Default for SimState {
@@ -234,6 +309,12 @@ impl Default for SimState {
             reamp_on: false,
             #[cfg(feature = "e2e")]
             fail_capture_slot: None,
+            #[cfg(feature = "e2e")]
+            saved_levels: HashMap::new(),
+            #[cfg(feature = "e2e")]
+            ever_saved: std::collections::HashSet::new(),
+            #[cfg(feature = "e2e")]
+            commit_latency_override: None,
         }
     }
 }
@@ -243,6 +324,156 @@ impl SimState {
     fn scene_key(&self) -> i64 {
         self.current_scene.map_or(SCENE_BASE, i64::from)
     }
+}
+
+#[cfg(feature = "e2e")]
+impl SimState {
+    /// `slot0`'s lazy-commit entry, seeding it from the slot's own scenario JSON (or 1.0
+    /// for a non-scenario slot) the first time this slot is touched THIS run. The baked
+    /// param overlay always starts EMPTY — a never-yet-saved-this-run slot's own static
+    /// scenario body is the un-overlaid truth (its dspUnitParameters ARE the base values;
+    /// [`SimState::param_writes`]' seed-on-load reads them straight off the field-3/field-8
+    /// body, not through this overlay — see the LOAD handler).
+    fn pending_level_entry(&mut self, slot0: u32) -> &mut PendingLevel {
+        self.saved_levels
+            .entry(slot0)
+            .or_insert_with(|| PendingLevel {
+                committed: SavedDoc {
+                    preset_level: scenario_preset_level(slot0).unwrap_or(1.0),
+                    params: HashMap::new(),
+                },
+                pending: None,
+            })
+    }
+
+    /// `slot0`'s lazy-commit entry with any DUE pending save promoted to committed first —
+    /// every doc accessor goes through this, so a read or load after the commit window
+    /// always answers with the settled doc, never a phantom still-pending one.
+    fn promoted_entry(&mut self, slot0: u32) -> &mut PendingLevel {
+        let now = std::time::Instant::now();
+        let entry = self.pending_level_entry(slot0);
+        if matches!(&entry.pending, Some((_, deadline)) if now >= *deadline) {
+            if let Some((doc, _)) = entry.pending.take() {
+                entry.committed = doc;
+            }
+        }
+        entry
+    }
+
+    /// The doc a LOAD is entitled to see right now for `slot0`: committed only — a
+    /// still-pending save is invisible to a load until its deadline passes (the stale-load
+    /// corruption window this model exists to reproduce).
+    fn committed_doc(&mut self, slot0: u32) -> &SavedDoc {
+        &self.promoted_entry(slot0).committed
+    }
+
+    /// The doc a field-8 READ sees right now for `slot0`: the pending doc when one exists
+    /// (read-your-writes), else the committed doc.
+    fn readable_doc(&mut self, slot0: u32) -> &SavedDoc {
+        let entry = self.promoted_entry(slot0);
+        entry
+            .pending
+            .as_ref()
+            .map_or(&entry.committed, |(doc, _)| doc)
+    }
+
+    /// Record a save: the CURRENT working `preset_level`, plus the CURRENTLY-COMMITTED
+    /// baked params merged with this session's own SCENE_BASE `param_writes` (a footswitch
+    /// bake), becomes `slot0`'s pending doc, landing after [`SimState::commit_latency`].
+    /// Even a 0 ms latency changes LOAD's semantics (module header) — a genuinely non-zero
+    /// latency additionally REPRODUCES the same-slot stale-load incident (a load before the
+    /// deadline still sees the OLD committed doc). Merging onto the CURRENT committed params
+    /// (not the session's writes alone) mirrors the real device: a save persists this
+    /// session's edits ON TOP of whatever was already saved, not a wholesale replacement —
+    /// a base-only save must not erase an earlier footswitch save's baked knob, and vice
+    /// versa (two separate save call sites in the real leveling flow, base then FS batch).
+    fn record_save(&mut self, slot0: u32) {
+        self.ever_saved.insert(slot0);
+        let level = self.preset_level;
+        let mut params = self.pending_level_entry(slot0).committed.params.clone();
+        for ((scene, group, node, param), v) in &self.param_writes {
+            if *scene == SCENE_BASE {
+                params.insert((group.clone(), node.clone(), param.clone()), *v);
+            }
+        }
+        let deadline = std::time::Instant::now() + self.commit_latency();
+        self.pending_level_entry(slot0).pending = Some((
+            SavedDoc {
+                preset_level: level,
+                params,
+            },
+            deadline,
+        ));
+    }
+
+    /// How long a save stays pending before a LOAD may see it: the spec/test override
+    /// first (`SimDevice::with_commit_latency` / `POST /sim/commit-latency`), else
+    /// `TMP_SIM_COMMIT_LATENCY_MS`, else 0.
+    fn commit_latency(&self) -> std::time::Duration {
+        self.commit_latency_override.unwrap_or_else(|| {
+            std::env::var("TMP_SIM_COMMIT_LATENCY_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map(std::time::Duration::from_millis)
+                .unwrap_or(std::time::Duration::ZERO)
+        })
+    }
+}
+
+/// The slot's own scenario-fixture `audioGraph.presetLevel` — the seed value a
+/// never-yet-saved-this-run slot's lazy-commit store starts at. `None` for a
+/// non-scenario slot (the caller falls back to 1.0, matching the shared default body's
+/// own implicit unity gain).
+#[cfg(feature = "e2e")]
+fn scenario_preset_level(slot0: u32) -> Option<f32> {
+    scenario_json_for(slot0)
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+        .and_then(|v| v["audioGraph"]["presetLevel"].as_f64())
+        .map(|v| v as f32)
+}
+
+/// Patch `audioGraph.presetLevel` PLUS a footswitch bake's own baked `(group, node,
+/// param)` overlay into a preset-JSON BODY TEXT — the fields the lazy-commit model
+/// synthesizes into the field-3/field-8 JSON string itself (the rest of that TEXT —
+/// `scenes`, `ftsw`, scene-scoped param overlays — stays exactly the committed scenario
+/// body; no offline caller reads THOSE back through a save round trip, so deep-merging
+/// them is out of scope here — see the module header's deviation note). Patching the
+/// baked params into this TEXT (not just `SimState::param_writes`, which is what
+/// `model_lufs` actually reads) matters for two READERS of the text itself:
+/// `leveller::witness_value_in_doc` compares a `SaveWitness::Param` against the
+/// FIELD-3 echo, and `verify_fs_persisted_writes`'s post-save field-8 read expects the
+/// just-baked value to show up in the SAVED document, not the pristine fixture body —
+/// without this, both would see the pre-bake value forever and report a false
+/// persist-mismatch / a permanently-stale witness compare. Falls back to the original
+/// bytes on a parse failure, which never happens for a committed fixture but a caller
+/// must still get SOMETHING.
+#[cfg(feature = "e2e")]
+fn with_patched_doc(
+    json: &str,
+    level: f32,
+    params: &HashMap<(String, String, String), f32>,
+) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return json.to_string();
+    };
+    if let Some(ag) = v.get_mut("audioGraph") {
+        ag["presetLevel"] = serde_json::json!(level);
+        if let Some(groups) = ag.get_mut("guitarNodes").and_then(|g| g.as_object_mut()) {
+            for ((group, node, param), value) in params {
+                let Some(nodes) = groups.get_mut(group).and_then(|g| g.as_array_mut()) else {
+                    continue;
+                };
+                for n in nodes {
+                    if n.get("nodeId").and_then(|v| v.as_str()) == Some(node.as_str()) {
+                        if let Some(dsp) = n.get_mut("dspUnitParameters") {
+                            dsp[param] = serde_json::json!(value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| json.to_string())
 }
 
 /// An in-memory fake device. Clone shares the same recording (an `Arc<Mutex<…>>`), so a
@@ -294,6 +525,24 @@ impl SimDevice {
     pub fn with_preset_json(self, json: &str) -> SimDevice {
         self.state.lock().expect("sim lock").preset_json = json.to_string();
         self
+    }
+
+    /// Test-only: fix the lazy-commit latency (bypasses `TMP_SIM_COMMIT_LATENCY_MS` so
+    /// parallel unit tests never race each other over a shared env var). The Playwright
+    /// spec instead uses the `POST /sim/commit-latency` bridge route → [`set_commit_latency`]
+    /// (this SimDevice is already installed and running by the time the spec starts).
+    #[cfg(all(test, feature = "e2e"))]
+    pub fn with_commit_latency(self, ms: u64) -> SimDevice {
+        self.state.lock().expect("sim lock").commit_latency_override =
+            Some(std::time::Duration::from_millis(ms));
+        self
+    }
+
+    /// The CURRENT `preset_level` — test-only introspection for the lazy-commit specs
+    /// (mirrors [`SimDevice::bypass_write`] / [`SimDevice::param_write`]).
+    #[cfg(all(test, feature = "e2e"))]
+    pub fn preset_level(&self) -> f32 {
+        self.state.lock().expect("sim lock").preset_level
     }
 
     /// Seed the song / setlist names (slot = index + 1) the live read-back returns —
@@ -384,9 +633,8 @@ impl SimDevice {
             st.events.push(SimEvent::Loaded(slot0));
             // A load activates the preset's saved `lastLoadedScene` (HW-confirmed — a bare
             // load does NOT reset to base) and discards the edit buffer (the scene-scoped
-            // knob writes + forced bypasses). `preset_level` is deliberately NOT reset —
-            // see its field doc (the sim has no per-slot saved value, so it preserves the
-            // last-set multiplier; faithful for the leveling flow).
+            // knob writes + forced bypasses) — reseeded from the slot's own COMMITTED doc
+            // just below (e2e only; see that block's doc for why a plain build can't).
             st.current_slot = slot0;
             st.current_scene = match st.saved_scene.get(&slot0).copied() {
                 Some(scene) => scene,
@@ -397,10 +645,37 @@ impl SimDevice {
             };
             st.param_writes.clear();
             st.bypass_writes.clear();
+            // Lazy-commit doc (e2e only — module header): a load restores THIS slot's own
+            // committed `presetLevel` AND baked param overlay, faithfully INCLUDING the
+            // stale-load corruption window while an earlier save is still pending — but
+            // ONLY once this run has actually SAVED slot0 at least once (`ever_saved`). A
+            // slot nobody has saved this run keeps the OLD "preserve the last-set value"
+            // behavior unperturbed: restoring unconditionally on EVERY load (this run's
+            // first cut) changed the ambient `preset_level` for scene/base-only offline
+            // fixtures that never save a presetLevel at all, silently shifting their
+            // calibrated measured LUFS and breaking specs unrelated to the stale-load
+            // incident (caught only by the full offline Playwright e2e suite, not
+            // `cargo test --lib` alone). A plain (non-e2e) build has no per-slot
+            // scenario doc to consult, so `preset_level` keeps its old behavior
+            // unconditionally, and
+            // `param_writes` simply starts empty (today's behavior).
+            #[cfg(feature = "e2e")]
+            if st.ever_saved.contains(&slot0) {
+                st.preset_level = st.committed_doc(slot0).preset_level;
+                // Reseed the SCENE_BASE param_writes a footswitch bake previously wrote and
+                // saved — without this, a fresh load (the `measure_sound_asis_strict`/
+                // `e2e_measure_sound` re-measure seam, or a later leveling batch on the same
+                // slot) reads NO write for the leveled param and `model_lufs` treats the
+                // switch as "engaged with nothing written" → silence, even though the real
+                // device would still be sounding the SAVED knob value.
+                for ((group, node, param), v) in st.committed_doc(slot0).params.clone() {
+                    st.param_writes.insert((SCENE_BASE, group, node, param), v);
+                }
+            }
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
             // post-load push the `blockcaps` guard reads as the pre-edit roster
             // (`Session::current_preset_value`). May exceed one HID frame, so chunk it.
-            let json = load_echo_json(&st, slot0);
+            let json = load_echo_json(&mut st, slot0);
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
             reports.extend(frame_multi(&current_preset_data_changed(&json)));
             return reports;
@@ -412,7 +687,7 @@ impl SimDevice {
             // reply every scene/footswitch write is refused ("no saved-preset read").
             let dev_slot = proto::first_varint(&proto::parse(dr), 2).unwrap_or(0);
             let slot0 = dev_slot.saturating_sub(1) as u32;
-            return match saved_slot_json(slot0) {
+            return match saved_slot_json_body(&mut st, slot0) {
                 // Plaintext (NOT lz4): every read path does `from_utf8_lossy` on field 9.
                 Some(j) => frame_multi(&preset_data_changed(dev_slot, j.as_bytes())),
                 None => Vec::new(), // non-scenario slot: the read times out, as offline today
@@ -471,6 +746,11 @@ impl SimDevice {
             let scene = st.current_scene;
             st.saved_scene.insert(slot0, scene);
             st.events.push(SimEvent::Saved(slot0));
+            // Lazy-commit: this becomes slot0's PENDING doc (presetLevel + baked params),
+            // landing after `commit_latency()` (module header) — a same-slot load before
+            // that deadline must still see the OLD committed doc.
+            #[cfg(feature = "e2e")]
+            st.record_save(slot0);
             return Vec::new();
         }
         if let Some(spl) = proto::first_bytes(&f, F_SET_PRESET_LEVEL) {
@@ -500,7 +780,8 @@ impl SimDevice {
             // `outputLevel` node-agnostically, so re-serving the same graph per scene is enough
             // for the amp pick to resolve — without it, the pre-pass harvests nothing and every
             // scene fails to classify ("read failed").
-            let json = load_echo_json(&st, st.current_slot);
+            let current_slot = st.current_slot;
+            let json = load_echo_json(&mut st, current_slot);
             return frame_multi(&current_preset_data_changed(&json));
         }
         if let Some(cp) = proto::first_bytes(&f, F_CHANGE_PARAMETER) {
@@ -666,16 +947,24 @@ pub fn live_events() -> Vec<SimEvent> {
 // didn't contain the backup candidate's amp, so `build_scene_jobs` failed to match and every
 // scene read-failed. Any non-scenario slot (and all non-e2e builds) still uses the default graph.
 //
-// FIDELITY DECISIONS (PR3):
+// FIDELITY DECISIONS (PR3, updated by the stale-load-fix PR's `leveled_params` addition):
 //  • The "clamped-at-max" outcome is authored on Base (presetLevel → C clamp at LEVEL_MAX,
 //    fully faithful); a scene-outputLevel CLAMP verdict is still NOT faithfully authorable
 //    (the closed-loop verify converges regardless of the sidecar clamp) → base-path only.
-//  • `SlotLoudness::offbranch_switch_node` (see its `model_lufs` check for the WHY) is the
-//    ONLINE footswitch-off-branch mechanism; OFFLINE the footswitch lane needs an unmodeled
-//    field-8 read (out of PR3 scope), so offline the off-branch is instead a SCENE saved with
-//    the amp output at zero → no-authority silence (same "no signal on USB 1/2" verdict).
-// What offline-green STILL does NOT prove: a scene-outputLevel CLAMP verdict, offline FOOTSWITCH
-// leveling (field-8), and parallel-lane summation (joint-k) — all online-only classes.
+//  • `SlotLoudness::offbranch_switch_node` models a block-acting footswitch whose toggled
+//    block sits on a MUTED parallel branch (engaging it routes to dead air) — the model reads
+//    `bypass_writes` directly, no field-8 needed, so this ONE off-branch shape has always been
+//    offline-faithful (the field-8 read `saved_slot_json_body` performs is for the LEVELED-PARAM
+//    knob curve below, a separate mechanism).
+//  • STALE (superseded): earlier revisions of this comment called offline footswitch leveling
+//    "unmodeled (out of PR3 scope)" and listed it under "online-only classes" below.
+//    `SlotLoudness::leveled_params` (a drive pedal's own knob → `saturated_pedal_lufs`, module
+//    header) now models it — see `e2e/specs/level-fs-preset24.spec.ts` for full offline
+//    footswitch-leveling coverage, including a save→load round trip of the baked value
+//    (`SimState::param_writes` reseeded from the lazy-commit `SavedDoc` on load).
+// What offline-green STILL does NOT prove: a scene-outputLevel CLAMP verdict, an ASSIGN-path
+// footswitch (only BAKE is modeled — no `SetFootswitchAssignment` wire op in `handle`), and
+// parallel-lane summation (joint-k) — still online-only classes.
 
 /// Arm the currently-installed fake so `slot`'s NEXT capture returns silence once (the
 /// `POST /sim/fault` bridge endpoint). No-op when no fake is installed (online).
@@ -683,6 +972,20 @@ pub fn live_events() -> Vec<SimEvent> {
 pub fn arm_capture_fault(slot: u32) {
     if let Some(dev) = LIVE.lock().expect("sim live lock").as_ref() {
         dev.state.lock().expect("sim lock").fail_capture_slot = Some(slot);
+    }
+}
+
+/// Arm the currently-installed fake's lazy-commit latency (the `POST /sim/commit-latency`
+/// bridge endpoint) — the spec-side way to reproduce the same-slot stale-load incident
+/// against the ONE already-running offline server process, where a per-test env var
+/// can't reach a process that started before the test did. No-op when no fake is
+/// installed (online). `/sim/reset` installs a fresh fake with latency back at 0, so this
+/// never leaks past the test that armed it.
+#[cfg(feature = "e2e")]
+pub fn set_commit_latency(ms: u64) {
+    if let Some(dev) = LIVE.lock().expect("sim live lock").as_ref() {
+        dev.state.lock().expect("sim lock").commit_latency_override =
+            Some(std::time::Duration::from_millis(ms));
     }
 }
 
@@ -768,6 +1071,26 @@ fn model_lufs(
             return None;
         }
     }
+    // Leveled-param response (preset-024-class drive pedal into a saturated amp):
+    // overrides the flat C law for exactly the ENGAGED declared block's own knob — Base
+    // and every OTHER switch's isolated measurement (this block bypassed) fall through
+    // to the ordinary formula below unperturbed.
+    if let Some(lp) = entry.and_then(|e| {
+        e.leveled_params
+            .iter()
+            .find(|lp| st.bypass_writes.get(&lp.node).copied() == Some(false))
+    }) {
+        let key = (
+            st.scene_key(),
+            lp.group.clone(),
+            lp.node.clone(),
+            lp.param.clone(),
+        );
+        let v = st.param_writes.get(&key).copied()?;
+        let c = saturated_pedal_lufs(v)?;
+        let preset_term = 20.0 * f64::from(st.preset_level.max(1e-6)).log10();
+        return Some(c + preset_term);
+    }
     // Scene overlay C falls back to base; an unlisted preset falls back to a flat default.
     let c = entry.map_or(sidecar.default, |e| e.c_for(st.current_scene));
     let stored_ol = stored
@@ -852,6 +1175,51 @@ struct SlotLoudness {
     /// leveller's off-branch verdict. See the `model_lufs` off-branch checks. Optional.
     #[serde(default)]
     offbranch_switch_node: Option<String>,
+    /// Blocks/params whose OWN knob drives loudness through [`saturated_pedal_lufs`]
+    /// instead of the flat `C + preset_term + ol_term` law — a drive pedal feeding a
+    /// saturated amp (preset-024-class; notes/leveling.md). Activates ONLY while that
+    /// block is ENGAGED (`bypass_writes[node] == Some(false)` — i.e. under ITS OWN
+    /// isolated footswitch measurement); every other slot's empty default vector leaves
+    /// this branch dead, so it can never perturb an existing scenario's numbers.
+    #[serde(default)]
+    leveled_params: Vec<LeveledParam>,
+}
+
+/// One block/param whose knob feeds [`saturated_pedal_lufs`] instead of the flat C law —
+/// see [`SlotLoudness::leveled_params`].
+#[cfg(feature = "e2e")]
+#[derive(serde::Deserialize, Clone)]
+struct LeveledParam {
+    group: String,
+    node: String,
+    param: String,
+}
+
+/// Preset-024-class ("TR+BD2+BMP") saturated-amp response for a drive pedal's OWN
+/// level/volume knob: silent (no signal) at or below the noise floor, a steep ~42 LU
+/// cliff, then a heavily compressed plateau — see notes/leveling.md §"Saturated-amp
+/// response shape (preset 024…)". Pure and EXACT (no HW noise, no stimulus-scaling
+/// slack) so the FS solver's tightened `FS_TOL_LU` = 0.1 acceptance is meaningful
+/// offline. `None` below the floor is genuine silence (the leveller's no-signal path),
+/// matching the HW note that the bracket-expansion probe down there reads NO_SIGNAL, not
+/// merely "very quiet".
+#[cfg(feature = "e2e")]
+fn saturated_pedal_lufs(v: f32) -> Option<f64> {
+    let v = f64::from(v);
+    if v <= 0.10 {
+        return None;
+    }
+    if v <= 0.20 {
+        // The cliff: 42 LU over this 0.10 span.
+        return Some(-62.0 + 420.0 * (v - 0.10));
+    }
+    if v <= 0.30 {
+        // Shoulder — the cliff's top IS the plateau's own floor (continuous, no dip).
+        return Some(-20.0);
+    }
+    // The compressed plateau: +3 LU across the remaining 0.70 of knob travel.
+    let t = ((v - 0.30) / 0.70).min(1.0);
+    Some(-20.0 + 3.0 * t)
 }
 
 #[cfg(feature = "e2e")]
@@ -977,17 +1345,43 @@ fn node_output_level(node: &serde_json::Value) -> Option<f32> {
 }
 
 /// The field-3 graph a `loadPreset`/`loadScene` echoes for slot `slot0`. For a SCENARIO slot
-/// (e2e) it echoes that slot's REAL presetJson so offline scene-leveling's prepass classifies
-/// against the same amp node the backup-derived candidates name (written==stored → faithful
-/// convergence + a correct amp pick for the parallel/split templates); any other slot (and all
-/// non-e2e builds) uses the shared default two-node graph (`with_preset_json` overrides it).
-fn load_echo_json(st: &SimState, slot0: u32) -> Vec<u8> {
+/// (e2e) it echoes that slot's REAL presetJson, `presetLevel` PLUS any baked footswitch
+/// param patched to the slot's COMMITTED lazy-commit doc (module header — a load sees
+/// committed-only, never a still-pending save), so offline scene-leveling's prepass
+/// classifies against the same amp node the backup-derived candidates name (written==stored
+/// → faithful convergence + a correct amp pick for the parallel/split templates), AND a
+/// LATER `ensure_fresh_load` barrier witnessing a `SaveWitness::Param` (a footswitch bake)
+/// can actually match against this echo; any other slot (and all non-e2e builds) uses the
+/// shared default two-node graph (`with_preset_json` overrides it).
+fn load_echo_json(st: &mut SimState, slot0: u32) -> Vec<u8> {
     #[cfg(feature = "e2e")]
     if let Some(j) = scenario_json_for(slot0) {
-        return j.as_bytes().to_vec();
+        let doc = st.committed_doc(slot0).clone();
+        return with_patched_doc(j, doc.preset_level, &doc.params).into_bytes();
     }
     let _ = slot0;
     st.preset_json.as_bytes().to_vec()
+}
+
+/// The field-8 (`presetDataChanged`) read body for `slot0` — the slot's static scenario
+/// JSON with `presetLevel` PLUS any baked footswitch param patched to what a READ is
+/// entitled to see right now (the pending doc if one exists — read-your-writes — else
+/// committed; module header). `None` for a non-scenario slot / a non-e2e build, exactly as
+/// [`saved_slot_json`] alone.
+fn saved_slot_json_body(
+    #[cfg_attr(not(feature = "e2e"), allow(unused_variables))] st: &mut SimState,
+    slot0: u32,
+) -> Option<String> {
+    #[cfg(feature = "e2e")]
+    {
+        let doc = st.readable_doc(slot0).clone();
+        saved_slot_json(slot0).map(|j| with_patched_doc(j, doc.preset_level, &doc.params))
+    }
+    #[cfg(not(feature = "e2e"))]
+    {
+        let _ = st;
+        saved_slot_json(slot0).map(str::to_string)
+    }
 }
 
 /// The committed scenario preset JSON for a 0-based list index, cached (the seed module owns
@@ -1196,6 +1590,7 @@ mod physics_tests {
                 scenes,
                 routed_node: routed.map(str::to_string),
                 offbranch_switch_node: None,
+                leveled_params: Vec::new(),
             },
         );
         Sidecar {
@@ -1376,6 +1771,255 @@ mod physics_tests {
                 .integrated_lufs
                 .is_finite(),
             "the capture after the one-shot fault is healthy"
+        );
+    }
+
+    // ── saturated-pedal response shape (notes/leveling.md §preset-024) ──────────────
+
+    #[test]
+    fn saturated_pedal_response_is_silent_at_and_below_the_noise_floor() {
+        assert!(saturated_pedal_lufs(0.0).is_none());
+        assert!(saturated_pedal_lufs(0.05).is_none());
+        // (not asserting the exact 0.10 boundary itself — f32→f64 widening puts it a
+        // hair either side of the literal, which the fixture never writes anyway)
+        assert!(saturated_pedal_lufs(0.1001).is_some());
+    }
+
+    #[test]
+    fn saturated_pedal_response_cliff_is_about_42_lu_over_0_10_to_0_20() {
+        let lo = saturated_pedal_lufs(0.10 + 1e-4).expect("just past the floor");
+        let hi = saturated_pedal_lufs(0.20).expect("cliff top");
+        assert!(
+            (hi - lo - 42.0).abs() < 0.1,
+            "cliff span must be ~42 LU, got {}",
+            hi - lo
+        );
+        // Our two FS fixture targets (-26/-24) must land ON this cliff, not the flat
+        // plateau — the whole reason the fixture is solvable at a tight ±0.1 LU offline.
+        assert!(
+            (lo..=hi).contains(&-26.0) && (lo..=hi).contains(&-24.0),
+            "targets -26/-24 must fall inside the cliff [{lo}, {hi}]"
+        );
+    }
+
+    #[test]
+    fn saturated_pedal_response_plateau_is_far_shallower_than_the_cliff() {
+        let cliff = saturated_pedal_lufs(0.20).unwrap() - saturated_pedal_lufs(0.1001).unwrap();
+        let plateau = saturated_pedal_lufs(1.0).unwrap() - saturated_pedal_lufs(0.30).unwrap();
+        assert!((plateau - 3.0).abs() < 0.05, "plateau span: {plateau}");
+        assert!(
+            plateau < cliff / 10.0,
+            "the plateau ({plateau} LU) must be far shallower than the cliff ({cliff} LU)"
+        );
+    }
+
+    #[test]
+    fn model_lufs_leveled_param_activates_only_while_its_own_block_is_engaged() {
+        let mut slots = std::collections::HashMap::new();
+        slots.insert(
+            "999".to_string(),
+            SlotLoudness {
+                base: -10.0,
+                scenes: vec![],
+                routed_node: None,
+                offbranch_switch_node: None,
+                leveled_params: vec![LeveledParam {
+                    group: "G1".into(),
+                    node: "pedal".into(),
+                    param: "level".into(),
+                }],
+            },
+        );
+        let sc = Sidecar {
+            slots,
+            default: -18.0,
+        };
+        let stored = std::collections::HashMap::new();
+        let mut st = SimState {
+            current_slot: 999,
+            preset_level: 1.0,
+            ..Default::default()
+        };
+        // Not engaged (no write at all) — the ordinary flat C, unperturbed by the pedal
+        // curve: the "don't touch existing scenarios" guarantee, pinned at the boundary.
+        assert!(
+            (model_lufs(&st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6,
+            "unengaged must fall through to the flat C"
+        );
+        // Engaged (bypass=false) but nothing written yet for the leveled param → no
+        // signal, never a silent fallback to the flat C (which would mask a real bug).
+        st.bypass_writes.insert("pedal".into(), false);
+        assert!(
+            model_lufs(&st, &sc, &stored).is_none(),
+            "engaged with no written value must not silently read as the flat C"
+        );
+        // Engaged with a mid-cliff value → the curve's own arithmetic.
+        st.param_writes.insert(
+            (SCENE_BASE, "G1".into(), "pedal".into(), "level".into()),
+            0.1857,
+        );
+        let lufs = model_lufs(&st, &sc, &stored).unwrap();
+        assert!(
+            (lufs - (-26.0)).abs() < 0.2,
+            "v=0.1857 should land near -26 LUFS, got {lufs}"
+        );
+        // Forced OFF again (a sibling's own isolated measurement) — back to the flat C.
+        st.bypass_writes.insert("pedal".into(), true);
+        assert!((model_lufs(&st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6);
+    }
+
+    // ── lazy-commit `presetLevel` (the same-slot stale-load incident, at the sim layer) ──
+
+    /// The field-8 read body's `audioGraph.presetLevel`, via a real `Session` (proves the
+    /// wire round-trip, not just the internal store).
+    fn read_saved_preset_level(s: &mut crate::session::Session, dev_slot: u32) -> f64 {
+        let bytes = s
+            .read_slot_preset_json(dev_slot)
+            .expect("field-8 read")
+            .expect("a scenario slot answers field-8");
+        let json: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&bytes)).expect("valid json");
+        json["audioGraph"]["presetLevel"]
+            .as_f64()
+            .expect("presetLevel present")
+    }
+
+    #[test]
+    fn save_then_immediate_field8_read_shows_the_pending_value() {
+        // A long latency proves the read does NOT depend on elapsed time at all.
+        let sim = SimDevice::new().with_commit_latency(60_000);
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.81).unwrap();
+        s.save_current_preset(401).unwrap();
+        let level = read_saved_preset_level(&mut s, 402); // dev slot = list index + 1
+        assert!(
+            (level - 0.81).abs() < 1e-3,
+            "field-8 must read-your-writes immediately, got {level}"
+        );
+    }
+
+    #[test]
+    fn load_before_the_deadline_materializes_the_committed_old_value() {
+        let sim = SimDevice::new().with_commit_latency(60_000);
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.81).unwrap();
+        s.save_current_preset(401).unwrap();
+        // A same-slot reload WELL inside the (60 s) commit window must NOT see 0.81 — the
+        // committed doc is still the fixture's own baked-in 0.32 (401's static presetLevel).
+        s.load_preset(401).unwrap();
+        assert!(
+            (sim.preset_level() - 0.32).abs() < 1e-3,
+            "a load inside the commit window must materialize the PRE-save value, got {}",
+            sim.preset_level()
+        );
+    }
+
+    #[test]
+    fn load_after_the_deadline_materializes_the_new_value() {
+        let sim = SimDevice::new().with_commit_latency(50);
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.81).unwrap();
+        s.save_current_preset(401).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(90)); // past the 50 ms deadline
+        s.load_preset(401).unwrap();
+        assert!(
+            (sim.preset_level() - 0.81).abs() < 1e-3,
+            "a load after the commit window must materialize the NEW value, got {}",
+            sim.preset_level()
+        );
+    }
+
+    // ── merged-doc extension: a footswitch bake's own knob round-trips a save→load ──
+
+    /// A footswitch bake writes a `changeParameter` float onto the block's own knob at
+    /// SCENE_BASE, saves, then a LATER fresh load must still see it — the reseed this
+    /// fix adds to the `F_LOAD_PRESET` handler (`committed_params`). Without it, a
+    /// re-measure seam (`e2e_measure_sound`) or a second leveling batch on the same
+    /// slot would read NO write for the leveled param and silently mis-model it as
+    /// off-branch silence.
+    #[test]
+    fn a_baked_param_survives_a_save_then_fresh_load() {
+        let sim = SimDevice::new(); // default 0 ms latency
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.change_parameter("G1", "pedal", "level", 0.1857).unwrap();
+        s.save_current_preset(401).unwrap();
+        s.load_preset(401).unwrap(); // fresh load, no new write this session
+        assert_eq!(
+            sim.param_write(SCENE_BASE, "G1", "pedal", "level"),
+            Some(0.1857),
+            "a baked param must survive a save→fresh-load round trip"
+        );
+    }
+
+    /// The merge is ADDITIVE across separate save sessions (the real leveling flow's
+    /// shape: a base save, then a LATER footswitch batch save) — a later save must not
+    /// erase an earlier save's already-baked param just because this session's own
+    /// `param_writes` doesn't happen to touch it.
+    #[test]
+    fn a_later_unrelated_save_does_not_erase_an_earlier_baked_param() {
+        let sim = SimDevice::new();
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.change_parameter("G1", "pedal", "level", 0.1857).unwrap();
+        s.save_current_preset(401).unwrap();
+        // A second, unrelated session: fresh load (reseeds the baked param), a plain
+        // presetLevel change, save — never touches "pedal"/"level" itself.
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.9).unwrap();
+        s.save_current_preset(401).unwrap();
+        s.load_preset(401).unwrap();
+        assert_eq!(
+            sim.param_write(SCENE_BASE, "G1", "pedal", "level"),
+            Some(0.1857),
+            "an unrelated later save must not drop an earlier baked param"
+        );
+    }
+
+    /// A same-slot load INSIDE the commit window must see the OLD baked overlay, not a
+    /// still-pending one — the param-overlay analogue of
+    /// `load_before_the_deadline_materializes_the_committed_old_value`.
+    #[test]
+    fn load_before_the_deadline_materializes_the_old_baked_param() {
+        let sim = SimDevice::new().with_commit_latency(60_000);
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.change_parameter("G1", "pedal", "level", 0.1857).unwrap();
+        s.save_current_preset(401).unwrap();
+        s.load_preset(401).unwrap(); // well inside the 60 s window
+        assert_eq!(
+            sim.param_write(SCENE_BASE, "G1", "pedal", "level"),
+            None,
+            "a load inside the commit window must not see the still-pending baked param"
+        );
+    }
+
+    /// RED-PIN: pins the incident mechanism itself (notes/leveling.md's corruption
+    /// class) at the sim layer. With a non-zero commit latency, a load right after a
+    /// save — no barrier, no wait, exactly the un-fixed shape — must NOT see the
+    /// just-saved value. HW: base saved 0.4377, the footswitch batch's load 2 s later
+    /// still read the pre-save ≈0.798.
+    #[test]
+    fn red_pin_load_right_after_save_consumes_the_stale_preset_level() {
+        let sim = SimDevice::new().with_commit_latency(2_000);
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.9).unwrap();
+        s.save_current_preset(401).unwrap();
+        s.load_preset(401).unwrap(); // NO wait — the un-fixed shape
+        assert_ne!(
+            sim.preset_level(),
+            0.9,
+            "a same-slot load with no fresh-load barrier must consume the STALE \
+             (pre-save) value, not the just-saved one — the whole incident this fix exists for"
+        );
+        assert!(
+            (sim.preset_level() - 0.32).abs() < 1e-3,
+            "the stale value must be the fixture's own pre-save presetLevel, got {}",
+            sim.preset_level()
         );
     }
 }

@@ -927,6 +927,11 @@ pub(crate) fn prepass_scene_docs_via(
             ),
         }
     }
+    // Freshness barrier: this is the run_batched (live-branch) prepass load — a same-slot
+    // scene-leveling run started shortly after this preset's own earlier deferred-scene save
+    // could otherwise materialize the PRE-save doc here (`leveller::ensure_fresh_load`'s own
+    // doc has the HW evidence). No-op when the slot has no pending save in the registry.
+    crate::leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     prepass_scene_docs(slot, scene_slots)
 }
 

@@ -460,6 +460,275 @@ pub(crate) fn stimulus_spread_lu(stimulus: &[f32]) -> f64 {
     }
 }
 
+// ───────────────────────── Stale-load freshness barrier (per-slot save registry) ─────────────────────────
+//
+// `saveCurrentPreset` commits LAZILY on the real TMP (fw 1.8.45, HW-reproduced 2026-08-02):
+// the commit materializes T+45–100 s after the request, and a same-slot `loadPreset` issued
+// inside that window can still return the PRE-save bytes — read-your-writes only holds for
+// the field-8 slot-addressed read, not for `loadPreset`. Incident: a footswitch batch loaded
+// its slot ~2 s after the run's own base save and materialized the presetLevel from BEFORE
+// that save (0.4377 saved, ≈0.798 read back), sweeping all 4 switches ~5.2 LU hot.
+//
+// Fix: an in-process per-slot SAVE REGISTRY. Every leveling save records what it wrote (a
+// `SaveWitness`) and when; a load site that might race a still-committing save calls
+// `ensure_fresh_load` first — it re-loads on a rich harvest session and waits for the
+// harvested doc to show the registered witness before the caller's own (unchanged)
+// load/connect proceeds. No registry entry, or the commit window has elapsed, is a
+// zero-cost no-op — the overwhelming majority of loads, which never race a same-slot save.
+
+/// How long a `saveCurrentPreset` commit stays racy (HW: 45–100 s observed; 150 s gives
+/// margin). Past this, `ensure_fresh_load` stops waiting and proceeds — the commit is
+/// time-bounded, so camping on an unharvestable witness forever would brick a run.
+pub(crate) const COMMIT_WINDOW_SECS: u64 = 150;
+/// Agreement band for a harvested witness vs its registered value — matches `PERSIST_TOL`'s
+/// float-formatting slack, far below any real leveling step.
+const WITNESS_EPS: f64 = 1e-4;
+/// Wait between re-issued loads while a save is still racing — heartbeat-interleaved (see the
+/// cadence loop in `ensure_fresh_load`), never a passive sleep.
+const STALE_RETRY_WAIT_MS: u64 = 10_000;
+/// Heartbeat cadence during a stale-load wait — the idle-gap family's ≤300 ms ceiling.
+const STALE_HEARTBEAT_MS: u64 = 250;
+
+/// One field a leveling save actually changed — the freshness barrier's comparison anchor.
+/// `Param` covers BOTH a footswitch Bake/Assign write and a scene deferred `outputLevel`
+/// write: the harvest reads whatever scene is currently materialized by the barrier's own
+/// (scene-blind) load, which for a scene witness may not be the scene that received the
+/// write — there is no scene discriminator here. That gap is accepted: an unmatched scene
+/// witness reads as "still stale" like any other miss, and the time-gate fallback below
+/// bounds the wait, so the worst case is a `COMMIT_WINDOW_SECS`-long wait, never a hang.
+#[derive(Debug, Clone)]
+pub(crate) enum SaveWitness {
+    PresetLevel(f32),
+    Param {
+        group: String,
+        node: String,
+        param: String,
+        value: f32,
+    },
+}
+
+/// One slot's most recent leveling save: when it fired and what it should have changed.
+struct SlotSave {
+    at: std::time::Instant,
+    witness: SaveWitness,
+}
+
+/// Per-slot save registry: `slot` → the last leveling save's witness + timestamp. One
+/// process, one device, and (`device_gate::OP_ABORT`'s own reasoning) exactly one leveling
+/// op ever in flight — a global map keyed on the wire slot is the right shape, not a
+/// per-run registry with extra ceremony.
+static SLOT_SAVE_REGISTRY: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, SlotSave>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Record what a leveling save just wrote to `slot`, and when. Call at EVERY leveling save
+/// site — an unregistered save site silently reopens the stale-load hole for whatever loads
+/// next, since `ensure_fresh_load` treats a missing entry as "nothing to wait for".
+pub(crate) fn register_slot_save(slot: u32, witness: SaveWitness) {
+    if let Ok(mut reg) = SLOT_SAVE_REGISTRY.lock() {
+        reg.insert(
+            slot,
+            SlotSave {
+                at: std::time::Instant::now(),
+                witness,
+            },
+        );
+    }
+}
+
+/// The slot's currently registered `PresetLevel` witness, if that's what the last leveling
+/// save wrote. The FS batch command snapshots this BEFORE `write_footswitch_values` — whose
+/// own save registers the batch's `Param` witness over the same slot key, after which the
+/// base save's expectation is unrecoverable from the registry (it holds ONE entry per slot).
+pub(crate) fn registered_preset_level(slot: u32) -> Option<f32> {
+    SLOT_SAVE_REGISTRY.lock().ok().and_then(|reg| {
+        reg.get(&slot).and_then(|e| match e.witness {
+            SaveWitness::PresetLevel(pl) => Some(pl),
+            SaveWitness::Param { .. } => None,
+        })
+    })
+}
+
+/// Wipe the registry — e2e-only: `/sim/reset` installs a FRESH sim device between specs, and
+/// a witness left over from a previous spec's save would make the next spec's first leveling
+/// load wait out the whole commit window against a doc that can never match it.
+#[cfg(feature = "e2e")]
+pub(crate) fn clear_slot_save_registry() {
+    if let Ok(mut reg) = SLOT_SAVE_REGISTRY.lock() {
+        reg.clear();
+    }
+}
+
+/// Test seam: register with an explicit timestamp, so the time-gate path is coverable
+/// without a real 2.5-minute wait (`e2e_server_tests`' sim-routed barrier tests).
+#[cfg(all(test, feature = "e2e"))]
+pub(crate) fn register_slot_save_at(slot: u32, witness: SaveWitness, at: std::time::Instant) {
+    if let Ok(mut reg) = SLOT_SAVE_REGISTRY.lock() {
+        reg.insert(slot, SlotSave { at, witness });
+    }
+}
+
+/// True if `slot` has a registry entry `ensure_fresh_load` would actually wait on right now
+/// (an entry inside the commit window). Used ONLY to decide whether to surface the caller's
+/// "waiting for the device to commit…" progress line BEFORE calling `ensure_fresh_load`
+/// (which re-derives the identical condition internally); never mutates the registry.
+pub(crate) fn slot_save_pending_commit(slot: u32) -> bool {
+    SLOT_SAVE_REGISTRY.lock().is_ok_and(|reg| {
+        reg.get(&slot)
+            .is_some_and(|e| e.at.elapsed().as_secs() <= COMMIT_WINDOW_SECS)
+    })
+}
+
+/// The witness's own expected value, as `f64` for the comparison.
+fn witness_expected(w: &SaveWitness) -> f64 {
+    match w {
+        SaveWitness::PresetLevel(v) => *v as f64,
+        SaveWitness::Param { value, .. } => *value as f64,
+    }
+}
+
+/// Scan `ftsw` for a `param` function targeting `(node, param)` on ANY switch and return its
+/// `valueA` — the Assign write shape, which lives in the footswitch table, never in
+/// `dspUnitParameters`. No switch index needed: a leveled block param is targeted by at most
+/// one footswitch function in practice, and the caller (a `SaveWitness::Param`) doesn't carry
+/// one either — so this walks every switch through the footswitch module's own accessor.
+fn ftsw_value_a(ftsw: &serde_json::Value, node: &str, param: &str) -> Option<f64> {
+    (0..ftsw.as_array()?.len() as u32)
+        .find_map(|sw| crate::footswitch::existing_param_fn_value_a(ftsw, sw, node, param))
+}
+
+/// Read the witness's field out of a harvested (or re-read) preset doc. `PresetLevel` reads
+/// `audioGraph.presetLevel`; `Param` checks BOTH places a leveling save can put the value —
+/// the block's own `dspUnitParameters` (the Bake / scene-`outputLevel` shape) and `ftsw`'s
+/// `valueA` (the Assign shape, where `dspUnitParameters` keeps holding the switch-OFF value)
+/// — preferring whichever one matches the witness, else the first present. The witness
+/// doesn't record which shape its save used, and for an Assign the `dspUnitParameters` value
+/// EXISTS but can never match, so a fixed try-order would starve that case into the
+/// time-gate.
+fn witness_value_in_doc(doc: &serde_json::Value, w: &SaveWitness) -> Option<f64> {
+    match w {
+        SaveWitness::PresetLevel(_) => crate::audiograph::preset_level(doc),
+        SaveWitness::Param {
+            node, param, value, ..
+        } => {
+            let expected = *value as f64;
+            let candidates = [
+                crate::commands::level_footswitch::node_param_f64(doc, node, param),
+                doc.get("ftsw").and_then(|f| ftsw_value_a(f, node, param)),
+            ];
+            candidates
+                .iter()
+                .flatten()
+                .copied()
+                .find(|got| (got - expected).abs() <= WITNESS_EPS)
+                .or_else(|| candidates.iter().flatten().copied().next())
+        }
+    }
+}
+
+/// Freshness barrier for a same-slot load that may race a still-committing save (see this
+/// section's module doc). No registry entry for `slot`, or the registered save is older than
+/// `COMMIT_WINDOW_SECS`, is the overwhelming common case and costs nothing — no session is
+/// opened.
+///
+/// Otherwise: a RICH harvest session (heartbeat warmup, `send_and_collect(LoadPreset)` —
+/// never `Session::load_preset`, whose `transact_eager` discards the field-3 push the harvest
+/// reads; mirrors `probe_api::slot_write::discover_blocks_rich`) loads the slot and compares
+/// the harvested doc's witness field against the registered value (`WITNESS_EPS`). A match
+/// means fresh: done. An empty/truncated harvest counts as STILL-STALE, same as a mismatch —
+/// never a free pass. `s.raw` is cleared before every harvest, including every retry: this
+/// session must never carry a field-9 (`presetDataChanged`) stream, because
+/// `best_json_payload` prefers the LONGEST of its three carriers and (9,3) is the field-8
+/// reply's own carrier — a polluted session would compare the oracle against itself. This
+/// barrier NEVER issues a field-8 read on its own session, by construction.
+///
+/// A mismatch retries on the SAME held session (no reconnects — the HID open-lockout window,
+/// `danger.md`), heartbeat-interleaved so the wait is cancellable and the device sees a live
+/// controller, re-issuing the load roughly every `STALE_RETRY_WAIT_MS`. Once
+/// elapsed-since-save exceeds `COMMIT_WINDOW_SECS`, one final load re-issue runs and this
+/// returns `Ok` regardless of the harvest (INFO-logged) — the commit is time-bounded, so this
+/// must never hang or hard-error the caller.
+///
+/// After a barrier pass, the CALLER's own existing load/connect proceeds completely
+/// unchanged — never fold the barrier's rich session into a measurement/engage flow (a
+/// two-full-handshake connect wedges re-amp; `notes/leveling.md`'s "no signal captured").
+pub(crate) fn ensure_fresh_load(
+    slot: u32,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<(), String> {
+    ensure_fresh_load_paced(slot, cancelled, STALE_RETRY_WAIT_MS)
+}
+
+/// [`ensure_fresh_load`] with an explicit retry cadence — the sim-routed barrier tests
+/// (`e2e_server_tests`) shrink it so a stale→retry→pass cycle runs in seconds; production
+/// always enters through the `STALE_RETRY_WAIT_MS` wrapper above.
+pub(crate) fn ensure_fresh_load_paced(
+    slot: u32,
+    cancelled: &mut dyn FnMut() -> bool,
+    retry_wait_ms: u64,
+) -> Result<(), String> {
+    let Some((saved_at, witness)) = SLOT_SAVE_REGISTRY
+        .lock()
+        .ok()
+        .and_then(|reg| reg.get(&slot).map(|e| (e.at, e.witness.clone())))
+    else {
+        return Ok(());
+    };
+    if saved_at.elapsed().as_secs() > COMMIT_WINDOW_SECS {
+        return Ok(());
+    }
+    let expected = witness_expected(&witness);
+    let mut s = Session::connect()?;
+    s.rich_warmup()?;
+    let out = 'harvest: loop {
+        if cancelled() {
+            break Err(CANCELLED.to_string());
+        }
+        if let Err(e) = s.rich_load_collect(slot) {
+            break Err(e);
+        }
+        let harvested = s
+            .current_preset_value()
+            .ok()
+            .and_then(|doc| witness_value_in_doc(&doc, &witness));
+        if let Some(got) = harvested {
+            if (got - expected).abs() <= WITNESS_EPS {
+                break Ok(());
+            }
+        }
+        if saved_at.elapsed().as_secs() > COMMIT_WINDOW_SECS {
+            log::info!(
+                "ensure_fresh_load: slot {slot} commit window elapsed — proceeding on the \
+                 latest load (commit is time-bounded; the witness may be unharvestable, e.g. a \
+                 scene overlay the barrier's bare load never re-activated)"
+            );
+            break Ok(());
+        }
+        log::warn!(
+            "ensure_fresh_load: slot {slot} stale load — device has not committed the previous \
+             save; waiting"
+        );
+        let mut waited_ms = 0u64;
+        while waited_ms < retry_wait_ms {
+            if cancelled() {
+                break 'harvest Err(CANCELLED.to_string());
+            }
+            let _ = s.heartbeat();
+            let _ = s.pump_collect(STALE_HEARTBEAT_MS);
+            waited_ms += STALE_HEARTBEAT_MS;
+        }
+    };
+    drop(s);
+    // The barrier just held a live rich session; give the HID stack the same settle gap
+    // every other session-close → connect seam pays before the caller's own connect
+    // (callers only gap around their OWN sessions — they can't see whether the barrier's
+    // fast path skipped the session entirely). Err aborts the flow, so no gap needed.
+    if out.is_ok() {
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+    }
+    out
+}
+
 /// What one reference capture yields: the loudness reading, the solved model
 /// constant, and the capture's dynamics spread (see `LevelResult::dynamic_spread_lu`).
 #[derive(Debug, Clone, Copy)]
@@ -488,6 +757,7 @@ pub fn measure_c(
     force_bypass: &[(String, String, bool)],
 ) -> Result<MeasuredC, String> {
     let ref_level = ref_level.clamp(0.05, 1.0);
+    ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
@@ -1054,6 +1324,7 @@ pub fn apply_levels(
     saved: Option<&serde_json::Value>,
 ) -> Result<(bool, Option<f64>), String> {
     if reload_preset {
+        ensure_fresh_load(slot, &mut || crate::op_aborted())?;
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
         // A verify capture needs the DSP audio fully settled; a pure write does not.
@@ -1217,6 +1488,7 @@ pub fn restore_redistribution(
         let list = s.list_my_presets()?;
         verify_slot_name(&list, slot, expected_name)?;
     }
+    ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
@@ -1229,7 +1501,9 @@ pub fn restore_redistribution(
     crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     write_grouped_knobs(&mut s, knobs, saved.as_ref())?;
     recall_base(&mut s)?;
-    s.save_current_preset(slot)
+    s.save_current_preset(slot)?;
+    register_slot_save(slot, SaveWitness::PresetLevel(preset_level));
+    Ok(())
 }
 
 /// Write `knobs` GROUPED by `scene_slot` (one `set_knobs` call per distinct scene,
@@ -1576,8 +1850,20 @@ impl LevelKnob {
 
 /// Closed-loop convergence tolerance and iteration cap. Each iteration is one
 /// fresh connection (re-amp engages once per connection), so the cap bounds the
-/// device round-trips; ≈0.3 LU is well within audible-match for leveling.
+/// device round-trips; ≈0.3 LU is well within audible-match for leveling. SCENE
+/// band only — the footswitch lane's acceptance is the tighter [`FS_TOL_LU`]; see
+/// its doc for which.
 const KNOB_TOL_LU: f64 = 0.3;
+/// Footswitch-lane acceptance band — user-decided TRUE ±0.1 vs target, tighter than the
+/// scene lane's `KNOB_TOL_LU` (0.3). Applies ONLY to solve_footswitch's at-target checks
+/// (the `err(...)` distance-to-target gates), `classify_fs_outcome`, and `switch_at_target`
+/// — the FLATNESS/no-authority checks in the same functions stay on `KNOB_TOL_LU` (a
+/// noise-floor threshold, not an acceptance band; HW measured ~0.12 LU run-to-run noise).
+/// `FS_CORRECT_MAX` was doubled alongside this to compensate — a tighter band needs more
+/// bracket-aware iterates to converge. HW noise caveat: 0.1 LU sits close to the measured
+/// capture noise floor, so a well-converged FS solve may occasionally read `unconverged` on
+/// noise alone; a re-run absorbs it (idempotency skip on the next in-tolerance pass).
+const FS_TOL_LU: f64 = 0.1;
 const KNOB_MAX_ITERS: u32 = 6;
 const LIVE_SETTLE_MS: u64 = 350;
 const LIVE_MAX_ITERS: u32 = 5;
@@ -1699,7 +1985,14 @@ fn recall_reassert_save(
         s.set_preset_level(pl)?;
         crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
-    s.save_current_preset(slot)
+    s.save_current_preset(slot)?;
+    // Whenever this save is carrying a presetLevel (the base/restore/redistribution path —
+    // `reassert_pl` is `Some` regardless of whether a recall made the re-set necessary), it IS
+    // the witness: register it so a same-slot load inside the lazy-commit window waits for it.
+    if let Some(pl) = reassert_pl {
+        register_slot_save(slot, SaveWitness::PresetLevel(pl));
+    }
+    Ok(())
 }
 
 /// Set the chosen knob to `value` on an open session (before re-amp engage). The
@@ -2081,6 +2374,14 @@ pub struct FootswitchLevelResult {
     /// `"baked"` (value written straight onto the block) or `"assigned"` (param-change
     /// footswitch function written) — which simplification the leveler chose.
     pub method: String,
+    /// Post-save param-level verify (see `verify_fs_persisted_writes`): `Some(true)` = the
+    /// saved preset does NOT hold the value this result reports (do not trust the number);
+    /// `Some(false)` = re-read and confirmed; `None` = not checked (no save, nothing written,
+    /// the re-read failed, or a path without the verify). HONEST CONTRACT: detects ONLY
+    /// "this run's own write didn't persist" — it does NOT detect staleness or the
+    /// pre-save-revert shape (field-8 is read-your-writes and would echo stale-saved bytes
+    /// right back); that coverage is the registry barrier (`ensure_fresh_load`) alone.
+    pub persist_mismatch: Option<bool>,
 }
 
 /// How to write the leveling `param` function — resolved by the caller (edit an existing
@@ -2221,7 +2522,7 @@ pub(crate) fn measure_fs_at(
 /// improve it). The third state, no-authority (`clamp_reason: Some(..)` from the seed's
 /// routing probe), is decided before this and rides `clamped` as it always did.
 fn classify_fs_outcome(best_v: f32, best_lufs: f64, target_lufs: f64) -> (bool, bool) {
-    if (best_lufs - target_lufs).abs() <= KNOB_TOL_LU {
+    if (best_lufs - target_lufs).abs() <= FS_TOL_LU {
         return (false, false);
     }
     // Unreachable only when the knob is pinned at the bound that blocks the direction target
@@ -2234,14 +2535,14 @@ fn classify_fs_outcome(best_v: f32, best_lufs: f64, target_lufs: f64) -> (bool, 
     (clamped, !clamped)
 }
 
-/// Is the switch's engaged loudness already at target (within `KNOB_TOL_LU`, not clamped)?
-/// The footswitch mirror of `scene_at_target` / `level_unchanged` — same acceptance band,
-/// so a re-run leaves an in-tolerance switch untouched instead of re-solving and
-/// re-randomizing it (the idempotency gap PR #74 deferred). `clamped` is always `false`
-/// here (the probe measures a real value at `cur`), but the param matches `scene_at_target`
-/// for parity and testability.
+/// Is the switch's engaged loudness already at target (within `FS_TOL_LU`, not clamped)? The
+/// footswitch mirror of `scene_at_target` / `level_unchanged`, but on the FS lane's tighter
+/// band (NOT delegated to `scene_at_target`, which is pinned to `KNOB_TOL_LU`) — a re-run
+/// leaves an in-tolerance switch untouched instead of re-solving and re-randomizing it (the
+/// idempotency gap PR #74 deferred). `clamped` is always `false` here (the probe measures a
+/// real value at `cur`), but the param matches `scene_at_target` for parity and testability.
 fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
-    scene_at_target(measured, target, clamped)
+    !clamped && (measured - target).abs() <= FS_TOL_LU
 }
 
 /// Measurement/solve phase of ONE footswitch job — no write, no save, no reload.
@@ -2329,6 +2630,7 @@ fn solve_footswitch(
                     iterations: 1,
                     dynamic_spread_lu: Some(l.spread_lu()),
                     method: method.into(),
+                    persist_mismatch: None,
                 });
             }
             // In-tolerance-but-not-a-skip falls through to the seed pass; a probe error
@@ -2372,6 +2674,7 @@ fn solve_footswitch(
                 iterations: 1,
                 dynamic_spread_lu: None,
                 method: method.into(),
+                persist_mismatch: None,
             });
         }
         Err(e) => return Err(e),
@@ -2406,7 +2709,7 @@ fn solve_footswitch(
     // search — it must never advertise a re-run. Set ONLY where no-authority is proven
     // (the seed/expansion pair below); a mid-loop stall keeps `unconverged`.
     let mut flat_response = false;
-    if err(best_lufs) > KNOB_TOL_LU {
+    if err(best_lufs) > FS_TOL_LU {
         let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
         let mut p1 = (v_hi as f64, l_hi_lufs);
         // Bracket before falling to the correction loop — see `fs_bracket_expansion`'s doc.
@@ -2457,7 +2760,7 @@ fn solve_footswitch(
         //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
         //     from the validated behavior; the first crossing iterate forms a straddling
         //     consecutive pair, which flips the loop into bracket mode by itself.
-        if err(best_lufs) > KNOB_TOL_LU {
+        if err(best_lufs) > FS_TOL_LU {
             if (p1.1 - p0.1).abs() < KNOB_TOL_LU {
                 // The seed pair itself is flat (and the expansion probe didn't land
                 // it): the knob demonstrably can't move loudness, the correction loop
@@ -2503,7 +2806,7 @@ fn solve_footswitch(
                         }
                         Err(e) => return Err(e),
                     };
-                    if l2_real && err(l2_lufs) <= KNOB_TOL_LU {
+                    if l2_real && err(l2_lufs) <= FS_TOL_LU {
                         break;
                     }
                     let p2 = (v2 as f64, l2_lufs);
@@ -2554,6 +2857,7 @@ fn solve_footswitch(
         iterations,
         dynamic_spread_lu: Some(best_spread),
         method: method.into(),
+        persist_mismatch: None,
     })
 }
 
@@ -2590,6 +2894,10 @@ pub fn level_footswitch(
     restore_scene: Option<u32>,
 ) -> Result<FootswitchLevelResult, String> {
     let body = || -> Result<FootswitchLevelResult, String> {
+        // Freshness barrier first: this is the single-switch probe seam, called with no
+        // caller-supplied witness — registry-driven only (a no-op when the slot has no
+        // pending save).
+        ensure_fresh_load(slot, &mut || crate::op_aborted())?;
         // Load the preset in its own connection (re-amp latch workaround), then measure on
         // fresh connections (the preset stays current across reconnects).
         {
@@ -2699,6 +3007,11 @@ pub fn write_footswitch_values(
     }
     // Guaranteed re-amp OFF first — the measurement's last disengage can be dropped.
     let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+    // Freshness barrier on its OWN separate session, before this function's write session
+    // opens — NEVER inside `write_fs_values_on_session`: a live-edit lapse there drops
+    // chunked writes. Its own internal `load_preset` (below) stays exactly as-is.
+    ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     write_fs_values_on_session(&mut s, slot, pending, restore_scene)
@@ -2847,6 +3160,29 @@ fn write_fs_values_on_session(
     }
     recall_original_scene(s, restore_scene)?;
     s.save_current_preset(slot)?;
+    // Witness: the first Bake's baked param, else the first Assign's valueA — whichever this
+    // batch actually wrote first. `write_footswitch_values` (this function's only caller)
+    // already ran `ensure_fresh_load` before this session opened, so this registration is
+    // exactly what a NEXT same-slot load should wait to see.
+    let first_bake = pending
+        .iter()
+        .find(|p| matches!(p.write, FsWrite::Bake { .. }));
+    let witness_write = first_bake.or_else(|| {
+        pending
+            .iter()
+            .find(|p| matches!(p.write, FsWrite::Assign { .. }))
+    });
+    if let Some(p) = witness_write {
+        register_slot_save(
+            slot,
+            SaveWitness::Param {
+                group: p.lev.0.clone(),
+                node: p.lev.1.clone(),
+                param: p.lev.2.clone(),
+                value: p.value,
+            },
+        );
+    }
     Ok(())
 }
 
@@ -3375,7 +3711,10 @@ pub fn redistribute_clamped_headroom(
     // ONE save — new pl + every compensated outputLevel together, original scene
     // recalled and the UNSAVED raised pl re-asserted after it (the recall would
     // otherwise revert it to the saved value — see `recall_reassert_save`).
-    save_deferred_scene_writes(slot, restore_scene, Some(new_preset_level))?;
+    // No separate scene witness here: `recall_reassert_save` (called inside
+    // `save_deferred_scene_writes`) already registers the raised `new_preset_level` as this
+    // save's `PresetLevel` witness — that single value identifies the whole save.
+    save_deferred_scene_writes(slot, restore_scene, Some(new_preset_level), None)?;
 
     // Post-save AUDIO spot-verify at the PERSISTED pl (the wrong-pl-solve guard). Pick a
     // compensated sound that actually moved (writes > 0); re-measure it as-is. Advisory —
@@ -3504,15 +3843,25 @@ fn run_scene_jobs(
     // The batch's ONE persist — after the re-amp OFF, on its own clean connection.
     // Fired on the stopped path too, so already-reported scenes are never lost.
     if save && attempted {
+        // Witness: one written scene `outputLevel` this batch actually persisted — the
+        // freshness registry's anchor for a NEXT run's same-slot prepass load. `group` is
+        // left empty: `PersistedWrite` doesn't carry a group id and the comparator
+        // (`witness_value_in_doc`) never reads it (node+param alone locate the value).
+        let scene_witness = written.first().map(|w| SaveWitness::Param {
+            group: String::new(),
+            node: w.node_id.clone(),
+            param: w.parameter_id.clone(),
+            value: w.value,
+        });
         if stopped {
             // The callee already warns internally on its own first failure; this
             // catches the case where its retry ALSO failed (cancelled path only —
             // the non-cancelled `?` below still surfaces a hard error to the caller).
-            if let Err(e) = save_deferred_scene_writes(slot, restore_scene, None) {
+            if let Err(e) = save_deferred_scene_writes(slot, restore_scene, None, scene_witness) {
                 log::warn!("save_deferred_scene_writes failed on cancel (slot {slot}): {e}");
             }
         } else {
-            save_deferred_scene_writes(slot, restore_scene, None)?;
+            save_deferred_scene_writes(slot, restore_scene, None, scene_witness)?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
             // after every audio step. A stopped run returns CANCELLED below and its outcomes
             // are discarded, so it is not worth a read.
@@ -3539,6 +3888,7 @@ fn save_deferred_scene_writes(
     slot: u32,
     restore_scene: Option<u32>,
     reassert_pl: Option<f32>,
+    scene_witness: Option<SaveWitness>,
 ) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this is ALSO fired on cancel, to persist the scene overlays
     // already written. Bailing here would throw away the run's completed work.
@@ -3550,7 +3900,17 @@ fn save_deferred_scene_writes(
     attempt().or_else(|e| {
         log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
         attempt()
-    })
+    })?;
+    // Registered ONLY when the save didn't already carry a `PresetLevel` witness
+    // (`recall_reassert_save` registers that one itself) — a scene deferred save with no
+    // raised presetLevel needs its OWN witness so a later same-slot load has something to
+    // wait for.
+    if reassert_pl.is_none() {
+        if let Some(w) = scene_witness {
+            register_slot_save(slot, w);
+        }
+    }
+    Ok(())
 }
 
 /// One solved scene write, to be checked against what the batch-end save actually persisted.
@@ -3653,6 +4013,68 @@ fn verify_persisted_writes(
     }
 }
 
+/// The FS-lane mirror of [`verify_persisted_writes`]: re-read the saved preset ONCE after the
+/// FS batch save and confirm every solved+saved switch's write survived, stamping
+/// `persist_mismatch` on the result at each `(idx, node_id, param, value, is_assign)` entry
+/// (`is_assign` picks the read: `dspUnitParameters` for a Bake, the `ftsw` table's `valueA`
+/// for an Assign — the two writes land in different places on the device).
+///
+/// HONEST CONTRACT (§A4, restated): this detects ONLY "my writes didn't persist" (a dropped
+/// chunked edit / lapse / rejection). It does NOT detect staleness or the pre-save-revert
+/// shape — field-8 is read-your-writes and would happily echo stale-saved bytes right back.
+/// Revert coverage is the registry barrier (`ensure_fresh_load`) alone. `base_expect` is the
+/// run's own earlier base-save `presetLevel` expectation, if any — snapshotted by the CALLER
+/// via [`registered_preset_level`] BEFORE the batch's save overwrote the slot's registry
+/// entry with its own `Param` witness (by the time this runs, the registry can no longer
+/// answer). A mismatch there means THAT save reverted — which no per-switch param check
+/// would ever catch on its own — so every switch in this batch is stamped mismatched too
+/// (the whole preset's base sound, not just one switch, is now suspect).
+pub(crate) fn verify_fs_persisted_writes(
+    slot: u32,
+    writes: &[(usize, String, String, f32, bool)],
+    base_expect: Option<f32>,
+    results: &mut [Option<FootswitchLevelResult>],
+) {
+    if writes.is_empty() {
+        return;
+    }
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+    let Some(saved) = read_saved_preset(slot) else {
+        log::warn!(
+            "slot {slot}: FS post-save verify skipped — the saved preset could not be re-read; \
+             the reported values are unconfirmed"
+        );
+        return;
+    };
+    let base_reverted =
+        base_expect.is_some_and(|pl| match crate::audiograph::preset_level(&saved) {
+            Some(got) => (got - pl as f64).abs() > PERSIST_TOL,
+            None => true,
+        });
+    let ftsw = saved.get("ftsw");
+    for (idx, node, param, value, is_assign) in writes {
+        let got = if *is_assign {
+            ftsw.and_then(|f| ftsw_value_a(f, node, param))
+        } else {
+            crate::commands::level_footswitch::node_param_f64(&saved, node, param)
+        };
+        let mismatch = base_reverted
+            || match got {
+                Some(v) => (v - *value as f64).abs() > PERSIST_TOL,
+                None => true,
+            };
+        if let Some(r) = results.get_mut(*idx).and_then(|o| o.as_mut()) {
+            r.persist_mismatch = Some(mismatch);
+        }
+        if mismatch {
+            log::warn!(
+                "slot {slot}: FS result idx {idx} ({node}/{param}) did not persist as solved \
+                 (or the run's earlier base save appears reverted)"
+            );
+        }
+    }
+}
+
 /// Result of the joint-k solve for a scene's amp-knob set.
 struct JointK {
     /// Per-knob final levels (aligned with the input `knobs`), each `current_i · k_eff`.
@@ -3745,8 +4167,12 @@ const MEASURE_CORRECT_MAX: u32 = 3;
 /// put the target on a steep cliff that needs several Illinois-damped bracket
 /// iterates (HW, Hiwatt fs12: ~4 from a 21-LU-wide bracket) — converged solves
 /// still exit on the first in-tolerance iterate, so the extra headroom costs
-/// well-behaved knobs nothing.
-const FS_CORRECT_MAX: u32 = 8;
+/// well-behaved knobs nothing. Doubled from 8 to 16 alongside the `FS_TOL_LU`
+/// tightening (0.3 → 0.1): a tighter acceptance band needs more bracket-aware
+/// iterates to walk down onto, and a stalled/no-authority pair still exits early
+/// via `flat_response`/the secant's own degenerate-pair break, so the extra
+/// headroom again costs well-behaved knobs nothing.
+const FS_CORRECT_MAX: u32 = 16;
 /// An `outputLevel` change of at least this many dB that moves the captured loudness by
 /// less than `KNOB_TOL_LU` means the amp has no authority over the USB 1/2 capture
 /// (off-branch / off-USB output, or hard-limited downstream).
@@ -4703,6 +5129,125 @@ mod persist_verify_tests {
         let mixed = persist_mismatches(&saved, &[write(0, 0.72), write(1, 0.61)]);
         assert_eq!(mixed.len(), 1);
         assert_eq!(mixed[0].0, 1);
+    }
+}
+
+#[cfg(test)]
+mod fresh_load_registry_tests {
+    use super::*;
+
+    // No registry entry for the slot ⇒ zero-cost fast path: `ensure_fresh_load` must return
+    // `Ok` WITHOUT ever attempting a real device connect. Proven indirectly: this test binary
+    // has no real device, so `Session::connect()` inside the barrier would return `Err` (a
+    // failed HID open) and propagate through `?` — an `Ok` here is only possible if that
+    // branch was never reached.
+    #[test]
+    fn ensure_fresh_load_is_a_no_op_with_no_registry_entry() {
+        let slot = 900_001;
+        assert!(
+            SLOT_SAVE_REGISTRY.lock().unwrap().get(&slot).is_none(),
+            "test fixture invariant: slot must start unregistered"
+        );
+        let result = ensure_fresh_load(slot, &mut || false);
+        assert!(
+            result.is_ok(),
+            "no registry entry must be a no-op, not attempt a real device connect: {result:?}"
+        );
+    }
+
+    // A registered save older than `COMMIT_WINDOW_SECS` is the SAME zero-cost fast path — the
+    // commit is assumed done, so `ensure_fresh_load` must not open a session either. Directly
+    // pokes `SLOT_SAVE_REGISTRY` (same module) to backdate the entry without a real wait.
+    #[test]
+    fn ensure_fresh_load_is_a_no_op_once_the_commit_window_has_elapsed() {
+        let slot = 900_002;
+        {
+            let mut reg = SLOT_SAVE_REGISTRY.lock().unwrap();
+            reg.insert(
+                slot,
+                SlotSave {
+                    at: std::time::Instant::now() - Duration::from_secs(COMMIT_WINDOW_SECS + 1),
+                    witness: SaveWitness::PresetLevel(0.5),
+                },
+            );
+        }
+        let result = ensure_fresh_load(slot, &mut || false);
+        assert!(
+            result.is_ok(),
+            "an elapsed commit window must proceed, not attempt a real device connect: {result:?}"
+        );
+    }
+
+    // The harvest loop itself (witness match → first-pass Ok, stale → retry → pass,
+    // cancellation mid-wait, time-gate) is covered end-to-end against the SimDevice
+    // lazy-commit model in `e2e_server_tests`' `fresh_load_barrier_*` tests — they need
+    // `Session::connect()` routed to the sim (the e2e transport factory), which only that
+    // module's serial harness owns.
+
+    // The incident's own numbers (base saved 0.4377, the stale pre-save materialization read
+    // back ≈0.798): the comparator is a DUMB value compare with no staleness detection of its
+    // own — given a stale/pre-save doc, it must report a MISMATCH against the freshly
+    // registered witness, never a false match. The compare's only real protection is upstream
+    // session hygiene (`ensure_fresh_load` clears `raw` before every harvest and never issues
+    // a field-8 read); `session::best_json_payload_from_reports_can_prefer_a_stale_field9_reply`
+    // proves that pollution hazard at the wire layer this reads from.
+    #[test]
+    fn witness_compare_can_fail_on_a_stale_pre_save_value() {
+        let stale_doc = serde_json::json!({ "audioGraph": { "presetLevel": 0.798 } });
+        let registered = SaveWitness::PresetLevel(0.4377);
+        let got = witness_value_in_doc(&stale_doc, &registered).expect("presetLevel present");
+        assert!(
+            (got - witness_expected(&registered)).abs() > WITNESS_EPS,
+            "a stale doc must NOT compare equal to the freshly-registered witness"
+        );
+    }
+
+    #[test]
+    fn witness_value_in_doc_reads_preset_level() {
+        let doc = serde_json::json!({ "audioGraph": { "presetLevel": 0.6543 } });
+        let got = witness_value_in_doc(&doc, &SaveWitness::PresetLevel(0.6543));
+        assert_eq!(got, Some(0.6543));
+    }
+
+    #[test]
+    fn witness_value_in_doc_reads_a_baked_dsp_param() {
+        let doc = serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "amp", "FenderId": "amp",
+                  "dspUnitParameters": { "drive": 0.42 } }
+            ] } }
+        });
+        let w = SaveWitness::Param {
+            group: "G1".into(),
+            node: "amp".into(),
+            param: "drive".into(),
+            value: 0.42,
+        };
+        assert_eq!(witness_value_in_doc(&doc, &w), Some(0.42));
+    }
+
+    // The Assign shape: the witness value lives in `ftsw`'s `valueA`, NOT
+    // `dspUnitParameters` — an Assign never touches the block's own live param value, so
+    // comparing against `dspUnitParameters` there would compare against the switch-OFF
+    // value and could never match.
+    #[test]
+    fn witness_value_in_doc_falls_back_to_ftsw_value_a_for_an_assign() {
+        let doc = serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "amp", "FenderId": "amp",
+                  "dspUnitParameters": { "drive": 0.10 } }
+            ] } },
+            "ftsw": [[
+                { "func": "param", "nodeId": "amp", "parameterId": "drive", "valueA": 0.77 }
+            ]]
+        });
+        let w = SaveWitness::Param {
+            group: "G1".into(),
+            node: "amp".into(),
+            param: "drive".into(),
+            value: 0.77,
+        };
+        assert_eq!(witness_value_in_doc(&doc, &w), Some(0.77));
     }
 }
 
@@ -5672,18 +6217,18 @@ mod tests {
     // switch_at_target is the footswitch mirror of scene_at_target — the re-run
     // idempotency band (the PR #74 follow-up gap). Same KNOB_TOL_LU acceptance.
     #[test]
-    fn switch_at_target_accepts_within_knob_tol() {
+    fn switch_at_target_accepts_within_fs_tol() {
         assert!(
-            super::switch_at_target(-24.0, -24.29, false),
-            "0.29 LU off, unclamped → skip the re-solve"
+            super::switch_at_target(-24.0, -24.09, false),
+            "0.09 LU off, unclamped → skip the re-solve (FS_TOL_LU = 0.1, tighter than the scene lane's KNOB_TOL_LU)"
         );
     }
 
     #[test]
-    fn switch_at_target_rejects_just_outside_knob_tol() {
+    fn switch_at_target_rejects_just_outside_fs_tol() {
         assert!(
-            !super::switch_at_target(-24.0, -24.31, false),
-            "0.31 LU off → must re-level"
+            !super::switch_at_target(-24.0, -24.11, false),
+            "0.11 LU off → must re-level"
         );
     }
 
@@ -6413,8 +6958,10 @@ mod tests {
             // Mid-range miss: captures ran out, the knob still has room → re-runnable.
             ("mid-range miss", 0.55, -26.0, (false, true)),
             ("mid-range overshoot", 0.55, -14.0, (false, true)),
-            // On target (within KNOB_TOL_LU) → neither, even sitting on a bound.
-            ("on target", 1.0, -20.1, (false, false)),
+            // On target (within FS_TOL_LU) → neither, even sitting on a bound. 0.05, not
+            // 0.1 exactly — the exact boundary is float-rounding-sensitive (0.1's f64
+            // representation makes `abs(-20.1 - -20.0)` land a hair ABOVE 0.1).
+            ("on target", 1.0, -20.05, (false, false)),
             // At a bound but the miss is in the direction the knob CAN still move → the
             // search simply stopped early, so it is unconverged, not unreachable.
             ("maxed, target quieter", 1.0, -14.0, (false, true)),

@@ -1005,6 +1005,34 @@ impl Session {
         self.pump_collect(ms)
     }
 
+    /// Rich-harvest warmup: the heartbeat/pump turns that establish this session as a live
+    /// controller before a [`Session::rich_load_collect`] (the bench intel-session /
+    /// `prepass_scene_docs` shape). Shared by `discover_blocks_rich` and the
+    /// `ensure_fresh_load` freshness barrier.
+    pub(crate) fn rich_warmup(&mut self) -> Result<(), String> {
+        for _ in 0..8 {
+            self.heartbeat()?;
+            self.pump_collect(120)?;
+        }
+        Ok(())
+    }
+
+    /// Load list-index `slot` for a field-3 harvest: clear `raw` first (this session must
+    /// never carry an older stream into the harvest — `best_json_payload` prefers the
+    /// LONGEST of its carriers, so leftovers can shadow the fresh push), send `LoadPreset`
+    /// via [`Session::send_and_collect`] (NOT [`Session::load_preset`], whose
+    /// `transact_eager` discards the reports the field-3 push rides on), then keep pumping
+    /// past the 125 hit so the multi-packet push finishes arriving.
+    pub(crate) fn rich_load_collect(&mut self, slot: u32) -> Result<(), String> {
+        self.raw.clear();
+        self.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+        for _ in 0..10 {
+            self.heartbeat()?;
+            self.pump_collect(200)?;
+        }
+        Ok(())
+    }
+
     /// Diagnostic: send `body`, collect the reply, and return a dump of the reply
     /// streams (count + per-stream top-level field numbers, with songMessage[11] /
     /// setlistMessage[12] / presetMessage[2] expanded to their inner field numbers).
@@ -1343,21 +1371,7 @@ impl Session {
     /// currentPresetDataJsonResponse 79→1, and presetDataChanged 9→3 (the
     /// slot-addressed reply). Largest wins so a complete stream beats a stray.
     fn best_json_payload(&self) -> Vec<u8> {
-        const CARRIERS: [(u32, u32); 3] = [(3, 1), (79, 1), (9, 3)];
-        self.streams()
-            .iter()
-            .filter_map(|s| {
-                CARRIERS.iter().find_map(|&(pm_field, json_field)| {
-                    let inner = dig(&s.body, TMS_PRESET, pm_field)?;
-                    inner
-                        .iter()
-                        .find(|(f, _)| *f == json_field)
-                        .and_then(|(_, v)| v.as_bytes())
-                        .map(|b| b.to_vec())
-                })
-            })
-            .max_by_key(|b| b.len())
-            .unwrap_or_default()
+        best_json_payload_from_reports(&self.raw)
     }
 
     /// HW / Tier-4 diagnostic: capture the FULL `currentPresetDataChanged` (field
@@ -2618,6 +2632,36 @@ fn best_factory_list_from_reports(reports: &[Vec<u8>]) -> Option<Vec<String>> {
         .chain(proto::reassemble_streams_final(reports))
         .filter_map(|s| extract_preset_list_for(&s.body, LIST_ENUM_FACTORY))
         .max_by_key(|names| (names.len(), names.last().map_or(0, |s| s.len())))
+}
+
+/// [`Session::best_json_payload`]'s body, split into a free function over raw reports so it
+/// is unit-testable without a live `Session` (mirrors `best_preset_list_from_reports`). See
+/// that method's doc for the three carriers and the longest-wins rule.
+///
+/// DANGER (`leveller::ensure_fresh_load`'s own doc restates this): carrier `(9, 3)` is the
+/// field-8 slot-read reply's own payload. If a session's accumulated reports ever carry BOTH
+/// a fresh field-3 live push and a stray field-9 reply, "longest wins" can pick the STALE
+/// field-9 content over the fresh push — a caller comparing that payload against an
+/// independently-recorded "what should this preset show now" oracle would be comparing the
+/// oracle against itself. `ensure_fresh_load`'s session never issues a field-8 read for
+/// exactly this reason; `best_json_payload_from_reports_can_prefer_a_stale_field9_reply`
+/// below proves the hazard exists at this layer.
+fn best_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
+    const CARRIERS: [(u32, u32); 3] = [(3, 1), (79, 1), (9, 3)];
+    proto::reassemble_streams(reports)
+        .iter()
+        .filter_map(|s| {
+            CARRIERS.iter().find_map(|&(pm_field, json_field)| {
+                let inner = dig(&s.body, TMS_PRESET, pm_field)?;
+                inner
+                    .iter()
+                    .find(|(f, _)| *f == json_field)
+                    .and_then(|(_, v)| v.as_bytes())
+                    .map(|b| b.to_vec())
+            })
+        })
+        .max_by_key(|b| b.len())
+        .unwrap_or_default()
 }
 
 /// Extract the firmware version from a `currentFwResponse` frame:
@@ -4320,6 +4364,50 @@ mod tests {
         ];
         let best = best_preset_list_from_reports(&reports).expect("my presets");
         assert_eq!(best, vec!["Guitar".to_string(), "Cello".to_string()]);
+    }
+
+    // The field-9-polluted rig `leveller::ensure_fresh_load` is built to never create:
+    // carrier (9, 3) is the field-8 slot-read reply's OWN payload, and `best_json_payload`
+    // picks the LONGEST of its three carriers with no other tiebreak. A session whose
+    // accumulated reports carry BOTH a fresh field-3 live push and a stray, longer field-9
+    // reply will silently prefer the STALE field-9 content — proving the compare CAN fail
+    // (a freshness check built on this payload would launder stale bytes as fresh) and why
+    // `ensure_fresh_load` clears `raw` before every harvest and never issues a field-8 read
+    // on its own session.
+    #[test]
+    fn best_json_payload_from_reports_can_prefer_a_stale_field9_reply() {
+        fn ld(field: u32, inner: &[u8]) -> Vec<u8> {
+            let mut o = Vec::new();
+            o.push(((field << 3) | 2) as u8);
+            o.push(inner.len() as u8);
+            o.extend_from_slice(inner);
+            o
+        }
+        fn report(body: &[u8]) -> Vec<u8> {
+            let mut r = vec![0x00, 0x35, 0x00, body.len() as u8];
+            r.extend_from_slice(body);
+            r
+        }
+        let fresh_json = b"FRESH_LIVE_PUSH".to_vec();
+        let stale_json = b"STALE_FIELD9_SLOT_READ_REPLY_PADDED_LONGER".to_vec();
+        assert!(
+            stale_json.len() > fresh_json.len(),
+            "test fixture invariant"
+        );
+        // Healthy session: only the fresh currentPresetDataChanged(3)->presetJson(1) push.
+        let clean = vec![report(&ld(TMS_PRESET, &ld(3, &ld(1, &fresh_json))))];
+        assert_eq!(best_json_payload_from_reports(&clean), fresh_json);
+        // Polluted session: the same fresh push PLUS a stray presetDataChanged(9)->…(3) reply
+        // (the field-8 carrier) that happens to be longer.
+        let polluted = vec![
+            report(&ld(TMS_PRESET, &ld(3, &ld(1, &fresh_json)))),
+            report(&ld(TMS_PRESET, &ld(9, &ld(3, &stale_json)))),
+        ];
+        assert_eq!(
+            best_json_payload_from_reports(&polluted),
+            stale_json,
+            "longest-wins picked the stale field-9 reply over the fresh field-3 push"
+        );
     }
 
     // The Factory harvest gates on listEnum == 4: it must pick the Factory reply

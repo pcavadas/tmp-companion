@@ -236,6 +236,22 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
             .collect();
         let plans = footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys);
 
+        // Freshness barrier: a same-slot batch load starting shortly after this preset's own
+        // earlier save (base level, a prior FS batch, …) could otherwise materialize the
+        // PRE-save preset — the incident this whole fix exists for. Tell the wizard WHY
+        // nothing moves for up to ~2 min before paying the wait, since `ensure_fresh_load`
+        // gates silently otherwise.
+        if leveller::slot_save_pending_commit(slot) {
+            if let Some(first) = jobs.first() {
+                let _ = on_result.send(FootswitchLevelProgressItem {
+                    switch: first.switch,
+                    status: "active".into(),
+                    result: None,
+                    message: Some("waiting for the device to commit the previous save…".into()),
+                });
+            }
+        }
+        leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
         // Load the preset ONCE for the whole batch — `measure_footswitch`'s caller
         // contract. Every job's sweep runs against this load (its pollution is
         // self-correcting: each job's force list explicitly sets every sibling
@@ -400,10 +416,24 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         }
         // ── ONE write session + ONE save for every solved switch (also fired after a
         // cancel, so already-reported switches persist), then a reload to leave the
-        // working copy clean. No post-save verify capture: `predicted_lufs` is already
-        // a REAL measurement at `final_value` (the sweep's best point), not a model
-        // prediction — re-measuring it bought nothing but ~10 s per switch.
+        // working copy clean. No re-measure verify capture: `predicted_lufs` is already a
+        // REAL measurement at `final_value` (the sweep's best point), not a model
+        // prediction — re-measuring it bought nothing but ~10 s per switch. A CHEAP
+        // param-level persist verify (one field-8 read, §A4) still runs below.
         let write_result = if save && !pending.is_empty() {
+            // Snapshot for the post-save persist-verify BEFORE the unzip below consumes
+            // `pending` — (result idx, node, param, solved value, is-an-Assign-write).
+            let verify_specs: Vec<(usize, String, String, f32, bool)> = pending
+                .iter()
+                .map(|(idx, w)| {
+                    let is_assign = matches!(w.write, leveller::FsWrite::Assign { .. });
+                    (*idx, w.lev.1.clone(), w.lev.2.clone(), w.value, is_assign)
+                })
+                .collect();
+            // Snapshot the run's own earlier base-save expectation NOW — the write below
+            // registers the batch's `Param` witness over the same slot key, after which the
+            // registry can no longer answer for the base save (`registered_preset_level`).
+            let base_expect = leveller::registered_preset_level(slot);
             let (idxs, writes): (Vec<usize>, Vec<leveller::FsPendingWrite>) =
                 pending.into_iter().unzip();
             // Re-stamp the preset's original `lastLoadedScene`: the write session's base
@@ -418,13 +448,25 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                         r.saved = true;
                     }
                 }
-                // Propagate the persisted state to BakeShared siblings that reused a
-                // now-saved representative's result (they share the same written write).
+                // §A4: one field-8 read, stamping `persist_mismatch` per switch — the FS-lane
+                // mirror of the scene lane's `verify_persisted_writes`.
+                leveller::verify_fs_persisted_writes(
+                    slot,
+                    &verify_specs,
+                    base_expect,
+                    &mut results,
+                );
+                // Propagate the persisted state (saved + persist_mismatch) to BakeShared
+                // siblings that reused a now-saved representative's result (they share the
+                // same written write).
                 for (idx, plan) in plans.iter().enumerate() {
                     if let footswitch::FsLevelPlan::BakeShared { rep } = plan {
                         if written.contains(rep) {
+                            let rep_mismatch =
+                                results[*rep].as_ref().and_then(|r| r.persist_mismatch);
                             if let Some(r) = &mut results[idx] {
                                 r.saved = true;
+                                r.persist_mismatch = rep_mismatch;
                             }
                         }
                     }

@@ -8,7 +8,7 @@
 /// or working-copy-writing probe experiment may target. Shared by every guard
 /// that gates a probe write — a single declaration so widening or shifting the
 /// scratch zone is one edit, not four.
-pub(crate) const SCRATCH_SLOTS: [u32; 5] = [400, 401, 402, 403, 404];
+pub(crate) const SCRATCH_SLOTS: [u32; 6] = [400, 401, 402, 403, 404, 405];
 
 pub(crate) mod analyze;
 pub(crate) mod doctor_calib;

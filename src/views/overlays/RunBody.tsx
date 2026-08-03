@@ -131,13 +131,15 @@ export function RunBody({
     `${it.targetName} · ${fmtLufs(resolvedTargetLufs(it, targetLufsByName))}`;
   const rowStatus = (it: RunItem): string => {
     // Active-but-not-yet-streaming = loading the preset + engaging re-amp (no LUFS events
-    // yet), so "connecting…" is truer than "leveling…" for that pre-capture window.
+    // yet), so "connecting…" is truer than "leveling…" for that pre-capture window — unless
+    // the backend handed a specific reason (e.g. the freshness barrier waiting out the TMP's
+    // lazy `saveCurrentPreset` commit window), which takes priority over the generic default.
     if (it.status === "active")
       return stopping
         ? "stopping…"
         : liveLufs !== null
           ? `leveling · ${fmtLufs(liveLufs)}`
-          : "connecting…";
+          : (it.activeMessage ?? "connecting…");
     if (it.status === "result") return resultText(it);
     // A stopped run's tail would otherwise read as still-pending forever.
     return stopped ? "—" : "queued";

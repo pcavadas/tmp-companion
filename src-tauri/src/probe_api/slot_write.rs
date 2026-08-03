@@ -445,18 +445,8 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
 /// bench intel session + `prepass_scene_docs`.
 pub(crate) fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
     let mut s = Session::connect()?;
-    for _ in 0..8 {
-        s.heartbeat()?;
-        s.pump_collect(120)?;
-    }
-    s.raw.clear();
-    s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
-    // Keep pumping past the 125 hit — the multi-packet field-3 push (block discovery)
-    // needs the extra turns to finish arriving.
-    for _ in 0..10 {
-        s.heartbeat()?;
-        s.pump_collect(200)?;
-    }
+    s.rich_warmup()?;
+    s.rich_load_collect(slot)?;
     s.current_preset_blocks()
 }
 
