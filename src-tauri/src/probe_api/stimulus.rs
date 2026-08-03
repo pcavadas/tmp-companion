@@ -10,9 +10,12 @@ use crate::read_slot_preset_parsed;
 use crate::session;
 use crate::topologies;
 
-/// Read a WAV file and downmix to mono f32 in [-1, 1] (fixed mono convention).
-/// Returns (samples, sample_rate).
-fn read_wav_mono(path: &str) -> Result<(Vec<f32>, u32), String> {
+/// Read a WAV file's raw interleaved samples as f32 in [-1, 1] (handles both
+/// float32 and integer PCM), without downmixing. Returns (interleaved,
+/// sample_rate, channels). Shared by [`read_wav_mono`] (which downmixes) and
+/// [`measure_wav_auto`] (which needs the channel count to pick a measurement
+/// convention).
+fn read_wav_interleaved(path: &str) -> Result<(Vec<f32>, u32, usize), String> {
     let mut reader = hound::WavReader::open(path).map_err(|e| format!("open {path}: {e}"))?;
     let spec = reader.spec();
     let ch = spec.channels.max(1) as usize;
@@ -26,36 +29,117 @@ fn read_wav_mono(path: &str) -> Result<(Vec<f32>, u32), String> {
                 .collect()
         }
     };
+    Ok((interleaved, spec.sample_rate, ch))
+}
+
+/// Read a WAV file and downmix to mono f32 in [-1, 1] (fixed mono convention).
+/// Returns (samples, sample_rate).
+fn read_wav_mono(path: &str) -> Result<(Vec<f32>, u32), String> {
+    let (interleaved, rate, ch) = read_wav_interleaved(path)?;
     let mono: Vec<f32> = interleaved
         .chunks(ch)
         .map(|frame| frame.iter().sum::<f32>() / ch as f32)
         .collect();
-    Ok((mono, spec.sample_rate))
+    Ok((mono, rate))
 }
 
 /// Read a WAV file, downmix to mono f32, and measure its loudness. Used by
 /// `probe --lufs <wav>` to validate `lufs.rs` against an external oracle
-/// (pyloudnorm / ffmpeg ebur128) without any device.
+/// (pyloudnorm / ffmpeg ebur128) without any device. Kept as the pre-PR2
+/// mono-only entry point; [`measure_wav_auto`] is the stereo-aware successor
+/// `probe --measure-wav` uses.
 pub fn measure_wav_file(path: &str) -> Result<lufs::Loudness, String> {
     let (mono, rate) = read_wav_mono(path)?;
     lufs::measure_mono(&mono, rate)
 }
 
+/// Read a WAV file and measure it through the PRODUCTION output-side
+/// convention (module header, `leveller::measure_processed`): a ≥2-channel
+/// file measures its first two channels as standard 2-ch BS.1770
+/// (`lufs::measure_stereo`) — extra channels beyond the pair are dropped
+/// rather than mixed in, matching `Capture::processed_stereo`'s dry-channel
+/// exclusion — and a genuinely 1-channel file measures via `lufs::measure_mono`.
+/// Device-free (reads a file, never opens HID or touches re-amp): the
+/// Companion side of `probe --measure-wav` / `scripts/meter-parity.sh`.
+pub fn measure_wav_auto(path: &str) -> Result<(lufs::Loudness, usize), String> {
+    let (interleaved, rate, ch) = read_wav_interleaved(path)?;
+    if ch >= 2 {
+        let pair: Vec<f32> = interleaved
+            .chunks(ch)
+            .flat_map(|f| {
+                [
+                    f.first().copied().unwrap_or(0.0),
+                    f.get(1).copied().unwrap_or(0.0),
+                ]
+            })
+            .collect();
+        Ok((lufs::measure_stereo(&pair, rate)?, ch))
+    } else {
+        Ok((lufs::measure_mono(&interleaved, rate)?, ch))
+    }
+}
+
 /// Write a mono f32 buffer to a WAV (the offline reference-clip corpus format +
 /// the Tier-2 calibration capture store via `profiles::store_capture`).
 pub(crate) fn write_wav_mono(path: &str, samples: &[f32], sample_rate: u32) -> Result<(), String> {
+    write_wav(path, samples, sample_rate, 1)
+}
+
+/// Write an INTERLEAVED 2-channel f32 buffer to a WAV — the processed-pair dump
+/// format `probe --dump-wav` writes (see [`dump_processed_capture`]).
+pub(crate) fn write_wav_stereo(
+    path: &str,
+    interleaved: &[f32],
+    sample_rate: u32,
+) -> Result<(), String> {
+    write_wav(path, interleaved, sample_rate, 2)
+}
+
+fn write_wav(
+    path: &str,
+    interleaved: &[f32],
+    sample_rate: u32,
+    channels: u16,
+) -> Result<(), String> {
     let spec = hound::WavSpec {
-        channels: 1,
+        channels,
         sample_rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
     let mut w = hound::WavWriter::create(path, spec).map_err(|e| format!("create {path}: {e}"))?;
-    for &s in samples {
+    for &s in interleaved {
         w.write_sample(s)
             .map_err(|e| format!("write {path}: {e}"))?;
     }
     w.finalize().map_err(|e| format!("finalize {path}: {e}"))
+}
+
+/// Write a re-amp `Capture`'s PROCESSED PAIR (never the dry channel) to a
+/// 32-bit-float WAV in `dir`, named from `label` (the caller builds it from
+/// slot/scene so a directory of dumps stays self-describing) — the
+/// `probe --dump-wav <dir>` add-on. A genuinely 1-channel capture falls back to
+/// a mono file (mirrors `Capture::processed_stereo`'s own fallback: duplicating
+/// it into fake dual-mono would invent the +3.01 dB the hardware never
+/// produced). Pure add-on: only called when `--dump-wav` is passed, so a probe
+/// invocation without it is byte-for-byte unaffected. Creates `dir` if absent.
+///
+/// `label` is NOT made unique here — a repeated `--measure-current`/`--measure-scene`
+/// call with the same slot/scene (the same caller-built label) OVERWRITES the prior
+/// dump. A caller wanting to keep every take (e.g. a same-day A/B) must vary `label`
+/// itself (a timestamp suffix).
+pub(crate) fn dump_processed_capture(
+    cap: &audio::Capture,
+    dir: &str,
+    label: &str,
+) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create dir {dir}: {e}"))?;
+    let path = format!("{}/{label}.wav", dir.trim_end_matches('/'));
+    match cap.processed_stereo() {
+        Some(stereo) => write_wav_stereo(&path, &stereo, cap.sample_rate)?,
+        None => write_wav_mono(&path, &cap.channel(0), cap.sample_rate)?,
+    }
+    Ok(path)
 }
 
 /// OFFLINE HARNESS (1/3): capture ONE full re-amp clip of `slot` at the leveling
@@ -318,7 +402,7 @@ pub fn probe_measure_converge_replay(
         preroll_ms,
         ..audio::MeasureOpts::adaptive()
     };
-    let r = audio::replay_measure(&mono, rate, opts)?;
+    let r = audio::replay_measure(&mono, rate, 1, opts)?;
     Ok(format!(
         "replay {wav}\n  opts: preroll={}ms hop={}ms eps={} k={} min={}ms max={}ms\n  \
          exit={}ms converged={}  integrated={:.3} LUFS  full={full:.3}  Δ={:+.3} LU\n",
@@ -363,7 +447,7 @@ pub fn probe_measure_adaptive(slot: u32, topology_id: &str) -> Result<String, St
             audio::reamp_measure(&stim, 48_000, audio::MeasureOpts::adaptive())
         } else {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            leveller::loudest_lufs(audio::reamp_capture(&stim, 48_000, 800))
+            leveller::processed_lufs(audio::reamp_capture(&stim, 48_000, 800))
         };
         let _ = s.set_reamp_mode(false);
         Ok((lufs?, t.elapsed().as_millis()))
@@ -881,5 +965,149 @@ mod clip_gate_tests {
             *x = 1.0; // 8 consecutive pinned samples = genuine overload
         }
         assert!(is_clipped_capture(&s));
+    }
+}
+
+#[cfg(test)]
+mod measure_wav_auto_tests {
+    use super::{measure_wav_auto, write_wav, write_wav_mono, write_wav_stereo};
+    use std::f32::consts::PI;
+
+    fn sine(freq: f32, secs: f32, rate: u32, amp: f32) -> Vec<f32> {
+        let n = (secs * rate as f32) as usize;
+        (0..n)
+            .map(|i| amp * (2.0 * PI * freq * i as f32 / rate as f32).sin())
+            .collect()
+    }
+
+    fn interleave2(l: &[f32], r: &[f32]) -> Vec<f32> {
+        l.iter().zip(r).flat_map(|(&a, &b)| [a, b]).collect()
+    }
+
+    fn fixture(tag: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "tmp-measure-wav-auto-{tag}-{}.wav",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn mono_file_measures_via_the_mono_convention() {
+        let rate = 48_000;
+        let tone = sine(1000.0, 4.0, rate, 0.4);
+        let path = fixture("mono");
+        write_wav_mono(&path, &tone, rate).unwrap();
+        let (l, ch) = measure_wav_auto(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(ch, 1);
+        let direct = crate::lufs::measure_mono(&tone, rate).unwrap();
+        assert!((l.integrated_lufs - direct.integrated_lufs).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dual_mono_stereo_file_reads_3_01_over_a_mono_file_of_the_same_tone() {
+        // The offline proof that `--measure-wav` picks the OUTPUT-side (2-ch)
+        // convention for a stereo file, not a mono downmix — matches the
+        // `lufs.rs` module-header +3.0103 dB dual-mono constant.
+        let rate = 48_000;
+        let tone = sine(1000.0, 4.0, rate, 0.4);
+        let mono_path = fixture("dualmono-mono");
+        let stereo_path = fixture("dualmono-stereo");
+        write_wav_mono(&mono_path, &tone, rate).unwrap();
+        write_wav_stereo(&stereo_path, &interleave2(&tone, &tone), rate).unwrap();
+        let (mono, mono_ch) = measure_wav_auto(&mono_path).unwrap();
+        let (stereo, stereo_ch) = measure_wav_auto(&stereo_path).unwrap();
+        let _ = std::fs::remove_file(&mono_path);
+        let _ = std::fs::remove_file(&stereo_path);
+        assert_eq!(mono_ch, 1);
+        assert_eq!(stereo_ch, 2);
+        assert!(
+            (stereo.integrated_lufs - mono.integrated_lufs - 3.0103).abs() < 0.05,
+            "mono {:.3} stereo {:.3}",
+            mono.integrated_lufs,
+            stereo.integrated_lufs
+        );
+    }
+
+    #[test]
+    fn extra_channels_beyond_the_pair_are_dropped_not_mixed_in() {
+        // A 3-channel file (mirrors a `--dump-wav`-adjacent capture with a dry
+        // send appended) must measure identically to its own first-2-channel
+        // truncation — never mix the 3rd channel in.
+        let rate = 48_000;
+        let l = sine(1000.0, 3.0, rate, 0.4);
+        let r = sine(1300.0, 3.0, rate, 0.2);
+        let dry = sine(220.0, 3.0, rate, 0.9); // loud — would visibly skew a mix-in
+        let three: Vec<f32> = l
+            .iter()
+            .zip(&r)
+            .zip(&dry)
+            .flat_map(|((&a, &b), &c)| [a, b, c])
+            .collect();
+        let path = fixture("three-ch");
+        write_wav(&path, &three, rate, 3).unwrap();
+        let (three_ch_result, ch) = measure_wav_auto(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(ch, 3);
+        let pair_only = super::lufs::measure_stereo(&interleave2(&l, &r), rate).unwrap();
+        assert!(
+            (three_ch_result.integrated_lufs - pair_only.integrated_lufs).abs() < 1e-6,
+            "3-ch read {:.3} must match pair-only {:.3}",
+            three_ch_result.integrated_lufs,
+            pair_only.integrated_lufs
+        );
+    }
+}
+
+#[cfg(test)]
+mod dump_processed_capture_tests {
+    use super::dump_processed_capture;
+    use crate::audio::Capture;
+
+    #[test]
+    fn stereo_capture_dumps_the_processed_pair_and_drops_the_dry_channel() {
+        let cap = Capture {
+            interleaved: vec![1.0, 0.4, 0.0, 0.5, 0.2, 0.0], // 2 frames, 3 channels (ch2 = dry)
+            channels: 3,
+            sample_rate: 48_000,
+        };
+        let dir = std::env::temp_dir()
+            .join(format!("tmp-dump-capture-{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let path = dump_processed_capture(&cap, &dir, "slot12_scene3").unwrap();
+        assert!(path.ends_with("slot12_scene3.wav"));
+        let (samples, rate, ch) = super::read_wav_interleaved(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ch, 2, "dry channel 2 must be excluded from the dump");
+        assert_eq!(rate, 48_000);
+        assert!((samples[0] - 1.0).abs() < 1e-6);
+        assert!((samples[1] - 0.4).abs() < 1e-6);
+        assert!((samples[2] - 0.5).abs() < 1e-6);
+        assert!((samples[3] - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mono_capture_falls_back_to_a_mono_dump() {
+        let cap = Capture {
+            interleaved: vec![0.3, -0.2, 0.1],
+            channels: 1,
+            sample_rate: 48_000,
+        };
+        let dir = std::env::temp_dir()
+            .join(format!("tmp-dump-capture-mono-{}", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let path = dump_processed_capture(&cap, &dir, "current_current").unwrap();
+        let (samples, _, ch) = super::read_wav_interleaved(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            ch, 1,
+            "a genuinely mono capture must not be duplicated to fake stereo"
+        );
+        assert_eq!(samples, vec![0.3, -0.2, 0.1]);
     }
 }

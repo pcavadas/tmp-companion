@@ -82,22 +82,55 @@ pub fn playback_offset_lu(level: PlaybackLevel, instrument: &str) -> f64 {
 
 /// The three pro-grade live levels shipped by default (and seeded into any store
 /// that predates the `targets` field). Names match modeler vocab (Kemper/Helix/QC);
-/// all ≤ −22 LUFS to stay under the device's ~−20 LUFS re-amp tap ceiling.
+/// all ≤ −19 LUFS to stay under the device's ~−17 LUFS re-amp tap ceiling
+/// (PR2 re-baseline: convention-adjusted from the mono-era ~−20 LUFS ceiling by
+/// the +3.0103 dB dual-mono shift, pending hardware re-validation — see
+/// `notes/leveling.md`'s metering-convention section).
 fn default_targets() -> Vec<Target> {
     vec![
         Target {
             name: "Rhythm".into(),
-            lufs: -26.0,
+            lufs: -23.0,
         },
         Target {
             name: "Crunch".into(),
-            lufs: -24.0,
+            lufs: -21.0,
         },
         Target {
             name: "Lead".into(),
-            lufs: -22.0,
+            lufs: -19.0,
         },
     ]
+}
+
+/// Current meter convention this store's `targets` are expressed in. `1` = 2-ch
+/// BS.1770 over the processed USB pair (this PR); `0` (or the field ABSENT —
+/// `#[serde(default)]`, every store written before this PR) = the mono-era
+/// single-channel convention, +3.0103 dB quieter for the same audible loudness.
+pub const METER_CONVENTION_STEREO: u8 = 1;
+
+/// The exact dB a mono-era stored target needs to keep producing the SAME
+/// audible loudness under the new stereo convention — see `lufs.rs`'s module
+/// header for why this is algebraically exact, not just empirically measured.
+const MONO_TO_STEREO_SHIFT_LU: f64 = 3.0103;
+
+/// One-shot mono-era → stereo-era target migration (D3): if `store.meter_convention`
+/// predates [`METER_CONVENTION_STEREO`], shift every stored target by
+/// [`MONO_TO_STEREO_SHIFT_LU`] (rounded to 0.1 LU — the UI's own quantizer step)
+/// and stamp the new convention. Idempotent: a store already AT the current
+/// convention is returned unchanged (`migrated: false`), so calling this twice
+/// in a row (e.g. a `load` immediately followed by a `save_targets`-style
+/// load-mutate-save) never double-shifts. `calibration_lufs` is INPUT-side and
+/// is never touched here.
+fn migrate_meter_convention(mut store: Store) -> (Store, bool) {
+    if store.meter_convention >= METER_CONVENTION_STEREO {
+        return (store, false);
+    }
+    for t in &mut store.targets {
+        t.lufs = ((t.lufs + MONO_TO_STEREO_SHIFT_LU) * 10.0).round() / 10.0;
+    }
+    store.meter_convention = METER_CONVENTION_STEREO;
+    (store, true)
 }
 
 /// The whole persisted store: the profile list, which profile each preset slot
@@ -120,6 +153,11 @@ pub struct Store {
     /// Auto-download updates in the background (Settings → App updates).
     #[serde(default = "default_true")]
     pub auto_install_updates: bool,
+    /// See [`METER_CONVENTION_STEREO`]/[`migrate_meter_convention`]. Absent (any
+    /// store written before this PR) deserializes to `0` — mono-era — via
+    /// `#[serde(default)]`.
+    #[serde(default)]
+    pub meter_convention: u8,
 }
 
 fn default_true() -> bool {
@@ -136,6 +174,11 @@ impl Default for Store {
             targets: default_targets(),
             playback_level: PlaybackLevel::default(),
             auto_install_updates: true,
+            // A fresh install's `default_targets()` are ALREADY expressed in the
+            // current (stereo) convention — stamp it directly rather than routing
+            // through `migrate_meter_convention`, which would try to shift them
+            // a second time.
+            meter_convention: METER_CONVENTION_STEREO,
         }
     }
 }
@@ -156,10 +199,33 @@ fn store_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 }
 
 /// Read the store from `path`; a missing file yields the default (empty) store.
+/// A store loaded from a REAL file runs the mono→stereo meter-convention
+/// migration (D3): if it predates [`METER_CONVENTION_STEREO`], its targets are
+/// shifted in memory and the migrated store is persisted back immediately, so
+/// every subsequent load (this run or a future one) sees the already-migrated
+/// convention and never re-shifts. A persist failure here (read-only config
+/// dir, full disk, permissions) is logged and swallowed, NOT propagated: this
+/// is the first load after an app update, so turning a cosmetic
+/// save-back-now-vs-next-launch difference into a hard settings-load failure
+/// would break the app's whole startup on what should be a soft warning —
+/// the returned store is correctly migrated for this session regardless, and
+/// the write is simply retried on the next `load_from_path` call.
 pub fn load_from_path(path: &Path) -> Result<Store, String> {
     match std::fs::read(path) {
         Ok(bytes) => {
-            serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))
+            let store: Store = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("parse {}: {e}", path.display()))?;
+            let (store, migrated) = migrate_meter_convention(store);
+            if migrated {
+                if let Err(e) = save_to_path(path, &store) {
+                    log::warn!(
+                        "meter-convention migration persist failed for {}: {e} \
+                         (will retry on next load; this session's store is migrated)",
+                        path.display()
+                    );
+                }
+            }
+            Ok(store)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store::default()),
         Err(e) => Err(format!("read {}: {e}", path.display())),
@@ -324,6 +390,7 @@ mod tests {
             }],
             playback_level: PlaybackLevel::Rehearsal,
             auto_install_updates: false,
+            meter_convention: METER_CONVENTION_STEREO,
         }
     }
 
@@ -373,6 +440,164 @@ mod tests {
         let store: Store = serde_json::from_str(legacy).unwrap();
         assert!(store.auto_install_updates);
         assert!(Store::default().auto_install_updates);
+    }
+
+    #[test]
+    fn fresh_default_store_is_already_stamped_stereo_and_never_shifted() {
+        // A brand-new install's `default_targets()` are ALREADY in the current
+        // convention — `Store::default()` must stamp `meter_convention` directly,
+        // not fall through a migration that would shift them a second time.
+        let store = Store::default();
+        assert_eq!(store.meter_convention, METER_CONVENTION_STEREO);
+        assert_eq!(store.targets, default_targets());
+    }
+
+    #[test]
+    fn mono_era_store_migrates_targets_on_load_and_stamps_the_convention() {
+        // D3: a hand-authored mono-era file (no `meterConvention` key at all —
+        // `#[serde(default)]` reads it as 0) must migrate on `load_from_path`.
+        let dir = tmp_dir("migrate-on-load");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        std::fs::write(
+            &path,
+            r#"{"targets":[{"name":"Rhythm","lufs":-26.0},{"name":"Lead","lufs":-22.0}]}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.meter_convention, METER_CONVENTION_STEREO);
+        // -26.0 + 3.0103 = -22.9897, rounded to the UI's 0.1 LU step = -23.0.
+        // -22.0 + 3.0103 = -18.9897, rounded = -19.0.
+        assert!(
+            (loaded.targets[0].lufs - (-23.0)).abs() < 1e-9,
+            "{:?}",
+            loaded.targets
+        );
+        assert!(
+            (loaded.targets[1].lufs - (-19.0)).abs() < 1e-9,
+            "{:?}",
+            loaded.targets
+        );
+        // The migration must have persisted back to disk — re-reading the RAW
+        // bytes (not `load_from_path`, which would migrate again if it hadn't)
+        // shows the stamped convention.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("\"meter_convention\": 1"),
+            "migration did not persist the stamped convention: {raw}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migration_is_idempotent_across_repeated_loads() {
+        // Loading an already-migrated store a second (and third) time must NOT
+        // shift its targets again — the exact failure mode a `meter_convention`
+        // stamp exists to prevent.
+        let dir = tmp_dir("migrate-idempotent");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        std::fs::write(&path, r#"{"targets":[{"name":"Rhythm","lufs":-26.0}]}"#).unwrap();
+        let once = load_from_path(&path).unwrap();
+        let twice = load_from_path(&path).unwrap();
+        let thrice = load_from_path(&path).unwrap();
+        assert_eq!(once.targets, twice.targets);
+        assert_eq!(twice.targets, thrice.targets);
+        assert_eq!(thrice.meter_convention, METER_CONVENTION_STEREO);
+        assert!((once.targets[0].lufs - (-23.0)).abs() < 1e-9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migration_survives_a_save_targets_style_round_trip() {
+        // The advisor-flagged real failure mode: `commands::settings::save_targets`
+        // loads the WHOLE store (running the migration), overwrites ONLY `.targets`
+        // with the caller's new values, then saves the WHOLE store back. If the
+        // stamped `meter_convention` were dropped or not carried through that
+        // wholesale overwrite, the NEXT load would re-shift the just-saved (already
+        // current-convention) targets. Emulate that exact load → mutate-targets →
+        // save → reload sequence with the pure path-based functions.
+        let dir = tmp_dir("migrate-save-targets");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        std::fs::write(&path, r#"{"targets":[{"name":"Rhythm","lufs":-26.0}]}"#).unwrap();
+
+        let mut store = load_from_path(&path).unwrap(); // migrates + persists
+        assert_eq!(store.meter_convention, METER_CONVENTION_STEREO);
+        store.targets = vec![Target {
+            name: "Custom".into(),
+            lufs: -19.0,
+        }];
+        save_to_path(&path, &store).unwrap(); // the `save_targets` command's own save
+
+        let reloaded = load_from_path(&path).unwrap();
+        assert_eq!(reloaded.meter_convention, METER_CONVENTION_STEREO);
+        assert_eq!(reloaded.targets, store.targets, "no re-shift on reload");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calibration_lufs_is_never_touched_by_the_migration() {
+        // calibration_lufs is INPUT-side (Tier-2 dry-DI reference) — the migration
+        // must only ever touch `targets`.
+        let dir = tmp_dir("migrate-calibration-untouched");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        std::fs::write(
+            &path,
+            r#"{"targets":[{"name":"Rhythm","lufs":-26.0}],
+                "profiles":[{"id":"p1","name":"Tele","topology_id":"guitar-singlecoil","calibration_lufs":-9.5}]}"#,
+        )
+        .unwrap();
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(loaded.profiles[0].calibration_lufs, Some(-9.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migration_persist_failure_still_returns_the_migrated_store_not_an_error() {
+        // Advisor-flagged regression: before the fix, `load_from_path` propagated
+        // the post-migration `save_to_path` error with `?`, turning a cosmetic
+        // persistence failure (read-only config dir, full disk, permissions) into
+        // a HARD settings-load failure — on exactly the first launch after an
+        // update, when the migration runs. Force that persist to fail by making
+        // the on-disk file read-only (the file itself, so `std::fs::read` above it
+        // still succeeds — only the migration's save-back should fail) and assert
+        // `load_from_path` still returns Ok with the in-memory-migrated store.
+        let dir = tmp_dir("migrate-persist-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        std::fs::write(&path, r#"{"targets":[{"name":"Rhythm","lufs":-26.0}]}"#).unwrap();
+
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let result = load_from_path(&path);
+
+        // Restore write access so the tmp dir can be removed (and so a leaked
+        // read-only file never lingers for another test run to trip over).
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let store = result.expect("a failed migration persist must not fail the load");
+        assert_eq!(store.meter_convention, METER_CONVENTION_STEREO);
+        // -26.0 + 3.0103 = -22.9897, rounded to the UI's 0.1 LU step = -23.0 — the
+        // migrated value must still come back even though it was never written.
+        assert!(
+            (store.targets[0].lufs - (-23.0)).abs() < 1e-9,
+            "{:?}",
+            store.targets
+        );
+        // And the on-disk bytes were genuinely NOT updated (the failure was real).
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("-26.0") && !raw.contains("meter_convention"),
+            "expected the write-back to have failed, but the file changed: {raw}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn tmp_dir(tag: &str) -> PathBuf {

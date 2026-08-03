@@ -264,7 +264,9 @@ export function SettingsView({
   // ── Loudness targets — create / rename / set level / reorder / delete ──
   function addTarget() {
     const uid = newUid();
-    void persistTargets([...targets, { uid, name: "New target", lufs: -22.0 }]);
+    // PR2 re-baseline: +3 from the mono-era -22.0 default (same audible loudness
+    // under the new 2-ch BS.1770 convention — see TargetRow's TMIN/TMAX doc).
+    void persistTargets([...targets, { uid, name: "New target", lufs: -19.0 }]);
     setJustAdded(uid);
   }
   function renameTarget(uid: string, name: string) {

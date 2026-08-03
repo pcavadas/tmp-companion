@@ -14,10 +14,13 @@ import { Icon } from "../../ui/Icon";
 import { MenuItem, MenuDivider } from "../../ui/primitives";
 import { Menu } from "../../ui/Menu";
 
-// Slider domain (handoff): v ∈ [−32 .. −16]. No upper clamp — any value in range
-// is valid (the old ≈ −20.7 ceiling warning was removed).
-const TMIN = -32;
-const TMAX = -16;
+// Slider domain (handoff): v ∈ [−29 .. −13]. No upper clamp — any value in range
+// is valid (the old ≈ −20.7 ceiling warning was removed). PR2 re-baseline:
+// +3.0103 (rounded to +3) from the mono-era [−32, −16] domain, so the same
+// slider position is the same audible loudness under the new 2-ch BS.1770
+// convention — convention-adjusted, pending hardware re-validation.
+const TMIN = -29;
+const TMAX = -13;
 const TSPAN = TMAX - TMIN;
 
 // Knob position %, clamped only to the renderable track (a stored value outside

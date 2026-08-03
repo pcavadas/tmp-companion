@@ -30,7 +30,15 @@
 //!                                  ADD a block to the device's CURRENT ACTIVE preset via
 //!                                  live insertNode (field 34). No --commit = DRY RUN
 //!                                  (insert + verify, then revert); --commit = save in-place
-//!   probe --lufs <wav>             measure a WAV's loudness (validate lufs.rs vs an oracle)
+//!   probe --lufs <wav>             measure a WAV's loudness, mono-downmix convention
+//!                                  (validate lufs.rs vs an oracle)
+//!   probe --measure-wav <wav>      NO-DEVICE: measure a WAV through the PRODUCTION output-side
+//!                                  convention (stereo for ≥2-ch, mono for 1-ch) — the Companion
+//!                                  side of `scripts/meter-parity.sh` (ffmpeg ebur128 ground truth)
+//!   probe --dump-wav <dir>         (ADD-ON flag on --measure-current/--measure-scene) also
+//!                                  writes the captured processed pair to a 32-bit-float WAV in
+//!                                  <dir>, named from slot/scene — feeds real captures into
+//!                                  `scripts/meter-parity.sh`. No effect on any other flag.
 //!   probe --capture-reference <slot> <topology> <out.wav>
 //!                                  OFFLINE-HARNESS: capture one full ~6.8s re-amp clip
 //!                                  to build the adaptive-tuning corpus (DEVICE OP)
@@ -1945,6 +1953,9 @@ fn main() {
         }
         let scene_slot = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
         let calibration_lufs = args.get(i + 3).and_then(|s| s.parse::<f32>().ok());
+        // Optional ADD-ON flag, unrelated to the positional args above: also write
+        // the captured processed pair to a WAV in <dir> for `scripts/meter-parity.sh`.
+        let dump_dir = flag_arg(&args, "--dump-wav");
         eprintln!(
             "[probe] measuring current live LUFS topology={topology} scene={scene_slot:?} calibration={calibration_lufs:?}…"
         );
@@ -1953,6 +1964,7 @@ fn main() {
             None,
             scene_slot,
             calibration_lufs,
+            dump_dir.as_deref(),
         ) {
             Ok(report) => {
                 println!("{report}");
@@ -1980,6 +1992,9 @@ fn main() {
             std::process::exit(2);
         }
         let calibration_lufs = args.get(i + 4).and_then(|s| s.parse::<f32>().ok());
+        // Optional ADD-ON flag, unrelated to the positional args above: also write
+        // the captured processed pair to a WAV in <dir> for `scripts/meter-parity.sh`.
+        let dump_dir = flag_arg(&args, "--dump-wav");
         eprintln!(
             "[probe] measuring slot={} scene={} topology={topology} calibration={calibration_lufs:?}…",
             slot.unwrap(),
@@ -1990,6 +2005,7 @@ fn main() {
             slot,
             scene_slot,
             calibration_lufs,
+            dump_dir.as_deref(),
         ) {
             Ok(report) => {
                 println!("{report}");
@@ -2911,6 +2927,37 @@ fn main() {
                 println!(
                     "integrated_lufs={:.3} short_term_max_lufs={:.3}",
                     l.integrated_lufs, l.short_term_max_lufs
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--measure-wav") {
+        // --measure-wav <wav>   NO-DEVICE: measure a WAV through the PRODUCTION
+        // output-side convention (stereo entry point for a ≥2-ch file, mono for
+        // 1-ch — `probe_api::stimulus::measure_wav_auto`). The Companion side of
+        // the ffmpeg-ebur128 parity harness (`scripts/meter-parity.sh`): reads a
+        // file, never opens HID or touches re-amp. Machine-readable stdout —
+        // the harness parses `integrated_lufs=`.
+        // `path.starts_with("--")` guard (same shape as `--insert-active`'s
+        // `fender_id` check): without it, an accidentally-adjacent flag like
+        // `--measure-wav --dump-wav /tmp/x` would silently try to open a file
+        // named "--dump-wav" instead of failing usage.
+        let path = args.get(i + 1).cloned().unwrap_or_default();
+        if path.is_empty() || path.starts_with("--") {
+            eprintln!("usage: probe --measure-wav <wav>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::measure_wav_auto(&path) {
+            Ok((l, channels)) => {
+                println!(
+                    "channels={channels} integrated_lufs={:.3} short_term_max_lufs={:.3} true_peak_dbtp={:.3}",
+                    l.integrated_lufs, l.short_term_max_lufs, l.true_peak_dbtp
                 );
                 return;
             }

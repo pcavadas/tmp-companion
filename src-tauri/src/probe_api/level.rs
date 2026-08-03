@@ -4,6 +4,7 @@ use super::scene_bench::knob_bounds;
 use super::scene_jobs::is_amp_model_id;
 use super::scene_jobs::is_amp_output_level_param;
 use super::slot_write::load_then_discover_blocks;
+use super::stimulus::dump_processed_capture;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_48k;
 use super::stimulus::read_stimulus_calibrated;
@@ -210,17 +211,18 @@ pub fn probe_measure_current_lufs(
     slot: Option<u32>,
     scene_slot: Option<u32>,
     calibration_lufs: Option<f32>,
+    dump_dir: Option<&str>,
 ) -> Result<String, String> {
     let stim_path = probe_stimulus_path(topology_id)?;
     let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
     // Repro instrumentation: ONE capture, everything derived from it — the headline
-    // (loudest channel, matching production's pick) PLUS every channel's loudness,
-    // so the argmax (broadband RMS across ALL channels incl. the ch2 dry DI tap)
-    // is observable per measurement. No floor-guard retry (diagnostic seam).
+    // (2-ch BS.1770 over the processed pair, matching PRODUCTION's own convention —
+    // `leveller::measure_processed`) PLUS every channel's own mono loudness, so the
+    // argmax (broadband RMS across ALL channels incl. the ch2 dry DI tap) stays
+    // observable per measurement even though it no longer drives the headline.
+    // No floor-guard retry (diagnostic seam).
     let cap = leveller::capture_asis_full(slot, scene_slot, &stim)?;
     let (win, _) = cap.loudest_channel();
-    let loud = crate::lufs::measure_mono(&cap.channel(win), cap.sample_rate)
-        .map_err(|e| format!("loudest-channel measure failed: {e}"))?;
     let mut per_channel = String::new();
     for c in 0..cap.channels {
         let rms = cap.channel_rms(c);
@@ -241,6 +243,32 @@ pub fn probe_measure_current_lufs(
         per_channel.push_str(&line);
         per_channel.push('\n');
     }
+    // `--dump-wav <dir>` ADD-ON (pure add-on: `dump_dir` is `None` on every call
+    // site that doesn't pass `--dump-wav`, so behaviour is byte-identical then).
+    // Writes BEFORE the `measure_processed` move below — `dump_processed_capture`
+    // only borrows `cap`. Feeds `scripts/meter-parity.sh` real device captures
+    // once the device is back online; this write path itself is untested on real
+    // hardware (device unavailable at implementation time).
+    let dump_note = match dump_dir {
+        Some(dir) => {
+            let label = format!(
+                "measure_slot-{}_scene-{}",
+                slot.map(|s| s.to_string())
+                    .unwrap_or_else(|| "current".to_string()),
+                scene_slot
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "current".to_string()),
+            );
+            match dump_processed_capture(&cap, dir, &label) {
+                Ok(path) => format!("  dumped processed pair → {path}\n"),
+                Err(e) => format!("  --dump-wav FAILED: {e}\n"),
+            }
+        }
+        None => String::new(),
+    };
+    // Moves `cap` — everything above that needed it (the per-channel loop, the dump) is done.
+    let loud =
+        leveller::measure_processed(cap).map_err(|e| format!("processed measure failed: {e}"))?;
     // No floor-guard retry on this diagnostic seam, so a silent/failed inject WOULD
     // print the device's stationary floor as if it were a measurement — stamp the
     // headline with `probe_reamp_state`'s engaged/floor criterion instead.
@@ -250,7 +278,7 @@ pub fn probe_measure_current_lufs(
         "  << FLOOR/SILENT — not a valid measurement (failed inject?)"
     };
     Ok(format!(
-        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}{verdict}\n{per_channel}",
+        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}{verdict}\n{per_channel}{dump_note}",
         slot.map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string()),
         scene_slot

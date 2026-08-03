@@ -374,7 +374,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let capture_profile = |skip_load: bool,
                                     stim: &[f32]|
              -> Result<(doctor::SoundProfile, Vec<bool>), String> {
-                let (samples, rate) = leveller::doctor_capture(
+                // `_with_loudness`: the production Doctor path REPORTS `integrated_lufs`
+                // to the user (D4), so it needs the un-mixed capture's stereo-measured
+                // Loudness alongside the average-mixdown `samples` bands/PSD run on —
+                // see `doctor_capture_with_loudness`'s doc.
+                let (samples, rate, stereo_loudness) = leveller::doctor_capture_with_loudness(
                     item.list_index,
                     item.scene,
                     &fb,
@@ -405,7 +409,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 // the stimulus's spectral ridges can't read as chain
                 // resonances. Cheap (~ms) next to the ~5 s capture.
                 let stim_psd = crate::psd::welch_psd(stim, rate as f32);
-                let mut profile = doctor::SoundProfile::from_capture_with_psd(
+                let mut profile = doctor::SoundProfile::from_capture_with_psd_loudness(
                     &samples,
                     rate,
                     stim.len(),
@@ -413,6 +417,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     family,
                     &body_psd,
                     Some(&stim_psd),
+                    Some(stereo_loudness),
                 )?;
                 // The re-amp stimulus's own band powers — the stimulus-transfer
                 // anchor `compute_rule_metrics` subtracts so a non-humbucker

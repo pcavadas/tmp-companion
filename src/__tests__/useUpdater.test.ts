@@ -48,6 +48,7 @@ const storeWith = (auto: boolean): Store => ({
   targets: [],
   playback_level: "stage",
   auto_install_updates: auto,
+  meter_convention: 1,
 });
 
 /** A controllable FoundUpdate: exposes the percent callback + settle handles. */

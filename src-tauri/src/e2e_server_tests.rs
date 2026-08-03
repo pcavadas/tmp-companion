@@ -195,7 +195,8 @@ fn offline_copy_journey_through_real_backend() {
 /// `--features e2e` physics-faithful capture model (`audio::reamp_capture` → the
 /// SimDevice's `e2e_capture`), so the leveler measures the modeled loudness and solves a
 /// finite `C` / final level with no hardware. Proves the audio seam AND the physics
-/// wire-in: slot 0 is unlisted in the sidecar → the flat default `C = -18`, so the solved
+/// wire-in: slot 0 is unlisted in the sidecar → the flat default `C = -15` (PR2
+/// re-baseline: +3 from the mono-era -18), so the solved
 /// `constant_c` lands there (a `set_live` regression that skipped the model would read the
 /// passthrough stimulus's own loudness instead and fail this).
 #[test]
@@ -223,10 +224,11 @@ fn offline_level_preset_runs_against_the_fake_audio() {
         r.measured_lufs.is_finite(),
         "measured a finite loudness: {r:?}"
     );
-    // The physics wire-in ran: an unlisted slot solves to the sidecar's flat default C.
+    // The physics wire-in ran: an unlisted slot solves to the sidecar's flat default C
+    // (PR2 re-baseline: +3 from the mono-era -18).
     assert!(
-        (r.constant_c - (-18.0)).abs() < 0.5,
-        "the physics model produced the default C=-18 (not a passthrough loudness): {r:?}"
+        (r.constant_c - (-15.0)).abs() < 0.5,
+        "the physics model produced the default C=-15 (not a passthrough loudness): {r:?}"
     );
     let ev = sim.events();
     assert!(
@@ -325,13 +327,14 @@ fn level_defaults_403_base_clamps_and_footswitch_is_offbranch() {
         "403's off-branch node ACD_TubeScreamer must sit on the split lane G3, not the trunk"
     );
 
-    // Base at Crunch (-24) → CLAMP at the ceiling (~-28), headroom (reason-less).
+    // Base at Crunch (-21, PR2 re-baseline: +3 from the mono-era -24) → CLAMP at
+    // the ceiling (~-25, +3 from ~-28), headroom (reason-less).
     let opts = crate::leveller::LevelOptions {
         save: false,
         verify: true,
         ..Default::default()
     };
-    let base = crate::leveller::level_preset(403, &stim, -24.0, opts, &[], None, || false)
+    let base = crate::leveller::level_preset(403, &stim, -21.0, opts, &[], None, || false)
         .expect("level 403 base");
     assert!(
         base.clamped,
@@ -342,8 +345,8 @@ fn level_defaults_403_base_clamps_and_footswitch_is_offbranch() {
         "403 Base is a headroom clamp (reason-less), not a routing clamp: {base:?}"
     );
     assert!(
-        (base.predicted_lufs - (-28.0)).abs() < 0.5,
-        "403 Base clamps at its ~-28 ceiling: {base:?}"
+        (base.predicted_lufs - (-25.0)).abs() < 0.5,
+        "403 Base clamps at its ~-25 ceiling: {base:?}"
     );
 
     // FS1 (BRANCH B) toggles ACD_TubeScreamer on the muted parallel branch (G3): engaging it
@@ -358,7 +361,7 @@ fn level_defaults_403_base_clamps_and_footswitch_is_offbranch() {
             mirror_scenes: vec![],
         },
         &stim,
-        -24.0,
+        -21.0,
         false,
         true,
         None,
@@ -375,9 +378,10 @@ fn level_defaults_403_base_clamps_and_footswitch_is_offbranch() {
 /// The SCENE-leveling physics for slot 403 through the REAL `level_scenes_apply_batched`
 /// command over mock IPC — the same path the offline UI drives, minus the per-scene Channel
 /// stream the HTTP bridge no-ops (so the UI can't render these outcomes offline; this gate
-/// asserts them on the command's RETURN value instead). At the shipped default target (-26)
-/// the 4 scenes produce the level-defaults outcome set: 3 SOLVABLE (amp `outputLevel`
-/// converged to ~-26) + 1 OFF-BRANCH ("Clean", saved with the amp output at zero → no
+/// asserts them on the command's RETURN value instead). At the shipped default target (-23,
+/// PR2 re-baseline: +3 from the mono-era -26) the 4 scenes produce the level-defaults outcome
+/// set: 3 SOLVABLE (amp `outputLevel` converged to ~-23) + 1 OFF-BRANCH ("Clean", saved with
+/// the amp output at zero → no
 /// authority over the USB capture → the routing clamp). Proves the graph-echo fix (the prepass
 /// classifies gtrParallel1 and picks the trunk amp) AND the sidecar scene C authoring.
 #[test]
@@ -423,7 +427,7 @@ fn level_defaults_403_scenes_solve_and_offbranch() {
         "level_scenes_apply_batched",
         serde_json::json!({
             "slot": 403,
-            "jobs": (0..4).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -26.0})).collect::<Vec<_>>(),
+            "jobs": (0..4).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -23.0})).collect::<Vec<_>>(),
             "candidates": amp,
             "save": true, "rebalance": false,
             "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
@@ -456,18 +460,19 @@ fn level_defaults_403_scenes_solve_and_offbranch() {
     for r in solvable {
         let lufs = r["measured_lufs"].as_f64().expect("lufs");
         assert!(
-            (lufs + 26.0).abs() < 1.0,
-            "solvable scene lands near -26: {r:?}"
+            (lufs + 23.0).abs() < 1.0,
+            "solvable scene lands near -23: {r:?}"
         );
     }
 }
 
 /// Gain-budget redistribution (PR5) end-to-end through the real command against the offline
-/// physics: slot 400 (E2E Reference) is the loud class — Base C=-18 solves, scene 0 C=-30
-/// clamps. `redistribute_headroom` raises presetLevel by the solved delta and re-levels the
-/// base amp + BOTH scenes back to −26, so the previously-clamped scene 0 reaches target (done,
-/// not clamped) and every sound lands near −26 — AND it records the pre-values (presetLevel +
-/// touched knobs) for the Summary's Restore. This is the offline half of "clamped run →
+/// physics: slot 400 (E2E Reference) is the loud class — Base C=-15 solves, scene 0 C=-27
+/// clamps (PR2 re-baseline: +3 from the mono-era -18/-30). `redistribute_headroom` raises
+/// presetLevel by the solved delta and re-levels the base amp + BOTH scenes back to −23, so the
+/// previously-clamped scene 0 reaches target (done, not clamped) and every sound lands near −23
+/// — AND it records the pre-values (presetLevel + touched knobs) for the Summary's Restore.
+/// This is the offline half of "clamped run →
 /// redistribute → all done"; the base-scene skip + save-persistence idempotency are online
 /// (the sim models no field-8 read-back / saved-state reload, same limit as `level-rerun`).
 #[test]
@@ -507,12 +512,13 @@ fn redistribute_400_gives_the_clamped_scene_headroom() {
         "groupId": "G1", "nodeId": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR",
         "parameterId": "outputLevel", "value": 0.5
     }]);
-    // Base (wire slot 8) + scene 0 (the clamped one) + scene 1, all to −26. `worstClampedDeficitDb`
-    // = scene 0's deficit at presetLevel 0.32 (≈5.9); 6.0 is enough to fully rescue it.
+    // Base (wire slot 8) + scene 0 (the clamped one) + scene 1, all to −23 (PR2 re-baseline: +3
+    // from the mono-era −26). `worstClampedDeficitDb` = scene 0's deficit at presetLevel 0.32
+    // (≈5.9); 6.0 is enough to fully rescue it.
     let jobs = serde_json::json!([
-        {"sceneSlot": 8, "targetLufs": -26.0},
-        {"sceneSlot": 0, "targetLufs": -26.0},
-        {"sceneSlot": 1, "targetLufs": -26.0}
+        {"sceneSlot": 8, "targetLufs": -23.0},
+        {"sceneSlot": 0, "targetLufs": -23.0},
+        {"sceneSlot": 1, "targetLufs": -23.0}
     ]);
     let res = invoke(
         &webview,
@@ -529,8 +535,8 @@ fn redistribute_400_gives_the_clamped_scene_headroom() {
     for r in results {
         let lufs = r["measured_lufs"].as_f64().expect("lufs");
         assert!(
-            (lufs + 26.0).abs() < 1.0,
-            "every sound (incl. the once-clamped scene 0) reaches −26: {r}"
+            (lufs + 23.0).abs() < 1.0,
+            "every sound (incl. the once-clamped scene 0) reaches −23: {r}"
         );
         assert_eq!(
             r["clamped"],
@@ -610,8 +616,8 @@ fn redistribute_aborts_and_saves_nothing_on_a_dropped_capture() {
         "parameterId": "outputLevel", "value": 0.5
     }]);
     let jobs = serde_json::json!([
-        {"sceneSlot": 8, "targetLufs": -26.0},
-        {"sceneSlot": 0, "targetLufs": -26.0}
+        {"sceneSlot": 8, "targetLufs": -23.0},
+        {"sceneSlot": 0, "targetLufs": -23.0}
     ]);
     let res = invoke(
         &webview,
@@ -668,16 +674,16 @@ fn common_reachable_target_returns_min_ceiling_minus_headroom() {
         "common_reachable_target",
         serde_json::json!({
             "ceilings": [
-                { "cLufs": -28.0, "topologyId": null },
-                { "cLufs": -23.0, "topologyId": "guitar-humbucker" }
+                { "cLufs": -25.0, "topologyId": null },
+                { "cLufs": -20.0, "topologyId": "guitar-humbucker" }
             ]
         }),
     )
     .expect("common_reachable_target");
     let t = res.as_f64().expect("target f64");
     assert!(
-        (t - -29.0).abs() < 1e-9,
-        "min(-28,-23) − 1 headroom = -29: {t}"
+        (t - -26.0).abs() < 1e-9,
+        "min(-25,-20) − 1 headroom = -26 (PR2 re-baseline: +3 from the mono-era -28/-23 → -29): {t}"
     );
 
     // No finite ceiling → an error (an all-silent run has nothing to derive from).
@@ -730,7 +736,7 @@ fn cross_feature_profile_relevel_resolves_and_no_crash() {
     // A profile-driven job (an instrument + its topology). profile_id with no stored DI capture
     // falls back to the topology stimulus — the resolution must not crash on the missing capture.
     let job = serde_json::json!({
-        "slot": 401, "target_lufs": -26.0, "save": false,
+        "slot": 401, "target_lufs": -23.0, "save": false,
         "topology_id": "guitar-humbucker", "calibration_lufs": null, "stimulus_path": null,
         "profile_id": "tele-1",
         "block_group_id": null, "block_node_id": null, "block_parameter_id": null, "block_value": null
@@ -936,7 +942,7 @@ fn hiwatt_scene_leveling_never_reseeds_an_existing_overlay() {
         "level_scenes_apply_batched",
         serde_json::json!({
             "slot": HIWATT,
-            "jobs": (0..3).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -26.0})).collect::<Vec<_>>(),
+            "jobs": (0..3).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -23.0})).collect::<Vec<_>>(),
             "candidates": amp,
             "save": true, "rebalance": false,
             "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
@@ -984,9 +990,10 @@ fn hiwatt_scene_leveling_never_reseeds_an_existing_overlay() {
 /// BUG→GATE (2026-07-27 report, the MEASUREMENT CONTEXT): a preset loads into its SAVED
 /// `lastLoadedScene`, so a base measurement that does not recall base first measures THAT
 /// scene. The reported preset saves `lastLoadedScene = 3`, and the authored C table puts scene
-/// 3 eight dB below base (-34 vs -20) — so the outcome itself discriminates: recalled to base
-/// the run SOLVES -26 (presetLevel ~0.5); measuring scene 3 instead the target is above that
-/// ceiling and the run reports CLAMPED. No event-order heuristic needed.
+/// 3 eight dB below base (-31 vs -17, PR2 re-baseline: +3 from the mono-era -34/-20) — so the
+/// outcome itself discriminates: recalled to base the run SOLVES -23 (presetLevel ~0.5);
+/// measuring scene 3 instead the target is above that ceiling and the run reports CLAMPED. No
+/// event-order heuristic needed.
 #[test]
 fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
     let _serial = serial();
@@ -1012,7 +1019,7 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
         .build()
         .expect("wv");
     let job = serde_json::json!({
-        "slot": HIWATT, "target_lufs": -26.0, "save": false,
+        "slot": HIWATT, "target_lufs": -23.0, "save": false,
         "topology_id": null, "calibration_lufs": null, "stimulus_path": null, "profile_id": null,
         "block_group_id": null, "block_node_id": null, "block_parameter_id": null,
         "block_value": null
@@ -1022,12 +1029,12 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
     assert_eq!(
         r["clamped"],
         serde_json::json!(false),
-        "base solved from base's C=-20; a CLAMP means the capture measured the saved scene 3 \
-         (C=-34) instead of base: {r}"
+        "base solved from base's C=-17; a CLAMP means the capture measured the saved scene 3 \
+         (C=-31) instead of base: {r}"
     );
     let measured = r["measured_lufs"].as_f64().expect("measured_lufs");
     assert!(
-        (measured + 26.0).abs() < 1.0,
+        (measured + 23.0).abs() < 1.0,
         "the base run lands on target: {r}"
     );
     // Belt-and-braces on the mechanism, not just the outcome: base (wire slot 8) was recalled.

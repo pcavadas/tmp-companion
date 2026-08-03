@@ -50,7 +50,7 @@ fn measure_scene_knob_isolated(
     std::thread::sleep(Duration::from_millis(500));
     let cap = audio::reamp_capture(stim, 48_000, 800);
     let _ = s.set_reamp_mode(false);
-    leveller::loudest_lufs(cap)
+    leveller::processed_lufs(cap)
 }
 
 /// READ-ONLY outcome proof: measure each scene's ACTUAL captured loudness from the
@@ -86,7 +86,7 @@ pub fn probe_measure_scene_levels(list_index: u32, topology_id: String) -> Resul
         std::thread::sleep(Duration::from_millis(500));
         let cap = audio::reamp_capture(&stim, 48_000, 800);
         let _ = s.set_reamp_mode(false);
-        leveller::loudest_lufs(cap)
+        leveller::processed_lufs(cap)
     };
 
     let mut out = format!(

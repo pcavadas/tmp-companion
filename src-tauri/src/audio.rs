@@ -163,7 +163,9 @@ impl Capture {
     /// `loudest_channel` has on stereo presets (L/R can trade loudest across
     /// runs, flipping spectral verdicts). Channel 2 (dry instrument send) and
     /// beyond are deliberately excluded. Falls back to channel 0 when the
-    /// capture is mono.
+    /// capture is mono. Doctor's band/PSD analysis (`leveller::to_stereo`) stays
+    /// on this AVERAGE mixdown — see [`Self::processed_stereo`] for the
+    /// SUM-convention view the LUFS meter uses instead.
     pub fn stereo_mix(&self) -> Vec<f32> {
         if self.channels < 2 {
             return self.channel(0);
@@ -172,6 +174,29 @@ impl Capture {
             .chunks(self.channels)
             .map(|f| (f.first().copied().unwrap_or(0.0) + f.get(1).copied().unwrap_or(0.0)) / 2.0)
             .collect()
+    }
+
+    /// Interleaved 2-channel view of the processed pair (USB-Out 1/2 = capture
+    /// channels 0/1) for the standard BS.1770 stereo measure (`lufs::measure_stereo`)
+    /// — dry channel 2+ is excluded exactly like `stereo_mix`/`loudest_channel`.
+    /// `None` for a genuinely 1-channel capture: the caller falls back to
+    /// [`lufs::measure_mono`] on channel 0 rather than duplicating it into fake
+    /// dual-mono, which would invent the +3.01 dB the hardware never produced.
+    pub fn processed_stereo(&self) -> Option<Vec<f32>> {
+        if self.channels < 2 {
+            return None;
+        }
+        Some(
+            self.interleaved
+                .chunks(self.channels)
+                .flat_map(|f| {
+                    [
+                        f.first().copied().unwrap_or(0.0),
+                        f.get(1).copied().unwrap_or(0.0),
+                    ]
+                })
+                .collect(),
+        )
     }
 }
 
@@ -222,6 +247,38 @@ fn emit_live_lufs(integrated: f64, momentary: f64) {
         if let Some(f) = g.as_ref() {
             f(integrated, momentary);
         }
+    }
+}
+
+/// Deinterleave `new_interleaved` (raw `in_ch`-channel frames) down to the
+/// processed pair (capture channels 0/1) as an interleaved 2-ch buffer — or
+/// return it verbatim when the capture is genuinely mono (`in_ch < 2`). Shared
+/// by the live advisory loop (`reamp_capture_real`) and the adaptive measure
+/// (`reamp_measure`) so both feed [`IncrementalLoudness`] the SAME
+/// stereo-or-mono-fallback view [`Capture::processed_stereo`] uses for a full
+/// capture — the converging readout must match the final number.
+fn processed_pair_or_mono(new_interleaved: &[f32], in_ch: usize) -> Vec<f32> {
+    if in_ch < 2 {
+        return new_interleaved.to_vec();
+    }
+    new_interleaved
+        .chunks(in_ch)
+        .flat_map(|f| {
+            [
+                f.first().copied().unwrap_or(0.0),
+                f.get(1).copied().unwrap_or(0.0),
+            ]
+        })
+        .collect()
+}
+
+/// [`IncrementalLoudness::new`] (mono) or [`IncrementalLoudness::new_stereo`]
+/// depending on `in_ch`, mirroring [`processed_pair_or_mono`]'s fallback.
+fn incremental_loudness_for(in_ch: usize, sample_rate: u32) -> Result<IncrementalLoudness, String> {
+    if in_ch >= 2 {
+        IncrementalLoudness::new_stereo(sample_rate)
+    } else {
+        IncrementalLoudness::new(sample_rate)
     }
 }
 
@@ -412,10 +469,11 @@ fn reamp_capture_real(
         // Advisory live-LUFS: emit the converging integrated loudness on a fixed cadence
         // while the SAME buffer fills. DEADLINE-bounded so total wall-clock stays exactly
         // `total_ms` regardless of hop count / emit latency — the authoritative buffer and
-        // the final `measure_mono` are byte-identical to a blind `sleep(total_ms)` (the
-        // meter is parallel, fed from COPIES of the new frames; meter errors are swallowed
-        // so a bad reading never aborts a real capture). PICK_MS mirrors `reamp_measure`'s
-        // loudest-channel settle.
+        // the final measurement (leveller.rs's stereo-or-mono-fallback hub) are
+        // byte-identical to a blind `sleep(total_ms)` (the meter is parallel, fed from
+        // COPIES of the new frames; meter errors are swallowed so a bad reading never
+        // aborts a real capture). PICK_MS mirrors `reamp_measure`'s settle before the
+        // meter starts (and, separately, the momentary-VU channel pick).
         //
         // The loop runs even with NO sink installed (the Doctor, `probe`) — it is also
         // what makes the capture window STOPPABLE: this is the single longest wait in a
@@ -462,13 +520,16 @@ fn reamp_capture_real(
                 None => {
                     if (total_frames as u64) * 1000 / sample_rate as u64 >= PICK_MS {
                         let pick = Capture {
-                            interleaved: new_interleaved,
+                            interleaved: new_interleaved.clone(),
                             channels: in_ch,
                             sample_rate,
                         };
+                        // `ch` drives only the momentary VU pick below — the LUFS
+                        // meter itself always gets the processed pair (or the mono
+                        // fallback), never a single argmax-picked channel.
                         let ch = pick.loudest_channel().0;
-                        if let Ok(mut m) = IncrementalLoudness::new(sample_rate) {
-                            let _ = m.add(&pick.channel(ch));
+                        if let Ok(mut m) = incremental_loudness_for(in_ch, sample_rate) {
+                            let _ = m.add(&processed_pair_or_mono(&new_interleaved, in_ch));
                             loud_ch = Some(ch);
                             meter = Some(m);
                             consumed_frames = total_frames;
@@ -489,7 +550,7 @@ fn reamp_capture_real(
                         MOMENTARY_FLOOR_DB
                     };
                     if let Some(m) = meter.as_mut() {
-                        let _ = m.add(&mono);
+                        let _ = m.add(&processed_pair_or_mono(&new_interleaved, in_ch));
                     }
                 }
                 Some(_) => {}
@@ -638,8 +699,9 @@ impl ConvergenceTracker {
 
 /// Adaptive re-amp loudness measurement: same isolated fresh stream pair as
 /// [`reamp_capture`] (NOT the shared `LiveReamp` ring buffer, which mis-measured on
-/// HW), but it discards a pre-roll, feeds the loudest channel into an incremental
-/// ITU-R BS.1770 meter, and returns integrated LUFS as soon as the value converges
+/// HW), but it discards a pre-roll, feeds the processed pair (or the mono fallback
+/// for a genuinely 1-channel capture) into an incremental ITU-R BS.1770 meter, and
+/// returns integrated LUFS as soon as the value converges
 /// (or at `max_capture_ms`). Returns `Err` if no finite signal was captured (re-amp
 /// did not route). Requires re-amp mode already ON.
 ///
@@ -655,8 +717,9 @@ pub fn reamp_measure(
     if stimulus_mono.is_empty() {
         return Err("empty re-amp stimulus".to_string());
     }
-    // ~400 ms of post-preroll audio before the loudest channel is fixed — plenty
-    // for a stable RMS pick on the stationary shaped-noise stimulus.
+    // ~400 ms of post-preroll audio before the meter starts (and, separately, the
+    // momentary-VU loudest-channel pick fixes) — plenty for a stable RMS pick on
+    // the stationary shaped-noise stimulus.
     const PICK_MS: u64 = 400;
 
     let streams = resolve_reamp_streams(sample_rate)?;
@@ -709,17 +772,20 @@ pub fn reamp_measure(
 
         // Fix the loudest channel once enough post-preroll audio exists. Before the
         // pick `consumed_frames` is 0, so `new_interleaved` is everything so far.
+        // As in `reamp_capture_real`: `ch` is kept only so `loud_ch` marks "have we
+        // picked yet" (its value is otherwise unused now) — the LUFS meter always
+        // gets the processed pair (or the mono fallback), never a single channel.
         match loud_ch {
             None => {
                 if total_frames as u64 * 1000 / sample_rate as u64 >= PICK_MS {
                     let pick = Capture {
-                        interleaved: new_interleaved,
+                        interleaved: new_interleaved.clone(),
                         channels: in_ch,
                         sample_rate,
                     };
                     let ch = pick.loudest_channel().0;
-                    let mut m = IncrementalLoudness::new(sample_rate)?;
-                    m.add(&pick.channel(ch))?; // feed everything captured up to the pick
+                    let mut m = incremental_loudness_for(in_ch, sample_rate)?;
+                    m.add(&processed_pair_or_mono(&new_interleaved, in_ch))?; // feed everything captured up to the pick
                     loud_ch = Some(ch);
                     meter = Some(m);
                     consumed_frames = total_frames;
@@ -729,15 +795,12 @@ pub fn reamp_measure(
                     continue;
                 }
             }
-            Some(ch) if !new_interleaved.is_empty() => {
-                // Deinterleave the chosen channel by striding the new frames.
-                let mono: Vec<f32> = new_interleaved[ch..]
-                    .iter()
-                    .step_by(in_ch)
-                    .copied()
-                    .collect();
+            Some(_) if !new_interleaved.is_empty() => {
                 consumed_frames = total_frames;
-                meter.as_mut().unwrap().add(&mono)?;
+                meter
+                    .as_mut()
+                    .unwrap()
+                    .add(&processed_pair_or_mono(&new_interleaved, in_ch))?;
             }
             Some(_) => {}
         }
@@ -774,26 +837,33 @@ pub struct ReplayResult {
     pub converged: bool,
 }
 
-/// Offline twin of [`reamp_measure`]: replay an already-captured MONO channel
-/// through the SAME pre-roll skip → hop-fed incremental meter → [`ConvergenceTracker`]
-/// so the adaptive constants can be tuned against reference clips with no device.
-/// "Elapsed" is derived from samples consumed, not wall-clock.
+/// Offline twin of [`reamp_measure`]: replay an already-captured buffer of
+/// `channels` channels (1 = mono, 2 = interleaved processed pair) through the
+/// SAME pre-roll skip → hop-fed incremental meter → [`ConvergenceTracker`] so
+/// the adaptive constants can be tuned against reference clips with no device.
+/// "Elapsed" is derived from FRAMES consumed (`channels`-aware), not wall-clock.
 pub fn replay_measure(
-    mono: &[f32],
+    interleaved: &[f32],
     sample_rate: u32,
+    channels: u32,
     opts: MeasureOpts,
 ) -> Result<ReplayResult, String> {
-    if mono.is_empty() {
+    if interleaved.is_empty() {
         return Err("empty replay buffer".to_string());
     }
-    let preroll = (sample_rate as u64 * opts.preroll_ms / 1000) as usize;
-    let hop = (sample_rate as u64 * opts.hop_ms / 1000).max(1) as usize;
-    if preroll >= mono.len() {
+    let ch = channels.max(1) as usize;
+    let preroll = (sample_rate as u64 * opts.preroll_ms / 1000) as usize * ch;
+    let hop = ((sample_rate as u64 * opts.hop_ms / 1000).max(1) as usize) * ch;
+    if preroll >= interleaved.len() {
         return Err("preroll exceeds clip length".to_string());
     }
-    let body = &mono[preroll..];
+    let body = &interleaved[preroll..];
 
-    let mut meter = IncrementalLoudness::new(sample_rate)?;
+    let mut meter = if ch >= 2 {
+        IncrementalLoudness::new_stereo(sample_rate)?
+    } else {
+        IncrementalLoudness::new(sample_rate)?
+    };
     let mut tracker = ConvergenceTracker::new(opts.eps_lu, opts.stable_k);
     let mut fed = 0usize;
     let mut converged = false;
@@ -801,7 +871,7 @@ pub fn replay_measure(
         let end = (fed + hop).min(body.len());
         meter.add(&body[fed..end])?;
         fed = end;
-        let elapsed_ms = fed as u64 * 1000 / sample_rate as u64;
+        let elapsed_ms = (fed / ch) as u64 * 1000 / sample_rate as u64;
         if elapsed_ms < opts.min_measure_ms {
             continue;
         }
@@ -814,7 +884,7 @@ pub fn replay_measure(
             break;
         }
     }
-    let exit_ms = fed as u64 * 1000 / sample_rate as u64;
+    let exit_ms = (fed / ch) as u64 * 1000 / sample_rate as u64;
     let integrated = meter.integrated().unwrap_or(f64::NAN);
     Ok(ReplayResult {
         integrated_lufs: integrated,
@@ -1270,6 +1340,32 @@ mod tests {
     }
 
     #[test]
+    fn processed_stereo_interleaves_the_pair_and_excludes_dry() {
+        // Same 3-channel capture as `stereo_mix`'s test: ch0/ch1 must come through
+        // UNMIXED (SUM convention — the LUFS meter, not the average `stereo_mix`
+        // uses), and ch2 (dry send) must not leak in.
+        let cap = Capture {
+            interleaved: vec![1.0, 0.4, 9.0, 0.5, 0.2, 9.0],
+            channels: 3,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.processed_stereo(), Some(vec![1.0, 0.4, 0.5, 0.2]));
+    }
+
+    #[test]
+    fn processed_stereo_is_none_for_a_genuinely_mono_capture() {
+        // T2/D-fallback: a true 1-channel capture must NOT be duplicated into fake
+        // dual-mono (that would invent the +3.01 dB the hardware never produced) —
+        // the caller falls back to `lufs::measure_mono` instead.
+        let cap = Capture {
+            interleaved: vec![0.25, -0.5, 0.75],
+            channels: 1,
+            sample_rate: 48_000,
+        };
+        assert_eq!(cap.processed_stereo(), None);
+    }
+
+    #[test]
     fn loudest_channel_never_picks_the_dry_send() {
         // ch2 (dry DI tap) is the loudest — a plugged-in guitar during a run.
         // The argmax must stay on the processed pair (ch0/ch1).
@@ -1358,7 +1454,7 @@ mod tests {
         let full = crate::lufs::measure_mono(&full_clip, rate)
             .unwrap()
             .integrated_lufs;
-        let r = replay_measure(&full_clip, rate, MeasureOpts::adaptive()).unwrap();
+        let r = replay_measure(&full_clip, rate, 1, MeasureOpts::adaptive()).unwrap();
         assert!(r.converged, "stationary tone should converge early");
         assert!(r.exit_ms < 4000, "expected early exit, got {}ms", r.exit_ms);
         assert!(
@@ -1370,12 +1466,37 @@ mod tests {
     }
 
     #[test]
+    fn replay_stereo_converges_to_the_stereo_oneshot_reading() {
+        // The stereo counterpart of `replay_stationary_converges_early_and_matches_full`
+        // — `replay_measure(..., 2, ...)` must converge on the SAME reading
+        // `lufs::measure_stereo` gets one-shot (proof the frame-count hop scaling
+        // survives 2-ch replay, not just the live capture loops).
+        let rate = 48_000;
+        let tone = sine(1000.0, 6.0, rate, 0.5);
+        let interleaved: Vec<f32> = tone.iter().flat_map(|&s| [s, s]).collect();
+        let full = crate::lufs::measure_stereo(&interleaved, rate)
+            .unwrap()
+            .integrated_lufs;
+        let r = replay_measure(&interleaved, rate, 2, MeasureOpts::adaptive()).unwrap();
+        assert!(
+            r.converged,
+            "stationary dual-mono tone should converge early"
+        );
+        assert!(
+            (r.integrated_lufs - full).abs() < 0.2,
+            "adaptive {:.3} vs stereo one-shot {:.3}",
+            r.integrated_lufs,
+            full
+        );
+    }
+
+    #[test]
     fn full_opts_never_early_exit() {
         // The leveling default integrates the whole window — even a dead-stationary
         // tone must not converge-exit (that's the accuracy-preserving contract).
         let rate = 48_000;
         let clip = sine(1000.0, 6.0, rate, 0.5);
-        let r = replay_measure(&clip, rate, MeasureOpts::full()).unwrap();
+        let r = replay_measure(&clip, rate, 1, MeasureOpts::full()).unwrap();
         assert!(!r.converged, "full() must never early-exit");
         assert!(
             r.exit_ms >= 4000,
@@ -1399,7 +1520,7 @@ mod tests {
                 amp * (2.0 * PI * 1000.0 * t).sin()
             })
             .collect();
-        let r = replay_measure(&clip, rate, MeasureOpts::adaptive()).unwrap();
+        let r = replay_measure(&clip, rate, 1, MeasureOpts::adaptive()).unwrap();
         assert!(!r.converged, "a rising ramp should not converge");
         assert!(
             r.exit_ms >= 4000,
@@ -1412,7 +1533,7 @@ mod tests {
     fn replay_silent_is_nonfinite() {
         let rate = 48_000;
         let silence = vec![0.0f32; rate as usize * 3];
-        let r = replay_measure(&silence, rate, MeasureOpts::adaptive()).unwrap();
+        let r = replay_measure(&silence, rate, 1, MeasureOpts::adaptive()).unwrap();
         assert!(
             !r.integrated_lufs.is_finite(),
             "silence has no finite loudness"
@@ -1422,10 +1543,10 @@ mod tests {
 
     #[test]
     fn replay_rejects_empty_and_short() {
-        assert!(replay_measure(&[], 48_000, MeasureOpts::default()).is_err());
+        assert!(replay_measure(&[], 48_000, 1, MeasureOpts::default()).is_err());
         // shorter than the pre-roll → err
         let short = vec![0.1f32; 48_000 / 100]; // 10 ms
-        assert!(replay_measure(&short, 48_000, MeasureOpts::default()).is_err());
+        assert!(replay_measure(&short, 48_000, 1, MeasureOpts::default()).is_err());
     }
 
     #[test]

@@ -71,6 +71,6 @@ cargo run --bin probe                         # headless HW re-validation (devic
 
 `presetLevel` is a **linear amplitude** control: `captured_LUFS = 20·log10(presetLevel) + C`. So `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply), forced by the re-amp rules in `danger.md`.
 
-`C` is each preset's **max reachable** loudness. A louder target clamps, and the ceiling is preset- and model-specific — there is no hard `−20 LUFS` rule (a maxed 65 Twin reached `−14 LUFS` comfortably). For relative leveling, pick a target below the quietest preset's measured max.
+`C` is each preset's **max reachable** loudness. A louder target clamps, and the ceiling is preset- and model-specific — there is no hard `−17 LUFS` rule (a maxed 65 Twin reached `−11 LUFS` comfortably; convention-adjusted +3 from the mono-era `−20`/`−14`, pending hardware re-validation — see `notes/leveling.md`'s metering-convention section). For relative leveling, pick a target below the quietest preset's measured max.
 
 Full model — scene/footswitch recipes, parallel-amp rebalance, Fletcher–Munson playback compensation, the dynamics-spread flag, and the outcome taxonomy: **[`notes/leveling.md`](notes/leveling.md)**.

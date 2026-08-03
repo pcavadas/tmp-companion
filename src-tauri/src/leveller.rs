@@ -147,7 +147,7 @@ pub(crate) const SETTLE_AFTER_SCENE_RECALL_MS: u64 = 150;
 const RATE: u32 = 48_000;
 const LEVEL_MIN: f32 = 0.0;
 const LEVEL_MAX: f32 = 1.0;
-/// `loudest_loudness`'s sentinel error text for a capture with no measurable signal — shared
+/// `processed_loudness`'s sentinel error text for a capture with no measurable signal — shared
 /// so producer and consumers can't drift.
 const NO_SIGNAL_CAPTURED: &str = "no signal captured";
 
@@ -240,7 +240,7 @@ impl Default for LevelOptions {
 }
 
 /// Fresh-connect, recall BASE, set `level` (NO preset load — the current preset is already
-/// the one we want), engage re-amp once, capture, and return the loudest channel's loudness.
+/// the one we want), engage re-amp once, capture, and return the processed pair's loudness.
 /// The one-shot `presetLevel` case of `measure_knob_at` (which owns the base recall — see
 /// `arm_measurement`: without it the capture measures the preset's saved `lastLoadedScene`).
 fn measure_at_level(
@@ -947,7 +947,7 @@ pub fn capture_loudness_asis(
     scene: Option<u32>,
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, String> {
-    loudest_loudness(capture_asis_full(slot, scene, stimulus))
+    processed_loudness(capture_asis_full(slot, scene, stimulus))
 }
 
 /// Repro instrumentation: the FULL multi-channel as-is capture behind
@@ -1025,10 +1025,13 @@ pub fn capture_samples_bypassed(
 /// the redundant per-sound preset reload (same preset, previous sound clean + Ok).
 /// `tail_ms`: the caller picks — `DOCTOR_TAIL_MS` for a chain that may wash, else
 /// the shorter `DOCTOR_TAIL_DRY_MS` (`doctor::has_time_effect` decides).
-/// Mixes down via `Capture::stereo_mix` (deterministic average of USB-Out 1/2),
-/// not the leveling path's argmax `loudest_channel` — on a stereo preset (ping-
-/// pong delay, hard-panned dual amps) the argmax can flip L/R across runs and
-/// flip spectral verdicts with it.
+/// Mixes down via `Capture::stereo_mix` (deterministic AVERAGE of USB-Out 1/2)
+/// for the returned `samples` — band/PSD analysis needs one deterministic
+/// channel, and on a stereo preset (ping-pong delay, hard-panned dual amps) an
+/// argmax pick (`Capture::loudest_channel`) can flip L/R across runs and flip
+/// spectral verdicts with it. This is UNRELATED to the leveling LUFS metric,
+/// which is a 2-ch BS.1770 SUM over the un-mixed pair (`processed_lufs`) — see
+/// [`doctor_capture_with_loudness`] for the seam that gets both.
 pub fn doctor_capture(
     slot: u32,
     scene: Option<u32>,
@@ -1049,10 +1052,47 @@ pub fn doctor_capture(
     )?))
 }
 
-/// Deterministic stereo mixdown (`Capture::stereo_mix` — average of USB-Out 1/2,
-/// not the leveling path's argmax `loudest_channel`, which can flip L/R across
-/// runs on a stereo preset and flip spectral verdicts with it) — the shared tail
-/// of every Doctor capture seam.
+/// Like [`doctor_capture`], but ALSO returns the capture's stereo-measured
+/// `Loudness` (D4, PR2): bands/PSD keep the `stereo_mix` AVERAGE mixdown
+/// unchanged (`samples`/`rate` below are byte-identical to `doctor_capture`'s),
+/// but the REPORTED `integrated_lufs` a Doctor sound displays must come from the
+/// same 2-ch BS.1770 sum every other output-side measurement uses now —
+/// `stereo_mix`'s average can't be un-mixed back into a correct 2-ch measure, so
+/// this measures the loudness from the UN-MIXED capture before mixing it down.
+/// The one production Doctor capture site (`commands/doctor.rs`) uses this; every
+/// dev probe harness keeps the plain `doctor_capture` seam (and its legacy
+/// mono-on-mixdown `SoundProfile::integrated_lufs`) unchanged — see
+/// `SoundProfile::from_capture_with_psd_loudness`'s doc.
+pub fn doctor_capture_with_loudness(
+    slot: u32,
+    scene: Option<u32>,
+    force_bypass: &[(String, String, bool)],
+    stimulus: &[f32],
+    ref_level: Option<f32>,
+    tail_ms: u64,
+    skip_load: bool,
+) -> Result<(Vec<f32>, u32, lufs::Loudness), String> {
+    let cap = capture_full_at(
+        slot,
+        scene,
+        force_bypass,
+        stimulus,
+        ref_level,
+        tail_ms,
+        skip_load,
+    )?;
+    let samples = cap.stereo_mix();
+    let sample_rate = cap.sample_rate;
+    let loudness = measure_processed(cap)?;
+    Ok((samples, sample_rate, loudness))
+}
+
+/// Deterministic stereo mixdown (`Capture::stereo_mix` — average of USB-Out 1/2;
+/// an argmax pick, `Capture::loudest_channel`, can flip L/R across runs on a
+/// stereo preset and flip spectral verdicts with it) — the shared tail of every
+/// Doctor capture seam that needs band/PSD `samples`, not the leveling LUFS
+/// metric (a 2-ch BS.1770 SUM over the un-mixed pair — see
+/// [`doctor_capture_with_loudness`]).
 fn to_stereo(cap: audio::Capture) -> (Vec<f32>, u32) {
     let sr = cap.sample_rate;
     (cap.stereo_mix(), sr)
@@ -1067,8 +1107,8 @@ fn to_stereo(cap: audio::Capture) -> (Vec<f32>, u32) {
 /// re-amp once → capture with the Doctor tail → guaranteed re-amp off), plus
 /// the leading `RECONNECT_GAP_MS` gap `capture_full_at`'s own load branch would
 /// otherwise supply. Deterministic stereo mixdown (`Capture::stereo_mix`, not
-/// the leveling path's argmax `loudest_channel` — see `doctor_capture`'s doc
-/// for why). The scene recall + force-bypass writes land on the UNSAVED edit
+/// an argmax `loudest_channel` pick — see `doctor_capture`'s doc for why). The
+/// scene recall + force-bypass writes land on the UNSAVED edit
 /// buffer ON PURPOSE: `doctor_save` never persists this live buffer (it
 /// rebuilds SAVED+ops from scratch, see `commands/doctor.rs::doctor_save`), so
 /// a forced bypass or scene recall made here can never leak into a save —
@@ -1120,8 +1160,8 @@ pub fn doctor_capture_on_session(
 
 /// STRICT-HARNESS measure (the online e2e's post-leveling audio gate,
 /// `level-strict.spec.ts`): re-measure one leveled sound of `slot` AS-IS on the
-/// production capture path and the LEVELING metric (loudest channel,
-/// floor-guarded), so the spec can assert the SAVED state actually renders at the
+/// production capture path and the LEVELING metric (2-ch BS.1770 over the
+/// processed pair, floor-guarded), so the spec can assert the SAVED state actually renders at the
 /// leveling target — not merely that the run reported success. Context mirrors
 /// the leveling lanes exactly:
 /// * scene sound — pure as-is (`loadScene` applies the scene's own `ftswStates`);
@@ -1153,7 +1193,7 @@ pub fn measure_sound_asis_strict(
     }
     require_live(
         || {
-            loudest_loudness(capture_full_at(
+            processed_loudness(capture_full_at(
                 slot,
                 scene,
                 force_bypass,
@@ -2223,28 +2263,47 @@ fn set_knobs(
 /// loudness AS-IS without writing ANY parameter (no `set_knob`, no Scene Edit). Lets
 /// the one-shot runner decide whether a scene already sits at target before touching
 /// it. The preset must already be current (loaded in a prior connection).
-/// The integrated LUFS of a re-amp capture's loudest channel, erroring on silence.
+/// The integrated LUFS of a re-amp capture's PROCESSED pair, erroring on silence.
 /// The shared tail of every isolated measurement (load/engage/capture/disengage
-/// differ per caller; this `capture → loudest channel → measure → finite-check` is
+/// differ per caller; this `capture → stereo-or-mono measure → finite-check` is
 /// identical). `pub(crate)` so the `lib.rs` probe measure paths share it too.
-pub(crate) fn loudest_lufs(cap: Result<audio::Capture, String>) -> Result<f64, String> {
-    loudest_loudness(cap).map(|l| l.integrated_lufs)
+/// Renamed from `loudest_lufs` (PR2): the metric is a 2-ch BS.1770 sum over
+/// USB-Out 1/2, not an argmax-picked single channel — `loudest_channel` is still
+/// used elsewhere (advisory VU pick, per-channel probe diagnostics) but no longer
+/// describes this hub.
+pub(crate) fn processed_lufs(cap: Result<audio::Capture, String>) -> Result<f64, String> {
+    processed_loudness(cap).map(|l| l.integrated_lufs)
 }
 
-/// Like [`loudest_lufs`] but keeps the full meter reading (integrated + short-term
+/// Like [`processed_lufs`] but keeps the full meter reading (integrated + short-term
 /// max), for paths that report the capture's dynamics spread alongside the level.
-fn loudest_loudness(cap: Result<audio::Capture, String>) -> Result<lufs::Loudness, String> {
+fn processed_loudness(cap: Result<audio::Capture, String>) -> Result<lufs::Loudness, String> {
     let cap = cap?;
-    let (ch, _) = cap.loudest_channel();
-    let m = lufs::measure_mono(&cap.channel(ch), cap.sample_rate)?;
+    let m = measure_processed(cap)?;
     m.integrated_lufs
         .is_finite()
         .then_some(m)
         .ok_or_else(|| NO_SIGNAL_CAPTURED.to_string())
 }
 
+/// The metering convention shared by every OUTPUT-side measurement hub in this
+/// module: 2-ch BS.1770 over the processed USB pair (`Capture::processed_stereo`),
+/// falling back to [`lufs::measure_mono`] on channel 0 for a genuinely 1-channel
+/// capture (never duplicating it into fake dual-mono — see `processed_stereo`'s
+/// doc). The INPUT/stimulus side (`stimulus_spread_lu`, calibration, etc.) never
+/// calls this — it stays on `measure_mono` directly. `pub(crate)` so a probe
+/// diagnostic headline can share the exact production convention instead of a
+/// parallel per-channel re-check (`probe_api::level::probe_measure_current_lufs`).
+pub(crate) fn measure_processed(cap: audio::Capture) -> Result<lufs::Loudness, String> {
+    let sample_rate = cap.sample_rate;
+    match cap.processed_stereo() {
+        Some(stereo) => lufs::measure_stereo(&stereo, sample_rate),
+        None => lufs::measure_mono(&cap.channel(0), sample_rate),
+    }
+}
+
 /// Engage re-amp on `s` (latching the already-set knob/scene), settle, capture the
-/// FULL stimulus + decay tail, measure the loudest channel's integrated LUFS, then
+/// FULL stimulus + decay tail, measure the processed pair's integrated LUFS, then
 /// disengage. The shared tail of every isolated leveling measurement (the
 /// connect/load/set prefix differs per caller).
 ///
@@ -2264,7 +2323,7 @@ pub(crate) fn engage_measure_disengage(
     let _ = settle_abortable(SETTLE_AFTER_REAMP_MS);
     let cap = audio::reamp_capture(stimulus, RATE, CAPTURE_TAIL_MS);
     let _ = s.set_reamp_mode(false);
-    loudest_loudness(cap)
+    processed_loudness(cap)
 }
 
 /// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
@@ -2324,7 +2383,7 @@ fn arm_measurement(
 }
 
 /// Fresh-connect, arm the measurement (`arm_measurement`: scene context → knob → isolation),
-/// engage re-amp once, measure the loudest channel on the full capture. Restores re-amp OFF.
+/// engage re-amp once, measure the processed pair on the full capture. Restores re-amp OFF.
 fn measure_knob_at(
     stimulus: &[f32],
     knob: &LevelKnob,
@@ -2645,7 +2704,7 @@ fn solve_footswitch(
     // Seed two real points and run a bounded generic secant.
     let (v_lo, v_hi) = (0.25f32, 0.75f32);
     // The FIRST seed doubles as the routing probe: a genuinely silent capture (device output not
-    // on USB 1/2) makes `loudest_loudness` error "no signal captured" — convert THAT one to the
+    // on USB 1/2) makes `processed_loudness` error "no signal captured" — convert THAT one to the
     // honest "not on USB 1/2" clamp (mirrors the scene mute-floor idiom below). Signal-present but
     // flat/short-of-target is a headroom/authority clamp with NO reason, not a routing error. ONLY
     // the first seed can mean broken routing (silent from capture #1); every LATER silence is the
@@ -3243,8 +3302,7 @@ fn coord_to_knob(coord: f32, log_space: bool, lo: f32, hi: f32) -> f32 {
 
 fn live_window_lufs(live: &audio::LiveReamp, window_ms: u64) -> Result<f64, String> {
     let cap = live.recent_capture(window_ms)?;
-    let (ch, _) = cap.loudest_channel();
-    let lufs = lufs::measure_mono(&cap.channel(ch), cap.sample_rate)?.integrated_lufs;
+    let lufs = measure_processed(cap)?.integrated_lufs;
     if lufs.is_finite() {
         Ok(lufs)
     } else {
@@ -4183,7 +4241,7 @@ const NO_AUTHORITY_MIN_DB: f64 = 6.0;
 /// lane's bleed corrupts the equal-solo balance → flag the scene "verify by ear".
 const REBALANCE_BLEED_MARGIN_DB: f64 = 28.0;
 /// Sentinel loudness for a both-lanes-muted capture that reads as digital silence — the
-/// IDEAL mute (no bleed). `loudest_loudness` errors on silence; this stands in so the
+/// IDEAL mute (no bleed). `processed_loudness` errors on silence; this stands in so the
 /// solo-above-floor margin is huge (→ no verify-by-ear flag) instead of failing the scene.
 const MUTE_FLOOR_SILENT_LUFS: f64 = -120.0;
 
@@ -4197,8 +4255,9 @@ const MUTE_FLOOR_SILENT_LUFS: f64 = -120.0;
 /// pinning the geometry to the literal floor forced the bounded Illinois-damped correction
 /// loop (`FS_CORRECT_MAX` = 8 iterates) to spend its ENTIRE budget walking the bracket back
 /// down from a 90+ LU gap, landing ONE iterate short of converging on the reported repro
-/// (HW, fw 1.8.45, preset "TR+BD2+BMP": Plumes `level` knob, target −26 LUFS). −50 sits 18 LU
-/// below the quietest user-settable target (`TargetRow` TMIN = −32) — well clear of any real
+/// (HW, fw 1.8.45, preset "TR+BD2+BMP": Plumes `level` knob, target −26 LUFS, mono-era
+/// convention — see the PR2 metering re-baseline in `notes/leveling.md`). −50 sits 21 LU
+/// below the quietest user-settable target (`TargetRow` TMIN = −29) — well clear of any real
 /// target, yet close enough that the damping converges with iterates to spare (a sentinel
 /// sensitivity sweep found −62..−70 and −98..−100 to be non-converging "dead zones" for this
 /// fixture's geometry — avoid those bands if this value ever needs to move).
@@ -4564,7 +4623,7 @@ fn no_authority(applied_db: f64, response: f64) -> bool {
 }
 
 /// Fresh-connect, set a SET of knobs (before engage), engage re-amp once, measure the
-/// loudest channel on the full capture — the multi-knob `measure_knob_at` used by the
+/// processed pair on the full capture — the multi-knob `measure_knob_at` used by the
 /// rebalance flow to read one lane SOLO (the other muted) and the balanced combination.
 fn measure_knobs_at(
     stimulus: &[f32],
@@ -4578,7 +4637,7 @@ fn measure_knobs_at(
 }
 
 /// Measure the both-lanes-muted FLOOR. `outputLevel`=0 is often DEEP silence — the ideal
-/// mute — which `loudest_loudness` reports as "no signal captured"; treat that as a sentinel
+/// mute — which `processed_loudness` reports as "no signal captured"; treat that as a sentinel
 /// deep floor (`MUTE_FLOOR_SILENT_LUFS`), the BEST case (no bleed), rather than failing.
 /// Other capture errors still propagate.
 fn measure_mute_floor(

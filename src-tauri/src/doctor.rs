@@ -404,8 +404,44 @@ impl SoundProfile {
         body_psd: &crate::psd::Psd,
         stim_psd: Option<&crate::psd::Psd>,
     ) -> Result<SoundProfile, String> {
+        Self::from_capture_with_psd_loudness(
+            samples,
+            rate,
+            stimulus_samples,
+            onset,
+            family,
+            body_psd,
+            stim_psd,
+            None,
+        )
+    }
+
+    /// Like [`Self::from_capture_with_psd`], but lets the caller supply an
+    /// already-measured `Loudness` (PR2, D4: 2-ch BS.1770 over the un-mixed
+    /// processed pair) to use for `integrated_lufs`/`spread_lu` INSTEAD of the
+    /// mono measure over the averaged `samples` mixdown. `stereo_mix`'s average
+    /// is lossy for loudness — it can't reconstruct per-channel energy — so a
+    /// caller with access to the raw un-mixed capture (`commands/doctor.rs`'s
+    /// production path, via `leveller::doctor_capture_with_loudness`) passes its
+    /// stereo measure here. `None` (every curated/test fixture, and every dev
+    /// probe harness that only has the mixed-down `samples`) preserves the exact
+    /// legacy mono-on-mixdown behaviour byte-for-byte.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_capture_with_psd_loudness(
+        samples: &[f32],
+        rate: u32,
+        stimulus_samples: usize,
+        onset: usize,
+        family: Family,
+        body_psd: &crate::psd::Psd,
+        stim_psd: Option<&crate::psd::Psd>,
+        stereo_loudness: Option<crate::lufs::Loudness>,
+    ) -> Result<SoundProfile, String> {
         let bands = body_psd.band_powers(family.bands());
-        let loudness = crate::lufs::measure_mono(samples, rate)?;
+        let loudness = match stereo_loudness {
+            Some(l) => l,
+            None => crate::lufs::measure_mono(samples, rate)?,
+        };
         let integrated_lufs = loudness.integrated_lufs;
         // A silent capture measures −inf — route the sound to the errors lane
         // (the leveller's sentinel philosophy) instead of poisoning the scene

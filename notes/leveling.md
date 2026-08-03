@@ -108,9 +108,45 @@ Equal-LUFS is equal-loudness only near one SPL. The store carries a playback lev
 
 The capture window (≈6 s stimulus + 0.8 s tail) is load-bearing: TMP presets are not stationary under gated-integrated LUFS (delay/reverb buildup + tail), so trimming the window shifts the measured value. The leveling default uses the full capture.
 
-## Metering convention vs external stereo meters (not a bug)
+## Metering convention (PR2 re-baseline)
 
-An external BS.1770 stereo meter (integrated over USB Ch 1–2) reads **~+3.0 dB louder** than Companion's own loudest-single-channel meter on the TMP's mirrored USB output. This is a **metering-convention difference, not a measurement error**: the TMP mirrors equal-energy content onto USB-Out 1 and 2, so a true stereo BS.1770 integration reads the +3 dB stereo-sum convention that a single-channel meter never sees. Companion's `presetLevel` solve is internally self-consistent either way (it always measures and applies against the same single-channel convention), so this does NOT affect leveling accuracy — it only means a cross-check against an external stereo meter must be read with a ~+3 dB offset in mind. A stacked follow-up PR may adopt the stereo BS.1770 convention for Companion's own meter; out of scope here.
+**Companion now measures the processed USB pair as standard 2-channel BS.1770** (`lufs::measure_stereo`, energy sum over capture channels 0/1 — dry channel 2+ excluded), matching an external BS.1770 stereo meter to within 0.02 LU (ground-truthed against ffmpeg's independent `ebur128` 2026-08-03). This SUPERSEDES the mono-era "loudest single channel" convention this section used to describe: on the TMP's mirrored dual-mono USB output the two conventions differ by a fixed **+3.0103 dB** (`10·log10(2)`, algebraically exact for identical channels), so every shipped default target, the `TargetRow` slider domain, and every previously-saved user target shifted +3 LU together (`profiles::Store::meter_convention`, one-shot migration) to keep producing the SAME audible loudness. Relative quantities — spreads, deltas, the `presetLevel` solve itself — are invariant to this convention change; only ABSOLUTE reported numbers moved. The INPUT/stimulus side (self-measurement, dry-DI calibration, the floor-guard spread) still uses `lufs::measure_mono` and did not change. **Every other absolute LUFS/dB figure elsewhere in this document (the Klon `-9.610`/`-6.96` HW measurements, the preset-024 saturated-amp response's `-20 → -17` plateau and `-29.2`/`+12.35`/`+8.72`/`+6.88` figures, the `-17.4` channel-forensics reading, etc.) is a HISTORICAL hardware measurement taken under the mono-era single-channel convention and is preserved as recorded — not restated to the new convention.**
+
+### Parity harness (dev-only, optional)
+
+`scripts/meter-parity.sh` ground-truths the metering convention above against an
+independent BS.1770 implementation — ffmpeg's `ebur128` filter — instead of taking
+`lufs.rs`'s own word for it. It is a **developer tool, not a gate**: not wired into
+`scripts/gates.sh`, never a CI dependency, and ffmpeg is never linked into or invoked
+by the shipped app.
+
+```bash
+bash scripts/meter-parity.sh                 # generate deterministic synthetic
+                                              # fixtures via ffmpeg lavfi and compare
+bash scripts/meter-parity.sh <dir-of-wavs>   # compare an existing directory instead —
+                                              # e.g. real captures from `probe --dump-wav`
+```
+
+Both arms run the SAME WAV through two independent meters — `probe --measure-wav`
+(`lufs.rs`'s production output-side path: `measure_stereo` for a ≥2-ch file, `measure_mono`
+for 1-ch) and ffmpeg's `-af ebur128` — and assert `|Δ integrated| ≤ 0.1 LU` per file (ffmpeg's
+summary prints only one decimal, so this is the tightest honest bar for that print
+resolution). If `ffmpeg` isn't on `PATH` the script prints a skip notice and exits 0 —
+absence is not a failure.
+
+**What a FAIL means:** `lufs.rs` disagrees with the independent BS.1770 read by more than
+0.1 LU on at least one file. Since ffmpeg's `ebur128` is a mature, widely-used
+implementation, treat that as a `lufs.rs` regression (channel/hop handling, most likely
+the 2-ch true-peak-per-channel or the frame-vs-sample hop math this module's header
+documents) first — unless the file came from a real device capture, where device-side
+noise or a DC offset is also a plausible explanation.
+
+`probe --dump-wav <dir>` is the add-on that feeds the second arm: passed alongside
+`probe --measure-current`/`--measure-scene`, it also writes the captured processed pair
+(never the dry channel) to a 32-bit-float WAV in `<dir>`, named from slot/scene, with no
+effect on the command's behavior when the flag is absent. The filename is NOT made
+unique beyond slot/scene — re-running the same slot/scene overwrites the earlier dump,
+so rename a take before re-measuring if it needs to survive a follow-up run.
 
 ## Performance
 

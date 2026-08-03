@@ -118,9 +118,14 @@ Window: a **3 s stimulus slice + 200 ms silent preamble pad**
 a time-based block (the wash rule needs the decay), 0.3 s dry
 (`doctor::doctor_tail_ms`). HW-A/B'd against the original 6 s + 2.5 s oracle
 (`probe --doctor-window-ab`): 0 verdict flips. Capture runs ~4.7 s/sound
-(pad + tail included). Captures are the **stereo mix** of USB-out 1/2
-(`Capture::stereo_mix`, Doctor seams only — leveling's loudest-channel pick is
-untouched, A/B'd −0.00 LU).
+(pad + tail included). Band/PSD analysis (bands, air-flatness, localized
+peaks) runs on the **stereo mix** of USB-out 1/2 (`Capture::stereo_mix`, the
+per-sample AVERAGE — Doctor seams only, unaffected by the PR2 metering
+re-baseline: it never switched average→sum). The reported `integrated_lufs`
+is the exception — it adopts the same 2-ch BS.1770 SUM every other
+output-side measurement uses now (`leveller::doctor_capture_with_loudness`),
+so a Doctor sound's displayed loudness matches Companion's own Level-tab
+number rather than the `stereo_mix` average's mono-equivalent reading.
 
 The body/tail split is onset-aligned: `audio::estimate_onset` (correlation
 ≥ 0.15 at a plausible ≤ 120 ms lag — recalibrated from HW latency

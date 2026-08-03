@@ -22,7 +22,10 @@ import {
 // capture is a stimulus passthrough), so this file is an online-only oracle.
 
 const HIWATT = SCENARIO[4]; // E2E Hiwatt 3S — the sanitized user-reported preset
-const TARGET = -20; // HW-proven reachable for base + all 4 scenes + all 4 switches
+// PR2 re-baseline: +3 (2-ch BS.1770 over the processed pair) from the mono-era
+// HW-proven -20 — same physical operating point, pending hardware re-validation
+// (deferred; device offline as of this PR — see notes/leveling.md).
+const TARGET = -17; // HW-proven reachable for base + all 4 scenes + all 4 switches
 const DELTA = 0.5; // base/scenes: ~0.12 LU run-to-run noise + the one-shot/secant residual
 // Footswitch sounds get the product's own contract, not a tighter one: the FS lane
 // accepts a solve within KNOB_TOL_LU (0.3 LU, leveller.rs), and even the bracket-aware

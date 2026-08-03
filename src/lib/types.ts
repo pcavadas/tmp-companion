@@ -243,6 +243,10 @@ export interface Store {
   playback_level: PlaybackLevel;
   /** Download + install app updates automatically (Settings toggle). */
   auto_install_updates: boolean;
+  /** Meter convention `targets` are expressed in (mirrors
+   * profiles::METER_CONVENTION_STEREO) — backend-migration bookkeeping only;
+   * the frontend never reads or writes this. */
+  meter_convention: number;
 }
 
 /** A shipped pickup topology or alias row (mirrors commands/settings.rs

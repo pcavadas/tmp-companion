@@ -1110,9 +1110,45 @@ fn model_lufs(
     Some(c + preset_term + ol_term)
 }
 
-/// Scale `stimulus` so its measured integrated LUFS lands exactly at `l_model`
-/// (`s = 10^((l_model − l_stim)/20)`). Deterministic. A silent stimulus (non-finite
-/// `l_stim`) can't be modeled → returned verbatim.
+/// The stereo meter's fixed gain over mono for a DUAL-MONO signal (identical
+/// content on both channels): `10*log10(2)`, algebraically exact under BS.1770
+/// regardless of the content (duplicating a channel doubles every per-block mean
+/// square uniformly, so the relative gate's block selection — and hence which
+/// blocks integrate — cannot change; see `lufs.rs::dual_mono_stereo_reads_3_01_over_mono`).
+/// Ground-truthed against an external BS.1770 stereo meter (dual-mono +3.01 LU
+/// over mono on the same clip, matching ffmpeg's independent `ebur128` to 0.02 LU).
+#[cfg(feature = "e2e")]
+const DUAL_MONO_GAIN_LU: f64 = 3.0103;
+
+/// Duplicate a mono buffer onto both channels — the offline model of the TMP's
+/// mirrored USB-Out 1/2. Dual-mono is the only stereo shape the offline sim ever
+/// needs to emit: the fixture C-table models a single amp signal, never
+/// independent L/R.
+#[cfg(feature = "e2e")]
+fn to_dual_mono(mono: &[f32], rate: u32) -> crate::audio::Capture {
+    let mut interleaved = Vec::with_capacity(mono.len() * 2);
+    for &s in mono {
+        interleaved.push(s);
+        interleaved.push(s);
+    }
+    crate::audio::Capture {
+        interleaved,
+        channels: 2,
+        sample_rate: rate,
+    }
+}
+
+/// Scale `stimulus` so its measured integrated LUFS, AS THE SIM WILL EMIT IT
+/// (dual-mono, per `to_dual_mono`), lands exactly at `l_model`
+/// (`s = 10^((l_model − DUAL_MONO_GAIN_LU − l_stim)/20)`). `l_stim` is measured
+/// MONO (`measure_mono` — the input/stimulus-side convention never changes, T2),
+/// so without the `DUAL_MONO_GAIN_LU` term the stereo meter would add its own
+/// +3.01 ON TOP of a buffer already scaled to hit `l_model`, landing every
+/// offline capture +3 too hot (plan finding F1 — the double-count trap this
+/// constant closes; see `scale_stimulus_lands_on_model` for the contract proof
+/// through the PRODUCTION measure path, not a hand-rolled stereo re-check).
+/// Deterministic. A silent stimulus (non-finite `l_stim`) can't be modeled →
+/// returned verbatim (still dual-mono).
 #[cfg(feature = "e2e")]
 fn scale_stimulus(stimulus: &[f32], rate: u32, l_model: f64) -> crate::audio::Capture {
     // ponytail: re-measure L_stim per capture — ebur128 over the fixed ~3 s WAV is sub-ms
@@ -1124,33 +1160,24 @@ fn scale_stimulus(stimulus: &[f32], rate: u32, l_model: f64) -> crate::audio::Ca
     if !l_stim.is_finite() {
         return passthrough(stimulus, rate);
     }
-    let s = 10f64.powf((l_model - l_stim) / 20.0) as f32;
-    crate::audio::Capture {
-        interleaved: stimulus.iter().map(|x| x * s).collect(),
-        channels: 1,
-        sample_rate: rate,
-    }
+    let s = 10f64.powf((l_model - DUAL_MONO_GAIN_LU - l_stim) / 20.0) as f32;
+    let mono: Vec<f32> = stimulus.iter().map(|x| x * s).collect();
+    to_dual_mono(&mono, rate)
 }
 
-/// One mono channel of the stimulus, verbatim (the pre-physics fallback).
+/// The stimulus, dual-mono — the pre-physics fallback (no live SimDevice /
+/// unmodeled `l_stim`). Mirrors the real TMP's mirrored USB-Out (D1).
 #[cfg(feature = "e2e")]
 fn passthrough(stimulus: &[f32], rate: u32) -> crate::audio::Capture {
-    crate::audio::Capture {
-        interleaved: stimulus.to_vec(),
-        channels: 1,
-        sample_rate: rate,
-    }
+    to_dual_mono(stimulus, rate)
 }
 
-/// `n` samples of silence — `loudest_loudness` reports "no signal captured" on it, exactly
-/// as a real silent USB return does, driving the leveller's no-signal / off-branch verdict.
+/// `n` samples of silence, dual-mono — `processed_loudness` reports "no signal
+/// captured" on it, exactly as a real silent USB return does, driving the
+/// leveller's no-signal / off-branch verdict.
 #[cfg(feature = "e2e")]
 fn silent_capture(n: usize, rate: u32) -> crate::audio::Capture {
-    crate::audio::Capture {
-        interleaved: vec![0.0; n.max(1)],
-        channels: 1,
-        sample_rate: rate,
-    }
+    to_dual_mono(&vec![0.0; n.max(1)], rate)
 }
 
 /// Per-slot C values + the routed amp node, hand-authored in
@@ -1213,16 +1240,19 @@ fn saturated_pedal_lufs(v: f32) -> Option<f64> {
         return None;
     }
     if v <= 0.20 {
-        // The cliff: 42 LU over this 0.10 span.
-        return Some(-62.0 + 420.0 * (v - 0.10));
+        // The cliff: 42 LU over this 0.10 span. Floor anchor +3 (PR2 D1: the
+        // coherent +3 world) from the mono-era -62.0.
+        return Some(-59.0 + 420.0 * (v - 0.10));
     }
     if v <= 0.30 {
-        // Shoulder — the cliff's top IS the plateau's own floor (continuous, no dip).
-        return Some(-20.0);
+        // Shoulder — the cliff's top IS the plateau's own floor (continuous, no
+        // dip). Anchor +3 (PR2 D1) from the mono-era -20.0.
+        return Some(-17.0);
     }
-    // The compressed plateau: +3 LU across the remaining 0.70 of knob travel.
+    // The compressed plateau: +3 LU across the remaining 0.70 of knob travel
+    // (a RELATIVE span, untouched by the D1 absolute shift above).
     let t = ((v - 0.30) / 0.70).min(1.0);
-    Some(-20.0 + 3.0 * t)
+    Some(-17.0 + 3.0 * t)
 }
 
 #[cfg(feature = "e2e")]
@@ -1735,14 +1765,34 @@ mod physics_tests {
     // The scaling actually lands the measured LUFS on the modeled value.
     #[test]
     fn scale_stimulus_lands_on_model() {
+        // T1/F1: run the scaled capture through the PRODUCTION measure path
+        // (`leveller::processed_lufs`, the 2-ch BS.1770 hub every leveling
+        // measurement uses) rather than a hand-rolled per-channel re-check — a bug
+        // in `Capture::processed_stereo`'s stereo pairing wouldn't show up in a
+        // `measure_mono(&cap.channel(0), ..)` re-check, only in the real path.
         let rate = 48_000u32;
         let cap = scale_stimulus(&tone(rate), rate, -20.0);
-        let measured = crate::lufs::measure_mono(&cap.channel(0), rate)
-            .unwrap()
-            .integrated_lufs;
+        assert_eq!(cap.channels, 2, "the sim emits dual-mono (D1)");
+        let measured = crate::leveller::processed_lufs(Ok(cap)).unwrap();
         assert!(
-            (measured + 20.0).abs() < 0.3,
-            "scaled to hit -20 LUFS, measured {measured}"
+            (measured + 20.0).abs() < 0.05,
+            "scaled to hit -20 LUFS through the production measure, got {measured}"
+        );
+    }
+
+    // T1/F1, the brief's exact contract test: a capture built for l_model = -24.0
+    // must measure -24.0 through the production path, tight tolerance — this is
+    // what would have shipped +3.0 (or +6.0, stacked with the C-table shift) off
+    // had `scale_stimulus` not compensated for the dual-mono duplication it now
+    // performs.
+    #[test]
+    fn scale_stimulus_contract_survives_dual_mono_emission() {
+        let rate = 48_000u32;
+        let cap = scale_stimulus(&tone(rate), rate, -24.0);
+        let measured = crate::leveller::processed_lufs(Ok(cap)).unwrap();
+        assert!(
+            (measured - (-24.0)).abs() < 0.05,
+            "measured == l_model contract broke: got {measured}"
         );
     }
 
@@ -1797,11 +1847,12 @@ mod physics_tests {
             "cliff span must be ~42 LU, got {}",
             hi - lo
         );
-        // Our two FS fixture targets (-26/-24) must land ON this cliff, not the flat
-        // plateau — the whole reason the fixture is solvable at a tight ±0.1 LU offline.
+        // Our two FS fixture targets (-23/-21, PR2 D1: +3 from the mono-era -26/-24)
+        // must land ON this cliff, not the flat plateau — the whole reason the
+        // fixture is solvable at a tight ±0.1 LU offline.
         assert!(
-            (lo..=hi).contains(&-26.0) && (lo..=hi).contains(&-24.0),
-            "targets -26/-24 must fall inside the cliff [{lo}, {hi}]"
+            (lo..=hi).contains(&-23.0) && (lo..=hi).contains(&-21.0),
+            "targets -23/-21 must fall inside the cliff [{lo}, {hi}]"
         );
     }
 
@@ -1862,9 +1913,11 @@ mod physics_tests {
             0.1857,
         );
         let lufs = model_lufs(&st, &sc, &stored).unwrap();
+        // PR2 re-baseline: +3 from the mono-era -26 (the cliff's floor anchor moved
+        // -62 → -59, same -420*(v-0.10) slope).
         assert!(
-            (lufs - (-26.0)).abs() < 0.2,
-            "v=0.1857 should land near -26 LUFS, got {lufs}"
+            (lufs - (-23.0)).abs() < 0.2,
+            "v=0.1857 should land near -23 LUFS, got {lufs}"
         );
         // Forced OFF again (a sibling's own isolated measurement) — back to the flat C.
         st.bypass_writes.insert("pedal".into(), true);

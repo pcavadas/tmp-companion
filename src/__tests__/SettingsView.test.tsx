@@ -3,7 +3,8 @@
 // section.
 //
 //   • Targets render from the store; "Add target" appends a row in rename mode
-//     and persists via save_targets (no ceiling clamp — value seeds at −22.0).
+//     and persists via save_targets (no ceiling clamp — value seeds at −19.0,
+//     PR2 re-baseline: +3 from the mono-era −22.0).
 //   • Deleting the last target shows the empty-state line.
 //   • The Playback level control persists the picked level via set_playback_level.
 //   • App updates: version readout, manual check → "up to date", auto-install
@@ -115,10 +116,10 @@ describe("SettingsView — loudness targets", () => {
     const input = await screen.findByDisplayValue("New target");
     expect(input).toBeInTheDocument();
 
-    // Persisted: a 4th target seeded at −22.0, no clamp.
+    // Persisted: a 4th target seeded at −19.0 (PR2 re-baseline), no clamp.
     const saved = lastArgs("save_targets") as { targets: { lufs: number }[] };
     expect(saved.targets).toHaveLength(4);
-    expect(saved.targets[3]).toEqual({ name: "New target", lufs: -22.0 });
+    expect(saved.targets[3]).toEqual({ name: "New target", lufs: -19.0 });
   });
 
   it("shows the empty state once every target is deleted", async () => {

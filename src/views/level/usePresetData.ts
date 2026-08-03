@@ -96,11 +96,13 @@ export function usePresetData(connected: boolean) {
   );
 
   // Case-insensitive lookup by target NAME (the leveling flow carries the display
-  // name, e.g. "Crunch"); −30 is the conservative fallback when a name is unknown.
+  // name, e.g. "Crunch"); −27 is the conservative fallback when a name is unknown
+  // (PR2 re-baseline: +3 from the mono-era −30, same audible loudness under the
+  // new 2-ch BS.1770 convention).
   const targetLufsByName = useCallback(
     (name: string | null): number =>
       store?.targets.find((tg) => tg.name.toLowerCase() === name?.toLowerCase())
-        ?.lufs ?? -30,
+        ?.lufs ?? -27,
     [store],
   );
 

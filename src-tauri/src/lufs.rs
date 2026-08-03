@@ -3,9 +3,20 @@
 //! report **short-term max** because the relative gate discards quiet decays
 //! and palm-mute gaps, so integrated alone understates a dynamic clean tone vs
 //! a compressed high-gain one (the clean-vs-distorted mismatch the research
-//! flagged). The capture path measures a single (mono) processed channel; keep
-//! that convention fixed — a mono read sits ~3 dB below the same signal as
-//! dual-mono.
+//! flagged).
+//!
+//! **Metering convention (PR2 re-baseline):** the processed USB pair (capture
+//! channels 0/1) is measured as standard 2-channel BS.1770 (energy sum across
+//! channels, [`measure_stereo`]) — dry channel 2+ is never included. On the
+//! TMP's mirrored dual-mono USB output this reads a fixed +3.0103 dB
+//! (10·log10(2), algebraically exact for identical channels regardless of
+//! content) over the single-channel read the app used before this PR —
+//! ground-truthed against an external BS.1770 stereo meter (dual-mono +3.01 LU
+//! over mono on the same clip, agreeing with ffmpeg's independent `ebur128` to
+//! 0.02 LU). The INPUT/stimulus side (self-measurement, dry-DI calibration,
+//! the floor-guard spread) deliberately stays on [`measure_mono`] — those
+//! reads are single-channel by construction (the dry instrument send), not a
+//! metering choice.
 
 use ebur128::{EbuR128, Mode};
 use serde::Serialize;
@@ -33,18 +44,24 @@ impl Loudness {
     }
 }
 
-/// Measure a mono buffer of `f32` samples in [-1, 1]. Feeds the meter in 100 ms
-/// hops so we can track the short-term maximum as the window slides.
-pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, String> {
-    if samples.is_empty() {
+/// Shared BS.1770 measure over an interleaved buffer of `channels` channels.
+/// `measure_mono`/`measure_stereo` are thin `channels` = 1/2 wrappers so the two
+/// conventions can't drift: the 100 ms short-term hop is a FRAME count (scaled by
+/// `channels` for an interleaved buffer — verified: chunked == one-shot that way)
+/// and the true peak is `max` over every channel (`EbuR128::true_peak(ch)` is
+/// PER-CHANNEL — reading only channel 0 under a 2-ch meter would silently report
+/// the left channel's peak as the clip's true peak). dBTP is never shifted by the
+/// channel count.
+fn measure(interleaved: &[f32], sample_rate: u32, channels: u32) -> Result<Loudness, String> {
+    if interleaved.is_empty() {
         return Err("empty audio buffer".into());
     }
-    let mut meter = EbuR128::new(1, sample_rate, Mode::I | Mode::S | Mode::TRUE_PEAK)
+    let mut meter = EbuR128::new(channels, sample_rate, Mode::I | Mode::S | Mode::TRUE_PEAK)
         .map_err(|e| format!("ebur128 init: {e:?}"))?;
 
-    let hop = (sample_rate as usize / 10).max(1); // 100 ms
+    let hop = (sample_rate as usize / 10).max(1) * channels as usize; // 100 ms of FRAMES
     let mut st_max = f64::NEG_INFINITY;
-    for chunk in samples.chunks(hop) {
+    for chunk in interleaved.chunks(hop) {
         meter
             .add_frames_f32(chunk)
             .map_err(|e| format!("ebur128 add_frames: {e:?}"))?;
@@ -58,9 +75,15 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
     let integrated = meter
         .loudness_global()
         .map_err(|e| format!("ebur128 loudness_global: {e:?}"))?;
-    let true_peak_linear = meter
-        .true_peak(0)
-        .map_err(|e| format!("ebur128 true_peak: {e:?}"))?;
+    let mut true_peak_linear = 0.0f64;
+    for ch in 0..channels {
+        let tp = meter
+            .true_peak(ch)
+            .map_err(|e| format!("ebur128 true_peak({ch}): {e:?}"))?;
+        if tp > true_peak_linear {
+            true_peak_linear = tp;
+        }
+    }
     let true_peak_dbtp = if true_peak_linear > 0.0 {
         20.0 * true_peak_linear.log10()
     } else {
@@ -78,22 +101,53 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
     })
 }
 
+/// Measure a mono buffer of `f32` samples in [-1, 1]. The INPUT/stimulus-side
+/// convention (self-measurement, dry-DI calibration, the floor-guard spread) —
+/// see the module header. Kept forever regardless of how the output-side
+/// convention evolves.
+pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, String> {
+    measure(samples, sample_rate, 1)
+}
+
+/// Measure an INTERLEAVED 2-channel buffer of `f32` samples in [-1, 1] — the
+/// OUTPUT-side convention (see the module header): standard 2-ch BS.1770 over
+/// the processed USB pair. `interleaved.len()` must be even (frame-aligned);
+/// an odd length drops its trailing sample via integer chunking rather than
+/// erroring, matching `measure_mono`'s no-partial-frame tolerance.
+pub fn measure_stereo(interleaved: &[f32], sample_rate: u32) -> Result<Loudness, String> {
+    measure(interleaved, sample_rate, 2)
+}
+
 /// Incremental integrated-loudness meter for the adaptive capture: feed frames as
 /// they arrive and query the gated integrated LUFS repeatedly to watch convergence.
 /// `Mode::I` only — the adaptive measurement path solves on integrated loudness and
 /// never reads short-term, so the 3 s short-term window is dead weight here.
+/// `new` (1-ch, mono) and `new_stereo` (2-ch, interleaved) are the two entry
+/// points, mirroring [`measure_mono`]/[`measure_stereo`]; `add` is channel-count
+/// agnostic — it just forwards whatever frame-aligned buffer the caller built.
 pub struct IncrementalLoudness {
     meter: EbuR128,
 }
 
 impl IncrementalLoudness {
     pub fn new(sample_rate: u32) -> Result<Self, String> {
-        let meter =
-            EbuR128::new(1, sample_rate, Mode::I).map_err(|e| format!("ebur128 init: {e:?}"))?;
+        Self::new_channels(sample_rate, 1)
+    }
+
+    /// 2-channel (interleaved) incremental meter — the OUTPUT-side convention for
+    /// the adaptive/live-advisory paths once the capture is genuinely stereo.
+    pub fn new_stereo(sample_rate: u32) -> Result<Self, String> {
+        Self::new_channels(sample_rate, 2)
+    }
+
+    fn new_channels(sample_rate: u32, channels: u32) -> Result<Self, String> {
+        let meter = EbuR128::new(channels, sample_rate, Mode::I)
+            .map_err(|e| format!("ebur128 init: {e:?}"))?;
         Ok(Self { meter })
     }
 
-    /// Feed a mono chunk of `f32` samples in [-1, 1]. An empty chunk is a no-op.
+    /// Feed a frame-aligned chunk of `f32` samples in [-1, 1] (interleaved, if the
+    /// meter is stereo). An empty chunk is a no-op.
     pub fn add(&mut self, samples: &[f32]) -> Result<(), String> {
         if samples.is_empty() {
             return Ok(());
@@ -183,5 +237,104 @@ mod tests {
         let d = measure_mono(&dynamic, rate).unwrap();
         assert!(s.spread_lu() < 1.0, "steady spread {}", s.spread_lu());
         assert!(d.spread_lu() > 3.0, "dynamic spread {}", d.spread_lu());
+    }
+
+    fn interleave2(l: &[f32], r: &[f32]) -> Vec<f32> {
+        l.iter().zip(r).flat_map(|(&a, &b)| [a, b]).collect()
+    }
+
+    #[test]
+    fn dual_mono_stereo_reads_3_01_over_mono() {
+        // Ground-truthed constant (module header): a mono buffer duplicated onto
+        // both channels reads a fixed +3.0103 dB (10*log10(2)) under the 2-ch
+        // meter — the TMP's mirrored USB-Out shape.
+        let rate = 48_000;
+        let tone = sine(1000.0, 4.0, rate, 0.4);
+        let mono = measure_mono(&tone, rate).unwrap().integrated_lufs;
+        let stereo = measure_stereo(&interleave2(&tone, &tone), rate)
+            .unwrap()
+            .integrated_lufs;
+        assert!(
+            (stereo - mono - 3.0103).abs() < 0.05,
+            "mono {mono:.3} stereo {stereo:.3} delta {:.3}",
+            stereo - mono
+        );
+    }
+
+    #[test]
+    fn stereo_matches_hand_computed_energy_sum_on_independent_channels() {
+        // The test that actually discriminates a genuine 2-ch BS.1770 meter from
+        // "measure channel 0 and add a constant": two DIFFERENT-level, uncorrelated
+        // tones on L/R. A dual-mono shortcut would report L's level +3.01 regardless
+        // of R; a real 2-ch meter reports 10*log10(z_l + z_r) - 0.691 (BS.1770's
+        // -0.691 LUFS offset), which is NOT simply "louder channel + 3.01" once the
+        // channels differ.
+        let rate = 48_000;
+        let l = sine(1000.0, 5.0, rate, 0.5);
+        let r = sine(1300.0, 5.0, rate, 0.2);
+        let stereo = measure_stereo(&interleave2(&l, &r), rate).unwrap();
+        let ml = measure_mono(&l, rate).unwrap().integrated_lufs;
+        let mr = measure_mono(&r, rate).unwrap().integrated_lufs;
+        // BS.1770 integrated loudness before gating is -0.691 + 10*log10(sum of
+        // per-channel mean-square); recovering each channel's "z" from its own
+        // (also -0.691-offset) mono reading and summing reproduces the stereo
+        // value — the two tones are stationary and above the relative gate, so
+        // gating doesn't reorder anything here.
+        let zl = 10f64.powf((ml + 0.691) / 10.0);
+        let zr = 10f64.powf((mr + 0.691) / 10.0);
+        let hand_computed = -0.691 + 10.0 * (zl + zr).log10();
+        assert!(
+            (stereo.integrated_lufs - hand_computed).abs() < 0.1,
+            "stereo {:.3} vs hand-computed sum {hand_computed:.3}",
+            stereo.integrated_lufs
+        );
+        // And it must NOT equal "louder channel (L) + 3.01" — the dual-mono
+        // shortcut a hand-rolled per-channel-and-add-a-constant bug would produce.
+        assert!(
+            (stereo.integrated_lufs - (ml + 3.0103)).abs() > 0.3,
+            "stereo reading must not collapse to dual-mono-of-the-loudest-channel"
+        );
+    }
+
+    #[test]
+    fn stereo_true_peak_is_the_max_of_either_channel() {
+        // T3: `EbuR128::true_peak(ch)` is PER-CHANNEL. An asymmetric pair must
+        // report the LOUDER channel's peak, not channel 0's.
+        let rate = 48_000;
+        let quiet = sine(1000.0, 2.0, rate, 0.2);
+        let loud = sine(1000.0, 2.0, rate, 0.9);
+        let ch0_quiet = measure_stereo(&interleave2(&quiet, &loud), rate).unwrap();
+        let ch0_loud = measure_stereo(&interleave2(&loud, &quiet), rate).unwrap();
+        let expected = 20.0 * 0.9f64.log10();
+        assert!(
+            (ch0_quiet.true_peak_dbtp - expected).abs() < 0.3,
+            "loud-on-ch1: expected ~{expected:.2} dBTP, got {:.2}",
+            ch0_quiet.true_peak_dbtp
+        );
+        assert!(
+            (ch0_loud.true_peak_dbtp - expected).abs() < 0.3,
+            "loud-on-ch0: expected ~{expected:.2} dBTP, got {:.2}",
+            ch0_loud.true_peak_dbtp
+        );
+    }
+
+    #[test]
+    fn incremental_stereo_matches_measure_stereo() {
+        let rate = 48_000;
+        let l = sine(1000.0, 4.0, rate, 0.4);
+        let r = sine(1300.0, 4.0, rate, 0.15);
+        let clip = interleave2(&l, &r);
+        let oneshot = measure_stereo(&clip, rate).unwrap().integrated_lufs;
+        let mut m = IncrementalLoudness::new_stereo(rate).unwrap();
+        // Hop by FRAMES*channels (100 ms of frames), mirroring `measure`'s own hop.
+        let hop = (rate as usize / 10) * 2;
+        for chunk in clip.chunks(hop) {
+            m.add(chunk).unwrap();
+        }
+        let inc = m.integrated().unwrap();
+        assert!(
+            (inc - oneshot).abs() < 1e-6,
+            "incremental {inc:.6} vs one-shot {oneshot:.6}"
+        );
     }
 }
