@@ -132,8 +132,18 @@ export default tseslint.config(
       "no-restricted-syntax": [
         "error",
         {
+          // Dot form: process.env.TMP_E2E_ONLINE — the form both historical
+          // occurrences used.
           selector:
             "MemberExpression[object.object.name='process'][object.property.name='env'][property.name='TMP_E2E_ONLINE']",
+          message:
+            "process.env.TMP_E2E_ONLINE is never inherited by the Playwright test process (only the e2e_server subprocess sees it) — use `await isOnline(page)` from e2e/fixtures/scenario.ts instead.",
+        },
+        {
+          // Bracket form: process.env["TMP_E2E_ONLINE"] — same env read, computed
+          // access, so `property.name` above doesn't match it.
+          selector:
+            "MemberExpression[computed=true][object.object.name='process'][object.property.name='env'][property.value='TMP_E2E_ONLINE']",
           message:
             "process.env.TMP_E2E_ONLINE is never inherited by the Playwright test process (only the e2e_server subprocess sees it) — use `await isOnline(page)` from e2e/fixtures/scenario.ts instead.",
         },

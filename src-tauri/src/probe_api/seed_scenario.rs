@@ -243,6 +243,34 @@ fn extract_fender_chain(text: &str) -> Vec<String> {
     out
 }
 
+/// Test-only convenience over [`pristine_check`] — collapses its `Result` to a
+/// bool for the majority of assertions below that only need the pass/fail shape;
+/// a few also assert on the `Err` variant directly to pin which sub-check fired.
+/// Production calls `pristine_check` itself so the caller can log WHICH sub-check
+/// failed instead of a fixed guess (see [`PristineMiss`]).
+#[cfg(test)]
+fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
+    pristine_check(body, fixture_json).is_ok()
+}
+
+/// Which of [`pristine_check`]'s three sub-checks rejected a body — kept distinct
+/// from a plain bool so the caller can log an HONEST reason. The two substantive
+/// gates (level, chain) fail independently (a level-drifted-only body still has a
+/// matching chain, and vice versa — see `pristine_check_flags_a_structural_block_delete`),
+/// so a caller that hardcodes one reason string regardless of which check actually
+/// tripped is silently wrong half the time; that was the bug here before this type
+/// existed (see `pristine_check`'s doc comment for the full incident).
+#[derive(Debug, PartialEq, Eq)]
+enum PristineMiss {
+    /// The resident body predates the fixture's `FIXTURE_SOURCE_STAMP` revision.
+    StaleRevision,
+    /// `presetLevel` no longer matches the fixture (a leveling/knob save).
+    LevelDrift,
+    /// The base `audioGraph` block chain ([`extract_fender_chain`]) no longer
+    /// matches the fixture (a structural edit — e.g. `copy_apply`'s delete/insert).
+    ChainDrift,
+}
+
 /// Pristine = the on-device body's `presetLevel` still matches the fixture's AND its
 /// base block chain ([`extract_fender_chain`]) is IDENTICAL to the fixture's. The
 /// presetLevel check alone catches a strict-harness LEVEL run (a strict-harness run
@@ -259,32 +287,9 @@ fn extract_fender_chain(text: &str) -> Vec<String> {
 /// matches even though presetLevel legitimately drifted (the level check is still the
 /// one that fails THAT case). Unreadable/truncated-past-the-level or mid-chain bodies
 /// count as NOT pristine either way: ownership is already proven, so the worst case is
-/// a redundant re-import.
-/// Test-only convenience: production now calls [`pristine_check`] directly so it
-/// can log WHICH sub-check failed (see [`PristineMiss`]); the tests below only
-/// need the pass/fail shape for most cases, with a few also pinning the reason.
-#[cfg(test)]
-fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
-    pristine_check(body, fixture_json).is_ok()
-}
-
-/// Which of `body_is_pristine`'s three sub-checks rejected the body — kept distinct
-/// from the plain bool so the caller can log an HONEST reason. The two gates fail
-/// independently (a level-drifted-only body still has a matching chain, and vice
-/// versa — see `pristine_check_flags_a_structural_block_delete`), so a caller that
-/// hardcodes one reason string regardless of which check actually tripped is
-/// silently wrong half the time; that was the bug here before this type existed.
-#[derive(Debug, PartialEq, Eq)]
-enum PristineMiss {
-    /// The resident body predates the fixture's `FIXTURE_SOURCE_STAMP` revision.
-    StaleRevision,
-    /// `presetLevel` no longer matches the fixture (a leveling/knob save).
-    LevelDrift,
-    /// The base `audioGraph` block chain ([`extract_fender_chain`]) no longer
-    /// matches the fixture (a structural edit — e.g. `copy_apply`'s delete/insert).
-    ChainDrift,
-}
-
+/// a redundant re-import. Returns the FIRST sub-check that fails (rev, then level,
+/// then chain) — a caller that wants an honest re-import reason should log the
+/// returned [`PristineMiss`] rather than assume which one fired.
 fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     let body_str = String::from_utf8_lossy(body);
     // Rev gate first: a resident copy of an OLDER fixture revision is never pristine,
