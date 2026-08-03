@@ -260,12 +260,37 @@ fn extract_fender_chain(text: &str) -> Vec<String> {
 /// one that fails THAT case). Unreadable/truncated-past-the-level or mid-chain bodies
 /// count as NOT pristine either way: ownership is already proven, so the worst case is
 /// a redundant re-import.
+/// Test-only convenience: production now calls [`pristine_check`] directly so it
+/// can log WHICH sub-check failed (see [`PristineMiss`]); the tests below only
+/// need the pass/fail shape for most cases, with a few also pinning the reason.
+#[cfg(test)]
 fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
+    pristine_check(body, fixture_json).is_ok()
+}
+
+/// Which of `body_is_pristine`'s three sub-checks rejected the body — kept distinct
+/// from the plain bool so the caller can log an HONEST reason. The two gates fail
+/// independently (a level-drifted-only body still has a matching chain, and vice
+/// versa — see `pristine_check_flags_a_structural_block_delete`), so a caller that
+/// hardcodes one reason string regardless of which check actually tripped is
+/// silently wrong half the time; that was the bug here before this type existed.
+#[derive(Debug, PartialEq, Eq)]
+enum PristineMiss {
+    /// The resident body predates the fixture's `FIXTURE_SOURCE_STAMP` revision.
+    StaleRevision,
+    /// `presetLevel` no longer matches the fixture (a leveling/knob save).
+    LevelDrift,
+    /// The base `audioGraph` block chain ([`extract_fender_chain`]) no longer
+    /// matches the fixture (a structural edit — e.g. `copy_apply`'s delete/insert).
+    ChainDrift,
+}
+
+fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     let body_str = String::from_utf8_lossy(body);
     // Rev gate first: a resident copy of an OLDER fixture revision is never pristine,
     // whatever its levels or chain read (see `FIXTURE_SOURCE_STAMP`).
     if !body_str.contains(FIXTURE_SOURCE_STAMP) {
-        return false;
+        return Err(PristineMiss::StaleRevision);
     }
     let level_matches = match (
         extract_preset_level(body),
@@ -275,9 +300,12 @@ fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
         _ => false,
     };
     if !level_matches {
-        return false;
+        return Err(PristineMiss::LevelDrift);
     }
-    extract_fender_chain(&body_str) == extract_fender_chain(fixture_json)
+    if extract_fender_chain(&body_str) != extract_fender_chain(fixture_json) {
+        return Err(PristineMiss::ChainDrift);
+    }
+    Ok(())
 }
 
 /// Does the field-8 body identify itself as `name`? Back-to-back slot reads on one
@@ -447,10 +475,14 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
                  preset (stale/mismatched read) — keeping the marker-skip",
                 p.list_index, p.name
             );
-        } else if !body_is_pristine(&body, &p.preset_json) {
+        } else if let Err(miss) = pristine_check(&body, &p.preset_json) {
+            let why = match miss {
+                PristineMiss::StaleRevision => "resident copy is an older fixture revision",
+                PristineMiss::LevelDrift => "presetLevel drifted",
+                PristineMiss::ChainDrift => "block chain drifted (structural edit)",
+            };
             eprintln!(
-                "[seed] slot {} ({:?}) is fixture-owned but not pristine \
-                 (presetLevel drifted) — re-importing",
+                "[seed] slot {} ({:?}) is fixture-owned but not pristine ({why}) — re-importing",
                 p.list_index, p.name
             );
             to_seed.push(p);
@@ -701,6 +733,14 @@ mod tests {
             vec!["ACD_TubeScreamer".to_string()],
             "the mutilated body's chain is a proper prefix of the fixture's"
         );
+        // The reason the caller logs must actually discriminate: a structural delete
+        // is rejected by the CHAIN gate, not mislabeled as a level drift (the
+        // pre-fix log string was hardcoded to "presetLevel drifted" regardless of
+        // which sub-check tripped, which misled a real online investigation).
+        assert_eq!(
+            pristine_check(mutilated.as_bytes(), fixture),
+            Err(PristineMiss::ChainDrift)
+        );
 
         // Value-only drift (presetLevel) must NOT trip the chain gate — leveling and
         // doctor-param saves never touch a `"FenderId"` occurrence, so the chain
@@ -716,6 +756,11 @@ mod tests {
         assert!(
             !body_is_pristine(level_drifted.as_bytes(), fixture),
             "still not pristine overall — via the presetLevel gate, not the chain gate"
+        );
+        assert_eq!(
+            pristine_check(level_drifted.as_bytes(), fixture),
+            Err(PristineMiss::LevelDrift),
+            "level-only drift must report as LevelDrift, not ChainDrift"
         );
 
         // A body truncated MID-chain (cut inside the second block, after presetLevel
