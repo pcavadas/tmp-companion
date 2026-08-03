@@ -179,7 +179,7 @@ impl PresetIo for LiveIo {
             let mut s = Session::connect()?;
             s.load_preset(target.list_index)?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        crate::settle(std::time::Duration::from_millis(400));
         // conn2: fresh handshake re-attaches to the now-current preset. CONFIRM it is the
         // target before mutating+saving (a dropped load = wrong-preset save = data loss),
         // then heartbeat-warm the line so fw 1.8.45 accepts the edits from a live

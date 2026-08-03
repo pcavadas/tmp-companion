@@ -290,7 +290,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // The isolation read opened (or tried to open) its own session either way —
                 // gap before level_preset reconnects, else the quick reopen risks the HID
                 // open-lockout (0xe00002c5).
-                std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
                 leveller::level_preset(
                     slot,
                     &stim,

@@ -262,10 +262,10 @@ pub const CANCELLED: &str = "cancelled";
 pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
     // the edit buffer dirty at the measurement level — the whole point of the restore.
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
-    std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+    crate::settle(Duration::from_millis(settle_after_load_ms()));
     log::info!("restored stored preset slot={slot} after unsaved measurement");
     Ok(())
 }
@@ -812,7 +812,7 @@ pub fn doctor_capture_current(
     ref_level: Option<f32>,
     tail_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     Ok(to_stereo(capture_full_at(
         0, // slot unused: skip_load
         scene,
@@ -871,9 +871,9 @@ pub fn measure_sound_asis_strict(
         {
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+            crate::settle(Duration::from_millis(settle_after_load_ms()));
         }
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         return require_live(
             || measure_fs_at((&g, &n, &p), force_bypass, stimulus, v),
             stimulus,
@@ -917,14 +917,14 @@ pub fn capture_scene_ceilings(
         {
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+            crate::settle(Duration::from_millis(settle_after_load_ms()));
         }
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect_lean()?;
         s.load_scene(scene)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
         set_knob(&mut s, &LevelKnob::PresetLevel, 1.0, None)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
         cs.push(engage_measure_disengage(&mut s, stimulus)?.integrated_lufs);
     }
     Ok(cs)
@@ -1062,14 +1062,14 @@ pub fn apply_levels(
         } else {
             SETTLE_BEFORE_WRITE_MS
         };
-        std::thread::sleep(Duration::from_millis(settle));
+        crate::settle(Duration::from_millis(settle));
     }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
 
     let mut verify_lufs = None;
     let mut s = Session::connect()?;
     set_knobs(&mut s, targets, saved)?; // set before any re-amp engage (latched)
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
 
     if opts.verify {
         verify_lufs = engage_measure_disengage(&mut s, stimulus)
@@ -1087,7 +1087,7 @@ pub fn apply_levels(
             .all(|(k, _)| matches!(k, LevelKnob::PresetLevel))
         {
             let _ = set_knobs(&mut s, targets, saved);
-            std::thread::sleep(Duration::from_millis(150));
+            crate::settle(Duration::from_millis(150));
         }
     }
 
@@ -1108,7 +1108,7 @@ pub fn apply_levels(
             // fresh). The written values survive in the device's working copy across
             // reconnects, so save on a FRESH connection.
             drop(s);
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             let mut s2 = Session::connect()?;
             recall_reassert_save(&mut s2, slot, opts.restore_scene, reassert_pl)?;
         } else {
@@ -1162,7 +1162,7 @@ pub fn restore_preset_level(slot: u32, level: f32, expected_name: &str) -> Resul
         let list = s.list_my_presets()?;
         verify_slot_name(&list, slot, expected_name)?;
     }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let opts = LevelOptions {
         save: true,
         verify: false,
@@ -1217,7 +1217,7 @@ pub fn restore_redistribution(
         let list = s.list_my_presets()?;
         verify_slot_name(&list, slot, expected_name)?;
     }
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     s.begin_live_edit()?;
     s.load_preset(slot)?;
@@ -1226,7 +1226,7 @@ pub fn restore_redistribution(
         let _ = s.pump_collect(150);
     }
     s.set_preset_level(preset_level)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     write_grouped_knobs(&mut s, knobs, saved.as_ref())?;
     recall_base(&mut s)?;
     s.save_current_preset(slot)
@@ -1653,7 +1653,7 @@ fn saved_for_scene_knobs<'a>(
 /// / `SETTLE_AFTER_SCENE_EDIT_MS` pair instead, in `set_knobs`).
 fn recall_base(s: &mut Session) -> Result<(), String> {
     s.load_scene(crate::session::BASE_SCENE_SLOT)?;
-    std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     Ok(())
 }
 
@@ -1666,7 +1666,7 @@ fn recall_base(s: &mut Session) -> Result<(), String> {
 fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<(), String> {
     if let Some(scene) = restore_scene {
         s.load_scene(scene)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
     Ok(())
 }
@@ -1697,7 +1697,7 @@ fn recall_reassert_save(
     recall_original_scene(s, restore_scene)?;
     if let (Some(pl), Some(_)) = (reassert_pl, restore_scene) {
         s.set_preset_level(pl)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
     s.save_current_preset(slot)
 }
@@ -1896,7 +1896,7 @@ fn set_knobs(
             "set_knobs[t] scene {scene}: loadScene returned at {} ms",
             t0.elapsed().as_millis()
         );
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         for (group_id, node_id) in &needs_enable {
             s.set_node_scene_edit(group_id, node_id, true)?;
             log::info!(
@@ -1908,7 +1908,7 @@ fn set_knobs(
         // wasn't is pure idle and rides the ~400-450 ms silent-drop cliff (see
         // `SETTLE_AFTER_SCENE_EDIT_MS`'s doc for the HW evidence).
         if !needs_enable.is_empty() {
-            std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
+            crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_EDIT_MS));
         }
     } else if has_base_block {
         recall_base(s)?;
@@ -2595,9 +2595,9 @@ pub fn level_footswitch(
         {
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+            crate::settle(Duration::from_millis(settle_after_load_ms()));
         }
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
 
         let method = match write {
             FsWrite::Bake { .. } => "baked",
@@ -2616,7 +2616,7 @@ pub fn level_footswitch(
         )?;
         if result.clamp_reason.is_some() {
             // No-signal routing clamp: nothing to write — discard the sweep pollution.
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             if let Ok(mut s) = Session::connect_lean() {
                 if let Err(e) = s.load_preset(slot) {
                     log::warn!("footswitch no-signal reload failed (slot {slot}): {e}");
@@ -2638,7 +2638,7 @@ pub fn level_footswitch(
             write_footswitch_values(slot, &pending, restore_scene)?;
             result.saved = true;
             if verify {
-                std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+                crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
                 result.verify_lufs =
                     measure_fs_at(lev, engaged_bypass, stimulus, result.final_value)
                         .ok()
@@ -2699,7 +2699,7 @@ pub fn write_footswitch_values(
     }
     // Guaranteed re-amp OFF first — the measurement's last disengage can be dropped.
     let _ = Session::connect_lean().map(|mut s| s.set_reamp_mode(false));
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let mut s = Session::connect()?;
     write_fs_values_on_session(&mut s, slot, pending, restore_scene)
 }
@@ -2772,7 +2772,7 @@ fn write_fs_values_on_session(
                             break;
                         }
                         let _ = s.heartbeat();
-                        std::thread::sleep(Duration::from_millis(200));
+                        crate::settle(Duration::from_millis(200));
                     }
                     if confirmed {
                         break;
@@ -2807,7 +2807,7 @@ fn write_fs_values_on_session(
                             break;
                         }
                         let _ = s.heartbeat();
-                        std::thread::sleep(Duration::from_millis(200));
+                        crate::settle(Duration::from_millis(200));
                     }
                     if !cleared {
                         return Err(
@@ -2839,7 +2839,7 @@ fn write_fs_values_on_session(
     }
     for (scene, writes) in &by_scene {
         s.load_scene(*scene)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
         for p in writes {
             s.change_parameter(&p.lev.0, &p.lev.1, &p.lev.2, p.value)?;
         }
@@ -3078,9 +3078,9 @@ pub fn level_scenes_live_batched(
         {
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+            crate::settle(Duration::from_millis(settle_after_load_ms()));
         }
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
 
         // ONE pair of CoreAudio streams for the whole preset (between engages
         // they just carry silence). Rebuilding streams per scene both wasted
@@ -3108,14 +3108,14 @@ pub fn level_scenes_live_batched(
                 let mut s = Session::connect()?;
                 set_knob(&mut s, &kt.knob, kt.current.clamp(kt.lo, kt.hi), saved)?;
                 *writes += 1;
-                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+                crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
                 let _ = s.set_reamp_mode(true)?;
-                std::thread::sleep(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
+                crate::settle(Duration::from_millis(SETTLE_AFTER_REAMP_MS));
 
                 let (log_space, c_lo, c_hi) = knob_search_space(kt.lo, kt.hi);
                 let mut coord =
                     knob_to_coord(kt.current.clamp(kt.lo, kt.hi), log_space).clamp(c_lo, c_hi);
-                std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
                 let mut measured = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                 *windows += 1;
                 let mut best = (coord, measured);
@@ -3146,7 +3146,7 @@ pub fn level_scenes_live_batched(
                     let next_value = coord_to_knob(next, log_space, kt.lo, kt.hi);
                     set_knob_value_only(&mut s, &kt.knob, next_value)?;
                     *writes += 1;
-                    std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
                     let lufs = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                     *windows += 1;
                     if (lufs - job.target_lufs).abs() < (best.1 - job.target_lufs).abs() {
@@ -3162,7 +3162,7 @@ pub fn level_scenes_live_batched(
                 if (best.0 - coord).abs() > 1e-4 {
                     set_knob_value_only(&mut s, &kt.knob, best_value)?;
                     *writes += 1;
-                    std::thread::sleep(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
+                    crate::settle(Duration::from_millis(LIVE_SETTLE_MS + BATCH_WINDOW_MS));
                     best.1 = live_window_lufs(&live, BATCH_WINDOW_MS)?;
                     *windows += 1;
                 }
@@ -3174,7 +3174,7 @@ pub fn level_scenes_live_batched(
                 ))
             })(&mut windows, &mut writes);
 
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             let outcome = match scene_result {
                 Ok((lufs, level, clamped)) => BatchedSceneOutcome {
                     scene_slot: job.scene_slot,
@@ -3306,10 +3306,10 @@ pub fn redistribute_clamped_headroom(
     // LEAN — no `load_preset` — so this working-copy value survives every scene's fresh
     // re-amp connect (HW: unsaved writes persist across reconnects).
     {
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
         s.set_preset_level(new_preset_level)?;
-        std::thread::sleep(Duration::from_millis(SETTLE_AFTER_SET_MS));
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
 
     let mut outcomes = Vec::with_capacity(jobs.len());
@@ -3333,7 +3333,7 @@ pub fn redistribute_clamped_headroom(
             continue;
         }
         let result = jointk_one_scene(slot, job, stimulus, job.target_lufs, true, true, saved);
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let o = match result {
             Ok(s) => {
                 solved_scene_outcome(job.scene_slot, job.target_lufs, s, t0.elapsed().as_millis())
@@ -3384,7 +3384,7 @@ pub fn redistribute_clamped_headroom(
         .iter()
         .find(|o| o.writes > 0 && o.final_lufs.is_some())
     {
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         match require_live(|| measure_scene_asis(check.scene_slot, stimulus), stimulus) {
             Ok(l) => {
                 let err = (l.integrated_lufs - check.target_lufs).abs();
@@ -3463,7 +3463,7 @@ fn run_scene_jobs(
         attempted = true;
         let result = solve(job);
 
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let outcome = match result {
             Ok(s) => {
                 // Harvested BEFORE `solved_scene_outcome` consumes the solve: the outcome keeps
@@ -3543,7 +3543,7 @@ fn save_deferred_scene_writes(
     // NOT `sleep_or_cancel`: this is ALSO fired on cancel, to persist the scene overlays
     // already written. Bailing here would throw away the run's completed work.
     let attempt = || -> Result<(), String> {
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
         recall_reassert_save(&mut s, slot, restore_scene, reassert_pl)
     };
@@ -3629,7 +3629,7 @@ fn verify_persisted_writes(
     }
     // `save_deferred_scene_writes` has just closed its session and `read_saved_preset` sleeps
     // only AFTER itself, so the opening gap is the caller's to provide.
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let Some(saved) = read_saved_preset(slot) else {
         log::warn!(
             "slot {slot}: post-save verify skipped — the saved preset could not be re-read; \
@@ -3954,7 +3954,7 @@ fn apply_first_verified(
                 && expected_db.abs() >= SUSPECT_DROP_MIN_DB
                 && (v - baseline_lufs).abs() < KNOB_TOL_LU =>
         {
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             Ok((
                 apply_levels(slot, stimulus, &targets, opts, false, saved)?.1,
                 1,
@@ -4188,14 +4188,14 @@ pub fn mute_floor_report(
     {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
-        std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+        crate::settle(Duration::from_millis(settle_after_load_ms()));
     }
     let combined = measure_knobs_at(stimulus, &[(a, cur_a), (b, cur_b)], saved)?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let floor_lufs = measure_mute_floor(stimulus, a, b, saved)?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)], saved)?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let b_solo = measure_knobs_at(stimulus, &[(a, 0.0), (b, cur_b)], saved)?;
     let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
 
@@ -4314,12 +4314,12 @@ fn rebalance_one_scene(
         || measure_knobs_at(stimulus, &[(&a.knob, cur_a), (&b.knob, 0.0)], saved),
         stimulus,
     )?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let lb_solo = require_live(
         || measure_knobs_at(stimulus, &[(&a.knob, 0.0), (&b.knob, cur_b)], saved),
         stimulus,
     )?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let c_a = la_solo.integrated_lufs - 20.0 * (cur_a as f64).log10();
     let c_b = lb_solo.integrated_lufs - 20.0 * (cur_b as f64).log10();
 
@@ -4329,7 +4329,7 @@ fn rebalance_one_scene(
     // overall target) → flag the scene "verify by ear". One extra capture; rebalance is opt-in.
     // A SILENT floor (deep mute) is the best case → huge margin → no flag.
     let floor_lufs = measure_mute_floor(stimulus, &a.knob, &b.knob, saved)?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let min_solo = la_solo.integrated_lufs.min(lb_solo.integrated_lufs);
     let verify_by_ear = (min_solo - floor_lufs) < REBALANCE_BLEED_MARGIN_DB;
 
@@ -4343,7 +4343,7 @@ fn rebalance_one_scene(
         || measure_knobs_at(stimulus, &[(&a.knob, la_bal), (&b.knob, lb_bal)], saved),
         stimulus,
     )?;
-    std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let spread = combined.spread_lu();
 
     // 5. Joint-k the balanced pair to target (scale both by one k from the combined point).
@@ -4510,9 +4510,9 @@ pub fn level_preset_block(
         {
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
-            std::thread::sleep(Duration::from_millis(settle_after_load_ms()));
+            crate::settle(Duration::from_millis(settle_after_load_ms()));
         }
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
 
         // Search in a coordinate where the knob is ~linear in LUFS so the secant
         // converges in 1–2 steps. Amplitude knobs (range within [0,1]) are linear in
@@ -4560,7 +4560,7 @@ pub fn level_preset_block(
         if cancelled() {
             return Err(CANCELLED.to_string());
         }
-        std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let mut yb = measure_knob_at(stimulus, knob, from_c(cb), &[], overlays)?.integrated_lufs;
         let mut iterations = 2u32;
 
@@ -4584,7 +4584,7 @@ pub fn level_preset_block(
             if cancelled() {
                 return Err(CANCELLED.to_string());
             }
-            std::thread::sleep(Duration::from_millis(RECONNECT_GAP_MS));
+            crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             let ynext =
                 measure_knob_at(stimulus, knob, from_c(cnext), &[], overlays)?.integrated_lufs;
             iterations += 1;

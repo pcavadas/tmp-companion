@@ -277,10 +277,10 @@ fn sweep_on(
         }
         s.clear_user_preset(slot)?;
         swept.push(slot);
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        crate::settle(std::time::Duration::from_millis(300));
     }
     if !swept.is_empty() {
-        std::thread::sleep(std::time::Duration::from_millis(1_500));
+        crate::settle(std::time::Duration::from_millis(1_500));
     }
     Ok(swept)
 }
@@ -353,10 +353,10 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
             // "the device did not answer this read" (documented back-to-back read
             // unreliability), not "the slot is empty" — retry once, paced, before
             // treating the slot as unreadable.
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            crate::settle(std::time::Duration::from_millis(300));
             let mut b = s.read_slot_preset_json(p.list_index + 1).ok().flatten();
             if b.is_none() {
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                crate::settle(std::time::Duration::from_millis(300));
                 b = s.read_slot_preset_json(p.list_index + 1).ok().flatten();
             }
             b
@@ -423,7 +423,7 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
             // Quiet gap between imports: each lands via several fresh connections
             // (import → landing read → load/confirm/save → guarded clear), and the
             // device needs the gap for its read-after-write list propagation.
-            std::thread::sleep(std::time::Duration::from_secs(8));
+            crate::settle(std::time::Duration::from_secs(8));
         }
         // Re-confirm THIS target in the SAME address space as the mutation,
         // immediately before it: the classification pass above ran off one
@@ -480,7 +480,7 @@ pub fn probe_import_file(path: &str, list_index: u32) -> Result<String, String> 
         }
     }
     drop(s);
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    crate::settle(std::time::Duration::from_millis(1000));
     replace_inplace_with(list_index, &bytes, false)?;
     Ok(format!(
         "[probe --import-file] imported {path} → list index {list_index} (device slot {})\n",

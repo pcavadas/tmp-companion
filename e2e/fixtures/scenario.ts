@@ -7,8 +7,8 @@ import { expect, type Page } from "@playwright/test";
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
 // committed presetJsons (`e2e_seed_scenario` → `scenario-presets.json`). `clearScenario`
 // returns the unit to net-zero.
-// Per-worktree bridge port (scripts/e2e.sh exports TMP_E2E_PORT); default 7600.
-const SERVER = `http://127.0.0.1:${process.env.TMP_E2E_PORT ?? "7600"}`;
+// This worker's own bridge (per-worktree base + parallel index) — see fixtures/port.ts.
+import { SERVER } from "./port";
 
 export interface Preset {
   name: string;
@@ -172,12 +172,27 @@ export async function isOnline(page: Page): Promise<boolean> {
  *  so clearing here only forces the next run to re-import everything (~2 min of device
  *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
  *  TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per slot) for the
- *  on-demand net-zero clean. OFFLINE the clears stay (SimDevice isolation, milliseconds).
+ *  on-demand net-zero clean.
  *  Recovery always runs: stray sweep + recall 001 + re-amp OFF. Best-effort — the backend
- *  guard refuses any slot not holding the scenario name, so a real preset is never cleared. */
+ *  guard refuses any slot not holding the scenario name, so a real preset is never cleared.
+ *
+ *  OFFLINE this is a NO-OP, because it has nothing left to undo: the `page` fixture POSTs
+ *  `/sim/reset` before EVERY test, and that rebuilds the whole SimDevice from scratch —
+ *  presets, scenes, songs, setlists, the re-amp latch and any armed capture fault — then
+ *  reinstalls the 400-404 snapshot. So isolation between tests comes from the reset, not
+ *  from this teardown, and the 7 bridged commands here were pure cost. Two things that do
+ *  survive the reset are deliberately unaffected: the cumulative re-amp counters (every
+ *  spec baseline-DIFFS them via `expectReampBalanced`) and `SCENARIO_VERIFIED` (read only
+ *  by `e2e_seed_scenario`, which offline is unreachable because `ensureScenario` above
+ *  early-returns once the reset has put the presets back). */
 export async function clearScenario(page: Page): Promise<void> {
-  const resident =
-    (await isOnline(page)) && process.env.TMP_E2E_CLEAR_SCENARIO !== "1";
+  // Ask the SERVER, never `process.env.TMP_E2E_ONLINE` — `scripts/e2e.sh` sets that var
+  // only on the `cargo run` server invocation, so the Playwright process does NOT inherit
+  // it (same trap documented in level-rerun.spec.ts). An env check here would read
+  // "offline" during an ONLINE run and skip the device recovery — no re-amp OFF, leaving
+  // the unit input-muted.
+  if (!(await isOnline(page))) return;
+  const resident = process.env.TMP_E2E_CLEAR_SCENARIO !== "1";
   if (!resident) {
     for (const s of SCENARIO) {
       await quiet(page, "e2e_clear_preset", {

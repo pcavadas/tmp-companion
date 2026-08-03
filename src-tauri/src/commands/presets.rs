@@ -271,7 +271,7 @@ pub(crate) async fn rename_save_preset(
             .ok_or_else(|| format!("rename target list index {list_index} out of range"))?;
         s.load_preset(list_index)?;
         drop(s);
-        std::thread::sleep(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
+        crate::settle(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
         let mut s = Session::connect()?;
         s.confirm_active(list_index, Some(&name_before))?;
         s.rename_current_preset(&name)?;
@@ -316,7 +316,7 @@ pub(crate) async fn load_scene_on_amp(
                 let mut s = Session::connect()?;
                 s.load_preset(idx)?;
                 drop(s);
-                std::thread::sleep(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
+                crate::settle(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
             }
             Session::connect()?.load_scene(scene_slot)
         })

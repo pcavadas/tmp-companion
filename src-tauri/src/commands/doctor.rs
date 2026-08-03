@@ -121,7 +121,7 @@ fn resolve_sound_isolation(
             // The read opened (or tried to open) its own session — gap before
             // the capture reconnects, else the quick reopen risks the HID
             // open-lockout (0xe00002c5).
-            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+            crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         }
         let preset = &preset_cache[&list_index];
         doctor_force_bypass(
@@ -836,7 +836,7 @@ fn apply_ops_under_scene(
 ) -> Result<(), String> {
     s.begin_live_edit()?;
     s.load_scene(scene.unwrap_or(session::BASE_SCENE_SLOT))?;
-    std::thread::sleep(std::time::Duration::from_millis(
+    crate::settle(std::time::Duration::from_millis(
         leveller::SETTLE_AFTER_SET_MS,
     ));
     apply_doctor_ops(s, ops)
@@ -917,7 +917,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             let before_clip = match before_cache_get(&key) {
                 Some(clip) => {
                     leveller::restore_saved_preset(job.list_index)?;
-                    std::thread::sleep(std::time::Duration::from_millis(
+                    crate::settle(std::time::Duration::from_millis(
                         leveller::RECONNECT_GAP_MS,
                     ));
                     clip
@@ -940,7 +940,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                     // Same inter-session gap the cache-hit branch takes after its
                     // own restore: the BEFORE capture's session just closed, and
                     // `ops_session` opens a fresh one next — let the seize release.
-                    std::thread::sleep(std::time::Duration::from_millis(
+                    crate::settle(std::time::Duration::from_millis(
                         leveller::RECONNECT_GAP_MS,
                     ));
                     clip
@@ -1019,7 +1019,7 @@ pub(crate) async fn doctor_save(
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         leveller::restore_saved_preset(list_index)?;
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let mut s = ops_session(list_index, &expect_name, scene, &ops, "save")?;
         s.save_current_preset(list_index)?;
         Ok(())

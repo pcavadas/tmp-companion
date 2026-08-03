@@ -45,11 +45,50 @@ pub(crate) fn op_aborted() -> bool {
     OP_ABORT.load(SeqCst)
 }
 
+/// Scale a hardware settle for the current tier: unchanged in production and on the ONLINE
+/// e2e tier, ZERO when the offline SimDevice fake is installed.
+///
+/// Every settle in this codebase exists to let a REAL Tone Master Pro's IOKit seize or DSP
+/// state catch up — an in-process fake has neither. They are also conditional on WHICH
+/// commands were sent, never on elapsed time, so zeroing them cannot change the emitted
+/// wire sequence (the `/sim/events` golden is the gate for exactly that claim).
+///
+/// `TMP_E2E_KEEP_SETTLES=1` restores full production timing in the offline tier. It is the
+/// bisect handle for the one risk this collapse carries: zeroing a settle also removes a
+/// thread yield, so if an offline spec ever turns flaky, re-run it with this set — flaky
+/// with it, a real product race; green with it, the yield mattered and this function is the
+/// single place to reintroduce a small non-zero floor.
+pub(crate) fn settle_ms(ms: u64) -> u64 {
+    #[cfg(feature = "e2e")]
+    if crate::e2e_offline_fake() && std::env::var_os("TMP_E2E_KEEP_SETTLES").is_none() {
+        return 0;
+    }
+    ms
+}
+
+/// [`settle_ms`] as a blocking sleep. Takes a `Duration` rather than millis so the ~80
+/// raw `std::thread::sleep(..)` settle sites swap by NAME only, keeping each call site's
+/// units and constants exactly as written.
+///
+/// NOT a drop-in for a HID retry backoff or a poll cadence — only for settles, which are
+/// dead time against a fake. `hid.rs`'s open-retry and `monitor.rs`'s poll loops keep
+/// `std::thread::sleep`.
+pub(crate) fn settle(d: std::time::Duration) {
+    std::thread::sleep(std::time::Duration::from_millis(settle_ms(
+        d.as_millis() as u64
+    )));
+}
+
 /// Sleep up to `ms`, waking early if an abort is requested. Returns `true` if it aborted
 /// (the caller bails), `false` if the full duration elapsed. Drop-in for the settle
 /// `thread::sleep`s on the leveling/Doctor paths — the settle semantics are unchanged for
 /// a run nobody stopped.
+///
+/// The wait is [`settle_ms`]-scaled, so offline it collapses to a single abort check and
+/// returns. The `op_aborted()` probe stays FIRST in the loop so a Stop still wins even at a
+/// zero duration — cancellation semantics are identical in both tiers.
 pub(crate) fn sleep_abortable(ms: u64) -> bool {
+    let ms = settle_ms(ms);
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
     loop {
         if op_aborted() {
@@ -121,7 +160,19 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
                                            // the monitor still holds its seize for ≤1 pump (`stop_live_sync` clears it
                                            // before locking) is absorbed by hid.rs's bounded open-retry, as documented
                                            // on PAUSE_WAIT_TRIES.
-    if MONITOR_ENABLED.load(SeqCst) {
+                                           // OFFLINE e2e: `e2e_server` sets `MONITOR_ENABLED` to claim the monitor OWNS the device
+                                           // (which is what makes `with_released_seize_blocking` skip its reconnect), but it never
+                                           // spawns a monitor thread — `monitor::spawn` is called only from `bootstrap.rs`. So
+                                           // `MONITOR_PAUSED_ACK` can never arrive and EVERY bridged command burned the full 1 s
+                                           // budget described above (measured: 1.14 s for a trivial `e2e_load_preset` against an
+                                           // in-process fake). Nothing holds the fake, so there is no seize to wait on.
+    #[allow(unused_mut, unused_assignments)]
+    let mut wait_for_ack = MONITOR_ENABLED.load(SeqCst);
+    #[cfg(feature = "e2e")]
+    if crate::e2e_offline_fake() {
+        wait_for_ack = false;
+    }
+    if wait_for_ack {
         let mut acked = false;
         for _ in 0..PAUSE_WAIT_TRIES {
             if MONITOR_PAUSED_ACK.load(SeqCst) {
@@ -222,5 +273,47 @@ mod tests {
             "a 10 s wait must not be sat out after a Stop"
         );
         OP_ABORT.store(false, SeqCst);
+    }
+
+    /// NON-REGRESSION GATE: the offline settle collapse must never reach hardware.
+    ///
+    /// `settle_ms` returns 0 only while the offline SimDevice fake is installed in THIS
+    /// process. Every other build and tier — the shipped app, and the ONLINE e2e tier
+    /// driving a real Tone Master Pro — must get the settle back unchanged, because those
+    /// sleeps are what let the unit's IOKit seize and DSP state catch up. A regression
+    /// here is silent and expensive: writes drop with no `presetError` (the ~400-450 ms
+    /// idle-gap cliff), so it surfaces as corrupt levels on a real unit, not a red test.
+    ///
+    /// Asserted for the DEFAULT process state, which is what makes it meaningful in both
+    /// build modes. Under `--features e2e` nothing has called `e2e_install_offline_fake`
+    /// (the unit tests install their fake via raw `set_factory`/`set_live`), so the flag is
+    /// false and this is a live check on the guard; without the feature the branch does not
+    /// compile at all and this pins the identity path. It is deliberately OUTSIDE any
+    /// `#[cfg(feature = "e2e")]` gating, mirroring `lib.rs`'s `fixture_gates`: a gate that
+    /// only compiles under a feature CI does not build is not a gate.
+    #[test]
+    fn settles_are_full_length_unless_the_offline_fake_is_installed() {
+        #[cfg(feature = "e2e")]
+        assert!(
+            !crate::e2e_offline_fake(),
+            "the offline-fake flag must be armed ONLY by e2e_install_offline_fake / \
+             e2e_install_showcase — never merely by building with --features e2e"
+        );
+        for ms in [1_u64, 150, 400, 600, 800, 5_000] {
+            assert_eq!(
+                settle_ms(ms),
+                ms,
+                "settle_ms must be identity off the offline tier — a real device needs \
+                 the full {ms}ms settle"
+            );
+        }
+        // And the abortable wait, which routes through settle_ms, really sleeps.
+        OP_ABORT.store(false, SeqCst);
+        let t = std::time::Instant::now();
+        assert!(!sleep_abortable(120));
+        assert!(
+            t.elapsed() >= std::time::Duration::from_millis(110),
+            "sleep_abortable must not collapse off the offline tier"
+        );
     }
 }

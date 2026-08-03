@@ -39,10 +39,28 @@ cd "$REPO"
 # the same values (they default to 7600/1421 when unset, preserving a bare `bunx playwright`).
 # ponytail: cksum%200 — a collision between two of the handful of real worktrees merely shares
 # ports (today's status quo); widen the modulus only if that ever bites.
+#
+# OFFLINE now claims a RANGE, not one port: each Playwright worker gets its own e2e_server on
+# PORT+i. So the per-worktree offset is STRIDED — with a stride of 1 a neighbouring worktree's
+# base would land inside this one's range and the two runs would kill each other's servers.
+#
+# The stride is a FIXED constant, deliberately NOT the live worker count: keying it to WORKERS
+# would move a worktree's base port whenever the count changed, so a `TMP_E2E_WORKERS=1` run
+# could not clean up after a 3-worker one and would strand orphaned servers. Fixed stride ⇒ a
+# worktree's range is stable, and the stale-kill below always covers all of it.
+# Vite stays one port per worktree (a single shared asset server).
+PORT_STRIDE=8
+WORKERS="${TMP_E2E_WORKERS:-3}"
+# NB printf, not err() — the helpers are defined further down and this runs before them.
+if [ "$WORKERS" -gt "$PORT_STRIDE" ]; then
+  printf '\033[31m✗ TMP_E2E_WORKERS=%s exceeds the per-worktree port stride (%s) — raise PORT_STRIDE\033[0m\n' \
+    "$WORKERS" "$PORT_STRIDE" >&2
+  exit 2
+fi
 PORT_OFFSET=$(( $(printf '%s' "$REPO" | cksum | cut -d' ' -f1) % 200 ))
-PORT="${TMP_E2E_PORT:-$((7600 + PORT_OFFSET))}"
+PORT="${TMP_E2E_PORT:-$((7600 + PORT_OFFSET * PORT_STRIDE))}"
 VITE_PORT="${TMP_E2E_VITE_PORT:-$((1421 + PORT_OFFSET))}"
-export TMP_E2E_PORT="$PORT" TMP_E2E_VITE_PORT="$VITE_PORT"
+export TMP_E2E_PORT="$PORT" TMP_E2E_VITE_PORT="$VITE_PORT" TMP_E2E_WORKERS="$WORKERS"
 # shellcheck source=scripts/device-lock.sh disable=SC1091
 . "$REPO/scripts/device-lock.sh"
 
@@ -96,6 +114,19 @@ prebuild() {
 PROBE_BIN="src-tauri/target/debug/probe"
 
 kill_port() { lsof -ti "tcp:$1" 2>/dev/null | xargs kill 2>/dev/null || true; }
+
+# Clear this worktree's whole bridge STRIDE (PORT .. PORT+PORT_STRIDE-1). Killing only the
+# base port would leave workers 1..N-1 stale, and `reuseExistingServer` would silently adopt
+# them — the false-green trap that makes an "online" run hit a leftover SimDevice, or vice
+# versa. Sweeping the full stride rather than just $WORKERS also cleans up after a run that
+# used MORE workers than this one.
+kill_port_range() {
+  i=0
+  while [ "$i" -lt "$PORT_STRIDE" ]; do
+    kill_port $(( PORT + i ))
+    i=$(( i + 1 ))
+  done
+}
 
 bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the response body
   curl -fsS -m "${2:-60}" -X POST "http://127.0.0.1:$PORT/invoke" \
@@ -161,8 +192,10 @@ wait_server_ready() {
   err "e2e_server not ready after 240s:"; tail -20 "$SERVER_LOG" >&2; exit 1
 }
 
-# ── always clear a stale :7600 first (the fake-mode-reuse guard), then warm the binary ──
-kill_port "$PORT"
+# ── always clear the stale bridge range first (the fake-mode-reuse guard), then warm the
+#    binary. Offline claims PORT..PORT+WORKERS-1; online only uses PORT, and clearing the
+#    rest of its range is harmless (nothing of its own is listening there). ──
+kill_port_range
 ensure_dist
 prebuild
 

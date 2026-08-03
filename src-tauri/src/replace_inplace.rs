@@ -16,7 +16,7 @@ fn read_list_until(
         if pred(&list) || attempt == ATTEMPTS {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1_500));
+        crate::settle(std::time::Duration::from_millis(1_500));
     }
     Ok(list)
 }
@@ -190,7 +190,7 @@ pub(crate) fn replace_inplace_with(
 
     // 4) Re-read and confirm slot / Song-link survival. Settle first: clear/save are
     // fire-and-forget (no ACK); give the device a moment or the read returns pre-clear state.
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    crate::settle(std::time::Duration::from_millis(800));
     let after = Session::connect()?.list_my_presets()?;
     let orig_name_after = after
         .iter()

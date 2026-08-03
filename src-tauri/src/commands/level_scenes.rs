@@ -164,7 +164,7 @@ fn level_one_scene_legacy(
     let (knob, lo, hi, _current) = pick_scene_level_knob(slot, scene, candidates)?;
     // 800 ms before the leveller's first fresh connect — the empirical safe gap
     // after a rich-session close (shorter chases trip the device's open lockout).
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    crate::settle(std::time::Duration::from_millis(800));
     let opts = leveller::LevelOptions {
         save,
         verify: true,
@@ -315,7 +315,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             // runner opens a fresh one. Reuse the leveller's HW-proven open-after-close
             // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
             // is pure CPU, so this is the only wait here.
-            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+            crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
             // `build_scene_jobs` stamps a base target on every job; override each with its
             // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
             // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
@@ -565,7 +565,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
         // Prepass: ONE rich session loads the preset + harvests each sound's live doc (the
         // pre-raise presetLevel + per-sound current outputLevel). No re-amp yet.
         let (docs, restore_scene) = prepass_scene_docs_via(slot, &scene_slots, false)?;
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let base_target = jobs[0].target_lufs + offset;
         let mut scene_jobs =
             build_scene_jobs(&scene_slots, &candidates, &docs, base_target, saved.as_ref())?;

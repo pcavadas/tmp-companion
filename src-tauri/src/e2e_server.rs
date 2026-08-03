@@ -17,6 +17,25 @@ pub(crate) fn e2e_online() -> bool {
     std::env::var("TMP_E2E_ONLINE").is_ok()
 }
 
+/// The OFFLINE fake transport is installed in THIS process: every device "op" is an
+/// in-process `SimDevice` call, so the hardware settle sleeps and the monitor pause-ack
+/// wait have nothing to wait for. Armed ONLY by the two installers below.
+///
+/// Deliberately NOT `!e2e_online()` (what `audio::reamp_capture` uses). That predicate is
+/// true in ANY `--features e2e` build with `TMP_E2E_ONLINE` unset — including
+/// `cargo test --lib --features e2e`, where zeroing the settles would break
+/// `device_gate`'s `sleep_abortable_wakes_early_on_abort`. The unit tests install their
+/// fake through raw `set_factory`/`set_live`, never through `e2e_install_offline_fake`,
+/// so this flag stays FALSE there and the timing semantics they assert are preserved.
+#[cfg(feature = "e2e")]
+static OFFLINE_FAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Is the offline SimDevice fake installed in this process? See [`OFFLINE_FAKE`].
+#[cfg(feature = "e2e")]
+pub(crate) fn e2e_offline_fake() -> bool {
+    OFFLINE_FAKE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The scenario presets are known seeded-and-OWNERSHIP-VERIFIED for this server process:
 /// set by a successful seed (in-process `e2e_seed_scenario`, or the runner's fresh-process
 /// `probe --seed-scenario` via its `e2e_mark_seeded` POST) and invalidated by any scenario
@@ -87,6 +106,10 @@ pub fn run_e2e_server() {
             app_info,
             connect_device,
             list_presets,
+            // The frontend polls this on every mount (`scheduleLibraryScan`); leaving it
+            // unregistered made every call throw "Command current_graph not found" — 16
+            // console errors per test, and no way for a graphless snapshot to recover.
+            current_graph,
             read_library_via_backup,
             copy_apply,
             cancel_copy_apply,
@@ -155,6 +178,10 @@ pub fn run_e2e_server() {
 /// build script lists them). Re-callable to reset device state between specs (`/sim/reset`).
 #[cfg(feature = "e2e")]
 fn e2e_install_offline_fake() {
+    // Arm BEFORE the showcase branch below so both fakes are covered from here, and before
+    // any device work can run: from this point every "device" op is an in-process SimDevice
+    // call, so hardware settles and the monitor pause-ack have nothing to wait for.
+    OFFLINE_FAKE.store(true, std::sync::atomic::Ordering::SeqCst);
     // SHOWCASE (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): drive the whole app
     // from the curated, non-personal `e2e/fixtures/showcase/` library instead of the
     // 3-preset test scenario. The committed `.bin` (built from `showcase.json` by the
@@ -193,8 +220,22 @@ fn e2e_install_offline_fake() {
             name: "E2E Hiwatt 3S".into(),
         },
     ];
+    // Hero graph, decoded from the SAME backup fixture `read_library_via_backup` already
+    // serves — the showcase installer below does the identical thing for its curated `.bin`.
+    // The fixture holds ONLY the 5 scenario presets (device slots 401-405, list 400-404), so
+    // the hero is simply its first entry; there is no preset 001 offline to prefer.
+    //
+    // Not cosmetic: with the snapshot's graph `None`, the frontend's `startScanAfterGraph`
+    // (`src/lib/scheduleLibraryScan.ts`) polls `current_graph` 16 × 500 ms before it will
+    // start the library scan — 8 s of dead time on EVERY test, measured as essentially the
+    // whole cost of `level.spec.ts`'s leveling-free "enumerates …" test.
+    let graph = std::env::var("TMP_E2E_BACKUP_FIXTURE")
+        .ok()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| read_backup_archive(&b).ok())
+        .and_then(|res| res.presets.first().map(|r| r.graph.clone()));
     MONITOR_ENABLED.store(true, SeqCst);
-    monitor::e2e_install_snapshot(Some("1.8.45".into()), presets, None);
+    monitor::e2e_install_snapshot(Some("1.8.45".into()), presets, graph);
 }
 
 /// Install the SHOWCASE offline fake (marketing screenshots). Points the backup-fixture
@@ -205,6 +246,9 @@ fn e2e_install_offline_fake() {
 /// read failure falls back to an empty library rather than panicking the server.
 #[cfg(feature = "e2e")]
 fn e2e_install_showcase() {
+    // Also armed here (not only via `e2e_install_offline_fake`) so a direct call still
+    // gets the offline timing regime — showcase installs a fake transport just the same.
+    OFFLINE_FAKE.store(true, std::sync::atomic::Ordering::SeqCst);
     let bin = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../e2e/fixtures/showcase/showcase-fixture.bin"
@@ -448,7 +492,7 @@ async fn e2e_clear_preset(
         // settles 800ms after its own clear). And an ABSENT entry — a truncated list, or
         // a failed read — is UNKNOWN, not empty: only a POSITIVELY observed empty name
         // releases the claim, so a degraded read keeps it instead of stranding the slot.
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        crate::settle(std::time::Duration::from_millis(800));
         let now_empty = s
             .list_my_presets()
             .ok()

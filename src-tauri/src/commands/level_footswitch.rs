@@ -216,7 +216,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         // THE single field-8 read: it resolves every job AND is the planner's scene-overlay
         // source (per-node bake gate) — never add a second read here.
         let (preset, _, _) = read_slot_preset_parsed(slot)?;
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let ftsw = preset
             .get("ftsw")
             .cloned()
@@ -244,11 +244,11 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         {
             let mut s = Session::connect_lean()?;
             s.load_preset(slot)?;
-            std::thread::sleep(std::time::Duration::from_millis(
+            crate::settle(std::time::Duration::from_millis(
                 leveller::settle_after_load_ms(),
             ));
         }
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
         // The solved writes pending the batch's single write+save session, each
