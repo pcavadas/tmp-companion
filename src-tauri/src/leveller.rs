@@ -513,10 +513,12 @@ struct SlotSave {
     witness: SaveWitness,
 }
 
-/// Per-slot save registry: `slot` → the last leveling save's witness + timestamp. One
-/// process, one device, and (`device_gate::OP_ABORT`'s own reasoning) exactly one leveling
-/// op ever in flight — a global map keyed on the wire slot is the right shape, not a
-/// per-run registry with extra ceremony.
+/// Per-slot save registry: `slot` → the last leveling save's witness + timestamp. Keyed on
+/// the 0-BASED LIST INDEX — the same `slot` every `Session` method takes (they add the +1
+/// for the wire `userSlot` themselves), so registry keys and load/save call sites never
+/// convert. One process, one device, and (`device_gate::OP_ABORT`'s own reasoning) exactly
+/// one leveling op ever in flight — a global map is the right shape, not a per-run registry
+/// with extra ceremony.
 static SLOT_SAVE_REGISTRY: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u32, SlotSave>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));

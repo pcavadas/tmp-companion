@@ -446,7 +446,10 @@ fn scenario_preset_level(slot0: u32) -> Option<f32> {
 /// without this, both would see the pre-bake value forever and report a false
 /// persist-mismatch / a permanently-stale witness compare. Falls back to the original
 /// bytes on a parse failure, which never happens for a committed fixture but a caller
-/// must still get SOMETHING.
+/// must still get SOMETHING. Patches `audioGraph.guitarNodes` groups ONLY: a `micNodes`
+/// baked param would silently patch nothing — no current fixture routes one; extend the
+/// group lookup here FIRST if a mic-path fixture ever bakes a param, or its persist
+/// verify reads the pristine value and reports a false mismatch with no diagnostic.
 #[cfg(feature = "e2e")]
 fn with_patched_doc(
     json: &str,

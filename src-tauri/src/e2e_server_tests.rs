@@ -255,6 +255,16 @@ fn note_structural_save_flags_structural_saves_only() {
     use std::sync::atomic::Ordering::SeqCst;
     let _serial = serial();
 
+    // Process-global flag: restore the default (false) on exit — INCLUDING a panicking
+    // assert — so the leaked value can't steer a later serial test's fast path.
+    struct FlagReset;
+    impl Drop for FlagReset {
+        fn drop(&mut self) {
+            super::SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _reset = FlagReset;
+
     super::SCENARIO_VERIFIED.store(true, SeqCst);
     super::note_structural_save("copy_apply");
     assert!(
