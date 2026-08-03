@@ -318,13 +318,15 @@ mod tests {
                  the full {ms}ms settle"
             );
         }
-        // And the abortable wait, which routes through settle_ms, really sleeps.
+        // And the abortable SETTLE really sleeps. It must be `settle_abortable`, not
+        // `sleep_abortable`: scaling is opt-in, so only the former routes through
+        // `settle_ms` and only the former can regress into collapsing on hardware.
         OP_ABORT.store(false, SeqCst);
         let t = std::time::Instant::now();
-        assert!(!sleep_abortable(120));
+        assert!(!settle_abortable(120));
         assert!(
             t.elapsed() >= std::time::Duration::from_millis(110),
-            "sleep_abortable must not collapse off the offline tier"
+            "settle_abortable must not collapse off the offline tier"
         );
     }
 }
