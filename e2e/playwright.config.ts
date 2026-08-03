@@ -18,9 +18,16 @@ export default defineConfig({
   // The default per-test timeout is 30 s, but the songs/level CRUD flows run ~20-25 s locally
   // and comfortably exceed 30 s on a loaded CI runner (2-4x slower), so the whole test is
   // killed mid-flight ("Test timeout of 30000ms exceeded") even though every assertion set a
-  // 30-240 s timeout — those are dead under a tighter test cap. Grant the same generous room
-  // the online config already does (it uses 300 s); SimDevice is fast, so 120 s is ample.
-  timeout: 120_000,
+  // 30-240 s timeout — those are dead under a tighter test cap.
+  //
+  // KEEP THIS EQUAL TO THE ONLINE CAP. `testDir` is the SAME ./specs in both configs, so one
+  // spec set cannot carry two budgets: the eleven 240 s waits the shared specs declare are
+  // only reachable under a cap ≥ 300 s, and a tighter cap silently truncates them instead of
+  // failing the assertion they belong to. A 120 s cap did exactly that to the heaviest offline
+  // test (level-defaults.spec.ts "reachable-common-target fallback" — TWO full 2-preset level
+  // runs), which measured 133 s → 150 s begin-to-begin across CI runners and so died mid-run
+  // on whichever runner drew the slow straw, reporting a timeout on unrelated PRs.
+  timeout: 300_000,
   use: {
     baseURL: `http://localhost:${VITE}`,
     trace: "on-first-retry",

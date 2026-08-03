@@ -13,6 +13,8 @@ Applies while editing the Playwright harness or its specs. **The stale-server fa
 
 Tauri's `tauri-driver`/WebdriverIO cannot drive this app — macOS WKWebView has no WebDriver. So the dual-mode harness drives the **real React UI in headless Chromium** → an HTTP bridge → a windowless Rust backend (`tauri::test::mock_builder` MockRuntime, `bin/e2e_server.rs`) → `SimDevice` offline, or the real device online with `TMP_E2E_ONLINE=1`. One spec set under two configs. Vitest owns component-level coverage with the invoke/event bridge mocked; use the `probe` bin for real-HID paths.
 
+**Because it is one spec set, the two configs' `timeout:` caps must stay EQUAL.** A spec's per-assertion `timeout:` is written for the slower mode (eleven waits declare 240 s), and a config whose cap is lower silently truncates them — the test dies mid-flight with a bare "Test timeout of Nms exceeded" pointing at whichever assertion was unlucky, never at the assertion that actually failed. An offline cap of 120 s did this to `level-defaults.spec.ts`'s two-run fallback test, which reports as a red `e2e` on unrelated PRs.
+
 ## UI copy is e2e-load-bearing
 
 The specs **regex-match user-facing strings** (`doctor.spec.ts` matches `/presets? need a look|All clear/`). Before rewording any view label or heading — especially on a design handoff — **grep `e2e/specs/` for the old phrase first**.
