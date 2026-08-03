@@ -4,6 +4,7 @@ import {
   clearScenario,
   ensureScenario,
   invoke,
+  isOnline,
 } from "../fixtures/scenario";
 
 // ONLINE-ONLY suite member: exercises the doctor_apply → doctor_save and
@@ -15,10 +16,6 @@ import {
 // are cleared in teardown. Adds ~1–2 min to the attended online run; skipped
 // offline (see below).
 test.describe("Doctor apply/save/discard — one-off HW validation", () => {
-  // ONLINE-ONLY: offline the fake re-amp never loads the slot, so the apply's
-  // identity guard (confirm_active) correctly refuses ("slot echo None") —
-  // a SimDevice fidelity limit, not a product bug.
-  test.skip(!process.env.TMP_E2E_ONLINE, "online-only one-off HW validation");
   test.afterEach(async ({ page }) => {
     await clearScenario(page);
   });
@@ -26,6 +23,17 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
   test("apply returns A/B clips; save persists; discard restores", async ({
     page,
   }) => {
+    // ONLINE-ONLY: offline the fake re-amp never loads the slot, so the apply's
+    // identity guard (confirm_active) correctly refuses ("slot echo None") —
+    // a SimDevice fidelity limit, not a product bug.
+    //
+    // Asks the SERVER, and from inside the test body. The previous
+    // `test.skip(!process.env.TMP_E2E_ONLINE)` at describe level was always TRUE:
+    // scripts/e2e.sh sets that var only on the server invocation, so the Playwright
+    // process never sees it (the same trap documented in level-rerun.spec.ts). This
+    // spec therefore skipped even during online runs — and it is excluded from the
+    // offline config — so it had never actually executed in either tier.
+    test.skip(!(await isOnline(page)), "online-only one-off HW validation");
     test.setTimeout(300_000);
     await ensureScenario(page);
     await page.goto("/");

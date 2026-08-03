@@ -166,26 +166,24 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
     // command QUEUED behind this lock can't clear the flag of the op currently running).
     OP_ABORT.store(false, SeqCst);
     MONITOR_PAUSE_REQ.store(true, SeqCst); // ask the monitor to yield its seize
-                                           // Only wait for the ack while the monitor is actually enabled — a disabled
-                                           // monitor never acks (it idles in its disabled branch), so waiting would burn
-                                           // the full `PAUSE_WAIT_TRIES × 25 ms = 1 s` budget on EVERY command whenever
-                                           // live-sync is off. The one transition where the flag is already false while
-                                           // the monitor still holds its seize for ≤1 pump (`stop_live_sync` clears it
-                                           // before locking) is absorbed by hid.rs's bounded open-retry, as documented
-                                           // on PAUSE_WAIT_TRIES.
-                                           // OFFLINE e2e: `e2e_server` sets `MONITOR_ENABLED` to claim the monitor OWNS the device
-                                           // (which is what makes `with_released_seize_blocking` skip its reconnect), but it never
-                                           // spawns a monitor thread — `monitor::spawn` is called only from `bootstrap.rs`. So
-                                           // `MONITOR_PAUSED_ACK` can never arrive and EVERY bridged command burned the full 1 s
-                                           // budget described above (measured: 1.14 s for a trivial `e2e_load_preset` against an
-                                           // in-process fake). Nothing holds the fake, so there is no seize to wait on.
-    #[allow(unused_mut, unused_assignments)]
-    let mut wait_for_ack = MONITOR_ENABLED.load(SeqCst);
-    #[cfg(feature = "e2e")]
-    if crate::e2e_offline_fake() {
-        wait_for_ack = false;
-    }
-    if wait_for_ack {
+
+    // Wait for the ack only when someone can actually SEND one. Two conditions, and both
+    // are load-bearing:
+    //
+    // - `MONITOR_ENABLED` — a disabled monitor idles in its disabled branch and never acks,
+    //   so waiting would burn the full `PAUSE_WAIT_TRIES × PAUSE_WAIT_STEP_MS` budget on
+    //   every command whenever live-sync is off. The one transition where the flag is
+    //   already false while the monitor still holds its seize for ≤1 pump (`stop_live_sync`
+    //   clears it before locking) is absorbed by hid.rs's bounded open-retry.
+    // - `MONITOR_SPAWNED` — a monitor THREAD exists at all. `e2e_server` sets
+    //   `MONITOR_ENABLED` in BOTH tiers (it wants the reconnect skip in
+    //   `with_released_seize_blocking`) but never calls `monitor::spawn`, so the ack could
+    //   never arrive and EVERY bridged command paid the full budget: measured 1.14 s for a
+    //   trivial `e2e_load_preset`. This is the precise condition — "is there a thread to
+    //   answer?" — so it fixes the ONLINE e2e tier too, not just the offline fake, and it
+    //   cannot mask a wedged monitor in production (there the thread exists, so the wait
+    //   and its `log::warn!` still happen).
+    if MONITOR_ENABLED.load(SeqCst) && crate::MONITOR_SPAWNED.load(SeqCst) {
         let mut acked = false;
         for _ in 0..PAUSE_WAIT_TRIES {
             if MONITOR_PAUSED_ACK.load(SeqCst) {

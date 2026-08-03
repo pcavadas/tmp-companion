@@ -249,7 +249,11 @@ if ! device_lock_acquire "$REPO"; then
 fi
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor level level-rerun level-strict) ;; esac
+# `doctor-apply.online` sits with the other doctor work, BEFORE any level* spec (the ordering
+# guard below enforces that for `doctor`; this one writes and saves through the same paths).
+# It was absent from this set AND self-skipping on an env var the Playwright process never
+# sees, so it had never run in either tier despite existing to be the one-off HW validation.
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor doctor-apply.online level level-rerun level-strict) ;; esac
 
 # ORDERING GUARD (enforced, not just documented): doctor must run BEFORE any leveling
 # spec — every level* spec writes (the wizard always saves post-disclaimer), and

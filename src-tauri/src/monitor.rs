@@ -476,6 +476,9 @@ pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
         .name("tmp-device-monitor".into())
         .spawn(move || monitor_loop(app, session, cmd_rx, metadata_rx))
         .expect("spawn tmp-device-monitor");
+    // A thread now exists to answer a pause request — see `MONITOR_SPAWNED`. Set AFTER the
+    // spawn succeeds (it panics on failure, so reaching here means the thread is live).
+    crate::MONITOR_SPAWNED.store(true, SeqCst);
 }
 
 #[cfg(not(target_os = "macos"))]

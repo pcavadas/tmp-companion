@@ -177,6 +177,17 @@ pub(crate) static MONITOR_PAUSE_REQ: AtomicBool = AtomicBool::new(false);
 /// the monitor when it resumes after the request clears.
 pub(crate) static MONITOR_PAUSED_ACK: AtomicBool = AtomicBool::new(false);
 
+/// A monitor THREAD actually exists in this process — set by [`monitor::spawn`].
+///
+/// [`MONITOR_ENABLED`] means "the monitor owns the device", which is not the same thing:
+/// `e2e_server` sets it in BOTH tiers to get the reconnect skip in
+/// `with_released_seize_blocking`, but it never calls `monitor::spawn` (only `bootstrap`
+/// does). Waiting for [`MONITOR_PAUSED_ACK`] there waits for a thread that cannot answer,
+/// so every bridged command paid the full `PAUSE_WAIT_TRIES × PAUSE_WAIT_STEP_MS` budget —
+/// measured at 1.14 s for a trivial command. Gate the wait on a thread EXISTING, which is
+/// the precise condition, rather than on which e2e tier is running.
+pub(crate) static MONITOR_SPAWNED: AtomicBool = AtomicBool::new(false);
+
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_offline_fake;
 #[cfg(feature = "e2e")]
