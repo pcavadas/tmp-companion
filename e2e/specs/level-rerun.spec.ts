@@ -189,7 +189,15 @@ test.describe("Level re-run — online skip-branch idempotency", () => {
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs the field-8 read");
-    test.setTimeout(300_000);
+    // This test makes THREE `level_footswitches_apply` round trips (dry, run 1, run 2),
+    // and a SINGLE one of them is already allowed `LEVEL_T` = 280 s. On top of that, run 2
+    // waits on the lazy-save barrier that run 1's save arms — up to `COMMIT_WINDOW_SECS`
+    // = 150 s of `ensure_fresh_load` polling. So a 300 s budget could never fit this test
+    // even when the device behaves: 3 x 280 s + 150 s ~= 990 s worst case. It was reached
+    // twice in a row on real hardware (both full online runs timed out here at exactly
+    // 300000 ms, on the run-2 apply), which is a budget defect, not a product fault —
+    // level-strict.spec.ts levels base + every scene + every footswitch and passes.
+    test.setTimeout(1_200_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
     // E2E Reference switch 1 (GREENBOX) toggles ACD_TubeScreamer; level its `level` param.

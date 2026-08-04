@@ -22,9 +22,15 @@
 # from a real device capture (`--dump-wav`), where device-side noise/DC offset
 # is also a plausible explanation.
 #
-# ffmpeg's ebur128 summary prints only ONE decimal of LUFS, so this script
-# must not assert tighter than ~0.05 LU; the tolerance below (0.1 LU) is the
-# tightest honest bar for that print resolution.
+# Precision: ffmpeg's end-of-run ebur128 SUMMARY prints only one decimal, which
+# would cap this comparison at ~0.1 LU and hide the real agreement. So we read the
+# full-precision integrated value out of the filter's own metadata instead
+# (`ebur128=metadata=1` + `ametadata=print:key=lavfi.r128.I`, last value emitted =
+# the final integrated loudness, ~0.001 resolution). That let the tolerance drop
+# from 0.1 to 0.02 LU. Measured residual vs ffmpeg on real device captures is
+# 0.004-0.006 LU; two conformant BS.1770 implementations still differ slightly in
+# how the final partial gating block is handled, so do NOT expect bit-exact
+# equality — 0.02 is a deliberately tight but achievable bar.
 #
 # Written to run under macOS system /bin/bash (3.2): no associative arrays,
 # no `mapfile`, plain space-separated lists instead of arrays.
@@ -37,7 +43,7 @@ log()  { printf '\033[36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m✓ %s\033[0m\n' "$*"; }
 err()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
 
-TOL_LU="0.1"
+TOL_LU="0.02"
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
   log "skipped: ffmpeg not found on PATH (this is a dev-only harness — ffmpeg is never a build or runtime dependency of the app)"
@@ -127,15 +133,17 @@ companion_lufs() {
     | cut -d= -f2 || true
 }
 
-# The independent BS.1770 read: ffmpeg's ebur128 filter, integrated summary
-# line only (never the Loudness Range's own "LRA:" line, which `-A1` avoids by
-# only taking the line directly after the "Integrated loudness:" header).
+# The independent BS.1770 read: ffmpeg's ebur128 filter, taken at FULL precision
+# from the filter's metadata rather than the one-decimal end-of-run summary (see
+# the precision note in the header). `lavfi.r128.I` is emitted repeatedly as the
+# integration proceeds, so the LAST value is the final integrated loudness.
 # `|| true` for the same reason as `companion_lufs` above.
 ffmpeg_lufs() {
-  ffmpeg -hide_banner -nostats -i "$1" -af ebur128=framelog=quiet -f null - 2>&1 \
-    | grep -A1 'Integrated loudness:' \
-    | grep 'I:' \
-    | awk '{print $2}' || true
+  ffmpeg -hide_banner -nostats -i "$1" \
+    -af ebur128=metadata=1,ametadata=print:key=lavfi.r128.I:file=- -f null - 2>&1 \
+    | grep -o 'lavfi\.r128\.I=.*' \
+    | tail -1 \
+    | cut -d= -f2 || true
 }
 
 WAVS=""

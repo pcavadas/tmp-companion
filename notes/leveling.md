@@ -110,7 +110,26 @@ The capture window (≈6 s stimulus + 0.8 s tail) is load-bearing: TMP presets a
 
 ## Metering convention (PR2 re-baseline)
 
-**Companion now measures the processed USB pair as standard 2-channel BS.1770** (`lufs::measure_stereo`, energy sum over capture channels 0/1 — dry channel 2+ excluded), matching an external BS.1770 stereo meter to within 0.02 LU (ground-truthed against ffmpeg's independent `ebur128` 2026-08-03). This SUPERSEDES the mono-era "loudest single channel" convention this section used to describe: on the TMP's mirrored dual-mono USB output the two conventions differ by a fixed **+3.0103 dB** (`10·log10(2)`, algebraically exact for identical channels), so every shipped default target, the `TargetRow` slider domain, and every previously-saved user target shifted +3 LU together (`profiles::Store::meter_convention`, one-shot migration) to keep producing the SAME audible loudness. Relative quantities — spreads, deltas, the `presetLevel` solve itself — are invariant to this convention change; only ABSOLUTE reported numbers moved. The INPUT/stimulus side (self-measurement, dry-DI calibration, the floor-guard spread) still uses `lufs::measure_mono` and did not change. **Every other absolute LUFS/dB figure elsewhere in this document (the Klon `-9.610`/`-6.96` HW measurements, the preset-024 saturated-amp response's `-20 → -17` plateau and `-29.2`/`+12.35`/`+8.72`/`+6.88` figures, the `-17.4` channel-forensics reading, etc.) is a HISTORICAL hardware measurement taken under the mono-era single-channel convention and is preserved as recorded — not restated to the new convention.**
+**Companion now measures the processed USB pair as standard 2-channel BS.1770** (`lufs::measure_stereo`, energy sum over capture channels 0/1 — dry channel 2+ excluded), matching an external BS.1770 stereo meter to within 0.009 LU (ground-truthed against ffmpeg's independent `ebur128` at full metadata precision, 2026-08-04). This SUPERSEDES the mono-era "loudest single channel" convention this section used to describe: on the TMP's mirrored dual-mono USB output the two conventions differ by a fixed **+3.0103 dB** (`10·log10(2)`, algebraically exact for identical channels), so every shipped default target, the `TargetRow` slider domain, and every previously-saved user target shifted +3 LU together (`profiles::Store::meter_convention`, one-shot migration) to keep producing the SAME audible loudness. Relative quantities — spreads, deltas, the `presetLevel` solve itself — are invariant to this convention change; only ABSOLUTE reported numbers moved. The INPUT/stimulus side (self-measurement, dry-DI calibration, the floor-guard spread) still uses `lufs::measure_mono` and did not change. **Every other absolute LUFS/dB figure elsewhere in this document (the Klon `-9.610`/`-6.96` HW measurements, the preset-024 saturated-amp response's `-20 → -17` plateau and `-29.2`/`+12.35`/`+8.72`/`+6.88` figures, the `-17.4` channel-forensics reading, etc.) is a HISTORICAL hardware measurement taken under the mono-era single-channel convention and is preserved as recorded — not restated to the new convention.**
+
+**Hardware-validated 2026-08-04 (fw 1.8.45).** Same-day A/B on preset list-index 0
+("Guitar", 10 blocks) at the base scene, `guitar-humbucker` stimulus: a `d7a2a2c`-built
+probe (mono-era convention) and a branch-built probe (2-ch BS.1770), alternated
+baseline/branch/baseline/branch on the same preset. Baseline read **−22.588** on both
+runs, branch **−19.578** on both — a delta of **+3.010** against the algebraic
+`10·log10(2) = 3.0103`, with **0.000** within-arm spread (the USB path is digital and
+deterministic). The processed pair was confirmed mirrored: `ch0 ≡ ch1` to three decimals
+on every capture, which is the premise the whole re-baseline rests on.
+
+Doctor was A/B'd in the same session on list indices 0 and 404: **band dB, tilt, air
+flatness and fired verdicts are unchanged** between the two builds (|Δ| ≤ 0.002 dB) —
+D4's requirement that band analysis stay on the averaged mixdown. Note the dev probe
+arm (`probe --doctor`) reports the legacy mono-on-mixdown loudness by design
+(`SoundProfile::from_capture_with_psd_loudness` with `stereo_loudness: None`), so its
+`integratedLufs` deliberately does NOT shift; the PRODUCTION Doctor path
+(`commands/doctor.rs` → `leveller::doctor_capture_with_loudness`) passes the stereo
+measure as the override and does. Don't read the probe arm's unshifted number as a
+regression.
 
 ### Parity harness (dev-only, optional)
 
@@ -129,9 +148,14 @@ bash scripts/meter-parity.sh <dir-of-wavs>   # compare an existing directory ins
 
 Both arms run the SAME WAV through two independent meters — `probe --measure-wav`
 (`lufs.rs`'s production output-side path: `measure_stereo` for a ≥2-ch file, `measure_mono`
-for 1-ch) and ffmpeg's `-af ebur128` — and assert `|Δ integrated| ≤ 0.1 LU` per file (ffmpeg's
-summary prints only one decimal, so this is the tightest honest bar for that print
-resolution). If `ffmpeg` isn't on `PATH` the script prints a skip notice and exits 0 —
+for 1-ch) and ffmpeg's `-af ebur128` — and assert `|Δ integrated| ≤ 0.02 LU` per file. The
+ffmpeg side is read at FULL precision from the filter's metadata
+(`ebur128=metadata=1` + `ametadata=print:key=lavfi.r128.I`, last value emitted), NOT from
+the end-of-run summary, which prints one decimal and would cap the comparison at ~0.1 LU
+while hiding the true agreement. Measured 2026-08-04: **≤ 0.009 LU** across the six
+synthetic fixtures and **0.004-0.006 LU** on real device captures. Two conformant BS.1770
+implementations still differ slightly in how the final partial gating block is handled, so
+bit-exact equality is not expected and 0.02 is a deliberately tight but achievable bar. If `ffmpeg` isn't on `PATH` the script prints a skip notice and exits 0 —
 absence is not a failure.
 
 **What a FAIL means:** `lufs.rs` disagrees with the independent BS.1770 read by more than

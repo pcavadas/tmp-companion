@@ -252,14 +252,21 @@ pub(crate) async fn audit_loudness(
         let stim = read_stimulus_calibrated(&stim_path, None)?;
         let mut measures = Vec::with_capacity(slots.len());
         for slot in slots {
-            let (samples, rate) = leveller::capture_samples(slot, &stim, 0.5)?;
-            let peak = samples.iter().fold(0f32, |m, &s| m.max(s.abs()));
+            // PR2: report loudness in the SAME 2-ch BS.1770 convention as every other
+            // absolute LUFS the app shows. `audit_measures`'s verdicts are convention-
+            // invariant (outliers are measured against the run's own median, and the clip
+            // rule is `peak_dbfs`), but the finding's user-facing text prints an absolute
+            // "loudness … LUFS" — left on the mono measure it would read 3 dB below the
+            // Level tab for the same preset. Peak stays the loudest channel's, unchanged.
+            let cap = leveller::capture_full(slot, &stim, 0.5)?;
+            let (ch, _) = cap.loudest_channel();
+            let peak = cap.channel_peak(ch);
             let peak_dbfs = if peak > 0.0 {
                 20.0 * (peak as f64).log10()
             } else {
                 -120.0
             };
-            let loud = lufs::measure_mono(&samples, rate)?;
+            let loud = leveller::measure_processed(cap)?;
             measures.push(lint::AuditMeasure {
                 list_index: slot,
                 peak_dbfs,
