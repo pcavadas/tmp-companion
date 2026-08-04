@@ -33,7 +33,10 @@
 # equality — 0.02 is a deliberately tight but achievable bar.
 #
 # Written to run under macOS system /bin/bash (3.2): no associative arrays,
-# no `mapfile`, plain space-separated lists instead of arrays.
+# no `mapfile`. Plain indexed arrays (`WAVS=()`/`+=()`) ARE fine on 3.2 — only
+# `declare -A` and `mapfile` are the 4.x-only features — but "${arr[@]}" on a
+# TRULY EMPTY array is an unbound-variable abort pre-4.4, so any expansion of
+# WAVS is guarded by an `${#WAVS[@]}` length check first.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -146,18 +149,25 @@ ffmpeg_lufs() {
     | cut -d= -f2 || true
 }
 
-WAVS=""
+WAVS=()
 if [ -n "$INPUT_DIR" ]; then
   for f in "$FIXTURE_DIR"/*.wav; do
     [ -e "$f" ] || continue
-    WAVS="$WAVS $f"
+    WAVS+=("$f")
   done
-  if [ -z "$WAVS" ]; then
+  if [ "${#WAVS[@]}" -eq 0 ]; then
     err "no .wav files found in $FIXTURE_DIR"
     exit 2
   fi
 else
-  WAVS="$FIXTURE_DIR/sine_mono.wav $FIXTURE_DIR/sine_dual_mono.wav $FIXTURE_DIR/true_stereo.wav $FIXTURE_DIR/pink_dual_mono.wav $FIXTURE_DIR/dynamic.wav $FIXTURE_DIR/tremolo.wav"
+  WAVS+=(
+    "$FIXTURE_DIR/sine_mono.wav"
+    "$FIXTURE_DIR/sine_dual_mono.wav"
+    "$FIXTURE_DIR/true_stereo.wav"
+    "$FIXTURE_DIR/pink_dual_mono.wav"
+    "$FIXTURE_DIR/dynamic.wav"
+    "$FIXTURE_DIR/tremolo.wav"
+  )
 fi
 
 log "comparing lufs.rs (probe --measure-wav) vs ffmpeg ebur128 — tolerance ${TOL_LU} LU"
@@ -165,24 +175,32 @@ printf '\n%-22s %14s %14s %10s   %s\n' "fixture" "companion" "ffmpeg" "delta" "v
 printf '%s\n' "-------------------------------------------------------------------------"
 
 FAILED=0
-for wav in $WAVS; do
-  name="$(basename "$wav" .wav)"
-  companion="$(companion_lufs "$wav")"
-  ffmpeg_val="$(ffmpeg_lufs "$wav")"
+# Guard the array expansion: under `set -u`, "${WAVS[@]}" on a TRULY EMPTY
+# array is safe on bash 4.4+ but an "unbound variable" abort on macOS's
+# bash 3.2 (this script's target shell — see the header). Unreachable in
+# practice (the INPUT_DIR branch above already exits if empty, and the
+# fixture branch always populates six entries), but cheap insurance against
+# a future edit reintroducing an empty-array path.
+if [ "${#WAVS[@]}" -gt 0 ]; then
+  for wav in "${WAVS[@]}"; do
+    name="$(basename "$wav" .wav)"
+    companion="$(companion_lufs "$wav")"
+    ffmpeg_val="$(ffmpeg_lufs "$wav")"
 
-  if [ -z "$companion" ] || [ -z "$ffmpeg_val" ]; then
-    printf '%-22s %14s %14s %10s   %s\n' "$name" "${companion:-N/A}" "${ffmpeg_val:-N/A}" "N/A" "FAIL (unparseable)"
-    FAILED=1
-    continue
-  fi
+    if [ -z "$companion" ] || [ -z "$ffmpeg_val" ]; then
+      printf '%-22s %14s %14s %10s   %s\n' "$name" "${companion:-N/A}" "${ffmpeg_val:-N/A}" "N/A" "FAIL (unparseable)"
+      FAILED=1
+      continue
+    fi
 
-  delta="$(awk -v a="$companion" -v b="$ffmpeg_val" 'BEGIN { d = a - b; if (d < 0) d = -d; printf "%.3f", d }')"
-  verdict="$(awk -v d="$delta" -v tol="$TOL_LU" 'BEGIN { print (d <= tol) ? "PASS" : "FAIL" }')"
-  printf '%-22s %14s %14s %10s   %s\n' "$name" "$companion" "$ffmpeg_val" "$delta" "$verdict"
-  if [ "$verdict" = "FAIL" ]; then
-    FAILED=1
-  fi
-done
+    delta="$(awk -v a="$companion" -v b="$ffmpeg_val" 'BEGIN { d = a - b; if (d < 0) d = -d; printf "%.3f", d }')"
+    verdict="$(awk -v d="$delta" -v tol="$TOL_LU" 'BEGIN { print (d <= tol) ? "PASS" : "FAIL" }')"
+    printf '%-22s %14s %14s %10s   %s\n' "$name" "$companion" "$ffmpeg_val" "$delta" "$verdict"
+    if [ "$verdict" = "FAIL" ]; then
+      FAILED=1
+    fi
+  done
+fi
 
 echo
 if [ "$FAILED" -eq 0 ]; then

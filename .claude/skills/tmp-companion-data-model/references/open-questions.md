@@ -23,9 +23,10 @@ Every settled entry cites the firmware version it was measured on (**1.8.45** th
 
 > **Measurement provenance.** Every LUFS figure here was reproduced exactly by an independent BS.1770-4 implementation from the raw WAVs. The probe was built **without `--features e2e`** (that feature fabricates all LUFS) — verified by build-log audit and by `strings` on the binary. Device integrity is checked by SHA-256 over each `presetJson` against the session-start backup.
 >
-> Two standing cautions for anyone taking new captures:
+> Three standing cautions for anyone taking new captures:
 >
-> - Captures use `loudest_channel()`, which argmaxes RMS over **all** input channels, so the captured channel's identity is an assumption rather than a recorded fact. Use `stereo_mix()` (channels 0/1 only) for lane work — channel 2 is the dry instrument send.
+> - Captures use `loudest_channel()`, which argmaxes RMS over the **processed pair only** — `(0..channels.min(2))` in `audio.rs`, so channel 2's dry instrument send can never win the argmax. What is still an assumption rather than a recorded fact is **which of the two processed lanes** a given figure came from: on a genuinely stereo preset L and R can trade loudest between runs, flipping any per-channel verdict with them. Prefer `stereo_mix()` (the deterministic 0/1 average) for lane work.
+> - The LUFS figures below are **mono-era**: they predate the stereo re-baseline and were measured as a single channel, so they read ~3.01 dB below what the app now reports for the same capture (`lufs::measure_stereo` over the processed pair — see `lufs.rs`'s module header). The comparisons and deltas are unaffected; only the absolute numbers moved.
 > - Check headroom. `h_noG2.wav` peaks at exactly 1.000000; immaterial to its integrated LUFS, but its own >22 kHz rows are clipping products, not signal.
 
 ---

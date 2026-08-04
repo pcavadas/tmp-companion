@@ -52,10 +52,26 @@ impl Loudness {
 /// PER-CHANNEL — reading only channel 0 under a 2-ch meter would silently report
 /// the left channel's peak as the clip's true peak). dBTP is never shifted by the
 /// channel count.
+///
+/// A buffer whose length isn't a multiple of `channels` is trimmed to a whole
+/// number of frames BEFORE chunking: the crate's own frame view
+/// (`ebur128::Interleaved::new`) rejects a non-divisible slice outright with
+/// `Error::NoMem` rather than silently dropping the remainder the way
+/// `.chunks()` does, so a trailing partial frame must be trimmed here or
+/// `add_frames_f32` fails with an opaque "NoMem" instead of the documented
+/// no-partial-frame tolerance. `measure_mono` (channels == 1) never has a
+/// remainder, so the trim is a no-op there.
 fn measure(interleaved: &[f32], sample_rate: u32, channels: u32) -> Result<Loudness, String> {
     if interleaved.is_empty() {
         return Err("empty audio buffer".into());
     }
+    // See the doc comment above for why a non-frame-aligned buffer is trimmed
+    // rather than handed straight to `.chunks()`.
+    let usable_len = interleaved.len() - interleaved.len() % channels as usize;
+    if usable_len == 0 {
+        return Err("empty audio buffer".into());
+    }
+    let interleaved = &interleaved[..usable_len];
     let mut meter = EbuR128::new(channels, sample_rate, Mode::I | Mode::S | Mode::TRUE_PEAK)
         .map_err(|e| format!("ebur128 init: {e:?}"))?;
 
@@ -111,9 +127,9 @@ pub fn measure_mono(samples: &[f32], sample_rate: u32) -> Result<Loudness, Strin
 
 /// Measure an INTERLEAVED 2-channel buffer of `f32` samples in [-1, 1] — the
 /// OUTPUT-side convention (see the module header): standard 2-ch BS.1770 over
-/// the processed USB pair. `interleaved.len()` must be even (frame-aligned);
-/// an odd length drops its trailing sample via integer chunking rather than
-/// erroring, matching `measure_mono`'s no-partial-frame tolerance.
+/// the processed USB pair. An odd `interleaved.len()` drops its trailing
+/// sample (no complete frame) rather than erroring, matching `measure_mono`'s
+/// no-partial-frame tolerance.
 pub fn measure_stereo(interleaved: &[f32], sample_rate: u32) -> Result<Loudness, String> {
     measure(interleaved, sample_rate, 2)
 }
@@ -316,6 +332,38 @@ mod tests {
             "loud-on-ch0: expected ~{expected:.2} dBTP, got {:.2}",
             ch0_loud.true_peak_dbtp
         );
+    }
+
+    #[test]
+    fn stereo_trailing_partial_frame_is_dropped_not_errored() {
+        // The doc comment on `measure` promises a trailing partial frame is
+        // dropped, not an error — but `ebur128::Interleaved::new` (this crate's
+        // internal frame view) rejects any slice whose length isn't a multiple
+        // of `channels` with `Error::NoMem`, which `add_frames_f32` surfaces as
+        // an opaque "ebur128 add_frames: NoMem". A [l, r, trailing] buffer (one
+        // full stereo frame plus one orphan sample) must measure identically to
+        // the same buffer with the orphan trimmed off, not error.
+        let rate = 48_000;
+        let l = sine(1000.0, 4.0, rate, 0.4);
+        let r = sine(1300.0, 4.0, rate, 0.15);
+        let mut clip = interleave2(&l, &r);
+        let trimmed = measure_stereo(&clip, rate).unwrap();
+        clip.push(0.9); // one orphan sample — not a complete stereo frame
+        let with_trailing = measure_stereo(&clip, rate)
+            .expect("a trailing partial frame must be dropped, not error");
+        assert_eq!(
+            trimmed.integrated_lufs, with_trailing.integrated_lufs,
+            "trailing orphan sample must not change the reading"
+        );
+    }
+
+    #[test]
+    fn stereo_single_sample_is_empty_buffer_not_a_crate_error() {
+        // A 1-sample buffer under a 2-channel meter has no complete frame at
+        // all — that must surface as the same "empty audio buffer" error the
+        // zero-length case already returns, not a crate-internal NoMem error.
+        let err = measure_stereo(&[0.5], 48_000).unwrap_err();
+        assert_eq!(err, "empty audio buffer");
     }
 
     #[test]
