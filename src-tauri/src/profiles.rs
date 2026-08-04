@@ -122,12 +122,27 @@ const MONO_TO_STEREO_SHIFT_LU: f64 = 3.0103;
 /// in a row (e.g. a `load` immediately followed by a `save_targets`-style
 /// load-mutate-save) never double-shifts. `calibration_lufs` is INPUT-side and
 /// is never touched here.
-fn migrate_meter_convention(mut store: Store) -> (Store, bool) {
+///
+/// `targets_present_in_file` is the non-obvious part: `Store::targets` is
+/// `#[serde(default = "default_targets")]`, and those defaults are ALREADY
+/// expressed in the CURRENT (stereo) convention (see `default_targets`'s doc
+/// comment). A file that predates the `targets` field entirely has no
+/// `meter_convention` key either — serde reads both as their defaults, so a
+/// naive caller can't tell "genuinely mono-era targets that need shifting"
+/// apart from "no targets key at all, serde just seeded current-convention
+/// defaults". Shifting the latter would silently persist -20/-18/-16, above
+/// `default_targets()`'s own <= -19 ceiling. So when `targets` was ABSENT
+/// from the file, this only stamps the convention — never shifts — while a
+/// file that DID have a `targets` key (mono-era or otherwise) shifts exactly
+/// as before.
+fn migrate_meter_convention(mut store: Store, targets_present_in_file: bool) -> (Store, bool) {
     if store.meter_convention >= METER_CONVENTION_STEREO {
         return (store, false);
     }
-    for t in &mut store.targets {
-        t.lufs = ((t.lufs + MONO_TO_STEREO_SHIFT_LU) * 10.0).round() / 10.0;
+    if targets_present_in_file {
+        for t in &mut store.targets {
+            t.lufs = ((t.lufs + MONO_TO_STEREO_SHIFT_LU) * 10.0).round() / 10.0;
+        }
     }
     store.meter_convention = METER_CONVENTION_STEREO;
     (store, true)
@@ -213,9 +228,17 @@ fn store_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, S
 pub fn load_from_path(path: &Path) -> Result<Store, String> {
     match std::fs::read(path) {
         Ok(bytes) => {
-            let store: Store = serde_json::from_slice(&bytes)
+            // Parsed to a raw `Value` FIRST so the migration can tell "the file
+            // genuinely had a `targets` key" apart from "serde seeded
+            // `default_targets()` because the key was absent" — see
+            // `migrate_meter_convention`'s doc comment for why that distinction
+            // is load-bearing.
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("parse {}: {e}", path.display()))?;
-            let (store, migrated) = migrate_meter_convention(store);
+            let targets_present_in_file = value.get("targets").is_some();
+            let store: Store = serde_json::from_value(value)
+                .map_err(|e| format!("parse {}: {e}", path.display()))?;
+            let (store, migrated) = migrate_meter_convention(store, targets_present_in_file);
             if migrated {
                 if let Err(e) = save_to_path(path, &store) {
                     log::warn!(
@@ -232,13 +255,67 @@ pub fn load_from_path(path: &Path) -> Result<Store, String> {
     }
 }
 
+/// Best-effort clear whatever sits at `path` — a plain file OR a leftover
+/// directory (e.g. a prior failed save that somehow left a directory behind).
+/// `remove_file` errors on a directory, so a directory-shaped leftover falls
+/// through to `remove_dir_all`; a missing entry is not an error either way.
+fn remove_any(path: &Path) {
+    // `remove_file` handles the common case (a plain leftover file) and any
+    // already-gone path (its error is simply ignored). It errors on a
+    // directory, so only THEN fall back to `remove_dir_all` — checked via
+    // `path.exists()` so a merely-already-gone path doesn't trigger it too.
+    if std::fs::remove_file(path).is_err() && path.exists() {
+        let _ = std::fs::remove_dir_all(path);
+    }
+}
+
 /// Write the store to `path` (pretty JSON), creating parent dirs as needed.
+/// Atomic: serializes to a same-directory temp file (`<path>.tmp`), flushes +
+/// `sync_all`s it, then `rename`s it onto `path` — same-directory guarantees
+/// the rename is a same-filesystem, atomic replace (a cross-filesystem rename
+/// is not). This matters because `load_from_path`'s meter-convention
+/// migration calls this AUTOMATICALLY and swallows its error: without the
+/// atomic swap, a write that died mid-flight (full disk, permissions) would
+/// leave a truncated, unparseable `profiles.json` that the next launch's
+/// `load_from_path` would hard-fail on — turning a cosmetic persist failure
+/// into total loss of profiles/slot assignments.
+///
+/// The temp path is deterministic rather than uniquely-named, so it is
+/// self-healing against a leftover from a previous failed save: any existing
+/// entry there is cleared FIRST (`remove_any`), and again on this call's own
+/// failure path, so one bad leftover can never wedge every future save.
 pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(store).map_err(|e| format!("serialize store: {e}"))?;
-    std::fs::write(path, json).map_err(|e| format!("write {}: {e}", path.display()))
+
+    let mut tmp_name = path
+        .file_name()
+        .ok_or_else(|| format!("no file name in path {}", path.display()))?
+        .to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+
+    remove_any(&tmp);
+    let write_result: Result<(), String> = (|| {
+        use std::io::Write;
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("sync {}: {e}", tmp.display()))
+    })();
+    if let Err(e) = write_result {
+        remove_any(&tmp);
+        return Err(e);
+    }
+
+    std::fs::rename(&tmp, path).map_err(|e| {
+        remove_any(&tmp);
+        format!("rename {} to {}: {e}", tmp.display(), path.display())
+    })
 }
 
 /// Load the store for the running app (config-dir resolved).
@@ -453,6 +530,43 @@ mod tests {
     }
 
     #[test]
+    fn load_from_path_does_not_shift_serde_seeded_default_targets() {
+        // MAJOR data-integrity fix: `targets` is `#[serde(default =
+        // "default_targets")]`, and those defaults are ALREADY expressed in
+        // the current (stereo) convention. A file that predates the `targets`
+        // field entirely (no key in the JSON at all) makes serde SEED
+        // `default_targets()` while `meter_convention` deserializes absent →
+        // 0 (mono-era). The migration must not mistake that serde-seeded,
+        // already-current-convention data for a real mono-era value and shift
+        // it +3.0103 dB — that would silently persist -20/-18/-16, above
+        // `default_targets()`'s own documented <= -19 ceiling, pushing
+        // leveling runs into clamping. The convention stamp must still be
+        // written so the question is never re-asked.
+        let dir = tmp_dir("migrate-no-targets-key-at-all");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        std::fs::write(&path, r#"{"profiles":[],"profile_by_slot":{}}"#).unwrap();
+
+        let loaded = load_from_path(&path).unwrap();
+        assert_eq!(
+            loaded.targets,
+            default_targets(),
+            "serde-seeded defaults must not be shifted: {:?}",
+            loaded.targets
+        );
+        assert_eq!(loaded.meter_convention, METER_CONVENTION_STEREO);
+
+        // The stamp must still be persisted so the question is never re-asked,
+        // even though nothing was shifted.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("\"meter_convention\": 1"),
+            "the stereo stamp must be persisted even though targets weren't shifted: {raw}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn mono_era_store_migrates_targets_on_load_and_stamps_the_convention() {
         // D3: a hand-authored mono-era file (no `meterConvention` key at all —
         // `#[serde(default)]` reads it as 0) must migrate on `load_from_path`.
@@ -554,33 +668,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn migration_persist_failure_still_returns_the_migrated_store_not_an_error() {
         // Advisor-flagged regression: before the fix, `load_from_path` propagated
         // the post-migration `save_to_path` error with `?`, turning a cosmetic
         // persistence failure (read-only config dir, full disk, permissions) into
         // a HARD settings-load failure — on exactly the first launch after an
-        // update, when the migration runs. Force that persist to fail by making
-        // the on-disk file read-only (the file itself, so `std::fs::read` above it
-        // still succeeds — only the migration's save-back should fail) and assert
+        // update, when the migration runs. Force that persist to fail and assert
         // `load_from_path` still returns Ok with the in-memory-migrated store.
+        //
+        // Fix 2 made `save_to_path` atomic (temp-file + rename), which needs
+        // only DIRECTORY write permission, not permission on the destination
+        // file itself — a read-only `profiles.json` no longer blocks a rename
+        // over it. So the failure injection is a read-only PARENT DIRECTORY
+        // (blocks creating the temp file / renaming), not a read-only file;
+        // `std::fs::read` above it still succeeds since that only needs read
+        // access, which a read+execute-only directory still grants.
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tmp_dir("migrate-persist-failure");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.json");
         std::fs::write(&path, r#"{"targets":[{"name":"Rhythm","lufs":-26.0}]}"#).unwrap();
 
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&path, perms).unwrap();
-
-        let result = load_from_path(&path);
-
-        // Restore write access so the tmp dir can be removed (and so a leaked
-        // read-only file never lingers for another test run to trip over).
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        perms.set_readonly(false);
-        std::fs::set_permissions(&path, perms).unwrap();
+        // Scoped so the directory is writable again the instant `load_from_path`
+        // returns — before any assertion or cleanup — even on a panic.
+        struct RestorePerms(PathBuf, std::fs::Permissions);
+        impl Drop for RestorePerms {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+        let result = {
+            let original_perms = std::fs::metadata(&dir).unwrap().permissions();
+            let _restore = RestorePerms(dir.clone(), original_perms);
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            load_from_path(&path)
+        };
 
         let store = result.expect("a failed migration persist must not fail the load");
         assert_eq!(store.meter_convention, METER_CONVENTION_STEREO);
@@ -596,6 +721,75 @@ mod tests {
         assert!(
             raw.contains("-26.0") && !raw.contains("meter_convention"),
             "expected the write-back to have failed, but the file changed: {raw}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_to_path_leaves_no_temp_file_behind_on_success() {
+        // Atomic save writes `<path>.tmp` then renames it onto `path` — the
+        // happy path must not leak the temp file.
+        let dir = tmp_dir("save-atomic-happy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        save_to_path(&path, &sample_store()).unwrap();
+        let tmp = dir.join("profiles.json.tmp");
+        assert!(!tmp.exists(), "temp file leaked after a successful save");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_to_path_atomic_failure_leaves_the_original_file_untouched() {
+        // Regression: `save_to_path` used to be `std::fs::write` — truncate
+        // then write. Fix 1's migration adds an AUTOMATIC write during
+        // `load_from_path` whose error is logged-and-swallowed, so a write
+        // that dies mid-flight (full disk, permissions) must NOT leave a
+        // half-written, unparseable `profiles.json` behind: the atomic
+        // temp-write + rename means a failure before the rename can only ever
+        // corrupt the (discarded) temp file, never the real one.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("save-atomic-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        let original = sample_store();
+        save_to_path(&path, &original).unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+
+        let mut other = original.clone();
+        other.playback_level = PlaybackLevel::Quiet;
+
+        // Make the parent directory read-only (no create/rename rights) so the
+        // temp-file write fails deterministically. Scoped so the permission
+        // fixture is restored the instant the risky call returns — before any
+        // assertion or cleanup runs — even if `save_to_path` itself panicked.
+        struct RestorePerms(PathBuf, std::fs::Permissions);
+        impl Drop for RestorePerms {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, self.1.clone());
+            }
+        }
+        let result = {
+            let original_perms = std::fs::metadata(&dir).unwrap().permissions();
+            let _restore = RestorePerms(dir.clone(), original_perms);
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            save_to_path(&path, &other)
+        };
+
+        assert!(
+            result.is_err(),
+            "save into a read-only parent dir must fail, not silently succeed"
+        );
+        let reloaded_bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            reloaded_bytes, original_bytes,
+            "a failed save must leave the original file's bytes untouched"
+        );
+        let reloaded = load_from_path(&path).unwrap();
+        assert_eq!(
+            reloaded, original,
+            "the original file must still parse to the pre-failure store"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
