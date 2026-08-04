@@ -159,7 +159,7 @@ bit-exact equality is not expected and 0.02 is a deliberately tight but achievab
 absence is not a failure.
 
 **What a FAIL means:** `lufs.rs` disagrees with the independent BS.1770 read by more than
-0.1 LU on at least one file. Since ffmpeg's `ebur128` is a mature, widely-used
+0.02 LU on at least one file. Since ffmpeg's `ebur128` is a mature, widely-used
 implementation, treat that as a `lufs.rs` regression (channel/hop handling, most likely
 the 2-ch true-peak-per-channel or the frame-vs-sample hop math this module's header
 documents) first — unless the file came from a real device capture, where device-side
