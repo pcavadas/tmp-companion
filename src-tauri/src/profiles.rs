@@ -315,7 +315,18 @@ pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| {
         remove_any(&tmp);
         format!("rename {} to {}: {e}", tmp.display(), path.display())
-    })
+    })?;
+
+    // The rename above is durable on disk only once the DIRECTORY ENTRY itself
+    // is synced — without this, a power loss right after a successful rename
+    // can still lose it. `File::open` on a directory succeeds read-only, so
+    // this doesn't need write access to the parent.
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| format!("sync parent dir {}: {e}", parent.display()))?;
+    }
+    Ok(())
 }
 
 /// Load the store for the running app (config-dir resolved).

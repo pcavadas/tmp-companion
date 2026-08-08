@@ -139,10 +139,15 @@ pub fn measure_stereo(interleaved: &[f32], sample_rate: u32) -> Result<Loudness,
 /// `Mode::I` only — the adaptive measurement path solves on integrated loudness and
 /// never reads short-term, so the 3 s short-term window is dead weight here.
 /// `new` (1-ch, mono) and `new_stereo` (2-ch, interleaved) are the two entry
-/// points, mirroring [`measure_mono`]/[`measure_stereo`]; `add` is channel-count
-/// agnostic — it just forwards whatever frame-aligned buffer the caller built.
+/// points, mirroring [`measure_mono`]/[`measure_stereo`]; `add` tolerates a
+/// non-frame-aligned chunk by carrying the trailing partial frame across calls
+/// (see its doc comment) rather than requiring the caller to pre-align.
 pub struct IncrementalLoudness {
     meter: EbuR128,
+    channels: u32,
+    /// Trailing samples from the last `add` that didn't complete a frame — at
+    /// most `channels - 1` of them. Prepended to the next call's samples.
+    pending: Vec<f32>,
 }
 
 impl IncrementalLoudness {
@@ -159,18 +164,43 @@ impl IncrementalLoudness {
     fn new_channels(sample_rate: u32, channels: u32) -> Result<Self, String> {
         let meter = EbuR128::new(channels, sample_rate, Mode::I)
             .map_err(|e| format!("ebur128 init: {e:?}"))?;
-        Ok(Self { meter })
+        Ok(Self {
+            meter,
+            channels,
+            pending: Vec::new(),
+        })
     }
 
-    /// Feed a frame-aligned chunk of `f32` samples in [-1, 1] (interleaved, if the
-    /// meter is stereo). An empty chunk is a no-op.
+    /// Feed a chunk of `f32` samples in [-1, 1] (interleaved, if the meter is
+    /// stereo). The chunk need NOT be frame-aligned: a trailing partial frame
+    /// (fewer than `channels` samples) is carried over and prepended to the
+    /// next `add` call rather than fed to `ebur128` (which errors on a
+    /// non-frame-aligned slice) or trimmed outright (which would desync L/R
+    /// mid-stream for a stereo meter). A dangling sample never flushed by a
+    /// later call is simply dropped — there is no explicit finish/flush API.
+    /// An empty chunk is a no-op.
     pub fn add(&mut self, samples: &[f32]) -> Result<(), String> {
         if samples.is_empty() {
             return Ok(());
         }
-        self.meter
-            .add_frames_f32(samples)
-            .map_err(|e| format!("ebur128 add_frames: {e:?}"))
+        let channels = self.channels as usize;
+        // Fast path: no carry-over pending and the chunk is already
+        // frame-aligned — feed it straight through, no extra allocation.
+        if self.pending.is_empty() && samples.len().is_multiple_of(channels) {
+            return self
+                .meter
+                .add_frames_f32(samples)
+                .map_err(|e| format!("ebur128 add_frames: {e:?}"));
+        }
+        self.pending.extend_from_slice(samples);
+        let usable_len = self.pending.len() - self.pending.len() % channels;
+        if usable_len > 0 {
+            self.meter
+                .add_frames_f32(&self.pending[..usable_len])
+                .map_err(|e| format!("ebur128 add_frames: {e:?}"))?;
+        }
+        self.pending.drain(..usable_len);
+        Ok(())
     }
 
     /// Gated integrated loudness over everything fed so far. May be non-finite
@@ -383,6 +413,44 @@ mod tests {
         assert!(
             (inc - oneshot).abs() < 1e-6,
             "incremental {inc:.6} vs one-shot {oneshot:.6}"
+        );
+    }
+
+    #[test]
+    fn incremental_stereo_survives_odd_split_boundaries() {
+        // `replay_measure` slices `body[fed..end]` in fixed-size steps that have
+        // no relation to the 2-channel frame size, so a chunk boundary can land
+        // one sample into a stereo frame. That must carry across `add` calls
+        // rather than erroring (the crate's `NoMem` on a non-frame-aligned
+        // slice) or being trimmed (which would desync L/R mid-stream).
+        let rate = 48_000;
+        let l = sine(1000.0, 4.0, rate, 0.4);
+        let r = sine(1300.0, 4.0, rate, 0.15);
+        let clip = interleave2(&l, &r);
+        let oneshot = measure_stereo(&clip, rate).unwrap().integrated_lufs;
+
+        // Split at an ODD sample offset (one past a whole-frame prefix), then
+        // feed the rest in one more chunk.
+        let mut m = IncrementalLoudness::new_stereo(rate).unwrap();
+        let split = (rate as usize / 10) * 2 + 1; // 100 ms of frames, plus one orphan sample
+        m.add(&clip[..split]).unwrap();
+        m.add(&clip[split..]).unwrap();
+        let inc = m.integrated().unwrap();
+        assert!(
+            (inc - oneshot).abs() < 1e-6,
+            "odd-split incremental {inc:.6} vs one-shot {oneshot:.6}"
+        );
+
+        // All-odd chunk size (3) — proves mid-stream carries keep channel
+        // alignment across many boundary crossings, not just one.
+        let mut m3 = IncrementalLoudness::new_stereo(rate).unwrap();
+        for chunk in clip.chunks(3) {
+            m3.add(chunk).unwrap();
+        }
+        let inc3 = m3.integrated().unwrap();
+        assert!(
+            (inc3 - oneshot).abs() < 1e-6,
+            "chunk-of-3 incremental {inc3:.6} vs one-shot {oneshot:.6}"
         );
     }
 }
