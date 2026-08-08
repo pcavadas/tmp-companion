@@ -4,7 +4,7 @@ A **macOS-only** Tauri 2 desktop app (Rust backend + React/TypeScript frontend) 
 
 **UX north-star:** fewest possible clicks per action. The audience is thousands of users, many not comfortable with computers. Every feature ships whole in v1 — no subsetting. The app is **click-only**: no keyboard shortcuts, no command palette.
 
-**Architecture map: [`notes/overview.md`](notes/overview.md).** There is deliberately no module tree here — 88 of 93 backend files carry a `//!` header and 175 of 198 frontend files carry a `//` header, and those are the authority. Feature docs live in [`notes/`](notes/).
+**Architecture map: [`notes/overview.md`](notes/overview.md).** There is deliberately no module tree here — 88 of 93 backend files carry a `//!` header and nearly every frontend file carries a `//` header, and those are the authority. Feature docs live in [`notes/`](notes/).
 
 ## Where the rules live
 

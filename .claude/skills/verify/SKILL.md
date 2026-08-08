@@ -48,9 +48,10 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
 - **Stale bridge server = false-green OR false-online** (CLAUDE.md, "Traps that fire when you run something").
   `scripts/e2e.sh` kills the port before every run, but a direct `bunx playwright test` invocation
   can hit a leftover WRONG-mode server via `reuseExistingServer: true`. Kill the REAL port first,
-  always — in a worktree that's the per-worktree DERIVED port (`TMP_E2E_PORT`, offset off 7600
-  since the port-isolation PR), not necessarily 7600; check `$TMP_E2E_PORT` or the e2e.sh log
-  line before killing a hardcoded port.
+  always — in a worktree that's the per-worktree DERIVED port. Offline claims an 8-port stride
+  based at 7800 (`scripts/e2e.sh`'s `PORT_BASE`), never a fixed 7600; check `$TMP_E2E_PORT` or
+  the e2e.sh log line before killing a hardcoded port, and prefer letting `scripts/e2e.sh` sweep
+  the range itself.
 - **Fresh worktree needs deps before checks, not just before dev** (CLAUDE.md's "Traps that fire when you run something" /
   worktree traps" section) — `bun install` before typecheck/lint/test/build, `bun run build`
   before any `cargo` gate.
