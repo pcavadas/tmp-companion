@@ -7,7 +7,8 @@ name: Arm auto-merge
 #   - Trusted author (OWNER/MEMBER/COLLABORATOR, or dependabot[bot]) → arm auto-merge now.
 #     GitHub merges once the ruleset clears (CodeRabbit's approval counts).
 #   - External author → arm ONLY after @pcavadas approves; disarm on any new external push.
-#     CodeRabbit-alone can never AUTO-merge an external PR.
+#     CodeRabbit-alone can never AUTO-merge an external PR. (For a FORK head the approval-arm
+#     runs secretless and is skipped — see the FORK PRs note below; @pcavadas arms manually.)
 #
 # Auto-merge is armed with a GitHub App token, NOT the GITHUB_TOKEN. GitHub does not re-trigger
 # workflows for pushes made by GITHUB_TOKEN, so a GITHUB_TOKEN-armed merge lands on main WITHOUT
@@ -23,6 +24,13 @@ name: Arm auto-merge
 # draft — that's how a stacked-series PR (#50) merged with zero review the moment it was marked
 # ready, into an already-merged parent. Stack/side-branch PRs merge only by deliberate manual
 # action; the review gate lives once, at main.
+#
+# FORK PRs: `pull_request_review` runs triggered from a fork head get NO secrets, so the App
+# token can't be minted — the job used to fail there (empty app-id), and the red check left the
+# PR UNSTABLE, which stalled auto-merge (#143). The job now skips that combination entirely.
+# `pull_request_target` runs keep secrets even for forks, so disarm-on-external-push still works;
+# the review-approval ARM path for a fork PR is instead a manual click by @pcavadas — a
+# user-armed auto-merge attributes the merge push to the user, so release.yml/ci.yml still fire.
 
 on:
   pull_request_target:
@@ -42,7 +50,13 @@ permissions:
 jobs:
   arm:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false && github.event.pull_request.base.ref == 'main'
+    # The pull_request_review clause skips fork-head runs: those get no secrets (see the
+    # FORK PRs note above), so the App-token mint can only ever fail there.
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.base.ref == 'main'
+      && (github.event_name != 'pull_request_review'
+      || github.event.pull_request.head.repo.full_name == github.repository)
     # The merge is enabled with the GitHub App token minted below, so the job's own
     # GITHUB_TOKEN needs no write scope — it inherits the workflow default contents:read.
     # The App INSTALLATION must carry Contents: write (auto-merge is a merge/contents op)
