@@ -467,6 +467,7 @@ fn resolve_sound_isolation_carries_param_writes_for_a_param_only_switch() {
 /// scene 0's overlay set to `overlay_params` — the ONE fixture shape
 /// `scene_overlay` itself is pinned against, shared from its own test module.
 use crate::probe_api::scene_jobs::scene_jobs_tests::with_scene0_overlay as preset_with_scene0_overlay;
+use crate::probe_api::scene_jobs::scene_jobs_tests::{hbe_boost_preset, HBE_NODE, HBE_PARAM};
 
 fn param_op(node_id: &str) -> doctor::DoctorOp {
     doctor::DoctorOp::Param {
@@ -532,6 +533,32 @@ fn bypass_only_conflict_refuses_on_an_unknown_overlay() {
     let ops = vec![param_op("ampA")];
     let reason = bypass_only_conflict(&preset, 0, &ops).expect("Unknown overlay refuses");
     assert!(reason.contains("ampA"));
+}
+
+/// BUG→GATE (widened policy's second consumer, "Friedman HBE" preset 28):
+/// `bypass_only_conflict` calls the SAME `scene_write_verdict_for_param` the scene-leveling
+/// lane does, so its own audibility-cleared allow arm (`WriteDirect{lands_on_base:true}`)
+/// must reach Doctor too, not just the leveller. `hbe_boost_preset()` (shared from
+/// `scene_jobs_tests`) is the exact anatomy: `boost`/`ACD_Boost` bypassed in base, a
+/// bypass-only un-bypass overlay in ONLY scene 2 "Solo", no footswitch/EXP assign targeting
+/// it, and every other scene either pins its own `gain` (Full) or stays bypassed
+/// (bypass-only) — Solo is the sole scene the shared write is audible in. Doctor's prescribe
+/// for Solo must NOT report a conflict here.
+#[test]
+fn bypass_only_conflict_allows_the_audibility_cleared_shared_write() {
+    let preset = hbe_boost_preset();
+    let ops = vec![doctor::DoctorOp::Param {
+        group_id: "G1".to_string(),
+        node_id: HBE_NODE.to_string(),
+        param: HBE_PARAM.to_string(),
+        value: 4.0,
+    }];
+    assert_eq!(
+        bypass_only_conflict(&preset, 2, &ops),
+        None,
+        "Solo (scene 2): the shared write is audible only here, so Doctor must be allowed \
+         through, not refused as shared_with_base"
+    );
 }
 
 // --- doctor_apply BEFORE-clip cache ---

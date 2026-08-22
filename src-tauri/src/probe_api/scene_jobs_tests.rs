@@ -713,14 +713,18 @@ fn restating_base_skips_a_bypass_only_scene_which_inherits_the_bake() {
 // outright ("shares knobs with base"); `shared_write_is_scene_local` clears it.
 
 /// `hbe_boost_preset()`'s node id/param, named once so the matrix tests below don't repeat
-/// the literals.
-const HBE_NODE: &str = "boost";
-const HBE_PARAM: &str = "gain";
+/// the literals. `pub(crate)` alongside the preset builder — `commands::doctor_tests`'
+/// `bypass_only_conflict` matrix reuses both rather than re-typing the anatomy.
+pub(crate) const HBE_NODE: &str = "boost";
+pub(crate) const HBE_PARAM: &str = "gain";
 
 /// The bug's exact shape: one node (`boost`/`ACD_Boost`, group G1) bypassed in base with
 /// `gain` 2.5, and 4 scenes — Dirt/Crunch (Full, own gain), Clean (bypass-only, stays
 /// bypassed), Solo (bypass-only, un-bypassed — the sole audible scene for a shared write).
-fn hbe_boost_preset() -> serde_json::Value {
+/// `pub(crate)` so `commands::doctor_tests` can drive `bypass_only_conflict` (the OTHER
+/// consumer of `scene_write_verdict_for_param`) against the exact same anatomy instead of
+/// re-typing it.
+pub(crate) fn hbe_boost_preset() -> serde_json::Value {
     serde_json::json!({
         "lastLoadedScene": 2,
         "audioGraph": { "guitarNodes": { "G1": [

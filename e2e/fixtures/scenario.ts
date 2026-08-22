@@ -21,7 +21,8 @@ export interface Preset {
 // `fixture_gates` in src-tauri/src/lib.rs. In brief — Rig: scene overlays, footswitch classes
 // and the two Doctor damage signatures; Pedalboard: scene-free, the Copy source, EXP + link
 // groups + a second-bank switch; Edge: gtrSplit, 8 scenes, the baked 2.6 kHz EQ-ring Doctor
-// oracle and the off-USB lane; Parallel: both lane amps live (joint-k / rebalance);
+// oracle and the off-USB lane, plus (P4-C) a `shared_write_is_scene_local` Boost/Solo
+// anatomy — bypassed in base, un-bypassed ONLY by scene 3 "Solo"; Parallel: both lane amps live (joint-k / rebalance);
 // Hiwatt 3S: a VERBATIM device export (the scene-conformance oracle — do not edit);
 // Preset24: the stale-load / saturated-pedal footswitch fixture (level-fs-preset24.spec.ts).
 // P3 additions (ADDITIONS, not replacements — 404/405 stay untouched): Combined Level: the

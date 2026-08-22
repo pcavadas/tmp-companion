@@ -746,6 +746,78 @@ mod fixture_gates {
                 "scene {s}: amp overlay ABSENT"
             );
         }
+
+        // BUG→GATE (user-reported, "Friedman HBE" preset 28): `ACD_Boost` is bypassed in
+        // BASE, and scene 3 "Solo" carries a BYPASS-ONLY overlay that flips it on — no
+        // footswitch or EXP assign targets it, and every OTHER scene carries no overlay
+        // at all — inherits base's bypass. That is exactly
+        // `scene_jobs::shared_write_is_scene_local`'s shape: the
+        // leak-to-base write a bypass-only overlay gets is audible ONLY in Solo, so the
+        // picker must offer the handle ENABLED there (`scope: "isolated"`, not
+        // `"shared_with_base"`) — see `level-setup.spec.ts`'s "402 Solo" coverage.
+        assert_eq!(
+            p["audioGraph"]["guitarNodes"]["G1"]
+                .as_array()
+                .expect("G1 chain")
+                .iter()
+                .find(|n| n["FenderId"] == "ACD_Boost")
+                .expect("ACD_Boost lives in base G1")["dspUnitParameters"]["bypass"],
+            true,
+            "ACD_Boost is bypassed in base"
+        );
+        assert_eq!(
+            ol(3, "ACD_Boost"),
+            Some(vec!["bypass".into(), "bypassType".into()]),
+            "scene 3 'Solo': ACD_Boost's overlay is bypass-only, un-bypassing it"
+        );
+        for s in [0usize, 1, 2, 4, 5, 6, 7] {
+            assert!(
+                ol(s, "ACD_Boost").is_none(),
+                "scene {s}: ACD_Boost carries no overlay — inherits base's bypass"
+            );
+        }
+        assert!(
+            !crate::footswitch::node_targeted_by_assign(&p, "ACD_Boost"),
+            "no footswitch or EXP assign may target ACD_Boost — otherwise the shared write \
+             could be audible outside Solo through a path this scan doesn't model"
+        );
+        assert!(
+            matches!(
+                crate::probe_api::scene_jobs::scene_write_verdict_for_param(
+                    &p,
+                    3,
+                    "ACD_Boost",
+                    "gain",
+                ),
+                crate::probe_api::scene_jobs::SceneWriteVerdict::WriteDirect {
+                    lands_on_base: true
+                }
+            ),
+            "scene 3 'Solo': a scene-scoped write of ACD_Boost.gain must be allowed through \
+             as a scene-local base write, not refused as shared_with_base"
+        );
+
+        // NEGATIVE CONTROL / over-widening tripwire: the policy must still REFUSE where it
+        // must. Scene 2's ACD_JC120 overlay is bypass-only too (COVERAGE row 12's
+        // shared_with_base case), but JC120 is NOT bypassed in base (`bypass: false`
+        // above) — `shared_write_is_scene_local`'s own base-bypass guard means the
+        // leak-to-base write here can never be scene-local, so an over-widened policy
+        // that let every bypass-only overlay through would turn this Refuse into a
+        // WriteDirect. Pin the Refuse to catch that regression.
+        assert!(
+            matches!(
+                crate::probe_api::scene_jobs::scene_write_verdict_for_param(
+                    &p,
+                    2,
+                    "ACD_JC120",
+                    "outputLevel",
+                ),
+                crate::probe_api::scene_jobs::SceneWriteVerdict::Refuse { .. }
+            ),
+            "scene 2: ACD_JC120's bypass-only overlay must still be refused as \
+             shared_with_base — JC120 is already audible in base, so the write can never be \
+             scene-local"
+        );
     }
 
     /// 404/405 — the two INCIDENT fixtures. 404 is kept verbatim (its exact bytes are
