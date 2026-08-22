@@ -937,50 +937,226 @@ pub(crate) fn scene_overlay_for<'a>(
     }
 }
 
+/// Which refused [`SceneOverlay`] state produced a [`SceneWriteVerdict::Refuse`] — the
+/// machine-readable half of the refusal, alongside its user-facing `reason` string. A caller
+/// that needs to distinguish the two (the scene-handle picker's scope annotation) matches on
+/// this instead of sniffing the reason text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusedScope {
+    /// [`SceneOverlay::BypassOnly`], not cleared by the audibility guard — the scene SHARES
+    /// this node's knobs with base.
+    SharedWithBase,
+    /// [`SceneOverlay::Unknown`] — a truncated field-8 read / a base slot, presence
+    /// unanswerable.
+    Unknown,
+}
+
 /// Where a scene-context knob write on one node would LAND, and what the writer must send to
 /// put it there. The ONE write-landing policy — every lane that writes a knob under a scene
 /// (`leveller::set_knobs`, the Doctor's prescription apply) reads it here, so the four
-/// [`SceneOverlay`] states can never be answered two ways.
+/// [`SceneOverlay`] states can never be answered two ways. The landing is carried IN the
+/// verdict (`lands_on_base`) rather than left for the caller to re-derive from overlay state.
 pub(crate) enum SceneWriteVerdict {
-    /// The node's Scene Edit flag is already ON ([`SceneOverlay::Full`]) — write with the
-    /// enable DROPPED. The flag state alone decides the landing, so the write lands on the
-    /// overlay even for a param the overlay does not yet carry, and re-enabling would RESEED
-    /// the overlay from base (HW 3-cell matrix, fw 1.8.45).
-    WriteDirect,
+    /// Safe to write with the Scene Edit enable DROPPED. `lands_on_base` says where:
+    /// * `false` — [`SceneOverlay::Full`], the node's Scene Edit flag is already ON. The flag
+    ///   state alone decides the landing, so the write lands on the overlay even for a param
+    ///   the overlay does not yet carry, and re-enabling would RESEED the overlay from base
+    ///   (HW 3-cell matrix, fw 1.8.45).
+    /// * `true` — a [`SceneOverlay::BypassOnly`] node whose [`shared_write_is_scene_local`]
+    ///   reads `true`: the write DELIBERATELY lands on the shared BASE value, not an overlay
+    ///   (there is none to land in), because the leak is confirmed audible ONLY in this scene.
+    WriteDirect { lands_on_base: bool },
     /// No overlay for this node in this scene ([`SceneOverlay::Absent`]) — the enable is what
     /// MATERIALISES one, so `set_node_scene_edit(node, true)` is REQUIRED before the write;
     /// without it the write leaks to base. Nothing to reseed away here.
     NeedsEnable,
-    /// Neither write shape is safe. `String` is the user-facing reason:
-    /// [`SceneOverlay::BypassOnly`] (the scene SHARES this node's knobs with base — the
-    /// enable-dropped write lands on BASE, the enable reseeds) or [`SceneOverlay::Unknown`]
-    /// (a truncated field-8 read / a base slot — presence unanswerable).
-    Refuse(String),
+    /// Neither write shape is safe. `reason` is the user-facing text; `scope` is the
+    /// machine-readable state behind it: [`RefusedScope::SharedWithBase`]
+    /// ([`SceneOverlay::BypassOnly`], not audibility-cleared — the enable-dropped write would
+    /// land on BASE and change every sharing scene, the enable would reseed) or
+    /// [`RefusedScope::Unknown`] ([`SceneOverlay::Unknown`] — a truncated field-8 read / a
+    /// base slot, presence unanswerable).
+    Refuse { scope: RefusedScope, reason: String },
 }
 
-/// The write-landing verdict for `node` in `scene` of the SAVED (field-8) `preset` — pure, no
-/// device I/O, decided before any write so an unanswerable overlay state refuses with the
-/// preset untouched. The refusal strings are user-facing and live here, next to the states
-/// they describe, so the leveling and Doctor lanes tell the player the same story.
-pub(crate) fn scene_write_verdict(
+/// [`SceneWriteVerdict::Refuse`]'s [`SceneOverlay::BypassOnly`] wording — a shared function so
+/// every refusing arm of [`scene_write_verdict_for_param`] hands out identical text, whether the
+/// audibility guard never ran (no param in hand) or ran and read `false`.
+fn bypass_only_refuse_message(scene: u32, node: &str) -> String {
+    format!(
+        "scene {scene} shares {node}'s knobs with the base preset (Scene Edit off for that \
+         block) — a scene write would change every sharing scene; level Base instead"
+    )
+}
+
+/// [`SceneWriteVerdict::Refuse`]'s [`SceneOverlay::Unknown`] wording, shared for the same
+/// reason as [`bypass_only_refuse_message`].
+fn unknown_refuse_message(scene: u32, node: &str) -> String {
+    format!(
+        "refusing to write {node} in scene {scene} — the saved preset does not say whether \
+         that node already has a scene overlay (truncated field-8 read), and both write \
+         shapes corrupt it (enable reseeds an existing overlay from base; omitting it leaks \
+         the write to base)"
+    )
+}
+
+/// The write-landing verdict for `node`/`param` in `scene` of the SAVED (field-8) `preset` —
+/// pure, no device I/O, decided before any write so an unanswerable overlay state refuses with
+/// the preset untouched. The refusal strings are user-facing and live here, next to the states
+/// they describe, so the leveling and Doctor lanes tell the player the same story. The ONE
+/// write-landing policy for every scene-writing lane (`leveller::set_knobs`, the Doctor's
+/// prescription apply — both know the param they're about to write, so both call this form; an
+/// earlier paramless `scene_write_verdict` existed for a caller with no param in hand, but every
+/// real caller HAD one, so it was folded in here rather than kept as unreachable code).
+///
+/// [`SceneOverlay::Full`] and [`SceneOverlay::Absent`] answer exactly as the param-blind rule
+/// would (`WriteDirect` / `NeedsEnable` — the landing there never depends on which param is
+/// being written). The one param-SENSITIVE arm is [`SceneOverlay::BypassOnly`]: instead of an
+/// outright refuse, it consults [`shared_write_is_scene_local`] and, when the leak-to-base
+/// write would be audible ONLY in `scene`, allows it through as [`SceneWriteVerdict::WriteDirect`]
+/// with `lands_on_base: true` (still with NO scene-edit enable — the write is meant to land on
+/// the shared base param, never reseed the overlay).
+///
+/// REJECTED ALTERNATIVE (do not "simplify" into it): enable Scene Edit (reseeding the overlay
+/// from base), then rewrite `bypass` back to its scene value, then write the param — that would
+/// leave the node as a genuine `Full` overlay instead of a shared BASE write. It was rejected
+/// because a cancel landing between the bypass rewrite and the param write — plus the leveller's
+/// ALWAYS-RUN post-cancel deferred-save cleanup (`danger.md`) — could persist the scene with the
+/// node's `bypass` flipped OFF and the param unset: a genuine corruption window, HW-unverified
+/// because nobody has forced that race on real hardware. The BASE-write shape this function
+/// allows instead has no such window: it is one single write, on a param that was ALREADY
+/// shared with base before this call, so a cancel mid-write leaves the same shared state the
+/// scene started in, only with base's own value moved (audible nowhere but `scene`, by
+/// construction of the predicate).
+pub(crate) fn scene_write_verdict_for_param(
     preset: &serde_json::Value,
     scene: u32,
     node: &str,
+    param: &str,
 ) -> SceneWriteVerdict {
     match scene_overlay(preset, scene, node) {
-        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect,
+        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect {
+            lands_on_base: false,
+        },
         SceneOverlay::Absent => SceneWriteVerdict::NeedsEnable,
-        SceneOverlay::BypassOnly(_) => SceneWriteVerdict::Refuse(format!(
-            "scene {scene} shares {node}'s knobs with the base preset (Scene Edit off for that \
-             block) — a scene write would change every sharing scene; level Base instead"
-        )),
-        SceneOverlay::Unknown => SceneWriteVerdict::Refuse(format!(
-            "refusing to write {node} in scene {scene} — the saved preset does not say whether \
-             that node already has a scene overlay (truncated field-8 read), and both write \
-             shapes corrupt it (enable reseeds an existing overlay from base; omitting it leaks \
-             the write to base)"
-        )),
+        SceneOverlay::BypassOnly(_) => {
+            if shared_write_is_scene_local(preset, scene, node, param) {
+                SceneWriteVerdict::WriteDirect {
+                    lands_on_base: true,
+                }
+            } else {
+                SceneWriteVerdict::Refuse {
+                    scope: RefusedScope::SharedWithBase,
+                    reason: bypass_only_refuse_message(scene, node),
+                }
+            }
+        }
+        SceneOverlay::Unknown => SceneWriteVerdict::Refuse {
+            scope: RefusedScope::Unknown,
+            reason: unknown_refuse_message(scene, node),
+        },
     }
+}
+
+/// True iff a plain (enable-dropped) leak-to-base write of `param` on `node` — the shape a
+/// [`SceneOverlay::BypassOnly`] node gets, since its Scene Edit flag is off and there is no
+/// overlay to land in — would be audible in `scene` and ONLY `scene`. HW-confirmed bug class
+/// (preset 28 "Friedman HBE", `ACD_Boost`/`gain`): the node is bypassed in base and in every
+/// OTHER scene, and only the Solo scene's bypass-only overlay flips it on, so a shared write is
+/// inaudible everywhere the knobs are shared and therefore safe to send exactly as scene_write_
+/// verdict would today refuse.
+///
+/// Effective bypass for one scene: `overlay.bypass ?? base.bypass`, applied UNIFORMLY across
+/// every [`SceneOverlay`] kind (a `Full` overlay that happens to omit `bypass` inherits base
+/// exactly like `Absent` and `BypassOnly` do) — an overlay can flip bypass without carrying
+/// every other knob, so the family key alone decides audibility, never the overlay KIND.
+///
+/// True requires ALL of:
+/// * `scene`'s effective bypass is `false` (the write would be audible here);
+/// * base's node carries a `bypass` key and it reads `true` (a MISSING key answers `false` —
+///   can't confirm the shared value is silent in base to begin with);
+/// * every OTHER scene either has effective bypass `true` (the leak is silent there too), or
+///   carries its OWN [`SceneOverlay::Full`] overlay that already contains `param` (a per-scene
+///   knob PINS that scene against whatever base holds, insulating it from the leak).
+///
+/// Refuses (`false`) outright, before any of the above, when: the `scenes` array is truncated
+/// (`footswitch::max_referenced_scene` names an index the array doesn't reach — the same guard
+/// [`scenes_restating_base`] uses, and for the same reason: "every other scene" is unanswerable
+/// with a cut tail); the base node identity is AMBIGUOUS ([`base_node_matches`] > 1 hit); or
+/// [`footswitch::node_targeted_by_assign`] says the node is targeted by ANY `ftsw` entry (an
+/// `"on-off"` row whose `nodes[]` contains it, or a `"param"`-function assign whose `nodeId` is
+/// it) or ANY EXP/MIDI-EXP jack binding (`exp1`/`exp2`/`midiExp1`/`midiExp2`/`toe`, any `func`)
+/// — those write the node over a DIFFERENT wire path this scan never models, so a node they
+/// touch can be audible in ways the overlay table alone can't rule out.
+fn shared_write_is_scene_local(
+    preset: &serde_json::Value,
+    scene: u32,
+    node: &str,
+    param: &str,
+) -> bool {
+    let Some(scenes) = preset.get("scenes").and_then(|s| s.as_array()) else {
+        return false;
+    };
+    if scene as usize >= scenes.len() {
+        return false;
+    }
+    if max_referenced_scene(preset).is_some_and(|m| m as usize >= scenes.len()) {
+        return false;
+    }
+    let mut base_hits = base_node_matches(preset, node);
+    if base_hits.len() != 1 {
+        return false;
+    }
+    let Some(base_bypass) = base_hits
+        .pop()
+        .flatten()
+        .and_then(|p| p.get("bypass").and_then(|v| v.as_bool()))
+    else {
+        return false;
+    };
+    if !base_bypass {
+        return false; // already audible in base — a shared write is never scene-local
+    }
+    if crate::footswitch::node_targeted_by_assign(preset, node) {
+        return false;
+    }
+
+    // Roster triple resolved ONCE — every per-scene overlay lookup below reuses it via
+    // `scene_overlay_for` instead of re-walking the whole base graph per scene (`scene_overlay`
+    // pays that walk on every call). A miss here can't happen for a real base node: `base_hits`
+    // above already confirmed exactly one match by nodeId OR FenderId, and every real base node
+    // carries both — but refuse rather than assume it if one ever doesn't.
+    let Some((group, node_id, fender_id)) = crate::audiograph::roster_entry(preset, node) else {
+        return false;
+    };
+    let triple = (group.as_str(), node_id.as_str(), fender_id.as_str());
+
+    // `overlay.bypass ?? base.bypass`, the same fallback for every overlay kind — see the
+    // doc comment above for why the KIND must not gate this lookup.
+    let effective_bypass = |s: u32| -> bool {
+        match scene_overlay_for(preset, s, triple) {
+            SceneOverlay::Full(p) | SceneOverlay::BypassOnly(p) => p
+                .get("bypass")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(base_bypass),
+            SceneOverlay::Absent => base_bypass,
+            // A cut read for one of the OTHER scenes can't be trusted to answer "bypassed" —
+            // fails both the bypass and the pin test below, so the whole predicate refuses.
+            SceneOverlay::Unknown => false,
+        }
+    };
+    if effective_bypass(scene) {
+        return false; // not audible in `scene` itself
+    }
+    (0..scenes.len() as u32).all(|s| {
+        s == scene || {
+            let pins = matches!(
+                scene_overlay_for(preset, s, triple),
+                SceneOverlay::Full(p) if p.contains_key(param)
+            );
+            effective_bypass(s) || pins
+        }
+    })
 }
 
 // `max_referenced_scene` lives in `crate::footswitch` (shared with the field-8

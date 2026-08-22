@@ -1110,11 +1110,15 @@ pub(crate) struct SceneHandleCandidate {
     current: f32,
     /// Does writing this control in THIS scene affect ONLY this scene?
     /// * `"isolated"` — the scene carries a knob overlay for the node (or none at all, in
-    ///   which case the Scene Edit enable materialises one). The write stays here.
-    /// * `"shared_with_base"` — the node's Scene Edit flag is OFF (a bypass-only overlay),
-    ///   so this scene reads the BASE knob and a write would change every sharing scene.
-    ///   `set_knobs` REFUSES such a write, so the picker must warn rather than offer it
-    ///   silently.
+    ///   which case the Scene Edit enable materialises one). The write stays here. ALSO
+    ///   `"isolated"` for a bypass-only node whose leak-to-base write
+    ///   `shared_write_is_scene_local` confirms is audible ONLY in this scene (every other
+    ///   sharing scene stays bypassed, or pins this param with its own overlay) — the write
+    ///   still lands on the shared base value, but nothing ELSE it's shared with can hear it.
+    /// * `"shared_with_base"` — the node's Scene Edit flag is OFF (a bypass-only overlay)
+    ///   and the leak above is NOT confirmed scene-local, so this scene reads the BASE knob
+    ///   and a write would audibly change another sharing scene too. `set_knobs` REFUSES
+    ///   such a write, so the picker must warn rather than offer it silently.
     /// * `"unknown"` — the saved read could not answer (a truncated `scenes` tail). Both
     ///   write shapes corrupt from there, so the write is refused too.
     scope: String,
@@ -1195,19 +1199,19 @@ fn scene_handle_rows(preset: &serde_json::Value) -> Vec<SceneHandleRow> {
                 let Some(base_params) = params.get(node_id) else {
                     continue;
                 };
-                // The overlay decides BOTH the scope annotation and which values are the
-                // scene's own — one lookup per node, reused for every candidate on it.
+                // The overlay decides which values are the scene's own — one lookup per node,
+                // reused for every candidate on it. (The scope annotation is a SEPARATE,
+                // per-candidate lookup below, via `scene_write_verdict_for_param`.)
                 // `scene_overlay_for`, not `scene_overlay`: the roster triple is already in
                 // hand, so the string-keyed wrapper's whole-graph `roster_entry` walk would
                 // be re-paid once per (scene, node) pair for an answer we resolved once.
                 let overlay = scene_overlay_for(preset, scene, (group_id, node_id, fender_id));
-                let (scope, overlay_params) = match &overlay {
-                    SceneOverlay::Full(p) => ("isolated", Some(*p)),
-                    // No overlay yet: the Scene Edit enable materialises one, so a write
-                    // here does land on this scene alone.
-                    SceneOverlay::Absent => ("isolated", None),
-                    SceneOverlay::BypassOnly(_) => ("shared_with_base", None),
-                    SceneOverlay::Unknown => ("unknown", None),
+                // Only the Full overlay's own params ever override a candidate's `current` —
+                // the scope annotation below is now derived per-candidate from the write-
+                // landing verdict itself, not re-derived here.
+                let overlay_params = match overlay {
+                    SceneOverlay::Full(p) => Some(p),
+                    _ => None,
                 };
                 // ONE annotation rule, applied to both lists — the safe-default candidates
                 // and the combined picker's superset must describe the same control the same
@@ -1226,6 +1230,28 @@ fn scene_handle_rows(preset: &serde_json::Value) -> Vec<SceneHandleRow> {
                         "lowers_only"
                     } else {
                         "full"
+                    };
+                    // ONE write-landing policy, consulted PER PARAM: another param on the same
+                    // BypassOnly node may leak audibly elsewhere even when this one doesn't, so
+                    // the scope can't be a per-node default with a per-param override — the
+                    // verdict itself already answers per (node, param).
+                    let scope = match scene_write_verdict_for_param(
+                        preset,
+                        scene,
+                        node_id,
+                        &c.parameter_id,
+                    ) {
+                        SceneWriteVerdict::WriteDirect { .. } | SceneWriteVerdict::NeedsEnable => {
+                            "isolated"
+                        }
+                        SceneWriteVerdict::Refuse {
+                            scope: RefusedScope::SharedWithBase,
+                            ..
+                        } => "shared_with_base",
+                        SceneWriteVerdict::Refuse {
+                            scope: RefusedScope::Unknown,
+                            ..
+                        } => "unknown",
                     };
                     SceneHandleCandidate {
                         group_id: c.group_id,
@@ -1272,7 +1298,9 @@ fn scene_handle_rows(preset: &serde_json::Value) -> Vec<SceneHandleRow> {
 // ───────────────────────── Gain-budget redistribution (PR5) ─────────────────────────
 
 /// One touched knob's PRE-redistribution value — the Restore anchor. `scene_slot` `None` =
-/// the base amp (plain write); `Some(i)` = the i-th FS scene overlay (scene-edit write).
+/// the base amp (plain write, INCLUDING a scene-scoped job whose write actually landed on
+/// base — a BypassOnly node's audibility-guarded shared write); `Some(i)` = the i-th FS
+/// scene overlay (scene-edit write).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreviousKnob {
@@ -1393,14 +1421,36 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
                     leveller::LevelKnob::Block {
                         group_id,
                         node_id,
+                        parameter_id,
                         scene_slot,
-                        ..
-                    } => Some(PreviousKnob {
-                        group_id: group_id.clone(),
-                        node_id: node_id.clone(),
-                        scene_slot: *scene_slot,
-                        value: kt.current,
-                    }),
+                    } => {
+                        // A BypassOnly node's write can land on BASE even for a scene-scoped
+                        // job (the audibility-guarded shared write —
+                        // `scene_write_verdict_for_param`'s BypassOnly arm) — the Restore
+                        // anchor must record where the write ACTUALLY lands, not where the
+                        // job was scoped, or Restore would try to rewrite a scene overlay
+                        // that was never touched. The SAME verdict function that gated
+                        // whether the write happens decides where it landed too — one
+                        // answer, not two (the shared policy IS the one-answer guarantee):
+                        // `lands_on_base` on its `WriteDirect` arm says the whole story.
+                        // `kt.current` is already the base value for a BypassOnly node (a
+                        // sharing scene reads exactly what base holds), so only `scene_slot`
+                        // needs correcting.
+                        let landed_scene_slot = scene_slot.filter(|&s| {
+                            !saved.as_ref().is_some_and(|p| {
+                                matches!(
+                                    scene_write_verdict_for_param(p, s, node_id, parameter_id),
+                                    SceneWriteVerdict::WriteDirect { lands_on_base: true }
+                                )
+                            })
+                        });
+                        Some(PreviousKnob {
+                            group_id: group_id.clone(),
+                            node_id: node_id.clone(),
+                            scene_slot: landed_scene_slot,
+                            value: kt.current,
+                        })
+                    }
                     leveller::LevelKnob::PresetLevel => None,
                 })
             })
@@ -2083,5 +2133,99 @@ mod scene_handle_tests {
         // pedal's `overdrive` is a drive control — neither is ever offered.
         assert!(find(&rows[0], "amp", "volume").is_none());
         assert!(find(&rows[0], "ped", "overdrive").is_none());
+    }
+
+    // ── Part B: audibility-guarded BypassOnly scope (bug: preset 28 "Friedman HBE",
+    // `ACD_Boost`/`gain` — a Solo-only shared write was annotated "shared_with_base" and
+    // disabled, even though the leak is inaudible everywhere else) ─────────────────────
+
+    /// The bug's exact shape: `boost`/`ACD_Boost` (group G1) bypassed in base with `gain`
+    /// 2.5; Dirt (0) and Crunch (3) carry Full overlays (own bypass + gain); Clean (1) is
+    /// bypass-only and stays bypassed; Solo (2) is bypass-only and UN-bypassed — the only
+    /// scene that can hear a plain leak-to-base write.
+    fn hbe_boost_preset() -> serde_json::Value {
+        serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "boost", "FenderId": "ACD_Boost",
+                  "dspUnitParameters": { "bypass": true, "gain": 2.5 } }
+            ] } },
+            "scenes": [
+                { "guitarNodes": { "G1": {
+                    "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
+                { "guitarNodes": { "G1": {
+                    "ACD_Boost": { "dspUnitParameters": { "bypass": true } } } } },
+                { "guitarNodes": { "G1": {
+                    "ACD_Boost": { "dspUnitParameters": { "bypass": false } } } } },
+                { "guitarNodes": { "G1": {
+                    "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
+            ]
+        })
+    }
+
+    fn find_boost_gain(row: &SceneHandleRow) -> Option<SceneHandleCandidate> {
+        row.candidates
+            .iter()
+            .find(|c| c.node_id == "boost" && c.parameter_id == "gain")
+            .cloned()
+    }
+
+    // THE bug: Solo (scene 2) is the only scene the shared write is audible in, so the
+    // picker must offer it — Dirt/Crunch stay isolated as genuine overlays, and Clean stays
+    // shared (the leak there is silent, so writing it there would still change Solo too).
+    #[test]
+    fn bypass_only_boost_gain_scopes_isolated_only_on_the_solo_scene() {
+        let rows = scene_handle_rows(&hbe_boost_preset());
+        assert_eq!(rows.len(), 4);
+        assert_eq!(
+            find_boost_gain(&rows[0]).expect("Dirt gain").scope,
+            "isolated",
+            "Full overlay"
+        );
+        assert_eq!(
+            find_boost_gain(&rows[1]).expect("Clean gain").scope,
+            "shared_with_base",
+            "still bypassed — a shared write here would also change Solo"
+        );
+        let solo = find_boost_gain(&rows[2]).expect("Solo gain");
+        assert_eq!(solo.scope, "isolated", "THE bug fix");
+        assert_eq!(
+            solo.current, 2.5,
+            "BypassOnly reads the base value, not a fabricated one"
+        );
+        assert_eq!(
+            find_boost_gain(&rows[3]).expect("Crunch gain").scope,
+            "isolated",
+            "Full overlay"
+        );
+    }
+
+    #[test]
+    fn bypass_only_boost_gain_falls_back_to_shared_when_a_second_scene_is_audible() {
+        let mut preset = hbe_boost_preset();
+        // Clean (scene 1) un-bypassed too, with no Full overlay pinning `gain` there — now
+        // BOTH Clean and Solo would hear the shared write, so neither can safely take it.
+        preset["scenes"][1]["guitarNodes"]["G1"]["ACD_Boost"] =
+            serde_json::json!({ "dspUnitParameters": { "bypass": false } });
+        let rows = scene_handle_rows(&preset);
+        assert_eq!(
+            find_boost_gain(&rows[1]).expect("Clean gain").scope,
+            "shared_with_base"
+        );
+        assert_eq!(
+            find_boost_gain(&rows[2]).expect("Solo gain").scope,
+            "shared_with_base"
+        );
+    }
+
+    #[test]
+    fn bypass_only_boost_gain_stays_shared_when_already_audible_in_base() {
+        let mut preset = hbe_boost_preset();
+        preset["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"] =
+            serde_json::json!(false);
+        let rows = scene_handle_rows(&preset);
+        assert_eq!(
+            find_boost_gain(&rows[2]).expect("Solo gain").scope,
+            "shared_with_base"
+        );
     }
 }

@@ -27,7 +27,7 @@ use crate::audio;
 use crate::lufs;
 use crate::session::Session;
 use crate::{
-    read_saved_preset, read_saved_preset_complete, scene_overlay, scene_write_verdict,
+    read_saved_preset, read_saved_preset_complete, scene_overlay, scene_write_verdict_for_param,
     settle_abortable, settle_or_cancel, SceneOverlay, SceneWriteVerdict,
 };
 
@@ -2321,17 +2321,21 @@ fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<
 ///   that can tell the two apart: after `overlay_scene_onto_graph` a base value is
 ///   indistinguishable from an overlaid one, so the live docs can't answer it.
 ///   The decision itself is NOT taken here: it is
-///   `scene_jobs::scene_write_verdict`, the ONE write-landing policy this lane
-///   shares with the Doctor's prescription apply, so a `BypassOnly` node can't be
-///   refused in one lane and written in the other.
+///   `scene_jobs::scene_write_verdict_for_param`, the ONE write-landing policy this
+///   lane shares with the Doctor's prescription apply, so a `BypassOnly` node can't
+///   be refused in one lane and written in the other.
 ///   `SceneOverlay::Unknown` (truncated read) or no `saved` at all ⇒ REFUSE the
-///   batch before any device write; both write shapes corrupt from there. So does
-///   `SceneOverlay::BypassOnly` — an overlay carrying only the bypass family means
-///   that block's Scene Edit flag is DISABLED and the scene SHARES its knobs with
-///   base, so the enable-dropped write lands on BASE and changes every sharing
-///   scene (HW-verified fw 1.8.45). The refusal is a per-scene skip, never a batch
-///   abort: `run_scene_jobs` turns a solve `Err` into a `failed_scene_outcome` and
-///   continues, exactly like a `build_scene_jobs` "no active guitar amp" skip.
+///   batch before any device write; both write shapes corrupt from there. Mostly so
+///   does `SceneOverlay::BypassOnly` — an overlay carrying only the bypass family
+///   means that block's Scene Edit flag is DISABLED and the scene SHARES its knobs
+///   with base, so the enable-dropped write lands on BASE and changes every sharing
+///   scene (HW-verified fw 1.8.45) — UNLESS `scene_jobs::shared_write_is_scene_local`
+///   confirms the leak is audible ONLY in this scene (every other sharing scene stays
+///   bypassed, or pins the param with its own overlay), in which case the verdict
+///   allows the base-landing write through as `WriteDirect` too. The refusal is a
+///   per-scene skip, never a batch abort: `run_scene_jobs` turns a solve `Err` into a
+///   `failed_scene_outcome` and continues, exactly like a `build_scene_jobs`
+///   "no active guitar amp" skip.
 ///   Re-asserted on EVERY connection (scene + scene-edit don't survive the
 ///   leveller's reconnects) — including the enable, since `saved` is a pre-run
 ///   snapshot: an overlay this run just materialised still reads Absent, so the
@@ -2404,30 +2408,35 @@ fn set_knobs(
         ));
     }
     // Which nodes need the Scene Edit enable — decided BEFORE any device write, so an
-    // unanswerable overlay state refuses with the preset untouched. Deduped by
-    // (group_id, node_id): two targets on one node share one enable, and re-enabling an
-    // already-enabled node re-triggers the reseed (HW 3-cell matrix) — not cosmetic.
+    // unanswerable overlay state refuses with the preset untouched. The verdict itself is
+    // checked per (node, PARAM) — `scene_write_verdict_for_param`'s BypassOnly arm can answer
+    // two params on the same node differently (one audibility-guarded, one not) — but the
+    // enable send stays deduped by (group_id, node_id): two targets on one node share one
+    // enable, and re-enabling an already-enabled node re-triggers the reseed (HW 3-cell
+    // matrix) — not cosmetic. Neither `WriteDirect` arm (Full overlay, or an audibility-
+    // guarded BypassOnly leak) ever needs the enable, so this dedup can't hide a missed one.
     let mut needs_enable: Vec<(&str, &str)> = Vec::new();
     if let Some(scene) = scene {
-        let mut seen: Vec<(&str, &str)> = Vec::new();
+        let mut checked: Vec<(&str, &str, &str)> = Vec::new();
         for (k, _) in targets {
             if let LevelKnob::Block {
                 group_id,
                 node_id,
+                parameter_id,
                 scene_slot: Some(_),
-                ..
             } = k
             {
-                let key = (group_id.as_str(), node_id.as_str());
-                if seen.contains(&key) {
+                let key = (group_id.as_str(), node_id.as_str(), parameter_id.as_str());
+                if checked.contains(&key) {
                     continue;
                 }
-                seen.push(key);
+                checked.push(key);
                 // ONE write-landing policy for every scene-writing lane
-                // (`scene_jobs::scene_write_verdict`, shared with the Doctor's apply) — the
-                // four overlay states can never be answered two ways. The no-saved-read case
-                // stays local: the verdict is a function OF a saved document, so having none
-                // is this caller's own gap, and it keeps its own wording.
+                // (`scene_jobs::scene_write_verdict_for_param`, shared with the Doctor's
+                // apply) — the four overlay states can never be answered two ways. The
+                // no-saved-read case stays local: the verdict is a function OF a saved
+                // document, so having none is this caller's own gap, and it keeps its own
+                // wording.
                 let Some(sv) = saved else {
                     return Err(format!(
                         "set_knobs: refusing to write {group_id}/{node_id} in scene {scene} — \
@@ -2437,10 +2446,15 @@ fn set_knobs(
                          write to base)"
                     ));
                 };
-                match scene_write_verdict(sv, scene, node_id) {
-                    SceneWriteVerdict::WriteDirect => {}
-                    SceneWriteVerdict::NeedsEnable => needs_enable.push(key),
-                    SceneWriteVerdict::Refuse(reason) => {
+                match scene_write_verdict_for_param(sv, scene, node_id, parameter_id) {
+                    SceneWriteVerdict::WriteDirect { .. } => {}
+                    SceneWriteVerdict::NeedsEnable => {
+                        let node_key = (group_id.as_str(), node_id.as_str());
+                        if !needs_enable.contains(&node_key) {
+                            needs_enable.push(node_key);
+                        }
+                    }
+                    SceneWriteVerdict::Refuse { reason, .. } => {
                         return Err(format!("set_knobs: {reason}"))
                     }
                 }

@@ -532,6 +532,53 @@ pub fn all_onoff_blocks(ftsw: &Value) -> Vec<(String, String)> {
     out
 }
 
+/// The EXP/MIDI-EXP jack set the device carries under `exp` — the module header's documented
+/// list, named once so [`node_targeted_by_assign`] can't drift from it.
+const EXP_JACKS: [&str; 5] = ["exp1", "exp2", "midiExp1", "midiExp2", "toe"];
+
+/// Every entry under `exp[jack]`, normalizing the two wire shapes a jack body takes: an array
+/// of assignment objects (the real-device shape [`crate::backup_read::silence_hint`] reads), or
+/// a single assignment object with no array wrapper.
+fn exp_jack_entries<'a>(exp: &'a Value, jack: &str) -> Vec<&'a Value> {
+    match exp.get(jack) {
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(v @ Value::Object(_)) => vec![v],
+        _ => Vec::new(),
+    }
+}
+
+/// Does ANY footswitch (`"on-off"` node list or `"param"`-function `nodeId`) or EXP/MIDI-EXP
+/// jack binding target `node`? Those are separate wire paths a knob-overlay scan (e.g.
+/// `probe_api::scene_jobs::shared_write_is_scene_local`) does not model, so a node either one
+/// touches must refuse an audibility guard outright rather than risk missing an audible path.
+///
+/// On-off rows and param-func assigns reuse the module's own enumeration seams
+/// ([`all_onoff_blocks`], [`param_fn_values`]) rather than re-walking `ftsw` here. EXP/MIDI-EXP
+/// jacks ([`EXP_JACKS`]: `exp1`/`exp2`/`midiExp1`/`midiExp2`/`toe`) are walked directly, since
+/// nothing else in the module enumerates them: every entry (array- or object-shaped body, see
+/// [`exp_jack_entries`]) counts if it names `node` via `nodeId`, regardless of its `func` — a
+/// `"volume"` or `"wah"` binding is as audible a path as a `"param"` one.
+pub fn node_targeted_by_assign(preset: &Value, node: &str) -> bool {
+    if let Some(ftsw) = preset.get("ftsw") {
+        if all_onoff_blocks(ftsw).iter().any(|(_, n)| n == node) {
+            return true;
+        }
+        let switch_count = ftsw.as_array().map_or(0, |a| a.len()) as u32;
+        if (0..switch_count).any(|sw| param_fn_values(ftsw, sw).iter().any(|(_, n, ..)| n == node))
+        {
+            return true;
+        }
+    }
+    let Some(exp) = preset.get("exp") else {
+        return false;
+    };
+    EXP_JACKS.iter().any(|jack| {
+        exp_jack_entries(exp, jack)
+            .iter()
+            .any(|e| e.get("nodeId").and_then(Value::as_str) == Some(node))
+    })
+}
+
 /// `all_onoff_blocks` minus `switch`'s OWN on-off targets, each forced to `bypass=true` (off) —
 /// "every OTHER footswitch's block off", the isolation force-list for leveling one switch. The
 /// excluded nodes are `switch`'s own (the caller owns them: `engaged_bypass_for_switch` forces
@@ -2125,6 +2172,52 @@ mod tests {
         assert!(all_onoff_blocks(&serde_json::Value::Null).is_empty());
         assert!(all_onoff_blocks(&serde_json::json!([])).is_empty());
         assert!(all_onoff_blocks(&serde_json::json!("garbage")).is_empty());
+    }
+
+    #[test]
+    fn node_targeted_by_assign_covers_on_off_and_param_fn_rows() {
+        let ftsw = serde_json::json!([
+            [onoff(&["N"], true)],
+            [{ "func": "param", "groupId": "G1", "nodeId": "P", "parameterId": "gain",
+               "valueA": 0.0, "valueB": 1.0 }],
+        ]);
+        let preset = serde_json::json!({ "ftsw": ftsw });
+        assert!(node_targeted_by_assign(&preset, "N"), "on-off row");
+        assert!(node_targeted_by_assign(&preset, "P"), "param-func assign");
+        assert!(!node_targeted_by_assign(&preset, "unrelated"));
+        assert!(!node_targeted_by_assign(&serde_json::json!({}), "anything"));
+    }
+
+    // The old `scene_jobs::node_targeted_by_ftsw_or_exp` copy this function replaces only
+    // scanned `exp1`/`exp2`, only accepted an array-shaped jack body, and only matched
+    // `func:"param"` — missing every one of these three shapes. Each must be caught now.
+    #[test]
+    fn node_targeted_by_assign_catches_a_toe_jack_assign() {
+        let preset = serde_json::json!({
+            "exp": { "toe": [
+                { "func": "param", "groupId": "G1", "nodeId": "T", "paramId": "gain",
+                  "heel": 0.0, "toe": 1.0 }
+            ] }
+        });
+        assert!(node_targeted_by_assign(&preset, "T"));
+    }
+
+    #[test]
+    fn node_targeted_by_assign_catches_an_object_shaped_exp1_body() {
+        let preset = serde_json::json!({
+            "exp": { "exp1": { "func": "volume", "nodeId": "V" } }
+        });
+        assert!(node_targeted_by_assign(&preset, "V"));
+    }
+
+    #[test]
+    fn node_targeted_by_assign_catches_a_wah_func_binding() {
+        let preset = serde_json::json!({
+            "exp": { "exp2": [
+                { "func": "wah", "groupId": "G1", "nodeId": "W", "heel": 0.0, "toe": 1.0 }
+            ] }
+        });
+        assert!(node_targeted_by_assign(&preset, "W"));
     }
 
     #[test]

@@ -526,7 +526,7 @@ fn bypass_only_conflict_refuses_on_an_absent_overlay_too() {
 #[test]
 fn bypass_only_conflict_refuses_on_an_unknown_overlay() {
     // No `scenes` array at all (mirrors a truncated field-8 read — 22/25 real
-    // presets read "scenes unknown") — `scene_write_verdict` can't tell Absent
+    // presets read "scenes unknown") — `scene_write_verdict_for_param` can't tell Absent
     // from a cut, so it refuses rather than risk either write shape.
     let preset = serde_json::json!({});
     let ops = vec![param_op("ampA")];

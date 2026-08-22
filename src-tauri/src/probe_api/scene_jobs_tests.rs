@@ -702,3 +702,266 @@ fn restating_base_skips_a_bypass_only_scene_which_inherits_the_bake() {
         "only the FULL restating overlay is mirrored; the sharing scene inherits the bake"
     );
 }
+
+// ── Part B: audibility-guarded BypassOnly shared write ──────────────────────────────────
+//
+// BUG (preset 28 "Friedman HBE", `ACD_Boost`/`gain`): base bypassed, `gain` 2.5. Dirt (scene
+// 0) and Crunch (scene 3) carry FULL overlays (their own bypass + gain). Clean (scene 1) is
+// bypass-only and stays bypassed. Solo (scene 2) is bypass-only and UN-bypassed — it is the
+// ONLY scene that can hear a plain leak-to-base write, because every OTHER scene either stays
+// bypassed or pins `gain` with its own overlay. `scene_write_verdict` used to refuse this
+// outright ("shares knobs with base"); `shared_write_is_scene_local` clears it.
+
+/// `hbe_boost_preset()`'s node id/param, named once so the matrix tests below don't repeat
+/// the literals.
+const HBE_NODE: &str = "boost";
+const HBE_PARAM: &str = "gain";
+
+/// The bug's exact shape: one node (`boost`/`ACD_Boost`, group G1) bypassed in base with
+/// `gain` 2.5, and 4 scenes — Dirt/Crunch (Full, own gain), Clean (bypass-only, stays
+/// bypassed), Solo (bypass-only, un-bypassed — the sole audible scene for a shared write).
+fn hbe_boost_preset() -> serde_json::Value {
+    serde_json::json!({
+        "lastLoadedScene": 2,
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "boost", "FenderId": "ACD_Boost",
+              "dspUnitParameters": { "bypass": true, "gain": 2.5 } }
+        ] } },
+        "scenes": [
+            // Dirt: Full overlay, own gain — pins `gain` against base.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
+            // Clean: bypass-only, stays bypassed — the leak is silent here.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": true } } } } },
+            // Solo: bypass-only, un-bypassed — the ONLY scene that can hear the leak.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": false } } } } },
+            // Crunch: Full overlay, own gain — pins `gain` against base.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
+        ]
+    })
+}
+
+#[test]
+fn shared_write_is_scene_local_true_only_for_the_solo_scene() {
+    assert!(matches!(
+        scene_overlay(&hbe_boost_preset(), 2, HBE_NODE),
+        SceneOverlay::BypassOnly(_)
+    ));
+    assert!(
+        shared_write_is_scene_local(&hbe_boost_preset(), 2, HBE_NODE, HBE_PARAM),
+        "Solo is the only scene the shared write is audible in"
+    );
+    // Clean (scene 1) is ALSO bypass-only, but stays bypassed — the predicate is asked
+    // about scene 1 itself now, and it must refuse (the leak is silent there, so writing it
+    // there would be pointless AND it is not the scene answering "audible only here").
+    assert!(!shared_write_is_scene_local(
+        &hbe_boost_preset(),
+        1,
+        HBE_NODE,
+        HBE_PARAM
+    ));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_second_scene_is_audible_without_pinning() {
+    let mut p = hbe_boost_preset();
+    // Clean (scene 1) un-bypassed too, with NO Full overlay pinning `gain` there — now BOTH
+    // scene 1 and Solo would hear the shared write, so neither is scene-LOCAL to it.
+    p["scenes"][1]["guitarNodes"]["G1"]["ACD_Boost"] =
+        serde_json::json!({ "dspUnitParameters": { "bypass": false } });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_base_carries_no_bypass_key() {
+    let mut p = hbe_boost_preset();
+    p["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"] =
+        serde_json::json!({ "gain": 2.5 });
+    assert!(
+        !shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM),
+        "a missing base bypass key can't confirm the shared value is silent in base"
+    );
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_audible_in_base() {
+    let mut p = hbe_boost_preset();
+    p["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"] =
+        serde_json::json!(false);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_on_truncated_scenes() {
+    let mut p = hbe_boost_preset();
+    // A scene footswitch assignment naming an index the 4-entry `scenes[]` doesn't reach —
+    // the same truncation signature `max_referenced_scene` exists to catch.
+    p["ftsw"] = serde_json::json!([[
+        { "func": "scene", "sceneSlot": 5, "isActive": true }
+    ]]);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_footswitch_on_off_row_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["ftsw"] = serde_json::json!([[
+        { "func": "on-off", "isActive": true,
+          "nodes": [{ "groupId": "G1", "nodeId": "boost" }] }
+    ]]);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_footswitch_param_function_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["ftsw"] = serde_json::json!([[
+        { "func": "param", "groupId": "G1", "nodeId": "boost", "parameterId": "gain",
+          "valueA": 0.0, "valueB": 1.0 }
+    ]]);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_an_exp_binding_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["exp"] = serde_json::json!({
+        "exp1": [
+            { "func": "param", "groupId": "G1", "nodeId": "boost", "paramId": "gain",
+              "heel": 0.0, "toe": 1.0 }
+        ]
+    });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+// The three escapes `footswitch::node_targeted_by_assign` catches that the old, local
+// `scene_jobs::node_targeted_by_ftsw_or_exp` copy it replaced did NOT: a `toe` jack (the old
+// scan only checked `exp1`/`exp2`), an object-shaped jack body (the old scan assumed an array),
+// and a non-`"param"` func naming the node (the old scan matched `func:"param"` only). Each
+// must still make `shared_write_is_scene_local` refuse, exactly like the exp1/param case above.
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_toe_jack_assign_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["exp"] = serde_json::json!({
+        "toe": [
+            { "func": "param", "groupId": "G1", "nodeId": "boost", "paramId": "gain",
+              "heel": 0.0, "toe": 1.0 }
+        ]
+    });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_an_object_shaped_exp1_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    // No array wrapper — a single assignment object directly under the jack key.
+    p["exp"] = serde_json::json!({ "exp1": { "func": "volume", "nodeId": "boost" } });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_wah_func_exp_binding_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["exp"] = serde_json::json!({
+        "exp2": [
+            { "func": "wah", "groupId": "G1", "nodeId": "boost", "heel": 0.0, "toe": 1.0 }
+        ]
+    });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_on_an_ambiguous_base_node_match() {
+    let mut p = hbe_boost_preset();
+    // A second base node answering to the SAME nodeId, in the mic graph — `base_node_matches`
+    // now reads two hits for "boost", which the predicate refuses outright.
+    p["audioGraph"]["micNodes"] = serde_json::json!({ "M1": [
+        { "nodeId": "boost", "FenderId": "ACD_Boost", "dspUnitParameters": { "bypass": true } }
+    ] });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+// ── verdict matrix: `scene_write_verdict_for_param` on the same doc ─────────────────────
+
+#[test]
+fn scene_write_verdict_for_param_allows_the_solo_write_direct_with_no_enable() {
+    let verdict = scene_write_verdict_for_param(&hbe_boost_preset(), 2, HBE_NODE, HBE_PARAM);
+    assert!(
+        matches!(
+            verdict,
+            SceneWriteVerdict::WriteDirect {
+                lands_on_base: true
+            }
+        ),
+        "the audibility-guarded shared write must land WriteDirect with lands_on_base=true"
+    );
+    assert!(
+        !matches!(verdict, SceneWriteVerdict::NeedsEnable),
+        "must NEVER enable Scene Edit here — that would reseed the overlay and wipe the \
+         scene's bypass flip"
+    );
+}
+
+#[test]
+fn scene_write_verdict_for_param_refuses_when_the_leak_is_not_scene_local() {
+    // Clean (scene 1) stays bypassed — the leak is silent there, so the predicate refuses
+    // (nothing gained by writing it), and the verdict keeps today's Refuse wording.
+    let verdict = scene_write_verdict_for_param(&hbe_boost_preset(), 1, HBE_NODE, HBE_PARAM);
+    match verdict {
+        SceneWriteVerdict::Refuse { scope, reason } => {
+            assert_eq!(scope, RefusedScope::SharedWithBase);
+            assert!(reason.contains("shares") && reason.contains(HBE_NODE));
+        }
+        _ => panic!("expected Refuse"),
+    }
+}
+
+#[test]
+fn scene_write_verdict_for_param_full_overlay_arm_unchanged() {
+    // Dirt (scene 0): a genuine Full overlay — WriteDirect regardless of the audibility
+    // guard, exactly like the paramless rule, and lands on the overlay (not base).
+    assert!(matches!(
+        scene_write_verdict_for_param(&hbe_boost_preset(), 0, HBE_NODE, HBE_PARAM),
+        SceneWriteVerdict::WriteDirect {
+            lands_on_base: false
+        }
+    ));
+}
+
+#[test]
+fn scene_write_verdict_for_param_absent_overlay_arm_unchanged() {
+    // A second node no scene ever mentions — Absent in every scene, unaffected by the
+    // BypassOnly-only audibility guard.
+    let mut p = hbe_boost_preset();
+    p["audioGraph"]["guitarNodes"]["G1"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "nodeId": "delay", "FenderId": "ACD_TapeDelay",
+            "dspUnitParameters": { "bypass": true, "level": 0.5 }
+        }));
+    assert!(matches!(
+        scene_write_verdict_for_param(&p, 2, "delay", "level"),
+        SceneWriteVerdict::NeedsEnable
+    ));
+}
+
+#[test]
+fn scene_write_verdict_for_param_unknown_overlay_arm_unchanged() {
+    // No `scenes` array at all (mirrors a truncated field-8 read) — presence unanswerable.
+    let p = serde_json::json!({});
+    match scene_write_verdict_for_param(&p, 0, HBE_NODE, HBE_PARAM) {
+        SceneWriteVerdict::Refuse { scope, reason } => {
+            assert_eq!(scope, RefusedScope::Unknown);
+            assert!(reason.contains("truncated"));
+        }
+        SceneWriteVerdict::WriteDirect { .. } => {
+            panic!("expected Refuse(Unknown), got WriteDirect")
+        }
+        SceneWriteVerdict::NeedsEnable => panic!("expected Refuse(Unknown), got NeedsEnable"),
+    }
+}

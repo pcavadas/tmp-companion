@@ -956,11 +956,11 @@ pub(crate) fn ops_session(
 /// reseed-wipes-siblings bug leveling's `set_knob`/`set_knobs` has (fixed
 /// there by a measure-the-diff-and-repair pass; no equivalent repair exists
 /// for Doctor). So Doctor never attempts either shape: `doctor_apply` refuses
-/// the apply before this fn ever runs, for BOTH the Absent case and the
-/// `SceneOverlay::BypassOnly` case (Scene-Edit off, knobs shared with base) —
-/// see [`bypass_only_conflict`], which now reads the same
-/// [`scene_write_verdict`] the leveling lane does instead of re-deriving a
-/// narrower (BypassOnly-only) rule.
+/// the apply before this fn ever runs, for the Absent case and for a
+/// `SceneOverlay::BypassOnly` node the audibility guard does NOT clear — see
+/// [`bypass_only_conflict`], which now reads the same
+/// [`scene_write_verdict_for_param`] the leveling lane does instead of
+/// re-deriving a narrower (BypassOnly-only) rule.
 fn apply_ops_under_scene(
     s: &mut Session,
     scene: Option<u32>,
@@ -974,19 +974,22 @@ fn apply_ops_under_scene(
     apply_doctor_ops(s, ops)
 }
 
-/// Does `ops` contain a scene-context `Param` write [`scene_write_verdict`] won't
-/// hand to a plain enable-dropped `changeParameter`? Reads the SAME write-landing
+/// Does `ops` contain a scene-context `Param` write [`scene_write_verdict_for_param`]
+/// won't hand to a plain enable-dropped `changeParameter`? Reads the SAME write-landing
 /// policy the leveling lane consults (`leveller::set_knobs`), rather than
-/// re-deriving a narrower rule: `Refuse` (BypassOnly — shares knobs with base;
-/// Unknown — truncated field-8 read, 22/25 real presets) surfaces its reason
-/// verbatim; `NeedsEnable` (Absent overlay) ALSO refuses HERE, even though the
-/// verdict itself says a write is possible — Doctor has no
+/// re-deriving a narrower rule: `Refuse` (BypassOnly, and not audibility-guarded —
+/// shares knobs with base; Unknown — truncated field-8 read, 22/25 real presets)
+/// surfaces its reason verbatim; `NeedsEnable` (Absent overlay) ALSO refuses HERE,
+/// even though the verdict itself says a write is possible — Doctor has no
 /// `set_node_scene_edit` + measure-the-diff repair pass (see
 /// [`apply_ops_under_scene`]'s doc), so enabling would reseed the node's other
 /// scene-edited params from base with nothing to repair the collateral damage.
-/// Only `WriteDirect` (Full overlay, enable already on) proceeds. Pure — takes
-/// the already-read preset JSON, so it's unit-testable without a live session
-/// (mirrors [`floor_error_for`]'s split, same reason: `ops_session` itself
+/// `WriteDirect` proceeds either way it's produced: a Full overlay (enable already
+/// on), or a BypassOnly node whose leak-to-base write `shared_write_is_scene_local`
+/// confirms is audible ONLY in this scene — Doctor sends the SAME enable-dropped
+/// `changeParameter` in both cases, so there is nothing scene-specific to repair.
+/// Pure — takes the already-read preset JSON, so it's unit-testable without a live
+/// session (mirrors [`floor_error_for`]'s split, same reason: `ops_session` itself
 /// needs `Session::connect`). Returns the first conflicting op's user-facing
 /// refusal reason; `None` = safe to proceed.
 ///
@@ -999,10 +1002,10 @@ fn bypass_only_conflict(
     ops: &[doctor::DoctorOp],
 ) -> Option<String> {
     ops.iter().find_map(|op| match op {
-        doctor::DoctorOp::Param { node_id, .. } => {
-            match scene_write_verdict(preset, scene, node_id) {
-                SceneWriteVerdict::WriteDirect => None,
-                SceneWriteVerdict::Refuse(reason) => Some(reason),
+        doctor::DoctorOp::Param { node_id, param, .. } => {
+            match scene_write_verdict_for_param(preset, scene, node_id, param) {
+                SceneWriteVerdict::WriteDirect { .. } => None,
+                SceneWriteVerdict::Refuse { reason, .. } => Some(reason),
                 SceneWriteVerdict::NeedsEnable => Some(format!(
                     "{node_id} has no scene overlay yet in scene {scene} — Doctor can't safely \
                      create one here (that would reseed the node's other scene-edited params \
@@ -1044,7 +1047,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
     with_released_seize(state.session.clone(), move || {
         // Refuse a scene-context Param write BEFORE touching device state (no
         // BEFORE-clip capture, no force-bypass writes) whenever
-        // `scene_write_verdict` won't hand it a safe enable-dropped landing —
+        // `scene_write_verdict_for_param` won't hand it a safe enable-dropped landing —
         // see `bypass_only_conflict`'s doc. One extra field-8 read, paid only
         // when relevant (a scene sound with a Param op) — the same read
         // `resolve_sound_isolation`'s empty-graph fallback already pays
