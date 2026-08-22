@@ -1,28 +1,53 @@
-// src/views/overlays/BlockLevelPick.tsx — the Set up step's COMBINED block+param
-// leveling-handle picker (D2). ONE component drives all three row kinds:
+// src/views/overlays/BlockLevelPick.tsx — the Set up step's TWO-DROPDOWN leveling-
+// handle picker (D2, Part C). ONE component drives all three row kinds, now split
+// into a BLOCK dropdown followed by a CONTROL dropdown — the original single flat
+// block+param list grew too long once a preset carried many blocks:
 //   • Base rows — candidates from `list_level_blocks`; a "Preset level" pseudo-option
 //     (the master `presetLevel`) is the default first entry.
 //   • Scene rows — candidates from `list_scene_level_handles`'s `allCandidates`; an
 //     "Amp output level" pseudo-option (the per-scene amp joint-k path) is the default.
 //   • Footswitch rows — candidates are the switch's own `level_params` (no device
-//     read — already in hand). NO pseudo-option: every FS row must carry a real handle
-//     (the backend removed the verify-only "no handle" row entirely).
+//     read — already in hand). NO pseudo-option: every FS row must carry a real
+//     handle (the backend removed the verify-only "no handle" row entirely).
 // A pseudo-option submits `handle: null` on the wire — for Base/Scene that is a
 // DIFFERENT, richer path than any single block param (the backend's own per-scene amp
-// auto-pick, or the preset-level path), never just "the first candidate".
+// auto-pick, or the preset-level path), never just "the first candidate". Picking the
+// pseudo-option happens in the BLOCK dropdown (it has no param, so the control
+// dropdown never shows for it).
 //
-// Candidates are grouped BY BLOCK, blocks with a level-class param sorted first; within
-// a block, level-class params (`level_linear`/`level_db`) list before `wet_mix`. The
-// single best candidate overall (first in that order) is flagged "Recommended". A
-// `disabled` candidate (Scene's `shared_with_base`/`unknown` scope) stays visible but
-// inert, with its reason. A `wet_mix` candidate is flagged "may change the tone" (it
-// also moves the effect's presence, not just its loudness).
+// Candidates are grouped BY BLOCK and resolved against a stored handle by
+// `../level/blockLevelGroups.ts` — rank ordering, the "best enabled candidate" rule,
+// and the DANGER-rule stale guard all live there as plain-data functions, unit-tested
+// without rendering anything (`blockLevelGroups.test.ts`); this component composes
+// that data into the two-dropdown UI. The BLOCK dropdown lists one row per block
+// (`BlockPickRow` — art tile + full name); the single overall-best candidate (the
+// first block, in rank
+// order, that has an ENABLED candidate — `recommendedBlock`) flags its block
+// "Recommended" there. A block whose every candidate is `disabled` (Scene's
+// `shared_with_base`/`unknown` scope) stays visible but inert, with the shared reason
+// — mirroring the per-candidate disabled note the CONTROL dropdown (`BlockParamRow`)
+// already carried. Selecting a DIFFERENT block auto-picks its best ENABLED candidate,
+// via the SAME `bestEnabled` the "Recommended" tag reads (fewest clicks: one click
+// can pick a block AND land on the right control) — re-selecting the block that
+// already holds the stored handle is a no-op — it never silently changes a stored
+// pick. The control dropdown is the override: it lists the selected block's own
+// params (level-class first) with the SAME per-candidate notes (Recommended / "may
+// change the tone" for `wet_mix` / "can only lower" / disabled reason) BlockLevelPick
+// has always shown.
 //
 // DANGER-rule guard (`Pick`/`BlockPick` trap): a stored `handle` the current candidate
 // list doesn't cover must render VERBATIM + a warning, never silently fall back to the
-// pseudo-option or `candidates[0]`.
+// pseudo-option or `candidates[0]`. Split across two dropdowns, the trap now has two
+// arms: the stored block itself is missing from the (resolved) candidate list ⇒ the
+// BLOCK trigger renders the raw `nodeId` + the param's label verbatim (the control
+// dropdown has nothing to show, so it stays hidden — losing it there would silently
+// drop the stored param from view, which the trap forbids) with a warning; the block IS
+// present but its stored param is gone ⇒ the block trigger renders normally and the
+// CONTROL trigger renders the raw param label + "(removed)" with a warning.
 //
-// Click-only. Reuses the wizard's card-portaled dropdown, same machinery as Pick.
+// Click-only. Reuses the wizard's card-portaled dropdown (`usePickAnchor` /
+// `PickPortalMenu`) TWICE — once per dropdown, each with its own `PickTrigger`
+// (the shared trigger chrome) + menu.
 
 import { useContext } from "react";
 
@@ -31,48 +56,35 @@ import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { blockArtTile } from "../../models/blockArt";
 import { paramLabel } from "../level/leveling";
+import {
+  groupByBlock,
+  groupHead,
+  bestEnabled,
+  recommendedBlock,
+  resolveHandle,
+  isDisabledCandidate,
+  blockKeyOf,
+  type BlockLevelCandidate,
+  type BlockLevelHandle,
+} from "../level/blockLevelGroups";
 import { DialogCardCtx } from "./wizardContext";
 import { PickPortalMenu } from "./PickPortalMenu";
+import { PickTrigger } from "./PickTrigger";
+import { PickWarnNote } from "./PickWarnNote";
 import { usePickAnchor } from "./usePickAnchor";
-import { pickTriggerBorder } from "./pickTriggerChrome";
-import { BlockParamRow, BlockParamWarnNote } from "./BlockParamRow";
-import type { ParamClass } from "../../lib/types";
+import { BlockPickRow } from "./BlockPickRow";
+import { BlockParamRow } from "./BlockParamRow";
 
-export type BlockLevelCandidate = {
-  groupId: string;
-  nodeId: string;
-  fenderId: string;
-  parameterId: string;
-  /** The classifier's verdict — undefined when the source carries none (Base's
-   *  `list_level_blocks`, which is already gated to level-safe params but doesn't
-   *  annotate the class on the wire; see `session::LevelBlock`). An undefined-class
-   *  candidate sorts after every classified one and never shows a tone-risk note. */
-  paramClass?: ParamClass;
-  /** `true` ⇒ this control can only make the sound QUIETER (already at/near the top
-   *  of its range). Scene rows only. */
-  lowersOnly?: boolean;
-} & (
-  | { disabled?: false; disabledTitle?: undefined }
-  /** Scene rows only: this control's overlay scope — `shared_with_base`/`unknown`
-   *  disable the row (the backend refuses that write). A disabled row always
-   *  carries its reason — the producer (`sceneDisabledTitle`) never emits one
-   *  without the other. */
-  | { disabled: true; disabledTitle: string }
-);
-
-export interface BlockLevelHandle {
-  groupId: string;
-  nodeId: string;
-  parameterId: string;
-}
+export type { BlockLevelCandidate, BlockLevelHandle };
 
 export type BlockLevelFetch =
   | { status: "unfetched" | "loading" | "error" }
   | { status: "resolved"; list: BlockLevelCandidate[] };
 
 export interface BlockLevelPickProps {
-  /** Pseudo first entry's label ("Preset level" / "Amp output level"). Omit for
-   *  footswitch rows — D2: every FS row must carry a real handle. */
+  /** Pseudo first entry's label ("Preset level" / "Amp output level"), offered in
+   *  the BLOCK dropdown. Omit for footswitch rows — D2: every FS row must carry a
+   *  real handle. */
   pseudoLabel?: string;
   /** `null` = the pseudo-option (when offered) or, on a footswitch row, "not yet
    *  resolved" (the row always seeds a real default, so this stays defensive). */
@@ -80,18 +92,36 @@ export interface BlockLevelPickProps {
   onHandleChange: (h: BlockLevelHandle | null) => void;
   candidates: BlockLevelFetch;
   /** Fire the lazy per-preset fetch (Base/Scene rows only). Idempotent — safe to call
-   *  on every open. A no-op prop (`() => undefined`) for footswitch rows, whose
-   *  candidates are already in hand. */
+   *  on every open (both dropdowns call it). A no-op prop (`() => undefined`) for
+   *  footswitch rows, whose candidates are already in hand. */
   onOpen: () => void;
 }
 
-/** Level-class-first rank, shared by the "Recommended" pick and the group order —
- *  mirrors `leveling.ts`'s `CLASS_RANK` (kept local: that table is keyed on the WIRE
- *  `ParamClass`, this one also has to rank the classless Base candidates). */
-function rank(c: BlockLevelCandidate): number {
-  if (c.paramClass === "level_linear" || c.paramClass === "level_db") return 0;
-  if (c.paramClass === "wet_mix") return 1;
-  return 2;
+/** The stored handle's block-trigger label: verbatim `nodeId · param label` (never
+ *  the catalog name) while the block itself is missing from a resolved list — the
+ *  DANGER-rule guard forbids silently swapping in a friendlier string for a handle
+ *  that isn't actually confirmed. */
+function blockTriggerLabelFor(
+  handle: BlockLevelHandle | null,
+  pseudoLabel: string | undefined,
+  blockArt: ReturnType<typeof blockArtTile> | null,
+  resolved: boolean,
+): string {
+  if (handle == null) return pseudoLabel ?? "Choose a control";
+  if (blockArt) return blockArt.fullName ?? blockArt.name;
+  if (resolved) return `${handle.nodeId} · ${paramLabel(handle.parameterId)}`;
+  return paramLabel(handle.parameterId);
+}
+
+/** The stored handle's control-trigger label — computes `paramLabel` once (it was
+ *  called twice, one per ternary arm, before this was hoisted out). */
+function controlTriggerLabelFor(
+  handle: BlockLevelHandle | null,
+  matched: BlockLevelCandidate | undefined,
+): string {
+  if (handle == null) return "";
+  const label = paramLabel(handle.parameterId);
+  return matched ? label : `${label} (removed)`;
 }
 
 export function BlockLevelPick({
@@ -103,70 +133,149 @@ export function BlockLevelPick({
 }: BlockLevelPickProps) {
   const { t } = useTheme();
   const cardRef = useContext(DialogCardCtx);
-  const list = candidates.status === "resolved" ? candidates.list : [];
+  const resolved = candidates.status === "resolved";
+  const list = resolved ? candidates.list : [];
 
-  // Blocks (groupId:nodeId) ordered by their best-ranked candidate; candidates within a
-  // block ordered by rank. One stable pass — `Map` preserves first-insertion key order.
-  const byBlock = new Map<string, BlockLevelCandidate[]>();
-  list.forEach((c) => {
-    const key = `${c.groupId}:${c.nodeId}`;
-    const g = byBlock.get(key);
-    if (g) g.push(c);
-    else byBlock.set(key, [c]);
+  const blocks = groupByBlock(list);
+  const { handleBlockKey, blockGroup, matched, blockStale, paramStale } =
+    resolveHandle(blocks, handle, resolved);
+  // The control dropdown has nothing to show without a confirmed block — hidden for
+  // the pseudo pick and for a block-stale handle; shown (with its own removed-param
+  // note) as soon as the block is confirmed, matched or not.
+  const showControl = handle != null && resolved && !blockStale;
+
+  // The single overall-best candidate — `recommendedBlock` walks `bestEnabled` per
+  // block, so `recommended` is ALWAYS an enabled candidate (or `null` when every
+  // block is fully disabled); it can still sit on a block that has OTHER, disabled
+  // candidates (Scene's per-candidate scope), which is why `controlRow` still checks
+  // `c.disabled` ahead of `rec` below — defensive, since the two conditions can never
+  // both be true for the same candidate any more.
+  const recommended = recommendedBlock(blocks);
+  const recommendedBlockKey = recommended ? blockKeyOf(recommended) : null;
+
+  // `groupHead` (not a bare `blockGroup[0]`) — the third spot that would otherwise
+  // re-spell the same defensive "array might type as empty" guard `pickBlock` and
+  // `blockRow` use below.
+  const blockHead = blockGroup ? groupHead(blockGroup) : undefined;
+  const blockArt = blockHead ? blockArtTile(blockHead.fenderId) : null;
+  const blockTriggerLabel = blockTriggerLabelFor(
+    handle,
+    pseudoLabel,
+    blockArt,
+    resolved,
+  );
+  const controlTriggerLabel = controlTriggerLabelFor(handle, matched);
+
+  // Two independent `usePickAnchor` instances — DESTRUCTURED (not kept as one
+  // `blockPick`/`controlPick` object) because the hook returns refs
+  // (`menuRef`/`triggerRef`) alongside plain state: `react-hooks/refs` taints every
+  // property read off an un-destructured hook-result object once ANY of its fields is
+  // a ref, so a bare `blockPick.anchor` reads as a ref access even though `anchor` is
+  // plain `useState`. Destructuring gives each field its own precise binding, exactly
+  // like every other `Pick`-family caller already does.
+  const {
+    open: blockOpen,
+    anchor: blockAnchor,
+    pos: blockPos,
+    cardEl: blockCardEl,
+    menuRef: blockMenuRef,
+    triggerRef: blockTriggerRef,
+    openMenu: openBlockMenu,
+    close: closeBlockMenu,
+  } = usePickAnchor(cardRef, {
+    onOpen,
+    // Grows AFTER it opens (the lazy fetch resolves a moment later) — same key
+    // shape as the original combined picker's, so the menu re-clamps/re-flips once
+    // real rows land.
+    contentKey: `${candidates.status}:${String(blocks.length)}`,
   });
-  const blocks = [...byBlock.values()]
-    .map((g) => [...g].sort((a, b) => rank(a) - rank(b)))
-    .sort((a, b) => {
-      const ra = a.length > 0 ? rank(a[0]) : 2;
-      const rb = b.length > 0 ? rank(b[0]) : 2;
-      return ra - rb;
+  const {
+    open: ctrlOpen,
+    anchor: ctrlAnchor,
+    pos: ctrlPos,
+    cardEl: ctrlCardEl,
+    menuRef: ctrlMenuRef,
+    triggerRef: ctrlTriggerRef,
+    openMenu: openCtrlMenu,
+    close: closeCtrlMenu,
+  } = usePickAnchor(cardRef, { onOpen });
+
+  const pickBlock = (group: BlockLevelCandidate[]) => {
+    // `group` is one of `blocks`' entries — never empty (see `groupByBlock`), but
+    // `groupHead` still spells it out as `T | undefined`: this tsconfig has no
+    // `noUncheckedIndexedAccess`, so a bare `group[0]` types as always-defined.
+    const first = groupHead(group);
+    if (!first) return;
+    const key = blockKeyOf(first);
+    if (key === handleBlockKey) {
+      // Re-selecting the block that already holds the stored handle: a click that
+      // LOOKS like navigation must never silently change a stored handle (holds even
+      // when the stored param itself is stale — the user must open the control
+      // dropdown to fix that explicitly).
+      closeBlockMenu();
+      return;
+    }
+    // Selecting a DIFFERENT block auto-picks its best ENABLED candidate (fewest
+    // clicks), via the SAME `bestEnabled` the "Recommended" tag reads. A block row
+    // is only clickable when it has one (see `blockDisabled` below), so `best` is
+    // always found here.
+    const best = bestEnabled(group);
+    if (!best) return;
+    onHandleChange({
+      groupId: best.groupId,
+      nodeId: best.nodeId,
+      parameterId: best.parameterId,
     });
-  const recommended =
-    blocks.length > 0 && blocks[0].length > 0 ? blocks[0][0] : null;
+    closeBlockMenu();
+  };
 
-  const { open, anchor, pos, cardEl, menuRef, triggerRef, openMenu, close } =
-    usePickAnchor(cardRef, {
-      onOpen,
-      // Grows AFTER it opens (the lazy fetch resolves a moment later) — same key
-      // shape as SceneLevelPick's, so the menu re-clamps/re-flips once real rows land.
-      contentKey: `${candidates.status}:${String(list.length)}`,
-    });
+  const blockRow = (group: BlockLevelCandidate[]) => {
+    const first = groupHead(group);
+    if (!first) return null;
+    const key = blockKeyOf(first);
+    const blockDisabled = group.every((c) => c.disabled === true);
+    const disabledReason = blockDisabled
+      ? group.find(isDisabledCandidate)?.disabledTitle
+      : undefined;
+    const rec = key === recommendedBlockKey;
+    const art = blockArtTile(first.fenderId);
+    return (
+      <BlockPickRow
+        key={key}
+        pickKey={key}
+        art={art}
+        label={art.fullName ?? art.name}
+        selected={key === handleBlockKey}
+        disabled={blockDisabled}
+        disabledTitle={disabledReason}
+        onPick={() => {
+          pickBlock(group);
+        }}
+        note={
+          blockDisabled ? (
+            <PickWarnNote>{disabledReason}</PickWarnNote>
+          ) : rec ? (
+            <Tag tone="good" uppercase>
+              Recommended
+            </Tag>
+          ) : undefined
+        }
+      />
+    );
+  };
 
-  const matched = handle
-    ? list.find(
-        (c) =>
-          c.groupId === handle.groupId &&
-          c.nodeId === handle.nodeId &&
-          c.parameterId === handle.parameterId,
-      )
-    : undefined;
-  // DANGER-rule guard: a stored handle absent from the current (resolved) candidate
-  // list must render verbatim + a warning — never silently fall back to the pseudo
-  // option or `candidates[0]`. Gated on `resolved` so a not-yet-fetched list doesn't
-  // flag a perfectly valid carried-forward handle as stale.
-  const stale = handle != null && candidates.status === "resolved" && !matched;
-
-  const triggerArt = matched ? blockArtTile(matched.fenderId) : null;
-  const triggerLabel = handle
-    ? matched
-      ? `${triggerArt?.fullName ?? triggerArt?.name ?? ""} · ${paramLabel(handle.parameterId)}`
-      : candidates.status === "resolved"
-        ? `${paramLabel(handle.parameterId)} (removed)`
-        : paramLabel(handle.parameterId)
-    : (pseudoLabel ?? "Choose a control");
-
-  const candidateRow = (c: BlockLevelCandidate) => {
-    const on =
-      handle?.groupId === c.groupId &&
-      handle.nodeId === c.nodeId &&
-      handle.parameterId === c.parameterId;
+  const controlRow = (c: BlockLevelCandidate) => {
+    // `c` iterates over `blockGroup` (`(blockGroup ?? []).map(controlRow)` below) —
+    // the SAME array `matched` was found from, so a referential compare stands in
+    // for the field-by-field one (`matched` already narrows to this block's own
+    // `groupId`/`nodeId`, since `blockGroup` is the block holding the stored handle).
+    const on = c === matched;
     const rec = c === recommended;
     const loud = c.paramClass !== "wet_mix";
     return (
       <BlockParamRow
         key={`${c.nodeId}:${c.parameterId}`}
         pickKey={`${c.nodeId}:${c.parameterId}`}
-        art={blockArtTile(c.fenderId)}
         paramLabel={paramLabel(c.parameterId)}
         selected={on}
         disabled={c.disabled}
@@ -177,17 +286,17 @@ export function BlockLevelPick({
             nodeId: c.nodeId,
             parameterId: c.parameterId,
           });
-          close();
+          closeCtrlMenu();
         }}
         note={
           c.disabled ? (
-            <BlockParamWarnNote>{c.disabledTitle}</BlockParamWarnNote>
+            <PickWarnNote>{c.disabledTitle}</PickWarnNote>
           ) : rec ? (
             <Tag tone="good" uppercase>
               {loud ? "Recommended - loudness only" : "Recommended"}
             </Tag>
           ) : !loud ? (
-            <BlockParamWarnNote>may change the tone</BlockParamWarnNote>
+            <PickWarnNote>may change the tone</PickWarnNote>
           ) : c.lowersOnly ? (
             <span
               style={{ fontFamily: t.sans, fontSize: 10.5, color: t.mutedInk }}
@@ -200,89 +309,41 @@ export function BlockLevelPick({
     );
   };
 
-  const sectionHead = (label: string) => (
-    <div
-      key={`h:${label}`}
-      style={{
-        padding: `${String(t.space2)}px ${String(t.space4)}px ${String(t.space2)}px`,
-        fontFamily: t.mono,
-        fontSize: 9,
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        color: t.faint,
-      }}
-    >
-      {label}
-    </div>
-  );
-
   return (
     <div
-      ref={triggerRef}
-      style={{ position: "relative", width: "100%", minWidth: 0 }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: t.space2,
+        width: "100%",
+        minWidth: 0,
+      }}
     >
-      <div
-        onClick={openMenu}
-        title="Choose this sound's leveling control"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: t.space3,
-          height: 26,
-          padding: `0 ${String(t.space4)}px`,
-          boxSizing: "border-box",
-          border: pickTriggerBorder(t, { open, warn: stale }),
-          borderRadius: 6,
-          background: t.bg,
-          cursor: "pointer",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-        }}
-      >
-        {stale && (
-          <Icon
-            name="warn-tri"
-            size={12}
-            stroke={t.sevWarn}
-            strokeWidth={1.7}
-          />
-        )}
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            fontFamily: t.sans,
-            fontSize: 11,
-            color: stale ? t.sevWarn : t.ink2,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          {triggerLabel}
-        </span>
-        <Icon
-          name="chev-down"
-          size={11}
-          stroke={open ? t.accentDeep : t.faint}
-        />
-      </div>
+      <PickTrigger
+        triggerRef={blockTriggerRef}
+        open={blockOpen}
+        warn={blockStale}
+        label={blockTriggerLabel}
+        title="Choose this sound's leveling block"
+        onClick={openBlockMenu}
+      />
 
-      {open && anchor && cardEl && (
+      {blockOpen && blockAnchor && blockCardEl && (
         <PickPortalMenu
-          cardEl={cardEl}
-          menuRef={menuRef}
-          left={pos ? pos.left : anchor.left}
-          top={pos ? pos.top : anchor.below}
-          visible={pos != null}
-          minWidth={Math.max(anchor.width, 280)}
-          onClose={close}
+          cardEl={blockCardEl}
+          menuRef={blockMenuRef}
+          left={blockPos ? blockPos.left : blockAnchor.left}
+          top={blockPos ? blockPos.top : blockAnchor.below}
+          visible={blockPos != null}
+          minWidth={Math.max(blockAnchor.width, 280)}
+          onClose={closeBlockMenu}
         >
           {pseudoLabel != null && (
             <div
               onClick={(e) => {
                 e.stopPropagation();
                 onHandleChange(null);
-                close();
+                closeBlockMenu();
               }}
               style={{
                 display: "flex",
@@ -347,39 +408,50 @@ export function BlockLevelPick({
               Couldn’t read this preset’s controls.
             </div>
           )}
-          {blocks.flatMap((group) => {
-            if (group.length === 0) return [];
-            const art = blockArtTile(group[0].fenderId);
-            return [
-              sectionHead(art.fullName ?? art.name),
-              ...group.map(candidateRow),
-            ];
-          })}
-          {stale && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: t.space3,
-                padding: t.space4,
-                fontFamily: t.sans,
-                fontSize: 10.5,
-                color: t.sevWarn,
-              }}
-            >
-              <Icon
-                name="warn-tri"
-                size={11}
-                stroke={t.sevWarn}
-                strokeWidth={1.7}
-              />
-              <span>
+          {blocks.map(blockRow)}
+          {blockStale && (
+            <div style={{ padding: t.space4 }}>
+              <PickWarnNote>
                 stored pick no longer offered — pick again
                 {pseudoLabel ? " or use the default" : ""}.
-              </span>
+              </PickWarnNote>
             </div>
           )}
         </PickPortalMenu>
+      )}
+
+      {showControl && (
+        <>
+          <PickTrigger
+            triggerRef={ctrlTriggerRef}
+            open={ctrlOpen}
+            warn={paramStale}
+            label={controlTriggerLabel}
+            title="Choose this sound's leveling parameter"
+            onClick={openCtrlMenu}
+          />
+
+          {ctrlOpen && ctrlAnchor && ctrlCardEl && (
+            <PickPortalMenu
+              cardEl={ctrlCardEl}
+              menuRef={ctrlMenuRef}
+              left={ctrlPos ? ctrlPos.left : ctrlAnchor.left}
+              top={ctrlPos ? ctrlPos.top : ctrlAnchor.below}
+              visible={ctrlPos != null}
+              minWidth={Math.max(ctrlAnchor.width, 280)}
+              onClose={closeCtrlMenu}
+            >
+              {(blockGroup ?? []).map(controlRow)}
+              {paramStale && (
+                <div style={{ padding: t.space4 }}>
+                  <PickWarnNote>
+                    stored pick no longer offered — pick a control below.
+                  </PickWarnNote>
+                </div>
+              )}
+            </PickPortalMenu>
+          )}
+        </>
       )}
     </div>
   );

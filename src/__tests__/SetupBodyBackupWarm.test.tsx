@@ -189,6 +189,12 @@ describe("SetupBody's eager warm effect stays provably device-free", () => {
       expect(deviceCallsAgainst("list_level_blocks")).toHaveLength(1);
     });
     expect(invoke).toHaveBeenCalledWith("list_level_blocks", { slot: 0 });
-    expect(await screen.findByText("Output level")).toBeInTheDocument();
+    // The block dropdown lands with the one fallback-fetched block (Tweed Deluxe,
+    // rendered by its catalog full name) — pick it (the row's only, hence best-
+    // ranked, candidate) to reach the CONTROL dropdown's trigger, which now shows
+    // the picked param.
+    const blockRow = await screen.findByText("FENDER '57 DELUXE");
+    await user.click(blockRow);
+    expect(screen.getByText("Output level")).toBeInTheDocument();
   });
 });

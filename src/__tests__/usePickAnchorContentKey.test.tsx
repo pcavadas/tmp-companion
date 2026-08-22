@@ -3,10 +3,10 @@
 //
 // BUG→GATE. `usePickAnchor`'s measure/place layout effect depended only on `[open, anchor]`,
 // both fixed at `openMenu` time, while what it measures is `menuRef.current.offsetHeight`.
-// `BlockLevelPick` (Scene/Base rows' combined block+param picker, D2) is the one picker
-// whose body lands LATE: opening fires the lazy per-preset candidate read, so the first
-// paint is a one-line "Loading controls…" and the real list appears a moment later. The
-// placement therefore stayed the skeleton's — a tall candidate list rendered straight off
+// `BlockLevelPick`'s BLOCK dropdown (Scene/Base rows' first-stage picker, D2/Part C) is the
+// one whose body lands LATE: opening fires the lazy per-preset candidate read, so the first
+// paint is a one-line "Loading controls…" and the real block list appears a moment later.
+// The placement therefore stayed the skeleton's — a tall block list rendered straight off
 // the bottom edge of the wizard card, never clamped and never flipped above the trigger,
 // with its rows unreachable.
 //
@@ -17,7 +17,7 @@
 // at the below-value and fails this test.
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -84,9 +84,10 @@ function stubLayout() {
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
     get(this: HTMLElement) {
-      // Chrome (the pseudo-option row + section header) plus one row per rendered
-      // candidate.
-      const rows = this.querySelectorAll("[data-block-param-pick]").length;
+      // Chrome (the pseudo-option row) plus one row per rendered BLOCK — the menu
+      // measured here is the BLOCK dropdown's, whose rows carry `data-block-pick`
+      // (one per block, not one per candidate).
+      const rows = this.querySelectorAll("[data-block-pick]").length;
       return 120 + rows * 60;
     },
   });
@@ -154,16 +155,20 @@ describe("usePickAnchor — a menu whose content arrives after the open", () => 
       const placedForSkeleton = menuTop();
       expect(placedForSkeleton).toBe(176);
 
-      // The fetch lands with four candidates → the menu is 360px tall, so the flip point
-      // moves to `max(8, 300 - 360 - 4)` = 8. Stale placement would leave it at 176, where
-      // 176 + 360 = 536 puts 136px of the list past the card's 400px bottom edge.
+      // The fetch lands with four candidates ON FOUR DIFFERENT BLOCKS (distinct
+      // `nodeId`s) → the block dropdown renders four `BlockPickRow`s, a 360px-tall
+      // menu, so the flip point moves to `max(8, 300 - 360 - 4)` = 8. Stale placement
+      // would leave it at 176, where 176 + 360 = 536 puts 136px of the list past the
+      // card's 400px bottom edge.
       rerender(
         props({
           status: "resolved",
           list: ["a", "b", "c", "d"].map(candidate),
         }),
       );
-      await screen.findAllByText("Output level");
+      await waitFor(() => {
+        expect(document.querySelectorAll("[data-block-pick]")).toHaveLength(4);
+      });
       const placedForList = menuTop();
 
       expect(

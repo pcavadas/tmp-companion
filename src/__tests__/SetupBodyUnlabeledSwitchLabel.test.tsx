@@ -97,10 +97,12 @@ async function pickTubeScreamerAndStart(option: SetupOption) {
   );
   const user = userEvent.setup();
   // Every row levels now (D2 — no "Make level-neutral" opt-in any more). Open the
-  // combined block+param picker, currently on the tone-safe DEFAULT (Boost · Gain)…
-  await user.click(screen.getByTitle("Choose this sound's leveling control"));
-  // …and override it with the OTHER block's `level`.
-  await user.click(await screen.findByText("Level"));
+  // BLOCK dropdown, currently on the tone-safe DEFAULT block (Boost)…
+  await user.click(screen.getByTitle("Choose this sound's leveling block"));
+  // …and pick the OTHER block (its catalog full name, all-caps) — a DIFFERENT block
+  // auto-picks its best enabled param (its only one here, `level`), so this single
+  // click both overrides the block AND lands on the right control.
+  await user.click(await screen.findByText("GREENBOX 8"));
   // The backup acknowledgment gates the primary button on a fresh run.
   await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
   await user.click(screen.getByRole("button", { name: /level 1 sound/i }));

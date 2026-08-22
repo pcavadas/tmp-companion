@@ -3,8 +3,9 @@
 // Everything chosen in the LIST (the scene tree) WILL be leveled — this step never
 // re-gates inclusion. Its single job is to set each sound's INSTRUMENT + TARGET +
 // LEVELING HANDLE (D2 — every row levels against ONE user-chosen block+param control,
-// picked from a combined dropdown; Base rows default to the "Preset level" pseudo-
-// option, Scene rows to "Amp output level", Footswitch rows always carry a real pick):
+// picked from `BlockLevelPick`'s two dropdowns — block, then control; Base rows
+// default to the "Preset level" pseudo-option, Scene rows to "Amp output level",
+// Footswitch rows always carry a real pick):
 //   • A top "Apply to" bar is a brush that writes instrument + target to every row at
 //     once — or, when the user ticks a few rows, to just those. Ticking is a bulk-edit
 //     convenience only.
@@ -41,7 +42,7 @@ import {
   type BlockLevelHandle,
   type BlockLevelFetch,
 } from "./BlockLevelPick";
-import { BlockParamWarnNote } from "./BlockParamRow";
+import { PickWarnNote } from "./PickWarnNote";
 import {
   useSceneHandles,
   type HandleFetchState,
@@ -210,9 +211,10 @@ function CalibrationOnboardingBanner({ show }: { show: boolean }) {
   );
 }
 
-/** A footswitch row's leveling controls (D2 + D3): the combined block+param picker —
- *  NO pseudo-option (the backend removed the verify-only "no handle" row entirely, so
- *  every FS row must carry a real handle) — stacked over the scene-context picker
+/** A footswitch row's leveling controls (D2 + D3): `BlockLevelPick`'s two-dropdown
+ *  block+param picker — NO pseudo-option (the backend removed the verify-only "no
+ *  handle" row entirely, so every FS row must carry a real handle) — stacked over
+ *  the scene-context picker
  *  (which scene, if any, this switch's sound is measured and solved in). Picking a
  *  scene that doesn't actually turn the switch on is ALLOWED — flagged, never blocked
  *  (D3). `sceneContext` is the EFFECTIVE value to display, resolved by the caller
@@ -294,9 +296,9 @@ function FsRowControls({
         tid={`fsctx:${String(switchIndex)}`}
       />
       {nonEnabling && (
-        <BlockParamWarnNote>
+        <PickWarnNote>
           FS{String(switchIndex + 1)} doesn’t turn on in that scene
-        </BlockParamWarnNote>
+        </PickWarnNote>
       )}
     </div>
   );
@@ -742,10 +744,11 @@ export function SetupBody({
                   title="Tick to bulk-edit this row with the bar above"
                   columns="192px 108px 108px"
                 >
-                  {/* Every row's own leveling handle (D2): Base/Scene get a combined
-                      block+param picker with a pseudo-default; footswitch rows also
-                      carry the D3 scene-context picker. Base rows without scenes still
-                      qualify for the Base picker (they're the whole preset). */}
+                  {/* Every row's own leveling handle (D2): Base/Scene get
+                      `BlockLevelPick`'s two-dropdown (block, then control) picker
+                      with a pseudo-default; footswitch rows also carry the D3
+                      scene-context picker. Base rows without scenes still qualify
+                      for the Base picker (they're the whole preset). */}
                   {o.footswitch != null &&
                   o.levelParams &&
                   o.levelParams.length > 0 ? (

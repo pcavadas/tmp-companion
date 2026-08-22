@@ -5,6 +5,7 @@
 // an empty row is the correct, expected answer for a scene-less preset (see
 // `useSceneHandles.ts`'s doc), so it must NOT trigger a device read.
 
+import { useState } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   renderHook,
@@ -17,7 +18,10 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { BlockLevelPick } from "../views/overlays/BlockLevelPick";
+import {
+  BlockLevelPick,
+  type BlockLevelHandle,
+} from "../views/overlays/BlockLevelPick";
 import { WithCard } from "./pickCardTestUtils";
 import { useSceneHandles } from "../views/level/useSceneHandles";
 import {
@@ -198,6 +202,7 @@ describe("useSceneHandles — instant-first with device fallback", () => {
 
     function Harness() {
       const { prefetch, candidatesFor } = useSceneHandles();
+      const [handle, setHandle] = useState<BlockLevelHandle | null>(null);
       const st = candidatesFor(0, 0);
       const candidates =
         st.status === "resolved"
@@ -215,8 +220,8 @@ describe("useSceneHandles — instant-first with device fallback", () => {
       return (
         <BlockLevelPick
           pseudoLabel="Amp output level"
-          handle={null}
-          onHandleChange={() => undefined}
+          handle={handle}
+          onHandleChange={setHandle}
           candidates={candidates}
           onOpen={() => {
             prefetch(0);
@@ -235,7 +240,14 @@ describe("useSceneHandles — instant-first with device fallback", () => {
     );
 
     await user.click(screen.getByText("Amp output level"));
-    expect(await screen.findByText("Gain")).toBeInTheDocument();
+    // The candidate is already resolved by open time — the skeleton never shows,
+    // and the BLOCK dropdown's one row (the Boost's catalog full name) is there
+    // immediately.
     expect(screen.queryByText("Loading controls…")).toBeNull();
+    const blockRow = await screen.findByText("BOOST");
+    await user.click(blockRow);
+    // Picking the (only, hence best-ranked) block auto-picks its candidate, landing
+    // on the CONTROL dropdown's trigger.
+    expect(screen.getByText("Gain")).toBeInTheDocument();
   });
 });

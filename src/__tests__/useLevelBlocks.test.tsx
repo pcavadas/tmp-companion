@@ -5,6 +5,7 @@
 // expected answer for a genuinely blockless/unparseable preset (mirrors
 // `useSceneHandles.ts`'s own discriminator: MAP KEY PRESENCE, not list emptiness).
 
+import { useState } from "react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   renderHook,
@@ -17,7 +18,10 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { BlockLevelPick } from "../views/overlays/BlockLevelPick";
+import {
+  BlockLevelPick,
+  type BlockLevelHandle,
+} from "../views/overlays/BlockLevelPick";
 import { WithCard } from "./pickCardTestUtils";
 import { useLevelBlocks } from "../views/level/useLevelBlocks";
 import {
@@ -212,6 +216,7 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
 
     function Harness() {
       const { prefetch, blocksFor } = useLevelBlocks();
+      const [handle, setHandle] = useState<BlockLevelHandle | null>(null);
       const st = blocksFor(0);
       const candidates =
         st.status === "resolved"
@@ -229,8 +234,8 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
       return (
         <BlockLevelPick
           pseudoLabel="Preset level"
-          handle={null}
-          onHandleChange={() => undefined}
+          handle={handle}
+          onHandleChange={setHandle}
           candidates={candidates}
           onOpen={() => {
             prefetch(0);
@@ -250,8 +255,14 @@ describe("useLevelBlocks — instant-first with device fallback", () => {
 
     await user.click(screen.getByText("Preset level"));
     // The candidate is already resolved by open time (the backup scan ran at
-    // `beforeEach`/`seedScan` time, well before this click) — the skeleton never shows.
-    expect(await screen.findByText("Output level")).toBeInTheDocument();
+    // `beforeEach`/`seedScan` time, well before this click) — the skeleton never
+    // shows, and the BLOCK dropdown's one row (the amp's catalog full name) is
+    // there immediately.
     expect(screen.queryByText("Loading controls…")).toBeNull();
+    const blockRow = await screen.findByText("FENDER '65 TWIN REVERB");
+    await user.click(blockRow);
+    // Picking the (only, hence best-ranked) block auto-picks its candidate, landing
+    // on the CONTROL dropdown's trigger.
+    expect(screen.getByText("Output level")).toBeInTheDocument();
   });
 });
