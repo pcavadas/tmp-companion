@@ -28,28 +28,61 @@ const REAMP_INSTRUMENT_OUT_CH: usize = 2;
 /// calibration to measure the instrument's actual output.
 pub const DRY_INSTRUMENT_IN_CH: usize = 2;
 
-/// A Core Audio device with its max input/output channel counts and the sample
-/// rates it advertises.
+/// Parse a `/proc/asound/cardN/usbid` body (`"1ed8:0047\n"`, lowercase hex,
+/// colon-separated, no zero-padding) into `(vendor, product)`. Pure so the
+/// Linux card-identity lookup is unit-tested on macOS CI too. `pub(crate)`:
+/// shared with `probe_api::audio_devices`, which walks `/proc/asound` to
+/// report every Fender-VID card regardless of which product id carries PCM.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn parse_asound_usbid(usbid: &str) -> Option<(u16, u16)> {
+    let (v, p) = usbid.trim().split_once(':')?;
+    let vendor = u16::from_str_radix(v, 16).ok()?;
+    let product = u16::from_str_radix(p, 16).ok()?;
+    Some((vendor, product))
+}
+
+/// A host audio device with its max input/output channel counts, the sample
+/// rates and sample formats it advertises, and (on Linux, where a device name
+/// alone is ambiguous between `hw:`/`plughw:`/dmix/etc aliases of the same
+/// card) the exact ALSA PCM id cpal would open it as.
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioDevice {
     pub name: String,
+    pub driver: Option<String>,
     pub input_channels: u16,
     pub output_channels: u16,
     pub sample_rates: Vec<u32>,
+    pub sample_formats: Vec<String>,
 }
 
-/// Enumerate Core Audio devices, merging the input/output views of each device
-/// (a device appears in both lists) keyed by name.
+/// Enumerate host audio devices, merging the input/output views of each device
+/// (a device appears in both lists) keyed by **(name, driver)**, not name
+/// alone: on Linux several distinct ALSA PCMs (a `hw:` device, a `dmix:`
+/// wrapper, a `surroundNN:` hint…) can share the exact same display name, and
+/// merging those by name alone would union their channel/rate/format ranges
+/// into a chimera that describes none of them (HW-observed: `hw:CARD=Pro_1,
+/// DEV=0`'s real S32_LE/4ch/[44100,96000] getting merged with an unrelated
+/// hint into a bogus 64ch/F32/[4000,4294967295] entry). `driver` is the exact
+/// ALSA pcm_id, so it disambiguates; two entries with the same name AND driver
+/// really are the same device's input/output view.
 pub fn enumerate() -> Vec<AudioDevice> {
     let host = cpal::default_host();
-    let mut map: BTreeMap<String, AudioDevice> = BTreeMap::new();
+    let mut map: BTreeMap<(String, Option<String>), AudioDevice> = BTreeMap::new();
 
-    let mut note = |name: String, in_ch: u16, out_ch: u16, rates: &[u32]| {
-        let e = map.entry(name.clone()).or_insert_with(|| AudioDevice {
+    let mut note = |name: String,
+                    driver: Option<String>,
+                    in_ch: u16,
+                    out_ch: u16,
+                    rates: &[u32],
+                    formats: &[SampleFormat]| {
+        let key = (name.clone(), driver.clone());
+        let e = map.entry(key).or_insert_with(|| AudioDevice {
             name,
+            driver,
             input_channels: 0,
             output_channels: 0,
             sample_rates: Vec::new(),
+            sample_formats: Vec::new(),
         });
         e.input_channels = e.input_channels.max(in_ch);
         e.output_channels = e.output_channels.max(out_ch);
@@ -59,20 +92,37 @@ pub fn enumerate() -> Vec<AudioDevice> {
             }
         }
         e.sample_rates.sort_unstable();
+        for f in formats {
+            let s = format!("{f:?}");
+            if !e.sample_formats.contains(&s) {
+                e.sample_formats.push(s);
+            }
+        }
+        e.sample_formats.sort_unstable();
     };
 
     if let Ok(devs) = host.input_devices() {
         for d in devs {
             let name = d.to_string();
-            let (ch, rates) = max_channels_and_rates(d.supported_input_configs().ok());
-            note(name, ch, 0, &rates);
+            let driver = d.description().ok().and_then(|desc| {
+                desc.driver()
+                    .filter(|drv| *drv != name)
+                    .map(|drv| drv.to_string())
+            });
+            let (ch, rates, formats) = channels_rates_formats(d.supported_input_configs().ok());
+            note(name, driver, ch, 0, &rates, &formats);
         }
     }
     if let Ok(devs) = host.output_devices() {
         for d in devs {
             let name = d.to_string();
-            let (ch, rates) = max_channels_and_rates(d.supported_output_configs().ok());
-            note(name, 0, ch, &rates);
+            let driver = d.description().ok().and_then(|desc| {
+                desc.driver()
+                    .filter(|drv| *drv != name)
+                    .map(|drv| drv.to_string())
+            });
+            let (ch, rates, formats) = channels_rates_formats(d.supported_output_configs().ok());
+            note(name, driver, 0, ch, &rates, &formats);
         }
     }
 
@@ -92,13 +142,14 @@ pub fn find_tmp(devices: &[AudioDevice]) -> Option<&AudioDevice> {
         })
 }
 
-fn max_channels_and_rates<I, C>(configs: Option<I>) -> (u16, Vec<u32>)
+fn channels_rates_formats<I, C>(configs: Option<I>) -> (u16, Vec<u32>, Vec<SampleFormat>)
 where
     I: Iterator<Item = C>,
     C: SupportedConfigLike,
 {
     let mut ch = 0u16;
     let mut rates: Vec<u32> = Vec::new();
+    let mut formats: Vec<SampleFormat> = Vec::new();
     if let Some(it) = configs {
         for c in it {
             ch = ch.max(c.channels());
@@ -108,17 +159,22 @@ where
                     rates.push(r);
                 }
             }
+            let f = c.sample_format();
+            if !formats.contains(&f) {
+                formats.push(f);
+            }
         }
     }
     rates.sort_unstable();
-    (ch, rates)
+    (ch, rates, formats)
 }
 
-/// Tiny abstraction so `max_channels_and_rates` works over cpal's input and
+/// Tiny abstraction so `channels_rates_formats` works over cpal's input and
 /// output `SupportedStreamConfigRange` without duplicating the loop.
 trait SupportedConfigLike {
     fn channels(&self) -> u16;
     fn sample_rate_range(&self) -> (u32, u32);
+    fn sample_format(&self) -> SampleFormat;
 }
 
 impl SupportedConfigLike for cpal::SupportedStreamConfigRange {
@@ -127,6 +183,9 @@ impl SupportedConfigLike for cpal::SupportedStreamConfigRange {
     }
     fn sample_rate_range(&self) -> (u32, u32) {
         (self.min_sample_rate(), self.max_sample_rate())
+    }
+    fn sample_format(&self) -> SampleFormat {
+        cpal::SupportedStreamConfigRange::sample_format(self)
     }
 }
 
@@ -1326,6 +1385,67 @@ mod tests {
             Some(32000.0 - cap as f32 + 1.0),
             "front is exactly `cap` samples back — older history trimmed"
         );
+    }
+
+    #[test]
+    fn parse_asound_usbid_reads_the_kernels_lowercase_colon_form() {
+        // A real TMP audio-interface card (fw 1.8.58, HW-captured).
+        assert_eq!(parse_asound_usbid("1ed8:0047\n"), Some((0x1ed8, 0x0047)));
+        // No trailing newline, no leading zeros stripped either way.
+        assert_eq!(parse_asound_usbid("07ca:313a"), Some((0x07ca, 0x313a)));
+    }
+
+    #[test]
+    fn parse_asound_usbid_rejects_malformed_input() {
+        for bad in ["", "1ed8", "1ed8:", ":0047", "zzzz:0047", "1ed8:0047:extra"] {
+            assert_eq!(parse_asound_usbid(bad), None, "input {bad:?}");
+        }
+    }
+
+    #[test]
+    fn channels_rates_formats_merges_and_dedupes_across_config_ranges() {
+        struct Fake {
+            ch: u16,
+            lo: u32,
+            hi: u32,
+            fmt: SampleFormat,
+        }
+        impl SupportedConfigLike for Fake {
+            fn channels(&self) -> u16 {
+                self.ch
+            }
+            fn sample_rate_range(&self) -> (u32, u32) {
+                (self.lo, self.hi)
+            }
+            fn sample_format(&self) -> SampleFormat {
+                self.fmt
+            }
+        }
+        let configs = vec![
+            Fake {
+                ch: 4,
+                lo: 44_100,
+                hi: 48_000,
+                fmt: SampleFormat::I32,
+            },
+            Fake {
+                ch: 2,
+                lo: 48_000,
+                hi: 48_000,
+                fmt: SampleFormat::F32,
+            },
+            // Same format as the first row — must not duplicate in the output.
+            Fake {
+                ch: 4,
+                lo: 44_100,
+                hi: 48_000,
+                fmt: SampleFormat::I32,
+            },
+        ];
+        let (ch, rates, formats) = channels_rates_formats(Some(configs.into_iter()));
+        assert_eq!(ch, 4, "max channel count across all ranges");
+        assert_eq!(rates, vec![44_100, 48_000]);
+        assert_eq!(formats, vec![SampleFormat::I32, SampleFormat::F32]);
     }
 
     #[test]
