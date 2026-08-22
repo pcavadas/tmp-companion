@@ -664,6 +664,8 @@ mod truncation_fallback_tests {
                 all_params: Vec::new(),
             }],
             silence_hint: None,
+            scene_handles: Vec::new(),
+            base_handles: Vec::new(),
         }
     }
 

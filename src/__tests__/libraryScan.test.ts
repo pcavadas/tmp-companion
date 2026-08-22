@@ -41,6 +41,8 @@ const row = (slot: number, name: string) => ({
   graph: emptyGraph,
   footswitches: [],
   silence_hint: null,
+  scene_handles: [],
+  base_handles: [],
 });
 
 // device slots 8 / 58 → list indices 7 / 57; three song→preset bindings.

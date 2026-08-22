@@ -3,7 +3,7 @@
 //! truth is the checked-in `src/models/param-class.json` (repo-root, frontend
 //! `src/`), parsed once here — Rust is now the ONLY classifier. There used to be
 //! a hand-mirrored TS copy (`src/views/level/paramClass.ts`); it was deleted once
-//! `footswitch::LevelParamCandidate`/`commands::SceneHandleCandidate` started
+//! `footswitch::LevelParamCandidate`/`probe_api::scene_jobs::SceneHandleCandidate` started
 //! shipping [`ParamClass`] itself on the wire, so drift is no longer possible —
 //! the frontend reads the verdict off the candidate, it never re-derives one.
 //!

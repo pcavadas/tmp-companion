@@ -302,9 +302,15 @@ function FsRowControls({
   );
 }
 
-/** `list_level_blocks` (Base rows) → the combined picker's candidate list. No class
- *  annotation on the wire (`session::LevelBlock`) — `BlockLevelPick` sorts an
- *  unclassified candidate after every classified one. */
+/** `useLevelBlocks` (Base rows) → the combined picker's candidate list. TWO sources ride
+ *  the SAME `BaseCandidate` shape now: the backup-derived arm carries a real `paramClass`
+ *  (`base_handles`, classified backend-side, same table the scene picker uses), while the
+ *  device-fallback arm (`list_level_blocks` → `session::LevelBlock`) carries none — that
+ *  wire shape was never annotated, and this is a deliberate divergence, not a gap to
+ *  "fix" by classifying frontend-side (there is no local classifier mirror; see
+ *  `LevelParamCandidate`'s doc in `types.ts`). `BlockLevelPick`'s `rank()` already sorts
+ *  an `undefined` class after every classified one, so the fallback arm's candidates
+ *  simply fall in last, exactly as they always have. */
 function baseCandidatesFetch(state: BaseBlockFetchState): BlockLevelFetch {
   if (state.status !== "resolved") return { status: state.status };
   return {
@@ -314,6 +320,8 @@ function baseCandidatesFetch(state: BaseBlockFetchState): BlockLevelFetch {
       nodeId: b.node_id,
       fenderId: b.model_id,
       parameterId: b.parameter_id,
+      paramClass: b.paramClass,
+      lowersOnly: b.headroom === "lowers_only",
     })),
   };
 }
@@ -355,23 +363,6 @@ function sceneCandidatesFetch(state: HandleFetchState): BlockLevelFetch {
       ...sceneDisabledFields(c.scope),
     })),
   };
-}
-
-/** True when a carried-forward Base handle pick is IDENTICAL to the user's current
- *  choice — the untouched-relevel case, where the original pick's stored `value`
- *  should be kept verbatim rather than re-resolved against a fresh block read.
- *  Each field its own optional-chained comparison (rather than an `a && a.x`
- *  chain) so a `null`/`undefined` carried pick simply compares false, with no
- *  narrowing the caller can rely on — the caller re-reads `o.baseHandle` itself. */
-function sameHandle(
-  a: BaseHandlePick | null | undefined,
-  b: BlockLevelHandle,
-): boolean {
-  return (
-    a?.groupId === b.groupId &&
-    a.nodeId === b.nodeId &&
-    a.parameterId === b.parameterId
-  );
 }
 
 /** One row's editable choices, keyed by `SetupOption.key`. `handle` is Base/Scene/FS
@@ -497,14 +488,39 @@ export function SetupBody({
     });
   };
 
-  // Leveling-handle candidates: real device reads, so each fires LAZILY — once per
-  // PRESET, on the first time any of that preset's rows opens its own picker (Set up
-  // otherwise does no device reads). Footswitch candidates need no fetch at all — the
-  // switch's own `level_params` are already in hand.
-  const { prefetch: fetchHandlesFor, candidatesFor } = useSceneHandles();
-  const { prefetch: fetchBlocksFor, blocksFor } = useLevelBlocks();
+  // Leveling-handle candidates. Base/Scene resolve INSTANT-FIRST off the startup backup
+  // scan (no device I/O — see `useLevelBlocks`/`useSceneHandles`), falling back to a real
+  // device read (load+discovery / a field-8 read) only for a row the backup didn't cover.
+  // Footswitch candidates need no fetch at all — the switch's own `level_params` are
+  // already in hand. The scene-context picker (D3) stays a real, lazy device read.
+  const {
+    prefetch: fetchHandlesFor,
+    candidatesFor,
+    hasBackupData: sceneHasBackup,
+  } = useSceneHandles();
+  const {
+    prefetch: fetchBlocksFor,
+    blocksFor,
+    hasBackupData: baseHasBackup,
+  } = useLevelBlocks();
   const { prefetch: fetchFsContextFor, contextFor } =
     useFootswitchSceneContexts();
+
+  // Eagerly warm every group's Base/Scene candidates on Set-up step render — SCAN-ONLY:
+  // gated on `hasBackupData` so this provably cannot reach the device. A slot the backup
+  // scan didn't cover (map key absent — including the "ready but failed" scan shape,
+  // where every map is empty) is left unfetched here; its row falls back to a real device
+  // read LAZILY, only if the user actually opens that row's own picker (the `onOpen`
+  // handlers below, unchanged). Idempotent either way (`useLazySlotCache`'s per-mount
+  // `fetchedSlotsRef`), so re-running this on every render (the fetchers are fresh
+  // closures, not memoized — matching every other call site in this file) only re-checks
+  // already-fetched slots, never re-fetches them.
+  useEffect(() => {
+    groups.forEach((g) => {
+      if (baseHasBackup(g.slot)) fetchBlocksFor(g.slot);
+      if (sceneHasBackup(g.slot)) fetchHandlesFor(g.slot);
+    });
+  }, [groups, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
 
   // A footswitch row's D3 default: the lazily-fetched `suggested` scene, when resolved.
   const fsSuggestedFor = (o: SetupOption): number | null => {
@@ -594,37 +610,20 @@ export function SetupBody({
             : {}),
         };
       } else if (o.isBase) {
+        // `chosen` (a `BlockLevelHandle`) already carries exactly the three fields a
+        // `BaseHandlePick` needs — no block-list re-lookup required. `block_value`
+        // is ALWAYS `null` at dispatch (`buildLevelJob`): the run's own fresh
+        // saved-doc read anchors the wet floor instead (`level_preset.rs`'s
+        // block-value fallback), for either source, so there is nothing here to
+        // resolve from a live read.
         const chosen = row?.handle;
-        let baseHandle: BaseHandlePick | null;
-        if (chosen == null) {
-          baseHandle = null; // the "Preset level" pseudo-option (D2 default)
-        } else if (sameHandle(o.baseHandle, chosen)) {
-          // Untouched carried-forward pick (a re-level round) — keep its own stored
-          // `value` verbatim rather than re-resolving it against a fresh read.
-          baseHandle = o.baseHandle ?? null;
-        } else {
-          const blocks = blocksFor(o.slot);
-          const match =
-            blocks.status === "resolved"
-              ? blocks.blocks.find(
-                  (b) =>
-                    b.group_id === chosen.groupId &&
-                    b.node_id === chosen.nodeId &&
-                    b.parameter_id === chosen.parameterId,
-                )
-              : undefined;
-          // `match` is always found in practice — picking a candidate requires opening
-          // the (already-fetched-by-then) menu — but a `null` fallback keeps this
-          // honest rather than inventing a value for an unresolved pick.
-          baseHandle = match
-            ? {
-                groupId: match.group_id,
-                nodeId: match.node_id,
-                parameterId: match.parameter_id,
-                value: match.value,
-              }
-            : null;
-        }
+        const baseHandle: BaseHandlePick | null = chosen
+          ? {
+              groupId: chosen.groupId,
+              nodeId: chosen.nodeId,
+              parameterId: chosen.parameterId,
+            }
+          : null; // the "Preset level" pseudo-option (D2 default)
         option = { ...o, baseHandle };
       } else if (o.sceneSlot != null) {
         option = { ...o, sceneHandle: row?.handle ?? null };

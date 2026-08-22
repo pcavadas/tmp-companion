@@ -773,6 +773,22 @@ export interface BackupPresetRow {
    * `exp_mute` = an exp-pedal binding zeroes an amp outputLevel at one end (silence
    * only when a physical pedal sits there). Refines the "not on USB 1/2" verdict. */
   silence_hint: SilenceHint | null;
+  /** Per-scene leveling-handle candidates (`lib::backup_read::BackupPresetRow.scene_handles`),
+   * extracted from the SAME presetJson `list_scene_level_handles` reads live — the Set-up
+   * step's scene control picker resolves off this INSTANTLY instead of firing that command's
+   * live field-8 read on first open (device fallback stays wired for a row this doesn't
+   * cover). Empty for a scene-less/unparseable row. */
+  scene_handles: SceneHandleRow[];
+  /** Base-row leveling-handle candidates (`lib::backup_read::BackupPresetRow.base_handles`,
+   * GUITAR-ONLY — only the guitar chain reaches the USB-Out the leveler measures), same
+   * instant-first sourcing as `scene_handles` but with no overlay/scope concept — every
+   * entry's `scope` is `"isolated"` (a base write can't leak into another sound's overlay).
+   * Empty for an unparseable row OR a genuinely blockless preset — the frontend
+   * discriminates the two by MAP KEY PRESENCE (this slot has an entry vs. doesn't), never
+   * by list emptiness, so a real empty preset renders an empty picker and does not re-fire
+   * `list_level_blocks`'s live device read (mirroring `scene_handles`'s own discriminator —
+   * see `useLevelBlocks.ts`). */
+  base_handles: SceneHandleCandidate[];
 }
 
 /** A [`BackupPresetRow.silence_hint`] value. */

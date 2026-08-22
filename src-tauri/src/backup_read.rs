@@ -1,8 +1,9 @@
 //! Decode a device backup archive into preset/scene/song data.
 
 use crate::{
-    audiograph, decode_preset_scenes, filter_amp_candidates, footswitch, is_amp_model_id,
-    is_amp_output_level_param, session, LevelBlockArg,
+    audiograph, base_handle_candidates_scanned, decode_preset_scenes, filter_amp_candidates,
+    footswitch, is_amp_model_id, is_amp_output_level_param, scan_node_graph,
+    scene_handle_rows_scanned, session, LevelBlockArg, SceneHandleCandidate, SceneHandleRow,
 };
 use serde::Serialize;
 
@@ -51,6 +52,20 @@ pub struct BackupPresetRow {
     /// JSON-visible cause of a silent leveling capture ([`silence_hint`]), refining the
     /// generic "not on USB 1/2" verdict in the Level flow. `None` = no static cause.
     pub silence_hint: Option<&'static str>,
+    /// Per-scene leveling-handle candidates ([`crate::probe_api::scene_jobs::scene_handle_rows`]),
+    /// extracted from the SAME `presetJson` — so the Set-up step's scene control picker
+    /// resolves INSTANTLY off the backup row instead of firing `list_scene_level_handles`'s
+    /// live field-8 read on first open. Empty for a scene-less/unparseable row.
+    pub scene_handles: Vec<SceneHandleRow>,
+    /// Base-row leveling-handle candidates
+    /// ([`crate::probe_api::scene_jobs::base_handle_candidates_scanned`], GUITAR-ONLY — same
+    /// restriction as `session::extract_level_candidates`), same sourcing as `scene_handles`
+    /// — the Set-up step's Base control picker's instant-first source. Empty for an
+    /// unparseable row OR a genuinely blockless preset — the frontend discriminates the two
+    /// by MAP KEY PRESENCE (this slot has an entry vs. doesn't), never by list emptiness, so
+    /// a real empty preset renders an empty picker and does not re-fire `list_level_blocks`'s
+    /// live device read (mirroring `scene_handles`'s own discriminator).
+    pub base_handles: Vec<SceneHandleCandidate>,
 }
 
 /// One block in a backup preset's audioGraph roster (see [`BackupPresetRow::blocks`]).
@@ -420,6 +435,13 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
     let mut presets = Vec::new();
     let mut parsed = 0usize;
     let mut failed = 0usize;
+    // The picker-candidate derivation below (`scene_handle_rows_scanned` / `base_handle_candidates_scanned`)
+    // is real per-preset CPU — see `scene_handle_rows`'s SCAN-COST doc — and this loop runs
+    // for the WHOLE library (hundreds of presets) on every connection. Timed as one total
+    // across the loop, logged once at the end, so a regression here (e.g. a preset shape
+    // that pushes many nodes into the `BypassOnly` scope arm) shows up in the log rather than
+    // silently stretching startup.
+    let mut handle_derivation_time = std::time::Duration::ZERO;
     for r in rows.as_array().map(Vec::as_slice).unwrap_or(&[]) {
         let name = r.get("displayName").and_then(|v| v.as_str()).unwrap_or("");
         if session::is_empty_slot_name(name) {
@@ -482,6 +504,26 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
                     .map(|ftsw| footswitch::enumerate_block_footswitches(ftsw, v))
             })
             .unwrap_or_default();
+        // Set-up step picker candidates — same source document, so the instant-first path
+        // never needs a live device read for a preset the backup already covers. Empty vecs
+        // for an unparseable row (no `parsed_graph`), matching every other derivation above.
+        // ONE graph walk (`scan_node_graph`) feeds BOTH derivations — `scene_handle_rows` and
+        // `base_handle_candidates` (Base) and `scene_handle_rows` (Scene) used to each rebuild their own nodeId→params map and
+        // roster on this SAME preset, back-to-back; the scan is shared and passed by
+        // reference into both `*_scanned` cores instead.
+        let handle_start = std::time::Instant::now();
+        let (scene_handles, base_handles) = match parsed_graph.as_ref() {
+            Some(g) => {
+                let scan = scan_node_graph(g);
+                (
+                    scene_handle_rows_scanned(g, &scan),
+                    base_handle_candidates_scanned(&scan),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        handle_derivation_time += handle_start.elapsed();
+
         presets.push(BackupPresetRow {
             slot: r.get("slot").and_then(|v| v.as_i64()).unwrap_or(-1),
             name: name.to_string(),
@@ -492,8 +534,15 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             graph,
             footswitches,
             silence_hint: parsed_graph.as_ref().and_then(silence_hint),
+            scene_handles,
+            base_handles,
         });
     }
+    log::info!(
+        "backup read: picker-candidate derivation (scene_handles + base_handles) took \
+         {handle_derivation_time:?} across {} preset(s)",
+        presets.len()
+    );
     let scene_mode = format!("parsed scenes from presetJson ({parsed} ok, {failed} unparseable)");
 
     Ok(BackupReadResult {

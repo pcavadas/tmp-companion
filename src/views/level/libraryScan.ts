@@ -16,6 +16,8 @@ import type {
   ActiveGraph,
   AmpCandidate,
   FootswitchInfo,
+  SceneHandleCandidate,
+  SceneHandleRow,
   SceneInfo,
   SilenceHint,
   SongRecord,
@@ -63,6 +65,19 @@ export interface LibraryScan {
   /** Per-preset silence hint keyed by 0-based LIST INDEX — only flagged presets get an
    *  entry. Refines the Level flow's offbranch ("not on USB 1/2") row status. */
   silenceHintByIndex: Map<number, SilenceHint>;
+  /** Per-preset scene leveling-handle candidates keyed by 0-based LIST INDEX — read from
+   *  the SAME backup, so the Set-up step's scene control picker (`useSceneHandles`)
+   *  resolves instantly instead of firing `list_scene_level_handles` on first open. Every
+   *  scanned preset gets an entry (possibly `[]` — a scene-less or unparseable preset);
+   *  `useSceneHandles` falls back to the device command only when this MAP has no entry
+   *  for the slot at all (an empty array here is a legitimate answer, not "no data"). */
+  sceneHandlesByIndex: Map<number, SceneHandleRow[]>;
+  /** Per-preset BASE leveling-handle candidates (guitar-only) keyed by 0-based LIST INDEX
+   *  — same backup sourcing as `sceneHandlesByIndex`, for `useLevelBlocks`'s instant-first
+   *  path. Same discriminator as `sceneHandlesByIndex` too: every scanned preset gets an
+   *  entry (possibly `[]`); `useLevelBlocks` falls back to the device command only when
+   *  this MAP has no entry for the slot at all. */
+  baseHandlesByIndex: Map<number, SceneHandleCandidate[]>;
   /** The unit's presets — `{ slot: 0-based LIST INDEX, name }` — for the Songs tab's
    *  Presets axis rail. Read from the same backup, so the axis needs no device call. */
   presets: { slot: number; name: string }[];
@@ -91,6 +106,8 @@ const emptyScan = (): LibraryScan => ({
   blocksByIndex: new Map(),
   graphByIndex: new Map(),
   silenceHintByIndex: new Map(),
+  sceneHandlesByIndex: new Map(),
+  baseHandlesByIndex: new Map(),
   presets: [],
   songPresetSlots: new Map(),
   songs: [],
@@ -154,6 +171,8 @@ export async function ensureLibraryScan(): Promise<void> {
     const blocks = new Map<number, string[]>();
     const graphs = new Map<number, ActiveGraph>();
     const silence = new Map<number, SilenceHint>();
+    const sceneHandles = new Map<number, SceneHandleRow[]>();
+    const baseHandles = new Map<number, SceneHandleCandidate[]>();
     // backup slot is the 1-based device slot; the list is 0-based → −1.
     const presets: { slot: number; name: string }[] = [];
     res.presets.forEach((p) => {
@@ -172,6 +191,8 @@ export async function ensureLibraryScan(): Promise<void> {
       );
       graphs.set(p.slot - 1, p.graph);
       if (p.silence_hint != null) silence.set(p.slot - 1, p.silence_hint);
+      sceneHandles.set(p.slot - 1, p.scene_handles);
+      baseHandles.set(p.slot - 1, p.base_handles);
       presets.push({ slot: p.slot - 1, name: p.name });
     });
     // Song slot → preset LIST INDICES (preset device slot − 1), deduped per song.
@@ -201,6 +222,8 @@ export async function ensureLibraryScan(): Promise<void> {
       blocksByIndex: blocks,
       graphByIndex: graphs,
       silenceHintByIndex: silence,
+      sceneHandlesByIndex: sceneHandles,
+      baseHandlesByIndex: baseHandles,
       presets,
       songPresetSlots,
       songs,

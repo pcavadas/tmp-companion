@@ -86,12 +86,25 @@ pub use probe_api::*;
 // extraction (Phase 2). Explicit list documents the boundary until a later phase.
 pub(crate) use probe_api::level::filter_amp_candidates;
 pub(crate) use probe_api::scene_bench::knob_bounds;
+// `scene_overlay_for`/`RefusedScope` are NOT re-exported here (unlike their siblings): every
+// call site that used to reach them through this crate-root seam (`scene_handle_rows`'s old
+// home in `commands::level_scenes`) moved INTO `probe_api::scene_jobs` itself as part of the
+// same extraction, so the only remaining callers resolve them directly, module-internally —
+// re-exporting an unused name here is a dead `pub(crate) use`, caught by `-D warnings`.
 pub(crate) use probe_api::scene_jobs::{
-    build_scene_jobs, build_scene_jobs_with_handles, is_amp_model_id, is_amp_output_level_param,
-    last_loaded_scene, prepass_scene_docs_via, read_saved_preset, read_saved_preset_complete,
-    scene_overlay, scene_overlay_for, scene_write_verdict_for_param, scenes_restating_base,
-    warn_missing_restore_scene, RefusedScope, SceneHandleSpec, SceneOverlay, SceneWriteVerdict,
+    base_handle_candidates_scanned, build_scene_jobs, build_scene_jobs_with_handles,
+    is_amp_model_id, is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via,
+    read_saved_preset, read_saved_preset_complete, scan_node_graph, scene_handle_rows,
+    scene_handle_rows_scanned, scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
+    warn_missing_restore_scene, SceneHandleSpec, SceneOverlay, SceneWriteVerdict,
 };
+// `pub`, not `pub(crate)`: `backup_read::BackupPresetRow.scene_handles`/`.base_handles` (both
+// `pub` fields) embed these — see the types' own doc for why a less-visible type inside a
+// more-visible field is a hard warning (`private_interfaces`). Same reachability the two
+// types had when they lived in `commands::level_scenes` (reached via `pub use
+// commands::level_scenes::*` below); moving them into `probe_api::scene_jobs` must not
+// narrow that.
+pub use probe_api::scene_jobs::{SceneHandleCandidate, SceneHandleRow};
 pub(crate) use probe_api::setlists::{read_setlist_list, read_setlist_songs};
 pub(crate) use probe_api::slot_write::{discover_active_graph, load_then_discover_blocks};
 pub(crate) use probe_api::songs::{converge_song_bpm, read_song_list, read_song_presets};

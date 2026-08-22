@@ -343,14 +343,16 @@ export interface SetupOption {
 }
 
 /** A user-chosen BASE leveling control — the block param `level_preset` should drive
- *  INSTEAD of the master `presetLevel` (mirrors `LevelJob.block_*`). Carries `value` (the
- *  candidate's CURRENT reading at pick time) because `block_value` picks the closed-loop
- *  search bounds without a second `list_level_blocks` read at dispatch. */
+ *  INSTEAD of the master `presetLevel` (mirrors `LevelJob.block_*`). Carries no reading:
+ *  `buildLevelJob` always sends `block_value: null` for EITHER source (backup-derived or
+ *  device-fallback) — the run's own fresh saved-doc read anchors the wet floor instead
+ *  (`level_preset.rs`'s block-value fallback, the same read that already serves
+ *  classification, at zero extra device I/O), so there is nothing to carry here or
+ *  re-resolve on a carried-forward re-level pick. */
 export interface BaseHandlePick {
   groupId: string;
   nodeId: string;
   parameterId: string;
-  value: number;
 }
 
 /** The e2e-hook identity for a setup row (`PresetOptionRow`'s `data-setup-row`) —
@@ -662,6 +664,8 @@ export function buildLevelJob(
     block_group_id: handle?.groupId ?? null,
     block_node_id: handle?.nodeId ?? null,
     block_parameter_id: handle?.parameterId ?? null,
-    block_value: handle?.value ?? null,
+    // ALWAYS null — see `BaseHandlePick`'s doc: the run's own fresh saved-doc read
+    // anchors the wet floor, for either candidate source.
+    block_value: null,
   };
 }

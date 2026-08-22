@@ -1082,73 +1082,15 @@ fn outcome_to_level_result(
 }
 
 // ───────────────────── Scene handle picker (enumeration) ─────────────────────
-
-/// One control a scene row could be leveled on, with the two annotations the picker cannot
-/// derive on its own. `class`/`range` come from [`crate::param_class`]; `current` is the
-/// value AUTHORED IN THAT SCENE (overlay if present, else base).
-///
-/// Block DISPLAY info is `groupId`/`nodeId`/`fenderId` only — the frontend owns the
-/// friendly name (it has the models catalog; the backend deliberately does not, the same
-/// split as the amp candidates the Level view already sends down).
-#[derive(serde::Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SceneHandleCandidate {
-    group_id: String,
-    node_id: String,
-    fender_id: String,
-    parameter_id: String,
-    /// `"level_linear" | "level_db" | "wet_mix"` — the classifier's verdict, serialized
-    /// straight off [`param_class::ParamClass`] (no hand-rolled mapping to drift from the
-    /// table). On the `candidates` list `"other"` never appears — `level_candidates_for_node`
-    /// admits only params the classifier recognises. On `allCandidates` it CAN: that list is
-    /// every numeric control of the block, annotated so the picker can sort and warn.
-    class: param_class::ParamClass,
-    /// The param's usable `[lo, hi]` — NOT `[0,1]` for every control (`ACD_Boost.gain` is
-    /// raw dB over `[0, 12]`). For a `wet_mix` the LOW bound is already raised to the wet
-    /// floor, so the picker shows the range the solve may actually write.
-    range: [f32; 2],
-    current: f32,
-    /// Does writing this control in THIS scene affect ONLY this scene?
-    /// * `"isolated"` — the scene carries a knob overlay for the node (or none at all, in
-    ///   which case the Scene Edit enable materialises one). The write stays here. ALSO
-    ///   `"isolated"` for a bypass-only node whose leak-to-base write
-    ///   `shared_write_is_scene_local` confirms is audible ONLY in this scene (every other
-    ///   sharing scene stays bypassed, or pins this param with its own overlay) — the write
-    ///   still lands on the shared base value, but nothing ELSE it's shared with can hear it.
-    /// * `"shared_with_base"` — the node's Scene Edit flag is OFF (a bypass-only overlay)
-    ///   and the leak above is NOT confirmed scene-local, so this scene reads the BASE knob
-    ///   and a write would audibly change another sharing scene too. `set_knobs` REFUSES
-    ///   such a write, so the picker must warn rather than offer it silently.
-    /// * `"unknown"` — the saved read could not answer (a truncated `scenes` tail). Both
-    ///   write shapes corrupt from there, so the write is refused too.
-    scope: String,
-    /// `"full"` = the control has room in both directions. `"lowers_only"` = its authored
-    /// value already sits at (or within a whisker of) the top of its range, so this handle
-    /// can only make the scene QUIETER — the picker should say so before the user finds out
-    /// from a clamped row.
-    headroom: String,
-}
-
-/// The handle candidates for ONE scene.
-#[derive(serde::Serialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SceneHandleRow {
-    /// 0-based `scenes[]` wire index. FS scenes only — base handles are the preset lane's
-    /// own picker (`list_level_blocks`), and the overlay annotations below are meaningless
-    /// for base (it has no overlay concept).
-    scene_slot: u32,
-    candidates: Vec<SceneHandleCandidate>,
-    /// EVERY numeric control of every block in this scene, class-annotated and level-class
-    /// first — the combined picker's source. A SUPERSET of `candidates`, which stays the
-    /// safe-default list every pre-selection reads. Additive on the wire, so an existing
-    /// consumer is unaffected.
-    all_candidates: Vec<SceneHandleCandidate>,
-}
-
-/// Within this fraction of the range's top, a control counts as having no room to go up.
-/// A knob authored at 0.995 of `[0,1]` has ~0.04 dB of boost left — reporting that as "full"
-/// headroom would be a lie the user only discovers from a clamped row.
-const HANDLE_TOP_EPS_FRACTION: f32 = 0.01;
+// The wire DTOs (`SceneHandleCandidate`/`SceneHandleRow`) and the whole pure derivation this
+// command wraps (`scene_handle_rows`, `base_handle_candidates_scanned`, `scan_node_graph`,
+// `finish_handle_candidate`) live in `probe_api::scene_jobs` — their entire dependency mass
+// (`scene_overlay`, `scene_write_verdict_for_param`, `SceneOverlay`) already lived there, and
+// `backup_read` (which calls the shared-walk `*_scanned` cores straight off the backup scan,
+// with no command layer involved) has no business importing an algorithm from the IPC
+// command layer to reach them. All are re-exported at the crate root, so this command — and
+// every other caller, `backup_read` included — keeps addressing them unqualified
+// (`scene_handle_rows`, `SceneHandleRow`, …) exactly as before.
 
 /// Per-scene handle candidates for the picker. PURE apart from ONE field-8 read: every
 /// annotation (class, range, per-scene current value, overlay scope) comes out of the saved
@@ -1166,133 +1108,6 @@ pub(crate) async fn list_scene_level_handles(
         Ok(scene_handle_rows(&preset))
     })
     .await
-}
-
-/// [`list_scene_level_handles`]'s pure core — the whole annotation rule, unit-testable
-/// against a preset document with no device in the loop.
-fn scene_handle_rows(preset: &serde_json::Value) -> Vec<SceneHandleRow> {
-    let scene_count = preset
-        .get("scenes")
-        .and_then(|s| s.as_array())
-        .map_or(0, |a| a.len()) as u32;
-    // nodeId → its base `dspUnitParameters` (the candidate source; a scene overlay only
-    // ever restates params the base node already carries).
-    let mut params: std::collections::HashMap<String, serde_json::Map<String, serde_json::Value>> =
-        std::collections::HashMap::new();
-    audiograph::for_each_node(preset, |obj| {
-        if let Some(nid) = obj.get("nodeId").and_then(|v| v.as_str()) {
-            params.insert(
-                nid.to_string(),
-                obj.get("dspUnitParameters")
-                    .and_then(|p| p.as_object())
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-        }
-    });
-    let roster = audiograph::roster(preset);
-    (0..scene_count)
-        .map(|scene| {
-            let mut candidates = Vec::new();
-            let mut all_candidates = Vec::new();
-            for (group_id, node_id, fender_id) in &roster {
-                let Some(base_params) = params.get(node_id) else {
-                    continue;
-                };
-                // The overlay decides which values are the scene's own — one lookup per node,
-                // reused for every candidate on it. (The scope annotation is a SEPARATE,
-                // per-candidate lookup below, via `scene_write_verdict_for_param`.)
-                // `scene_overlay_for`, not `scene_overlay`: the roster triple is already in
-                // hand, so the string-keyed wrapper's whole-graph `roster_entry` walk would
-                // be re-paid once per (scene, node) pair for an answer we resolved once.
-                let overlay = scene_overlay_for(preset, scene, (group_id, node_id, fender_id));
-                // Only the Full overlay's own params ever override a candidate's `current` —
-                // the scope annotation below is now derived per-candidate from the write-
-                // landing verdict itself, not re-derived here.
-                let overlay_params = match overlay {
-                    SceneOverlay::Full(p) => Some(p),
-                    _ => None,
-                };
-                // ONE annotation rule, applied to both lists — the safe-default candidates
-                // and the combined picker's superset must describe the same control the same
-                // way, which they cannot do if each list annotates separately.
-                let annotate = |mut c: footswitch::LevelParamCandidate| {
-                    if let Some(v) = overlay_params
-                        .and_then(|p| p.get(&c.parameter_id))
-                        .and_then(|v| v.as_f64())
-                    {
-                        c.current = v;
-                    }
-                    let current = c.current as f32;
-                    let target = leveller::FsParamTarget::new(fender_id, &c.parameter_id, current);
-                    let (lo, hi) = target.bounds();
-                    let headroom = if current >= hi - (hi - lo).abs() * HANDLE_TOP_EPS_FRACTION {
-                        "lowers_only"
-                    } else {
-                        "full"
-                    };
-                    // ONE write-landing policy, consulted PER PARAM: another param on the same
-                    // BypassOnly node may leak audibly elsewhere even when this one doesn't, so
-                    // the scope can't be a per-node default with a per-param override — the
-                    // verdict itself already answers per (node, param).
-                    let scope = match scene_write_verdict_for_param(
-                        preset,
-                        scene,
-                        node_id,
-                        &c.parameter_id,
-                    ) {
-                        SceneWriteVerdict::WriteDirect { .. } | SceneWriteVerdict::NeedsEnable => {
-                            "isolated"
-                        }
-                        SceneWriteVerdict::Refuse {
-                            scope: RefusedScope::SharedWithBase,
-                            ..
-                        } => "shared_with_base",
-                        SceneWriteVerdict::Refuse {
-                            scope: RefusedScope::Unknown,
-                            ..
-                        } => "unknown",
-                    };
-                    SceneHandleCandidate {
-                        group_id: c.group_id,
-                        node_id: c.node_id,
-                        fender_id: c.fender_id,
-                        parameter_id: c.parameter_id,
-                        class: target.info.class,
-                        range: [lo, hi],
-                        current,
-                        scope: scope.to_string(),
-                        headroom: headroom.to_string(),
-                    }
-                };
-                candidates.extend(
-                    footswitch::level_candidates_for_node(
-                        group_id,
-                        node_id,
-                        fender_id,
-                        base_params,
-                    )
-                    .into_iter()
-                    .map(annotate),
-                );
-                all_candidates.extend(
-                    footswitch::all_numeric_candidates_for_node(
-                        group_id,
-                        node_id,
-                        fender_id,
-                        base_params,
-                    )
-                    .into_iter()
-                    .map(annotate),
-                );
-            }
-            SceneHandleRow {
-                scene_slot: scene,
-                candidates,
-                all_candidates,
-            }
-        })
-        .collect()
 }
 
 // ───────────────────────── Gain-budget redistribution (PR5) ─────────────────────────
@@ -2133,6 +1948,95 @@ mod scene_handle_tests {
         // pedal's `overdrive` is a drive control — neither is ever offered.
         assert!(find(&rows[0], "amp", "volume").is_none());
         assert!(find(&rows[0], "ped", "overdrive").is_none());
+    }
+
+    // ── Part A: base-row handle candidates (no overlay/scope concept — always isolated) ──
+
+    /// Test-only convenience: `base_handle_candidates_scanned` takes an already-built
+    /// [`NodeGraphScan`] (production callers — `backup_read` — build it once and share it
+    /// with the scene derivation too), so there is no live preset-in wrapper to call the way
+    /// `scene_handle_rows(&preset)` works. Every test below wants a single preset in, so
+    /// build-and-scan here instead of repeating `base_handle_candidates_scanned(&scan_node_graph(&preset))`
+    /// at every call site.
+    fn base_handle_candidates(preset: &serde_json::Value) -> Vec<SceneHandleCandidate> {
+        base_handle_candidates_scanned(&scan_node_graph(preset))
+    }
+
+    #[test]
+    fn base_handle_candidates_matches_the_scene_zero_candidates_scope_isolated() {
+        let out = base_handle_candidates(&preset());
+        let find = |node: &str, param: &str| {
+            out.iter()
+                .find(|c| c.node_id == node && c.parameter_id == param)
+                .cloned()
+        };
+
+        // Same classifier gate + range/current/headroom math as a scene candidate, but no
+        // overlay concept at all: every base candidate is unconditionally "isolated".
+        let amp = find("amp", "outputLevel").expect("amp outputLevel");
+        assert_eq!(amp.scope, "isolated");
+        assert_eq!(
+            amp.current, 0.5,
+            "the preset's BASE value, no overlay to prefer"
+        );
+        assert_eq!(amp.class, param_class::ParamClass::LevelLinear);
+        assert_eq!(amp.range, [0.0, 1.0]);
+        assert_eq!(amp.headroom, "full");
+
+        // A control authored at the top of its range can only go down, same as a scene row.
+        let ped = find("ped", "volume").expect("pedal volume");
+        assert_eq!(ped.scope, "isolated");
+        assert_eq!(ped.current, 1.0);
+        assert_eq!(ped.headroom, "lowers_only");
+
+        // The classifier's bars hold here too — an amp's `volume` (breakup) and a pedal's
+        // `overdrive` (drive) are never offered, exactly like the scene picker.
+        assert!(find("amp", "volume").is_none());
+        assert!(find("ped", "overdrive").is_none());
+        assert_eq!(out.len(), 2, "exactly the two level-classified candidates");
+    }
+
+    #[test]
+    fn base_handle_candidates_is_empty_for_a_graph_with_no_numeric_level_params() {
+        let preset = serde_json::json!({ "audioGraph": { "guitarNodes": {} } });
+        assert!(base_handle_candidates(&preset).is_empty());
+    }
+
+    // BUG: `base_handle_candidates` used to walk BOTH graphs (`audiograph::roster`), so a
+    // mic-node candidate could surface in the Base picker. Only the guitar chain reaches the
+    // USB-Out the leveler measures (`session::extract_level_candidates`'s own rationale) —
+    // Base must be guitar-only. `scene_handle_rows` keeps its pre-existing both-graphs walk.
+    #[test]
+    fn base_handle_candidates_is_guitar_only_but_scene_handle_rows_still_walks_both_graphs() {
+        let preset = serde_json::json!({
+            "audioGraph": {
+                "guitarNodes": { "G1": [
+                    { "nodeId": "amp", "FenderId": "ACD_TwinReverb65NoFx",
+                      "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } }
+                ] },
+                "micNodes": { "M1": [
+                    { "nodeId": "micpre", "FenderId": "ACD_TwinReverb65NoFx",
+                      "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } }
+                ] }
+            },
+            "scenes": [ {} ]
+        });
+
+        let base = base_handle_candidates(&preset);
+        assert!(
+            base.iter().any(|c| c.node_id == "amp"),
+            "the guitar node is still offered"
+        );
+        assert!(
+            base.iter().all(|c| c.node_id != "micpre"),
+            "a mic-graph node must never surface in the Base picker"
+        );
+
+        let rows = scene_handle_rows(&preset);
+        assert!(
+            rows[0].candidates.iter().any(|c| c.node_id == "micpre"),
+            "Scene's picker is unaffected — it still offers either graph's blocks"
+        );
     }
 
     // ── Part B: audibility-guarded BypassOnly scope (bug: preset 28 "Friedman HBE",

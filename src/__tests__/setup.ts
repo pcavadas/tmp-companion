@@ -68,6 +68,8 @@ function emptyResultFor(command: string): unknown {
     // leveling
     case "list_level_blocks":
       return [];
+    case "list_scene_level_handles":
+      return [];
     case "level_scenes":
       return [];
     case "level_setlist":
