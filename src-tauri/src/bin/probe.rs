@@ -26,6 +26,10 @@
 //!   probe --setlists               list every Setlist on the device (names)
 //!   probe --setlist-songs          list the songs each Setlist contains (slots → names)
 //!   probe --activegraph            print the current preset's live signal-chain graph
+//!   probe --audio-devices          NO-DEVICE (HID): enumerate host audio devices (cpal) —
+//!                                  names, exact ALSA PCM id (Linux), channels, rates,
+//!                                  sample formats, and which one find_tmp() would pick.
+//!                                  Linux also prints the /proc/asound Fender-VID card table.
 //!   probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <FENDER_ID>] [--slot N] [--commit]
 //!                                  ADD a block to the device's CURRENT ACTIVE preset via
 //!                                  live insertNode (field 34). No --commit = DRY RUN
@@ -206,6 +210,19 @@ fn main() {
         match tmp_companion_lib::probe_active_graph() {
             Ok(graph) => {
                 print!("{graph}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--audio-devices") {
+        match tmp_companion_lib::probe_audio_devices() {
+            Ok(report) => {
+                print!("{report}");
                 return;
             }
             Err(e) => {
