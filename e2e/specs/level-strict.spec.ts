@@ -80,6 +80,7 @@ interface FootswitchLevelResult {
   saved: boolean;
   clamped: boolean;
   clamp_reason: string | null;
+  predicted_lufs: number;
 }
 /** P5 external validation: what the run PROMISED for the sound about to be re-measured.
  * The spec owns this because the spec is what drove the leveling lane — the server keeps
@@ -236,9 +237,22 @@ test.describe("Level — strict output harness (Hiwatt corruption-class preset)"
       expect(r.clamped, `switch ${String(r.switch)} must reach target`).toBe(
         false,
       );
-      expect(r.saved, `switch ${String(r.switch)} must level and save`).toBe(
-        true,
-      );
+      // `saved: false` is legitimate ONLY as the bake lane's in-tolerance skip
+      // (cb7cb60): lanes 1/2 just leveled the whole preset to TARGET, so a
+      // low-authority switch's engaged sound can already sit at TARGET — the
+      // idempotency probe then writes nothing, and on THIS preset that shape is
+      // deterministic (switch 11 skips every run). Accept it only with the
+      // probe's own proof: `predicted_lufs` IS the measurement that passed the
+      // FS_TOL_LU (0.1 LU) gate, so it must sit within it. A save that merely
+      // failed reports off-target or clamped and still dies here. The strict
+      // ffmpeg re-measure below remains the real arbiter for every switch,
+      // skipped or saved.
+      if (!r.saved) {
+        expect(
+          Math.abs(r.predicted_lufs - TARGET),
+          `switch ${String(r.switch)} skipped its save, which is only legitimate when its stored value measured within tolerance of target`,
+        ).toBeLessThanOrEqual(0.11);
+      }
     }
 
     // ── The strict gate: re-measure EVERY sound from the SAVED state ──────────
