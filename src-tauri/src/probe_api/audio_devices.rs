@@ -75,9 +75,11 @@ fn format_device(d: &AudioDevice, picked: bool) -> String {
 
 #[cfg(target_os = "linux")]
 fn linux_asound_report() -> String {
-    // Fender's vendor id; the TMP's product id differs between its two USB
-    // interfaces (HID control vs USB-Audio) — walk every card the vendor id
-    // owns rather than assuming which product id carries PCM.
+    // Fender's vendor id. HW-observed (fw 1.8.58): the TMP enumerates on TWO USB
+    // product ids — 0x0044 carries HID control and is MIDI-only with no PCM, while
+    // 0x0047 is the 4-in/4-out USB-audio card (see notes/gotchas.md, "The TMP's audio
+    // interface is USB id 1ed8:0047"). Walk every card the vendor id owns rather than
+    // assuming which product id carries PCM.
     const FENDER_VID: u16 = 0x1ED8;
 
     let mut out = String::from("\n/proc/asound (Linux): USB-audio cards by vendor id\n");

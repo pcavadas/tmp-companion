@@ -69,7 +69,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 `udevadm trigger` re-applies the rule to an already-connected unit, so no replug is needed. Verify with `ls /dev/hidraw*` and `getfacl /dev/hidrawN` — the rule grants the logged-in user access via an ACL, so you should see a `user:<you>:rw-` entry rather than a group change.
 
-Then follow the build steps above. **Order matters** — `bun run build` must precede any `cargo` command, because `tauri-build`'s `generate_context!` panics when `dist/` is absent, and `dist/` is gitignored. Once that build has run, sanity-check the connection with `cargo run --bin probe`, which should print your preset list, and `cargo run --bin probe -- --audio-devices` to confirm the re-amp device resolves.
+Then follow the build steps above. **Order matters** — `bun run build` must precede any `cargo` command, because `tauri-build`'s `generate_context!` panics when `dist/` is absent, and `dist/` is gitignored. Once that build has run, sanity-check the connection with `cargo run --bin probe`, which should print your preset list, and `cargo run --bin probe -- --audio-devices` to inspect audio-device enumeration and ALSA resolution — on Linux it also prints the `hw:CARD=…` card the production resolver lands on. The report's own `find_tmp()` pick is a diagnostic, not the production `audio::find_device` path.
 
 ## Pull requests
 
