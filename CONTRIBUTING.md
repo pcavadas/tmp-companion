@@ -54,6 +54,8 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 Then follow the build steps above. **Order matters** — `bun run build` must precede any `cargo` command, because `tauri-build`'s `generate_context!` panics when `dist/` is absent, and `dist/` is gitignored. Once that build has run, sanity-check the connection with `cargo run --bin probe`, which should print your preset list.
 
+**`bun run tauri dev` shows only a taskbar entry, no window?** On some KDE/GNOME Wayland + GPU driver combinations, WebKitGTK's window maps but never paints. `bun run tauri dev` already works around this automatically (`scripts/tauri-dev-env.sh` forces `GDK_BACKEND=x11` when it detects a Linux Wayland session); if it recurs anyway, see [→ evidence](notes/gotchas.md#bun-run-tauri-dev-shows-only-a-taskbar-entry-no-window-on-kdegnome-wayland).
+
 ## Pull requests
 
 - **Conventional commits are enforced** (commitlint, in the pre-commit hook + CI) and drive releases (semantic-release): `feat:` / `fix:` / `docs:` / `chore:` / `refactor:` … A non-conforming message fails CI.
