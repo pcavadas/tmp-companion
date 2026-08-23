@@ -40,6 +40,7 @@ interface FootswitchLevelResult {
   clamped: boolean;
   predicted_lufs: number;
   clamp_reason: string | null;
+  method: string;
 }
 
 // A plain preset's base-leveling job (no scenes/footswitches → whole-preset = Base only).
@@ -183,10 +184,14 @@ test.describe("Level re-run — online skip-branch idempotency", () => {
     await expectReampBalanced(page, reampBase);
   });
 
-  // Footswitch lane: the switch_at_target idempotency fix (this PR). Run 1 levels the
-  // switch's engaged state (Assign path — E2E Rig has scenes); run 2 probes the
-  // stored valueA, finds it on target, and rewrites nothing. WITHOUT the fix this is RED
-  // (the lane re-solved in-tolerance switches every run — the PR #74 deferred gap).
+  // Footswitch lane: the switch_at_target idempotency fix (this PR). E2E Rig switch 1 is a
+  // bare on-off assignment on ACD_TubeScreamer (committed fixture fact), so the plan gate
+  // (`existing_param_fn_index`, footswitch.rs) deterministically resolves this row to BAKE —
+  // and BAKE is the arm this PR fixes (the Assign arm's skip was already fixed by PR #74).
+  // Run 2 probes the Bake anchor (the block's own stored param value), finds it on target,
+  // and rewrites nothing. The `method` assertion below pins the row to the Bake arm so a
+  // future fixture edit that turns this into an Assign row fails loudly instead of silently
+  // testing the wrong arm.
   test("footswitch: run 2 rewrites nothing in-tolerance (switch_at_target)", async ({
     page,
   }) => {
@@ -248,6 +253,16 @@ test.describe("Level re-run — online skip-branch idempotency", () => {
       leveled.size,
       "run 1 must level at least one switch at its reachable target",
     ).toBeGreaterThan(0);
+    // Self-identifying against fixture drift: this test's premise is BAKE (see the header
+    // comment). A future fixture edit that turns switch 1 into an Assign row must fail this
+    // assertion loudly rather than silently pass while testing the wrong arm.
+    for (const sw of leveled) {
+      const r = r1.find((x) => x.switch === sw);
+      expect(
+        r?.method,
+        `switch ${String(sw)} run 1 must resolve to the Bake arm (this test's premise)`,
+      ).toBe("baked");
+    }
 
     const r2 = await apply(target, true);
     // For EVERY switch run 1 leveled, run 2 must return a measurable (error-free),

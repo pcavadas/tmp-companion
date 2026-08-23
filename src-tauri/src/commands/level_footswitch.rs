@@ -491,41 +491,76 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                         r
                     })
                     .ok_or_else(|| "shared bake produced no result".to_string()),
-                // Bake has no cheap re-run marker (the block's param value is `Some` from the
-                // factory too), so it always solves — no idempotency probe (`current` = None).
+                // Re-run anchor: for a Bake plan the block's OWN stored param value IS the
+                // engaged value (baking writes straight to the block, no footswitch-function
+                // valueA to read instead) — so the idempotency probe in `measure_footswitch`
+                // fires against it exactly as the Assign arm fires against its `valueA` anchor.
+                // Every Bake row not already at target now pays one extra fresh-connect probe
+                // engage (~10 s HW) on first runs, buying back the full ~6 min re-solve+re-save
+                // on every in-tolerance re-run.
                 Some(footswitch::FsLevelPlan::Bake {
                     engaged,
                     clear_stale,
                     mirror_scenes,
-                }) => leveller::measure_footswitch(
-                    job.switch,
-                    job.scene_context,
-                    lev,
-                    engaged,
-                    &stim,
-                    job.target_lufs + offset,
-                    "baked",
-                    None,
-                    &lev_param,
-                    // See `intended_pl`: the saved level, re-asserted per capture.
-                    intended_pl,
-                )
-                .inspect(|r| {
-                    if save && r.clamp_reason.is_none() {
-                        pending.push((
-                            idx,
-                            leveller::FsPendingWrite {
-                                switch: job.switch,
-                                lev: lev_owned(),
-                                write: leveller::FsWrite::Bake {
-                                    clear_stale: *clear_stale,
-                                    mirror_scenes: mirror_scenes.clone(),
+                }) => {
+                    // Base-space/scene-space mismatch guard: the anchor reads the block's BASE
+                    // value, but the probe measures under `job.scene_context`. A context scene
+                    // whose Full overlay authors its own value for the leveled param is
+                    // deliberately EXCLUDED from `mirror_scenes` (`scenes_restating_base`) — in
+                    // that shape the base anchor doesn't describe the measured (scene-authored)
+                    // sound, so comparing against it could report a bogus in-tolerance skip.
+                    // Mirror scenes restate base, so the anchor holds there; treat any other
+                    // context scene as "no anchor" instead.
+                    let anchor_valid =
+                        job.scene_context.is_none_or(|sc| mirror_scenes.contains(&sc));
+                    let current = if anchor_valid {
+                        node_param_f64(&preset, &job.lev_node_id, &job.lev_parameter_id)
+                            .map(|v| v as f32)
+                    } else {
+                        None
+                    };
+                    leveller::measure_footswitch(
+                        job.switch,
+                        job.scene_context,
+                        lev,
+                        engaged,
+                        &stim,
+                        job.target_lufs + offset,
+                        "baked",
+                        current,
+                        &lev_param,
+                        // See `intended_pl`: the saved level, re-asserted per capture.
+                        intended_pl,
+                    )
+                    // Skip the write when the leveler left the value unchanged, mirroring the
+                    // Assign arm below — with one extra disjunct as fail-safe defence for a
+                    // future planner change: `push_bake` pins `clear_stale: None` BY
+                    // CONSTRUCTION (see its doc), so today `clear_stale.is_some()` is always
+                    // false and does nothing — but if a future planner change ever makes a Bake
+                    // carry a real `clear_stale`, the value-unchanged skip must not also swallow
+                    // the pending function-removal. `current` feeds this guard too (kept
+                    // consistent with the anchor above), so a scene-authored row with no valid
+                    // anchor always pushes the write rather than risking a bogus skip.
+                    .inspect(|r| {
+                        if save
+                            && r.clamp_reason.is_none()
+                            && (Some(r.final_value) != current || clear_stale.is_some())
+                        {
+                            pending.push((
+                                idx,
+                                leveller::FsPendingWrite {
+                                    switch: job.switch,
+                                    lev: lev_owned(),
+                                    write: leveller::FsWrite::Bake {
+                                        clear_stale: *clear_stale,
+                                        mirror_scenes: mirror_scenes.clone(),
+                                    },
+                                    value: r.final_value,
                                 },
-                                value: r.final_value,
-                            },
-                        ));
-                    }
-                }),
+                            ));
+                        }
+                    })
+                }
                 Some(footswitch::FsLevelPlan::Assign { engaged }) => {
                     match resolve_footswitch_job(&ftsw, &preset, job) {
                         Err(e) => Err(e),

@@ -945,6 +945,207 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     );
 }
 
+/// THE BAKE-ARM IDEMPOTENCY GATE (this PR): before the fix, `level_footswitches_apply`'s Bake
+/// arm called `measure_footswitch(..., None, ...)` unconditionally — no anchor for the re-run
+/// probe in `solve_param_secant` — so a Bake row re-solved and RE-SAVED an identical value on
+/// EVERY re-run (~6 min of device time, HW-confirmed tonight). This is the Bake-arm sibling of
+/// `assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persists_its_value_a`'s
+/// gate, but drives the actual BATCHED COMMAND (`level_footswitches_apply`) rather than the
+/// single-switch `leveller::level_footswitch` probe seam — that seam's own doc says it "always
+/// solve[s] fresh (no idempotency probe)" BY DESIGN (the batched command owns the re-run skip),
+/// so it cannot exercise the regressed path at all.
+///
+/// Fixture 405's Plumes switch (5) is the shape: `ACD_Plumes` is bypassed in base and switch 5
+/// carries a bare on-off with no `param` fn, so `plan_footswitch_jobs` bakes it (same premise as
+/// `bake_path_footswitch_writes_the_block_directly_and_persists_its_value`, a different
+/// fixture/switch). Its `level` knob rides the sim's `saturated_pedal_lufs` curve, so a target
+/// off the AUTHORED 0.5 (→ -16.14 LUFS at that curve) forces run 1 to actually solve and write —
+/// a fixture that already sat on target would make run 2's skip prove nothing.
+///
+/// `Saved` (not `ChangeParameter`) is the discriminator because the ceiling prepass engages once
+/// per row on EVERY run regardless of the fix (a known, accepted cost — see `CLAUDE.md`'s
+/// trade-offs) and writes its own throwaway `ChangeParameter` at the handle's top bound; only the
+/// actual write session (`write_footswitch_values`, gated on `pending` being non-empty) ever
+/// emits `Saved`.
+///
+/// WITHOUT the fix this is RED on run 2's `saved: false` / no-new-`Saved` assertions: the old
+/// unconditional `None` anchor never lets the probe fire, and the old `save &&
+/// r.clamp_reason.is_none()` guard (no comparison to `current`) pushes the identical value to
+/// `pending` regardless, so `write_footswitch_values` runs again and a second `Saved` event
+/// lands. The same two assertions also catch a HALF-applied fix: reading `current` correctly but
+/// leaving the unconditional push still saves every time; guarding the push but leaving
+/// `current: None` makes `Some(final_value) != None` always true, which also always saves.
+#[test]
+fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+        (
+            "TMP_E2E_STIMULUS",
+            "/resources/samples/guitar-humbucker.wav",
+        ),
+    ]);
+    crate::leveller::clear_slot_save_registry();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+
+    const SWITCH: u32 = 5;
+    const NODE: &str = "ACD_Plumes";
+    const PARAM: &str = "level";
+    // Reachable (the handle's top-bound ceiling reads ~ -14 LUFS on this curve) and >1 LU off
+    // the authored 0.5's -16.14, so run 1 truly solves rather than trivially matching already.
+    const TARGET: f64 = -15.0;
+
+    let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
+    let p24 = spec_json
+        .iter()
+        .find(|p| p.list_index == 405)
+        .expect("405 present");
+    let preset: serde_json::Value = serde_json::from_str(&p24.preset_json).expect("405 json");
+    let ftsw = preset["ftsw"].clone();
+    assert!(
+        crate::footswitch::existing_param_fn_index(&ftsw, SWITCH, NODE, PARAM).is_none(),
+        "premise: switch 5 must carry no existing param fn on (ACD_Plumes, level) — a bare \
+         on-off, so the row bakes"
+    );
+    let plans = crate::footswitch::plan_footswitch_jobs(
+        &ftsw,
+        &preset,
+        &[crate::footswitch::FsJobKey {
+            switch: SWITCH,
+            lev_node: NODE,
+            lev_param: PARAM,
+            target_bits: TARGET.to_bits(),
+        }],
+    );
+    assert!(
+        matches!(plans[0], crate::footswitch::FsLevelPlan::Bake { .. }),
+        "premise: switch 5 must plan Bake, got {:?}",
+        plans[0]
+    );
+    let authored = crate::commands::level_footswitch::node_param_f64(&preset, NODE, PARAM)
+        .expect("ACD_Plumes.level must be numeric");
+    assert!(
+        (authored - 0.5).abs() < 1e-6,
+        "fixture premise: the authored level is 0.5: {authored}"
+    );
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![level_footswitches_apply])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+
+    let job = serde_json::json!({
+        "switch": SWITCH,
+        "levGroupId": "G1",
+        "levNodeId": NODE,
+        "levParameterId": PARAM,
+        "targetLufs": TARGET,
+    });
+    let apply = |webview: &WebviewWindow<MockRuntime>| {
+        invoke(
+            webview,
+            "level_footswitches_apply",
+            serde_json::json!({
+                "slot": 405,
+                "jobs": [job],
+                "save": true,
+                "topologyId": serde_json::Value::Null,
+                "calibrationLufs": null,
+                "profileId": null,
+                "onResult": "__CHANNEL__:0",
+            }),
+        )
+        .expect("level_footswitches_apply")
+    };
+
+    // ── RUN 1 ── must actually solve and persist (the non-vacuous premise run 2's skip needs).
+    let r1 = apply(&webview);
+    assert_eq!(
+        r1[0]["clamped"], false,
+        "run 1 must reach target unclamped: {r1:?}"
+    );
+    assert_eq!(r1[0]["saved"], true, "run 1 must solve and save: {r1:?}");
+    // Pin the premise: run 1 must actually CONVERGE (not fall back to a best-effort
+    // best-point-found re-solve). Run 1 currently converges by accepting seed 0.75 with only
+    // 29% of FS_TOL_LU headroom — if a future tolerance/curve shift makes it unconverged, run
+    // 2 would legitimately re-solve too, and the no-new-`Saved` gate below would false-red on
+    // a correct run. Fail here, at the premise, instead of misattributing that to a
+    // regression in the fix.
+    assert_eq!(
+        r1[0]["unconverged"], false,
+        "run 1 must fully converge (see the seed-headroom note above): {r1:?}"
+    );
+    let final_value_1 = r1[0]["final_value"].as_f64().expect("final_value");
+    assert!(
+        (final_value_1 - authored).abs() > 0.05,
+        "run 1 must move the value off the authored 0.5, or run 2's skip proves nothing: {r1:?}"
+    );
+    let events1 = sim.events();
+    let saved_events_after_run1 = events1
+        .iter()
+        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
+        .count();
+    assert_eq!(
+        saved_events_after_run1,
+        1,
+        "run 1 must emit exactly one Saved event: {:?}",
+        sim.events()
+    );
+    assert!(
+        !events1.iter().any(|e| matches!(
+            e,
+            crate::sim_device::SimEvent::SetFootswitchAssignment { .. }
+        )),
+        "a Bake must never touch the switch's own ftsw row: {:?}",
+        sim.events()
+    );
+
+    // ── RUN 2 ── the re-run: the block's stored value is now run 1's `final_value`, already on
+    // target — the idempotency probe must find it and skip the write entirely.
+    let r2 = apply(&webview);
+    assert_eq!(
+        r2[0]["clamped"], false,
+        "run 2 must still read unclamped: {r2:?}"
+    );
+    assert_eq!(
+        r2[0]["saved"], false,
+        "run 2 solved the same value already saved → must skip the write: {r2:?}"
+    );
+    let final_value_2 = r2[0]["final_value"].as_f64().expect("final_value");
+    assert!(
+        (final_value_2 - final_value_1).abs() < 1e-6,
+        "the skip must return the CURRENT value verbatim, not re-solve/re-randomize it: \
+         run1={final_value_1} run2={final_value_2}"
+    );
+    let saved_events_after_run2 = sim
+        .events()
+        .iter()
+        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
+        .count();
+    assert_eq!(
+        saved_events_after_run2,
+        saved_events_after_run1,
+        "run 2 must emit NO new Saved event — a re-solve+re-save of an in-tolerance Bake row is \
+         exactly the ~6-minute HW-confirmed regression this gate exists to catch: {:?}",
+        sim.events()
+    );
+}
+
 /// The ASSIGN write path end-to-end offline — the shape a switch takes ONLY when it already
 /// carries a `param` function for the user-selected control (the assign gate, user directive
 /// 2026-08-19). Slot 400's param-only switches (VERB KILL, WAH SWEEP) don't fit this test: both

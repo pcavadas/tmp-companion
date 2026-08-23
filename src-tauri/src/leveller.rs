@@ -3439,8 +3439,10 @@ fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
 /// `valueA` on the Assign re-run path). When `Some`, the leveler probes it FIRST: if the
 /// engaged loudness there is already at target it returns `final_value == current_value`
 /// verbatim so the caller writes nothing — the re-run idempotency skip (mirrors the base
-/// `level_unchanged` / scene `scene_at_target` skips). `None` (fresh assign, Bake, probe
-/// seams) always solves.
+/// `level_unchanged` / scene `scene_at_target` skips). A Bake plan passes the block's own
+/// stored param value here too (baking writes straight to the block, so that value IS the
+/// engaged value) — `None` remains for fresh assigns and probe seams, which have no prior
+/// value to anchor on.
 ///
 /// `param` is the CLASSIFIED target ([`FsParamTarget`]) — it supplies the solve's bounds,
 /// the not-a-level-control refusal and the wet floor. Build it with
