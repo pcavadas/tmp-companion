@@ -3021,6 +3021,37 @@ impl FsParamTarget {
         lo + frac * (hi - lo)
     }
 
+    /// Solve-space coordinate for `v`. [`ParamClass::LevelLinear`] interpolates in
+    /// LOG-KNOB space (`u = 20*log10(v)`, floored at `v = 1e-3` so the 0 bound stays
+    /// finite) where the documented law `L = 20*log10(v) + C` is a straight line,
+    /// making the secant EXACT and ending the ~1 LU/capture knob-space creep (HW,
+    /// MythicDrive FS: −30 → −22 → −24 → −25 → −26 over 5 captures). `LevelDb` is
+    /// already ~1:1 dB→LU (raw space IS log space) and `WetMix` has no known law —
+    /// both keep the identity map, so their solve behavior is byte-identical to the
+    /// validated one. (`Other` never reaches the solve.)
+    fn to_u(&self, v: f64) -> f64 {
+        match self.info.class {
+            crate::param_class::ParamClass::LevelLinear => 20.0 * v.max(1e-3).log10(),
+            _ => v,
+        }
+    }
+
+    /// Inverse of [`Self::to_u`] — caller clamps to [`Self::bounds`]. Never emits
+    /// exactly `0.0` for `LevelLinear` (the floor at `v = 1e-3` means `from_u` bottoms
+    /// out just above zero); the exact-0 bound stays reachable only through
+    /// [`fs_bracket_expansion`]'s v-space extreme, which is why that probe stays in
+    /// v-space rather than u-space (see its doc).
+    // Takes `&self` deliberately (not the usual `from_*` conversion-constructor shape):
+    // the inverse map is PER-CLASS, so it needs the param's own classification, exactly
+    // like `to_u`.
+    #[allow(clippy::wrong_self_convention)]
+    fn from_u(&self, u: f64) -> f64 {
+        match self.info.class {
+            crate::param_class::ParamClass::LevelLinear => 10f64.powf(u / 20.0),
+            _ => u,
+        }
+    }
+
     /// The lowest value a wet/mix solve may write, or `None` for every other class. An
     /// authored value of `0.0` (the effect is already fully dry) floors at `0.0`, i.e. no
     /// constraint — the floor is RELATIVE to what the player wrote, never an absolute 0.25.
@@ -3057,9 +3088,17 @@ fn improve_best(
     }
 }
 
-/// Pure secant step in PARAMETER space: two `(value, loudness)` points → the next value
-/// that should hit `target`. `None` when the local slope is ~flat (the param doesn't move
-/// loudness). UNCLAMPED — caller clamps to the param's `[0,1]` range.
+/// Pure secant step in SOLVE-SPACE coordinates: two `(coordinate, loudness)` points →
+/// the next coordinate that should hit `target`. `None` when the local slope is ~flat
+/// (the param doesn't move loudness). UNCLAMPED — caller maps back via
+/// [`FsParamTarget::from_u`] and clamps to [`FsParamTarget::bounds`].
+///
+/// For a `LevelLinear` param the coordinate is log-knob `u` (|Δu| ≤ ~60 dB on
+/// `[1e-3, 1]`, so any pair with ≥ 0.3 LU separation has `|slope| ≥ 0.005 > 1e-3`, the
+/// guard below); for `LevelDb`/`WetMix` (identity map) nothing changes from before.
+/// Two probed values that both fall below the `1e-3` floor collapse to the SAME
+/// `u = −60` — a degenerate pair with a non-finite slope, which this guard turns into a
+/// graceful `unconverged` rather than a divide-by-zero.
 fn fs_secant_next(p0: (f64, f64), p1: (f64, f64), target: f64) -> Option<f64> {
     let slope = (p1.1 - p0.1) / (p1.0 - p0.0);
     if !slope.is_finite() || slope.abs() < 1e-3 {
@@ -3084,6 +3123,11 @@ fn fs_secant_next(p0: (f64, f64), p1: (f64, f64), target: f64) -> Option<f64> {
 ///
 /// `(lo, hi)` are the PARAM's own bounds (`FsParamTarget::bounds`), not a hard-coded
 /// `[0, 1]` — the extremes worth probing are the ends of the range the param actually has.
+///
+/// Deliberately stays in REAL v-space rather than the solve's log-knob `u` space: it
+/// is choosing between the actual bounds, and `FsParamTarget::from_u` never emits
+/// exactly `0.0` (a `LevelLinear` param's `u` floors at `v = 1e-3`), so the exact-0
+/// bound is reachable ONLY through this v-space extreme.
 fn fs_bracket_expansion(
     v_lo: f32,
     l_lo: f64,
@@ -3519,7 +3563,12 @@ fn solve_footswitch(
 /// lane into a [`SceneSolve`].
 struct ParamSolve {
     /// The value to write — the best point the search reached, always inside the param's
-    /// [`FsParamTarget::bounds`] (the wet floor included), so it is always writable.
+    /// [`FsParamTarget::bounds`] (the wet floor included), so it is always writable. ONE
+    /// exception: the idempotency skip's `final_value == current_value` verbatim can sit
+    /// BELOW the wet floor (an existing assign whose stored `valueA` predates the floor,
+    /// or predates a base value change) — safe only because that equality is the
+    /// caller's no-op signal, so this field is never clamped there; clamping would break
+    /// the no-op detect and make an unchanged switch look like a solved write.
     final_value: f32,
     /// Loudness at the first REFERENCE point: the low seed's capture, the idempotency
     /// probe's, or the routing-clamp sentinel. Context for the report, never the achieved
@@ -3619,13 +3668,19 @@ fn solve_param_secant(
     // switch). Reuses `measure_at` (so a success arms the isolation-once optimization for the
     // seeds); a NO_SIGNAL / floor / transient error falls through to the seed pass, which
     // owns the routing-clamp verdict. `current_value` is None for fresh assigns / probe seams.
+    // A successful-but-off-target probe is a PAID capture: it is kept as `probe_seed` and
+    // reused as the solve's seed 1 below instead of being discarded and re-bought at a fresh
+    // `at_fraction(0.25)`.
+    let mut probe_seed: Option<(f32, lufs::Loudness)> = None;
     if let Some(cur) = current_value {
         match require_live(|| measure_at(cur), stimulus) {
             Ok(l) if switch_at_target(l.integrated_lufs, target_lufs, false) => {
                 reamp_off();
                 // Skip signal: `final_value` == the caller's current value verbatim, so the
                 // caller detects the no-op by `final_value == current` and writes nothing
-                // (the footswitch mirror of the scene lane's off-wire `writes: 0`).
+                // (the footswitch mirror of the scene lane's off-wire `writes: 0`). See
+                // `ParamSolve::final_value`'s doc: this is the one path that can leave the
+                // returned value below the wet floor, safely, because it is never written.
                 return Ok(ParamSolve {
                     final_value: cur,
                     measured_lufs: l.integrated_lufs,
@@ -3638,88 +3693,134 @@ fn solve_param_secant(
                     iterations: 1,
                 });
             }
-            // In-tolerance-but-not-a-skip falls through to the seed pass; a probe error
-            // must disengage re-amp first (the seed pass re-engages on a fresh connection).
-            Ok(_) => {}
+            // In-tolerance-but-not-a-skip carries into the seed pass as seed 1; a probe
+            // error must disengage re-amp first (the seed pass re-engages on a fresh
+            // connection) and falls through to the fixed-seed path below.
+            Ok(l) => probe_seed = Some((cur, l)),
             Err(_) => reamp_off(),
         }
     }
 
-    // Seed two real points and run a bounded generic secant. The seeds sit a quarter and
-    // three quarters of the way across the PARAM's own range — identical to the validated
-    // 0.25/0.75 pair on a `[0,1]` param, and correctly placed on a raw-dB one.
-    let (v_lo, v_hi) = (param.at_fraction(0.25), param.at_fraction(0.75));
-    // The FIRST seed doubles as the routing probe: a genuinely silent capture (device output not
-    // on USB 1/2) makes `processed_loudness` error "no signal captured" — convert THAT one to the
-    // honest "not on USB 1/2" clamp (mirrors the scene mute-floor idiom below). Signal-present but
-    // flat/short-of-target is a headroom/authority clamp with NO reason, not a routing error. ONLY
-    // the first seed can mean broken routing (silent from capture #1); every LATER silence is the
-    // knob's own quiet extreme (a pedal `level`/`volume` at 0 IS deep digital silence on the real
-    // unit — DATA the secant needs, not a fatal abort). See `FS_SILENT_GEOMETRY_LUFS`'s doc: the
-    // second seed, the bracket-expansion probe, and the correction loop below each convert a
-    // later silence into a pseudo point instead of propagating the error (HW-reproduced, fw
-    // 1.8.45, preset "TR+BD2+BMP": Plumes `level` knob, seeds 0.25/0.75 read the compressed
-    // plateau, a −26 target extrapolated a negative knob value, clamped to 0.0, and 0.0 is
-    // silent).
-    // Floor-guarded (the flat-but-finite silent-inject case); the NO_SIGNAL arm below
-    // stays separate — genuine silence is the routing clamp, not a floor read.
-    let l_lo = match require_live(|| measure_at(v_lo), stimulus) {
-        Ok(l) => l,
-        Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
-            reamp_off();
-            return Ok(ParamSolve {
-                final_value: v_lo,
-                measured_lufs: MUTE_FLOOR_SILENT_LUFS,
-                predicted_lufs: MUTE_FLOOR_SILENT_LUFS,
-                clamped: true,
-                unconverged: false,
-                clamp_reason: Some("no signal on USB 1/2".into()),
-                wet_floor: false,
-                spread_lu: None,
-                iterations: 1,
-            });
-        }
-        Err(e) => return Err(e),
+    // Seed 1: reuse a successful idempotency probe when there is one (no new capture — it
+    // already proved signal, so the routing-clamp verdict below belongs to the fixed-seed
+    // path alone); else the fixed `at_fraction(0.25)` position exactly as before.
+    let (v_a, l_a) = if let Some((cur, l)) = probe_seed {
+        (cur, l)
+    } else {
+        let v = param.at_fraction(0.25);
+        // This seed doubles as the routing probe: a genuinely silent capture (device output
+        // not on USB 1/2) makes `processed_loudness` error "no signal captured" — convert
+        // THAT one to the honest "not on USB 1/2" clamp (mirrors the scene mute-floor idiom
+        // below). Signal-present but flat/short-of-target is a headroom/authority clamp with
+        // NO reason, not a routing error. ONLY this seed can mean broken routing (silent from
+        // the very first bought capture); every LATER silence — including a silent PROBE seed
+        // taking this seed's place above — is the knob's own quiet extreme (a pedal
+        // `level`/`volume` at 0 IS deep digital silence on the real unit — DATA the secant
+        // needs, not a fatal abort). See `FS_SILENT_GEOMETRY_LUFS`'s doc: seed 2, the
+        // bracket-expansion probe, and the correction loop below each convert a later
+        // silence into a pseudo point instead of propagating the error (HW-reproduced, fw
+        // 1.8.45, preset "TR+BD2+BMP": Plumes `level` knob, seeds 0.25/0.75 read the
+        // compressed plateau, a −26 target extrapolated a negative knob value, clamped to
+        // 0.0, and 0.0 is silent).
+        // Floor-guarded (the flat-but-finite silent-inject case); the NO_SIGNAL arm below
+        // stays separate — genuine silence is the routing clamp, not a floor read.
+        let l = match require_live(|| measure_at(v), stimulus) {
+            Ok(l) => l,
+            Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
+                reamp_off();
+                return Ok(ParamSolve {
+                    final_value: v,
+                    measured_lufs: MUTE_FLOOR_SILENT_LUFS,
+                    predicted_lufs: MUTE_FLOOR_SILENT_LUFS,
+                    clamped: true,
+                    unconverged: false,
+                    clamp_reason: Some("no signal on USB 1/2".into()),
+                    wet_floor: false,
+                    spread_lu: None,
+                    iterations: 1,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        (v, l)
     };
-    // The SECOND seed can ALSO land silent (a knob whose useful range is a narrow slice of
-    // [0, 1]) — past the first seed, that's data, never a routing error (see above).
+
+    // Seed 2: predict it from the linear law `L = u + C` (`u = param.to_u(v)`) fixed by
+    // seed 1 — EXACT in u-space for `LevelLinear` (log-knob u) and `LevelDb` (already
+    // ~1:1 dB→LU, identity u), landing seed 2 — and often the whole solve — on target in
+    // one extra capture instead of the knob-space secant's ~1 LU/capture creep (HW,
+    // MythicDrive FS: −30 → −22 → −24 → −25 → −26 over 5 captures). `WetMix` has no known
+    // law and always takes the fixed fallback. Gated on the prediction being plausible
+    // (finite, inside the central 5%–95% of the param's own range, far enough from seed 1
+    // to clear `FS_MIN_SEED_SPAN_FRAC`) — a wrong or out-of-range law prediction falls
+    // back to the old fixed complement fraction (0.75 if seed 1 sits in the lower half of
+    // the range, else 0.25), so a non-multiplier param degrades to the pre-existing
+    // behavior, never worse.
+    let predictable = matches!(
+        param.info.class,
+        crate::param_class::ParamClass::LevelLinear | crate::param_class::ParamClass::LevelDb
+    );
+    let fixed_fallback = || {
+        if v_a <= param.at_fraction(0.5) {
+            param.at_fraction(0.75)
+        } else {
+            param.at_fraction(0.25)
+        }
+    };
+    let v_b = predictable
+        .then(|| param.from_u(param.to_u(v_a as f64) + (target_lufs - l_a.integrated_lufs)))
+        .filter(|p| p.is_finite())
+        .map(|p| p as f32)
+        .filter(|&p| {
+            let frac = (p - bound_lo) / (bound_hi - bound_lo);
+            let span = (p - v_a).abs();
+            (0.05..=0.95).contains(&frac) && span >= FS_MIN_SEED_SPAN_FRAC * (bound_hi - bound_lo)
+        })
+        .unwrap_or_else(fixed_fallback);
+    // Seed 2 can land silent (a knob whose useful range is a narrow slice of its own
+    // range) — past seed 1, that's data, never a routing error (see seed 1's doc above).
     // `hi_silent` feeds the initial best-seed pick below so a synthesized floor point can
     // never win it (mirrors `improve_best`'s exclusion of synthetic points).
-    let (l_hi_lufs, l_hi_spread, hi_silent) = match require_live(|| measure_at(v_hi), stimulus) {
+    let (l_b_lufs, l_b_spread, hi_silent) = match require_live(|| measure_at(v_b), stimulus) {
         Ok(l) => (l.integrated_lufs, l.spread_lu(), false),
         Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
-            (fs_silent_geometry(l_lo.integrated_lufs), 0.0, true)
+            (fs_silent_geometry(l_a.integrated_lufs), 0.0, true)
         }
         Err(e) => return Err(e),
     };
     // The quietest REAL capture seen so far — the anchor `fs_silent_geometry` floors every
     // silent pseudo point under.
     let mut min_real = if hi_silent {
-        l_lo.integrated_lufs
+        l_a.integrated_lufs
     } else {
-        l_lo.integrated_lufs.min(l_hi_lufs)
+        l_a.integrated_lufs.min(l_b_lufs)
     };
+    // The probe capture (when present) counts as capture 1, so after seed 2 this is 2
+    // real device round-trips on BOTH paths — probe+seed2, or fixed-seed1+seed2.
     let mut iterations = 2u32;
     let err = |l: f64| (l - target_lufs).abs();
     let (mut best_v, mut best_lufs, mut best_spread) =
-        if hi_silent || err(l_lo.integrated_lufs) <= err(l_hi_lufs) {
-            (v_lo, l_lo.integrated_lufs, l_lo.spread_lu())
+        if hi_silent || err(l_a.integrated_lufs) <= err(l_b_lufs) {
+            (v_a, l_a.integrated_lufs, l_a.spread_lu())
         } else {
-            (v_hi, l_hi_lufs, l_hi_spread)
+            (v_b, l_b_lufs, l_b_spread)
         };
     // A seed pair that cannot move loudness is a physical dead end, not an exhausted
     // search — it must never advertise a re-run. Set ONLY where no-authority is proven
     // (the seed/expansion pair below); a mid-loop stall keeps `unconverged`.
     let mut flat_response = false;
     if err(best_lufs) > FS_TOL_LU {
-        let mut p0 = (v_lo as f64, l_lo.integrated_lufs);
-        let mut p1 = (v_hi as f64, l_hi_lufs);
+        // The correction loop below interpolates in SOLVE-SPACE (`param.to_u`), not raw
+        // parameter value — see `to_u`'s doc for why that makes the secant exact for a
+        // `LevelLinear`/`LevelDb` param.
+        let mut p0 = (param.to_u(v_a as f64), l_a.integrated_lufs);
+        let mut p1 = (param.to_u(v_b as f64), l_b_lufs);
         // Bracket before falling to the correction loop — see `fs_bracket_expansion`'s doc.
         if let Some(v_extreme) = fs_bracket_expansion(
-            v_lo,
-            l_lo.integrated_lufs,
-            v_hi,
-            l_hi_lufs,
+            v_a,
+            l_a.integrated_lufs,
+            v_b,
+            l_b_lufs,
             target_lufs,
             (bound_lo, bound_hi),
         ) {
@@ -3737,11 +3838,11 @@ fn solve_param_secant(
                         &mut best_lufs,
                         &mut best_spread,
                     );
-                    Some((v_extreme as f64, l_extreme.integrated_lufs))
+                    Some((param.to_u(v_extreme as f64), l_extreme.integrated_lufs))
                 }
                 Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
                     iterations += 1;
-                    Some((v_extreme as f64, fs_silent_geometry(min_real)))
+                    Some((param.to_u(v_extreme as f64), fs_silent_geometry(min_real)))
                 }
                 Err(_) => None,
             };
@@ -3790,7 +3891,7 @@ fn solve_param_secant(
                         // `unconverged` from classify_fs_outcome below.
                         break;
                     };
-                    let v2 = raw.clamp(bound_lo as f64, bound_hi as f64) as f32;
+                    let v2 = param.from_u(raw).clamp(bound_lo as f64, bound_hi as f64) as f32;
                     // Silence is data (see `FS_SILENT_GEOMETRY_LUFS`); `l2_real` gates the
                     // at-target break so only a REAL capture may declare victory.
                     let (l2_lufs, l2_real) = match require_live(|| measure_at(v2), stimulus) {
@@ -3816,7 +3917,7 @@ fn solve_param_secant(
                     if l2_real && err(l2_lufs) <= FS_TOL_LU {
                         break;
                     }
-                    let p2 = (v2 as f64, l2_lufs);
+                    let p2 = (param.to_u(v2 as f64), l2_lufs);
                     if straddles {
                         if (p2.1 - target_lufs) * (p0.1 - target_lufs) > 0.0 {
                             if last_side == -1 {
@@ -3856,7 +3957,7 @@ fn solve_param_secant(
         // is a real reading OF the written value. A wet solve pinned at the floor arrives
         // here as an ordinary at-a-bound clamp; only the advisory flag below names it.
         final_value: best_v,
-        measured_lufs: l_lo.integrated_lufs,
+        measured_lufs: l_a.integrated_lufs,
         predicted_lufs: best_lufs,
         clamped,
         unconverged,
@@ -5931,6 +6032,17 @@ const MEASURE_CORRECT_MAX: u32 = 3;
 /// via `flat_response`/the secant's own degenerate-pair break, so the extra
 /// headroom again costs well-behaved knobs nothing.
 const FS_CORRECT_MAX: u32 = 16;
+/// Minimum `|predicted_seed2 − seed1| / (hi − lo)` the law-predicted second seed must
+/// clear before it's trusted over the fixed 0.75/0.25-fraction fallback — 0.12 of the
+/// param's own range, identical to the old absolute 0.12 on a `[0,1]` param. The real
+/// flatness-proof guarantor is downstream, not this gate: an ACCEPTED prediction
+/// implies `|target − L_a| ≳ 1 LU` (the law solved for a seed that far from seed 1
+/// precisely because it needs that much correction), so a flat accepted-prediction pair
+/// always puts the target outside its `KNOB_TOL_LU` window, which fires
+/// `fs_bracket_expansion` and widens the proof pair on its own. This gate only guards
+/// against a NOISE-narrow pair — a predicted seed landing too close to seed 1 lets
+/// ordinary device-capture noise misread as flat.
+const FS_MIN_SEED_SPAN_FRAC: f32 = 0.12;
 /// An `outputLevel` change of at least this many dB that moves the captured loudness by
 /// less than `KNOB_TOL_LU` means the amp has no authority over the USB 1/2 capture
 /// (off-branch / off-USB output, or hard-limited downstream).
@@ -9324,31 +9436,44 @@ mod tests {
     // arm is byte-unchanged by the silence-as-data fix.
 
     /// HW-measured Plumes-pedal `level` knob curve (`probe --fs-sweep`, preset
-    /// "TR+BD2+BMP", fw 1.8.45): 0.05→−69.3, 0.10→−66.9, 0.15→−29.8, 0.20→−24.2,
-    /// 0.30→−20.1, 0.50→−18.1, 0.75→−17.2, 1.00→−16.9 LUFS. The test collapses `v ≤ 0.10`
-    /// to a genuinely SILENT capture (not merely quiet) — the exact pathology reported:
-    /// the fixed 0.25/0.75 seeds read the compressed plateau, the plain secant
-    /// extrapolates a NEGATIVE knob value for a −26 target, clamps to 0.0, and 0.0 is
-    /// silent on the real unit.
+    /// "TR+BD2+BMP", fw 1.8.45): 0.11→−66.9, 0.20→−24.2, 0.30→−20.1, 0.50→−18.1,
+    /// 0.75→−17.2, 1.00→−16.9 LUFS — the cliff shifted 0.01 up from the HW-measured
+    /// 0.10 so the fixed seed pair (0.25/0.75) reads a genuinely SLOPED, non-flat pair
+    /// (`fs_bracket_expansion` must NOT fire) while the correction loop's FIRST
+    /// extrapolated point still lands on the wrong side of the cliff — the exact
+    /// pathology reported (HW, preset "TR+BD2+BMP"): a knob whose useful range is a
+    /// narrow slice of its own range extrapolates a knob value PAST the silent
+    /// extreme mid-correction, not at either seed. `v ≤ 0.11` collapses to a
+    /// genuinely SILENT capture (not merely quiet).
     fn plumes_level_curve(v: f32) -> Result<lufs::Loudness, String> {
-        const ANCHORS: [(f64, f64); 7] = [
-            (0.10, -66.9),
-            (0.15, -29.8),
+        const ANCHORS: [(f64, f64); 6] = [
+            (0.11, -66.9),
             (0.20, -24.2),
             (0.30, -20.1),
             (0.50, -18.1),
             (0.75, -17.2),
             (1.00, -16.9),
         ];
-        if f64::from(v) <= 0.10 {
+        if f64::from(v) <= 0.11 {
             return Err(NO_SIGNAL_CAPTURED.to_string());
         }
         Ok(fs_loud(piecewise_lufs(&ANCHORS, v)))
     }
 
+    /// Re-pinned to the MID-LOOP silence arm (a `NO_SIGNAL_CAPTURED` on the bracket-aware
+    /// secant's OWN extrapolated point, not on either seed) — the law-predicted seed 2
+    /// (§ "Feature to apply" #3) reroutes this fixture off the arm it was originally built
+    /// to cover: on `plumes_level_curve`'s -22.15 LUFS seed-1 reading, the -26.0 target's
+    /// predicted seed 2 lands only 0.09 of the range from seed 1 (< `FS_MIN_SEED_SPAN_FRAC`),
+    /// so the gate rejects it and seed 2 falls back to the fixed 0.75 exactly as before —
+    /// seed 1 (0.25, real) and seed 2 (0.75, real) are both proven-real captures with real
+    /// slope (`fs_bracket_expansion` never fires), and it is specifically the THIRD capture
+    /// — the bracket-aware secant's own log-space extrapolation — that lands below the
+    /// cliff. Provably reaches the arm: `seen[2]` is asserted BOTH silent and distinct from
+    /// either seed's own value.
     #[test]
     fn solve_footswitch_treats_post_seed_silence_as_the_quiet_extreme_not_a_routing_error() {
-        let mut captures = 0u32;
+        let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
         let r = solve_footswitch(
             21,
             &[],
@@ -9358,16 +9483,30 @@ mod tests {
             None,
             &fs_unit_param(),
             |_, v| {
-                captures += 1;
+                seen.borrow_mut().push(v);
                 plumes_level_curve(v)
             },
         )
-        .expect("a silent capture past the first seed must be DATA, never a fatal abort");
+        .expect("a silent capture mid-correction must be DATA, never a fatal abort");
+        let seen = seen.borrow();
+        assert_eq!(seen[0], 0.25, "seed 1 is the fixed quarter-range point");
+        assert_eq!(
+            seen[1], 0.75,
+            "seed 2's law prediction is gated off (too narrow a span), so it falls back \
+             to the fixed complement"
+        );
+        assert!(
+            seen.len() >= 3 && seen[2] <= 0.11,
+            "the MID-LOOP arm must actually fire — the third capture (the correction \
+             loop's own extrapolation, not either seed) must probe below the cliff: \
+             {seen:?}"
+        );
         assert!(
             (r.predicted_lufs - -26.0).abs() <= KNOB_TOL_LU,
-            "expected convergence near -26.0: got {} at v={} ({captures} captures)",
+            "expected convergence near -26.0: got {} at v={} ({} captures)",
             r.predicted_lufs,
-            r.final_value
+            r.final_value,
+            seen.len()
         );
         assert!(
             !r.clamped,
@@ -9378,11 +9517,15 @@ mod tests {
             "must actually converge, not run out of budget: {r:?}"
         );
         assert!(
-            r.final_value > 0.10 && r.final_value < 0.25,
-            "solved value should land on the measured cliff (0.10, 0.25): {}",
+            r.final_value > 0.11 && r.final_value < 0.25,
+            "solved value should land on the measured cliff (0.11, 0.25): {}",
             r.final_value
         );
-        assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
+        assert!(
+            seen.len() as u32 <= 3 + FS_CORRECT_MAX,
+            "captures={}",
+            seen.len()
+        );
     }
 
     /// A knob whose useful range is a narrow slice near the TOP of `[0, 1]`: the fixed
@@ -9405,53 +9548,88 @@ mod tests {
         Ok(fs_loud(-50.0 + frac * 33.0))
     }
 
+    /// Re-pinned to the EXPANSION-PROBE arm specifically: with the ORIGINAL −26.0 target
+    /// the law-predicted seed 2 (§ "Feature to apply" #3) lands DIRECTLY in the silent
+    /// zone below 0.12 (`10^((-12.04+(-26.0-(-17.0)))/20) ≈ 0.089`), so the fixture would
+    /// exercise `hi_silent` instead of the bracket-expansion probe it was built for.
+    /// Retargeting to −22.0 keeps seed 1 real (0.25, flat plateau at −17.0) and puts the
+    /// prediction's span too narrow to clear `FS_MIN_SEED_SPAN_FRAC` (rejected — the SAME
+    /// span-gate rejection that keeps seed 2 at the fixed 0.75 complement, also real, also
+    /// flat vs seed 1), so the seed PAIR itself stays flat and it is `fs_bracket_expansion`
+    /// alone that reaches for the 0.0 extreme and finds it silent. Provably reaches the
+    /// arm: `seen[2] == 0.0` — the low bound the expansion probe (never a seed) targets.
     #[test]
     fn solve_footswitch_flat_seed_pair_with_silent_expansion_still_converges() {
-        let mut captures = 0u32;
+        let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
         let r = solve_footswitch(
             22,
             &[],
             &[],
-            -26.0,
+            -22.0,
             "baked",
             None,
             &fs_unit_param(),
             |_, v| {
-                captures += 1;
+                seen.borrow_mut().push(v);
                 flat_plateau_curve(v)
             },
         )
         .expect("a silent bracket-expansion probe must not abort the solve");
+        let seen = seen.borrow();
+        assert_eq!(seen[0], 0.25, "seed 1 is the fixed quarter-range point");
+        assert_eq!(
+            seen[1], 0.75,
+            "seed 2's law prediction is gated off (too narrow a span), keeping the pair \
+             flat so the expansion probe — not seed 2 — owns the silence"
+        );
+        assert_eq!(
+            seen.get(2),
+            Some(&0.0),
+            "the EXPANSION-PROBE arm must fire: the third capture is `fs_bracket_expansion`'s \
+             own low-bound probe, not a seed: {seen:?}"
+        );
         assert!(
-            (r.predicted_lufs - -26.0).abs() <= KNOB_TOL_LU,
-            "expected convergence near -26.0: got {} at v={} ({captures} captures)",
+            (r.predicted_lufs - -22.0).abs() <= KNOB_TOL_LU,
+            "expected convergence near -22.0: got {} at v={} ({} captures)",
             r.predicted_lufs,
-            r.final_value
+            r.final_value,
+            seen.len()
         );
         assert!(
             !r.clamped && !r.unconverged,
             "the false 'no authority' clamp must not fire once the expansion probe's \
              silence is treated as data: {r:?}"
         );
-        assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
+        assert!(
+            seen.len() as u32 <= 3 + FS_CORRECT_MAX,
+            "captures={}",
+            seen.len()
+        );
     }
 
     /// A "gate"-style knob response — DEcreasing with `v` (a physically real shape: e.g. a
-    /// noise-gate threshold, where turning it UP silences MORE) so the SECOND seed (0.75)
-    /// is the one that lands silent, not the first. Exercises the `hi_silent` arm directly:
-    /// the initial best-seed pick must still choose the real (0.25) reading, never the
-    /// synthesized one, and the pseudo point must still let the secant find the target.
+    /// noise-gate threshold, where turning it UP silences MORE) so seed 2 is the one that
+    /// lands silent, not seed 1. Steepened from the original -26 LU/knob-unit slope to -44:
+    /// with the shallower slope the law-predicted seed 2 (§ "Feature to apply" #3) landed
+    /// INSIDE the real region (0.436, computed from seed 1's -32.33 LUFS reading), rerouting
+    /// this fixture off the `hi_silent` arm entirely. At -44 LU/knob-unit the same
+    /// prediction (`0.25 + 20·log10⁻¹(...)`) overshoots past the range's 0.95 fraction
+    /// ceiling, so the gate rejects it and seed 2 falls back to the fixed complement
+    /// (0.75) — which this curve keeps silent (`v ≥ 0.60`). Exercises the `hi_silent` arm
+    /// directly: the initial best-seed pick must still choose the real (0.25) reading,
+    /// never the synthesized one, and the pseudo point must still let the secant find the
+    /// target. Provably reaches the arm: `seen[1]` (seed 2 itself) is asserted silent.
     fn second_seed_silent_curve(v: f32) -> Result<lufs::Loudness, String> {
         let v = f64::from(v);
         if v >= 0.60 {
             return Err(NO_SIGNAL_CAPTURED.to_string());
         }
-        Ok(fs_loud(-14.0 - (v / 0.60) * 26.0))
+        Ok(fs_loud(-14.0 - (v / 0.60) * 44.0))
     }
 
     #[test]
     fn solve_footswitch_second_seed_silence_becomes_data_not_a_hard_error() {
-        let mut captures = 0u32;
+        let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
         let r = solve_footswitch(
             23,
             &[],
@@ -9461,30 +9639,39 @@ mod tests {
             None,
             &fs_unit_param(),
             |_, v| {
-                captures += 1;
+                seen.borrow_mut().push(v);
                 second_seed_silent_curve(v)
             },
         )
         .expect("a silent SECOND seed must not abort the solve either");
+        let seen = seen.borrow();
+        assert_eq!(seen[0], 0.25, "seed 1 is the fixed quarter-range point");
+        assert!(
+            seen.len() >= 2 && seen[1] >= 0.60,
+            "the hi_silent arm must fire: seed 2 itself must be the silent capture: {seen:?}"
+        );
         assert!(
             (r.predicted_lufs - -20.0).abs() <= KNOB_TOL_LU,
-            "expected convergence near -20.0: got {} at v={} ({captures} captures)",
+            "expected convergence near -20.0: got {} at v={} ({} captures)",
             r.predicted_lufs,
-            r.final_value
+            r.final_value,
+            seen.len()
         );
         assert!(
             !r.clamped && !r.unconverged,
             "reachable target must converge: {r:?}"
         );
-        assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
+        assert!(
+            seen.len() as u32 <= 3 + FS_CORRECT_MAX,
+            "captures={}",
+            seen.len()
+        );
     }
 
     /// The Plumes shape shifted 40 LU down — a very quiet chain whose REAL captures sit
     /// BELOW the −50 sentinel. A fixed-LUFS pseudo point would be the LOUDEST point in any
     /// pair it enters (slope sign inverts — the solver would walk the wrong way), so the
-    /// sentinel must ride a fixed margin below the quietest real capture instead. Target
-    /// −68 sits on this curve's cliff: the secant's first extrapolation lands in the
-    /// silent zone, so the pseudo point's value decides convergence.
+    /// sentinel must ride a fixed margin below the quietest real capture instead.
     fn deep_quiet_pedal_curve(v: f32) -> Result<lufs::Loudness, String> {
         const ANCHORS: [(f64, f64); 7] = [
             (0.10, -106.9),
@@ -9501,35 +9688,67 @@ mod tests {
         Ok(fs_loud(piecewise_lufs(&ANCHORS, v)))
     }
 
+    /// Retargeted from the original −68.0 to −72.0 LUFS: the law-predicted seed 2
+    /// (§ "Feature to apply" #3) is what now drives this fixture into the silent zone in
+    /// the first place — at −68.0 the prediction (0.127, computed from seed 1's −62.15
+    /// LUFS reading) stayed just above the 0.10 cliff, so NO capture ever went silent and
+    /// the fixture stopped exercising `fs_silent_geometry` at all. At −72.0 the same
+    /// prediction formula lands at ≈0.080 (silent), and the correction loop that follows
+    /// keeps re-probing the silent zone at slightly different `v` for several iterates
+    /// BEFORE crossing back into real territory — a direct exercise of `min_real`'s
+    /// running-floor property (every real capture on this curve sits below −50, so a
+    /// pseudo point anchored at the FIXED `FS_SILENT_GEOMETRY_LUFS` sentinel rather than
+    /// `min_real - FS_SILENT_MARGIN_LU` would sit ABOVE the real points and invert the
+    /// secant's slope). Provably reaches the arm: at least two DISTINCT probed values sit
+    /// in the silent zone.
     #[test]
     fn solve_footswitch_silence_sentinel_stays_below_real_captures_on_quiet_chains() {
-        let mut captures = 0u32;
+        let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
         let r = solve_footswitch(
             26,
             &[],
             &[],
-            -68.0,
+            -72.0,
             "baked",
             None,
             &fs_unit_param(),
             |_, v| {
-                captures += 1;
+                seen.borrow_mut().push(v);
                 deep_quiet_pedal_curve(v)
             },
         )
         .expect("a silent probe on a quiet chain must be data, never an abort");
+        let seen = seen.borrow();
+        let silent_probes: Vec<f32> = seen.iter().copied().filter(|&v| v <= 0.10).collect();
         assert!(
-            (r.predicted_lufs - -68.0).abs() <= KNOB_TOL_LU,
-            "expected convergence near -68.0: got {} at v={} ({captures} captures) — a \
+            silent_probes.len() >= 2,
+            "fs_silent_geometry's min_real floor needs REPEATED silent probes (not a \
+             one-off) to prove it: {seen:?}"
+        );
+        assert!(
+            silent_probes
+                .iter()
+                .any(|&a| silent_probes.iter().any(|&b| (a - b).abs() > 1e-6)),
+            "the repeated silent probes must land at DISTINCT knob values, not the same \
+             point re-measured: {seen:?}"
+        );
+        assert!(
+            (r.predicted_lufs - -72.0).abs() <= KNOB_TOL_LU,
+            "expected convergence near -72.0: got {} at v={} ({} captures) — a \
              sentinel ABOVE the real captures inverts the secant's slope",
             r.predicted_lufs,
-            r.final_value
+            r.final_value,
+            seen.len()
         );
         assert!(
             !r.clamped && !r.unconverged,
-            "the -68 target sits on the curve's cliff, reachable: {r:?}"
+            "the -72 target sits on the curve's cliff, reachable: {r:?}"
         );
-        assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
+        assert!(
+            seen.len() as u32 <= 3 + FS_CORRECT_MAX,
+            "captures={}",
+            seen.len()
+        );
     }
 
     // Regression: an HONESTLY flat response (never silent anywhere) must keep the
@@ -9562,6 +9781,142 @@ mod tests {
              routing probe alone): {r:?}"
         );
         assert!(captures <= 3 + FS_CORRECT_MAX, "captures={captures}");
+    }
+
+    // ── log-space coordinate map + law-predicted seed 2 ─────────────────────────────────
+
+    /// The linear-amplitude law `L = 20·log10(v) + C` — proven exact for `presetLevel`,
+    /// amp `outputLevel` (scene lane), and the VolumePedal DSP (`out = in × g`) — is
+    /// solvable from ONE live point: seed 1 fixes `C`, seed 2 lands on target. The old
+    /// knob-space secant instead crept ~1 LU per capture (HW, MythicDrive FS:
+    /// −30 → −22 → −24 → −25 → −26 over 5 captures). Each capture is a real ~15–20 s
+    /// re-amp measurement, so the budget IS the feature: seed 1 + the exact law-predicted
+    /// seed 2 = 2 captures, budget 3 gives noise headroom.
+    #[test]
+    fn solve_footswitch_log_law_curve_solves_in_three_captures() {
+        let mut captures = 0u32;
+        let r = solve_footswitch(
+            12,
+            &[],
+            &[],
+            -20.0,
+            "baked",
+            None,
+            &fs_unit_param(),
+            |_, v| {
+                captures += 1;
+                Ok(fs_loud(20.0 * f64::from(v.max(1e-4)).log10() - 14.0))
+            },
+        )
+        .expect("solve");
+        assert!(
+            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
+            "must land within FS_TOL_LU: best {} LUFS at v={} ({captures} captures)",
+            r.predicted_lufs,
+            r.final_value,
+        );
+        assert!(!r.clamped && !r.unconverged, "converged solve: {r:?}");
+        assert!(captures <= 3, "captures={captures}");
+    }
+
+    /// The idempotency probe's capture is a PAID measurement: when it misses target it
+    /// must join the solve as seed 1 (it proved signal, so it owns no routing verdict —
+    /// that stays with the fixed seed on the probe-less path), not be discarded and
+    /// re-bought. Probe + law-placed seed 2 = 2 captures on an exact-law curve — the SAME
+    /// count as the no-probe path (`solve_footswitch_log_law_curve_solves_in_three_captures`);
+    /// the probe replaces seed 1 rather than adding to it, so it is never MORE captures,
+    /// only ever fewer than main's PRE-this-change discard-and-rebuy behavior (which paid
+    /// 3: the wasted probe, seed 1, seed 2).
+    #[test]
+    fn solve_footswitch_reuses_the_idempotency_probe_as_a_seed() {
+        let mut captures = 0u32;
+        let r = solve_footswitch(
+            12,
+            &[],
+            &[],
+            -20.0,
+            "baked",
+            Some(0.3),
+            &fs_unit_param(),
+            |_, v| {
+                captures += 1;
+                Ok(fs_loud(20.0 * f64::from(v.max(1e-4)).log10() - 14.0))
+            },
+        )
+        .expect("solve");
+        assert!(
+            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
+            "must land within FS_TOL_LU: best {} LUFS at v={} ({captures} captures)",
+            r.predicted_lufs,
+            r.final_value,
+        );
+        assert!(!r.clamped && !r.unconverged, "converged solve: {r:?}");
+        assert_eq!(captures, 2, "probe replaces seed 1: exactly 2 captures");
+        assert_eq!(
+            r.iterations, 2,
+            "the probe counts as capture 1, so `iterations` is 2 after seed 2 — the same \
+             accounting as the no-probe path"
+        );
+    }
+
+    /// A param whose loudness DECREASES with knob value — names imply neither direction
+    /// nor monotonicity, so the log-space transform must stay a pure monotone
+    /// reparameterization (a misprediction falls back to the fixed seed pair, or a
+    /// straddling bracket recovers) and never a direction assumption. Must converge inside
+    /// the standard fallback-seed budget.
+    #[test]
+    fn solve_footswitch_inverted_response_still_converges() {
+        let mut captures = 0u32;
+        let r = solve_footswitch(
+            12,
+            &[],
+            &[],
+            -20.0,
+            "baked",
+            None,
+            &fs_unit_param(),
+            |_, v| {
+                captures += 1;
+                Ok(fs_loud(-26.0 + 12.0 * (1.0 - f64::from(v))))
+            },
+        )
+        .expect("solve");
+        assert!(
+            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
+            "must land within FS_TOL_LU: best {} LUFS at v={} ({captures} captures)",
+            r.predicted_lufs,
+            r.final_value,
+        );
+        assert!(!r.clamped && !r.unconverged, "converged solve: {r:?}");
+        assert!(captures <= 2 + 1 + FS_CORRECT_MAX, "captures={captures}");
+    }
+
+    /// Flat response with a `current_value` probe: seeding from the probe + a law-placed
+    /// (or fixed-fallback) second seed must not shrink the pair below the span the
+    /// no-authority proof needs — the verdict stays the reason-less clamp (never
+    /// "unconverged"), exactly as on the probe-less path.
+    #[test]
+    fn solve_footswitch_flat_response_with_probe_still_reports_clamped() {
+        let mut captures = 0u32;
+        let r = solve_footswitch(
+            12,
+            &[],
+            &[],
+            -20.0,
+            "baked",
+            Some(0.5),
+            &fs_unit_param(),
+            |_, _| {
+                captures += 1;
+                Ok(fs_loud(-27.0))
+            },
+        )
+        .expect("solve");
+        assert!(
+            r.clamped && !r.unconverged,
+            "flat response must clamp, not advertise a re-run: {r:?}"
+        );
+        assert!(captures <= 2 + 1 + FS_CORRECT_MAX, "captures={captures}");
     }
 
     // ── param-class-driven solve: refusal, bounds, wet floor ────────────────────────────
@@ -9613,10 +9968,16 @@ mod tests {
             Ok(fs_loud(-30.0 + f64::from(v)))
         })
         .expect("solve");
+        // Seed 1 is still the fixed quarter across the range (3.0). Seed 2 is now the
+        // LAW-PREDICTED point, not the fixed three-quarters mark: `LevelDb` is ~1:1
+        // dB→LUFS (identity `to_u`/`from_u`), so predicting from seed 1's -27.0 dB
+        // reading toward the -22.0 target lands EXACTLY on 3.0 + (-22.0 - (-27.0)) =
+        // 8.0 — a deliberate behavior change (the prediction is exact here), not a
+        // weakened gate.
         assert_eq!(
             seen.borrow()[..2],
-            [3.0, 9.0],
-            "the seeds are a quarter and three quarters ACROSS THE RANGE, not 0.25/0.75"
+            [3.0, 8.0],
+            "seed 1 stays the fixed quarter-range point; seed 2 is now law-predicted"
         );
         assert!(
             (r.final_value - 8.0).abs() < 0.05,
