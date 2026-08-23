@@ -512,40 +512,43 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
     await page.close();
   });
 
-  // COVERAGE rows 3, 17, 20's WRITE-PATH half — and row 3 ONLY that half. Stated plainly
-  // because the honest scope is narrower than it looks: 400's `scenario-loudness.json`
+  // COVERAGE rows 3, 17, 20's SKIP half — the WRITE-PATH half this test used to prove no
+  // longer lives here. `cb7cb60` gave the footswitch Bake lane the same re-run idempotency
+  // skip the Assign lane already had: before solving, it probes the block's OWN stored
+  // param value (the bake anchor — for a Bake that IS the engaged value), and when that
+  // already renders the target within `FS_TOL_LU` it writes and saves NOTHING (`saved:
+  // false`, `final_value` = the stored value verbatim). 400's `scenario-loudness.json`
   // entry declares `leveledParams` for `ACD_TMSpring63.mix` and NOTHING ELSE, so the
-  // offline model is FLAT in `ACD_Boost.gain` — `model_lufs` returns the same C at every
-  // probe of it. What that makes provable here is the plumbing: the solve terminates, a
-  // resolved value reaches the wire through the Bake path, and the save persists it onto
-  // the block. What it does NOT prove is that the solved gain TRACKS loudness — any target
-  // converges against a flat response, so the dry run's `predicted_lufs` is a constant this
-  // test then feeds back to itself. Row 3's solve-tracking half is online-only. Do not read
-  // a green here as "the block-knob solve is correct"; read it as "the block-knob WRITE
-  // lands and persists".
+  // offline model is FLAT in `ACD_Boost.gain` — `model_lufs` returns the same C regardless
+  // of what the gain knob is set to. On a flat model NO target can force a genuine write
+  // (any off-C target just clamps/unconverges against that same constant, never converging
+  // TOWARD it), so a save run at the dry run's own learned target now correctly finds the
+  // stored gain already in tolerance and skips — this row can no longer prove the write
+  // half at all. What it proves instead: the bridge plumbing (a clean dry run, a save at
+  // its own learned target resolving through the Bake path), the SKIP itself (no persist,
+  // the stored value reported back verbatim), and the never-touch-ftsw danger-rule
+  // invariant.
+  //
+  // Where the two halves the old write-path version of this test used to prove now live:
+  //  * Bake WRITE + persist (Playwright layer): `level-fs-preset24.spec.ts` ("base + 4
+  //    pedals solve to target and re-measure at target from the saved state") — 405's
+  //    curve-backed pedals give the model real authority over the leveled param, so a
+  //    genuine off-anchor solve+persist is provable there.
+  //  * Bake WRITE + save + RE-RUN SKIP (command layer, Saved-event discriminator):
+  //    `e2e_server_tests.rs::bake_path_footswitch_rerun_skips_the_persist_when_already_at_target`.
   //
   // 400/switch 2 (Boost) routes through `FsLevelPlan::Bake` (`footswitch.rs`): the assign
   // gate (user directive, 2026-08-19) plans `Assign` ONLY when the switch already carries a
   // `param` fn on the user-selected control, and Boost's switch is a bare on-off — so
   // leveling `ACD_Boost.gain` writes the block directly rather than adding a function to the
   // switch (a two-entry row is HW-proven to make the firmware silently discard the whole
-  // imported preset, `danger.md`). SimDevice implements `changeParameter`(12) as a
-  // fire-and-forget setter (no reply, no echo) that lands straight on the block's own
-  // `dspUnitParameters` — there is nothing to "confirm by read-back" the way an Assign's
-  // `ftsw` write is, so the save simply persists the block value the write already set.
-  // Mirrors `e2e_server_tests.rs::bake_path_footswitch_writes_the_block_directly_and_persists_its_value`
-  // at the Playwright layer: the dry run learns Boost's reachable engaged loudness (400
-  // declares no `leveledParams` for `gain`, so the offline model is flat in it — any signal
-  // level converges), the save:true run must complete and persist, and the wire carries the
-  // solved value via `changeParameter` — never a `setFootswitchAssignment`(54), which would
-  // mean the switch grew a second function. Per this file's header, the RENDERED Summary
-  // still can't show this per-row offline — the wire proof is `/sim/events`.
-  test("Boost's opted-in gain write reaches the fake via the Bake path and persists on the block", async ({
+  // imported preset, `danger.md`).
+  test("Boost's in-tolerance gain skips the bake write and never touches ftsw", async ({
     page,
   }) => {
     test.skip(
       await isOnline(page),
-      "offline: pins the sim's Bake write behavior",
+      "offline: pins the sim's Bake re-run skip on a flat model",
     );
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
@@ -574,6 +577,12 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
         LEVEL_T,
       ) as Promise<FootswitchLevelResult[]>;
 
+    // -20 is picked only because it sits far from the flat model's constant C
+    // (base scene: -15 + 20*log10(presetLevel 0.32) ~= -24.9, `scenario-loudness.json` +
+    // 400's authored presetLevel) — i.e. far enough that the idempotency probe's own
+    // measurement at the CURRENT stored gain does NOT read in-tolerance, so this dry run
+    // provably does NOT itself take the skip path (its own `final_value` lands on the
+    // flat-response seed point, not the stored gain — see the comment below).
     const dry = await apply(-20, false);
     expect(dry[0].clamp_reason, "Boost's engaged capture has signal").toBe(
       null,
@@ -581,18 +590,45 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
     expect(Number.isFinite(dry[0].predicted_lufs)).toBe(true);
     expect(dry[0].saved, "a dry run must write nothing").toBe(false);
 
+    // Snapshot the sim's event log length BEFORE the save:true apply — the honest
+    // no-persist proof this test needs is a DELTA (no NEW `Saved` event), mirroring
+    // `level-rerun.spec.ts`'s "run 2 makes no new Saved write" idiom.
+    const beforeCount = (await simEvents(page)).length;
+
     const r = (await apply(dry[0].predicted_lufs, true))[0];
     expect(r.method).toBe("baked");
     expect(r.clamp_reason, "ACD_Boost is on the trunk — no routing clamp").toBe(
       null,
     );
-    expect(r.saved, "the Bake save must now complete and persist").toBe(true);
-    // A raw-dB gain solve must reach the wire unclamped (the `[0,12]` range's own seed).
-    expect(r.final_value).toBeGreaterThan(1);
+    expect(
+      r.clamped,
+      "an in-tolerance skip is a clean hit, never a clamp verdict",
+    ).toBe(false);
+    // The fix under test (cb7cb60): the Bake lane's re-run idempotency probe reads the
+    // block's OWN stored gain as its anchor. Feeding the save run the target the dry run
+    // itself just measured makes that anchor trivially in-tolerance on this flat model
+    // (every probe reads the same constant C regardless of gain) — the skip must fire, so
+    // no solve, no write, no save.
+    expect(
+      r.saved,
+      "the stored gain already renders the dry run's own target on this flat model, so cb7cb60's Bake re-run skip must hold (no persist)",
+    ).toBe(false);
+    // On the skip path `final_value` is the stored gain reported back VERBATIM
+    // (`solve_param_secant`'s idempotency arm) — NOT `dry[0].final_value`: the dry run's own
+    // -20 target isn't in tolerance of the flat C, so IT fell through to the flat-response
+    // no-authority seed pass and reports the seed's 0.25-fraction point instead (a
+    // different number, by construction, on `[0,12]`). 400's authored `ACD_Boost.gain` is
+    // 2.5 (`scenario-presets.json`'s `dspUnitParameters`, COVERAGE.md row 20's raw-dB
+    // `[0,12]` range) — assert the skip reports THAT stored value, not the dry run's seed.
+    expect(
+      r.final_value,
+      `a skip must report the stored gain verbatim: ${JSON.stringify({ dry: dry[0], r })}`,
+    ).toBeCloseTo(2.5, 3);
 
+    // A Bake — write or skip alike — must never touch the switch's own `ftsw` row: that
+    // shape (a second entry on a row that already has an on-off) is the exact one
+    // `danger.md` forbids. Kept VERBATIM from the write-path version of this test.
     const events = await simEvents(page);
-    // A Bake must never touch the switch's own `ftsw` row — that shape (a second entry on
-    // a row that already has an on-off) is the exact one `danger.md` forbids.
     const assigns = events
       .filter(isSetFootswitchAssignment)
       .map((e) => e.SetFootswitchAssignment);
@@ -601,20 +637,27 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
       `a Bake must never write ftsw: ${JSON.stringify(assigns)}`,
     ).toBe(false);
 
-    const bakes = events
-      .filter(isChangeParameter)
-      .map((e) => e.ChangeParameter);
-    const boost = bakes.find(
-      (b) =>
-        b.node === "ACD_Boost" &&
-        b.param === "gain" &&
-        Math.abs(b.value - r.final_value) < 1e-3,
-    );
-    if (!boost)
-      throw new Error(
-        `no ChangeParameter write landing the solved gain for ACD_Boost: ${JSON.stringify(bakes)}`,
-      );
-    expect(boost.group).toBe("G1");
+    // The honest no-persist proof: no NEW `Saved` event arrived across the save:true apply.
+    // Deliberately NOT asserting on `ChangeParameter` presence/absence — the idempotency
+    // probe's OWN measurement still fires a `changeParameter` to set up its capture even
+    // though nothing lands in `pending`, so a `ChangeParameter`'s mere presence proves
+    // nothing about whether the skip held.
+    //
+    // NON-VACUITY, honestly: this delta check alone can't prove a save:true run on this
+    // slot COULD emit `Saved` at all (a crash before the write phase would look identical
+    // to a clean skip). That discrimination — run 1 writes and saves, run 2 skips and
+    // doesn't — is deliberately NOT re-proven here; it lives at the command layer
+    // (`e2e_server_tests.rs::bake_path_footswitch_rerun_skips_the_persist_when_already_at_target`),
+    // which drives the same command twice on a Bake-planning switch and asserts the FIRST
+    // run's `Saved` count so the skip's absence is a discriminating proof, not a vacuous
+    // one. `r.method === "baked"` above still guards that this row reached the right plan
+    // arm, and a thrown/rejected `apply()` (a crash before the write phase) would fail this
+    // test outright rather than reach this assertion.
+    const delta = events.slice(beforeCount);
+    expect(
+      delta.some((e) => typeof e === "object" && e !== null && "Saved" in e),
+      `a skip must persist nothing — no new Saved event: ${JSON.stringify(delta)}`,
+    ).toBe(false);
 
     await expectReampBalanced(page, reampBase);
   });
