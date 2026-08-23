@@ -1,6 +1,6 @@
 # tmp-companion
 
-A **macOS-only** Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that auto-levels real Fender Tone Master Pro presets to a LUFS target by driving the device over USB in **re-amp mode** — no guitar plugged in. It plays a synthetic guitar-like sample through a preset's full DSP chain, captures the processed USB-Out, measures loudness, computes the `presetLevel` that hits the target, and (opt-in) saves it back. It renders its **own** UI: this is a USB host controller that draws its own interface, not a plugin.
+A **macOS-first** Tauri 2 desktop app (Rust backend + React/TypeScript frontend; ships on macOS, Linux is a supported dev platform — see `CONTRIBUTING.md`) that auto-levels real Fender Tone Master Pro presets to a LUFS target by driving the device over USB in **re-amp mode** — no guitar plugged in. It plays a synthetic guitar-like sample through a preset's full DSP chain, captures the processed USB-Out, measures loudness, computes the `presetLevel` that hits the target, and (opt-in) saves it back. It renders its **own** UI: this is a USB host controller that draws its own interface, not a plugin.
 
 **UX north-star:** fewest possible clicks per action. The audience is thousands of users, many not comfortable with computers. Every feature ships whole in v1 — no subsetting. The app is **click-only**: no keyboard shortcuts, no command palette.
 

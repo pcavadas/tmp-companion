@@ -33,6 +33,11 @@ pub fn probe_audio_devices() -> Result<String, String> {
             "\nfind_tmp() picked: NONE — no name match and no >=4in/>=4out fallback candidate\n",
         ),
     }
+    report.push_str(&format!(
+        "(find_tmp() is this report's own diagnostic picker, not what re-amp actually uses — \
+         see audio::find_device for the production seam{})\n",
+        production_pick_note()
+    ));
 
     report.push_str(&linux_asound_report());
     report.push_str(
@@ -40,6 +45,19 @@ pub fn probe_audio_devices() -> Result<String, String> {
          unit plugged in.\n",
     );
     Ok(report)
+}
+
+#[cfg(target_os = "linux")]
+fn production_pick_note() -> String {
+    match audio::linux_audio_card_id() {
+        Some(id) => format!(" — resolves to hw:CARD={id},DEV=0"),
+        None => " — resolves to NONE (no Fender-VID card with PCM)".to_string(),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn production_pick_note() -> String {
+    String::new()
 }
 
 fn format_device(d: &AudioDevice, picked: bool) -> String {

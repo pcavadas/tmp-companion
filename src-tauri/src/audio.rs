@@ -1,11 +1,40 @@
-//! Host audio I/O for the re-amp loop (cpal = native CoreAudio AUHAL on macOS).
+//! Host audio I/O for the re-amp loop, over `cpal` on both macOS and Linux.
 //!
-//! The TMP enumerates as a 4-in / 4-out USB-audio device. From the Mac's
+//! The TMP enumerates as a 4-in / 4-out USB-audio device. From the host's
 //! perspective its *output* channels feed the device's USB-In jacks (re-amp:
 //! USB-In 3 = instrument-channel entry) and its *input* channels carry the
-//! device's USB-Out (USB-Out 1/2 = processed stereo). M2 builds simultaneous
-//! play(ch3)/capture(ch1/2) on top of this; for now we enumerate so we can find
-//! the TMP and confirm its channel layout against a real device.
+//! device's USB-Out (USB-Out 1/2 = processed stereo).
+//!
+//! **Device resolution is the one platform boundary** (`find_device`'s `imp`
+//! module, mirroring `hid.rs`'s shape): CoreAudio names cpal devices by their USB
+//! product string, so a case-insensitive "tone master" substring match is
+//! unambiguous on macOS. ALSA carries no such string, and that same substring
+//! match is actively WRONG on Linux — cpal also surfaces a non-functional
+//! `usbstream:` hint device that renders as the identical "Tone Master Pro" name
+//! and sorts first (HW-measured, fw 1.8.58, `probe --audio-devices`), so the naive
+//! port would have picked a 0-channel dead end over the real PCM device. Linux
+//! instead resolves deterministically via `/proc/asound` by USB vendor id (the
+//! TMP's HID and audio interfaces sit on DIFFERENT product ids — 0x0044 vs
+//! 0x0047 — so match on "has PCM", not a specific id) and opens the exact
+//! `hw:CARD=<id>,DEV=0` PCM.
+//!
+//! **Format is the second boundary, handled at the stream-callback level, not a
+//! platform `cfg`.** The TMP's ALSA `hw:` interface is S32_LE (I32) only — no F32
+//! at all (HW-measured). `pick_config` accepts F32 (macOS/CoreAudio) or I32
+//! (Linux `hw:`), and `fill_output_frames_f32`/`read_input_frames_f32` convert at
+//! the boundary using `dasp_sample`'s exact 2^31 scaling, so every measurement
+//! above this module stays in f32 regardless of which format the negotiated
+//! stream actually used. Deliberately `hw:`, not `plughw:`: ALSA's `plug` layer
+//! converts channel COUNT as well as format, and `pick_config`'s "smallest
+//! channel count that fits" would ask `plughw:` for 3 channels — not the
+//! physical 4 — inviting an unverified remix of the exact USB-In-3 routing
+//! re-amp depends on. `hw:` only ever advertises the physical count.
+//!
+//! **PipeWire/WirePlumber claiming the TMP as a system audio device blocks `hw:`'s
+//! exclusive open with EBUSY** (HW-measured) whenever it's actively holding the
+//! card — a WirePlumber rule excluding the TMP by USB vendor/product id
+//! (`device.disabled`) is required on Linux dev machines; this module has no way
+//! to detect or work around a live PipeWire hold itself.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,7 +44,7 @@ use std::time::{Duration, Instant};
 use crate::lufs::IncrementalLoudness;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, SampleFormat, SupportedStreamConfig};
+use cpal::{Data, Device, SampleFormat, SupportedStreamConfig};
 use serde::Serialize;
 
 /// 0-based output channel that maps to the device's USB-In 3 (re-amp instrument
@@ -341,11 +370,124 @@ fn incremental_loudness_for(in_ch: usize, sample_rate: u32) -> Result<Incrementa
     }
 }
 
-fn find_device<I: Iterator<Item = Device>>(mut devs: I) -> Option<Device> {
-    devs.find(|d| d.to_string().to_lowercase().contains("tone master"))
+/// Pick the TMP out of a cpal device iterator. The platform boundary — see
+/// `imp` below.
+fn find_device<I: Iterator<Item = Device>>(devs: I) -> Option<Device> {
+    imp::find_device(devs)
 }
 
-/// Pick an f32 config on `target_rate` with at least `min_ch` channels.
+/// The ALSA card `find_device` would resolve to on Linux, or `None` if no
+/// Fender-VID card with PCM is present. `pub(crate)` so `probe --audio-devices`
+/// can report the PRODUCTION resolution (not a re-derived guess) without reaching
+/// into the private `imp` module itself — `imp` stays the one platform boundary.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_audio_card_id() -> Option<String> {
+    imp::tmp_audio_card_id()
+}
+
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::Device;
+
+    /// CoreAudio names devices for cpal by their USB product string, and there is
+    /// exactly one cpal entry per physical device — a plain substring match is
+    /// unambiguous.
+    pub(super) fn find_device<I: Iterator<Item = Device>>(mut devs: I) -> Option<Device> {
+        devs.find(|d| d.to_string().to_lowercase().contains("tone master"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::{parse_asound_usbid, Device};
+    use cpal::traits::DeviceTrait;
+
+    /// ALSA carries no USB product string, and cpal enumerates a name-substring
+    /// match ambiguously on Linux: a non-functional `usbstream:` hint (0 channels)
+    /// also renders as "Tone Master Pro" and sorts before the real `hw:`/`plughw:`
+    /// PCM device (HW-measured via `probe --audio-devices`, fw 1.8.58 — the
+    /// production `find_device` picked the hint, not the audio interface, before
+    /// this port). Resolve deterministically instead: walk `/proc/asound` for the
+    /// Fender-VID card that carries PCM (the TMP's HID and audio interfaces are on
+    /// DIFFERENT USB product ids — 0x0044 vs 0x0047 — so match by vendor id + "has
+    /// a pcm device", not a specific product id), then pick the cpal device whose
+    /// exact ALSA pcm_id (`description().driver()`) is that card's `hw:` PCM. `hw:`
+    /// (not `plughw:`) deliberately: `plughw:`'s `plug` layer converts channel
+    /// COUNT as well as format/rate, and `pick_config`'s "smallest channel count
+    /// that fits" would ask it for 3 channels — not the physical 4 — inviting an
+    /// unverified channel remix of the precise USB-In-3 routing re-amp depends on.
+    /// `hw:` only ever advertises the physical count, so `pick_config` can only
+    /// ever land on exactly 4 there. The resulting I32-only format is handled at
+    /// the stream-callback boundary (`pick_config`, `fill_output_frames_f32`,
+    /// `read_input_frames_f32`).
+    pub(super) fn find_device<I: Iterator<Item = Device>>(mut devs: I) -> Option<Device> {
+        let card_id = tmp_audio_card_id()?;
+        let want = format!("hw:CARD={card_id},DEV=0");
+        devs.find(|d| {
+            d.description()
+                .ok()
+                .and_then(|desc| desc.driver().map(str::to_string))
+                .as_deref()
+                == Some(want.as_str())
+        })
+    }
+
+    /// The ALSA short id (`/proc/asound/cardN/id`, e.g. `"Pro_1"`) of the Fender
+    /// card that carries PCM. `pub(crate)` so `probe_api::audio_devices` can report
+    /// what this path resolves to without re-walking `/proc/asound` itself.
+    pub(crate) fn tmp_audio_card_id() -> Option<String> {
+        const FENDER_VID: u16 = 0x1ED8;
+        let mut cards: Vec<String> = std::fs::read_dir("/proc/asound")
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with("card"))
+            .collect();
+        cards.sort();
+        for card in cards {
+            let dir = format!("/proc/asound/{card}");
+            let Ok(usbid) = std::fs::read_to_string(format!("{dir}/usbid")) else {
+                continue;
+            };
+            let Some((vendor, _product)) = parse_asound_usbid(&usbid) else {
+                continue;
+            };
+            if vendor != FENDER_VID {
+                continue;
+            }
+            let has_pcm = std::fs::read_dir(&dir)
+                .map(|it| {
+                    it.filter_map(|e| e.ok())
+                        .any(|e| e.file_name().to_string_lossy().starts_with("pcm"))
+                })
+                .unwrap_or(false);
+            if !has_pcm {
+                continue;
+            }
+            if let Ok(id) = std::fs::read_to_string(format!("{dir}/id")) {
+                return Some(id.trim().to_string());
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod imp {
+    use super::Device;
+
+    pub(super) fn find_device<I: Iterator<Item = Device>>(_devs: I) -> Option<Device> {
+        None
+    }
+}
+
+/// Pick a config on `target_rate` with at least `min_ch` channels, F32 or I32
+/// (falling back to I32 only when no F32 config exists). F32 is what CoreAudio
+/// always offers; Linux ALSA `hw:` devices are commonly integer-only — the TMP's
+/// own USB-audio-class interface is S32_LE (I32) exclusively, no F32 at the `hw:`
+/// level (HW-measured, `probe --audio-devices`). The four stream-build sites
+/// convert to/from f32 at the callback boundary (`fill_output_frames_f32` /
+/// `read_input_frames_f32`) so everything above them keeps working in f32.
 fn pick_config(
     ranges: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
     target_rate: u32,
@@ -354,17 +496,95 @@ fn pick_config(
     ranges
         .filter(|r| {
             r.channels() >= min_ch
-                && r.sample_format() == SampleFormat::F32
+                && matches!(r.sample_format(), SampleFormat::F32 | SampleFormat::I32)
                 && r.min_sample_rate() <= target_rate
                 && r.max_sample_rate() >= target_rate
         })
-        .min_by_key(|r| r.channels()) // smallest channel count that fits
+        // Smallest channel count that fits, F32 breaking a tie over I32 — ties only
+        // arise on hosts that offer both at the same channel count (not the TMP on
+        // either platform today, but keeps macOS's exact prior behavior explicit
+        // rather than accidental).
+        .min_by_key(|r| (r.channels(), r.sample_format() != SampleFormat::F32))
         .map(|r| r.with_sample_rate(target_rate))
 }
 
-/// The resolved TMP devices + f32 stream configs for a re-amp session. Shared by
-/// `reamp_capture` / `reamp_measure` / `LiveReamp::start` so the device lookup and
-/// channel/rate negotiation (the fiddly, error-prone part) cannot diverge.
+/// f32 -> i32, matching `dasp_sample`'s own scaling exactly (the crate cpal's typed
+/// `f32`/`i32` stream builders use internally) so a captured LUFS reading is
+/// identical regardless of which format the negotiated stream happened to use.
+fn f32_to_i32(s: f32) -> i32 {
+    (s * 2_147_483_648.0) as i32
+}
+
+/// i32 -> f32, the exact inverse of [`f32_to_i32`] (same `dasp_sample` convention).
+fn i32_to_f32(s: i32) -> f32 {
+    s as f32 / 2_147_483_648.0
+}
+
+/// Fill a format-agnostic output buffer one frame at a time: `next_sample()` is
+/// called once per frame and written to `inject_ch`, every other channel gets
+/// silence. The format-agnostic counterpart to a typed `build_output_stream::<f32,
+/// _, _>` callback — needed because `pick_config` can now hand back an I32 config
+/// (Linux `hw:`), and cpal's typed callback API requires the Rust type to match the
+/// negotiated format at compile time. Logs and no-ops on a format `pick_config`
+/// cannot produce (defensive; not reachable in practice).
+fn fill_output_frames_f32(
+    data: &mut Data,
+    channels: usize,
+    inject_ch: usize,
+    mut next_sample: impl FnMut() -> f32,
+) {
+    match data.sample_format() {
+        SampleFormat::F32 => {
+            if let Some(buf) = data.as_slice_mut::<f32>() {
+                for frame in buf.chunks_mut(channels) {
+                    let s = next_sample();
+                    for (c, v) in frame.iter_mut().enumerate() {
+                        *v = if c == inject_ch { s } else { 0.0 };
+                    }
+                }
+            }
+        }
+        SampleFormat::I32 => {
+            if let Some(buf) = data.as_slice_mut::<i32>() {
+                for frame in buf.chunks_mut(channels) {
+                    let s = f32_to_i32(next_sample());
+                    for (c, v) in frame.iter_mut().enumerate() {
+                        *v = if c == inject_ch { s } else { 0 };
+                    }
+                }
+            }
+        }
+        other => log::error!("[audio] unsupported output sample format {other:?}"),
+    }
+}
+
+/// Read a format-agnostic input buffer as interleaved f32 samples, calling `push`
+/// once per sample in wire order. The format-agnostic counterpart to
+/// [`fill_output_frames_f32`] for capture.
+fn read_input_frames_f32(data: &Data, mut push: impl FnMut(f32)) {
+    match data.sample_format() {
+        SampleFormat::F32 => {
+            if let Some(buf) = data.as_slice::<f32>() {
+                for &s in buf {
+                    push(s);
+                }
+            }
+        }
+        SampleFormat::I32 => {
+            if let Some(buf) = data.as_slice::<i32>() {
+                for &s in buf {
+                    push(i32_to_f32(s));
+                }
+            }
+        }
+        other => log::error!("[audio] unsupported input sample format {other:?}"),
+    }
+}
+
+/// The resolved TMP devices + stream configs (F32 or I32 — see [`pick_config`]) for
+/// a re-amp session. Shared by `reamp_capture` / `reamp_measure` / `LiveReamp::start`
+/// so the device lookup and channel/rate negotiation (the fiddly, error-prone part)
+/// cannot diverge.
 struct ReampStreams {
     out_dev: Device,
     in_dev: Device,
@@ -372,7 +592,7 @@ struct ReampStreams {
     in_cfg: SupportedStreamConfig,
 }
 
-/// Find the TMP and pick a 48 kHz f32 output config (≥3 ch for USB-In 3) + input
+/// Find the TMP and pick a 48 kHz output config (≥3 ch for USB-In 3) + input
 /// config. Errors describe exactly which half is missing.
 fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
     let host = cpal::default_host();
@@ -388,7 +608,7 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
         sample_rate,
         (REAMP_INSTRUMENT_OUT_CH + 1) as u16,
     )
-    .ok_or_else(|| format!("no f32 output config at {sample_rate} Hz with ≥3 channels"))?;
+    .ok_or_else(|| format!("no F32/I32 output config at {sample_rate} Hz with ≥3 channels"))?;
     let in_cfg = pick_config(
         in_dev
             .supported_input_configs()
@@ -396,7 +616,7 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
         sample_rate,
         1,
     )
-    .ok_or_else(|| format!("no f32 input config at {sample_rate} Hz"))?;
+    .ok_or_else(|| format!("no F32/I32 input config at {sample_rate} Hz"))?;
 
     Ok(ReampStreams {
         out_dev,
@@ -417,19 +637,18 @@ fn build_oneshot_output_stream(
     cursor: Arc<AtomicUsize>,
 ) -> Result<cpal::Stream, String> {
     let out_ch = streams.out_cfg.channels() as usize;
+    let fmt = streams.out_cfg.sample_format();
     let err = |e| log::error!("[audio] stream error: {e}");
     streams
         .out_dev
-        .build_output_stream(
+        .build_output_stream_raw(
             streams.out_cfg.config(),
-            move |data: &mut [f32], _| {
-                for frame in data.chunks_mut(out_ch) {
+            fmt,
+            move |data: &mut Data, _| {
+                fill_output_frames_f32(data, out_ch, REAMP_INSTRUMENT_OUT_CH, || {
                     let i = cursor.fetch_add(1, Ordering::Relaxed);
-                    let s = stim.get(i).copied().unwrap_or(0.0);
-                    for (c, v) in frame.iter_mut().enumerate() {
-                        *v = if c == REAMP_INSTRUMENT_OUT_CH { s } else { 0.0 };
-                    }
-                }
+                    stim.get(i).copied().unwrap_or(0.0)
+                });
             },
             err,
             None,
@@ -443,14 +662,16 @@ fn build_capture_input_stream(
     streams: &ReampStreams,
     captured: Arc<Mutex<Vec<f32>>>,
 ) -> Result<cpal::Stream, String> {
+    let fmt = streams.in_cfg.sample_format();
     let err = |e| log::error!("[audio] stream error: {e}");
     streams
         .in_dev
-        .build_input_stream(
+        .build_input_stream_raw(
             streams.in_cfg.config(),
-            move |data: &[f32], _| {
+            fmt,
+            move |data: &Data, _| {
                 if let Ok(mut buf) = captured.lock() {
-                    buf.extend_from_slice(data);
+                    read_input_frames_f32(data, |s| buf.push(s));
                 }
             },
             err,
@@ -969,6 +1190,30 @@ fn ring_append(buf: &mut std::collections::VecDeque<f32>, data: &[f32], cap: usi
     }
 }
 
+/// Format-agnostic counterpart to [`ring_append`] for the raw stream callback: F32
+/// is a zero-copy passthrough (byte-identical to the original always-f32 path); I32
+/// (Linux `hw:`) converts sample-by-sample straight into the ring, so the realtime
+/// callback never allocates on either format.
+fn ring_append_raw(buf: &mut std::collections::VecDeque<f32>, data: &Data, cap: usize) {
+    match data.sample_format() {
+        SampleFormat::F32 => {
+            if let Some(s) = data.as_slice::<f32>() {
+                ring_append(buf, s, cap);
+            }
+        }
+        SampleFormat::I32 => {
+            if let Some(s) = data.as_slice::<i32>() {
+                buf.extend(s.iter().map(|&v| i32_to_f32(v)));
+                if buf.len() > cap {
+                    let excess = buf.len() - cap;
+                    buf.drain(..excess);
+                }
+            }
+        }
+        other => log::error!("[audio] unsupported input sample format {other:?}"),
+    }
+}
+
 /// A continuously-running re-amp stream. Unlike [`reamp_capture`], this loops the
 /// stimulus forever and lets the caller measure recent capture windows after live
 /// parameter changes without rebuilding CoreAudio streams.
@@ -1009,17 +1254,16 @@ impl LiveReamp {
 
         let stim_cb = stim.clone();
         let cur_cb = cursor.clone();
+        let out_fmt = out_cfg.sample_format();
         let out_stream = out_dev
-            .build_output_stream(
+            .build_output_stream_raw(
                 out_cfg.config(),
-                move |data: &mut [f32], _| {
-                    for frame in data.chunks_mut(out_ch) {
+                out_fmt,
+                move |data: &mut Data, _| {
+                    fill_output_frames_f32(data, out_ch, REAMP_INSTRUMENT_OUT_CH, || {
                         let i = cur_cb.fetch_add(1, Ordering::Relaxed) % stim_cb.len();
-                        let s = stim_cb[i];
-                        for (c, v) in frame.iter_mut().enumerate() {
-                            *v = if c == REAMP_INSTRUMENT_OUT_CH { s } else { 0.0 };
-                        }
-                    }
+                        stim_cb[i]
+                    });
                 },
                 err,
                 None,
@@ -1033,12 +1277,14 @@ impl LiveReamp {
         // drain re-based multiple MB on the realtime callback in the worst case.
         let cap_samples = sample_rate as usize * LIVE_RING_SECS * in_ch;
         let cap_cb = captured.clone();
+        let in_fmt = in_cfg.sample_format();
         let in_stream = in_dev
-            .build_input_stream(
+            .build_input_stream_raw(
                 in_cfg.config(),
-                move |data: &[f32], _| {
+                in_fmt,
+                move |data: &Data, _| {
                     if let Ok(mut buf) = cap_cb.lock() {
-                        ring_append(&mut buf, data, cap_samples);
+                        ring_append_raw(&mut buf, data, cap_samples);
                     }
                 },
                 err,
@@ -1094,20 +1340,22 @@ pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
         sample_rate,
         1,
     )
-    .ok_or_else(|| format!("no f32 input config at {sample_rate} Hz"))?;
+    .ok_or_else(|| format!("no F32/I32 input config at {sample_rate} Hz"))?;
     let in_ch = in_cfg.channels() as usize;
 
     let captured = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
         (secs as usize + 1) * sample_rate as usize * in_ch,
     )));
+    let in_fmt = in_cfg.sample_format();
     let err = |e| log::error!("[audio] input stream error: {e}");
     let cap_cb = captured.clone();
     let in_stream = in_dev
-        .build_input_stream(
+        .build_input_stream_raw(
             in_cfg.config(),
-            move |data: &[f32], _| {
+            in_fmt,
+            move |data: &Data, _| {
                 if let Ok(mut buf) = cap_cb.lock() {
-                    buf.extend_from_slice(data);
+                    read_input_frames_f32(data, |s| buf.push(s));
                 }
             },
             err,
@@ -1350,6 +1598,67 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn f32_i32_round_trip_matches_dasp_sample_scaling() {
+        // Exact `dasp_sample` formulas (2^31, not i32::MAX) — a mismatch here would
+        // silently mis-scale every LUFS reading captured over the Linux hw:/I32 path.
+        assert_eq!(f32_to_i32(0.0), 0);
+        assert_eq!(f32_to_i32(0.5), 1_073_741_824); // 2^30
+        assert_eq!(f32_to_i32(-0.5), -1_073_741_824);
+        assert_eq!(i32_to_f32(0), 0.0);
+        assert_eq!(i32_to_f32(1_073_741_824), 0.5);
+        for s in [-1.0, -0.25, 0.0, 0.001, 0.25, 0.999] {
+            let roundtrip = i32_to_f32(f32_to_i32(s));
+            assert!(
+                (roundtrip - s).abs() < 1e-9,
+                "{s} round-tripped to {roundtrip}"
+            );
+        }
+    }
+
+    /// Build a `Data` over a local buffer for the raw-callback tests below. `unsafe`
+    /// only because `Data::from_parts` is — the buffer outlives every call made with
+    /// it in these tests, matching its safety contract.
+    fn data_from<T: cpal::SizedSample>(buf: &mut [T], fmt: SampleFormat) -> Data {
+        unsafe { Data::from_parts(buf.as_mut_ptr().cast(), buf.len(), fmt) }
+    }
+
+    #[test]
+    fn fill_output_frames_f32_injects_into_the_target_channel_only() {
+        let mut buf = vec![0.0f32; 8]; // 2 frames × 4 channels
+        let mut data = data_from(&mut buf, SampleFormat::F32);
+        let mut samples = [0.7f32, -0.3].into_iter();
+        fill_output_frames_f32(&mut data, 4, 2, || samples.next().unwrap());
+        assert_eq!(buf, vec![0.0, 0.0, 0.7, 0.0, 0.0, 0.0, -0.3, 0.0]);
+    }
+
+    #[test]
+    fn fill_output_frames_i32_injects_the_scaled_sample_into_the_target_channel_only() {
+        let mut buf = vec![0i32; 8]; // 2 frames × 4 channels
+        let mut data = data_from(&mut buf, SampleFormat::I32);
+        let mut samples = [0.5f32, -0.5].into_iter();
+        fill_output_frames_f32(&mut data, 4, 2, || samples.next().unwrap());
+        assert_eq!(buf, vec![0, 0, 1_073_741_824, 0, 0, 0, -1_073_741_824, 0]);
+    }
+
+    #[test]
+    fn read_input_frames_f32_passes_f32_through_unchanged() {
+        let mut buf = vec![0.1f32, -0.2, 0.3];
+        let data = data_from(&mut buf, SampleFormat::F32);
+        let mut got = Vec::new();
+        read_input_frames_f32(&data, |s| got.push(s));
+        assert_eq!(got, vec![0.1, -0.2, 0.3]);
+    }
+
+    #[test]
+    fn read_input_frames_i32_converts_every_sample() {
+        let mut buf = vec![1_073_741_824i32, -1_073_741_824, 0];
+        let data = data_from(&mut buf, SampleFormat::I32);
+        let mut got = Vec::new();
+        read_input_frames_f32(&data, |s| got.push(s));
+        assert_eq!(got, vec![0.5, -0.5, 0.0]);
+    }
+
     // The "locked up my machine" gate: the LiveReamp capture ring stays bounded at
     // `cap` samples no matter how much sustained input is pushed (unbounded growth once
     // OOM'd the whole Mac). Feeds many chunks totalling far more than `cap` and asserts
@@ -1384,6 +1693,21 @@ mod tests {
             buf.front().copied(),
             Some(32000.0 - cap as f32 + 1.0),
             "front is exactly `cap` samples back — older history trimmed"
+        );
+    }
+
+    #[test]
+    fn ring_append_raw_i32_converts_and_stays_bounded_like_the_f32_path() {
+        let cap = 4usize;
+        let mut buf = std::collections::VecDeque::<f32>::new();
+        let mut src = vec![1_073_741_824i32, -1_073_741_824, 0, 1_073_741_824, 0];
+        let data = data_from(&mut src, SampleFormat::I32);
+        ring_append_raw(&mut buf, &data, cap);
+        assert_eq!(buf.len(), cap, "trimmed to cap exactly like ring_append");
+        assert_eq!(
+            buf.iter().copied().collect::<Vec<_>>(),
+            vec![-0.5, 0.0, 0.5, 0.0],
+            "dropped the oldest sample, converted the rest"
         );
     }
 

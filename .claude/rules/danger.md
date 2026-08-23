@@ -40,7 +40,7 @@ Full hardware evidence for the linked entries is in [`notes/gotchas.md`](../../n
 
 - **`outputLevel`=0 is DEEP DIGITAL SILENCE on the real TMP**, and `leveller::loudest_loudness` ERRORS ("no signal captured") on a silent capture — a finite LUFS is not recoverable from silence. [→ evidence](../../notes/gotchas.md#outputlevel0-is-deep-digital-silence-on-the-real-tmp-and-levellerloudest_loudness-errors-no-signal-captured-on-a-silent-capture)
 
-- **48 kHz stimulus required** — that is the **host Core Audio rate** the device must be set to, not "the device clock". [→ evidence](../../notes/gotchas.md#48-khz-stimulus-required)
+- **48 kHz stimulus required** — that is the **host Core Audio rate** the device must be set to, not "the device clock" (macOS). On Linux there is no host-rate-vs-device-clock distinction to misconfigure: `hw:` negotiates the sample rate directly with the hardware (`pick_config`'s `target_rate`), bypassing any system-default-samplerate layer entirely — the TMP's `hw:` interface natively offers 48 kHz among its rates, confirmed HW-measured. [→ evidence](../../notes/gotchas.md#48-khz-stimulus-required)
 
 ## Resources and connections
 
