@@ -4,10 +4,13 @@ import {
   clearScenario,
   ensureScenario,
   expectReampBalanced,
+  isOnline,
   pickBaseTarget,
   reampCounters,
   reampOff,
+  runBaseLevel,
   selectBaseOnly,
+  simEvents,
 } from "../fixtures/scenario";
 
 // Level scenarios — run identically offline (fake re-amp) and online (real re-amp).
@@ -20,6 +23,19 @@ import {
 // whole-preset tick on a footswitch/scene-bearing fixture would collide.
 // Loudness accuracy is the device's job; these prove the multi-preset, per-preset-target
 // flow AND the base+scene+footswitch flow end to end through the real backend.
+//
+// ONLINE e2e suite consolidation (8→4 files): tests 1 and 3 below now run OFFLINE ONLY
+// (test.skip'd online) — both moved into `level.online.spec.ts` (test 1 verbatim; test 3
+// alongside that file's own Hiwatt arc, since it already carries slot 404). Test 2 (base +
+// scenes + footswitches on E2E Rig) is OFFLINE ONLY too, but for a different reason — trade
+// T2: it was never picked up by any *.online.spec.ts file, so its online run is simply
+// retired rather than moved (E2E Rig's own online leveling-flow coverage stays real via
+// this file's offline tier, which drives the identical UI/backend path against SimDevice).
+//
+// OFFLINE suite consolidation: test 4 below is level-rerun.spec.ts's remaining offline
+// test, merged in verbatim (owner decision: one offline level spec is enough). That file's
+// online tests were already retired to `level.online.spec.ts`'s idempotency test — see this
+// file's own describe block for the merge; level-rerun.spec.ts is deleted.
 test.describe("Level — plain presets + a scenes-and-footswitches preset", () => {
   // Between tests: SAFETY only (re-amp off, so an aborted capture can't strand the
   // unit input-muted for the next test). Slot cleanup happens ONCE in afterAll —
@@ -39,6 +55,9 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   test("levels two presets' Base to different targets, end to end", async ({
     page,
   }) => {
+    // OFFLINE ONLY (ONLINE e2e consolidation): moved verbatim into
+    // `level.online.spec.ts` for the online tier.
+    test.skip(await isOnline(page), "moved to level.online.spec.ts");
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
@@ -105,6 +124,14 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   test("levels a preset with base + scenes + footswitches end to end", async ({
     page,
   }) => {
+    // OFFLINE ONLY (trade T2, ONLINE e2e consolidation): this test's online run is
+    // retired, not moved — no *.online.spec.ts file picked it up, since E2E Rig's
+    // base+scene+footswitch flow doesn't need its own online arc on top of the Hiwatt
+    // (404) one `level.online.spec.ts` already carries. The offline tier below still
+    // drives the identical UI/backend path against SimDevice, so the FLOW itself (all
+    // three row kinds in Set up, the bake/assign mechanism never leaking, a terminal
+    // Summary) stays proven; only the real-audio loudness outcome is untested now.
+    test.skip(await isOnline(page), "trade T2 — see this file's own header");
     // ~18-23 re-amp captures (E2E Rig base + all scenes + all footswitches) plus up to two
     // `ensure_fresh_load` commit-window stalls (COMMIT_WINDOW_SECS = 150 s each, danger.md)
     // if a same-slot load races a prior save — worst case ≈ 1200 s, matching the terminal
@@ -170,6 +197,9 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
   test("enumerates the 3-scene + Base-Scene + 4-footswitch preset in the list", async ({
     page,
   }) => {
+    // OFFLINE ONLY (ONLINE e2e consolidation): moved into `level.online.spec.ts` for the
+    // online tier, alongside that file's own Hiwatt (404) arc — same slot, one file.
+    test.skip(await isOnline(page), "moved to level.online.spec.ts");
     await ensureScenario(page);
     await page.goto("/");
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
@@ -193,5 +223,75 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // distinct from the "Base Preset" row (the sentinel).
     await expect(page.getByText("Base Scene", { exact: true })).toHaveCount(1);
     await expect(page.getByText("Base Preset", { exact: true })).toHaveCount(1);
+  });
+
+  // Consecutive-runs idempotency gate — the PR #74 requirement ("2 consecutive leveling
+  // runs must produce the same result") that lived only in a session prompt, never as
+  // executable infrastructure, until level-rerun.spec.ts (now merged in here — offline
+  // suite consolidation; its online tests were already retired to `level.online.spec.ts`'s
+  // idempotency test). The SimDevice's field-8 read is READ-YOUR-WRITES (mirrors the real
+  // device), so `commands/level_preset.rs`'s pre-run `read_slot_preset_parsed` populates a
+  // real, non-`None` `previous_level` offline too, and `leveller::level_unchanged` is
+  // reachable in both modes — not merely an online-only property (it was offline-only
+  // "events-equality", `previous_level` structurally always `None`, before that fidelity
+  // fix landed; see git history for that shape if reviving it).
+  test("two identical base runs: run 2 makes no new Saved write (level_unchanged skip)", async ({
+    page,
+  }) => {
+    // Online-only equivalent: `level.online.spec.ts`'s idempotency test, on the Hiwatt
+    // state its own strict-arc test just saved — skip here to avoid a second full UI wait
+    // + device seize for the same property.
+    test.skip(
+      await isOnline(page),
+      "covered online by level.online.spec.ts's idempotency test",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+
+    // Base-only, not the whole-preset checkbox: 401 now carries footswitches of its own
+    // (P4-B fixture rebuild — see level-defaults.spec.ts's header), and a whole-preset
+    // tick would sweep those in too, colliding on the shared `data-pick="target:NAME"]`
+    // trigger `runBaseLevel` drives.
+    const run = () =>
+      runBaseLevel(page, [{ preset: SCENARIO[1], label: "Crunch" }]);
+
+    // /sim/reset (the `page` fixture) cleared the event log, so run 1's log is the whole
+    // prefix.
+    await run();
+    const afterRun1 = await simEvents(page);
+    // Non-vacuous: run 1 must actually solve + write a PresetLevel and Saved this slot,
+    // else the "no new writes" check below proves nothing.
+    expect(
+      afterRun1.some(
+        (e) => typeof e === "object" && e !== null && "PresetLevel" in e,
+      ),
+      "run 1 must write a PresetLevel",
+    ).toBe(true);
+    expect(
+      afterRun1.some(
+        (e) => typeof e === "object" && e !== null && "Saved" in e,
+      ),
+      "run 1 must save",
+    ).toBe(true);
+
+    // runBaseLevel's page.goto resets the UI (selection cleared) but NOT the SimDevice —
+    // events accumulate.
+    await run();
+    const afterRun2 = await simEvents(page);
+    const run2Delta = afterRun2.slice(afterRun1.length);
+
+    // A real idempotency skip: run 2 still RE-MEASURES (a reference-level `PresetLevel`
+    // probe write to solve C is legitimate and expected even on a skip — see
+    // `leveller::measure_c`), but must write no NEW `Saved` for this slot — the
+    // `level_unchanged` branch calls `restore_saved_preset` (a plain reload) instead of
+    // `apply_level` + save. `Saved` is the one event a skip can never emit.
+    expect(
+      run2Delta.some(
+        (e) => typeof e === "object" && e !== null && "Saved" in e,
+      ),
+      "run 2 solved the same value already saved → must skip the save",
+    ).toBe(false);
+
+    await expectReampBalanced(page, reampBase);
   });
 });

@@ -40,7 +40,7 @@ import {
 // the re-level-clamped loop (b), and a mid-run off-branch capture fault (c).
 
 // openLevel / selectBaseOnly / pickBaseTarget now live in ../fixtures/scenario.ts (shared
-// with level-setup.spec.ts, level-rerun.spec.ts, pedal-fiasco.spec.ts and level.spec.ts).
+// with level-setup.spec.ts, pedal-fiasco.spec.ts and level.spec.ts).
 
 test.describe("Level — first-run defaults + physics outcomes (offline, sidecar-authored)", () => {
   test.afterEach(async ({ page }) => {

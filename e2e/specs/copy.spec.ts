@@ -125,5 +125,16 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
 
     // The heavy library backup was read exactly once — every edit patched the cache.
     expect(backupCalls).toBe(1);
+
+    // NOT IMPLEMENTED (ONLINE e2e consolidation): copy_apply never calls
+    // leveller::register_slot_save, so ensure_fresh_load has no witness and a same-slot
+    // read-back here would race the device's 45-100 s lazy-commit window (danger.md).
+    // Read-back ships as a separately-designed follow-up (notes/user-journeys.md's Copy
+    // registry).
+
+    // ONLINE ONLY: this test's own edits above left T2 (402, E2E Edge) structurally
+    // mutated. The next run's pristine-checking seed (seed_scenario.rs's ChainDrift
+    // path) restores it; no in-run reseed here — that would duplicate the cost for
+    // zero benefit to THIS run.
   });
 });

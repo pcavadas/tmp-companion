@@ -18,6 +18,13 @@ import {
 // (prescription content is sound-dependent). Net-zero: the scenario slots
 // are cleared in teardown. Adds ~1–2 min to the attended online run; skipped
 // offline (see below).
+//
+// DEMOTED TO ON-DEMAND (ONLINE e2e consolidation, trade T1): no longer in
+// `scripts/e2e.sh`'s default online spec set — it stays runnable explicitly via
+// `scripts/e2e.sh online doctor-apply.online`. This is a one-off HW validation of a
+// hand-built job (not a preset-shape regression another spec would silently absorb),
+// so trimming it from the default ~40 min run costs no coverage that isn't still one
+// command away; it's attended, not a CI gate, either way.
 test.describe("Doctor apply/save/discard — one-off HW validation", () => {
   test.afterEach(async ({ page }) => {
     await clearScenario(page);
@@ -33,7 +40,8 @@ test.describe("Doctor apply/save/discard — one-off HW validation", () => {
     // Asks the SERVER, and from inside the test body. The previous
     // `test.skip(!process.env.TMP_E2E_ONLINE)` at describe level was always TRUE:
     // scripts/e2e.sh sets that var only on the server invocation, so the Playwright
-    // process never sees it (the same trap documented in level-rerun.spec.ts). This
+    // process never sees it (the same trap documented in level.spec.ts's merged
+    // idempotency test). This
     // spec therefore skipped even during online runs — and it is excluded from the
     // offline config — so it had never actually executed in either tier.
     test.skip(!(await isOnline(page)), "online-only one-off HW validation");

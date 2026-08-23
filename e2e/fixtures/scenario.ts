@@ -149,6 +149,65 @@ export async function pickBaseTarget(
   await page.locator(`[data-pick-option="target:${name}:${label}"]`).click();
 }
 
+/** Drive the Level wizard's Base flow end to end for one or more presets: select each
+ *  preset's Base row, submit, pick and confirm each target label, submit, and wait for
+ *  Done/Accept. */
+export async function runBaseLevel(
+  page: Page,
+  targets: { preset: Preset; label: string }[],
+): Promise<void> {
+  await openLevel(page);
+  for (const { preset } of targets) {
+    await selectBaseOnly(page, preset.name);
+  }
+  const n = String(targets.length);
+  await page
+    .getByRole("button", { name: new RegExp(`Level ${n} preset`) })
+    .click();
+  await page.getByText(/I.ve backed up with Pro Control/i).click();
+  for (const { preset, label } of targets) {
+    await pickBaseTarget(page, preset.name, label);
+  }
+  // The picks must actually BIND — assert each row's trigger now reads its target (guards
+  // a silent display-vs-value no-op an always-solving fake re-amp would otherwise hide).
+  for (const { preset, label } of targets) {
+    await expect(
+      page.locator(`[data-pick="target:${preset.name}"]`),
+    ).toContainText(label);
+  }
+  await page
+    .getByRole("button", { name: new RegExp(`Level ${n} sound`) })
+    .click();
+  await expect(
+    page.getByRole("button", { name: /^(Done|Accept)$/ }),
+  ).toBeVisible({
+    timeout: 240_000,
+  });
+}
+
+/** Open Doctor and select each preset in `presets` by name (filter → click "Select preset
+ *  to check" → clear filter). Shared by every doctor spec's selection step (was a
+ *  byte-identical loop in doctor.spec.ts and doctor.online.spec.ts). */
+export async function selectPresetsForCheck(
+  page: Page,
+  presets: Preset[],
+): Promise<void> {
+  await page.getByRole("button", { name: "Doctor" }).click();
+  const filter = page.getByPlaceholder(/Filter by name or slot/i);
+  for (const p of presets) {
+    await filter.fill(p.name);
+    await page.getByTitle("Select preset to check").first().click();
+  }
+  await filter.fill("");
+}
+
+/** Click "Check N sounds" then "Run check on N sounds" — the two-step Doctor run trigger,
+ *  always immediately after `selectPresetsForCheck`. */
+export async function runDoctorCheck(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
+  await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
+}
+
 /** Best-effort invoke: swallow errors (offline lacks some commands; online a teardown
  *  partial-failure must not mask the test's own result). Long timeout — the online
  *  clears/sweeps can run minutes. */
@@ -276,7 +335,7 @@ export async function isOnline(page: Page): Promise<boolean> {
 export async function clearScenario(page: Page): Promise<void> {
   // Ask the SERVER, never `process.env.TMP_E2E_ONLINE` — `scripts/e2e.sh` sets that var
   // only on the `cargo run` server invocation, so the Playwright process does NOT inherit
-  // it (same trap documented in level-rerun.spec.ts). An env check here would read
+  // it (same trap documented in level.spec.ts's merged idempotency test). An env check here would read
   // "offline" during an ONLINE run and skip the device recovery — no re-amp OFF, leaving
   // the unit input-muted.
   if (!(await isOnline(page))) return;

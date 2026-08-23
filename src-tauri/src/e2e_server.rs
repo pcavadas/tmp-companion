@@ -56,8 +56,8 @@ static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 
 /// Commands whose SUCCESS persists a STRUCTURAL/body mutation over a resident fixture
 /// slot — as opposed to a value-only write (e.g. leveling's `presetLevel`/`outputLevel`
-/// saves), which within-run drift is deliberately tolerated via spec ORDERING (doctor
-/// must run before level-strict — see `scripts/e2e.sh`). A structural save invalidates
+/// saves), which within-run drift is deliberately tolerated via spec ORDERING (doctor.online
+/// must run before level.online — see `scripts/e2e.sh`). A structural save invalidates
 /// [`SCENARIO_VERIFIED`] so the NEXT spec's `ensureScenario` re-verifies the device and
 /// re-imports only what drifted, rather than trusting a fixture that's since been
 /// mutilated (root cause: `copy.spec.ts` stripping E2E Edge's trailing EQ block,
@@ -75,7 +75,7 @@ const STRUCTURAL_SAVE_CMDS: [&str; 2] = ["copy_apply", "doctor_save"];
 /// nothing persisted and there is nothing to invalidate. Value-only leveling saves are
 /// deliberately excluded from the set: adding them would cost a device re-verify per
 /// spec inside the HID open-lockout danger window (`.claude/rules/danger.md`), and
-/// within-run value drift is already handled by ordering doctor before level-strict.
+/// within-run value drift is already handled by ordering doctor.online before level.online.
 #[cfg(feature = "e2e")]
 fn note_structural_save(cmd: &str) {
     if STRUCTURAL_SAVE_CMDS.contains(&cmd) {
@@ -637,7 +637,7 @@ async fn e2e_reamp_off(state: State<'_, AppState>) -> Result<(), String> {
     .await
 }
 
-/// STRICT-HARNESS measure for the post-leveling audio gate (`level-strict.spec.ts`
+/// STRICT-HARNESS measure for the post-leveling audio gate (`level.online.spec.ts`
 /// online, `level-fs-preset24.spec.ts` offline): re-measure one sound of `slot` exactly
 /// as the leveling lane measured it (scene as-is / base isolation / footswitch engaged
 /// state with the saved ASSIGN `valueA` re-played) and return its integrated LUFS, so
@@ -852,7 +852,8 @@ fn e2e_route(
             "200 OK",
             serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),
         ),
-        // Verification-harness read endpoints (see e2e/specs/level-rerun.spec.ts).
+        // Verification-harness read endpoints (see e2e/specs/level.spec.ts's and
+        // e2e/specs/level.online.spec.ts's idempotency tests).
         ("GET", "/reamp/counters") => {
             use std::sync::atomic::Ordering;
             let on = crate::session::REAMP_ON_COUNT.load(Ordering::Relaxed);

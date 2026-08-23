@@ -39,7 +39,8 @@ import {
 // (sim_device.rs) round-trips the baked value through a save→load exactly like `presetLevel`.
 //
 // OFFLINE-ONLY: ±0.1 LU assumes the sim's exact deterministic model; the online strict
-// harness (level-strict.spec.ts) keeps a HW-noise-sized DELTA_FS (1.0) for the same reason.
+// harness (level.online.spec.ts, absorbed from level-strict.spec.ts) keeps a
+// HW-noise-sized DELTA_FS (1.0) for the same reason.
 
 const PRESET24 = SCENARIO[5]; // E2E Preset24
 const BASE_TARGET = -26;
@@ -193,7 +194,7 @@ test.describe("Level — footswitch stale-load fixture (offline deterministic mo
     }
 
     // Re-measure the PERSISTED sim state from a FRESH load (the strict harness's own seam,
-    // `e2e_measure_sound` — see level-strict.spec.ts) — proves the SAVED preset actually
+    // `e2e_measure_sound` — see level.online.spec.ts) — proves the SAVED preset actually
     // sounds at target, not merely that the run reported it.
     const heardBase = await measureSound(page);
     expect(

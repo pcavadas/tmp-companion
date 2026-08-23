@@ -592,7 +592,8 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
 
     // Snapshot the sim's event log length BEFORE the save:true apply — the honest
     // no-persist proof this test needs is a DELTA (no NEW `Saved` event), mirroring
-    // `level-rerun.spec.ts`'s "run 2 makes no new Saved write" idiom.
+    // `level.spec.ts`'s "run 2 makes no new Saved write" idiom (merged from the
+    // now-deleted level-rerun.spec.ts — offline suite consolidation).
     const beforeCount = (await simEvents(page)).length;
 
     const r = (await apply(dry[0].predicted_lufs, true))[0];
@@ -745,10 +746,9 @@ test.describe("Level — wet-mix footswitch outcome (SPRING, raw invoke)", () =>
     // Reachable target: LEARNED from a dry run, never hard-coded. `presetLevel` shifts
     // SPRING's whole curve across a run (scenario-loudness.json's own note on the wet-mix
     // row), so a fixed LUFS picked in advance could clamp for reasons unrelated to what
-    // this half proves. -16 is only the SEED for the secant search (the level-rerun.spec.ts
-    // idiom): what actually gets applied is that seed's own converged/clamped
-    // `predicted_lufs`, so this asks "does converging off the floor work", not "does -16
-    // happen to still be reachable this run".
+    // this half proves. -16 is only the SEED for the secant search: what actually gets
+    // applied is that seed's own converged/clamped `predicted_lufs`, so this asks "does
+    // converging off the floor work", not "does -16 happen to still be reachable this run".
     const probe = (await apply(-16, false))[0];
     const target = probe.clamped ? probe.predicted_lufs : -16;
     const reachable = (await apply(target, true))[0];

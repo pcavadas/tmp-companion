@@ -266,7 +266,7 @@ fn offline_level_preset_runs_against_the_fake_audio() {
 /// `E2E Edge` fixture with nothing clearing `SCENARIO_VERIFIED`, so the next spec's
 /// `ensureScenario` hit the fast path, skipped the device re-verify, and asserted on the
 /// mutilated fixture. Value-only leveling saves are deliberately excluded from the set
-/// (within-run value drift is handled by spec ORDERING — doctor before level-strict —
+/// (within-run value drift is handled by spec ORDERING — doctor.online before level.online —
 /// not by paying a device re-verify per spec inside the HID open-lockout window).
 #[test]
 fn note_structural_save_flags_structural_saves_only() {
@@ -1862,7 +1862,8 @@ fn level_defaults_403_scenes_solve_and_offbranch() {
 /// — AND it records the pre-values (presetLevel + touched knobs) for the Summary's Restore.
 /// This is the offline half of "clamped run →
 /// redistribute → all done"; the base-scene skip + save-persistence idempotency are online
-/// (the sim models no field-8 read-back / saved-state reload, same limit as `level-rerun`).
+/// (the sim models no field-8 read-back / saved-state reload, same limit as `level.spec.ts`'s
+/// idempotency test).
 #[test]
 fn redistribute_400_gives_the_clamped_scene_headroom() {
     let _serial = serial();

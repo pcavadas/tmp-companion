@@ -5,8 +5,11 @@ import {
   ensureScenario,
   expectReampBalanced,
   isOnline,
+  openLevel,
   reampCounters,
   reampOff,
+  runDoctorCheck,
+  selectPresetsForCheck,
 } from "../fixtures/scenario";
 
 // Doctor journey — runs identically offline (fake re-amp: the sim's physics model
@@ -19,14 +22,25 @@ import {
 // advisory, presetLevel preservation) are backend-validated in doctor.rs unit tests
 // and the probe/HW lane, not here.
 //
-// ONLINE seeding note: scripts/e2e.sh seeds the scenario via `probe --seed-scenario`
-// BEFORE the server starts (fresh-process seeding dodges the in-process 0xe00002c5
-// open lockout that aborted in-spec seeds) and POSTs `e2e_mark_seeded`, which arms the
-// server's verified-seed flag; `ensureScenario` here always calls `e2e_seed_scenario`
-// online, which fast-no-ops on that flag and only pays the full ownership-verified
-// in-process seed on direct playwright runs (or after a clear). If the runner's seed
-// fails all attempts, check nothing else holds the device (Pro Control, a stale
-// server/app), rest a minute, rerun.
+// ONLINE e2e suite consolidation (8→4 files): this file's first test below now runs
+// OFFLINE ONLY (test.skip'd online) — its online-specific assertions (the E2E Edge
+// EQ-ring chip + "cut the 2 kHz band" prescription, plus the cross-card ring-chip
+// scoping proof on the other two presets) moved to `doctor.online.spec.ts`, which runs
+// the same 3-preset selection online — see that file's own header for why. The offline
+// FLOW proof here (select → check → run → Results, three presets' cards render) is
+// unaffected and keeps running here exactly as before. The second test below
+// (leveling-damage advisories) is now explicitly offline-only too — it performs zero
+// device captures (a backup-scan read only), so an online run of it proved nothing extra.
+//
+// ONLINE seeding note (kept for the file's own online-tier assertions, if any are ever
+// re-added): scripts/e2e.sh seeds the scenario via `probe --seed-scenario` BEFORE the
+// server starts (fresh-process seeding dodges the in-process 0xe00002c5 open lockout
+// that aborted in-spec seeds) and POSTs `e2e_mark_seeded`, which arms the server's
+// verified-seed flag; `ensureScenario` here always calls `e2e_seed_scenario` online,
+// which fast-no-ops on that flag and only pays the full ownership-verified in-process
+// seed on direct playwright runs (or after a clear). If the runner's seed fails all
+// attempts, check nothing else holds the device (Pro Control, a stale server/app),
+// rest a minute, rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
     // Re-amp OFF rescue FIRST — a mid-test failure before the balance gate must not strand
@@ -40,6 +54,15 @@ test.describe("Doctor — select, check, results", () => {
   test("checks three presets end to end and lands on Results", async ({
     page,
   }) => {
+    // OFFLINE ONLY (trade, ONLINE e2e consolidation): the online-only assertions this
+    // test used to carry now live in `doctor.online.spec.ts`, which runs the identical
+    // 3-preset selection — see this file's own header. Running this flow online too
+    // would just duplicate that run's device time for no extra proof; the FLOW itself
+    // is identical in both tiers, so nothing online-specific is lost.
+    test.skip(
+      await isOnline(page),
+      "online half moved to doctor.online.spec.ts",
+    );
     // ~29 real sounds across the three intact fixtures (E2E Rig + Pedalboard + Edge, base +
     // scenes + footswitches) at ~12-18 s/capture online, plus the pristine-check reseed and
     // backup scan before the run even starts — worst case ≈ 900 s, matching the terminal
@@ -48,30 +71,15 @@ test.describe("Doctor — select, check, results", () => {
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    await page.goto("/");
-    await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
-    await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
-      timeout: 20_000,
-    });
-
-    await page.getByRole("button", { name: "Doctor" }).click();
+    await openLevel(page);
 
     // Select E2E Pedalboard + E2E Edge (401/402) AND E2E Rig (400, base + 4 scenes +
     // block-acting footswitches) so the run exercises the scene/footswitch doctor paths
     // too — the sound count is scenario-shape-dependent, so the buttons match on
     // /\d+ sounds/.
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
     const picked = [SCENARIO[0], SCENARIO[1], SCENARIO[2]];
-    for (const p of picked) {
-      await filter.fill(p.name);
-      await page.getByTitle("Select preset to check").first().click();
-    }
-    await filter.fill("");
-
-    await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
-
-    // Set up: keep the defaults, run.
-    await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
+    await selectPresetsForCheck(page, picked);
+    await runDoctorCheck(page);
 
     // The run auto-advances to Results on a natural finish. Progress events don't stream
     // over the bridge, so the only signal is the terminal Results page — but a rejected run
@@ -97,87 +105,6 @@ test.describe("Doctor — select, check, results", () => {
     // Every checked preset renders on Results — a card, flagged or clean.
     for (const p of picked) {
       await expect(page.getByText(p.name).first()).toBeVisible();
-    }
-
-    // STRICT diagnosis oracle (online-only — the offline fake capture is a
-    // stimulus passthrough, so no real spectrum exists to diagnose): the checked
-    // set carries one KNOWN defect and two known-healthy controls, and the
-    // Doctor must call both sides correctly.
-    //  * "E2E Edge" (402) ships a fixture-injected post-cab EQ-5 parametric with
-    //    two stacked +12 dB Q14 peaks at 2.6 kHz (preserved byte-verbatim from the
-    //    pre-P4-A "E2E Target 2") — the calibration suite's `resonant_peq`
-    //    DefectRecipe (its Q14 saturation ceiling ≈17 dB clears the resonant
-    //    height gate on any chain) — and MUST be flagged with the localized
-    //    "Rings at N kHz" resonant chip. Resonant is the tilt-robust oracle: it
-    //    fires on the transfer's LOCAL octave-median-envelope excess, so the
-    //    bright/scooped broadband sweep every scenario chain measures (which
-    //    silences broadband verdicts like Muddy) cannot mask it. The anchored
-    //    regex tolerates PSD peak-fit wobble in the decimal and skips the Rx
-    //    title (which embeds the same phrase); broadband side-effects of the
-    //    +12 dB stack (harsh/fizzy) may co-fire and stay unasserted.
-    //  * AS-PLAYED SEMANTICS: the EQ ring lives in E2E Edge's BASE graph, so it is
-    //    present in every one of Edge's played sounds — base, all 8 scenes, and its
-    //    footswitch rows — not one isolated row. A page-wide `toHaveCount(1)` oracle
-    //    predates the as-played rework (when Doctor forced every diagnosis to a single
-    //    all-off baseline) and is stale under it: the chip legitimately renders once
-    //    PER Edge sound. The oracle below instead asserts (a) ZERO ring chips outside
-    //    Edge's own card — scoped via `data-preset-card`, the same e2e hook
-    //    `copy.spec.ts` uses for per-target scoping — and (b) INSIDE Edge's card the
-    //    chip count equals the count of `data-sound-row`s AFTER expanding the
-    //    collapsed "N sounds check out" healthy bucket (`PresetResultCard.tsx`'s
-    //    `showHealthy` strip, present whenever any sound on the card IS flagged): a
-    //    healthy sound renders NO `data-sound-row` while collapsed, so without the
-    //    expand step a sound that stops ringing would drop out of BOTH sides of the
-    //    equality and a 1–2 sound regression would pass silently. The denominator is
-    //    therefore ALL of Edge's played sounds, not a hardcoded number — any sound
-    //    that goes un-flagged breaks the equality.
-    //  * Opening the defect preset's own sound row must surface the RIGHT
-    //    prescription — the cut at the EQ-10 band nearest the MEASURED ring
-    //    (2.5–2.7 kHz all map log-nearest to the 2 kHz band; the chain owns a
-    //    parametric EQ, so the Rx is the point-at-your-EQ advisory).
-    if (await isOnline(page)) {
-      // Hedged accepted too: severity < 1.0 renders "Possible Rings at N kHz" via
-      // possibleLabel() (severity.ts), and TubeScreamer-engaged Edge rows can erode the
-      // margin into hedge territory — a hedged detection is still a detection.
-      const ringChip = /^(?:Possible )?Rings at 2\.\d kHz$/;
-      const edgeCard = page.locator(`[data-preset-card="${picked[2].name}"]`);
-      for (const p of [picked[0], picked[1]]) {
-        const card = page.locator(`[data-preset-card="${p.name}"]`);
-        // Non-vacuous: an attribute/name drift must not make the zero-count check
-        // below pass trivially against a card that doesn't exist.
-        await expect(card).toHaveCount(1);
-        await expect(card.getByText(ringChip)).toHaveCount(0);
-      }
-      // Expand the collapsed healthy bucket (if the strip is present) BEFORE
-      // counting — see the AS-PLAYED SEMANTICS note above.
-      const healthySummary = edgeCard.getByText(/\d+ sounds? checks? out/);
-      if (await healthySummary.isVisible().catch(() => false)) {
-        await healthySummary.click();
-      }
-      const edgeRowCount = await edgeCard.locator("[data-sound-row]").count();
-      expect(edgeRowCount).toBeGreaterThanOrEqual(9);
-      await expect(edgeCard.getByText(ringChip)).toHaveCount(edgeRowCount);
-
-      // Click the ROW HEADER's label, scoped inside a [data-sound-row] — a bare
-      // page-wide getByText(name).last() resolves into the "Level jumps" advisory
-      // panel below the rows (its body text repeats "E2E Edge · SCREAMER"), which
-      // expands nothing (HW run 2026-08-09). The panel renders wherever authored
-      // scene deltas exceed the 3 dB jump threshold — in BOTH tiers (the offline
-      // sim models per-scene C from scenario-loudness.json), so it is a permanent
-      // feature of intact-Edge results. Keep the click on the label INSIDE the
-      // header: the toggle handler lives on the inner header div, and once the row
-      // is open the outer [data-sound-row]'s center lands in the expanded body.
-      const edgeRingRow = edgeCard.locator("[data-sound-row]").first();
-      await edgeRingRow.getByText(picked[2].name).first().click();
-      await expect(
-        page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/).first(),
-      ).toBeVisible();
-      // Collapse the defect row again so the cut-through assertion below can only
-      // resolve against picked[1]'s freshly expanded row, never this one.
-      await edgeRingRow.getByText(picked[2].name).first().click();
-      await expect(
-        page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/),
-      ).toHaveCount(0);
     }
 
     // Expanding any measured sound row surfaces the cut-through estimate —
@@ -219,23 +146,20 @@ test.describe("Doctor — select, check, results", () => {
   test("400 surfaces its two leveling-damage advisories (backup-scan-only, zero captures)", async ({
     page,
   }) => {
+    // OFFLINE ONLY (ONLINE e2e consolidation): this row is a backup-scan read with zero
+    // device captures (see the header above), so an online run proves nothing an offline
+    // run doesn't already — it was only ever incidentally online because this file had
+    // no per-test mode split before.
+    test.skip(
+      await isOnline(page),
+      "zero captures — offline proves this identically",
+    );
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    await page.goto("/");
-    await page.getByRole("button", { name: /backed up/i }).click();
-    await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
-      timeout: 20_000,
-    });
-
-    await page.getByRole("button", { name: "Doctor" }).click();
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
-    await filter.fill(SCENARIO[0].name); // E2E Rig
-    await page.getByTitle("Select preset to check").first().click();
-    await filter.fill("");
-
-    await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
-    await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
+    await openLevel(page);
+    await selectPresetsForCheck(page, [SCENARIO[0]]); // E2E Rig
+    await runDoctorCheck(page);
     await expect(
       page.getByText(/presets? need a look|All clear/).first(),
     ).toBeVisible({ timeout: 240_000 });

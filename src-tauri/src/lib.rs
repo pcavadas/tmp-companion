@@ -2076,17 +2076,44 @@ mod fixture_gates {
         );
     }
 
-    /// Every `*.online.spec.ts` must appear in `scripts/e2e.sh`'s default online SPECS
-    /// line. `doctor-apply.online` sat outside that hand-maintained literal and "had
-    /// never run in either tier despite existing to be the one-off HW validation"
-    /// (e2e.sh's own comment) — this gate makes that failure mode impossible to repeat.
-    #[test]
-    fn every_online_spec_is_in_the_default_online_set() {
-        let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");
+    /// Locate `scripts/e2e.sh`'s default-SPECS resolve line and parse the space-separated
+    /// spec names out of its literal `SPECS=(…)` — shared by the two gates below so the
+    /// parse itself cannot drift between them (it did once: see the mirror gate's own
+    /// history). Takes the file's already-read text rather than a path so a caller that
+    /// needs the raw text too (for a different reason) only reads the file once.
+    fn parse_e2e_default_online_specs(sh: &str) -> Vec<&str> {
         let set_line = sh
             .lines()
             .find(|l| l.contains("SPECS=(") && l.contains("all"))
             .expect("scripts/e2e.sh: the default-SPECS resolve line (SPECS=(…)) is gone");
+        let after_open = set_line
+            .split_once("SPECS=(")
+            .expect("SPECS=( not found on the matched line")
+            .1;
+        let inside = after_open
+            .split_once(')')
+            .expect("SPECS=( has no closing paren on the matched line")
+            .0;
+        inside.split_whitespace().collect()
+    }
+
+    /// Every `*.online.spec.ts` must appear EITHER in `scripts/e2e.sh`'s default online
+    /// SPECS line OR in [`ON_DEMAND_ONLINE_SPECS`] below. `doctor-apply.online` sat
+    /// outside the hand-maintained literal and "had never run in either tier despite
+    /// existing to be the one-off HW validation" (e2e.sh's own comment) — this gate makes
+    /// that ACCIDENTAL failure mode impossible to repeat, while still allowing a spec to
+    /// be DELIBERATELY on-demand-only (trade T1, ONLINE e2e consolidation) as long as
+    /// that's a conscious, reviewed addition to the allowlist below, not a silent drop.
+    #[test]
+    fn every_online_spec_is_in_the_default_online_set() {
+        // On-demand-only BY DESIGN, not by accident: each entry here must already be
+        // documented at its own exclusion site in `scripts/e2e.sh` (a "run it explicitly
+        // with…" note) and in its own spec file's header. Adding an entry here is how a
+        // future spec opts OUT of the default online sweep — do so deliberately.
+        const ON_DEMAND_ONLINE_SPECS: &[&str] = &["doctor-apply.online"];
+
+        let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");
+        let default_specs = parse_e2e_default_online_specs(&sh);
         let mut checked = 0;
         for entry in std::fs::read_dir("../e2e/specs").expect("read e2e/specs") {
             let path = entry.expect("dir entry").path();
@@ -2100,18 +2127,60 @@ mod fixture_gates {
                 continue;
             }
             checked += 1;
+            let in_default_set = default_specs.contains(&spec);
+            let on_demand_by_design = ON_DEMAND_ONLINE_SPECS.contains(&spec);
             assert!(
-                set_line.contains(&format!(" {spec} "))
-                    || set_line.contains(&format!("({spec} "))
-                    || set_line.contains(&format!(" {spec})")),
-                "{name} exists but '{spec}' is not in scripts/e2e.sh's default online SPECS \
-                 set — it would never run in ANY tier (offline testIgnores *.online.spec.ts)"
+                in_default_set || on_demand_by_design,
+                "{name} exists but '{spec}' is neither in scripts/e2e.sh's default online \
+                 SPECS set nor in this test's ON_DEMAND_ONLINE_SPECS allowlist — it would \
+                 never run in ANY tier (offline testIgnores *.online.spec.ts). Add it to the \
+                 default set, or — if it's deliberately on-demand-only — to the allowlist \
+                 above with a matching exclusion note in scripts/e2e.sh."
             );
         }
         assert!(
             checked >= 2,
             "expected at least 2 *.online.spec.ts files ({checked} found) — a naming-scheme \
              change would otherwise make this gate pass vacuously"
+        );
+    }
+
+    /// The online tier has TWO hand-maintained mirrors of the same spec set:
+    /// `scripts/e2e.sh`'s default-arm `SPECS=(…)` literal (kept literal, not a command
+    /// substitution, so the gate above can grep it — and for readability) and
+    /// `scripts/gates.sh`'s `ONLINE_SPEC_SET="…"` line (what `--record-online` writes and
+    /// `--check-online` requires). Drift between them means a spec that stamps but never
+    /// runs, or runs but never gets a stamp requirement — this test parses both files the
+    /// same way the sibling gate above parses e2e.sh (via the shared helper), and fails
+    /// loud if they disagree.
+    #[test]
+    fn every_online_spec_set_mirror_matches_between_e2e_sh_and_gates_sh() {
+        let sh = std::fs::read_to_string("../scripts/e2e.sh").expect("read scripts/e2e.sh");
+        let mut e2e_specs = parse_e2e_default_online_specs(&sh);
+
+        let gates = std::fs::read_to_string("../scripts/gates.sh").expect("read scripts/gates.sh");
+        let spec_line = gates
+            .lines()
+            .find(|l| l.starts_with("ONLINE_SPEC_SET="))
+            .expect("scripts/gates.sh: the ONLINE_SPEC_SET=\"…\" line is gone");
+        let mut gates_specs: Vec<&str> = spec_line
+            .trim_start_matches("ONLINE_SPEC_SET=")
+            .trim_matches('"')
+            .split_whitespace()
+            .collect();
+
+        assert!(
+            !e2e_specs.is_empty() && !gates_specs.is_empty(),
+            "parsed an empty spec set from e2e.sh ({e2e_specs:?}) or gates.sh ({gates_specs:?}) \
+             — a naming-scheme change would otherwise make this gate pass vacuously"
+        );
+        e2e_specs.sort_unstable();
+        gates_specs.sort_unstable();
+        assert_eq!(
+            e2e_specs, gates_specs,
+            "scripts/e2e.sh's default SPECS=(…) literal and scripts/gates.sh's \
+             ONLINE_SPEC_SET=\"…\" line have drifted apart — keep both hand-maintained \
+             mirrors of the online tier in sync"
         );
     }
 

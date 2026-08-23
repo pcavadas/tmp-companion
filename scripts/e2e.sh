@@ -4,10 +4,10 @@
 #
 #   scripts/e2e.sh                  # OFFLINE (SimDevice) — fast, default, no hardware (~1.5 min)
 #   scripts/e2e.sh offline copy     # OFFLINE, only the copy spec
-#   scripts/e2e.sh online           # ONLINE (real device) — songs, copy, doctor, level in turn
-#   scripts/e2e.sh online level     # ONLINE, only the level spec
+#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy in turn (~40 min)
+#   scripts/e2e.sh online level.online   # ONLINE, only the level arc
 #   scripts/e2e.sh online all       # ONLINE, the full set (= the default online set)
-#   scripts/e2e.sh soak <N>         # ONLINE, attended: loop level-rerun.spec.ts N times —
+#   scripts/e2e.sh soak <N>         # ONLINE, attended: loop level.online.spec.ts N times —
 #                                   # drift / engage-drop / stochastic device-state class
 #
 # OFFLINE is a near-passthrough to `playwright test` (Playwright starts/stops its own
@@ -108,8 +108,9 @@ VALIDATE_WAV_DIR="$LOG_DIR/level-validate-wavs"
 # server already spent writing it — generous on purpose, but a POLICY rather than an
 # accident: a runaway spec must announce that rows were dropped, not silently truncate.
 VALIDATE_MAX_ROWS="${TMP_E2E_VALIDATE_MAX_ROWS:-40}"
-# Row-count FLOOR for the strict lane. `level-strict.spec.ts` re-measures exactly nine
-# sounds from the saved state — 1 base + 4 scenes (`for scene of [0,1,2,3]`) + 4
+# Row-count FLOOR for the strict lane. `level.online.spec.ts`'s strict arc (formerly
+# level-strict.spec.ts, absorbed into it — ONLINE e2e consolidation) re-measures exactly
+# nine sounds from the saved state — 1 base + 4 scenes (`for scene of [0,1,2,3]`) + 4
 # footswitches (`SWITCH_JOBS`) — and each one is supposed to append a row here. Anything
 # short means re-measures died before their capture, which emits NO row at all: the judge
 # can only grade what it is handed, so a truncated log used to sail through as "fewer rows,
@@ -140,19 +141,27 @@ mkdir -p "$LOG_DIR"
 # ── parse args: a mode token (online|offline) + zero or more spec names (copy|level|songs|all) ──
 MODE="offline"
 SPECS=()
+# Set ONLY by the default/`all` spec-set arm below — certifies that THIS run covers the
+# full online tier, the precondition (alongside a passing external-validation pass) for
+# `scripts/gates.sh --record-online` at the very end. An explicit spec list (even one that
+# happens to name all four specs) and soak mode both leave this at 0 on purpose.
+FULL_SET=0
 for a in "$@"; do
   case "$a" in
     online|offline|soak) MODE="$a" ;;
     -h|--help)
       cat >&2 <<'USAGE'
-Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|all ...]
+Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|level.online|all ...]
        scripts/e2e.sh soak <N>
-  (no args)        OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
-  offline copy     OFFLINE — only the copy spec
-  online           ONLINE  — songs, copy, doctor, level vs the real unit (Pro Control closed)
-  online level     ONLINE  — only the level spec
-  soak <N>         ONLINE  — attended: loop level-rerun.spec.ts N times, print a per-run
-                   ledger + end tally (drift / engage-drop / stochastic device-state class)
+  (no args)             OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
+  offline copy          OFFLINE — only the copy spec
+  online                ONLINE  — doctor, level, songs, copy vs the real unit (~40 min;
+                        Pro Control closed). doctor-apply.online is on-demand only — pass
+                        it explicitly: `scripts/e2e.sh online doctor-apply.online`
+  online level.online   ONLINE  — only the level arc
+  soak <N>              ONLINE  — attended: loop level.online.spec.ts N times, print a
+                        per-run ledger + end tally (drift / engage-drop / stochastic
+                        device-state class)
 USAGE
       exit 0 ;;
     *) SPECS+=("$a") ;;
@@ -319,26 +328,69 @@ if ! device_lock_acquire "$REPO"; then
 fi
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-# `doctor-apply.online` sits with the other doctor work, BEFORE any level* spec (the ordering
-# guard below enforces that for `doctor`; this one writes and saves through the same paths).
-# It was absent from this set AND self-skipping on an env var the Playwright process never
-# sees, so it had never run in either tier despite existing to be the one-off HW validation.
-case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(songs copy doctor doctor-apply.online doctor-oracle.online level level-rerun level-strict) ;; esac
+# ONLINE e2e consolidation (8 files/~60-75 min → 4 files/~40 min): doctor.online absorbs
+# doctor.spec.ts's online half + doctor-oracle.online.spec.ts (both deleted/retired);
+# level.online absorbs level.spec.ts's online half + level-strict.spec.ts (deleted) +
+# level-rerun.spec.ts's online half (retired; level-rerun.spec.ts is now DELETED entirely
+# — its offline half merged into level.spec.ts, offline suite consolidation). doctor-apply.
+# online is DEMOTED to on-demand-only (trade T1) — no longer in this default set; run it
+# explicitly with `scripts/e2e.sh online doctor-apply.online`.
+#
+# ORDER: doctor.online BEFORE level.online (the ordering guard below still enforces this
+# for the leveling-equalizes-loudness reason it always has), then songs, then the
+# STRUCTURAL MUTATOR copy LAST — a structural save (copy_apply) is the one thing that
+# clears the server's SCENARIO_VERIFIED flag (`note_structural_save`, e2e_server.rs), so
+# putting it last means nothing AFTER it in this run pays a mid-run re-verify/re-import;
+# the cost lands once, on the NEXT run's very first (pristine-checking) seed instead.
+#
+# KNOWN TRADE-OFF (flag, don't silently drop): copy no longer runs BEFORE doctor in the
+# default order, reversing the sequence notes/user-journeys.md's bug→gate registry (the
+# 2026-08-01 entry) used as its online end-to-end confirmation that doctor's
+# `SCENARIO_VERIFIED` re-verify still catches a live copy mutation WITHIN one server
+# process. That specific real-hardware sequence now needs a manual
+# `scripts/e2e.sh online copy doctor.online`; the underlying fix stays gated by that
+# entry's two Rust-level tests either way. See that registry row for the full context.
+case " ${SPECS[*]:-} " in *" all "*|"  ") SPECS=(doctor.online level.online songs copy); FULL_SET=1 ;; esac
 
-# ORDERING GUARD (enforced, not just documented): doctor must run BEFORE any leveling
-# spec — every level* spec writes (the wizard always saves post-disclaimer), and
-# leveling equalizes the relative scene loudness the doctor's consistency check keys
-# on, so the reverse order silently weakens the doctor oracle. ONLY the bare `doctor`
-# spec is order-sensitive: the other doctor specs (doctor-apply.online, doctor-oracle.online)
-# work presets the level* specs never save to, and the run-start seed self-repairs, so
-# they need no guard and the matcher stays exact on purpose.
+# RETIRED-FROM-ONLINE GUARD: these spec basenames either still exist as files whose online
+# tier now `test.skip`s every test (level, doctor), or have been deleted outright
+# (level-rerun — offline suite consolidation, its offline test merged into level.spec.ts).
+# `online level` / `online doctor` / `online level-rerun` used to print PASSED having
+# exercised nothing (or, for level-rerun, would now fail to even find the file). Fail fast
+# with the real target instead of a silent no-op green or a confusing "no such file".
+for s in "${SPECS[@]:-}"; do
+  case "$s" in
+    level)
+      err "spec 'level' has no online tests — renamed/absorbed into level.online (ONLINE e2e consolidation). Use: scripts/e2e.sh online level.online"
+      exit 2 ;;
+    doctor)
+      err "spec 'doctor' has no online tests — renamed/absorbed into doctor.online (ONLINE e2e consolidation). Use: scripts/e2e.sh online doctor.online"
+      exit 2 ;;
+    level-rerun)
+      err "spec 'level-rerun' no longer exists — its online tests were absorbed into level.online's idempotency test, and its offline test was merged into level.spec.ts (offline suite consolidation). Use: scripts/e2e.sh online level.online"
+      exit 2 ;;
+  esac
+done
+
+# ORDERING GUARD (enforced, not just documented): doctor.online must run BEFORE any
+# leveling spec — every level* spec writes (the wizard always saves post-disclaimer), and
+# leveling equalizes the relative scene loudness the doctor's consistency check keys on,
+# so the reverse order silently weakens the doctor oracle. `level*` matches both the
+# dash-named legacy specs and the new `level.online` (dot, not dash). `doctor`/
+# `doctor.online` are the only order-sensitive doctor specs — doctor-apply.online (now
+# on-demand) and the retired doctor-oracle.online work presets the level* specs never
+# save to, and the run-start seed self-repairs, so they need no guard.
 seen_leveling=0
 for s in "${SPECS[@]:-}"; do
-  case "$s" in level|level-*) seen_leveling=1 ;; esac
-  if [ "$s" = "doctor" ] && [ "$seen_leveling" -eq 1 ]; then
-    err "spec order error: doctor must come BEFORE every level* spec in '${SPECS[*]:-}' — reorder the arguments"
-    exit 2
-  fi
+  case "$s" in level*) seen_leveling=1 ;; esac
+  case "$s" in
+    doctor|doctor.online)
+      if [ "$seen_leveling" -eq 1 ]; then
+        err "spec order error: doctor/doctor.online must come BEFORE every level* spec in '${SPECS[*]:-}' — reorder the arguments"
+        exit 2
+      fi
+      ;;
+  esac
 done
 
 # Seed the scenario presets from the RUNNER in a FRESH probe process per attempt —
@@ -431,10 +483,17 @@ start_online_server() {
   log "device connected — snapshot includes the seeded presets"
 }
 
-# ── SOAK: attended online repetition of level-rerun.spec.ts (drift / engage-drop /
+# ── SOAK: attended online repetition of level.online.spec.ts (drift / engage-drop /
 #    stochastic device-state class) — reuses the exact seed-first / handshake-verified /
 #    always-recover machinery above; it just loops the ONE spec N times instead of the
 #    ordered spec set below, with a per-run pass/fail/wall-time ledger + an end tally.
+#    WAS level-rerun.spec.ts (now deleted entirely): that file's online describe block
+#    (the idempotency probes soak exists to stress) is retired — its content is now
+#    level.online.spec.ts's own idempotency test, run right after that file's strict-arc
+#    test in the same `describe.serial` block, with no standalone smaller spec left to
+#    target. Point soak there instead; there is no narrower substitute. HONEST TRADE: each
+#    soak iteration now runs the WHOLE file (the strict arc plus the idempotency test,
+#    not just level-rerun's two idempotency probes alone) — pick a smaller N accordingly.
 if [ "$MODE" = soak ]; then
   N="${SPECS[0]:-}"
   case "$N" in
@@ -442,7 +501,7 @@ if [ "$MODE" = soak ]; then
       err "usage: scripts/e2e.sh soak <N>  (N = a positive run count)"
       exit 1 ;;
   esac
-  log "SOAK: $N online run(s) of level-rerun.spec.ts (attended)"
+  log "SOAK: $N online run(s) of level.online.spec.ts (attended)"
   start_online_server
 
   pass=0; fail_seed=0; fail_spec=0
@@ -465,7 +524,7 @@ if [ "$MODE" = soak ]; then
     fi
     start=$(date +%s)
     run_log="$LOG_DIR/soak-run-$run.log"
-    if bunx playwright test --config "$ONLINE_CFG" "specs/level-rerun.spec.ts" >"$run_log" 2>&1; then
+    if bunx playwright test --config "$ONLINE_CFG" "specs/level.online.spec.ts" >"$run_log" 2>&1; then
       elapsed=$(( $(date +%s) - start ))
       printf 'soak run %d/%s: PASS  wall=%ss\n' "$run" "$N" "$elapsed"
       pass=$((pass + 1))
@@ -489,8 +548,19 @@ fi
 log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
 start_online_server
 
+# Snapshot the tree KEY now, covering the whole ~40-min spec + validation window below
+# (seeding/server start are device work, not tracked-file work, so starting the window
+# here rather than earlier is deliberate, not a gap). The record block re-reads this at
+# the end and refuses to stamp on a mismatch — a MID-RUN EDIT means the tree this run's
+# result describes is no longer the tree that would be stamped.
+KEY_START="$(bash "$REPO/scripts/gates.sh" --key)"
+
 fail=0
 first=1
+# Set only inside the vrc==0 arm of the external-validation case below — a real PASS
+# under the independent ffmpeg meter, never the exit-3 "ffmpeg vanished" skip or the
+# no-ffmpeg-at-all path (both leave a leveled sound unchecked, not confirmed correct).
+validated=0
 for s in "${SPECS[@]}"; do
   if [ "$first" -eq 1 ]; then
     # Rest between the server-start handshake and the first spec's own device work
@@ -504,8 +574,8 @@ for s in "${SPECS[@]}"; do
     # clears the server's SCENARIO_VERIFIED flag on success, so the NEXT spec's
     # ensureScenario re-verifies the device and re-imports only what drifted — it does
     # not trust a fixture that's since been mutilated. Value-only drift (leveling
-    # saves) is NOT in that set and is still handled by ORDERING: doctor must run
-    # BEFORE level-strict — leveling equalizes the relative scene loudness the
+    # saves) is NOT in that set and is still handled by ORDERING: doctor.online must run
+    # BEFORE level.online — leveling equalizes the relative scene loudness the
     # doctor's consistency check keys on. The rest stays: spec teardown/startup
     # device ops sit right in the lockout's danger window.
     log "resting the unit between specs…"
@@ -513,12 +583,24 @@ for s in "${SPECS[@]}"; do
   fi
   first=0
   log "running specs/$s.spec.ts (online)"
-  # No outer timeout: Playwright's own 300 s/test governs, except the two full-fixture
-  # end-to-end tests (doctor.spec.ts, level.spec.ts) which override to 20/25 min via their
-  # own test.setTimeout — so a hung spec fails forward in up to ~25 min, not 5. A short
-  # wrapper here would kill any of them mid-run.
-  if bunx playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts"; then
-    log "specs/$s.spec.ts PASSED"
+  # No outer timeout: Playwright's own 300 s/test governs, except the two heaviest online
+  # specs (doctor.online.spec.ts, level.online.spec.ts) which override to multi-minute
+  # ceilings via their own test.setTimeout — so a hung spec fails forward in up to ~40
+  # min, not 5. A short wrapper here would kill any of them mid-run.
+  #
+  # ALL-SKIP GUARD: `tee` a per-spec log — `set -o pipefail` (top of this script) means
+  # the `if` still sees PLAYWRIGHT's own exit code, not tee's — and require at least one
+  # actually-PASSED test in the summary. A spec whose every test online-skips (some
+  # runtime condition) exits 0 having exercised nothing; that used to log PASSED and
+  # could certify a stamp for a run that proved nothing about the spec it named.
+  spec_log="$LOG_DIR/online-spec-$s.log"
+  if bunx playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts" | tee "$spec_log"; then
+    if grep -Eq '[1-9][0-9]* passed' "$spec_log"; then
+      log "specs/$s.spec.ts PASSED"
+    else
+      err "specs/$s.spec.ts ran 0 tests online (all skipped) — false-green guard"
+      fail=1
+    fi
   else
     err "specs/$s.spec.ts FAILED"; fail=1
   fi
@@ -547,17 +629,17 @@ if [ "$fail" -eq 0 ]; then
     fi
     # ROW FLOOR — the false-green this branch used to be. "No rows emitted" was logged and
     # passed over unconditionally, which is only honest when nothing in the run was
-    # SUPPOSED to emit any. When level-strict ran, nine rows were promised (see
-    # VALIDATE_STRICT_MIN_ROWS at the top of this file); zero — or four — means captures
-    # died before they could be recorded and the judge silently graded a subset. The floor
-    # only applies when the strict spec actually ran, so `scripts/e2e.sh online songs`
+    # SUPPOSED to emit any. When level.online's strict arc ran, nine rows were promised
+    # (see VALIDATE_STRICT_MIN_ROWS at the top of this file); zero — or four — means
+    # captures died before they could be recorded and the judge silently graded a subset.
+    # The floor only applies when that spec actually ran, so `scripts/e2e.sh online songs`
     # keeps its legitimate skip, as does an ffmpeg-less box (handled above).
     ran_strict=0
     for s in "${SPECS[@]:-}"; do
-      [ "$s" = "level-strict" ] && ran_strict=1
+      [ "$s" = "level.online" ] && ran_strict=1
     done
     if [ "$ran_strict" -eq 1 ] && [ "$rows" -lt "$VALIDATE_STRICT_MIN_ROWS" ]; then
-      err "external validation ROW FLOOR: level-strict ran but only $rows expectation row(s) were emitted, expected at least $VALIDATE_STRICT_MIN_ROWS (1 base + 4 scenes + 4 footswitches)"
+      err "external validation ROW FLOOR: level.online's strict arc ran but only $rows expectation row(s) were emitted, expected at least $VALIDATE_STRICT_MIN_ROWS (1 base + 4 scenes + 4 footswitches)"
       err "  → $((VALIDATE_STRICT_MIN_ROWS - rows)) sound(s) were never independently measured; a re-measure died before its capture. See $SERVER_LOG"
       fail=1
     fi
@@ -575,11 +657,16 @@ if [ "$fail" -eq 0 ]; then
       bash "$REPO/scripts/level-validate.sh" --expectations "$VALIDATE_FEED"
       vrc=$?
       set -e
-      # Branch all three codes explicitly: a mid-run SKIP (3) must never be reported as a
-      # target miss, and must never quietly pass either.
+      # Branch all four codes explicitly: a mid-run SKIP (3) must never be reported as a
+      # target miss and must never quietly pass either; a VACUOUS pass (4 — every row
+      # clamped/persist-mismatched, exactly the shape a lazy-commit regression takes)
+      # must never certify a stamp, but it is also not a suite FAILURE — the specs
+      # themselves passed, only the independent check verified nothing. `validated`
+      # deliberately stays 0 here (its init value) rather than being set explicitly.
       case "$vrc" in
-        0) log "external validation PASSED" ;;
+        0) log "external validation PASSED"; validated=1 ;;
         3) log "external validation SKIPPED (exit 3 — ffmpeg vanished mid-run; nothing was checked)" ;;
+        4) log "online lane passed but NOT stamped — external validation was vacuous (0 rows measured)" ;;
         *)
           err "external validation FAILED (exit $vrc) — a leveled sound missed its target under an independent ffmpeg read"
           fail=1
@@ -590,4 +677,37 @@ if [ "$fail" -eq 0 ]; then
 else
   err "one or more online specs failed"
 fi
+
+# ── online-stamp recording ──────────────────────────────────────────────────────
+# Deliberately OUTSIDE cleanup() (which fires on every exit, including a failed/killed
+# run) — this only ever runs once, here, on the genuine full-suite success path. It also
+# runs BEFORE the EXIT trap's recover_device (trap handlers fire only once this script
+# actually exits, after this point): a failed device recovery does not invalidate the
+# results this run already measured, so that failure mode is an ACCEPTED RESIDUAL here —
+# it is not this block's job to gate on it.
+#
+# Three independent gates, all required: FULL_SET (only the default/`all` spec-set arm
+# sets it — an explicit partial/full spec list and soak mode never do, so neither can
+# reach this), `validated` (only a real vrc==0 PASS under the ffmpeg meter sets it — the
+# exit-3 skip, the exit-4 vacuous pass, and the no-ffmpeg-at-all path all leave it 0,
+# since none of them actually confirmed anything), and a STABLE tree key: a MID-RUN EDIT
+# landing anywhere in the ~40-min window between KEY_START and here means this run's
+# result no longer describes the tree that would be stamped.
+if [ "$fail" -eq 0 ] && [ "$FULL_SET" -eq 1 ]; then
+  if [ "$validated" -ne 1 ]; then
+    # Covers three distinct reasons (ffmpeg absent, exit-3 mid-run skip, exit-4 vacuous
+    # pass) — each already logged its own specific banner/line above, so this is
+    # deliberately generic rather than re-guessing which one applied.
+    log "online lane passed but NOT stamped — external validation did not confirm anything"
+  else
+    KEY_END="$(bash "$REPO/scripts/gates.sh" --key)"
+    if [ "$KEY_END" != "$KEY_START" ]; then
+      err "NOT stamped — the tree changed during the run (key $KEY_START -> $KEY_END); re-run the lane on the final tree"
+    else
+      log "recording the online stamp for the full tier (${SPECS[*]}) — externally validated"
+      bash "$REPO/scripts/gates.sh" --record-online "${SPECS[@]}"
+    fi
+  fi
+fi
+
 exit "$fail"

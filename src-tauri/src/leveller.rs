@@ -1308,7 +1308,7 @@ pub fn doctor_capture_on_session(
 }
 
 /// STRICT-HARNESS measure (the online e2e's post-leveling audio gate,
-/// `level-strict.spec.ts`): re-measure one leveled sound of `slot` AS-IS on the
+/// `level.online.spec.ts`): re-measure one leveled sound of `slot` AS-IS on the
 /// production capture path and the LEVELING metric (2-ch BS.1770 over the
 /// processed pair, floor-guarded), so the spec can assert the SAVED state actually renders at the
 /// leveling target — not merely that the run reported success. Context mirrors
@@ -2218,8 +2218,8 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
 /// one connection → the set is overridden" gotcha), so an unsaved working-copy
 /// `presetLevel` is silently reverted to the SAVED value right before the save
 /// persists it (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
-/// doc still read the prior 0.32; caught by the online `level-rerun` base
-/// idempotency spec). Node/overlay writes are immune (the footswitch
+/// doc still read the prior 0.32; caught by the online `level.online.spec.ts` base
+/// idempotency test). Node/overlay writes are immune (the footswitch
 /// `switch_at_target` re-run spec proves `valueA` persists through the recall), so
 /// only `reassert_pl` — the unsaved level a caller solved (`apply_levels`) or
 /// raised (`redistribute_clamped_headroom`) — needs re-writing, and only when a
@@ -8899,7 +8899,7 @@ mod tests {
     // load-level-apply gotcha), so every recalling save must replay it between the
     // recall and the save — the exact op order is the invariant (HW: a solved
     // 0.3096 "[SAVED]" persisted the prior 0.32 until this re-assert existed;
-    // caught live by the online level-rerun base idempotency spec).
+    // caught live by the online level.online.spec.ts base idempotency test).
     #[test]
     fn recall_reassert_save_replays_the_unsaved_level_after_the_recall() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));

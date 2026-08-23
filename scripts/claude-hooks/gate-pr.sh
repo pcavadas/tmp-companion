@@ -62,7 +62,18 @@ fi
 # Device-facing diff → also require a fresh online stamp. Scope mirrors
 # gates.sh: working tree vs merge-base (origin/main, else local main) + untracked
 # — so a NEW untracked device-facing file can't dodge the online requirement.
-device_re='src-tauri/src/leveller\.rs|src-tauri/src/footswitch\.rs|src-tauri/src/session\.rs|src-tauri/src/audio\.rs|src-tauri/src/commands/level_|src-tauri/src/commands/doctor'
+# audiograph/doctor were previously missed near-misses: `audio\.rs` doesn't match
+# `audiograph.rs` (different file), and only the `commands/doctor` wrapper matched,
+# not the `doctor.rs` engine it calls into. Online specs + the runner script are
+# included too — merging a broken oracle (a spec or the e2e.sh runner itself) would
+# silently defeat the online lane's whole purpose. e2e_server.rs/scenario.ts/probe.rs
+# are the lane's own bridge/seeder; presets.rs/preset_io.rs/edit_tools.rs are the
+# save/clear/import destructive-write class. The online-spec alternatives name ONLY
+# the two files in gates.sh's canonical online set (doctor.online, level.online) —
+# NOT every `*.online.spec.ts`: the on-demand specs (lib.rs's ON_DEMAND_ONLINE_SPECS,
+# e.g. doctor-apply.online) never run in the default lane, so requiring a fresh
+# online stamp on their account would block on a run that proves nothing about them.
+device_re='src-tauri/src/leveller\.rs|src-tauri/src/footswitch\.rs|src-tauri/src/session\.rs|src-tauri/src/audio\.rs|src-tauri/src/commands/level_|src-tauri/src/commands/doctor|src-tauri/src/hid\.rs|src-tauri/src/proto\.rs|src-tauri/src/blockcaps\.rs|src-tauri/src/backup\.rs|src-tauri/src/backup_read\.rs|src-tauri/src/audiograph\.rs|src-tauri/src/doctor\.rs|src-tauri/src/replace_inplace\.rs|src-tauri/src/probe_api/|src-tauri/src/commands/copy_apply\.rs|src-tauri/src/commands/held_edit\.rs|src-tauri/src/commands/bulk_replace\.rs|src-tauri/src/e2e_server\.rs|e2e/fixtures/scenario\.ts|src-tauri/src/commands/presets\.rs|src-tauri/src/preset_io\.rs|src-tauri/src/commands/edit_tools\.rs|src-tauri/src/bin/probe\.rs|e2e/specs/doctor\.online\.spec\.ts|e2e/specs/level\.online\.spec\.ts|scripts/e2e\.sh'
 # shellcheck disable=SC2015  # deliberate best-effort: any failure here must fall through to `true`, never abort the hook under set -e
 changed="$(cd "$repo" && {
   b="$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)"
@@ -72,7 +83,7 @@ changed="$(cd "$repo" && {
 
 if printf '%s\n' "$changed" | grep -Eq "$device_re"; then
   if ! /bin/bash "$gates" --check-online >/dev/null 2>&1; then
-    printf 'BLOCKED: device-facing change — run the online e2e lane first (scripts/e2e.sh online … then scripts/gates.sh --record-online).\n' >&2
+    printf 'BLOCKED: device-facing change — run scripts/e2e.sh online — a full passing lane records the online stamp automatically.\n' >&2
     exit 2
   fi
 fi

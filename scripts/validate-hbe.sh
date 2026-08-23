@@ -80,9 +80,12 @@
 #   --out DIR                 artifact dir for the log, WAVs and probe logs (default mktemp -d)
 #   --no-clear                leave the imported preset in the slot instead of clearing it
 #
-# Exit: 0 = every row PASSed or SKIPped · 1 = a leveling step or a validation row FAILed
-#       · 2 = usage/precondition error · 3 = validation SKIPPED (ffmpeg absent — nothing
-#       was independently checked; the leveling itself still ran).
+# Exit: 0 = every row PASSed or SKIPped, with at least one row actually MEASURED · 1 = a
+#       leveling step failed, a row FAILed, or an expectation row was never emitted
+#       (MISSING) · 2 = usage/precondition error · 3 = validation SKIPPED (ffmpeg absent —
+#       nothing was independently checked; the leveling itself still ran) · 4 = validation
+#       VACUOUS (every emitted row was clamped/persist-mismatched — nothing was
+#       independently verified; the leveling itself still ran and is saved).
 #
 # BSD userland only (macOS system /bin/bash 3.2): no `timeout(1)`, no GNU flags, no
 # `mapfile`/associative arrays — plain indexed arrays only, guarded per `.claude/rules/
@@ -507,7 +510,9 @@ if [ "$MISSING" -ne 0 ]; then
   err "                     went unvalidated. Named above; per-measure logs in $OUT_DIR"
   exit 1
 fi
-# Branch all three codes explicitly: a SKIP is not a miss and must not read as one.
+# Branch every known code explicitly — a SKIP or a VACUOUS pass must not read as a miss,
+# and (the point of naming 4 here) a VACUOUS pass must not silently fall into the `*)`
+# failure arm either, which would misreport "nothing was verified" as "a row FAILed".
 case "$EXT_RC" in
   0)
     ok "validate-hbe: PASS — every measured row landed within ${TOL} LU of its target"
@@ -517,6 +522,14 @@ case "$EXT_RC" in
     err "validate-hbe: SKIPPED — ffmpeg is not on PATH, so NOTHING was independently"
     err "                         measured. The leveling itself ran and is saved."
     exit 3
+    ;;
+  4)
+    err "validate-hbe: VACUOUS — every emitted row was SKIPped (clamped or persist-"
+    err "                        mismatched), so NOTHING was independently verified —"
+    err "                        this is the shape a lazy-commit regression takes. The"
+    err "                        leveling itself ran and is saved; see the per-row"
+    err "                        verdicts above and the logs in $OUT_DIR"
+    exit 4
     ;;
   *)
     err "validate-hbe: FAIL — see the per-row verdicts above and the logs in $OUT_DIR"

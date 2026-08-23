@@ -41,15 +41,20 @@
 #           reported, so the number under test is meaningless).
 #
 # EXIT CODES — both callers (`scripts/e2e.sh`, `scripts/validate-hbe.sh`) branch on all
-# three explicitly, so a mid-run skip can never be reported as a target miss:
-#   0  every row PASSed or SKIPped.
+# four explicitly, so a mid-run skip — or a vacuous pass — can never be reported as a
+# target miss, and a vacuous pass can never be reported as a real one:
+#   0  every row PASSed, and at least one row was actually MEASURED (not just skipped).
 #   1  at least one row FAILed.
 #   2  usage error.
 #   3  ffmpeg is not on PATH — nothing was checked. A DISTINCT code so "skipped" is
 #      never mistaken for "checked and passed"; a silent skip that looks like a pass is
 #      worse than a red failure.
+#   4  VACUOUS — every row was SKIPped (clamped / persist_mismatch), so ZERO rows were
+#      independently measured. Distinct from 0 on purpose: this is precisely the shape a
+#      lazy-commit regression takes (every row persist-mismatches, none FAILs), so a
+#      caller that treats it as a plain pass would certify a run that verified nothing.
 #
-# TOLERANCE defaults to 1.0 LU, NOT the solve's own acceptance band. `level-strict.spec.
+# TOLERANCE defaults to 1.0 LU, NOT the solve's own acceptance band. `level.online.spec.
 # ts` documents the arithmetic: the footswitch lane accepts a solve within KNOB_TOL_LU
 # (0.3 LU, `leveller.rs`) and the re-measure adds its own run-to-run noise on top (~0.12
 # LU base/scene, more on a modulated preset), so a 0.3 tolerance here would fail
@@ -100,7 +105,7 @@ usage:
   level-validate.sh --wav <path> --label L --target T [--tol T] [--probe-log <file>]
   level-validate.sh --live <seconds> --label L --target T [--tol T] [--device ID]
 
-exit: 0 pass/skip · 1 fail · 2 usage · 3 ffmpeg absent (nothing checked)
+exit: 0 pass · 1 fail · 2 usage · 3 ffmpeg absent (nothing checked) · 4 vacuous (0 rows measured)
 USAGE
   exit 2
 }
@@ -322,10 +327,12 @@ echo
 if [ "$ROW_FAILED" -eq 0 ]; then
   # A pass over zero measured rows is vacuous — every row skipped (clamped / persist
   # mismatch) means ffmpeg graded NOTHING. Legitimate (a skip is a real verdict, not an
-  # error), so still a 0, but it must never read as "the levels were verified".
+  # error) but it must never read — or exit — as "the levels were verified": this is
+  # exactly the shape a lazy-commit regression takes (every row persist-mismatches), so
+  # it gets its OWN exit code rather than folding into the plain-pass 0.
   if [ "$ROWS_SEEN" -eq 0 ]; then
-    warn "PASS (VACUOUS) — no row was measurable, so NOTHING was independently verified"
-    exit 0
+    warn "VACUOUS (exit 4) — no row was measurable, so NOTHING was independently verified"
+    exit 4
   fi
   ok "PASS — every measured row landed within tolerance of its target ($ROWS_SEEN measured)"
   exit 0
