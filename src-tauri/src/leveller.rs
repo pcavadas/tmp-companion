@@ -10088,6 +10088,137 @@ mod tests {
         assert_eq!(param.coord_to_value(-70.0), KNOB_LOG_FLOOR);
     }
 
+    /// The RESCUE half of `FS_MIN_SEED_GAP_LU`'s safety guarantor, which every other
+    /// accepted-prediction fixture leaves unexercised (they all end in a clamp): seed 1
+    /// (0.25, −24.0) and the law-predicted, ACCEPTED seed 2 (≈0.284 — gap 1.1 LU ≥
+    /// `FS_MIN_SEED_GAP_LU`, frac ≈0.28 inside 5%–95% — land in the −23.9 flat plateau
+    /// [0.28, 0.6], so the pair measures ~0.1 LU flat (< `KNOB_TOL_LU`) even though this
+    /// prediction was accepted, not rejected. `fs_bracket_expansion`'s entry condition
+    /// fires; the target (−22.9) sits ABOVE the flat plateau's loudness, so it probes the
+    /// HI extreme (1.0) and finds REAL slope there (−18.0), rescuing the pair into a
+    /// genuine converged solve rather than a false no-authority clamp. Provably reaches
+    /// the arm: `seen[1]` is the accepted prediction (not the 0.75 fixed fallback),
+    /// `seen[2] == 1.0` (the expansion probe, not a seed).
+    #[test]
+    fn solve_footswitch_accepted_flat_pair_is_rescued_by_bracket_expansion() {
+        fn accepted_flat_pair_curve(v: f32) -> Result<lufs::Loudness, String> {
+            let v = f64::from(v);
+            let l = if v <= 0.25 {
+                -24.0
+            } else if v < 0.28 {
+                let frac = (v - 0.25) / (0.28 - 0.25);
+                -24.0 + frac * (-23.9 - -24.0)
+            } else if v <= 0.6 {
+                -23.9
+            } else {
+                let frac = (v - 0.6) / (1.0 - 0.6);
+                -23.9 + frac * (-18.0 - -23.9)
+            };
+            Ok(fs_loud(l))
+        }
+        let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
+        let r = solve_footswitch(
+            40,
+            &[],
+            &[],
+            -22.9,
+            "baked",
+            None,
+            &fs_unit_param(),
+            |_, v| {
+                seen.borrow_mut().push(v);
+                accepted_flat_pair_curve(v)
+            },
+        )
+        .expect("solve");
+        let seen = seen.borrow();
+        assert_eq!(seen[0], 0.25, "seed 1 is the fixed quarter-range point");
+        assert!(
+            (0.26..0.6).contains(&seen[1]),
+            "seed 2 must be the ACCEPTED law prediction landing in the flat plateau, not \
+             the 0.75 fixed fallback: {seen:?}"
+        );
+        assert_eq!(
+            seen.get(2),
+            Some(&1.0),
+            "the accepted-but-flat-measured pair must trigger `fs_bracket_expansion`'s hi \
+             extreme probe, not a mid-loop secant step: {seen:?}"
+        );
+        assert!(
+            (r.predicted_lufs - -22.9).abs() <= KNOB_TOL_LU,
+            "the extreme probe's real slope must let the secant converge: best {} LUFS at \
+             v={} ({} captures)",
+            r.predicted_lufs,
+            r.final_value,
+            seen.len()
+        );
+        assert!(
+            !r.clamped && !r.unconverged,
+            "a REAL slope at the extreme must rescue the solve, never a false no-authority \
+             clamp: {r:?}"
+        );
+        assert!(
+            seen.len() as u32 <= 3 + FS_CORRECT_MAX,
+            "captures={}",
+            seen.len()
+        );
+    }
+
+    /// The original Plumes incident (HW-reproduced, fw 1.8.45, preset "TR+BD2+BMP") AT ITS
+    /// REAL in-UI-range target: the re-pinned mid-loop-silence test above had to move to
+    /// −40.0 (outside any real target range) to keep exercising that specific arm once the
+    /// law-predicted seed 2 started landing for real — but that leaves the ORIGINAL −26.0
+    /// shape uncovered. There, the accepted prediction (gap 3.85 LU, frac ≈0.16 — both
+    /// gates pass) lands at v≈0.16, where `plumes_level_curve`'s REAL response reads
+    /// ~16 LU off the idealized log-amplitude law it was predicted from (a piecewise HW
+    /// curve, not the exact law `solve_footswitch_log_law_curve_solves_in_three_captures`
+    /// uses) — this is the only convergence coverage for an ACCEPTED-but-badly-wrong
+    /// prediction on a real, non-ideal curve; every other accepted-prediction test uses an
+    /// exact law curve where the prediction is exact by construction. Provably reaches the
+    /// arm: `seen[1]` is the accepted prediction (~0.16), not the 0.75 fixed fallback.
+    #[test]
+    fn solve_footswitch_plumes_accepted_prediction_still_converges_from_a_bad_first_guess() {
+        let seen: std::cell::RefCell<Vec<f32>> = std::cell::RefCell::new(Vec::new());
+        let r = solve_footswitch(
+            41,
+            &[],
+            &[],
+            -26.0,
+            "baked",
+            None,
+            &fs_unit_param(),
+            |_, v| {
+                seen.borrow_mut().push(v);
+                plumes_level_curve(v)
+            },
+        )
+        .expect("solve");
+        let seen = seen.borrow();
+        assert_eq!(seen[0], 0.25, "seed 1 is the fixed quarter-range point");
+        assert!(
+            (0.10..0.25).contains(&seen[1]),
+            "seed 2 must be the ACCEPTED law prediction (~0.16), not the 0.75 fixed \
+             fallback: {seen:?}"
+        );
+        assert!(
+            (r.predicted_lufs - -26.0).abs() <= KNOB_TOL_LU,
+            "the correction loop must recover from a badly-wrong-but-accepted first guess: \
+             best {} LUFS at v={} ({} captures)",
+            r.predicted_lufs,
+            r.final_value,
+            seen.len()
+        );
+        assert!(
+            !r.clamped && !r.unconverged,
+            "a reachable target must converge, not clamp or run out of budget: {r:?}"
+        );
+        assert!(
+            seen.len() as u32 <= 3 + FS_CORRECT_MAX,
+            "captures={}",
+            seen.len()
+        );
+    }
+
     // ── param-class-driven solve: refusal, bounds, wet floor ────────────────────────────
 
     // ENTRY GUARD: a param the classifier answers `Other` for is not a level control.
