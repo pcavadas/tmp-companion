@@ -1,6 +1,8 @@
 # 2 ms RMS envelope (48 kHz, 96-sample hops, one f32 per line) of a real Doctor capture:
 # E2E Doctor Oracle fixture (list index 407) footswitch 13 WASHED = ACD_TMLargePlate
-# wetdrymix 0.65 / decay 0.7, `probe --doctor-fs 407 13`, fw 1.8.45, 2026-08-24.
+# wetdrymix 0.65 / decay 0.7 (the fixture's values at capture time; the seeded fixture has since
+# moved to mix 0.9 / decay 0.9 for gate margin -- this envelope stays as captured, it pins the
+# alignment math, not the fixture), `probe --doctor-fs 407 13`, fw 1.8.45, 2026-08-24.
 # Stimulus: guitar-humbucker, leveller::doctor_stim_slice (200 ms pad + 3000 ms).
 # Ground truth: signal starts at hop 115 (230 ms) -> true inject latency ~30 ms.
 # audio::estimate_onset on the full capture: best corr 0.370 at lag 136 ms (NOT confident);

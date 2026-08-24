@@ -1151,9 +1151,11 @@ mod fixture_gates {
         assert_eq!(plate["wetdrymix"].as_f64(), Some(0.0), "plate dry in base");
         assert_eq!(
             plate["decay"].as_f64(),
-            Some(0.7),
+            Some(0.9),
             "WASHED's decay is pre-baked in base (inaudible at mix 0) — the switch \
-             only moves wetdrymix, keeping the row single-entry"
+             only moves wetdrymix, keeping the row single-entry. 0.9 (with the \
+             switch's 0.9 mix) puts the aligned tail ratio well past the -10 dB \
+             gate; at decay 0.7 / mix 0.65 it sat 0.4 dB over it (HW 2026-08-25)"
         );
 
         // The per-defect param table (label -> node -> (param, valueA, valueB)),
@@ -1211,7 +1213,7 @@ mod fixture_gates {
             // keeps locals[lows] deep while the tilt stays clear of the bright gate.
             (11, "THIN", "hlp1", "hpffc", 200.0, 20.0),
             (12, "DARK", "hlp1", "lpffc", 1100.0, 20000.0),
-            (13, "WASHED", "plate1", "wetdrymix", 0.65, 0.0),
+            (13, "WASHED", "plate1", "wetdrymix", 0.9, 0.0),
         ];
 
         let ftsw = p["ftsw"].as_array().expect("ftsw");
