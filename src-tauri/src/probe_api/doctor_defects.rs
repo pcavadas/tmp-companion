@@ -199,6 +199,7 @@ fn run_recipe(
         stim,
         "before",
         leveller::doctor_capture(slot, None, &[], &[], stim, Some(0.5), before_tail_ms, false),
+        before_tail_ms as u32,
     )?;
     text += &line;
     if !before.verdicts.is_empty() {
@@ -222,6 +223,7 @@ fn run_recipe(
         stim,
         "after",
         leveller::doctor_capture_current(stim, None, &[], Some(0.5), after_tail_ms),
+        after_tail_ms as u32,
     );
     // Restore BEFORE propagating an after-capture failure: a mid-table recipe's
     // next `before` load self-heals the buffer, but the LAST recipe has no next
@@ -398,12 +400,14 @@ pub fn probe_doctor_fs(slot: u32, switch: u32) -> Result<String, String> {
             .into_iter()
             .map(|(g, n, p, a, _b)| (g, n, p, a))
             .collect();
-    let tail = u64::from(tail_ms_for_doc(&preset));
+    let tail_ms = tail_ms_for_doc(&preset);
+    let tail = u64::from(tail_ms);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (read, line) = measure(
         &stim,
         &format!("FS{switch}"),
         leveller::doctor_capture(slot, None, &fb, &fs_params, &stim, Some(0.5), tail, false),
+        tail_ms,
     )?;
     Ok(format!(
         "[probe --doctor-fs] slot={slot} switch={switch} param_writes={} isolation={} verdicts={:?}\n{line}",

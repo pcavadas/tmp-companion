@@ -398,21 +398,15 @@ impl SoundProfile {
     pub fn from_capture_with_psd(
         samples: &[f32],
         rate: u32,
-        stimulus_samples: usize,
-        onset: usize,
+        body_len: usize,
+        body_start: usize,
+        tail_ms: u32,
         family: Family,
         body_psd: &crate::psd::Psd,
         stim_psd: Option<&crate::psd::Psd>,
     ) -> Result<SoundProfile, String> {
         Self::from_capture_with_psd_loudness(
-            samples,
-            rate,
-            stimulus_samples,
-            onset,
-            family,
-            body_psd,
-            stim_psd,
-            None,
+            samples, rate, body_len, body_start, tail_ms, family, body_psd, stim_psd, None,
         )
     }
 
@@ -430,8 +424,9 @@ impl SoundProfile {
     pub fn from_capture_with_psd_loudness(
         samples: &[f32],
         rate: u32,
-        stimulus_samples: usize,
-        onset: usize,
+        body_len: usize,
+        body_start: usize,
+        tail_ms: u32,
         family: Family,
         body_psd: &crate::psd::Psd,
         stim_psd: Option<&crate::psd::Psd>,
@@ -453,7 +448,7 @@ impl SoundProfile {
             bands,
             integrated_lufs,
             spread_lu: loudness.spread_lu(),
-            tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples, onset),
+            tail_ratio_db: tail_energy_ratio(samples, rate, body_len, body_start, tail_ms),
             air_flatness: body_psd.flatness(6000.0, 12000.0),
             // Localization runs on the TRANSFER (capture − stimulus, dB) so
             // the deterministic stimulus's own spectral ridges cancel — raw
@@ -1082,8 +1077,9 @@ pub const OUTPUT_SNR_MARGIN_DB: f64 = 8.0;
 /// per capture matters (`doctor_check`'s capture path shares one `body_psd`
 /// across the profile + this coverage gate, see `commands/doctor.rs`).
 /// `signal_start` is the pad-shifted start of real signal
-/// ([`crate::leveller::doctor_signal_start`]); a confident onset always lands
-/// it well past MIN_FLOOR_SAMPLES thanks to the 200 ms stimulus preamble,
+/// ([`crate::leveller::doctor_onset`]'s `signal_start` field); a confident
+/// onset always lands it well past MIN_FLOOR_SAMPLES thanks to the 200 ms
+/// stimulus preamble,
 /// so the guard below fires only on the UNCONFIDENT-onset fallback
 /// (`signal_start == 0`) — then every band reads covered WITHOUT touching
 /// `body_psd`, the legacy permissive behavior.
@@ -1115,24 +1111,39 @@ pub fn output_coverage_with_body(
 /// keeps ringing → closer to 0). Returns −80 (a "silent tail" floor) when the
 /// capture has no tail window.
 ///
-/// `onset` is where the stimulus actually starts in the capture (the buffer
-/// begins at stream start, BEFORE the audio propagated through cpal/USB/DSP —
-/// see `audio::estimate_onset`). Splitting at `stimulus_samples` alone leaks the
-/// last ~latency of body-level signal into the tail, inflating a bone-dry
-/// preset's ratio toward the washed threshold (~−17 dB vs the −13 dB gate for a
-/// 50 ms leak into a multi-second tail). Pass 0 to keep the un-aligned legacy split.
+/// `body_start`/`body_len` are [`crate::leveller::DoctorOnset`]'s fields (the
+/// body window is `[body_start, body_start + body_len)`) — `body_start` is
+/// where the stimulus actually starts in the capture (the buffer begins at
+/// stream start, BEFORE the audio propagated through cpal/USB/DSP; see
+/// `crate::leveller::doctor_onset`). Splitting at `body_len` alone (from
+/// sample 0) leaks the last ~latency of body-level signal into the tail,
+/// inflating a bone-dry preset's ratio toward the washed threshold (~−17 dB vs
+/// the −13 dB gate for a 50 ms leak into a multi-second tail); pass
+/// `body_start: 0` to keep the un-aligned legacy split.
+///
+/// The tail window itself is PINNED to `tail_ms` past the body end (clamped to
+/// the capture length) rather than "everything after the body" — a
+/// wall-clock-length capture tail otherwise shifts this ratio ~0.3 dB per
+/// 100 ms of extra tail with no signal difference, confounding the
+/// split-point comparison this function exists to make robust. The window is
+/// the RECIPE's tail (whatever `tail_ms` the caller captured with), so a
+/// longer oracle capture measures its own longer tail rather than being
+/// clipped to a shorter production pin.
 pub fn tail_energy_ratio(
     samples: &[f32],
-    _rate: u32,
-    stimulus_samples: usize,
-    onset: usize,
+    rate: u32,
+    body_len: usize,
+    body_start: usize,
+    tail_ms: u32,
 ) -> f64 {
-    let body_end = onset.saturating_add(stimulus_samples);
-    if samples.len() <= body_end || stimulus_samples == 0 {
+    let body_end = body_start.saturating_add(body_len);
+    if samples.len() <= body_end || body_len == 0 {
         return -80.0;
     }
-    let body = rms_f64(&samples[onset..body_end]);
-    let tail = rms_f64(&samples[body_end..]);
+    let body = rms_f64(&samples[body_start..body_end]);
+    let tail_window = (rate as usize / 1000) * tail_ms as usize;
+    let tail_end = body_end.saturating_add(tail_window).min(samples.len());
+    let tail = rms_f64(&samples[body_end..tail_end]);
     if body <= 0.0 {
         return -80.0;
     }
@@ -3081,8 +3092,8 @@ mod onset_split_tests {
         let mut cap = vec![0.0f32; lag];
         cap.extend(std::iter::repeat_n(0.5f32, stim_n)); // body
         cap.extend(std::iter::repeat_n(0.0005f32, tail_n)); // truly dry tail
-        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0);
-        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
+        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0, crate::leveller::DOCTOR_TAIL_MS);
+        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag, crate::leveller::DOCTOR_TAIL_MS);
         assert!(
             unaligned > -20.0,
             "leak should inflate the unaligned tail (got {unaligned:.1})"
@@ -3102,8 +3113,8 @@ mod onset_split_tests {
         let mut cap = vec![0.0f32; lag];
         cap.extend(std::iter::repeat_n(0.5f32, stim_n));
         cap.extend(std::iter::repeat_n(0.25f32, tail_n)); // ringing reverb
-        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0);
-        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
+        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0, crate::leveller::DOCTOR_TAIL_MS);
+        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag, crate::leveller::DOCTOR_TAIL_MS);
         assert!((unaligned - aligned).abs() < 2.0);
         assert!(aligned > -13.0); // stays on the washed side
     }
@@ -3967,17 +3978,26 @@ mod tests {
         let wet_tail = vec![0.3f32; (rate / 2) as usize];
         let dry: Vec<f32> = body.iter().chain(dry_tail.iter()).copied().collect();
         let wet: Vec<f32> = body.iter().chain(wet_tail.iter()).copied().collect();
-        let d = tail_energy_ratio(&dry, rate, body.len(), 0);
-        let w = tail_energy_ratio(&wet, rate, body.len(), 0);
+        let d = tail_energy_ratio(&dry, rate, body.len(), 0, crate::leveller::DOCTOR_TAIL_MS);
+        let w = tail_energy_ratio(&wet, rate, body.len(), 0, crate::leveller::DOCTOR_TAIL_MS);
         assert!(w > d, "wet tail must read hotter ({w} vs {d})");
         assert!(w > -6.0 && d < -40.0);
     }
 
     #[test]
     fn tail_ratio_guards_short_capture() {
-        assert_eq!(tail_energy_ratio(&[0.1; 100], 48_000, 100, 0), -80.0);
-        assert_eq!(tail_energy_ratio(&[0.1; 50], 48_000, 100, 0), -80.0);
-        assert_eq!(tail_energy_ratio(&[], 48_000, 0, 0), -80.0);
+        assert_eq!(
+            tail_energy_ratio(&[0.1; 100], 48_000, 100, 0, crate::leveller::DOCTOR_TAIL_MS),
+            -80.0
+        );
+        assert_eq!(
+            tail_energy_ratio(&[0.1; 50], 48_000, 100, 0, crate::leveller::DOCTOR_TAIL_MS),
+            -80.0
+        );
+        assert_eq!(
+            tail_energy_ratio(&[], 48_000, 0, 0, crate::leveller::DOCTOR_TAIL_MS),
+            -80.0
+        );
     }
 
     // ── graph-driven prescriptions ──
@@ -4994,6 +5014,7 @@ mod tests {
             48_000,
             48_000,
             0,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &psd,
             None,
@@ -5220,6 +5241,7 @@ mod tests {
             RATE,
             samples.len(),
             0,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &psd,
             None,
@@ -5246,6 +5268,7 @@ mod tests {
             RATE,
             stim_samples,
             onset,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &body_psd(&samples, RATE, onset),
             None,
@@ -5258,6 +5281,7 @@ mod tests {
             RATE,
             stim_samples,
             onset,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &explicit_body,
             None,
@@ -5540,6 +5564,7 @@ mod tests {
             RATE,
             samples.len(),
             0,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &psd,
             Some(&stim_psd),

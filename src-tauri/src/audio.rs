@@ -1108,7 +1108,118 @@ const ONSET_MIN_CORR: f64 = 0.15;
 /// 30–34 ms across every preset/run, while envelope-destroyed chains produced
 /// artifact lags of 190–222 ms (wash buildup correlating with the stimulus
 /// head). A best lag beyond this is an artifact regardless of its correlation.
-const ONSET_MAX_PLAUSIBLE_LAG_MS: usize = 120;
+/// `pub(crate)` so `leveller::DOCTOR_ONSET_MAX_LATENCY_MS` derives from this
+/// ONE value instead of carrying its own copy.
+pub(crate) const ONSET_MAX_PLAUSIBLE_LAG_MS: usize = 120;
+
+// ───────────────────── Floor-relative energy onset step ─────────────────────
+//
+// HW evidence (fs13 `ACD_TMLargePlate` 65%-wet, `probe --doctor-fs 407 13`,
+// 2026-08-24): the correlation curve above is FLAT on a wash chain (0.27–0.37
+// across every lag 0–250 ms, no peak) — its confidence gate can't detect a
+// peakless curve, so a wash preset's tail split rides on whichever lag the
+// noise floor happens to land on. The Doctor stimulus always carries a played
+// silent pad (`leveller::DOCTOR_PAD_MS`) ahead of the body, so a floor-relative
+// energy step is deterministic (±2 ms) on every chain observed, wet or dry —
+// see `leveller::doctor_onset`, which tries this FIRST and falls back to the
+// correlator above.
+
+/// Hop width (ms) for the coarse pre-signal floor estimate — wider than
+/// `ONSET_HOP_MS`'s 2 ms search resolution so a single engage-click doesn't
+/// spike the floor's own RMS; the floor takes the MAX across these hops (a
+/// mean would be dragged down by the click instead of raised by it).
+const ENERGY_FLOOR_HOP_MS: usize = 20;
+/// A capture is "hot from sample 0" (no silent pre-roll to floor against) when
+/// the floor window sits within this many dB of the loudest hop in the whole
+/// capture — the step-search below would find nothing meaningful.
+const ENERGY_HOT_FROM_ZERO_DB: f64 = 6.0;
+/// Absolute floor for a digital-zero (silent) capture: without this, a true
+/// zero-RMS floor produces a zero threshold that any noise trips immediately.
+const ENERGY_ABS_FLOOR: f64 = 1e-5;
+
+/// [`estimate_signal_start`]'s floor-estimate window — long enough to smooth
+/// an engage click into the floor (not trigger on it) while sitting inside the
+/// Doctor pad's ~230 ms floor coverage (`leveller::DOCTOR_PAD_MS` + true
+/// latency). HW-derived (`fs13_wash_envelope_2ms` fixture, 11 real captures).
+const ONSET_ENERGY_FLOOR_WINDOW_MS: usize = 150;
+/// Amplitude step (dB, RMS) above the floor that marks the true onset — the
+/// real floor sits −90…−100 dB with a few dB of engage-pop wobble; the step
+/// itself is ~60 dB, so 12 dB clears the wobble with wide margin.
+const ONSET_ENERGY_STEP_DB: f64 = 12.0;
+/// Consecutive 2 ms hops the step must hold for before it's trusted.
+const ONSET_ENERGY_HOLD_HOPS: usize = 3;
+
+/// Find where the capture's energy steps up from its own pre-signal floor —
+/// the Doctor's primary onset estimator (see the module note above).
+///
+/// [`ONSET_ENERGY_FLOOR_WINDOW_MS`] is scanned in `ENERGY_FLOOR_HOP_MS` hops
+/// and the floor reference is the MAX of those hops' RMS (never a mean — an
+/// engage pop must raise the threshold, not trigger it). The search then
+/// scans forward in `ONSET_HOP_MS` hops for the first run of
+/// [`ONSET_ENERGY_HOLD_HOPS`] consecutive hops whose RMS exceeds
+/// `floor_ref · 10^(ONSET_ENERGY_STEP_DB/20)` (plus [`ENERGY_ABS_FLOOR`] so a
+/// true digital-zero floor can't produce a zero threshold), returning the
+/// sample index of the run's FIRST hop.
+///
+/// Returns `None` when no hop ever qualifies (a silent capture) or when the
+/// floor window is already within [`ENERGY_HOT_FROM_ZERO_DB`] of the loudest
+/// hop in the capture (no silent pre-roll to step away from — the capture is
+/// hot from sample 0). Note the reachable floor is
+/// [`ONSET_ENERGY_FLOOR_WINDOW_MS`] of latency at minimum (the search starts
+/// only after the floor window), so a negative-latency capture can be found
+/// only down to `-ONSET_ENERGY_FLOOR_WINDOW_MS`.
+pub(crate) fn estimate_signal_start(capture: &[f32], rate: u32) -> Option<usize> {
+    if capture.is_empty() {
+        return None;
+    }
+    let hop = (rate as usize * ONSET_HOP_MS / 1000).max(1);
+    let floor_hop = (rate as usize * ENERGY_FLOOR_HOP_MS / 1000).max(1);
+    let floor_hops = ONSET_ENERGY_FLOOR_WINDOW_MS
+        .div_ceil(ENERGY_FLOOR_HOP_MS)
+        .max(1);
+    let floor_samples = (floor_hops * floor_hop).min(capture.len());
+    let floor_ref = (0..floor_hops)
+        .map(|i| {
+            let start = (i * floor_hop).min(capture.len());
+            let end = ((i + 1) * floor_hop).min(capture.len());
+            crate::doctor::rms_f64(&capture[start..end])
+        })
+        .fold(0.0f64, f64::max)
+        .max(ENERGY_ABS_FLOOR);
+
+    let total_hops = capture.len() / hop;
+    if total_hops == 0 {
+        return None;
+    }
+    // ONE 2 ms-hop RMS pass, reused below for both the loudest-hop fold and
+    // the step search — the floor window above keeps its own coarser 20 ms
+    // hops (a click-smoothing concern the step search doesn't share).
+    let hop_rms: Vec<f64> = (0..total_hops)
+        .map(|i| crate::doctor::rms_f64(&capture[i * hop..((i + 1) * hop).min(capture.len())]))
+        .collect();
+    let loudest = hop_rms.iter().copied().fold(0.0f64, f64::max);
+    if loudest <= 0.0 {
+        return None; // digital silence throughout
+    }
+    if 20.0 * (loudest / floor_ref).log10() < ENERGY_HOT_FROM_ZERO_DB {
+        return None; // no quiet pre-roll to step away from
+    }
+
+    let threshold = floor_ref * 10f64.powf(ONSET_ENERGY_STEP_DB / 20.0);
+    let start_hop = floor_samples / hop;
+    let mut run = 0usize;
+    for (i, &r) in hop_rms.iter().enumerate().skip(start_hop) {
+        if r > threshold {
+            run += 1;
+            if run >= ONSET_ENERGY_HOLD_HOPS {
+                return Some((i + 1 - ONSET_ENERGY_HOLD_HOPS) * hop);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    None
+}
 
 /// Estimate where the played stimulus actually STARTS inside a capture (the
 /// capture begins at stream start, before the audio has propagated through
@@ -1118,6 +1229,12 @@ const ONSET_MAX_PLAUSIBLE_LAG_MS: usize = 120;
 /// energy-onset detector but not a correlator. Returns `(onset_samples,
 /// confident)`; low confidence returns `(0, false)` — the caller keeps the
 /// un-aligned behavior.
+///
+/// Doctor callers no longer use this as their primary onset estimate — its
+/// confidence gate is a corr floor + lag ceiling, neither of which detects a
+/// PEAKLESS correlation curve (measured flat, 0.27–0.37 over every lag 0–250 ms,
+/// on a 65%-wet reverb chain). [`leveller::doctor_onset`] tries
+/// [`estimate_signal_start`] first and falls back to this correlator.
 pub(crate) fn estimate_onset(stimulus: &[f32], capture: &[f32], rate: u32) -> (usize, bool) {
     let hop = (rate as usize * ONSET_HOP_MS / 1000).max(1);
     let max_lag_hops = ONSET_MAX_LAG_MS / ONSET_HOP_MS;
@@ -1186,22 +1303,9 @@ pub(crate) fn estimate_onset(stimulus: &[f32], capture: &[f32], rate: u32) -> (u
 #[cfg(test)]
 mod onset_tests {
     use super::*;
-    use std::f32::consts::PI;
+    use crate::test_support::plucky;
 
     const SR: u32 = 48_000;
-
-    /// A pluck train with a distinctive envelope (like the shipped stimuli).
-    fn plucky(secs: f32) -> Vec<f32> {
-        let n = (secs * SR as f32) as usize;
-        let note = SR as usize / 2; // 500 ms notes
-        (0..n)
-            .map(|i| {
-                let t = (i % note) as f32 / SR as f32;
-                let env = (-t / 0.12).exp();
-                env * (2.0 * PI * 220.0 * i as f32 / SR as f32).sin() * 0.5
-            })
-            .collect()
-    }
 
     #[test]
     fn recovers_a_known_lag_through_a_clipping_chain() {

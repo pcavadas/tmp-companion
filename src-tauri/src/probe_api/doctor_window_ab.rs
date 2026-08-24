@@ -69,10 +69,20 @@ fn capture_variant(
     let (samples, rate) =
         leveller::doctor_capture(slot, None, &[], &[], stim_slice, Some(0.5), tail_ms, false)?;
     // `pad_aware`: true for the production-prepared 3 s arm (padded stim, body
-    // PSD starts at `doctor_signal_start` — exactly `doctor_check`'s path);
-    // false for the raw oracle/4 s slices, whose estimated onset feeds the body
-    // PSD directly — see `analyze_capture`'s doc.
-    let read = analyze_capture(stim_slice, &samples, rate, family, pad_aware)?;
+    // PSD onset comes from `leveller::doctor_onset` — exactly `doctor_check`'s
+    // path); false for the raw oracle/4 s slices, whose estimated onset feeds
+    // the body PSD directly — see `analyze_capture`'s doc. `tail_ms` is this
+    // variant's OWN capture tail (oracle/production/4s each pass their own),
+    // not a shared literal — the tail window this arm's tail-ratio delta
+    // compares must match what each variant actually captured with.
+    let read = analyze_capture(
+        stim_slice,
+        &samples,
+        rate,
+        family,
+        pad_aware,
+        tail_ms as u32,
+    )?;
     if !read.onset_confident {
         eprintln!(
             "[probe] doctor-window-ab: onset not confidently found for slot {slot} (tail {tail_ms}ms) — un-aligned split"

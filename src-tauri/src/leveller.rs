@@ -87,7 +87,7 @@ pub fn doctor_stim_samples() -> usize {
 /// (`psd::SEG` = 8192 ≈ 171 ms) — the output-SNR coverage gate needs a stable
 /// floor estimate. 200 ms of played silence stretches the floor window to
 /// ~230 ms at the cost of 200 ms per capture. Spectrally neutral: LUFS gating
-/// drops silence, and the body PSD starts at [`doctor_signal_start`].
+/// drops silence, and the body PSD starts at [`doctor_onset`]'s `signal_start`.
 pub const DOCTOR_PAD_MS: usize = 200;
 
 /// [`DOCTOR_PAD_MS`] at the required host Core Audio rate, in samples.
@@ -107,17 +107,103 @@ pub fn doctor_stim_slice(mut stim: Vec<f32>) -> Vec<f32> {
     stim
 }
 
-/// Where the SIGNAL actually starts in a Doctor capture: the estimated onset is
-/// where the PADDED stimulus aligns (= the inject latency), so the played
-/// silence sits at `[onset, onset + pad)` and real signal begins after it. The
-/// body PSD and the coverage gate's floor/body split use THIS; the tail split
-/// keeps the raw `onset` (it adds the padded `stimulus_samples`, which already
-/// contains the pad). An unconfident onset keeps the legacy whole-buffer 0.
-pub fn doctor_signal_start(onset: usize, confident: bool) -> usize {
+/// Which detector produced a [`DoctorOnset`] — carried for logging (every
+/// fallback WARNs naming it) and tests; never branched on by a diagnosis rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnsetSource {
+    /// The padded stimulus's played silence produced a floor-relative energy
+    /// step (`audio::estimate_signal_start`) — the primary, deterministic path.
+    Energy,
+    /// Envelope cross-correlation (`audio::estimate_onset`) — the energy step
+    /// didn't fire, or its implied latency was outside the plausible band.
+    Correlator,
+    /// Neither found a trustworthy split — legacy whole-buffer/un-aligned.
+    UnAligned,
+}
+
+/// One Doctor capture's onset/body split, as [`doctor_onset`] derives it.
+#[derive(Debug, Clone, Copy)]
+pub struct DoctorOnset {
+    /// Where REAL signal begins (after the played pad) — the body PSD and the
+    /// coverage gate's floor window start here.
+    pub signal_start: usize,
+    /// Where the PADDED stimulus aligns — the pad stays IN the body (matches
+    /// the historical aligned split, so the R4/R5 tail-window budget holds).
+    pub body_start: usize,
+    /// Body length in samples: `body_start + body_len` is the tail split point
+    /// ([`crate::doctor::tail_energy_ratio`]'s `body_start`/`body_len`).
+    pub body_len: usize,
+    pub source: OnsetSource,
+}
+
+impl DoctorOnset {
+    /// Whether this split is trustworthy — energy and confident-correlator
+    /// splits are both confident; only the un-aligned fallback is not.
+    pub fn confident(&self) -> bool {
+        self.source != OnsetSource::UnAligned
+    }
+
+    /// The tail split point: `body_start + body_len`
+    /// ([`crate::doctor::tail_energy_ratio`]'s `body_start`/`body_len` summed).
+    pub fn body_end(&self) -> usize {
+        self.body_start + self.body_len
+    }
+}
+
+/// Mirrors `audio::ONSET_MAX_PLAUSIBLE_LAG_MS` — a wash-artifact lag beyond
+/// this is not real latency regardless of which detector reports it. Derived
+/// (not re-pinned) so the two thresholds can't drift apart.
+const DOCTOR_ONSET_MAX_LATENCY_MS: i64 = audio::ONSET_MAX_PLAUSIBLE_LAG_MS as i64;
+/// Negative-latency floor: a capture stream that starts a little late (signal
+/// lands before the pad "would" end) is real and unrepresentable by the
+/// correlator's forward-only lag search — but not unbounded, or an unrelated
+/// early energy step (e.g. an engage pop the floor step still let through)
+/// would be accepted as if it were the true onset. Kept local — there is no
+/// negative-lag counterpart on the correlator side to derive it from.
+const DOCTOR_ONSET_MIN_LATENCY_MS: i64 = -100;
+
+/// Doctor's onset seam: a floor-relative energy step (primary — deterministic
+/// on every wet/dry chain because the Doctor stimulus always carries a played
+/// silent pad, see [`DOCTOR_PAD_MS`]), falling back to the envelope correlator
+/// (`audio::estimate_onset`) when the step doesn't fire or its implied latency
+/// is implausible, falling back to the legacy un-aligned split when neither
+/// does. `stim_padded` is the padded Doctor stimulus ([`doctor_stim_slice`]);
+/// `samples` is the raw capture. WARNs with the source on every fallback, so a
+/// wash-cohort verdict flip is traceable to which path fired.
+pub fn doctor_onset(stim_padded: &[f32], samples: &[f32], rate: u32) -> DoctorOnset {
+    let pad = doctor_pad_samples();
+    let body_len_full = stim_padded.len().saturating_sub(pad);
+    if let Some(signal_start) = audio::estimate_signal_start(samples, rate) {
+        let latency_ms = (signal_start as i64 - pad as i64) * 1000 / i64::from(rate.max(1));
+        if (DOCTOR_ONSET_MIN_LATENCY_MS..=DOCTOR_ONSET_MAX_LATENCY_MS).contains(&latency_ms) {
+            let body_start = signal_start.saturating_sub(pad);
+            let body_end = signal_start.saturating_add(body_len_full);
+            return DoctorOnset {
+                signal_start,
+                body_start,
+                body_len: body_end.saturating_sub(body_start),
+                source: OnsetSource::Energy,
+            };
+        }
+        log::warn!(
+            "doctor_onset: energy step implies {latency_ms} ms latency (outside {DOCTOR_ONSET_MIN_LATENCY_MS}..={DOCTOR_ONSET_MAX_LATENCY_MS} ms) — falling back to the correlator"
+        );
+    }
+    let (onset, confident) = audio::estimate_onset(stim_padded, samples, rate);
     if confident {
-        onset + doctor_pad_samples()
-    } else {
-        0
+        return DoctorOnset {
+            signal_start: onset + pad,
+            body_start: onset,
+            body_len: stim_padded.len(),
+            source: OnsetSource::Correlator,
+        };
+    }
+    log::warn!("doctor_onset: no confident onset (energy step or correlator) — un-aligned split");
+    DoctorOnset {
+        signal_start: 0,
+        body_start: 0,
+        body_len: stim_padded.len(),
+        source: OnsetSource::UnAligned,
     }
 }
 
@@ -8167,10 +8253,6 @@ mod tests {
         assert_eq!(prepared.len(), doctor_pad_samples() + doctor_stim_samples());
         assert!(prepared[..doctor_pad_samples()].iter().all(|&s| s == 0.0));
         assert!(prepared[doctor_pad_samples()..].iter().all(|&s| s == 0.7));
-        // Signal start accounting: confident onset = latency + the pad; an
-        // unconfident onset keeps the legacy whole-buffer 0.
-        assert_eq!(doctor_signal_start(1536, true), 1536 + doctor_pad_samples());
-        assert_eq!(doctor_signal_start(1536, false), 0);
     }
 
     // A cancel flag already set at entry must bail at the PRE-MEASURE checkpoint —
@@ -11213,5 +11295,233 @@ mod reordered_run_tests {
         // decides anything (the solve takes over).
         assert!(!fs_target_beyond_ceiling(-25.0, -40.0));
         assert!(!fs_target_beyond_ceiling(f64::NEG_INFINITY, -18.0));
+    }
+}
+
+/// The Doctor onset seam — see `doctor_onset`'s doc and the fixture's header
+/// for the HW evidence (`fs13` `ACD_TMLargePlate` 65%-wet, `probe --doctor-fs
+/// 407 13`, fw 1.8.45, 2026-08-24). `G0` composes whatever the PRODUCTION
+/// pipeline actually calls, so it's rewritten (not just re-run) the moment the
+/// production seam changes from the raw correlator to `doctor_onset` — see its
+/// own doc for why that's intentional here.
+#[cfg(test)]
+mod onset_gate {
+    use super::*;
+    use crate::audio;
+    use crate::doctor;
+    use crate::test_support::{fs13_capture, plucky};
+
+    const SR: u32 = 48_000;
+    /// 2 ms hop at 48 kHz — matches the fixture's envelope resolution.
+    const HOP: usize = 96;
+
+    /// A synthetic stand-in for the real guitar-humbucker Doctor stimulus
+    /// (not a bundled test asset) — padded exactly as production pads it.
+    fn synthetic_padded_stim() -> Vec<f32> {
+        doctor_stim_slice(plucky(6.0))
+    }
+
+    /// G0 — behavioral: the production composition (`doctor_onset` ->
+    /// `tail_energy_ratio`) must land on the pinned-tail aligned ground truth
+    /// the fixture's header records (`fixtures/fs13_wash_envelope_2ms.txt`),
+    /// not the un-aligned or unpinned numbers the same header documents as
+    /// the failure modes this fix replaces — this test's stimulus is a
+    /// synthetic stand-in (see `synthetic_padded_stim`), not the real
+    /// guitar-humbucker capture the fixture itself came from, so it targets
+    /// the pinned-tail row, not the fixture's own correlator-run numbers.
+    #[test]
+    fn wash_capture_pinned_tail_matches_ground_truth_through_the_production_seam() {
+        let capture = fs13_capture();
+        let stim = synthetic_padded_stim();
+        let onset = doctor_onset(&stim, &capture, SR);
+        let ratio = doctor::tail_energy_ratio(
+            &capture,
+            SR,
+            onset.body_len,
+            onset.body_start,
+            DOCTOR_TAIL_MS,
+        );
+        assert!(
+            (ratio - (-9.54)).abs() < 0.2,
+            "doctor_onset -> tail_energy_ratio should land within 0.2 dB of the \
+             pinned-tail aligned ground truth (-9.54 dB); got {ratio:.2} \
+             (source={:?} confident={} signal_start={} body_start={} body_len={})",
+            onset.source,
+            onset.confident(),
+            onset.signal_start,
+            onset.body_start,
+            onset.body_len
+        );
+    }
+
+    /// G1-equivalent: the low-level energy step alone finds the fixture's true
+    /// onset (hop 115 = 230 ms = 11,040 samples) directly, independent of the
+    /// `doctor_onset` composition above.
+    #[test]
+    fn energy_step_lands_at_230ms_on_the_fixture() {
+        let capture = fs13_capture();
+        let found = audio::estimate_signal_start(&capture, SR)
+            .expect("a clear step should be found on the fixture");
+        let expected = 230 * SR as usize / 1000; // 11,040 samples
+        let err = (found as i64 - expected as i64).unsigned_abs() as usize;
+        assert!(
+            err <= HOP,
+            "energy step at {found} samples vs expected {expected} (±1 hop)"
+        );
+    }
+
+    /// Documents the flat-curve fact: the envelope correlator does NOT reliably
+    /// align this wash capture — either it isn't confident, or it lands more
+    /// than 5 ms from the true 30 ms lag (1,440 samples).
+    #[test]
+    fn correlator_on_the_wash_capture_is_not_the_aligning_source() {
+        let capture = fs13_capture();
+        let stim = synthetic_padded_stim();
+        let (onset, confident) = audio::estimate_onset(&stim, &capture, SR);
+        let expected = 30 * SR as usize / 1000; // 1,440 samples
+        let err_ms = (onset as i64 - expected as i64).unsigned_abs() as f64 / SR as f64 * 1000.0;
+        assert!(
+            !confident || err_ms > 5.0,
+            "correlator unexpectedly aligned the wash capture confidently \
+             (onset={onset} vs expected {expected}, err {err_ms:.1} ms) — the flat-curve \
+             premise this fix relies on no longer holds for this fixture"
+        );
+    }
+
+    /// G3: a −40 dB white-noise floor ahead of the true onset must not be
+    /// mistaken for the signal — the step is relative to the floor, not an
+    /// absolute level.
+    #[test]
+    fn hiss_floor_before_the_onset_does_not_fool_the_energy_step() {
+        let floor_amp = 0.01f32; // ~-40 dBFS peak
+        let floor_len = SR as usize * 400 / 1000; // 400 ms of hiss
+        let mut capture: Vec<f32> = (0..floor_len)
+            .map(|i| ((i * 7919) % 1000) as f32 / 1000.0 * 2.0 * floor_amp - floor_amp)
+            .collect();
+        let step_at = capture.len();
+        capture.extend(std::iter::repeat_n(0.5f32, SR as usize / 2)); // loud, 500 ms
+        let found = audio::estimate_signal_start(&capture, SR)
+            .expect("a clear step over a hiss floor should still be found");
+        let err = (found as i64 - step_at as i64).unsigned_abs() as usize;
+        assert!(
+            err <= HOP,
+            "step at {found} samples vs expected {step_at} (±1 hop) over a -40 dB floor"
+        );
+    }
+
+    /// G4: a capture whose signal starts 20 ms BEFORE the pad "would" end (a
+    /// negative-latency stream start) still gets a body split ending at the
+    /// true `signal_start + body_len_full` — the truncated-pad case in
+    /// `doctor_onset`'s doc.
+    #[test]
+    fn negative_latency_still_splits_at_the_true_body_end() {
+        let pad = doctor_pad_samples(); // 200 ms
+        let stim_padded = doctor_stim_slice(vec![0.0f32; doctor_stim_samples()]);
+        let body_len_full = stim_padded.len() - pad;
+        let signal_start_samples = pad - SR as usize * 20 / 1000; // 20 ms early
+        let mut capture: Vec<f32> = (0..signal_start_samples)
+            .map(|i| ((i * 7919) % 1000) as f32 / 1000.0 * 0.002 - 0.001) // tiny floor
+            .collect();
+        capture.extend(std::iter::repeat_n(0.5f32, SR as usize / 5)); // 200 ms loud
+        let onset = doctor_onset(&stim_padded, &capture, SR);
+        assert_eq!(onset.source, OnsetSource::Energy);
+        assert!(onset.confident());
+        let err = (onset.signal_start as i64 - signal_start_samples as i64).unsigned_abs() as usize;
+        assert!(
+            err <= HOP,
+            "signal_start {} vs expected {signal_start_samples}",
+            onset.signal_start
+        );
+        // The pad is truncated (clipped to 0), so body_start clips to 0 rather
+        // than going negative.
+        assert_eq!(onset.body_start, 0);
+        assert_eq!(
+            onset.body_end(),
+            onset.signal_start + body_len_full,
+            "body_end must be the true signal_start + the full body length"
+        );
+    }
+
+    /// G5: a fully silent capture, and a capture that's loud from sample 0
+    /// (no quiet pre-roll to step away from), must both fall through to the
+    /// correlator/un-aligned path rather than reporting a bogus energy step.
+    #[test]
+    fn silent_or_hot_from_sample_zero_capture_falls_back() {
+        let stim_padded = synthetic_padded_stim();
+
+        let silent = vec![0.0f32; SR as usize];
+        assert!(audio::estimate_signal_start(&silent, SR).is_none());
+        let onset = doctor_onset(&stim_padded, &silent, SR);
+        assert_ne!(onset.source, OnsetSource::Energy);
+
+        let hot: Vec<f32> = (0..SR as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / SR as f32).sin() * 0.5)
+            .collect();
+        assert!(audio::estimate_signal_start(&hot, SR).is_none());
+        let onset = doctor_onset(&stim_padded, &hot, SR);
+        assert_ne!(onset.source, OnsetSource::Energy);
+    }
+
+    /// An energy step that fires WAY outside the plausible latency band (here,
+    /// an uncorrelated loud burst over a second after the true, correlatable
+    /// lag) must be ignored — `doctor_onset` falls through to the confident
+    /// correlator result instead of trusting the out-of-band step.
+    #[test]
+    fn out_of_band_energy_onset_falls_through_to_the_correlator() {
+        let stim = plucky(2.0); // 96,000 samples
+        let true_lag = SR as usize * 32 / 1000; // 32 ms — in-band, correlatable
+        let floor_amp = 0.02f32;
+        let total_len = true_lag + stim.len() + SR as usize / 2;
+        let mut capture: Vec<f32> = (0..total_len)
+            .map(|i| ((i * 104_729) % 1009) as f32 / 1009.0 * floor_amp - floor_amp / 2.0)
+            .collect();
+        // A quiet (5%) correlatable copy of the stimulus at the true lag — its
+        // RMS stays well under the energy step's threshold (verified below).
+        for (i, &s) in stim.iter().enumerate() {
+            capture[true_lag + i] += s * 0.05;
+        }
+        // A loud, UNCORRELATED burst ~1.5 s after the true lag (outside the
+        // correlator's ~1.5 s head window) — the only thing that trips the
+        // energy step, and well outside the plausible ±120 ms latency band.
+        let burst_at = true_lag + SR as usize * 3 / 2;
+        for v in capture.iter_mut().skip(burst_at).take(SR as usize / 50) {
+            *v = 0.3;
+        }
+        let stim_padded = plucky(2.0); // stand-in "padded" stim (len only matters)
+        let onset = doctor_onset(&stim_padded, &capture, SR);
+        assert_ne!(
+            onset.source,
+            OnsetSource::Energy,
+            "an out-of-band energy step must not be trusted"
+        );
+        assert_eq!(
+            onset.source,
+            OnsetSource::Correlator,
+            "expected the confident correlator to win the fallthrough (got {:?})",
+            onset.source
+        );
+        let (corr_onset, corr_confident) = audio::estimate_onset(&stim_padded, &capture, SR);
+        assert!(corr_confident);
+        assert_eq!(onset.body_start, corr_onset);
+    }
+
+    /// Offline e2e passthrough (`sim_device::e2e_capture`): a scaled copy of
+    /// the padded stimulus with zero latency and no extra tail. `body_start`
+    /// must land at 0 and the tail (nothing past the body) must floor at -80,
+    /// exactly as before this change.
+    #[test]
+    fn sim_passthrough_zero_latency_no_tail_keeps_body_start_zero_and_floors_the_tail() {
+        let stim_padded = doctor_stim_slice(plucky(3.0));
+        let capture: Vec<f32> = stim_padded.iter().map(|&x| x * 0.7).collect();
+        let onset = doctor_onset(&stim_padded, &capture, SR);
+        assert_eq!(onset.body_start, 0);
+        let ratio = doctor::tail_energy_ratio(
+            &capture,
+            SR,
+            onset.body_len,
+            onset.body_start,
+            DOCTOR_TAIL_MS,
+        );
+        assert_eq!(ratio, -80.0);
     }
 }

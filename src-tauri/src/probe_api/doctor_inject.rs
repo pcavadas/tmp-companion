@@ -34,13 +34,15 @@ pub(crate) fn measure(
     stim: &[f32],
     label: &str,
     capture: Result<(Vec<f32>, u32), String>,
+    tail_ms: u32,
 ) -> Result<(DoctorRead, String), String> {
     let (samples, rate) = capture?;
     // Padded production stim (`leveller::doctor_stim_slice`) → the body PSD's
-    // onset is pad-adjusted via `doctor_signal_start` (`pad_aware: true`) —
-    // see `analyze_capture`'s doc for why this differs from
-    // `doctor_window_ab`'s raw-stim variant.
-    let read = analyze_capture(stim, &samples, rate, doctor::Family::Guitar, true)?;
+    // onset comes from `leveller::doctor_onset` (`pad_aware: true`) — see
+    // `analyze_capture`'s doc for why this differs from `doctor_window_ab`'s
+    // raw-stim variant. `tail_ms` is the tail THIS capture was actually taken
+    // with (`tail_ms_for_doc`) — the pinned tail-ratio window must match it.
+    let read = analyze_capture(stim, &samples, rate, doctor::Family::Guitar, true, tail_ms)?;
     let mut line = format!(
         "  {label:<7} tilt={} dev={} locals={} tail={:.1} verdicts={:?}\n",
         read.tilt_slope.map_or("n/a".into(), |s| format!("{s:+.2}")),
@@ -163,8 +165,8 @@ pub fn probe_doctor_inject(
     // (`doctor::doctor_tail_ms`, same policy `commands/doctor.rs` uses) before
     // touching the device — the before-capture must be taken in production's
     // capture space, not a pinned literal.
-    let (last_group, name, before_tail) = last_guitar_group_anchor(slot)?;
-    let before_tail = u64::from(before_tail);
+    let (last_group, name, before_tail_ms) = last_guitar_group_anchor(slot)?;
+    let before_tail = u64::from(before_tail_ms);
 
     // BEFORE: the stored preset as-is (also loads it, so the live edit below
     // confirms the already-current preset — the doctor_apply shape).
@@ -172,6 +174,7 @@ pub fn probe_doctor_inject(
         &stim,
         "before",
         leveller::doctor_capture(slot, None, &[], &[], &stim, Some(0.5), before_tail, false),
+        before_tail_ms,
     )?;
     out += &before_line;
 
@@ -196,7 +199,7 @@ pub fn probe_doctor_inject(
     // reverb) can turn a known-dry chain wet, and reusing the before tail
     // would under-capture the new wash tail. Falls back to the before tail
     // (already conservative-safe) if the live doc didn't come back.
-    let after_tail = match ops_s.current_preset_value() {
+    let after_tail_ms = match ops_s.current_preset_value() {
         Ok(doc) => {
             out += &format!(
                 "  vehicle params: {}\n",
@@ -204,13 +207,14 @@ pub fn probe_doctor_inject(
                     .map_or("node not found in live field-3 doc".into(), |p| p
                         .to_string())
             );
-            u64::from(tail_ms_for_doc(&doc))
+            tail_ms_for_doc(&doc)
         }
         Err(e) => {
             out += &format!("  vehicle params: (no live field-3 doc: {e})\n");
-            before_tail
+            before_tail_ms
         }
     };
+    let after_tail = u64::from(after_tail_ms);
     drop(ops_s);
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
@@ -219,6 +223,7 @@ pub fn probe_doctor_inject(
         &stim,
         "after",
         leveller::doctor_capture_current(&stim, None, &[], Some(0.5), after_tail),
+        after_tail_ms,
     );
 
     // Discard the injected defect ALSO when the after-capture failed (the module

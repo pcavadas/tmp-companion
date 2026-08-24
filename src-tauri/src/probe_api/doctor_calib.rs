@@ -21,7 +21,6 @@
 //! `--labels` is `{"washed":[5,6],"muddy":[11],…}` — 0-based list-index slot
 //! lists of the sounds that GENUINELY have each problem (the positives).
 
-use crate::audio;
 use crate::doctor;
 use crate::footswitch;
 use crate::leveller;
@@ -104,11 +103,11 @@ fn propose_threshold(clean: &[f64], positive: &[f64]) -> (f64, Option<f64>) {
 
 /// Pre-signal noise-floor metric: `20·log10(rms(capture[..signal_start]) /
 /// rms(body))` dB — how far the leading (pre-signal) hiss sits under the
-/// stimulus body. `body_end` is the raw onset + the padded stimulus length
-/// (where the played audio ends) — passed explicitly because `signal_start`
-/// is pad-SHIFTED, so `signal_start + stimulus_samples` would overshoot the
-/// body by one pad. `None` when the onset isn't confident or sits under 10 ms
-/// of samples (no meaningful pre-window) or the body is silent. Pure.
+/// stimulus body. `body_end` is `body_start + body_len` from the same
+/// `DoctorOnset` (where the played audio ends) — passed explicitly because
+/// `signal_start` is pad-SHIFTED, so `signal_start + body_len` would overshoot
+/// the body by one pad. `None` when the onset isn't confident or sits under
+/// 10 ms of samples (no meaningful pre-window) or the body is silent. Pure.
 fn noise_floor_db(
     samples: &[f32],
     rate: u32,
@@ -243,18 +242,18 @@ fn profile_and_coverage(
     samples: &[f32],
     rate: u32,
     stim: &[f32],
-    onset: usize,
-    confident: bool,
+    onset: &leveller::DoctorOnset,
+    tail_ms: u32,
     family: doctor::Family,
 ) -> Result<(doctor::SoundProfile, Vec<bool>, usize), String> {
-    let signal_start = leveller::doctor_signal_start(onset, confident);
-    let body_psd = doctor::body_psd(samples, rate, signal_start);
+    let body_psd = doctor::body_psd(samples, rate, onset.signal_start);
     let stim_psd = crate::psd::welch_psd(stim, rate as f32);
     let mut profile = doctor::SoundProfile::from_capture_with_psd(
         samples,
         rate,
-        stim.len(),
-        onset,
+        onset.body_len,
+        onset.body_start,
+        tail_ms,
         family,
         &body_psd,
         Some(&stim_psd),
@@ -264,8 +263,8 @@ fn profile_and_coverage(
     // thresholds/targets in the same anchored space the engine diagnoses in.
     profile.stim_bands = Some(stim_psd.band_powers(family.bands()));
     let coverage =
-        doctor::output_coverage_with_body(samples, rate, signal_start, family, &body_psd);
-    Ok((profile, coverage, signal_start))
+        doctor::output_coverage_with_body(samples, rate, onset.signal_start, family, &body_psd);
+    Ok((profile, coverage, onset.signal_start))
 }
 
 /// `profile_and_coverage`, sweep-flavored: log + `None` on failure so callers
@@ -279,11 +278,11 @@ fn profile_or_skip(
     samples: &[f32],
     rate: u32,
     stim: &[f32],
-    onset: usize,
-    confident: bool,
+    onset: &leveller::DoctorOnset,
+    tail_ms: u32,
     family: doctor::Family,
 ) -> Option<(doctor::SoundProfile, Vec<bool>, usize)> {
-    match profile_and_coverage(samples, rate, stim, onset, confident, family) {
+    match profile_and_coverage(samples, rate, stim, onset, tail_ms, family) {
         Ok(v) => Some(v),
         Err(e) => {
             eprintln!("[probe] {label}slot {slot}: profile failed: {e} (skipping)");
@@ -353,16 +352,27 @@ pub fn probe_doctor_calib(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match leveller::doctor_capture(slot, None, &fb, &[], &stim, Some(0.5), tail_ms, false) {
             Ok((samples, rate)) => {
-                let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
-                let Some((profile, coverage, signal_start)) =
-                    profile_or_skip("", slot, &samples, rate, &stim, onset, confident, family)
-                else {
+                let onset = leveller::doctor_onset(&stim, &samples, rate);
+                let Some((profile, coverage, signal_start)) = profile_or_skip(
+                    "",
+                    slot,
+                    &samples,
+                    rate,
+                    &stim,
+                    &onset,
+                    tail_ms as u32,
+                    family,
+                ) else {
                     continue;
                 };
-                // body_end pairs the RAW onset with the padded stim length (the
-                // pad cancels); the floor window ends at the pad-shifted start.
-                let noise_floor_db =
-                    noise_floor_db(&samples, rate, signal_start, confident, onset + stim.len());
+                // the floor window ends at the pad-shifted start.
+                let noise_floor_db = noise_floor_db(
+                    &samples,
+                    rate,
+                    signal_start,
+                    onset.confident(),
+                    onset.body_end(),
+                );
                 rows.push(Row {
                     slot,
                     profile,
@@ -598,9 +608,16 @@ pub fn probe_doctor_calib_factory(
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match leveller::doctor_capture_current(&stim, None, &[], Some(0.5), tail_ms) {
             Ok((samples, rate)) => {
-                let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
+                let onset = leveller::doctor_onset(&stim, &samples, rate);
                 let Some((profile, coverage, _)) = profile_or_skip(
-                    "factory ", slot, &samples, rate, &stim, onset, confident, family,
+                    "factory ",
+                    slot,
+                    &samples,
+                    rate,
+                    &stim,
+                    &onset,
+                    tail_ms as u32,
+                    family,
                 ) else {
                     continue;
                 };

@@ -68,6 +68,10 @@ mod session;
 mod sim_device;
 mod slot_read;
 mod spectrum;
+// Shared test-only fixtures/generators (`audio` onset tests, `leveller`
+// onset-gate tests) — see the module doc.
+#[cfg(test)]
+pub(crate) mod test_support;
 // `pub` so the `gen_samples` bin (a separate crate) can reach the shared
 // catalog as `tmp_companion_lib::topologies`.
 pub mod topologies;

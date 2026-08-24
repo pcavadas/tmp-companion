@@ -454,7 +454,8 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             };
             let family = instrument_of(item);
             let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
-            let tail_ms = u64::from(doctor::doctor_tail_ms(&item.nodes));
+            let tail_ms_u32 = doctor::doctor_tail_ms(&item.nodes);
+            let tail_ms = u64::from(tail_ms_u32);
             // One capture + profile attempt, `skip_load` threaded through (the retry
             // below forces a fresh preset recall — a floor read means the inject
             // failed, not that the working copy is stale).
@@ -485,22 +486,23 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     validate.as_ref(),
                 )?;
                 // Align the body/tail split to where the stimulus actually starts
-                // (I/O latency); low confidence keeps the legacy un-aligned split.
-                let (onset, confident) = audio::estimate_onset(stim, &samples, rate);
-                if !confident {
+                // (I/O latency); the energy step is primary, falling back to the
+                // correlator and then the legacy un-aligned split — see
+                // `leveller::doctor_onset`'s doc for why the correlator alone
+                // can't be trusted here (a peakless correlation curve on a
+                // washed/reverb chain).
+                let onset = leveller::doctor_onset(stim, &samples, rate);
+                if !onset.confident() {
                     log::warn!(
-                        "doctor: onset not confidently found for {} — un-aligned tail split",
-                        item.key
+                        "doctor: onset not confidently found for {} ({:?}) — un-aligned tail split",
+                        item.key,
+                        onset.source
                     );
                 }
-                // The SIGNAL starts after the stimulus's silent preamble
-                // (`doctor_signal_start`); the tail split below keeps the raw
-                // `onset` (its `stimulus_samples` already carries the pad).
-                let signal_start = leveller::doctor_signal_start(onset, confident);
                 // ONE shared post-onset body PSD for this capture — read by both the
                 // profile's band powers/air-flatness and the output-coverage SNR
                 // gate below, instead of each computing its own (disagreeing) space.
-                let body_psd = doctor::body_psd(&samples, rate, signal_start);
+                let body_psd = doctor::body_psd(&samples, rate, onset.signal_start);
                 // The STIMULUS's own PSD — the reference the localized
                 // resonant/boxy rules diff against (`Psd::transfer_db`), so
                 // the stimulus's spectral ridges can't read as chain
@@ -509,8 +511,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 let mut profile = doctor::SoundProfile::from_capture_with_psd_loudness(
                     &samples,
                     rate,
-                    stim.len(),
-                    onset,
+                    onset.body_len,
+                    onset.body_start,
+                    tail_ms_u32,
                     family,
                     &body_psd,
                     Some(&stim_psd),
@@ -528,7 +531,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 let cov = doctor::output_coverage_with_body(
                     &samples,
                     rate,
-                    signal_start,
+                    onset.signal_start,
                     family,
                     &body_psd,
                 );
