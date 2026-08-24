@@ -884,6 +884,41 @@ pub(crate) fn scene_overlay<'a>(
     scene_overlay_for(preset, scene, (&group, &node_id, &fender_id))
 }
 
+/// One PARAM's read out of a scene overlay — [`SceneOverlay`] narrowed to a single key, so the
+/// two scene-witness comparators (`leveller::scene_overlay_witness_value`'s Fix-3 match-only
+/// read, `leveller::persisted_value`'s scene arm) collapse the same four overlay states the same
+/// way instead of each hand-rolling the `Full`/`BypassOnly` param lookup.
+pub(crate) enum SceneParamRead<'a> {
+    /// The overlay carries `param`.
+    Value(&'a serde_json::Value),
+    /// The overlay exists (or the scene has none for this node) but not for `param` — a genuine
+    /// miss, from [`SceneOverlay::Full`]/[`SceneOverlay::BypassOnly`] without the key, or
+    /// [`SceneOverlay::Absent`].
+    Absent,
+    /// Presence unanswerable ([`SceneOverlay::Unknown`]) — a base slot or a truncated field-8
+    /// read.
+    Unknown,
+}
+
+/// [`scene_overlay`] narrowed to one `param`'s raw JSON value via [`SceneParamRead`]. Pure — no
+/// device I/O; same node-id-string signature as [`scene_overlay`] (a caller already holding the
+/// resolved roster triple should go through [`scene_overlay_for`] instead, as `scene_overlay`
+/// itself documents).
+pub(crate) fn overlay_param<'a>(
+    preset: &'a serde_json::Value,
+    scene: u32,
+    node: &str,
+    param: &str,
+) -> SceneParamRead<'a> {
+    match scene_overlay(preset, scene, node) {
+        SceneOverlay::Full(params) | SceneOverlay::BypassOnly(params) => params
+            .get(param)
+            .map_or(SceneParamRead::Absent, SceneParamRead::Value),
+        SceneOverlay::Absent => SceneParamRead::Absent,
+        SceneOverlay::Unknown => SceneParamRead::Unknown,
+    }
+}
+
 /// The scene's raw body (`scenes[scene]`), or `None` for a base slot / a truncated read.
 fn scene_body(preset: &serde_json::Value, scene: u32) -> Option<&serde_json::Value> {
     if scene >= session::BASE_SCENE_SLOT {
@@ -935,6 +970,53 @@ pub(crate) fn scene_overlay_for<'a>(
             None => SceneOverlay::Unknown,
         },
     }
+}
+
+/// The MUTABLE counterpart to [`scene_overlay_for`] — the write-side key resolver, so a scene
+/// overlay write can never key a node differently than [`scene_overlay_for`] would read it back.
+/// Locates `scenes[scene].{guitarNodes,micNodes}.<group>` (group ids are disjoint across the two
+/// graphs — same rationale as [`scene_overlay_for`]'s own read) and returns the node's overlay
+/// entry keyed by the SAME FenderId-first/nodeId-fallback rule: updates whichever key an
+/// existing entry already uses, and only when NEITHER key is present yet inserts a fresh
+/// nodeId-keyed `{"dspUnitParameters": {}}` entry. `None` for an unknown scene/group (nothing to
+/// write onto) — callers must skip silently, exactly like the read side's `Absent`/`Unknown`.
+///
+/// `#[cfg(feature = "e2e")]`: today's only writer of a scene overlay's raw JSON is the sim's own
+/// lazy-commit model (`sim_device::patch_scene_overlays`) — the real device is written over the
+/// wire (`Session::change_parameter` + `setNodeSceneEdit`), never by mutating a local JSON doc.
+#[cfg(feature = "e2e")]
+pub(crate) fn scene_overlay_entry_mut<'a>(
+    preset: &'a mut serde_json::Value,
+    scene: u32,
+    (group, node_id, fender_id): (&str, &str, &str),
+) -> Option<&'a mut serde_json::Value> {
+    let body = preset
+        .get_mut("scenes")
+        .and_then(|s| s.as_array_mut())
+        .and_then(|a| a.get_mut(scene as usize))?;
+    // A read-only pass picks WHICH graph carries `group` first, so the mutable resolution
+    // below borrows `body` exactly once — a loop that both `get_mut`s and early-`return`s
+    // per iteration trips the borrow checker (each iteration looks like it could still be
+    // holding the previous one's borrow for lifetime `'a`).
+    let graph = ["guitarNodes", "micNodes"].into_iter().find(|g| {
+        body.get(*g)
+            .and_then(|g| g.get(group))
+            .is_some_and(|v| v.is_object())
+    })?;
+    let nodes = body
+        .get_mut(graph)
+        .and_then(|g| g.get_mut(group))
+        .and_then(|g| g.as_object_mut())?;
+    let key = if nodes.contains_key(fender_id) {
+        fender_id
+    } else {
+        node_id
+    };
+    Some(
+        nodes
+            .entry(key.to_string())
+            .or_insert_with(|| serde_json::json!({ "dspUnitParameters": {} })),
+    )
 }
 
 /// Which refused [`SceneOverlay`] state produced a [`SceneWriteVerdict::Refuse`] — the

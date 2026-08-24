@@ -28,10 +28,11 @@
 //! `/sim/commit-latency` bridge route, default 0 ms) — even 0 ms changes LOAD's
 //! semantics from "preserve whatever `presetLevel` was last set" to "materialize this
 //! slot's own committed doc", which is what makes the stale-load class reproducible
-//! offline at all. The doc is `presetLevel` PLUS a footswitch bake's own baked param PLUS
-//! the `ftsw` array (`SavedDoc`) — narrower than a full merged presetJson (scene overlays
-//! do NOT round-trip through a save; `SavedDoc`'s doc comment has the deviation
-//! rationale). See `saved_levels`' field doc for the exact read/load asymmetry.
+//! offline at all. The doc is `presetLevel` PLUS a footswitch bake's own baked param PLUS a
+//! scene deferred save's own overlay param PLUS the `ftsw` array (`SavedDoc`) — narrower
+//! than a full merged presetJson still (the CAPTURE MODEL doesn't reseed a scene overlay's
+//! write on load, only its TEXT round-trips; `SavedDoc`'s doc comment has the residual
+//! deviation). See `saved_levels`' field doc for the exact read/load asymmetry.
 //!
 //! **Footswitch assignment writes (HW semantics, no dedicated echo):**
 //! `setFootswitchAssignment`(54) and `clearFootswitchAssignment`(55) edit the WORKING-COPY
@@ -362,9 +363,17 @@ struct SimState {
 /// own copy, never the shared immutable fixture text.
 ///
 /// REMAINING DEVIATION from the plan's full "merged presetJson" (module header,
-/// `record_save`'s doc): scene-OVERLAY writes are NOT merged in — a scene's own
-/// `outputLevel` override does not survive a save→load round trip, because no offline spec
-/// reads one back through a save and half-building it buys nothing.
+/// `record_save`'s doc): `scene_params` (the fold below) makes the SAVED DOCUMENT TEXT
+/// correctly carry a scene overlay's write (`witness_value_in_doc`'s scene-indexed witness
+/// and `persisted_value`'s scene-overlay read both consult it — Fix 2, closing the gap this
+/// note used to record as "no offline spec reads one back through a save"). What is STILL
+/// NOT modeled: `F_LOAD_PRESET` reseeds only the `SCENE_BASE` entries of `param_writes` on a
+/// fresh load (that handler's own comment), never `scene_params` — so after a save→load
+/// round trip the rendered TEXT holds the leveled scene value while the CAPTURE MODEL
+/// (`model_lufs`, which reads `param_writes`, not the doc text) still renders that scene's
+/// PRE-level loudness. A future spec that re-measures a scene AFTER its own save must reseed
+/// `param_writes` from `scene_params` on load first, or its capture will silently disagree
+/// with the saved document it just read (post-review amendment 4).
 ///
 /// `ftsw` ASSIGN edits DO round-trip now (they did not before field 54 was modeled), because
 /// the production Assign flow has three readers that a non-persisting `ftsw` makes lie:
@@ -381,6 +390,9 @@ struct SavedDoc {
     /// Baked `(group, node, param) → value` overlay — a footswitch bake's own knob,
     /// SCENE_BASE-scoped only (see the deviation note above).
     params: HashMap<(String, String, String), f32>,
+    /// Scene-scoped `(scene, group, node, param) → value` overlay — a scene deferred save's
+    /// own knob (see the deviation note above for what this does and does not fix).
+    scene_params: HashMap<(u32, String, String, String), f32>,
     /// The whole saved `ftsw` array once a footswitch set/clear has been saved for this slot;
     /// `None` = never edited, so the slot's own fixture text still owns it. Stored whole for
     /// the same reason [`SimState::ftsw_working`] is (a clear SHIFTS indices).
@@ -723,6 +735,7 @@ impl SimState {
                 committed: SavedDoc {
                     preset_level: scenario_preset_level(slot0).unwrap_or(1.0),
                     params: HashMap::new(),
+                    scene_params: HashMap::new(),
                     // `None` = the slot's own fixture `ftsw` is still the saved truth.
                     ftsw: None,
                 },
@@ -763,7 +776,8 @@ impl SimState {
 
     /// Record a save: the CURRENT working `preset_level`, plus the CURRENTLY-COMMITTED
     /// baked params merged with this session's own SCENE_BASE `param_writes` (a footswitch
-    /// bake), becomes `slot0`'s pending doc, landing after [`SimState::commit_latency`].
+    /// bake) AND its scene-scoped `param_writes` (a scene deferred save — `scene_params`,
+    /// Fix 2), becomes `slot0`'s pending doc, landing after [`SimState::commit_latency`].
     /// Even a 0 ms latency changes LOAD's semantics (module header) — a genuinely non-zero
     /// latency additionally REPRODUCES the same-slot stale-load incident (a load before the
     /// deadline still sees the OLD committed doc). Merging onto the CURRENT committed params
@@ -775,9 +789,21 @@ impl SimState {
         self.ever_saved.insert(slot0);
         let level = self.preset_level;
         let mut params = self.pending_level_entry(slot0).committed.params.clone();
+        let mut scene_params = self
+            .pending_level_entry(slot0)
+            .committed
+            .scene_params
+            .clone();
         for ((scene, group, node, param), v) in &self.param_writes {
             if *scene == SCENE_BASE {
                 params.insert((group.clone(), node.clone(), param.clone()), *v);
+            } else {
+                // Registration filter (post-review amendment 5): fold every non-base scene
+                // key, cast the wire `i64` scene index down to the witness/overlay's `u32`.
+                scene_params.insert(
+                    (*scene as u32, group.clone(), node.clone(), param.clone()),
+                    *v,
+                );
             }
         }
         // `ftsw` persists WHOLESALE: the working copy was itself materialized from the saved
@@ -793,6 +819,7 @@ impl SimState {
             SavedDoc {
                 preset_level: level,
                 params,
+                scene_params,
                 ftsw,
             },
             deadline,
@@ -826,36 +853,34 @@ fn scenario_preset_level(slot0: u32) -> Option<f32> {
 }
 
 /// Patch `audioGraph.presetLevel` PLUS a footswitch bake's own baked `(group, node,
-/// param)` overlay into a preset-JSON BODY TEXT — the fields the lazy-commit model
-/// synthesizes into the field-3/field-8 JSON string itself (the rest of that TEXT —
-/// `scenes`, `ftsw`, scene-scoped param overlays — stays exactly the committed scenario
-/// body; no offline caller reads THOSE back through a save round trip, so deep-merging
-/// them is out of scope here — see the module header's deviation note). Patching the
-/// baked params into this TEXT (not just `SimState::param_writes`, which is what
-/// `model_lufs` actually reads) matters for two READERS of the text itself:
-/// `leveller::witness_value_in_doc` compares a `SaveWitness::Param` against the
-/// FIELD-3 echo, and `verify_fs_persisted_writes`'s post-save field-8 read expects the
-/// just-baked value to show up in the SAVED document, not the pristine fixture body —
-/// without this, both would see the pre-bake value forever and report a false
-/// persist-mismatch / a permanently-stale witness compare. Falls back to the original
-/// bytes on a parse failure, which never happens for a committed fixture but a caller
-/// must still get SOMETHING. Patches `audioGraph.guitarNodes` groups ONLY: a `micNodes`
-/// baked param would silently patch nothing — no current fixture routes one; extend the
-/// group lookup here FIRST if a mic-path fixture ever bakes a param, or its persist
-/// verify reads the pristine value and reports a false mismatch with no diagnostic.
+/// param)` overlay PLUS every scene deferred save's own `(scene, group, node, param)`
+/// overlay (Fix 2, [`patch_scene_overlays`]) into a preset-JSON BODY TEXT — the fields the
+/// lazy-commit model synthesizes into the field-3/field-8 JSON string itself (the rest of
+/// that TEXT — `ftsw`, every OTHER scene field — stays exactly the committed scenario body;
+/// no offline caller reads those back through a save round trip, so deep-merging them is out
+/// of scope here). Patching the baked params into this TEXT (not just
+/// `SimState::param_writes`, which is what `model_lufs` actually reads — and, for the scene
+/// overlay, does NOT reseed on load; see `SavedDoc`'s deviation note) matters for readers of
+/// the text itself: `leveller::witness_value_in_doc` compares a `SaveWitness::Param` against
+/// the FIELD-3 echo (both the base-baked and the scene-indexed shape), and
+/// `leveller::persisted_value`'s post-save field-8 read expects the just-written value to
+/// show up in the SAVED document, not the pristine fixture body — without this, both would
+/// see the pre-write value forever and report a false persist-mismatch / a permanently-stale
+/// witness compare. Falls back to the original bytes on a parse failure, which never happens
+/// for a committed fixture but a caller must still get SOMETHING. Patches
+/// `audioGraph.guitarNodes` groups ONLY for the base overlay: a `micNodes` baked param would
+/// silently patch nothing — no current fixture routes one; extend the group lookup here
+/// FIRST if a mic-path fixture ever bakes a param, or its persist verify reads the pristine
+/// value and reports a false mismatch with no diagnostic.
 #[cfg(feature = "e2e")]
-fn with_patched_doc(
-    json: &str,
-    level: f32,
-    params: &HashMap<(String, String, String), f32>,
-) -> String {
+fn with_patched_doc(json: &str, doc: &SavedDoc) -> String {
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(json) else {
         return json.to_string();
     };
     if let Some(ag) = v.get_mut("audioGraph") {
-        ag["presetLevel"] = serde_json::json!(level);
+        ag["presetLevel"] = serde_json::json!(doc.preset_level);
         if let Some(groups) = ag.get_mut("guitarNodes").and_then(|g| g.as_object_mut()) {
-            for ((group, node, param), value) in params {
+            for ((group, node, param), value) in &doc.params {
                 let Some(nodes) = groups.get_mut(group).and_then(|g| g.as_array_mut()) else {
                     continue;
                 };
@@ -869,7 +894,50 @@ fn with_patched_doc(
             }
         }
     }
+    patch_scene_overlays(&mut v, &doc.scene_params);
     serde_json::to_string(&v).unwrap_or_else(|_| json.to_string())
+}
+
+/// Patch `scene_params` entries (`record_save`'s fold) into `scenes[scene].{guitarNodes,
+/// micNodes}.<group>` of the already-parsed doc `v` — [`with_patched_doc`]'s scene-overlay
+/// sibling. Resolves the node's own `(node_id, fender_id)` off ONE `audiograph::roster(v)` walk
+/// hoisted before the loop (the per-entry `roster_entry` call this used to make was a fresh
+/// whole-graph rebuild EVERY entry — the hot-path cost this hoist resolves), then locates and
+/// writes the overlay entry through [`crate::probe_api::scene_jobs::scene_overlay_entry_mut`] —
+/// the write-side counterpart of `scene_jobs::scene_overlay_for`'s read, so the two can never key
+/// a node differently. A node no longer in the base graph, or a scene/group the doc doesn't
+/// carry, is silently skipped — nothing to patch onto.
+#[cfg(feature = "e2e")]
+fn patch_scene_overlays(
+    v: &mut serde_json::Value,
+    scene_params: &HashMap<(u32, String, String, String), f32>,
+) {
+    let roster = crate::audiograph::roster(v);
+    for ((scene, group, node, param), value) in scene_params {
+        let Some((_, node_id, fender_id)) = roster
+            .iter()
+            .find(|(_, nid, fid)| nid == node || fid == node)
+        else {
+            continue;
+        };
+        let Some(entry) = crate::probe_api::scene_jobs::scene_overlay_entry_mut(
+            v,
+            *scene,
+            (group, node_id, fender_id),
+        ) else {
+            continue;
+        };
+        // Coerce a non-object `dspUnitParameters` (or none yet) to `{}` ONCE, then write —
+        // `scene_overlay_entry_mut` already seeds a FRESH entry with an object, so this only
+        // ever fires for a pre-existing entry whose shape is off.
+        if !entry
+            .get("dspUnitParameters")
+            .is_some_and(|d| d.is_object())
+        {
+            entry["dspUnitParameters"] = serde_json::json!({});
+        }
+        entry["dspUnitParameters"][param] = serde_json::json!(value);
+    }
 }
 
 /// `ftsw[addr]`'s function list, growing the switch array (with empty lists) and coercing a
@@ -2106,7 +2174,7 @@ fn load_echo_json(st: &mut SimState, slot0: u32) -> Vec<u8> {
     #[cfg(feature = "e2e")]
     if let Some(j) = scenario_json_for(slot0) {
         let doc = st.committed_doc(slot0).clone();
-        let patched = with_patched_doc(j, doc.preset_level, &doc.params);
+        let patched = with_patched_doc(j, &doc);
         // `ftsw`: the UNSAVED working copy when this session has edited it, else the slot's
         // saved array — the field-3 push is the LIVE document, which is what makes it the
         // confirm channel for the no-echo footswitch setters.
@@ -2132,12 +2200,7 @@ fn saved_slot_json_body(
         // NO working copy here: field-8 is the SAVED document, so an unsaved `ftsw` edit must
         // be invisible to it (that asymmetry against the field-3 render above is the point —
         // `verify_fs_persisted_writes` reads this to decide whether the assign PERSISTED).
-        saved_slot_json(slot0).map(|j| {
-            with_ftsw(
-                &with_patched_doc(j, doc.preset_level, &doc.params),
-                doc.ftsw.as_ref(),
-            )
-        })
+        saved_slot_json(slot0).map(|j| with_ftsw(&with_patched_doc(j, &doc), doc.ftsw.as_ref()))
     }
     #[cfg(not(feature = "e2e"))]
     {

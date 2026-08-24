@@ -2712,6 +2712,21 @@ fn install_barrier_sim(latency_ms: u64) -> crate::sim_device::SimDevice {
     sim
 }
 
+/// How many `Loaded` events the sim has recorded so far — the barrier tests' shared probe for
+/// "has `ensure_fresh_load_paced` issued another `LoadPreset`".
+fn loaded_count(sim: &crate::sim_device::SimDevice) -> usize {
+    sim.events()
+        .iter()
+        .filter(|e| matches!(e, crate::sim_device::SimEvent::Loaded(_)))
+        .count()
+}
+
+/// [`loaded_count`] taken relative to an earlier reading — the retry count a barrier call has
+/// issued since `baseline`.
+fn loads_since(sim: &crate::sim_device::SimDevice, baseline: usize) -> usize {
+    loaded_count(sim) - baseline
+}
+
 /// Save `level` to slot 401 through the real session wire path (the sim's F_SAVE handler
 /// records it as the slot's pending lazy-commit doc).
 fn save_level_401(sim: &crate::sim_device::SimDevice, level: f32) {
@@ -2829,6 +2844,127 @@ fn fresh_load_barrier_time_gate_proceeds_on_an_unharvestable_witness() {
         (sim.preset_level() - 0.32).abs() < 1e-3,
         "the pending save must still be uncommitted, got {}",
         sim.preset_level()
+    );
+}
+
+/// Scene-witness first-harvest gate (Fix 3 + Fix 2): a scene deferred save, driven through
+/// the sim exactly like `save_deferred_scene_writes` would, must be visible to the VERY
+/// FIRST harvest — no stale retry — because (a) the witness now carries a scene
+/// discriminator and consults that scene's overlay, and (b) the sim's lazy-commit doc now
+/// actually persists a scene-scoped write into the rendered TEXT the harvest reads (Fix 2;
+/// without it the harvest keeps seeing the pre-save overlay value forever). Slot 402/scene 0
+/// is Full-shaped for `ACD_JC120` in the committed fixture (module doc,
+/// `scene_jobs::SceneOverlay::Full`), so the write lands on the overlay with no
+/// `setNodeSceneEdit` needed (post-review amendment 8).
+#[test]
+fn fresh_load_barrier_scene_witness_passes_on_first_harvest() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+    ]);
+    let sim = install_barrier_sim(0); // commits immediately
+    const SLOT: u32 = 402;
+    const SCENE: u32 = 0;
+    const GROUP: &str = "G1";
+    const NODE: &str = "ACD_JC120";
+    const PARAM: &str = "outputLevel";
+    const VALUE: f32 = 0.77;
+    {
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(SLOT).expect("load 402");
+        s.load_scene(SCENE).expect("recall scene 0");
+        s.change_parameter(GROUP, NODE, PARAM, VALUE)
+            .expect("write outputLevel");
+        s.save_current_preset(SLOT).expect("save");
+    }
+    let baseline = loaded_count(&sim);
+    crate::leveller::register_slot_save(
+        SLOT,
+        crate::leveller::SaveWitness::Param {
+            node: NODE.to_string(),
+            param: PARAM.to_string(),
+            value: VALUE,
+            scene: Some(SCENE),
+        },
+    );
+    // Cancel bound (not `&mut || false`): the RED form of this gate must never blind-wait
+    // the full 150 s commit window — it terminates via the cancel hook right after a SECOND
+    // load is observed, which only a still-spinning (unmatched) witness would ever issue.
+    let sim_for_cancel = sim.clone();
+    let start = std::time::Instant::now();
+    let result = crate::leveller::ensure_fresh_load_paced(
+        SLOT,
+        &mut || loads_since(&sim_for_cancel, baseline) >= 2,
+        200,
+    );
+    let loads = loads_since(&sim, baseline);
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        loads, 1,
+        "a matching scene witness must pass on the FIRST harvest — no stale retry load"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "first-harvest pass must not have blind-waited, took {:?}",
+        start.elapsed()
+    );
+}
+
+/// Anti-stampede gate (post-review amendment 1): an UNHARVESTABLE witness (a `Param` naming a
+/// node no doc the sim renders ever carries) backdated to ~1 s BEFORE the commit-window edge —
+/// not past it, unlike the time-gate test above — so the barrier must genuinely retry a
+/// handful of times (the elapsed-since-save crosses `COMMIT_WINDOW_SECS` only after real
+/// wall-clock time passes) before the time-gate finally fires. Wall-clock pacing
+/// (`ensure_fresh_load_paced`'s inner wait loop) bounds that retrying to roughly
+/// `elapsed / retry_wait_ms` loads; the pre-fix busy-spin — the sim's `pump` returns instantly,
+/// so an unpaced inner loop burns through the same ~1 s wall-clock budget in hundreds of
+/// iterations — does not.
+#[test]
+fn fresh_load_barrier_paces_retries_near_the_commit_window_edge() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let sim = install_barrier_sim(600_000); // the pending save never commits
+    save_level_401(&sim, 0.9);
+    let baseline = loaded_count(&sim);
+    crate::leveller::register_slot_save_at(
+        401,
+        crate::leveller::SaveWitness::Param {
+            node: "no-such-node".into(),
+            param: "outputLevel".into(),
+            value: 0.9,
+            scene: None,
+        },
+        std::time::Instant::now()
+            - std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS - 1),
+    );
+    let start = std::time::Instant::now();
+    // Not the 50 ms-sleeping closure this used to pace itself with: that sleep was a test-side
+    // busy-spin damper from before `ensure_fresh_load_paced`'s own wait loop measured wall-clock
+    // time (Fix 6's `HidTransport::pump` doc). Production pacing now owns the retry cadence on
+    // its own, and dropping the sleep here makes the gate decisive — the pre-fix (unpaced) red
+    // form burns hundreds of loads in the same wall-clock budget, while the paced form still
+    // stays near the ~5 the assertion below expects.
+    let result = crate::leveller::ensure_fresh_load_paced(401, &mut || false, 200);
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "the time-gate must still fire near the window edge, took {:?}",
+        start.elapsed()
+    );
+    let loads = loads_since(&sim, baseline);
+    assert!(
+        loads <= 10,
+        "wall-clock-paced retries near the window edge must issue at most ~elapsed/cadence \
+         LoadPreset events (paced, ~200 ms cadence over ~1 s), not a busy-spin hundreds — got \
+         {loads}"
     );
 }
 

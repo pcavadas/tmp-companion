@@ -25,10 +25,11 @@ use serde::Serialize;
 
 use crate::audio;
 use crate::lufs;
+use crate::probe_api::scene_jobs::{overlay_param, SceneParamRead};
 use crate::session::Session;
 use crate::{
-    read_saved_preset, read_saved_preset_complete, scene_overlay, scene_write_verdict_for_param,
-    settle_abortable, settle_or_cancel, SceneOverlay, SceneWriteVerdict,
+    read_saved_preset, read_saved_preset_complete, scene_write_verdict_for_param, settle_abortable,
+    settle_or_cancel, SceneWriteVerdict,
 };
 
 // Post-load DSP settle before a capture. Was a conservative 1200; HW-bisected to 400
@@ -545,20 +546,27 @@ const STALE_RETRY_WAIT_MS: u64 = 10_000;
 const STALE_HEARTBEAT_MS: u64 = 250;
 
 /// One field a leveling save actually changed — the freshness barrier's comparison anchor.
-/// `Param` covers BOTH a footswitch Bake/Assign write and a scene deferred `outputLevel`
-/// write: the harvest reads whatever scene is currently materialized by the barrier's own
-/// (scene-blind) load, which for a scene witness may not be the scene that received the
-/// write — there is no scene discriminator here. That gap is accepted: an unmatched scene
-/// witness reads as "still stale" like any other miss, and the time-gate fallback below
-/// bounds the wait, so the worst case is a `COMMIT_WINDOW_SECS`-long wait, never a hang.
+/// `Param` covers a footswitch Bake/Assign write (`scene: None` — unaffected, same base
+/// `dspUnitParameters`/`ftsw` candidate logic as always) AND a scene deferred `outputLevel`
+/// write (`scene: Some(s)`, the 0-based `scenes[]` wire index the write landed in — closes
+/// the scene-discriminator gap this comment used to record as accepted). For a scene
+/// witness, `witness_value_in_doc` consults ONLY that scene's overlay
+/// (`probe_api::scene_jobs::scene_overlay`) and accepts on an exact match; every other
+/// answer — no overlay, a truncated/unknown read, or the param simply missing — reads as
+/// still-stale, with NO fallback to the base candidates (base can never legitimately hold a
+/// scene overlay's value, so a fallback match there would be a coincidence-accept of a
+/// possibly pre-save doc). An unmatched witness (the barrier's own bare load never
+/// re-activated that scene, say) still bounds out via the time-gate below, so the worst
+/// case stays a `COMMIT_WINDOW_SECS`-long wait, never a hang.
 #[derive(Debug, Clone)]
 pub(crate) enum SaveWitness {
     PresetLevel(f32),
     Param {
-        group: String,
         node: String,
         param: String,
         value: f32,
+        /// 0-based `scenes[]` wire index the write landed in; `None` = base/footswitch.
+        scene: Option<u32>,
     },
 }
 
@@ -654,19 +662,51 @@ fn ftsw_value_a(ftsw: &serde_json::Value, node: &str, param: &str) -> Option<f64
         .find_map(|sw| crate::footswitch::existing_param_fn_value_a(ftsw, sw, node, param))
 }
 
+/// The scene overlay's own value for `Param { scene: Some(s), node, param, .. }` — MATCH
+/// ONLY, no fallback (post-review amendment 2): a [`SceneParamRead::Value`] is the only accept
+/// path; `Absent`/`Unknown` (and a `Value` that isn't itself numeric) read `None`. The caller
+/// (`witness_value_in_doc`) must never fall through to the base `dspUnitParameters`/`ftsw`
+/// candidates for a scene witness on a `None` here — base can never legitimately hold a scene
+/// overlay's value, so a fallback match there would be a coincidence-accept of a possibly
+/// pre-save doc. Thin wrapper over [`overlay_param`], the shared read authority
+/// (`probe_api::scene_jobs`) also behind `persisted_value`'s scene arm.
+fn scene_overlay_witness_value(
+    doc: &serde_json::Value,
+    scene: u32,
+    node: &str,
+    param: &str,
+) -> Option<f64> {
+    match overlay_param(doc, scene, node, param) {
+        SceneParamRead::Value(v) => v.as_f64(),
+        SceneParamRead::Absent | SceneParamRead::Unknown => None,
+    }
+}
+
 /// Read the witness's field out of a harvested (or re-read) preset doc. `PresetLevel` reads
-/// `audioGraph.presetLevel`; `Param` checks BOTH places a leveling save can put the value —
-/// the block's own `dspUnitParameters` (the Bake / scene-`outputLevel` shape) and `ftsw`'s
-/// `valueA` (the Assign shape, where `dspUnitParameters` keeps holding the switch-OFF value)
-/// — preferring whichever one matches the witness, else the first present. The witness
-/// doesn't record which shape its save used, and for an Assign the `dspUnitParameters` value
-/// EXISTS but can never match, so a fixed try-order would starve that case into the
-/// time-gate.
+/// `audioGraph.presetLevel`. `Param { scene: Some(s), .. }` (Fix 3) consults ONLY that
+/// scene's overlay via [`scene_overlay_witness_value`] — no fallback, see that function's
+/// doc. `Param { scene: None, .. }` (a footswitch Bake/Assign write, unchanged) checks BOTH
+/// places a leveling save can put the value — the block's own `dspUnitParameters` (the Bake
+/// shape) and `ftsw`'s `valueA` (the Assign shape, where `dspUnitParameters` keeps holding
+/// the switch-OFF value) — preferring whichever one matches the witness, else the first
+/// present. The witness doesn't record which shape its save used, and for an Assign the
+/// `dspUnitParameters` value EXISTS but can never match, so a fixed try-order would starve
+/// that case into the time-gate.
 fn witness_value_in_doc(doc: &serde_json::Value, w: &SaveWitness) -> Option<f64> {
     match w {
         SaveWitness::PresetLevel(_) => crate::audiograph::preset_level(doc),
         SaveWitness::Param {
-            node, param, value, ..
+            scene: Some(s),
+            node,
+            param,
+            ..
+        } => scene_overlay_witness_value(doc, *s, node, param),
+        SaveWitness::Param {
+            scene: None,
+            node,
+            param,
+            value,
+            ..
         } => {
             let expected = *value as f64;
             let candidates = [
@@ -750,6 +790,16 @@ pub(crate) fn ensure_fresh_load_paced(
             .and_then(|doc| witness_value_in_doc(&doc, &witness));
         if let Some(got) = harvested {
             if (got - expected).abs() <= WITNESS_EPS {
+                // Observability hook for the online lane (post-review amendment 3): a scene
+                // witness accepting is the interesting case to see in real HW logs, since it
+                // proves the early exit actually fired instead of silently degrading to the
+                // (also-passing) time-gate below.
+                if let SaveWitness::Param { scene: Some(s), .. } = &witness {
+                    log::info!(
+                        "ensure_fresh_load: slot {slot} scene {s} witness matched on a \
+                         harvestable load — exiting early instead of blind-waiting"
+                    );
+                }
                 break Ok(());
             }
         }
@@ -765,14 +815,26 @@ pub(crate) fn ensure_fresh_load_paced(
             "ensure_fresh_load: slot {slot} stale load — device has not committed the previous \
              save; waiting"
         );
-        let mut waited_ms = 0u64;
-        while waited_ms < retry_wait_ms {
+        // Wall-clock-paced (post-review amendment 6: `cancelled()` checked BEFORE each
+        // slice's sleep, preserving the cancel test's timing contract) — measuring elapsed
+        // time rather than counting nominal pump slices, exactly because `HidTransport::pump`
+        // may return before `pump_ms` elapses (its trait doc). On real HW a slice already
+        // blocks ~its own duration, so this sleep is usually near-zero there; it only bites
+        // where a pump returns early, and only ever LENGTHENS the wait toward the intended
+        // `retry_wait_ms`, never shortens it.
+        let wait_start = std::time::Instant::now();
+        while wait_start.elapsed() < Duration::from_millis(retry_wait_ms) {
             if cancelled() {
                 break 'harvest Err(CANCELLED.to_string());
             }
+            let slice_start = std::time::Instant::now();
             let _ = s.heartbeat();
             let _ = s.pump_collect(STALE_HEARTBEAT_MS);
-            waited_ms += STALE_HEARTBEAT_MS;
+            let slice_target = Duration::from_millis(STALE_HEARTBEAT_MS);
+            let slice_elapsed = slice_start.elapsed();
+            if slice_elapsed < slice_target {
+                std::thread::sleep(slice_target - slice_elapsed);
+            }
         }
     };
     drop(s);
@@ -4360,10 +4422,10 @@ fn write_fs_values_on_session(
         register_slot_save(
             slot,
             SaveWitness::Param {
-                group: p.lev.0.clone(),
                 node: p.lev.1.clone(),
                 param: p.lev.2.clone(),
                 value: p.value,
+                scene: None, // footswitch batch — base/ftsw witness, never scene-scoped
             },
         );
     }
@@ -5558,14 +5620,20 @@ fn run_scene_jobs(
     // Fired on the stopped path too, so already-reported scenes are never lost.
     if save && attempted {
         // Witness: one written scene `outputLevel` this batch actually persisted — the
-        // freshness registry's anchor for a NEXT run's same-slot prepass load. `group` is
-        // left empty: `PersistedWrite` doesn't carry a group id and the comparator
-        // (`witness_value_in_doc`) never reads it (node+param alone locate the value).
+        // freshness registry's anchor for a NEXT run's same-slot prepass load. `SaveWitness::
+        // Param` carries no group id: node+param alone locate the value (the comparator,
+        // `witness_value_in_doc`, never needed one).
+        // `written.first()` — the LOWEST-index written scene — is deliberate, not arbitrary:
+        // it maximizes the odds a later harvest's `scenes` tail (often truncated, HW) still
+        // reaches this scene's overlay (post-review amendment 3). Base jobs also land in
+        // `written` at `scene_slot == session::BASE_SCENE_SLOT`, so the `<` guard below is
+        // required, not a `!=` (post-review amendment 5) — a base write is a `Param`
+        // witness too, but not a SCENE one.
         let scene_witness = written.first().map(|w| SaveWitness::Param {
-            group: String::new(),
             node: w.node_id.clone(),
             param: w.parameter_id.clone(),
             value: w.value,
+            scene: (w.scene_slot < crate::session::BASE_SCENE_SLOT).then_some(w.scene_slot),
         });
         if stopped {
             // The callee already warns internally on its own first failure; this
@@ -5725,15 +5793,13 @@ fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> PersistedRe
     // re-measure of the SAVED state read -22.99 LUFS against its -23 target, i.e. the write
     // had persisted perfectly. A false "did not persist" is worse than no check: it teaches
     // the user to distrust correct results, and the external judge SKIPS a good row.
-    match scene_overlay(saved, w.scene_slot, &w.node_id) {
-        SceneOverlay::Full(params) | SceneOverlay::BypassOnly(params) => {
-            match params.get(&w.parameter_id).and_then(|v| v.as_f64()) {
-                Some(v) => PersistedRead::Value(v),
-                None => PersistedRead::Absent,
-            }
-        }
-        SceneOverlay::Absent => PersistedRead::Absent,
-        SceneOverlay::Unknown => PersistedRead::Unverifiable,
+    match overlay_param(saved, w.scene_slot, &w.node_id, &w.parameter_id) {
+        SceneParamRead::Value(v) => match v.as_f64() {
+            Some(v) => PersistedRead::Value(v),
+            None => PersistedRead::Absent,
+        },
+        SceneParamRead::Absent => PersistedRead::Absent,
+        SceneParamRead::Unknown => PersistedRead::Unverifiable,
     }
 }
 
@@ -7772,10 +7838,10 @@ mod fresh_load_registry_tests {
             ] } }
         });
         let w = SaveWitness::Param {
-            group: "G1".into(),
             node: "amp".into(),
             param: "drive".into(),
             value: 0.42,
+            scene: None,
         };
         assert_eq!(witness_value_in_doc(&doc, &w), Some(0.42));
     }
@@ -7796,12 +7862,85 @@ mod fresh_load_registry_tests {
             ]]
         });
         let w = SaveWitness::Param {
-            group: "G1".into(),
             node: "amp".into(),
             param: "drive".into(),
             value: 0.77,
+            scene: None,
         };
         assert_eq!(witness_value_in_doc(&doc, &w), Some(0.77));
+    }
+
+    // ─── Scene-indexed witness (Fix 3) — overlay-match ONLY, no fallback candidates ───
+    //
+    // Every fixture below carries the node in the BASE `audioGraph` too (with a distinct
+    // `outputLevel`, deliberately equal to the SCENE witness's expected value in the
+    // negative cases) so a bug that falls through to the base/ftsw candidates — forbidden
+    // by post-review amendment 2 — would read as a false accept, not a false reject.
+
+    fn scene_witness_doc(overlay_key: &str, overlay: serde_json::Value) -> serde_json::Value {
+        let mut group = serde_json::Map::new();
+        group.insert(overlay_key.to_string(), overlay);
+        serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "n1", "FenderId": "ACD_Amp",
+                  "dspUnitParameters": { "outputLevel": 0.81 } }
+            ] } },
+            "scenes": [
+                { "guitarNodes": { "G1": serde_json::Value::Object(group) } }
+            ]
+        })
+    }
+
+    fn scene_witness(value: f32) -> SaveWitness {
+        SaveWitness::Param {
+            node: "n1".into(),
+            param: "outputLevel".into(),
+            value,
+            scene: Some(0),
+        }
+    }
+
+    #[test]
+    fn witness_value_in_doc_matches_a_fender_id_keyed_scene_overlay() {
+        let doc = scene_witness_doc(
+            "ACD_Amp", // FenderId-keyed — `scene_overlay_for`'s first lookup order
+            serde_json::json!({ "dspUnitParameters": { "outputLevel": 0.81 } }),
+        );
+        assert_eq!(witness_value_in_doc(&doc, &scene_witness(0.81)), Some(0.81));
+    }
+
+    #[test]
+    fn witness_value_in_doc_matches_a_node_id_keyed_scene_overlay() {
+        let doc = scene_witness_doc(
+            "n1", // nodeId-keyed fallback
+            serde_json::json!({ "dspUnitParameters": { "outputLevel": 0.81 } }),
+        );
+        assert_eq!(witness_value_in_doc(&doc, &scene_witness(0.81)), Some(0.81));
+    }
+
+    #[test]
+    fn witness_value_in_doc_never_falls_back_to_base_when_scenes_is_absent() {
+        // No `scenes` key at all — a truncated field-8 read (`scenes` sits at the doc
+        // tail). Base's own `outputLevel` (0.81) equals the witness's expected value, so
+        // a base-candidate fallback would wrongly accept; the scene arm must not take it.
+        let doc = serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "n1", "FenderId": "ACD_Amp",
+                  "dspUnitParameters": { "outputLevel": 0.81 } }
+            ] } }
+        });
+        assert_eq!(witness_value_in_doc(&doc, &scene_witness(0.81)), None);
+    }
+
+    #[test]
+    fn witness_value_in_doc_never_falls_back_to_base_when_the_overlay_misses_the_param() {
+        // A Full-shaped overlay (a non-bypass key present) that simply doesn't carry
+        // `outputLevel` — base again coincidentally holds the expected value.
+        let doc = scene_witness_doc(
+            "ACD_Amp",
+            serde_json::json!({ "dspUnitParameters": { "gain": 0.5 } }),
+        );
+        assert_eq!(witness_value_in_doc(&doc, &scene_witness(0.81)), None);
     }
 }
 

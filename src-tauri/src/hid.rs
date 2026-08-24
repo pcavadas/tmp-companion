@@ -129,7 +129,12 @@ pub trait HidTransport: Send {
     /// Send `body` as chunked output reports (`0x33/0x34*/0x35`) for bodies over
     /// `MAX_BODY`, then pump `pump_ms` and return the raw input reports.
     fn transact_chunked(&self, body: &[u8], pump_ms: u64) -> Result<Vec<Vec<u8>>, String>;
-    /// Pump without sending — collects reports that land after a prior send.
+    /// Pump without sending — collects reports that land after a prior send. An implementation
+    /// MAY return before `pump_ms` elapses (the sim returns instantly) — this is not a promise
+    /// of wall-clock duration, only of "however long this pump took, here's what arrived". A
+    /// caller that needs actual wall-clock pacing across a wait loop (spacing retries, not just
+    /// collecting) must measure elapsed time itself rather than counting nominal pump slices;
+    /// see `leveller::ensure_fresh_load_paced`'s wait loop for the pattern.
     fn pump(&self, pump_ms: u64) -> Result<Vec<Vec<u8>>, String>;
     /// Like [`Self::transact`], but returns EARLY once the response framing is complete
     /// and the line has gone quiet (`max_ms` stays the hard cap, so the worst case equals
