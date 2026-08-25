@@ -1,12 +1,13 @@
 //! Scene-leveling job planning: amp classification, knob classification, and job build (shared with the scene-leveling commands).
 
 use super::scene_bench::knob_bounds;
+use crate::footswitch::{self, max_referenced_scene};
 use crate::leveller;
 use crate::proto;
 use crate::scenes;
 use crate::session;
 use crate::session::Session;
-use crate::{AmpKnobSpec, LevelBlockArg};
+use crate::{param_class, AmpKnobSpec, LevelBlockArg};
 
 pub(crate) fn is_amp_category(category: &str) -> bool {
     matches!(
@@ -15,47 +16,92 @@ pub(crate) fn is_amp_category(category: &str) -> bool {
     )
 }
 
+/// Collect catalog block ids from `tmp-model-guide.json` whose `category` satisfies
+/// `is_match`. Shared by `amp_model_ids` (amp categories, cached behind its own
+/// `OnceLock`) and `fixture_gates::cab_model_ids` (`"Cabinets" | "IR"`), so amp-ness
+/// and cab-ness can never disagree about what the catalog says.
+pub(crate) fn model_ids_by_category(
+    is_match: impl Fn(&str) -> bool,
+) -> std::collections::HashSet<String> {
+    let Ok(catalog) = serde_json::from_str::<serde_json::Value>(include_str!(
+        "../../../src/models/tmp-model-guide.json"
+    )) else {
+        return std::collections::HashSet::new();
+    };
+    let Some(rows) = catalog.get("blocks").and_then(|v| v.as_array()) else {
+        return std::collections::HashSet::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let block_id = row.get("block_id").and_then(|v| v.as_str())?;
+            let category = row.get("category").and_then(|v| v.as_str())?;
+            is_match(category).then(|| block_id.to_string())
+        })
+        .collect()
+}
+
 pub(crate) fn amp_model_ids() -> &'static std::collections::HashSet<String> {
     static IDS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
-    IDS.get_or_init(|| {
-        let Ok(catalog) = serde_json::from_str::<serde_json::Value>(include_str!(
-            "../../../src/models/tmp-model-guide.json"
-        )) else {
-            return std::collections::HashSet::new();
-        };
-        let Some(rows) = catalog.get("blocks").and_then(|v| v.as_array()) else {
-            return std::collections::HashSet::new();
-        };
-        rows.iter()
-            .filter_map(|row| {
-                let block_id = row.get("block_id").and_then(|v| v.as_str())?;
-                let category = row.get("category").and_then(|v| v.as_str())?;
-                is_amp_category(category).then(|| block_id.to_string())
-            })
-            .collect()
-    })
+    IDS.get_or_init(|| model_ids_by_category(is_amp_category))
+}
+
+/// Collapse a device FenderId's cab/IR/convolution suffixes, testing `contains`
+/// after each strip, and return the first form that matches (or `None`). Device
+/// FenderIds carry suffixes a catalog's bare bid lacks (e.g.
+/// "ACD_HiwattDR103CanModCabIR", "ACD_PrincetonReverb68CabIRConvRvb") — strip them
+/// one at a time, CHECKING BEFORE each strip (so an id already catalogued WITH a
+/// suffix, like the `…CabIRConvRvb` reverb amps, matches directly and is never
+/// over-stripped), mirroring the frontend `baseDeviceId` / blockArt `SUFFIX`.
+/// ("NoFx" is part of real base ids, so it is never itself stripped.) The
+/// last-gap bridge appends "NoFx" once: a wet amp id (…CabIRConvRvb) strips to a
+/// bare id the catalog only carries WITH the NoFx token (…BlondeVibratoNoFx).
+///
+/// Shared by `is_amp_model_id` (catalog amp classification) and
+/// `param_class::classify` (block-scoped parameter overrides) so the one
+/// suffix-collapse rule can't drift between the two call sites.
+/// Device FenderId cab/IR/convolution suffixes, in strip-priority order — shared by
+/// `resolve_base_id` (repeated strip-and-check) and `bakes_in_a_cab` (a single suffix
+/// scan). "CabIRConvRvb" is deliberately absent: it already ends in "ConvRvb", so it is
+/// unreachable in an `any(ends_with)` scan.
+const CAB_SUFFIXES: [&str; 5] = ["ConvRvb", "CabIR", "NoCab", "Cab", "IR"];
+
+pub(crate) fn resolve_base_id(model_id: &str, contains: impl Fn(&str) -> bool) -> Option<String> {
+    let mut m = model_id;
+    loop {
+        if contains(m) {
+            return Some(m.to_string());
+        }
+        match CAB_SUFFIXES.iter().find_map(|s| m.strip_suffix(s)) {
+            Some(next) => m = next,
+            None => {
+                if m.ends_with("NoFx") {
+                    return None;
+                }
+                let with_nofx = format!("{m}NoFx");
+                return contains(&with_nofx).then_some(with_nofx);
+            }
+        }
+    }
+}
+
+/// Does this device FenderId carry its cabinet BAKED IN (a combo / amp+cab-merged
+/// model)? The device spells those with a cab/IR suffix on the bare amp id
+/// (`ACD_DeluxeReverb65BlondeVibratoNoFx` → `…NoFxCabIR`). `NoCab` is the explicit
+/// OPPOSITE and must never match, even though it ends in "Cab" — checked FIRST, before
+/// the shared suffix scan below. Used by `fixture_gates`' cab rule
+/// (`e2e::every_guitar_amp_in_every_fixture_reaches_a_cab`'s `is_cab_merged_amp`) — its
+/// only caller today, hence `#[cfg(test)]` (avoids a dead-code lint on a plain lib build).
+#[cfg(test)]
+pub(crate) fn bakes_in_a_cab(model_id: &str) -> bool {
+    if model_id.ends_with("NoCab") {
+        return false;
+    }
+    CAB_SUFFIXES.iter().any(|s| model_id.ends_with(s))
 }
 
 pub(crate) fn is_amp_model_id(model_id: &str) -> bool {
-    // Device FenderIds carry cab/IR/convolution suffixes the catalog's bare amp bids
-    // omit (e.g. "ACD_HiwattDR103CanModCabIR", "ACD_PrincetonReverb68CabIRConvRvb").
-    // Strip them one at a time, checking after each — mirrors the frontend
-    // `baseDeviceId` / blockArt `SUFFIX`. ("NoFx" is part of real base ids, not stripped.)
-    const SUFFIXES: [&str; 5] = ["ConvRvb", "CabIR", "NoCab", "Cab", "IR"];
     let amps = amp_model_ids();
-    let mut m = model_id;
-    loop {
-        if amps.contains(m) {
-            return true;
-        }
-        match SUFFIXES.iter().find_map(|s| m.strip_suffix(s)) {
-            Some(next) => m = next,
-            // Last-gap bridge: a wet amp id (…CabIRConvRvb) strips to a bare id the
-            // catalog only carries WITH the NoFx token (…BlondeVibratoNoFx). NoFx is
-            // never stripped, so try appending it once. Mirrors blockArt.ts.
-            None => return !m.ends_with("NoFx") && amps.contains(&format!("{m}NoFx")),
-        }
-    }
+    resolve_base_id(model_id, |m| amps.contains(m)).is_some()
 }
 
 pub(crate) fn is_amp_output_level_param(parameter_id: &str) -> bool {
@@ -329,27 +375,77 @@ pub(crate) fn build_scene_jobs(
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
 ) -> Result<Vec<leveller::SceneJob>, String> {
-    if !candidates
-        .iter()
-        .any(|c| is_amp_output_level_param(&c.parameter_id))
-    {
-        return Err("per-scene leveling needs an amp outputLevel control".to_string());
+    build_scene_jobs_with_handles(
+        scene_slots,
+        candidates,
+        docs,
+        target_lufs,
+        saved_fallback,
+        &[],
+    )
+}
+
+/// A row's USER-CHOSEN leveling control, as the wire job named it: the block param the solve
+/// should sweep INSTEAD of the active amp's `outputLevel`. Its class, bounds and per-scene
+/// current value are resolved by [`build_scene_jobs_with_handles`] off the SAVED preset + that
+/// scene's doc, so the caller ships coordinates only.
+pub(crate) struct SceneHandleSpec<'a> {
+    pub group_id: &'a str,
+    pub node_id: &'a str,
+    pub parameter_id: &'a str,
+}
+
+/// [`build_scene_jobs`] with the per-row handles threaded in — `handles` is sparse, keyed by
+/// wire scene slot, and a row it names is built from THAT control instead of the scene's amp.
+///
+/// Why the handle belongs HERE and not in a patch-up pass afterwards: the amp prerequisites
+/// (an `outputLevel` candidate, a readable routing template) are inputs the handle rows do not
+/// need — the user already named the knob. Failing them preset-wide errored rows that never
+/// touched the amp classifier. So the prerequisite is evaluated ONCE and consulted only by the
+/// rows that need it; a failure becomes THOSE rows' `skip`, and the handle rows level on.
+///
+/// The one exception keeps the amp-only contract intact: with NO handles at all (every probe
+/// seam, the redistribution runner, a batch where nobody named a control) a prerequisite
+/// failure is still the BATCH's `Err`, not N identical per-row skips.
+pub(crate) fn build_scene_jobs_with_handles(
+    scene_slots: &[u32],
+    candidates: &[LevelBlockArg],
+    docs: &[(u32, Option<serde_json::Value>)],
+    target_lufs: f64,
+    saved_fallback: Option<&serde_json::Value>,
+    handles: &[(u32, SceneHandleSpec)],
+) -> Result<Vec<leveller::SceneJob>, String> {
+    // The AMP-`outputLevel` classifier's preset-wide inputs, resolved once. `Err` = no row can
+    // take the amp path (its reason is what those rows report).
+    let amp_prereq: Result<session::ActiveGraph, String> = (|| {
+        if !candidates
+            .iter()
+            .any(|c| is_amp_output_level_param(&c.parameter_id))
+        {
+            return Err("per-scene leveling needs an amp outputLevel control".to_string());
+        }
+        let structure = structure_graph(docs)
+            .or_else(|| {
+                saved_fallback
+                    .map(|v| session::extract_active_graph(v, None))
+                    .filter(|g| session::is_known_routing_template(g.template.as_deref()))
+            })
+            .ok_or_else(|| {
+                "no complete routing read (template missing from every scene doc) — \
+                 can't classify scene routing safely"
+                    .to_string()
+            })?;
+        // Preset-wide un-levelable routing (unknown template / mic / split-output) stops the
+        // amp path for the whole preset. Per-SCENE issues below become skip jobs so one bad
+        // scene doesn't abort the batch.
+        check_levelable_routing(&structure)?;
+        Ok(structure)
+    })();
+    if handles.is_empty() {
+        if let Err(e) = &amp_prereq {
+            return Err(e.clone());
+        }
     }
-    let structure = structure_graph(docs)
-        .or_else(|| {
-            saved_fallback
-                .map(|v| session::extract_active_graph(v, None))
-                .filter(|g| session::is_known_routing_template(g.template.as_deref()))
-        })
-        .ok_or_else(|| {
-            "no complete routing read (template missing from every scene doc) — \
-         can't classify scene routing safely"
-                .to_string()
-        })?;
-    // Preset-wide un-levelable routing (unknown template / mic / split-output) is a hard
-    // error — the whole preset can't be scene-leveled. Per-SCENE issues below become skip
-    // jobs so one bad scene doesn't abort the batch.
-    check_levelable_routing(&structure)?;
     let jobs = scene_slots
         .iter()
         .map(|scene| {
@@ -363,7 +459,14 @@ pub(crate) fn build_scene_jobs(
             } else {
                 Some(*scene)
             };
-            match classify_scene_knobs(&structure, &doc, candidates) {
+            if let Some((_, h)) = handles.iter().find(|(s2, _)| s2 == scene) {
+                return handle_scene_job(*scene, scene_slot, target_lufs, h, &doc, saved_fallback);
+            }
+            let classified = match &amp_prereq {
+                Ok(structure) => classify_scene_knobs(structure, &doc, candidates),
+                Err(reason) => Err(reason.clone()),
+            };
+            match classified {
                 Ok((triples, kind)) => {
                     let knobs = triples
                         .into_iter()
@@ -391,24 +494,98 @@ pub(crate) fn build_scene_jobs(
                         knobs,
                         skip: None,
                         rebalanceable,
+                        handle: None,
+                        // Filled by `leveller::prepass_scene_ceilings` when the caller runs
+                        // the reordered (measure-everything-first) run.
+                        prepass: None,
                     }
                 }
-                Err(reason) => leveller::SceneJob {
-                    scene_slot: *scene,
-                    target_lufs,
-                    knobs: Vec::new(),
-                    skip: Some(reason),
-                    rebalanceable: false,
-                },
+                Err(reason) => skip_scene_job(*scene, target_lufs, reason),
             }
         })
         .collect();
     Ok(jobs)
 }
 
+/// A scene the batch reports as a failed outcome and moves past — never an abort.
+fn skip_scene_job(scene: u32, target_lufs: f64, reason: String) -> leveller::SceneJob {
+    leveller::SceneJob {
+        scene_slot: scene,
+        target_lufs,
+        knobs: Vec::new(),
+        skip: Some(reason),
+        rebalanceable: false,
+        handle: None,
+        // A skip job is never measured, so it never carries a prepass reading.
+        prepass: None,
+    }
+}
+
+/// One scene's job built on the USER'S OWN control. Classified off the SAVED preset (an
+/// unrecognised param refuses HERE, before any device work) with the value AUTHORED IN THIS
+/// SCENE as both the solve's starting point and the wet-floor anchor — the scene's own
+/// overlaid value when it has one (the prepass doc already carries the overlay merged onto
+/// base), never base's.
+///
+/// A per-row problem becomes that row's `skip`, exactly like the amp path's "no active guitar
+/// amp": one unclassifiable handle must not cost the other scenes their run.
+fn handle_scene_job(
+    scene: u32,
+    scene_slot: Option<u32>,
+    target_lufs: f64,
+    h: &SceneHandleSpec,
+    doc: &serde_json::Value,
+    saved: Option<&serde_json::Value>,
+) -> leveller::SceneJob {
+    let node_param = |v: &serde_json::Value| {
+        crate::commands::level_footswitch::node_param_f64(v, h.node_id, h.parameter_id)
+    };
+    let Some(preset) = saved else {
+        return skip_scene_job(
+            scene,
+            target_lufs,
+            format!(
+                "could not read the saved preset to classify {} on {} — leveling an \
+                 unclassified parameter could change the sound instead of its loudness",
+                h.parameter_id, h.node_id
+            ),
+        );
+    };
+    let current = node_param(doc)
+        .or_else(|| node_param(preset))
+        .unwrap_or(0.0) as f32;
+    let target =
+        match leveller::FsParamTarget::classified(preset, h.node_id, h.parameter_id, current) {
+            Ok(t) => t,
+            Err(refusal) => return skip_scene_job(scene, target_lufs, refusal),
+        };
+    let (lo, hi) = target.bounds();
+    leveller::SceneJob {
+        scene_slot: scene,
+        target_lufs,
+        knobs: vec![leveller::KnobTarget {
+            knob: leveller::LevelKnob::Block {
+                group_id: h.group_id.to_string(),
+                node_id: h.node_id.to_string(),
+                parameter_id: h.parameter_id.to_string(),
+                scene_slot,
+            },
+            lo,
+            hi,
+            current,
+        }],
+        skip: None,
+        // A user-chosen handle is one control, not a lane pair: joint-k's mix-preserving
+        // rebalance has nothing to act on.
+        rebalanceable: false,
+        handle: Some(target),
+        prepass: None,
+    }
+}
+
 /// The ONE field-8 saved-preset read a leveling run gets, THE source for everything the
-/// saved document answers: the raw per-node scene overlays ([`scene_overlay`],
-/// [`scene_overlays_change_param`]) and [`build_scene_jobs`]'s routing-structure fallback.
+/// saved document answers: the raw per-node scene overlays ([`scene_overlay`]) and
+/// [`build_scene_jobs`]'s routing-structure fallback.
 /// Read it once per preset and thread the document — never add a second read.
 ///
 /// GAP CONTRACT (the HID open-lockout is real: every failed exclusive open resets it, so
@@ -419,13 +596,34 @@ pub(crate) fn build_scene_jobs(
 /// opens next gets a properly-spaced session boundary. A failed read returns `None` and every
 /// consumer degrades to its pre-read behaviour.
 pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
-    let result = match crate::commands::level_footswitch::read_slot_preset_parsed(list_index) {
+    let result = match crate::read_slot_preset_parsed(list_index) {
         Ok((preset, _, _)) => Some(preset),
         Err(e) => {
             log::warn!("scene jobs slot {list_index}: field-8 saved-preset read failed ({e})");
             None
         }
     };
+    crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    result
+}
+
+/// [`read_saved_preset`]'s COMPLETE-OR-FAIL sibling, for the scene LEVELING planners.
+///
+/// The tolerant read above is right for consumers that degrade gracefully when a section
+/// is missing. A scene-leveling run is not one of them: a large preset's field-8 read is
+/// tail-truncated (per-slot deterministic — re-reading never lengthens it), and the tail
+/// that gets cut is `scenes`. The planner then simply does not see the last scene, so the
+/// run levels the scenes it can see and silently leaves the others untouched — the user
+/// reads that as "the Clean scene failed". HW-verified on the Friedman HBE (device slot
+/// 28): the field-8 read returns 3 of 4 scenes, the third cut mid-record with no
+/// `sceneName` and 9 of 15 nodes, and "Clean" is absent entirely.
+///
+/// So this routes through [`crate::read_slot_preset_complete`], which falls back to a
+/// name-guarded device backup — the only transport carrying the whole document — and
+/// refuses rather than returning a partial one. Same GAP CONTRACT as its sibling: no sleep
+/// before the read, one `RECONNECT_GAP_MS` after it.
+pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::Value, String> {
+    let result = crate::read_slot_preset_complete(list_index, &["scenes"]).map(|(p, _, _)| p);
     crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     result
 }
@@ -606,11 +804,56 @@ fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::V
 /// stored params, without one the write LEAKS TO BASE. Both mistakes corrupt the preset, so
 /// "can't tell" is its own state and never collapses into `Absent`.
 ///
-/// Consumed by `leveller::set_knobs`' Scene Edit enable decision and by the footswitch bake
-/// gate (`footswitch::plan_footswitch_jobs`, via [`scene_overlays_change_param`]).
+/// FOUR states, not three (HW-verified fw 1.8.45): an overlay carrying ONLY the bypass
+/// family is a node whose Scene Edit flag is DISABLED — its knobs are SHARED with base, and
+/// the enable-dropped write lands on BASE rather than on the overlay. That is
+/// [`SceneOverlay::BypassOnly`], and it must never collapse into `Full`.
+///
+/// A BYPASS-ONLY overlay's whole permitted key set — the block's per-scene STATE keys;
+/// NONE of these is a knob, so an overlay whose keys are a subset of these carries no
+/// per-scene knob values at all (HW-verified fw 1.8.45 — see [`SceneOverlay::BypassOnly`]).
+/// `bypass` is the on/off flag and `bypassType` its companion enum; `clipState`,
+/// `muteInput`, `muteOutput` are the other non-knob per-block state fields
+/// [`crate::footswitch::is_levelable_param`] also excludes — shared so the two exclusion
+/// lists (an overlay's "carries no knobs" test and a footswitch candidate's "is this a
+/// knob" test) can't drift apart: an overlay of `{bypass, clipState}` must classify
+/// `BypassOnly` exactly like a bare `{bypass}` one. An EMPTY param map is a subset too and
+/// classifies `BypassOnly` deliberately: nothing is overlaid, so the knobs are shared with
+/// base exactly as in the flag-disabled case, and the conservative (refusing) answer is the
+/// correct one. Widening this set only ever fails TOWARD `BypassOnly` (the refusing,
+/// conservative direction), never away from it.
+const BYPASS_ONLY_KEYS: [&str; 5] = [
+    "bypass",
+    "bypassType",
+    "clipState",
+    "muteInput",
+    "muteOutput",
+];
+
+/// Consumed by `leveller::set_knobs`' Scene Edit enable decision. (The footswitch bake gate
+/// in `footswitch::plan_footswitch_jobs` no longer reads scene overlays at all — the assign
+/// gate (2026-08-19) decides bake-vs-assign purely off whether the switch already carries a
+/// `param` fn for the selected control, so this type's other former consumer,
+/// `scene_overlays_change_param`, is gone.)
 pub(crate) enum SceneOverlay<'a> {
-    /// The scene carries params for this node — write WITHOUT the Scene Edit enable.
-    Present(&'a serde_json::Map<String, serde_json::Value>),
+    /// The scene carries KNOB params for this node (its Scene Edit flag is ENABLED) — write
+    /// WITHOUT the Scene Edit enable; the write lands on the overlay (HW). The Scene-Edit
+    /// FLAG STATE alone decides the landing, not per-param containment: an enable-less write
+    /// of a param this overlay does NOT yet carry still lands on the overlay, EXTENDING it
+    /// per-param (HW-verified fw 1.8.45, crafted Full-partial overlay: a TubeScreamer scene-0
+    /// overlay carrying `blend`/`overdrive`/`tone` but not `level`, base `level` 0.65 — an
+    /// enable-less `changeParameter(level, 0.22)` landed IN the overlay, every sibling param
+    /// survived unchanged with no reseed, base stayed 0.65, other scenes untouched).
+    Full(&'a serde_json::Map<String, serde_json::Value>),
+    /// The overlay exists but carries ONLY the bypass family ([`BYPASS_ONLY_KEYS`]) — the
+    /// block's Scene Edit flag is DISABLED, so this scene SHARES the node's knobs with the
+    /// base preset. HW-verified fw 1.8.45: a scene-context param write with the enable
+    /// dropped against such a node lands on BASE (measured: base gain 2.5 → 7.0, the
+    /// bypass-only overlay unchanged, other scenes' full overlays untouched). Neither write
+    /// shape is safe — enabling reseeds, omitting leaks to base — so a scene-scoped knob
+    /// write must REFUSE, exactly like [`SceneOverlay::Unknown`], but with a cause the user
+    /// can act on. Carries the params so the bypass-family gates can still read them.
+    BypassOnly(&'a serde_json::Map<String, serde_json::Value>),
     /// The scene exists and carries no entry for this node — the enable is what materialises
     /// the overlay, so it is REQUIRED here.
     Absent,
@@ -628,70 +871,378 @@ pub(crate) fn scene_overlay<'a>(
     scene: u32,
     node: &str,
 ) -> SceneOverlay<'a> {
-    if scene >= session::BASE_SCENE_SLOT {
-        return SceneOverlay::Unknown;
+    // String-keyed wrapper: resolve the roster triple, then defer to the resolved-roster
+    // variant. Callers that ALREADY hold `(group, node_id, fender_id)` — the per-scene
+    // pickers, which walk `audiograph::roster` once for the whole preset — call
+    // [`scene_overlay_for`] directly instead of paying a fresh whole-graph roster walk per
+    // (scene, node) pair.
+    let Some((group, node_id, fender_id)) = crate::audiograph::roster_entry(preset, node) else {
+        // No roster hit is only meaningful once the scene body itself is readable: a base
+        // slot or a truncated `scenes` tail must still answer `Unknown`, not `Absent`.
+        return scene_body(preset, scene).map_or(SceneOverlay::Unknown, |_| SceneOverlay::Absent);
+    };
+    scene_overlay_for(preset, scene, (&group, &node_id, &fender_id))
+}
+
+/// One PARAM's read out of a scene overlay — [`SceneOverlay`] narrowed to a single key, so the
+/// two scene-witness comparators (`leveller::scene_overlay_witness_value`'s Fix-3 match-only
+/// read, `leveller::persisted_value`'s scene arm) collapse the same four overlay states the same
+/// way instead of each hand-rolling the `Full`/`BypassOnly` param lookup.
+pub(crate) enum SceneParamRead<'a> {
+    /// The overlay carries `param`.
+    Value(&'a serde_json::Value),
+    /// The overlay exists (or the scene has none for this node) but not for `param` — a genuine
+    /// miss, from [`SceneOverlay::Full`]/[`SceneOverlay::BypassOnly`] without the key, or
+    /// [`SceneOverlay::Absent`].
+    Absent,
+    /// Presence unanswerable ([`SceneOverlay::Unknown`]) — a base slot or a truncated field-8
+    /// read.
+    Unknown,
+}
+
+/// [`scene_overlay`] narrowed to one `param`'s raw JSON value via [`SceneParamRead`]. Pure — no
+/// device I/O; same node-id-string signature as [`scene_overlay`] (a caller already holding the
+/// resolved roster triple should go through [`scene_overlay_for`] instead, as `scene_overlay`
+/// itself documents).
+pub(crate) fn overlay_param<'a>(
+    preset: &'a serde_json::Value,
+    scene: u32,
+    node: &str,
+    param: &str,
+) -> SceneParamRead<'a> {
+    match scene_overlay(preset, scene, node) {
+        SceneOverlay::Full(params) | SceneOverlay::BypassOnly(params) => params
+            .get(param)
+            .map_or(SceneParamRead::Absent, SceneParamRead::Value),
+        SceneOverlay::Absent => SceneParamRead::Absent,
+        SceneOverlay::Unknown => SceneParamRead::Unknown,
     }
-    let Some(body) = preset
+}
+
+/// The scene's raw body (`scenes[scene]`), or `None` for a base slot / a truncated read.
+fn scene_body(preset: &serde_json::Value, scene: u32) -> Option<&serde_json::Value> {
+    if scene >= session::BASE_SCENE_SLOT {
+        return None;
+    }
+    preset
         .get("scenes")
         .and_then(|s| s.as_array())
         .and_then(|a| a.get(scene as usize))
         .filter(|s| s.is_object())
-    else {
+}
+
+/// [`scene_overlay`] for a caller that already holds the node's resolved roster triple
+/// `(group, node_id, fender_id)` — same answer, without re-walking the whole base graph per
+/// lookup. The pickers resolve the roster ONCE per preset and then ask per (scene, node).
+pub(crate) fn scene_overlay_for<'a>(
+    preset: &'a serde_json::Value,
+    scene: u32,
+    (group, node_id, fender_id): (&str, &str, &str),
+) -> SceneOverlay<'a> {
+    let Some(body) = scene_body(preset, scene) else {
         return SceneOverlay::Unknown;
     };
     // The overlay is keyed by FenderId with a nodeId fallback (exactly like
-    // `overlay_scene_onto_graph`), so resolve both ids — and the node's group — from the
-    // base graph roster.
-    let Some((group, node_id, fender_id)) = crate::audiograph::roster(preset)
-        .into_iter()
-        .find(|(_, node_id, fender_id)| node_id == node || fender_id == node)
-    else {
-        return SceneOverlay::Absent;
-    };
+    // `overlay_scene_onto_graph`); the node's group picks the graph.
     // Group ids are disjoint across the two graphs (G1..G7 guitar / M1..M4 mic), so the
     // group key alone picks the right one.
     let entry = ["guitarNodes", "micNodes"].iter().find_map(|graph| {
-        let nodes = body.get(graph)?.get(&group)?;
-        nodes.get(&fender_id).or_else(|| nodes.get(&node_id))
+        let nodes = body.get(graph)?.get(group)?;
+        nodes.get(fender_id).or_else(|| nodes.get(node_id))
     });
     match entry {
         None => SceneOverlay::Absent,
         Some(e) => match e.get("dspUnitParameters").and_then(|p| p.as_object()) {
-            Some(params) => SceneOverlay::Present(params),
+            // Bypass-family-only ⇒ the node's Scene Edit flag is OFF and its knobs are
+            // shared with base (see [`BYPASS_ONLY_KEYS`]); anything beyond that set is a
+            // genuine per-scene knob overlay.
+            Some(params) => {
+                if params
+                    .keys()
+                    .all(|k| BYPASS_ONLY_KEYS.contains(&k.as_str()))
+                {
+                    SceneOverlay::BypassOnly(params)
+                } else {
+                    SceneOverlay::Full(params)
+                }
+            }
             // An overlay entry whose body isn't a param object is a cut read, not "no overlay".
             None => SceneOverlay::Unknown,
         },
     }
 }
 
-/// The highest `scenes[]` index the document REFERENCES elsewhere: `lastLoadedScene` plus
-/// every footswitch scene assignment (base — `session::BASE_SCENE_SLOT` — is not an index and
-/// is excluded). A `scenes` array shorter than this is a TRUNCATED read, not a preset with
-/// fewer scenes: the tolerant parse drops the cut entries and the array length alone can't
-/// tell the two apart. Both references sit BEFORE `scenes` in the document (HW field-8 order:
-/// `ftsw`, `lastLoadedScene`, `scenes`), so a tail cut that shortens `scenes` always leaves
-/// this evidence intact.
+/// The MUTABLE counterpart to [`scene_overlay_for`] — the write-side key resolver, so a scene
+/// overlay write can never key a node differently than [`scene_overlay_for`] would read it back.
+/// Locates `scenes[scene].{guitarNodes,micNodes}.<group>` (group ids are disjoint across the two
+/// graphs — same rationale as [`scene_overlay_for`]'s own read) and returns the node's overlay
+/// entry keyed by the SAME FenderId-first/nodeId-fallback rule: updates whichever key an
+/// existing entry already uses, and only when NEITHER key is present yet inserts a fresh
+/// nodeId-keyed `{"dspUnitParameters": {}}` entry. `None` for an unknown scene/group (nothing to
+/// write onto) — callers must skip silently, exactly like the read side's `Absent`/`Unknown`.
 ///
-/// ponytail: a scene bound to NO footswitch and not the last-loaded one is unreferenced, so a
-/// cut that takes only such scenes is undetectable. Upgrade path if that matters: thread
-/// `session::scene_names_from_slot_json`'s count (it recovers names from a cut document) out
-/// of `read_slot_preset_parsed`, which already computes and discards it.
-fn max_referenced_scene(preset: &serde_json::Value) -> Option<u32> {
-    let switch_scenes = preset
-        .get("ftsw")
-        .map(crate::footswitch::scene_fs_map)
-        .unwrap_or_default();
-    switch_scenes
-        .into_keys()
-        .chain(
-            preset
-                .get("lastLoadedScene")
-                .and_then(serde_json::Value::as_u64)
-                .map(|v| v as u32),
-        )
-        .filter(|s| *s < session::BASE_SCENE_SLOT)
-        .max()
+/// `#[cfg(feature = "e2e")]`: today's only writer of a scene overlay's raw JSON is the sim's own
+/// lazy-commit model (`sim_device::patch_scene_overlays`) — the real device is written over the
+/// wire (`Session::change_parameter` + `setNodeSceneEdit`), never by mutating a local JSON doc.
+#[cfg(feature = "e2e")]
+pub(crate) fn scene_overlay_entry_mut<'a>(
+    preset: &'a mut serde_json::Value,
+    scene: u32,
+    (group, node_id, fender_id): (&str, &str, &str),
+) -> Option<&'a mut serde_json::Value> {
+    let body = preset
+        .get_mut("scenes")
+        .and_then(|s| s.as_array_mut())
+        .and_then(|a| a.get_mut(scene as usize))?;
+    // A read-only pass picks WHICH graph carries `group` first, so the mutable resolution
+    // below borrows `body` exactly once — a loop that both `get_mut`s and early-`return`s
+    // per iteration trips the borrow checker (each iteration looks like it could still be
+    // holding the previous one's borrow for lifetime `'a`).
+    let graph = ["guitarNodes", "micNodes"].into_iter().find(|g| {
+        body.get(*g)
+            .and_then(|g| g.get(group))
+            .is_some_and(|v| v.is_object())
+    })?;
+    let nodes = body
+        .get_mut(graph)
+        .and_then(|g| g.get_mut(group))
+        .and_then(|g| g.as_object_mut())?;
+    let key = if nodes.contains_key(fender_id) {
+        fender_id
+    } else {
+        node_id
+    };
+    Some(
+        nodes
+            .entry(key.to_string())
+            .or_insert_with(|| serde_json::json!({ "dspUnitParameters": {} })),
+    )
 }
+
+/// Which refused [`SceneOverlay`] state produced a [`SceneWriteVerdict::Refuse`] — the
+/// machine-readable half of the refusal, alongside its user-facing `reason` string. A caller
+/// that needs to distinguish the two (the scene-handle picker's scope annotation) matches on
+/// this instead of sniffing the reason text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusedScope {
+    /// [`SceneOverlay::BypassOnly`], not cleared by the audibility guard — the scene SHARES
+    /// this node's knobs with base.
+    SharedWithBase,
+    /// [`SceneOverlay::Unknown`] — a truncated field-8 read / a base slot, presence
+    /// unanswerable.
+    Unknown,
+}
+
+/// Where a scene-context knob write on one node would LAND, and what the writer must send to
+/// put it there. The ONE write-landing policy — every lane that writes a knob under a scene
+/// (`leveller::set_knobs`, the Doctor's prescription apply) reads it here, so the four
+/// [`SceneOverlay`] states can never be answered two ways. The landing is carried IN the
+/// verdict (`lands_on_base`) rather than left for the caller to re-derive from overlay state.
+pub(crate) enum SceneWriteVerdict {
+    /// Safe to write with the Scene Edit enable DROPPED. `lands_on_base` says where:
+    /// * `false` — [`SceneOverlay::Full`], the node's Scene Edit flag is already ON. The flag
+    ///   state alone decides the landing, so the write lands on the overlay even for a param
+    ///   the overlay does not yet carry, and re-enabling would RESEED the overlay from base
+    ///   (HW 3-cell matrix, fw 1.8.45).
+    /// * `true` — a [`SceneOverlay::BypassOnly`] node whose [`shared_write_is_scene_local`]
+    ///   reads `true`: the write DELIBERATELY lands on the shared BASE value, not an overlay
+    ///   (there is none to land in), because the leak is confirmed audible ONLY in this scene.
+    WriteDirect { lands_on_base: bool },
+    /// No overlay for this node in this scene ([`SceneOverlay::Absent`]) — the enable is what
+    /// MATERIALISES one, so `set_node_scene_edit(node, true)` is REQUIRED before the write;
+    /// without it the write leaks to base. Nothing to reseed away here.
+    NeedsEnable,
+    /// Neither write shape is safe. `reason` is the user-facing text; `scope` is the
+    /// machine-readable state behind it: [`RefusedScope::SharedWithBase`]
+    /// ([`SceneOverlay::BypassOnly`], not audibility-cleared — the enable-dropped write would
+    /// land on BASE and change every sharing scene, the enable would reseed) or
+    /// [`RefusedScope::Unknown`] ([`SceneOverlay::Unknown`] — a truncated field-8 read / a
+    /// base slot, presence unanswerable).
+    Refuse { scope: RefusedScope, reason: String },
+}
+
+/// [`SceneWriteVerdict::Refuse`]'s [`SceneOverlay::BypassOnly`] wording — a shared function so
+/// every refusing arm of [`scene_write_verdict_for_param`] hands out identical text, whether the
+/// audibility guard never ran (no param in hand) or ran and read `false`.
+fn bypass_only_refuse_message(scene: u32, node: &str) -> String {
+    format!(
+        "scene {scene} shares {node}'s knobs with the base preset (Scene Edit off for that \
+         block) — a scene write would change every sharing scene; level Base instead"
+    )
+}
+
+/// [`SceneWriteVerdict::Refuse`]'s [`SceneOverlay::Unknown`] wording, shared for the same
+/// reason as [`bypass_only_refuse_message`].
+fn unknown_refuse_message(scene: u32, node: &str) -> String {
+    format!(
+        "refusing to write {node} in scene {scene} — the saved preset does not say whether \
+         that node already has a scene overlay (truncated field-8 read), and both write \
+         shapes corrupt it (enable reseeds an existing overlay from base; omitting it leaks \
+         the write to base)"
+    )
+}
+
+/// The write-landing verdict for `node`/`param` in `scene` of the SAVED (field-8) `preset` —
+/// pure, no device I/O, decided before any write so an unanswerable overlay state refuses with
+/// the preset untouched. The refusal strings are user-facing and live here, next to the states
+/// they describe, so the leveling and Doctor lanes tell the player the same story. The ONE
+/// write-landing policy for every scene-writing lane (`leveller::set_knobs`, the Doctor's
+/// prescription apply — both know the param they're about to write, so both call this form; an
+/// earlier paramless `scene_write_verdict` existed for a caller with no param in hand, but every
+/// real caller HAD one, so it was folded in here rather than kept as unreachable code).
+///
+/// [`SceneOverlay::Full`] and [`SceneOverlay::Absent`] answer exactly as the param-blind rule
+/// would (`WriteDirect` / `NeedsEnable` — the landing there never depends on which param is
+/// being written). The one param-SENSITIVE arm is [`SceneOverlay::BypassOnly`]: instead of an
+/// outright refuse, it consults [`shared_write_is_scene_local`] and, when the leak-to-base
+/// write would be audible ONLY in `scene`, allows it through as [`SceneWriteVerdict::WriteDirect`]
+/// with `lands_on_base: true` (still with NO scene-edit enable — the write is meant to land on
+/// the shared base param, never reseed the overlay).
+///
+/// REJECTED ALTERNATIVE (do not "simplify" into it): enable Scene Edit (reseeding the overlay
+/// from base), then rewrite `bypass` back to its scene value, then write the param — that would
+/// leave the node as a genuine `Full` overlay instead of a shared BASE write. It was rejected
+/// because a cancel landing between the bypass rewrite and the param write — plus the leveller's
+/// ALWAYS-RUN post-cancel deferred-save cleanup (`danger.md`) — could persist the scene with the
+/// node's `bypass` flipped OFF and the param unset: a genuine corruption window, HW-unverified
+/// because nobody has forced that race on real hardware. The BASE-write shape this function
+/// allows instead has no such window: it is one single write, on a param that was ALREADY
+/// shared with base before this call, so a cancel mid-write leaves the same shared state the
+/// scene started in, only with base's own value moved (audible nowhere but `scene`, by
+/// construction of the predicate).
+pub(crate) fn scene_write_verdict_for_param(
+    preset: &serde_json::Value,
+    scene: u32,
+    node: &str,
+    param: &str,
+) -> SceneWriteVerdict {
+    match scene_overlay(preset, scene, node) {
+        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect {
+            lands_on_base: false,
+        },
+        SceneOverlay::Absent => SceneWriteVerdict::NeedsEnable,
+        SceneOverlay::BypassOnly(_) => {
+            if shared_write_is_scene_local(preset, scene, node, param) {
+                SceneWriteVerdict::WriteDirect {
+                    lands_on_base: true,
+                }
+            } else {
+                SceneWriteVerdict::Refuse {
+                    scope: RefusedScope::SharedWithBase,
+                    reason: bypass_only_refuse_message(scene, node),
+                }
+            }
+        }
+        SceneOverlay::Unknown => SceneWriteVerdict::Refuse {
+            scope: RefusedScope::Unknown,
+            reason: unknown_refuse_message(scene, node),
+        },
+    }
+}
+
+/// True iff a plain (enable-dropped) leak-to-base write of `param` on `node` — the shape a
+/// [`SceneOverlay::BypassOnly`] node gets, since its Scene Edit flag is off and there is no
+/// overlay to land in — would be audible in `scene` and ONLY `scene`. HW-confirmed bug class
+/// (preset 28 "Friedman HBE", `ACD_Boost`/`gain`): the node is bypassed in base and in every
+/// OTHER scene, and only the Solo scene's bypass-only overlay flips it on, so a shared write is
+/// inaudible everywhere the knobs are shared and therefore safe to send exactly as scene_write_
+/// verdict would today refuse.
+///
+/// Effective bypass for one scene: `overlay.bypass ?? base.bypass`, applied UNIFORMLY across
+/// every [`SceneOverlay`] kind (a `Full` overlay that happens to omit `bypass` inherits base
+/// exactly like `Absent` and `BypassOnly` do) — an overlay can flip bypass without carrying
+/// every other knob, so the family key alone decides audibility, never the overlay KIND.
+///
+/// True requires ALL of:
+/// * `scene`'s effective bypass is `false` (the write would be audible here);
+/// * base's node carries a `bypass` key and it reads `true` (a MISSING key answers `false` —
+///   can't confirm the shared value is silent in base to begin with);
+/// * every OTHER scene either has effective bypass `true` (the leak is silent there too), or
+///   carries its OWN [`SceneOverlay::Full`] overlay that already contains `param` (a per-scene
+///   knob PINS that scene against whatever base holds, insulating it from the leak).
+///
+/// Refuses (`false`) outright, before any of the above, when: the `scenes` array is truncated
+/// (`footswitch::max_referenced_scene` names an index the array doesn't reach — the same guard
+/// [`scenes_restating_base`] uses, and for the same reason: "every other scene" is unanswerable
+/// with a cut tail); the base node identity is AMBIGUOUS ([`base_node_matches`] > 1 hit); or
+/// [`footswitch::node_targeted_by_assign`] says the node is targeted by ANY `ftsw` entry (an
+/// `"on-off"` row whose `nodes[]` contains it, or a `"param"`-function assign whose `nodeId` is
+/// it) or ANY EXP/MIDI-EXP jack binding (`exp1`/`exp2`/`midiExp1`/`midiExp2`/`toe`, any `func`)
+/// — those write the node over a DIFFERENT wire path this scan never models, so a node they
+/// touch can be audible in ways the overlay table alone can't rule out.
+fn shared_write_is_scene_local(
+    preset: &serde_json::Value,
+    scene: u32,
+    node: &str,
+    param: &str,
+) -> bool {
+    let Some(scenes) = preset.get("scenes").and_then(|s| s.as_array()) else {
+        return false;
+    };
+    if scene as usize >= scenes.len() {
+        return false;
+    }
+    if max_referenced_scene(preset).is_some_and(|m| m as usize >= scenes.len()) {
+        return false;
+    }
+    let mut base_hits = base_node_matches(preset, node);
+    if base_hits.len() != 1 {
+        return false;
+    }
+    let Some(base_bypass) = base_hits
+        .pop()
+        .flatten()
+        .and_then(|p| p.get("bypass").and_then(|v| v.as_bool()))
+    else {
+        return false;
+    };
+    if !base_bypass {
+        return false; // already audible in base — a shared write is never scene-local
+    }
+    if crate::footswitch::node_targeted_by_assign(preset, node) {
+        return false;
+    }
+
+    // Roster triple resolved ONCE — every per-scene overlay lookup below reuses it via
+    // `scene_overlay_for` instead of re-walking the whole base graph per scene (`scene_overlay`
+    // pays that walk on every call). A miss here can't happen for a real base node: `base_hits`
+    // above already confirmed exactly one match by nodeId OR FenderId, and every real base node
+    // carries both — but refuse rather than assume it if one ever doesn't.
+    let Some((group, node_id, fender_id)) = crate::audiograph::roster_entry(preset, node) else {
+        return false;
+    };
+    let triple = (group.as_str(), node_id.as_str(), fender_id.as_str());
+
+    // `overlay.bypass ?? base.bypass`, the same fallback for every overlay kind — see the
+    // doc comment above for why the KIND must not gate this lookup.
+    let effective_bypass = |s: u32| -> bool {
+        match scene_overlay_for(preset, s, triple) {
+            SceneOverlay::Full(p) | SceneOverlay::BypassOnly(p) => p
+                .get("bypass")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(base_bypass),
+            SceneOverlay::Absent => base_bypass,
+            // A cut read for one of the OTHER scenes can't be trusted to answer "bypassed" —
+            // fails both the bypass and the pin test below, so the whole predicate refuses.
+            SceneOverlay::Unknown => false,
+        }
+    };
+    if effective_bypass(scene) {
+        return false; // not audible in `scene` itself
+    }
+    (0..scenes.len() as u32).all(|s| {
+        s == scene || {
+            let pins = matches!(
+                scene_overlay_for(preset, s, triple),
+                SceneOverlay::Full(p) if p.contains_key(param)
+            );
+            effective_bypass(s) || pins
+        }
+    })
+}
+
+// `max_referenced_scene` lives in `crate::footswitch` (shared with the field-8
+// truncation-detection fallback in `commands::presets` — see its doc comment there).
 
 /// Tolerance for "this overlay merely restates the base value". Params are 0..1 knob floats
 /// that JSON round-trips exactly, so this only absorbs a last-bit difference.
@@ -727,56 +1278,6 @@ fn base_node_matches(
         }
     });
     hits
-}
-
-/// Does ANY scene overlay CHANGE `param` on `node` relative to base? The per-node footswitch
-/// bake gate (`footswitch::plan_footswitch_jobs`), asked for `bypass`: a scene that flips the
-/// block on renders a baked value in a state the leveler never measured → Assign. The LEVELED
-/// param takes the separate [`scenes_restating_base`] path instead — a restating overlay gets
-/// the solved value MIRRORED, a diverging one keeps its authored value.
-///
-/// VALUE semantics, not key presence: a DEVICE-AUTHORED preset carries the full param set for
-/// every node in every scene overlay, so "the key is there" is true of every node of every
-/// real scened preset and would collapse this back to the whole-preset gate it replaced
-/// (every switch → Assign → a second function on the switch → the unit displays "MULTI").
-///
-/// Conservative — anything unreadable answers `true`, because "unknown" must never authorise a
-/// bake: the `scenes` key absent, a truncated entry, an array cut SHORT of the scenes the
-/// document still references ([`max_referenced_scene`]), an AMBIGUOUS node identity, or a base
-/// value we can't resolve. A `false` derived from state we can't see is exactly what this gate
-/// exists to prevent.
-pub(crate) fn scene_overlays_change_param(
-    preset: &serde_json::Value,
-    node: &str,
-    param: &str,
-) -> bool {
-    let Some(scenes) = preset.get("scenes").and_then(|s| s.as_array()) else {
-        return true;
-    };
-    if max_referenced_scene(preset).is_some_and(|m| m as usize >= scenes.len()) {
-        return true;
-    }
-    // AMBIGUOUS identity is refused BEFORE any scene is read, not per overlay: [`scene_overlay`]
-    // resolves the node off the roster's FIRST match and keys the lookup by THAT instance's
-    // group, so with two instances an overlay living under the other one reads `Absent` — a
-    // bake authorised off a scene we never looked at, not merely a mismatched value.
-    let mut base = base_node_matches(preset, node);
-    if base.len() > 1 {
-        return true;
-    }
-    // No hit = the node isn't in the base graph at all, which `scene_overlay` reports as
-    // `Absent` for every scene (its own roster lookup misses too) — so this `None` is never
-    // consulted, and a node no scene mentions stays bakeable.
-    let base = base.pop().flatten();
-    (0..scenes.len() as u32).any(|scene| match scene_overlay(preset, scene, node) {
-        SceneOverlay::Present(params) => params.get(param).is_some_and(|overlay| {
-            base.as_ref()
-                .and_then(|b| b.get(param))
-                .is_none_or(|base| values_differ(base, overlay))
-        }),
-        SceneOverlay::Unknown => true,
-        SceneOverlay::Absent => false,
-    })
 }
 
 /// The saved document's `lastLoadedScene` (0-based scene index, or the base wire slot) —
@@ -820,8 +1321,10 @@ pub(crate) fn warn_missing_restore_scene(
 /// because the overlay held exactly the base value. A scene that authored its OWN value is
 /// NEVER mirrored (the divergence is intent — e.g. the Hiwatt's "Base Scene" mutes its trem
 /// with `level: 0.0`), and a scene whose overlay omits the param inherits base, so there is
-/// nothing to write. Guards mirror [`scene_overlays_change_param`]: anything unreadable ⇒
-/// empty (a mirror is an optimization, never worth a blind write).
+/// nothing to write. Guards are conservative the same way: `scenes` absent, a truncated
+/// entry, an array cut SHORT of the scenes the document still references
+/// ([`max_referenced_scene`]), or an AMBIGUOUS node identity all answer empty — a mirror is
+/// an optimization, never worth a blind write.
 pub(crate) fn scenes_restating_base(
     preset: &serde_json::Value,
     node: &str,
@@ -842,10 +1345,18 @@ pub(crate) fn scenes_restating_base(
     };
     (0..scenes.len() as u32)
         .filter(|&scene| match scene_overlay(preset, scene, node) {
-            SceneOverlay::Present(params) => params
+            SceneOverlay::Full(params) => params
                 .get(param)
                 .is_some_and(|overlay| !values_differ(&base_v, overlay)),
-            SceneOverlay::Absent | SceneOverlay::Unknown => false,
+            // CALL-SITE DECISION (three-state split): a BypassOnly overlay needs NO mirror
+            // write. Its Scene Edit flag is off, so the scene READS the base value for every
+            // knob — it already follows base for `param` and therefore inherits the bake
+            // automatically. That is the pleasant consequence of sharing, not a gap: writing
+            // a mirror there would be the leak-to-base write this split exists to prevent.
+            // (Structurally it also cannot match: `param` is never a bypass-family key —
+            // `footswitch::is_levelable_param` excludes those — so the map lookup would miss
+            // anyway. The arm is explicit so the REASON survives, not just the outcome.)
+            SceneOverlay::BypassOnly(_) | SceneOverlay::Absent | SceneOverlay::Unknown => false,
         })
         .collect()
 }
@@ -935,6 +1446,370 @@ pub(crate) fn prepass_scene_docs_via(
     prepass_scene_docs(slot, scene_slots)
 }
 
+// ───────────────────── Scene handle picker (enumeration) ─────────────────────
+// Moved here from `commands::level_scenes` (the IPC command layer): `scene_handle_rows`'s
+// whole dependency mass — `scene_overlay`, `scene_write_verdict_for_param`, `SceneOverlay` —
+// already lives in this module, and `backup_read::read_backup_archive` calls
+// `base_handle_candidates_scanned`/`scene_handle_rows` straight off the backup scan with no command
+// or device involved, so it has no business reaching into the command layer for an
+// algorithm. `list_scene_level_handles` (the `#[tauri::command]` wrapper) stays in
+// `commands::level_scenes`; both it and `backup_read` keep addressing everything below
+// unqualified via the crate-root re-export (`crate::scene_handle_rows`, `crate::SceneHandleRow`, …).
+
+/// One control a scene row could be leveled on, with the two annotations the picker cannot
+/// derive on its own. `class`/`range` come from [`crate::param_class`]; `current` is the
+/// value AUTHORED IN THAT SCENE (overlay if present, else base).
+///
+/// Block DISPLAY info is `groupId`/`nodeId`/`fenderId` only — the frontend owns the
+/// friendly name (it has the models catalog; the backend deliberately does not, the same
+/// split as the amp candidates the Level view already sends down).
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+// `pub`, not `pub(crate)`: `backup_read::BackupPresetRow.base_handles` (a `pub` field, like
+// its `amp_candidates`/`blocks` siblings) embeds this type, and a less-visible type inside a
+// more-visible field is a hard warning (`private_interfaces`) — same reason `LevelBlockArg`
+// is `pub` rather than `pub(crate)`. The command layer that actually SENDS this over IPC
+// still only reaches it via `pub(crate)` command fns, so nothing outside the crate can name
+// this type through them; only the backup-scan re-export needed the bump.
+pub struct SceneHandleCandidate {
+    pub(crate) group_id: String,
+    pub(crate) node_id: String,
+    pub(crate) fender_id: String,
+    pub(crate) parameter_id: String,
+    /// `"level_linear" | "level_db" | "wet_mix"` — the classifier's verdict, serialized
+    /// straight off [`param_class::ParamClass`] (no hand-rolled mapping to drift from the
+    /// table). On the `candidates` list `"other"` never appears — `level_candidates_for_node`
+    /// admits only params the classifier recognises. On `allCandidates` it CAN: that list is
+    /// every numeric control of the block, annotated so the picker can sort and warn.
+    pub(crate) class: param_class::ParamClass,
+    /// The param's usable `[lo, hi]` — NOT `[0,1]` for every control (`ACD_Boost.gain` is
+    /// raw dB over `[0, 12]`). For a `wet_mix` the LOW bound is already raised to the wet
+    /// floor, so the picker shows the range the solve may actually write.
+    pub(crate) range: [f32; 2],
+    pub(crate) current: f32,
+    /// Does writing this control in THIS scene affect ONLY this scene?
+    /// * `"isolated"` — the scene carries a knob overlay for the node (or none at all, in
+    ///   which case the Scene Edit enable materialises one). The write stays here. ALSO
+    ///   `"isolated"` for a bypass-only node whose leak-to-base write
+    ///   `shared_write_is_scene_local` confirms is audible ONLY in this scene (every other
+    ///   sharing scene stays bypassed, or pins this param with its own overlay) — the write
+    ///   still lands on the shared base value, but nothing ELSE it's shared with can hear it.
+    /// * `"shared_with_base"` — the node's Scene Edit flag is OFF (a bypass-only overlay)
+    ///   and the leak above is NOT confirmed scene-local, so this scene reads the BASE knob
+    ///   and a write would audibly change another sharing scene too. `set_knobs` REFUSES
+    ///   such a write, so the picker must warn rather than offer it silently.
+    /// * `"unknown"` — the saved read could not answer (a truncated `scenes` tail). Both
+    ///   write shapes corrupt from there, so the write is refused too.
+    pub(crate) scope: String,
+    /// `"full"` = the control has room in both directions. `"lowers_only"` = its authored
+    /// value already sits at (or within a whisker of) the top of its range, so this handle
+    /// can only make the scene QUIETER — the picker should say so before the user finds out
+    /// from a clamped row.
+    pub(crate) headroom: String,
+}
+
+/// The handle candidates for ONE scene.
+#[derive(serde::Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+// `pub`: see `SceneHandleCandidate`'s doc — `backup_read::BackupPresetRow.scene_handles`
+// embeds this type in a `pub` field.
+pub struct SceneHandleRow {
+    /// 0-based `scenes[]` wire index. FS scenes only — base handles are the preset lane's
+    /// own picker (`list_level_blocks`), and the overlay annotations below are meaningless
+    /// for base (it has no overlay concept).
+    pub(crate) scene_slot: u32,
+    pub(crate) candidates: Vec<SceneHandleCandidate>,
+    /// EVERY numeric control of every block in this scene, class-annotated and level-class
+    /// first — the combined picker's source. A SUPERSET of `candidates`, which stays the
+    /// safe-default list every pre-selection reads. Additive on the wire, so an existing
+    /// consumer is unaffected.
+    pub(crate) all_candidates: Vec<SceneHandleCandidate>,
+}
+
+/// Within this fraction of the range's top, a control counts as having no room to go up.
+/// A knob authored at 0.995 of `[0,1]` has ~0.04 dB of boost left — reporting that as "full"
+/// headroom would be a lie the user only discovers from a clamped row.
+const HANDLE_TOP_EPS_FRACTION: f32 = 0.01;
+
+/// Finish one raw [`footswitch::LevelParamCandidate`] into a wire [`SceneHandleCandidate`]:
+/// class + range + headroom off [`leveller::FsParamTarget`], `scope` passed in verbatim (the
+/// two callers — [`scene_handle_rows`] and [`base_handle_candidates_scanned`] — derive it differently,
+/// but the class/range/headroom math is identical, so it lives here once).
+fn finish_handle_candidate(
+    c: footswitch::LevelParamCandidate,
+    fender_id: &str,
+    scope: &str,
+) -> SceneHandleCandidate {
+    let current = c.current as f32;
+    let target = leveller::FsParamTarget::new(fender_id, &c.parameter_id, current);
+    let (lo, hi) = target.bounds();
+    let headroom = if current >= hi - (hi - lo).abs() * HANDLE_TOP_EPS_FRACTION {
+        "lowers_only"
+    } else {
+        "full"
+    };
+    SceneHandleCandidate {
+        group_id: c.group_id,
+        node_id: c.node_id,
+        fender_id: c.fender_id,
+        parameter_id: c.parameter_id,
+        class: target.info.class,
+        range: [lo, hi],
+        current,
+        scope: scope.to_string(),
+        headroom: headroom.to_string(),
+    }
+}
+
+/// One preset's node param map plus its two rosters — the graph walk [`base_handle_candidates_scanned`]
+/// and [`scene_handle_rows`] used to each pay for INDEPENDENTLY (a full `audiograph::for_each_node`
+/// pass for the param map, a full `audiograph::roster` pass for the block list) on the SAME
+/// preset, back-to-back, in `backup_read::read_backup_archive`'s per-preset loop. Run this
+/// ONCE per preset via [`scan_node_graph`] and thread the result BY REFERENCE into
+/// [`base_handle_candidates_scanned`]/[`scene_handle_rows_scanned`] instead. [`scene_handle_rows`]
+/// (unlike Base, which has no such command) stays as a plain (preset-only) convenience wrapper
+/// for `list_scene_level_handles` and this module's own tests, where a second walk costs
+/// nothing; it calls [`scan_node_graph`] internally and delegates to [`scene_handle_rows_scanned`].
+pub(crate) struct NodeGraphScan {
+    /// nodeId → `dspUnitParameters`, over BOTH graphs. A node missing a literal `nodeId`
+    /// field contributes no entry — matching `audiograph::for_each_node`'s callers before
+    /// this extraction, which never fell back to `FenderId` for the map key (only the
+    /// roster below does).
+    pub(crate) params:
+        std::collections::HashMap<String, serde_json::Map<String, serde_json::Value>>,
+    /// `(group, nodeId, fenderId)` for `/audioGraph/guitarNodes` ONLY — [`base_handle_candidates_scanned`]'s
+    /// source. Only the guitar chain reaches the USB-Out the leveler measures — the same
+    /// restriction `session::extract_level_candidates` applies for Base's device-fallback
+    /// picker (`list_level_blocks`) — so a mic-node candidate must never surface in the Base
+    /// picker the way it could when this walked `audiograph::roster`'s both-graphs list.
+    pub(crate) guitar_roster: Vec<(String, String, String)>,
+    /// Both graphs, guitar entries first then mic — the same order `audiograph::roster`
+    /// returns. [`scene_handle_rows_scanned`]'s source, UNCHANGED from before this
+    /// extraction: a scene's picker still offers either graph's blocks.
+    pub(crate) full_roster: Vec<(String, String, String)>,
+}
+
+/// Build a [`NodeGraphScan`] in ONE pass over `preset`'s `audioGraph` — guitar nodes first
+/// (populating `guitar_roster` and the shared start of `full_roster`), then mic nodes
+/// (extending only `full_roster`), both in the same sorted-group order
+/// `audiograph::for_each_node`/`audiograph::roster` use.
+pub(crate) fn scan_node_graph(preset: &serde_json::Value) -> NodeGraphScan {
+    let mut params: std::collections::HashMap<String, serde_json::Map<String, serde_json::Value>> =
+        std::collections::HashMap::new();
+    let mut guitar_roster = Vec::new();
+    let mut full_roster = Vec::new();
+    let Some(ag) = preset.get("audioGraph").and_then(|a| a.as_object()) else {
+        return NodeGraphScan {
+            params,
+            guitar_roster,
+            full_roster,
+        };
+    };
+    for graph in ["guitarNodes", "micNodes"] {
+        let Some(groups) = ag.get(graph).and_then(|g| g.as_object()) else {
+            continue;
+        };
+        let mut keys: Vec<&String> = groups.keys().collect();
+        keys.sort();
+        for k in keys {
+            for node in groups[k].as_array().into_iter().flatten() {
+                let Some(obj) = node.as_object() else {
+                    continue;
+                };
+                if let Some(nid) = obj.get("nodeId").and_then(|v| v.as_str()) {
+                    params.insert(
+                        nid.to_string(),
+                        obj.get("dspUnitParameters")
+                            .and_then(|p| p.as_object())
+                            .cloned()
+                            .unwrap_or_default(),
+                    );
+                }
+                let fid = obj.get("FenderId").and_then(|v| v.as_str());
+                let nid = obj.get("nodeId").and_then(|v| v.as_str()).or(fid);
+                if let (Some(nid), Some(fid)) = (nid, fid) {
+                    let row = (k.clone(), nid.to_string(), fid.to_string());
+                    if graph == "guitarNodes" {
+                        guitar_roster.push(row.clone());
+                    }
+                    full_roster.push(row);
+                }
+            }
+        }
+    }
+    NodeGraphScan {
+        params,
+        guitar_roster,
+        full_roster,
+    }
+}
+
+/// Base-row handle candidates for the picker: the SAME safe candidate source Base's
+/// device-fallback picker offers (`footswitch::level_candidates_for_node`, the gate behind
+/// `session::extract_level_candidates`/`list_level_blocks`), annotated like a scene candidate
+/// (class/range/current/headroom) but with NO overlay/scope concept — a base write can never
+/// leak into another sound's overlay the way a scene's shared bypass-only write can, so every
+/// candidate is unconditionally `scope: "isolated"`. PURE: no device I/O — takes an
+/// already-built [`NodeGraphScan`] (see [`scan_node_graph`]) rather than a preset document, so
+/// `backup_read::read_backup_archive`'s per-preset loop pays the graph walk once, shared with
+/// [`scene_handle_rows_scanned`], instead of re-walking here. GUITAR-ONLY, same rationale as
+/// `session::extract_level_candidates`: only the guitar chain reaches the USB-Out the leveler
+/// measures, so a mic-node candidate must never surface here — enforced by consuming
+/// `scan.guitar_roster`, never `scan.full_roster`.
+///
+/// Deliberately NOT the numeric superset (`footswitch::all_numeric_candidates_for_node`) yet —
+/// Base's combined picker doesn't consume it today (unlike Scene's `allCandidates`), and the
+/// per-param annotation below is real CPU (see [`scene_handle_rows`]'s doc on scan cost); add
+/// it if/when a Base "all candidates" consumer exists.
+///
+/// No single-preset (preset-in, walk-internally) convenience wrapper exists here, unlike
+/// [`scene_handle_rows`]/[`scene_handle_rows_scanned`] — there is no live command that levels
+/// ONE Base picker read the way `list_scene_level_handles` does for scenes, so a wrapper would
+/// be dead code outside tests. Tests call `base_handle_candidates_scanned(&scan_node_graph(&preset))`.
+pub(crate) fn base_handle_candidates_scanned(scan: &NodeGraphScan) -> Vec<SceneHandleCandidate> {
+    let mut out = Vec::new();
+    for (group_id, node_id, fender_id) in &scan.guitar_roster {
+        let Some(base_params) = scan.params.get(node_id) else {
+            continue;
+        };
+        out.extend(
+            footswitch::level_candidates_for_node(group_id, node_id, fender_id, base_params)
+                .into_iter()
+                .map(|c| finish_handle_candidate(c, fender_id, "isolated")),
+        );
+    }
+    out
+}
+
+/// [`list_scene_level_handles`]'s pure core — the whole annotation rule, unit-testable
+/// against a preset document with no device in the loop.
+///
+/// SCAN-COST NOTE: the `BypassOnly` arm below calls [`scene_write_verdict_for_param`] PER
+/// (scene, node, param) — its own `shared_write_is_scene_local` re-walks the whole preset
+/// (`base_node_matches`, `max_referenced_scene`, a fresh `roster()`) EVERY call, so it is not
+/// O(1). The other three overlay states are answered directly off the `overlay` this function
+/// already resolved once per (scene, node) — see `overlay_kind_scope` below — so the expensive
+/// path is paid only for genuinely BypassOnly nodes, never for `Full`/`Absent`/`Unknown`. On a
+/// preset whose scenes mostly toggle bypass rather than reprogram knobs (the common "scenes as
+/// pedal combos" usage) this can still dominate a large preset's derivation time; the caller
+/// (`backup_read::read_backup_archive`) logs the total derivation time across the whole scan so
+/// a regression here is visible rather than silently eating into startup latency.
+pub(crate) fn scene_handle_rows(preset: &serde_json::Value) -> Vec<SceneHandleRow> {
+    scene_handle_rows_scanned(preset, &scan_node_graph(preset))
+}
+
+/// [`scene_handle_rows`]'s core, off an already-built [`NodeGraphScan`] — the shape
+/// `backup_read::read_backup_archive`'s per-preset loop uses so the walk is paid once, shared
+/// with [`base_handle_candidates_scanned`]. `preset` is still needed here (unlike the base
+/// variant): the per-scene overlay/write-verdict resolution below reads it directly.
+pub(crate) fn scene_handle_rows_scanned(
+    preset: &serde_json::Value,
+    scan: &NodeGraphScan,
+) -> Vec<SceneHandleRow> {
+    let scene_count = preset
+        .get("scenes")
+        .and_then(|s| s.as_array())
+        .map_or(0, |a| a.len()) as u32;
+    (0..scene_count)
+        .map(|scene| {
+            let mut candidates = Vec::new();
+            let mut all_candidates = Vec::new();
+            for (group_id, node_id, fender_id) in &scan.full_roster {
+                let Some(base_params) = scan.params.get(node_id) else {
+                    continue;
+                };
+                // The overlay decides which values are the scene's own — one lookup per node,
+                // reused for every candidate on it. (The scope annotation is a SEPARATE,
+                // per-candidate lookup below, via `scene_write_verdict_for_param`.)
+                // `scene_overlay_for`, not `scene_overlay`: the roster triple is already in
+                // hand, so the string-keyed wrapper's whole-graph `roster_entry` walk would
+                // be re-paid once per (scene, node) pair for an answer we resolved once.
+                let overlay = scene_overlay_for(preset, scene, (group_id, node_id, fender_id));
+                // Only the Full overlay's own params ever override a candidate's `current` —
+                // the scope annotation below is now derived per-candidate from the write-
+                // landing verdict itself, not re-derived here.
+                let overlay_params = match overlay {
+                    SceneOverlay::Full(p) => Some(p),
+                    _ => None,
+                };
+                // The three overlay states OTHER than `BypassOnly` answer `scope` exactly as
+                // `scene_write_verdict_for_param` would (its own doc: "`Full`/`Absent` answer
+                // exactly as the param-blind rule would"; `Unknown` overlay ⇒ `Unknown` refusal
+                // unconditionally) — but the verdict fn re-resolves the overlay from scratch
+                // (a fresh whole-graph `roster()` walk) on every call, and only the `BypassOnly`
+                // arm is genuinely PARAM-sensitive (`shared_write_is_scene_local`'s per-scene
+                // pin check). Deciding it here, off the `overlay` already resolved once per
+                // (scene, node), skips that expensive re-derivation for every param on every
+                // non-`BypassOnly` node — see `scene_handle_rows`'s SCAN-COST doc.
+                let overlay_kind_scope: Option<&'static str> = match overlay {
+                    SceneOverlay::Full(_) | SceneOverlay::Absent => Some("isolated"),
+                    SceneOverlay::Unknown => Some("unknown"),
+                    SceneOverlay::BypassOnly(_) => None,
+                };
+                // ONE annotation rule, applied to both lists — the safe-default candidates
+                // and the combined picker's superset must describe the same control the same
+                // way, which they cannot do if each list annotates separately.
+                let annotate = |mut c: footswitch::LevelParamCandidate| {
+                    if let Some(v) = overlay_params
+                        .and_then(|p| p.get(&c.parameter_id))
+                        .and_then(|v| v.as_f64())
+                    {
+                        c.current = v;
+                    }
+                    // ONE write-landing policy, consulted PER PARAM only when the overlay kind
+                    // itself doesn't already answer it: another param on the same BypassOnly
+                    // node may leak audibly elsewhere even when this one doesn't, so THAT case
+                    // can't be a per-node default — the verdict answers per (node, param).
+                    let scope = overlay_kind_scope.unwrap_or_else(|| {
+                        match scene_write_verdict_for_param(preset, scene, node_id, &c.parameter_id)
+                        {
+                            SceneWriteVerdict::WriteDirect { .. }
+                            | SceneWriteVerdict::NeedsEnable => "isolated",
+                            SceneWriteVerdict::Refuse {
+                                scope: RefusedScope::SharedWithBase,
+                                ..
+                            } => "shared_with_base",
+                            SceneWriteVerdict::Refuse {
+                                scope: RefusedScope::Unknown,
+                                ..
+                            } => "unknown",
+                        }
+                    });
+                    finish_handle_candidate(c, fender_id, scope)
+                };
+                candidates.extend(
+                    footswitch::level_candidates_for_node(
+                        group_id,
+                        node_id,
+                        fender_id,
+                        base_params,
+                    )
+                    .into_iter()
+                    .map(annotate),
+                );
+                all_candidates.extend(
+                    footswitch::all_numeric_candidates_for_node(
+                        group_id,
+                        node_id,
+                        fender_id,
+                        base_params,
+                    )
+                    .into_iter()
+                    .map(annotate),
+                );
+            }
+            SceneHandleRow {
+                scene_slot: scene,
+                candidates,
+                all_candidates,
+            }
+        })
+        .collect()
+}
+
+// `pub(crate)` so sibling test modules can reuse this module's fixture builders
+// (`commands::doctor_tests` shares `with_scene0_overlay` — the shape `scene_overlay`
+// itself is pinned against) instead of re-typing the preset JSON.
 #[cfg(test)]
 #[path = "scene_jobs_tests.rs"]
-mod scene_jobs_tests;
+pub(crate) mod scene_jobs_tests;

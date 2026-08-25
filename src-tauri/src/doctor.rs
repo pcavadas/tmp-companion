@@ -2839,6 +2839,113 @@ pub fn diagnose_levels(
     out
 }
 
+// ─── leveling-damage advisories (backup-scan only, zero device captures) ──────
+
+/// Signature match for a footswitch `param` assignment shaped like the OLD
+/// (pre-`param_class`) leveler's damage — a value baked into a wire assignment
+/// the CURRENT classifier would never let the leveler write today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LevelingDamageKind {
+    /// `valueA` (the engaged value) sits near 0 on a WET-MIX param whose base
+    /// (`valueB`) is materially higher — the field case: a chorus `mix`
+    /// assign-leveled to 0.0, silencing the effect whenever the switch engages.
+    DeletedEffect,
+    /// The assignment sweeps an OTHER-class param — never a loudness control
+    /// ([`crate::param_class::ParamClass::Other`]) — so the CURRENT leveler's
+    /// `is_levelable_param` gate could never have produced it. The field case: a
+    /// phaser "leveled" via `ratehz`. NOT proof of leveler damage on its own — a
+    /// footswitch can legitimately sweep any param via Pro Control — hence the
+    /// factual (not accusatory) `detail` wording.
+    SweptOther,
+}
+
+/// One footswitch `param` assignment matching a leveling-damage signature —
+/// backup-scan sourced (`DoctorInput.footswitches`), zero device captures.
+/// Advisory only: the correct value is unknown, so Doctor names the observed
+/// fact rather than prescribing a fix (no `Rx`/`DoctorOp`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelingDamageHint {
+    pub switch: u32,
+    pub label: String,
+    pub node_id: String,
+    pub fender_id: String,
+    pub parameter_id: String,
+    pub kind: LevelingDamageKind,
+    /// Factual one-liner naming engaged vs base values (e.g. "mix: engaged
+    /// 0.00, base 0.42") — never "the old leveler damaged this".
+    pub detail: String,
+}
+
+/// The wet-mix base (`valueB`) must clear this to call the drop material — a
+/// base already near zero has nothing to delete. The materiality floor;
+/// how far `valueA` must fall below `valueB` is [`leveller::WET_FLOOR_FRACTION`]
+/// (below), not a number invented here.
+const DELETED_EFFECT_BASE_MIN: f64 = 0.15;
+/// Minimum relative move (of the base) to count as a genuine sweep for
+/// [`LevelingDamageKind::SweptOther`] — the param's unit is unknown by
+/// definition (Other-class ranges are meaningless per `param_class`'s doc), so
+/// a relative gate replaces an absolute one; the additive floor covers a
+/// nearly-zero base.
+const SWEPT_OTHER_REL: f64 = 0.05;
+const SWEPT_OTHER_ABS_FLOOR: f64 = 1e-3;
+
+/// Scan a preset's block-acting footswitches for `param` assignments matching
+/// either damage signature — pure, no device I/O (see module doc). Only
+/// `func: "param"` assignments with both `valueA`/`valueB` present are
+/// candidates (an `on-off` function carries neither). The classifier keys on
+/// the ACTED-ON block's `fender_id`, exactly like
+/// [`crate::footswitch::is_levelable_param`] (kept private there — this
+/// re-derives the classification rather than depending on it, since the
+/// predicate answers a different question: "may the CURRENT leveler write
+/// this" vs "does an EXISTING assignment match a damage shape"). The
+/// `DeletedEffect` threshold IS the leveler's own wet-floor invariant, negated:
+/// [`leveller::WET_FLOOR_FRACTION`] is the floor the CURRENT leveler refuses to
+/// cross, so `valueA` sitting below `WET_FLOOR_FRACTION × valueB` is a value the
+/// current leveler would never have written — a 94% wet kill (`0.05` vs base
+/// `0.90`) matches this and would NOT have fired the old absolute `<=0.02` gate.
+pub fn leveling_damage_hints(
+    footswitches: &[crate::footswitch::FootswitchInfo],
+) -> Vec<LevelingDamageHint> {
+    let mut out = Vec::new();
+    for fs in footswitches {
+        for f in &fs.functions {
+            if f.func != "param" {
+                continue;
+            }
+            let (Some(param), Some(a), Some(b)) = (&f.parameter_id, f.value_a, f.value_b) else {
+                continue;
+            };
+            let class = crate::param_class::classify(&f.fender_id, param).class;
+            let kind = if class == crate::param_class::ParamClass::WetMix
+                && a < f64::from(crate::leveller::WET_FLOOR_FRACTION) * b
+                && b >= DELETED_EFFECT_BASE_MIN
+            {
+                Some(LevelingDamageKind::DeletedEffect)
+            } else if class == crate::param_class::ParamClass::Other
+                && (a - b).abs() > b.abs() * SWEPT_OTHER_REL + SWEPT_OTHER_ABS_FLOOR
+            {
+                Some(LevelingDamageKind::SweptOther)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                out.push(LevelingDamageHint {
+                    switch: fs.switch,
+                    label: fs.label.clone(),
+                    node_id: f.node_id.clone(),
+                    fender_id: f.fender_id.clone(),
+                    parameter_id: param.clone(),
+                    kind,
+                    detail: format!("{param}: engaged {a:.2}, base {b:.2}"),
+                });
+            }
+        }
+    }
+    out
+}
+
 // ─── scene consistency ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -4748,6 +4855,89 @@ mod tests {
         assert!(scene_consistency("Rhythm", f64::NEG_INFINITY, &ok, Instrument::Guitar).is_none());
     }
 
+    // ── leveling-damage advisories (fix P3-5, backup-scan only) ──
+
+    /// One `param`-function footswitch, single assignment — the shape
+    /// `leveling_damage_hints` scans.
+    fn fs_param(
+        switch: u32,
+        fender_id: &str,
+        param: &str,
+        value_a: Option<f64>,
+        value_b: Option<f64>,
+    ) -> crate::footswitch::FootswitchInfo {
+        crate::footswitch::FootswitchInfo {
+            switch,
+            label: "MOD".to_string(),
+            link_group: None,
+            functions: vec![crate::footswitch::FootswitchFn {
+                func: "param".to_string(),
+                group_id: "G1".to_string(),
+                node_id: "n1".to_string(),
+                fender_id: fender_id.to_string(),
+                parameter_id: Some(param.to_string()),
+                value_a,
+                value_b,
+                is_active: false,
+            }],
+            level_params: Vec::new(),
+            all_params: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn leveling_damage_deleted_effect_fires_on_zeroed_wet_mix() {
+        // The field case: chorus `mix` assign-leveled to 0.0, base 0.42.
+        let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.0), Some(0.42))];
+        let hints = leveling_damage_hints(&fs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].kind, LevelingDamageKind::DeletedEffect);
+        assert_eq!(hints[0].parameter_id, "mix");
+    }
+
+    #[test]
+    fn leveling_damage_deleted_effect_fires_on_a_wet_floor_violation_not_just_zero() {
+        // A 94% wet kill (engaged 0.05, base 0.90) — below WET_FLOOR_FRACTION (0.25)
+        // × base (0.225) — is a value today's leveler would have refused to write.
+        // The OLD absolute `<=0.02` gate missed this (0.05 > 0.02); the wet-floor
+        // invariant catches it.
+        let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.05), Some(0.90))];
+        let hints = leveling_damage_hints(&fs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].kind, LevelingDamageKind::DeletedEffect);
+    }
+
+    #[test]
+    fn leveling_damage_swept_other_fires_on_moved_other_param() {
+        // The field case: a phaser "leveled" via `ratehz` (an Other-class param —
+        // never in `defaults`/`blockOverrides`).
+        let fs = [fs_param(1, "ACD_Phaser", "ratehz", Some(4.0), Some(0.5))];
+        let hints = leveling_damage_hints(&fs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].kind, LevelingDamageKind::SweptOther);
+    }
+
+    #[test]
+    fn leveling_damage_ignores_healthy_assignments() {
+        // A wet-mix param with a healthy (non-zeroed) engaged value, an on-off
+        // function (no valueA/valueB at all), and an Other-class param that
+        // didn't actually move (engaged == base) must all stay silent.
+        let healthy_mix = fs_param(0, "ACD_TCEChorus", "mix", Some(0.5), Some(0.42));
+        let mut on_off = fs_param(2, "ACD_DriveX", "bypass", None, None);
+        on_off.functions[0].func = "on-off".to_string();
+        on_off.functions[0].parameter_id = None;
+        let unmoved_other = fs_param(3, "ACD_Phaser", "ratehz", Some(0.5), Some(0.5));
+        assert!(leveling_damage_hints(&[healthy_mix, on_off, unmoved_other]).is_empty());
+    }
+
+    #[test]
+    fn leveling_damage_deleted_effect_needs_a_material_base() {
+        // valueA≈0 alone isn't enough — the base must have been materially wet
+        // (a base already near zero has nothing to delete).
+        let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.0), Some(0.05))];
+        assert!(leveling_damage_hints(&fs).is_empty());
+    }
+
     #[test]
     fn footswitch_worst_gets_advisory_not_trim() {
         // A footswitch sound (no wire scene index) as the worst jump: there is
@@ -5720,8 +5910,8 @@ mod tests {
         };
         let rows: Vec<Value> = serde_json::from_str(&raw).unwrap();
         let preset: Value = serde_json::from_str(rows[0]["presetJson"].as_str().unwrap()).unwrap();
-        // The reference preset (TweedDeluxe + pedals, no cab) exercises the
-        // insert paths with REAL device JSON, through the SAME graph decoder
+        // The first scenario preset ("E2E Rig": two amps + cab + pedals) exercises
+        // the insert paths with REAL device JSON, through the SAME graph decoder
         // the backup scan uses (so the DoctorNode mapping is exercised too).
         let nodes: Vec<DoctorNode> = crate::session::extract_active_graph(&preset, None)
             .nodes

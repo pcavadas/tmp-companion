@@ -104,13 +104,17 @@ skipped — **coverage keys on the CAPTURED OUTPUT's own SNR**
 
 ## Capture
 
-Isolation matches leveling (Base = all block-acting footswitches off; a
-footswitch sound gets its switch-active state; scenes ride their own
-overrides) but derives **OFFLINE** from the startup backup scan
+Isolation matches leveling for Base/footswitch sounds (Base = all
+block-acting footswitches off; a footswitch sound gets its switch-active
+state) and derives **OFFLINE** from the startup backup scan
 (`footswitch::derived_force_bypass` over `DoctorInput.{nodes,footswitches}`;
 HW 60/60 equivalent to the old ~1.9 s per-preset field-8 read, which survives
-only as the empty-graph fallback). One `resolve_sound_isolation` policy is
-shared by `doctor_check` AND `doctor_apply`, so the A/B can never observe a
+only as the empty-graph fallback). A **scene sound gets NO force-bypass write
+at all** — `derived_force_bypass` is never called for one — because the scene
+recall itself asserts whatever overlay/bypass state the scene SAVED
+(as-played: a scene's diagnosis must hear what the player hears, not a
+synthetic all-off baseline). One `resolve_sound_isolation` policy is shared
+by `doctor_check` AND `doctor_apply`, so the A/B can never observe a
 different bypass state than the diagnosis.
 
 Window: a **3 s stimulus slice + 200 ms silent preamble pad**
@@ -172,6 +176,39 @@ before/after clips (BEFORE cached per sound — `BEFORE_CACHE`, keyed on
 list index + name + stimulus + calibration + scene + footswitch; a cache hit
 still reloads the slot). `severity.ts` ranks findings per sound and rolls up
 the preset's worst severity.
+
+**Scene-context safety:** a bare `changeParameter` under a scene recall lands
+in the overlay only when that node's scene overlay is already `Full` (a
+genuine per-param overlay, Scene-Edit ON). Two OTHER overlay states leak the
+write to BASE instead — silently changing every scene that shares the knob.
+`BypassOnly` (Scene-Edit OFF) is guarded: `doctor_apply` reads the slot's
+saved field-8 JSON once, classifies the target node via `scene_overlay`
+(`probe_api::scene_jobs`), and REFUSES the apply before any device write with
+an actionable message, when it would land there. `Absent` (no overlay at
+all yet) stays an unguarded, pre-existing limitation — `set_node_scene_edit`
+would materialize the overlay but also reseeds it from base, wiping any
+OTHER already-scene-edited params on the same node (the same
+reseed-wipes-siblings shape leveling's `set_knob`/`set_knobs` had before its
+own repair pass; no equivalent repair exists for Doctor yet).
+
+**SNR-gate transparency:** `DoctorSoundResult.coverageGated`/
+`skippedBandCount` surface when `output_coverage_with_body` dropped ≥1 band
+as too quiet to trust — the UI shows a small `info` badge next to an
+otherwise-normal row (SoundRow) rather than silently under-checking a quiet
+capture. Absent on an errored/showcase sound (no coverage computed at all)
+reads as "not gated", never as "everything gated".
+
+**Leveling-damage advisories (`doctor::leveling_damage_hints`):** a
+BACKUP-SCAN-ONLY, zero-capture scan of a preset's footswitch `param`
+assignments for two shapes the CURRENT `param_class` gate could never have
+produced — a wet-mix param assign-leveled to ~0 (an effect silenced whenever
+the switch engages) and an Other-class param actually swept (never a level
+control). Surfaced per preset as an advisory-only synthetic row
+(`LevelingDamageRow`, sibling of the scene-consistency row) — factual copy
+only ("this switch changes X"), never "the old leveler damaged this", since a
+footswitch can legitimately sweep any parameter via Pro Control. Counted by
+`severity.ts::presetLookCount` so a preset whose ONLY finding is a damage
+advisory still surfaces under "Needs a look".
 
 ## Cut-through estimate + reference match (flagship)
 

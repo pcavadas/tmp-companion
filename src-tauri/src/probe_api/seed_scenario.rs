@@ -61,7 +61,7 @@ const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
 /// The ownership probe ([`FIXTURE_MARKERS`]) matches the version-less prefix, so
 /// old-rev copies stay clearable/overwritable. `committed_fixtures_carry_an_ownership_marker`
 /// pins every committed fixture to this exact stamp.
-pub(crate) const FIXTURE_SOURCE_STAMP: &str = "tmp-companion-e2e-fixture#r2";
+pub(crate) const FIXTURE_SOURCE_STAMP: &str = "tmp-companion-e2e-fixture#r6";
 
 /// Substring probe (truncation-proof vs the field-8 partial). Pure.
 fn is_fixture_body(bytes: &[u8]) -> bool {
@@ -313,6 +313,154 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     Ok(())
 }
 
+// ── Landed-verify: the import is not believed until the device says so ───────
+//
+// The firmware can silently DISCARD an imported preset at its lazy commit, substituting
+// a gutted body under the same `displayName` (see notes/gotchas.md's discard entries and
+// `DISCARD_GOTCHA` below). The seed used to trust `replace_inplace_with`'s own confirms
+// and never read the landed body back, which is why that loop stayed invisible.
+
+/// The lazy-commit window a `saveCurrentPreset` needs before a field-8 read answers
+/// with the committed bytes. A verify read fired inside it can still see PRE-commit
+/// content and pass on a body the firmware is about to replace, which is worse than not
+/// checking at all — so this MIRRORS `leveller::COMMIT_WINDOW_SECS` (the mirror roster
+/// lives on that declaration) rather than carrying a second literal that can drift
+/// below it.
+const COMMIT_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS);
+
+/// Where the empty-body substitution is written up — quoted in the hard error so the
+/// next encounter starts at the HW bisect instead of repeating it. Section TITLE, not
+/// the anchor slug: the title is what survives a heading reflow.
+const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A dual-entry footswitch row makes \
+                              the firmware silently replace the whole imported preset \
+                              with an EMPTY body\"";
+
+/// Does `body` carry the firmware's EMPTY substitute rather than the import? Two
+/// independent signatures, either conclusive on a slot we imported THIS run:
+///   * the fixture's injected marker is absent — the reset `info` cannot carry it, and
+///     "a spec saved over it" is not available as an explanation seconds after an
+///     import; and
+///   * the base block chain is EMPTY while the fixture's is not (the gutted body's
+///     lanes are all present but hold zero nodes, so a key-presence test would miss it
+///     — the node COUNT is the discriminator, per the entry's own diagnostic order).
+///
+/// Pure.
+fn body_was_discarded(body: &[u8], fixture_json: &str) -> bool {
+    let text = String::from_utf8_lossy(body);
+    !is_fixture_body(body)
+        || (extract_fender_chain(&text).is_empty()
+            && !extract_fender_chain(fixture_json).is_empty())
+}
+
+/// Read `list_index`'s (0-based) field-8 body, paced and retried ONCE on a no-answer.
+/// `Ok(None)` from `read_slot_preset_json` means "the device did not answer this read",
+/// not "the slot is empty" (the documented back-to-back read unreliability; see
+/// `body_names`) — settling 300 ms and re-reading once resolves that. A SHORT/truncated
+/// body is a DIFFERENT class and is NOT retried here: the field-8 partial truncates at a
+/// per-slot-deterministic size, so a re-read cannot lengthen it. Shared by
+/// `verify_landed_imports` and `seed_scenario_core`'s per-target classify pass.
+fn paced_retry_read(s: &mut Session, list_index: u32) -> Option<Vec<u8>> {
+    crate::settle(std::time::Duration::from_millis(300));
+    let body = s.read_slot_preset_json(list_index + 1).ok().flatten();
+    if body.is_some() {
+        return body;
+    }
+    crate::settle(std::time::Duration::from_millis(300));
+    s.read_slot_preset_json(list_index + 1).ok().flatten()
+}
+
+/// Read every slot imported THIS run back over field-8 and prove the LANDED body is
+/// the fixture — the import call's own confirms cannot see a discard that happens
+/// tens of seconds later.
+///
+/// `seeded` / `list_index` are 0-BASED list indices, the same space the imports above
+/// act in; the field-8 read takes +1 (device `userSlot`). Runs on ONE fresh session,
+/// drained first (a read fired mid-flood is dropped device-side).
+///
+/// `check_pristine` is the ONLINE flag: the SimDevice commits synchronously and never
+/// substitutes a body, and offline nothing is imported in the first place (the sim's
+/// scenario slots are always present, so `seeded` is empty and this returns at once).
+/// There is no other sim/real discriminator in this file — this is the SAME online-only
+/// signal the pristine self-repair rides on, reused rather than re-named here.
+fn verify_landed_imports(
+    spec: &[ScenarioPreset],
+    seeded: &[u32],
+    last_import: std::time::Instant,
+    check_pristine: bool,
+) -> Result<(), String> {
+    if seeded.is_empty() {
+        return Ok(());
+    }
+    if check_pristine {
+        // Wait out the REMAINDER once, not once per slot: every earlier import has
+        // been ageing through the imports that followed it.
+        let remaining = COMMIT_WINDOW.saturating_sub(last_import.elapsed());
+        if !remaining.is_zero() {
+            eprintln!(
+                "[seed] holding {} s for the device's lazy commit before reading the \
+                 imported slots back",
+                remaining.as_secs()
+            );
+            crate::settle(remaining);
+        }
+    }
+    let mut s = Session::connect()?;
+    s.drain_until_quiet(250, 20)?;
+    for list_index in seeded {
+        let p = spec
+            .iter()
+            .find(|p| p.list_index == *list_index)
+            .ok_or_else(|| format!("internal: no spec entry for seeded slot {list_index}"))?;
+        let body = paced_retry_read(&mut s, *list_index);
+        let Some(body) = body else {
+            return Err(format!(
+                "slot {list_index} ({:?}) was imported this run but its body could not be \
+                 read back (the device did not answer field-8 twice) — the import is \
+                 UNVERIFIED, refusing to report the seed as landed",
+                p.name
+            ));
+        };
+        // The substitute keeps the imported `displayName`, so this still identifies the
+        // slot; a body naming ANOTHER preset is a stale/wrong-slot read and must not be
+        // allowed to stand in for the verification.
+        if !body_names(&body, &p.name) {
+            return Err(format!(
+                "slot {list_index}: the landed-verify read answered with a body naming \
+                 another preset — the import of {:?} is UNVERIFIED",
+                p.name
+            ));
+        }
+        // Classified BEFORE `pristine_check`: a gutted body trips that chain's REV gate
+        // first and would be logged as "an older fixture revision", the wrong diagnosis
+        // for a firmware discard (the honest-reason bug `PristineMiss` already exists to
+        // prevent).
+        if body_was_discarded(&body, &p.preset_json) {
+            return Err(format!(
+                "slot {list_index} ({:?}): the firmware DISCARDED this import at its lazy \
+                 commit and stored an EMPTY body in its place (displayName kept, every \
+                 lane at zero nodes). The fixture body itself carries the trigger — \
+                 re-running the seed will only gut it again. See {DISCARD_GOTCHA}",
+                p.name
+            ));
+        }
+        if let Err(miss) = pristine_check(&body, &p.preset_json) {
+            let why = match miss {
+                PristineMiss::StaleRevision => "it does not carry the current fixture rev stamp",
+                PristineMiss::LevelDrift => "its presetLevel does not match the fixture",
+                PristineMiss::ChainDrift => "its block chain does not match the fixture",
+            };
+            return Err(format!(
+                "slot {list_index} ({:?}) was imported this run but reads back wrong — \
+                 {why}. The seed did NOT land what the spec asked for",
+                p.name
+            ));
+        }
+    }
+    eprintln!("[seed] landed-verify passed for slots {seeded:?}");
+    Ok(())
+}
+
 /// Does the field-8 body identify itself as `name`? Back-to-back slot reads on one
 /// session can deliver the PREVIOUS request's body (HW: the unpaced classify loop
 /// re-imported 400/401/402 on every seed from false `presetLevel` mismatches while a
@@ -421,19 +569,10 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
             continue;
         }
         let e = entry.expect("occupied entries exist in the floored list");
+        // Paced apart — an immediate follow-on field-8 read can answer with the
+        // PREVIOUS slot's body (see `body_names`); `paced_retry_read` covers that.
         let body = if e.name == p.name {
-            // Pace the loop's reads apart — an immediate follow-on field-8 read can
-            // answer with the PREVIOUS slot's body (see `body_names`). `Ok(None)` is
-            // "the device did not answer this read" (documented back-to-back read
-            // unreliability), not "the slot is empty" — retry once, paced, before
-            // treating the slot as unreadable.
-            crate::settle(std::time::Duration::from_millis(300));
-            let mut b = s.read_slot_preset_json(p.list_index + 1).ok().flatten();
-            if b.is_none() {
-                crate::settle(std::time::Duration::from_millis(300));
-                b = s.read_slot_preset_json(p.list_index + 1).ok().flatten();
-            }
-            b
+            paced_retry_read(&mut s, p.list_index)
         } else {
             None
         };
@@ -496,6 +635,10 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
     drop(s);
 
     let mut seeded = Vec::new();
+    // When the LAST import's save landed — the clock the lazy-commit wait below is
+    // measured against. Unused while nothing is imported (the verify pass returns on an
+    // empty `seeded`).
+    let mut last_import = std::time::Instant::now();
     for p in to_seed {
         if !seeded.is_empty() {
             // Quiet gap between imports: each lands via several fresh connections
@@ -534,11 +677,15 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
         // rows, and the seed must conserve the device's open/close budget.
         let bytes = backup::xor_jld(p.preset_json.as_bytes());
         replace_inplace_with(p.list_index, &bytes, false)?;
+        last_import = std::time::Instant::now();
         // Record BEFORE anything can save over it — this is the ownership signal
         // teardown will need once a spec has rewritten the body.
         record_seeded(p.list_index, &p.name);
         seeded.push(p.list_index);
     }
+    // The import call cannot see a discard that happens tens of seconds later — read
+    // every slot placed this run back before reporting the seed as landed.
+    verify_landed_imports(&spec, &seeded, last_import, check_pristine)?;
     Ok(SeedOutcome { swept, seeded })
 }
 
@@ -691,9 +838,9 @@ mod tests {
     /// skip handed the next run pre-leveled state.
     #[test]
     fn pristine_check_flags_leveled_bodies() {
-        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684},"info":{"source_id":"tmp-companion-e2e-fixture#r2"}}"#;
+        let fixture = r#"{"audioGraph":{"nodes":[],"presetLevel":0.5999999046325684},"info":{"source_id":"tmp-companion-e2e-fixture#r6"}}"#;
         let same = fixture.as_bytes();
-        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495},"info":{"source_id":"tmp-companion-e2e-fixture#r2"}}"#.as_bytes();
+        let leveled = r#"{"audioGraph":{"nodes":[],"presetLevel":0.37495},"info":{"source_id":"tmp-companion-e2e-fixture#r6"}}"#.as_bytes();
         assert!(body_is_pristine(same, fixture));
         assert!(!body_is_pristine(leveled, fixture));
         // Tail-truncated AFTER presetLevel → still comparable.
@@ -723,12 +870,12 @@ mod tests {
     /// only the new chain compare can catch this.
     #[test]
     fn pristine_check_flags_a_structural_block_delete() {
-        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r2"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
+        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r6"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
         // The unmodified fixture passes against itself.
         assert!(body_is_pristine(fixture.as_bytes(), fixture));
 
         // The copy-delete shape: stamp + presetLevel intact, trailing block gone.
-        let mutilated = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r2"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
+        let mutilated = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r6"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
         assert!(
             !body_is_pristine(mutilated.as_bytes(), fixture),
             "a body missing its trailing FenderId block must NOT read pristine"
@@ -752,7 +899,7 @@ mod tests {
         // compare alone reads equal; `body_is_pristine`'s overall false comes ONLY
         // from the existing presetLevel gate, not from this one (pins the tolerance
         // both checks are independently responsible for their own drift class).
-        let level_drifted = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r2"},"audioGraph":{"presetLevel":0.5,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
+        let level_drifted = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r6"},"audioGraph":{"presetLevel":0.5,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"},{"FenderId":"ACD_FiveBandParamEQ","nodeId":"ACD_FiveBandParamEQ"}]}}}"#;
         assert_eq!(
             extract_fender_chain(level_drifted),
             extract_fender_chain(fixture),
@@ -785,12 +932,72 @@ mod tests {
         );
     }
 
+    /// The gutted shape the firmware substitutes at its lazy commit — `displayName`
+    /// kept, every lane/row/scene emptied. See `DISCARD_GOTCHA`.
+    fn discarded_body(name: &str) -> String {
+        let lanes = |prefix: &str, n: usize| -> String {
+            (1..=n)
+                .map(|i| format!("\"{prefix}{i}\":[]"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","presetLevel":0.5,{},{}}},"ftsw":[{}],
+               "info":{{"displayName":"{name}","author":"v4 uuid of user","source_id":"url slug of preset"}},
+               "scenes":[]}}"#,
+            format_args!("\"guitarNodes\":{{{}}}", lanes("G", 7)),
+            format_args!("\"micNodes\":{{{}}}", lanes("M", 4)),
+            vec!["[]"; 20].join(","),
+        )
+    }
+
+    /// BUG→GATE (see `DISCARD_GOTCHA`): the landed-verify classifier must call a gutted
+    /// body a DISCARD, without misfiring on a healthy import or a fixture with no blocks.
+    #[test]
+    fn landed_verify_flags_the_firmware_empty_body_substitution() {
+        let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r6","displayName":"E2E Doctor Oracle"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
+        // A healthy landed body is the fixture itself — no discard, and pristine.
+        assert!(!body_was_discarded(fixture.as_bytes(), fixture));
+        assert_eq!(pristine_check(fixture.as_bytes(), fixture), Ok(()));
+
+        let gutted = discarded_body("E2E Doctor Oracle");
+        assert!(
+            body_was_discarded(gutted.as_bytes(), fixture),
+            "the substituted empty body must read as a DISCARD"
+        );
+        // It still NAMES the preset — that is the whole reason the list looks right and
+        // why the name guard cannot be the thing that catches this.
+        assert!(body_names(gutted.as_bytes(), "E2E Doctor Oracle"));
+        // …and it is genuinely empty on the axis the entry's diagnostic order names:
+        // the lanes are all present, the node count is zero.
+        assert!(extract_fender_chain(&gutted).is_empty());
+        // Classified BEFORE `pristine_check`, which would blame the wrong sub-check:
+        // the reset `info` drops the rev stamp, so the chain reports StaleRevision.
+        assert_eq!(
+            pristine_check(gutted.as_bytes(), fixture),
+            Err(PristineMiss::StaleRevision),
+            "the honest reason for a gutted body is the DISCARD, not an old fixture rev"
+        );
+
+        // A marker-carrying body whose chain is empty because the FIXTURE has no blocks
+        // is not a discard — the chain arm only fires when the fixture's own chain is
+        // non-empty.
+        let blockless = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r6"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[]}}}"#;
+        assert!(!body_was_discarded(blockless.as_bytes(), blockless));
+        // A marker-LESS body is a discard on its own signature: seconds after our own
+        // import there is no "a spec saved over it" explanation available.
+        assert!(body_was_discarded(
+            br#"{"info":{"displayName":"E2E Doctor Oracle"}}"#,
+            fixture
+        ));
+    }
+
     /// A fixture regen that drops the `source_id` stamp must fail here, not on
     /// the unit (the guards would refuse to manage unmarked copies).
     #[test]
     fn committed_fixtures_carry_an_ownership_marker() {
         let spec = scenario_spec().expect("committed spec parses");
-        assert_eq!(spec.len(), 6, "every committed scenario preset is checked");
+        assert_eq!(spec.len(), 10, "every committed scenario preset is checked");
         for p in &spec {
             assert!(
                 is_fixture_body(p.preset_json.as_bytes()),

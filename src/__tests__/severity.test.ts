@@ -13,7 +13,7 @@ import type {
 function preset(
   sceneConsistency: DoctorSceneConsistency | null,
 ): DoctorPresetResult {
-  return { listIndex: 0, sounds: [], sceneConsistency };
+  return { listIndex: 0, sounds: [], sceneConsistency, levelingDamage: [] };
 }
 
 function sceneJump(worstDeltaDb: number): DoctorSceneConsistency {

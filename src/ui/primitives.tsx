@@ -508,15 +508,20 @@ export function Scrim({ onClose, zIndex = 30 }: ScrimProps) {
 export interface CheckboxProps {
   checked?: boolean;
   indeterminate?: boolean;
+  /** Not selectable at all (e.g. a footswitch with no level control to adjust —
+   *  BUG 1) — renders inert/faint regardless of `checked`/`indeterminate`. The
+   *  enclosing row owns the click no-op; this is display-only. */
+  disabled?: boolean;
 }
 
-export function Checkbox({ checked, indeterminate }: CheckboxProps) {
+export function Checkbox({ checked, indeterminate, disabled }: CheckboxProps) {
   const { t } = useTheme();
-  const on = (checked ?? false) || (indeterminate ?? false);
+  const on = !disabled && ((checked ?? false) || (indeterminate ?? false));
   return (
     <span
       role="checkbox"
       aria-checked={indeterminate ? "mixed" : (checked ?? false)}
+      aria-disabled={disabled ? true : undefined}
       style={{
         width: 14,
         height: 14,
@@ -528,9 +533,10 @@ export function Checkbox({ checked, indeterminate }: CheckboxProps) {
         justifyContent: "center",
         flexShrink: 0,
         boxSizing: "border-box",
+        opacity: disabled ? 0.45 : 1,
       }}
     >
-      {indeterminate ? (
+      {disabled ? null : indeterminate ? (
         <span
           style={{ width: 7, height: 2, borderRadius: 1, background: "#fff" }}
         />

@@ -57,8 +57,32 @@ function fsw(sw: number, label: string): FootswitchInfo {
         fender_id: "ACD_BluesDriver",
         parameter_id: "gain",
         current: 0.5,
+        class: "level_linear",
       },
     ],
+  };
+}
+// A footswitch with NO level-class parameter (real incident: "Friedman HBE" FS2
+// "PHASER" → ACD_PhaserP90) — BUG 1: must still render as a row, visibly disabled
+// with a reason, never silently dropped.
+function fswNoLevel(sw: number, label: string): FootswitchInfo {
+  return {
+    switch: sw,
+    label,
+    link_group: null,
+    functions: [
+      {
+        func: "on-off",
+        group_id: "G2",
+        node_id: `N${String(sw)}`,
+        fender_id: "ACD_PhaserP90",
+        parameter_id: null,
+        value_a: null,
+        value_b: null,
+        is_active: false,
+      },
+    ],
+    level_params: [],
   };
 }
 const FOOTSWITCHES = new Map<number, FootswitchInfo[]>([
@@ -239,5 +263,55 @@ describe("PresetList (scene tree)", () => {
   it("marks the active row", () => {
     const { container } = renderList({ activeSlot: 1 });
     expect(container.querySelector('[data-active="1"]')).toBeTruthy();
+  });
+
+  // ── BUG 1: a footswitch with no level-class parameter — shown, disabled, reasoned ──
+  describe("a footswitch with no level control (BUG 1)", () => {
+    const FSW_WITH_UNLEVELABLE = new Map<number, FootswitchInfo[]>([
+      [0, [fsw(4, "Solo"), fswNoLevel(1, "PHASER")]],
+    ]);
+
+    it("is still shown as a row, never silently omitted", async () => {
+      renderList({
+        footswitchInfo: FSW_WITH_UNLEVELABLE,
+        expanded: new Set<number>([0]),
+      });
+      expect(await screen.findByText("PHASER")).toBeTruthy();
+    });
+
+    it("is visibly disabled and NOT toggleable", async () => {
+      const onToggleKey = vi.fn();
+      renderList({
+        footswitchInfo: FSW_WITH_UNLEVELABLE,
+        expanded: new Set<number>([0]),
+        onToggleKey,
+      });
+      const row = await screen.findByText("PHASER");
+      await userEvent.click(row);
+      expect(onToggleKey).not.toHaveBeenCalled();
+    });
+
+    it("carries a short reason the user can understand", async () => {
+      renderList({
+        footswitchInfo: FSW_WITH_UNLEVELABLE,
+        expanded: new Set<number>([0]),
+      });
+      expect(await screen.findByText(/no level control/i)).toBeTruthy();
+    });
+
+    it("is excluded from the preset's select-all count (childKeys/row-builder agree)", () => {
+      renderList({
+        footswitchInfo: FSW_WITH_UNLEVELABLE,
+        // No FS scenes here so the only children are the two footswitches — isolates
+        // the count to exactly what's under test.
+        sceneInfo: new Map([[0, []]]),
+        expanded: new Set<number>([0]),
+        // Everything selectABLE already ticked (Base + the levelable Solo switch) —
+        // if PHASER were still counted as selectable, this would read indeterminate
+        // ("1 of 2 selected") instead of fully checked (no meta at all).
+        sel: new Set(["p0", "f0:0"]),
+      });
+      expect(screen.queryByText(/selected$/)).toBeNull();
+    });
   });
 });

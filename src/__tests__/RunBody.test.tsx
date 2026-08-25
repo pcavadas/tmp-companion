@@ -80,6 +80,32 @@ describe("RunBody live measuring strip", () => {
     expect(meter?.style.opacity).toBe("0");
   });
 
+  // GATE (user report, preset 30 "Plumes+BD2+OCD"): the ceiling prepass measures every
+  // footswitch row before anything is solved, ~10 s a row, and used to be invisible — one
+  // row held the highlight for the whole minute while the unit stepped through four, so the
+  // run read as "leveling the wrong footswitch". The backend now captions those rows
+  // (`leveller::PREPASS_ACTIVE_MSG`); the caption must reach the row as its VERB, or the
+  // phase is still indistinguishable from the solve.
+  it("uses the backend caption as the verb while a capture streams", () => {
+    render(runBody(-18.9, [{ ...activeItem, activeMessage: "measuring" }]));
+    expect(screen.getByText("measuring · −18.9")).toBeInTheDocument();
+    expect(screen.queryByText("leveling · −18.9")).not.toBeInTheDocument();
+  });
+
+  it("keeps the default verb for a solve row, which carries no caption", () => {
+    render(runBody(-23.1));
+    expect(screen.getByText("leveling · −23.1")).toBeInTheDocument();
+  });
+
+  // The other half of the caption contract: a message sent while NOTHING streams is a note,
+  // not a verb, and must never be composed with a number.
+  it("renders a caption verbatim when nothing is streaming", () => {
+    const note = "waiting for the device to commit the previous save…";
+    render(runBody(null, [{ ...activeItem, activeMessage: note }]));
+    expect(screen.getByText(note)).toBeInTheDocument();
+    expect(screen.queryByText("connecting…")).not.toBeInTheDocument();
+  });
+
   it("renders the live readout ONCE, in the header — never per row", () => {
     const second: RunItem = { ...activeItem, key: "k1", status: "queued" };
     render(runBody(-23.1, [activeItem, second]));

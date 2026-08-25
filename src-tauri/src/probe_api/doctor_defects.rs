@@ -198,7 +198,7 @@ fn run_recipe(
     let (before, line) = measure(
         stim,
         "before",
-        leveller::doctor_capture(slot, None, &[], stim, Some(0.5), before_tail_ms, false),
+        leveller::doctor_capture(slot, None, &[], &[], stim, Some(0.5), before_tail_ms, false),
     )?;
     text += &line;
     if !before.verdicts.is_empty() {
@@ -374,6 +374,43 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
     }
 
     Ok(out)
+}
+
+/// `probe --doctor-fs <listIdx> <switch>` — capture ONE footswitch SOUND through the
+/// production Doctor seam (`doctor_capture_params`: on-off isolation from
+/// `doctor_force_bypass` PLUS the switch's `param`-function engaged `valueA` writes)
+/// and print the diagnosis verdicts. The FS twin of the defect sweep: proves an
+/// FS-carried defect (the oracle-fixture shape) reaches the Doctor's measured audio.
+/// Read-only — working-copy writes only; re-amp OFF via the drop guard.
+pub fn probe_doctor_fs(slot: u32, switch: u32) -> Result<String, String> {
+    let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
+        "guitar-humbucker",
+    )?)?);
+    let _reamp_off = super::ReampOffGuard;
+    // The whole capture IS the switch's isolation state — a body cut before `ftsw` would
+    // silently capture the preset as-loaded and print verdicts for the wrong sound.
+    let (preset, _, _) = crate::read_slot_preset_complete(slot, &["ftsw"])?;
+    let null = serde_json::Value::Null;
+    let ftsw = preset.get("ftsw").unwrap_or(&null);
+    let fb = crate::commands::doctor::doctor_force_bypass(ftsw, &preset, Some(switch));
+    let fs_params: Vec<(String, String, String, f32)> =
+        crate::footswitch::param_fn_values(ftsw, switch)
+            .into_iter()
+            .map(|(g, n, p, a, _b)| (g, n, p, a))
+            .collect();
+    let tail = u64::from(tail_ms_for_doc(&preset));
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    let (read, line) = measure(
+        &stim,
+        &format!("FS{switch}"),
+        leveller::doctor_capture(slot, None, &fb, &fs_params, &stim, Some(0.5), tail, false),
+    )?;
+    Ok(format!(
+        "[probe --doctor-fs] slot={slot} switch={switch} param_writes={} isolation={} verdicts={:?}\n{line}",
+        fs_params.len(),
+        fb.len(),
+        read.verdicts
+    ))
 }
 
 #[cfg(test)]

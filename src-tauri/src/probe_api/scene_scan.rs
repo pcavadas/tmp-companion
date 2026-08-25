@@ -58,6 +58,8 @@ pub fn probe_level_scenes_oneshot(
             commit,
             restore_scene.filter(|_| commit),
             saved.as_ref(),
+            // No headroom trade on this dev arm — it runs the jobs verbatim.
+            None,
             |_, _| {},
             || false,
         )
@@ -69,6 +71,8 @@ pub fn probe_level_scenes_oneshot(
             commit,
             restore_scene.filter(|_| commit),
             saved.as_ref(),
+            // No headroom trade on this dev arm — it runs the jobs verbatim.
+            None,
             |_, _| {},
             || false,
         )
@@ -124,7 +128,8 @@ pub fn probe_knob_sweep(
     std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let mut out = format!("[probe --knob-sweep] list_index={list_index} {group}/{node}.{param}\n");
     for v in values {
-        let l = leveller::measure_fs_at((group, node, param), &[], &stim, *v)?;
+        // Probe sweep of a saved preset: no run-owned `presetLevel` to assert.
+        let l = leveller::measure_fs_at(None, (group, node, param), &[], &stim, *v, None)?;
         out += &format!(
             "  {param}={v:.3} → integrated {:.3} LUFS  short-term-max {:.3}\n",
             l.integrated_lufs, l.short_term_max_lufs
@@ -137,6 +142,47 @@ pub fn probe_knob_sweep(
     }
     leveller::reamp_off_guaranteed("knob-sweep");
     Ok(out)
+}
+
+/// `probe --measure-pair <listIdx> <topology> <presetLevel> <g:n:p=v>…` — P0 repro
+/// instrumentation for the headroom-trade physics: measure the captured loudness at an
+/// explicit (`presetLevel` × block-param) point on one isolated fresh re-amp capture
+/// (bundled stimulus, base recall inside `measure_pair_at`). Working-copy writes are
+/// discarded by a final reload; ends with a guaranteed re-amp OFF.
+pub fn probe_measure_pair(
+    list_index: u32,
+    topology_id: &str,
+    preset_level: f32,
+    scene: Option<u32>,
+    writes: &[(String, String, String, f32)],
+) -> Result<String, String> {
+    let stim = read_stimulus_calibrated(&super::stimulus::probe_stimulus_path(topology_id)?, None)?;
+    {
+        let mut s = Session::connect_lean()?;
+        s.load_preset(list_index)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            leveller::settle_after_load_ms(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    let result = leveller::measure_pair_at(scene, preset_level, writes, &stim);
+    // Discard the pair pollution, then the guaranteed OFF (bound before the `?`).
+    if let Ok(mut s) = Session::connect_lean() {
+        let _ = s.load_preset(list_index);
+    }
+    leveller::reamp_off_guaranteed("measure-pair");
+    let l = result?;
+    let wtxt: Vec<String> = writes
+        .iter()
+        .map(|(g, n, p, v)| format!("{g}/{n}.{p}={v:.4}"))
+        .collect();
+    Ok(format!(
+        "[probe --measure-pair] list_index={list_index} scene={scene:?} presetLevel={preset_level:.4} {} \
+         → integrated {:.3} LUFS  short-term-max {:.3}\n",
+        wtxt.join(" "),
+        l.integrated_lufs,
+        l.short_term_max_lufs
+    ))
 }
 
 /// `probe --scene-doc <listIdx> <scene…>` — repro instrumentation: load the preset,
@@ -199,6 +245,97 @@ pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String
         }
         match doc {
             Some(d) => out += &fmt_doc(&format!("recall scene {sc}"), &d),
+            None => out += &format!("[recall scene {sc}] NO DOC harvested\n"),
+        }
+    }
+    Ok(out)
+}
+
+/// `probe --scene-node-doc <listIdx> <group> <node> <scene…>` — repro instrumentation:
+/// the [`probe_scene_doc`] recipe (load, then recall the given scenes IN ORDER on ONE
+/// held session, harvesting the rendered field-3 doc after each recall) generalized to
+/// a caller-chosen node instead of the hard-coded Hiwatt/UniVibe pair. Prints the
+/// node's FULL rendered `dspUnitParameters` (bools and strings included, not just
+/// floats) plus the doc's `ftsw` active flags — the discriminator for how a partial
+/// (bypass-only) scene overlay and `ftswStates` materialize on recall.
+/// NON-DESTRUCTIVE: no writes, no re-amp.
+pub fn probe_scene_node_doc(
+    list_index: u32,
+    group: &str,
+    node: &str,
+    scenes: &[u32],
+) -> Result<String, String> {
+    fn fmt_doc(label: &str, doc: &serde_json::Value, group: &str, node: &str) -> String {
+        let mut out = format!(
+            "[{label}] lastLoadedScene={:?}\n",
+            doc.get("lastLoadedScene")
+        );
+        match crate::scenes::guitar_node(doc, group, node)
+            .and_then(|n| n.get("dspUnitParameters"))
+            .and_then(|p| p.as_object())
+        {
+            Some(params) => {
+                let mut kv: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                kv.sort();
+                out += &format!("  {group}/{node}: {}\n", kv.join(" "));
+            }
+            None => out += &format!("  {group}/{node}: <absent/truncated>\n"),
+        }
+        match doc.get("ftsw").and_then(|f| f.as_array()) {
+            Some(slots) => {
+                let active: Vec<String> = slots
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, slot)| {
+                        slot.as_array().into_iter().flatten().map(move |a| {
+                            format!(
+                                "FS{i}:{}{}",
+                                a.get("customLabel").and_then(|l| l.as_str()).unwrap_or("?"),
+                                if a.get("isActive").and_then(|b| b.as_bool()) == Some(true) {
+                                    "=ON"
+                                } else {
+                                    "=off"
+                                }
+                            )
+                        })
+                    })
+                    .collect();
+                out += &format!("  ftsw: {}\n", active.join(" "));
+            }
+            None => out += "  ftsw: <absent/truncated>\n",
+        }
+        out
+    }
+    let mut s = Session::connect()?;
+    for _ in 0..8 {
+        s.heartbeat()?;
+        s.pump_collect(120)?;
+    }
+    s.raw.clear();
+    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 300)?;
+    for _ in 0..6 {
+        s.heartbeat()?;
+        s.pump_collect(200)?;
+    }
+    let mut out = format!("[probe --scene-node-doc] list_index={list_index} {group}/{node}\n");
+    match s.current_preset_value() {
+        Ok(d) => out += &fmt_doc("post-load", &d, group, node),
+        Err(e) => out += &format!("[post-load] no doc: {e}\n"),
+    }
+    for &sc in scenes {
+        s.raw.clear();
+        s.send_and_collect(&proto::load_scene(sc as u64), 300)?;
+        let mut doc = None;
+        for _ in 0..4 {
+            s.heartbeat()?;
+            s.pump_collect(150)?;
+            if let Ok(v) = s.current_preset_value() {
+                doc = Some(v);
+                break;
+            }
+        }
+        match doc {
+            Some(d) => out += &fmt_doc(&format!("recall scene {sc}"), &d, group, node),
             None => out += &format!("[recall scene {sc}] NO DOC harvested\n"),
         }
     }

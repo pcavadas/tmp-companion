@@ -351,7 +351,7 @@ pub fn probe_doctor_calib(
             }
         };
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        match leveller::doctor_capture(slot, None, &fb, &stim, Some(0.5), tail_ms, false) {
+        match leveller::doctor_capture(slot, None, &fb, &[], &stim, Some(0.5), tail_ms, false) {
             Ok((samples, rate)) => {
                 let (onset, confident) = audio::estimate_onset(&stim, &samples, rate);
                 let Some((profile, coverage, signal_start)) =

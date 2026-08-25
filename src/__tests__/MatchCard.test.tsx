@@ -39,6 +39,7 @@ function sound(balanceDb: number[]): DoctorSoundResult {
     bandLabels: LABELS,
     cutThrough: null,
     error: null,
+    skippedBandCount: 0,
   };
 }
 

@@ -38,6 +38,8 @@ import {
   redistributeHeadroom,
   restoreRedistribution,
   commonReachableTarget,
+  listSceneLevelHandles,
+  listFootswitchSceneContexts,
   levelScenesApplyBatched,
   cancelSceneLeveling,
   cancelPresetLeveling,
@@ -59,6 +61,7 @@ import {
   doctorApply,
   doctorSave,
   doctorDiscard,
+  toFootswitchJobWire,
   cmd,
 } from "../lib/invoke";
 import type {
@@ -66,6 +69,7 @@ import type {
   FootswitchLevelProgressItem,
 } from "../lib/invoke";
 import type { LevelJob } from "../lib/types";
+import type { FootswitchTarget } from "../views/level/leveling";
 
 const pluginErrorMock = vi.mocked(pluginError);
 
@@ -204,6 +208,53 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
   it("cancel_scene_leveling invokes the cooperative cancel command", async () => {
     await cancelSceneLeveling();
     expectCall("cancel_scene_leveling", undefined);
+  });
+
+  it("list_scene_level_handles uses slot", async () => {
+    await listSceneLevelHandles(9);
+    expectCall("list_scene_level_handles", { slot: 9 });
+  });
+
+  it("list_footswitch_scene_contexts uses slot (D3)", async () => {
+    await listFootswitchSceneContexts(9);
+    expectCall("list_footswitch_scene_contexts", { slot: 9 });
+  });
+
+  it("level_scenes_apply_batched jobs carry an optional handle (D2)", async () => {
+    const onResult = vi.fn<(item: SceneLevelProgressItem) => void>(() => {
+      /* no-op */
+    });
+    await levelScenesApplyBatched(
+      {
+        slot: 5,
+        jobs: [
+          { sceneSlot: 0, targetLufs: -24 },
+          {
+            sceneSlot: 1,
+            targetLufs: -24,
+            handle: { groupId: "G1", nodeId: "ped", parameterId: "volume" },
+          },
+        ],
+        candidates: [],
+        save: false,
+        rebalance: false,
+        topologyId: null,
+        calibrationLufs: null,
+        profileId: null,
+      },
+      onResult,
+    );
+    const [, calledArgs] = invokeMock.mock.calls[0];
+    expect(calledArgs).toMatchObject({
+      jobs: [
+        { sceneSlot: 0, targetLufs: -24 },
+        {
+          sceneSlot: 1,
+          targetLufs: -24,
+          handle: { groupId: "G1", nodeId: "ped", parameterId: "volume" },
+        },
+      ],
+    });
   });
 
   it("redistribute_headroom passes jobs + deficit + a progress channel", async () => {
@@ -393,6 +444,48 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     await cancelFootswitchLeveling();
     expectCall("cancel_footswitch_leveling", undefined);
   });
+
+  // `toFootswitchJobWire` — the ONE place `FootswitchTarget` becomes the wire's job
+  // shape. Every row levels now (D2 — the backend removed the verify-only mode
+  // entirely), so a target always carries a real handle; `sceneContext` (D3) is the
+  // only field that varies (null = base, else a 0-based scenes[] slot).
+  it("toFootswitchJobWire carries the full handle + a null (base) sceneContext", () => {
+    const target: FootswitchTarget = {
+      switchIndex: 5,
+      levGroupId: "G1",
+      levNodeId: "amp",
+      levParameterId: "outputLevel",
+      sceneContext: null,
+    };
+    const wire = toFootswitchJobWire(target, -23);
+    expect(wire).toEqual({
+      switch: 5,
+      levGroupId: "G1",
+      levNodeId: "amp",
+      levParameterId: "outputLevel",
+      targetLufs: -23,
+      sceneContext: null,
+    });
+  });
+
+  it("toFootswitchJobWire carries a non-null sceneContext (D3)", () => {
+    const target: FootswitchTarget = {
+      switchIndex: 2,
+      levGroupId: "G1",
+      levNodeId: "pedal",
+      levParameterId: "gain",
+      sceneContext: 3,
+    };
+    const wire = toFootswitchJobWire(target, -20);
+    expect(wire).toEqual({
+      switch: 2,
+      levGroupId: "G1",
+      levNodeId: "pedal",
+      levParameterId: "gain",
+      targetLufs: -20,
+      sceneContext: 3,
+    });
+  });
 });
 
 describe("single-struct / nested-payload args (snake_case inside the payload)", () => {
@@ -458,10 +551,11 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 37 contract commands", () => {
+  it("cmd exposes exactly the 39 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    expect(Object.keys(cmd).length).toBe(37);
+    // 39 = the prior 38 + `listFootswitchSceneContexts` (D3's scene-context picker).
+    expect(Object.keys(cmd).length).toBe(39);
   });
 });
 

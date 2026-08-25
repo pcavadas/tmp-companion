@@ -22,6 +22,9 @@ export type Form =
 interface RawBlock {
   block_id: string | null;
   block_name: string;
+  /** Footswitch scribble-strip short name (`name8`); absent for blocks with no
+   *  display-name record. See the catalog JSON's own `field_notes.strip_name`. */
+  strip_name?: string | null;
   available: boolean;
   catalog_id: string;
   real_unit: string;
@@ -41,6 +44,10 @@ export interface ModelRecord {
   cid: string; // catalog_id — unique row id, React key
   bid: string | null; // block_id (ACD_*); null for the 7 mics
   name: string; // exact Fender public model name (UPPERCASE as printed)
+  /** What the UNIT prints under a footswitch for this block (`name8`) — often an
+   *  abbreviation of `name` ("SAPPHIRE DRIVE" → "Sapphire OD"), and differing from it
+   *  for 188 blocks. null where the catalog has no display-name record. */
+  strip: string | null;
   real: string; // real-world unit it emulates
   cat: string; // top-level category
   sub: string | null; // Effects only: subcategory
@@ -194,6 +201,7 @@ function toRecord(r: RawBlock): ModelRecord {
     cid: r.catalog_id,
     bid: r.block_id,
     name: r.block_name,
+    strip: r.strip_name ?? null,
     real: r.real_unit,
     cat: r.category,
     sub: r.subcategory,
@@ -234,6 +242,32 @@ for (const r of MODELS) {
   const s = FORMS_BY_BID.get(r.bid) ?? new Set<Form>();
   s.add(r.form);
   FORMS_BY_BID.set(r.bid, s);
+}
+
+// The unit's scribble-strip name per block_id. Rows are per-form, but the strip name
+// is a property of the BLOCK (both forms of one amp print the same thing), so first
+// non-null wins.
+const STRIP_BY_BID = new Map<string, string>();
+for (const r of MODELS) {
+  if (r.bid && r.strip && !STRIP_BY_BID.has(r.bid))
+    STRIP_BY_BID.set(r.bid, r.strip);
+}
+
+/** What the DEVICE prints under a footswitch for this block — the scribble-strip name
+ *  (`name8`), which is what a player reads off the unit when a switch carries no
+ *  customLabel. Often an abbreviation of the catalog `name`: `ACD_BluesDriver` is
+ *  "SAPPHIRE DRIVE" in the Model Guide but "Sapphire OD" on the strip, and
+ *  `ACD_ObsessiveDrive` is "Comic Sans Drive" but "CSD".
+ *
+ *  Resolved through the SAME suffix-stripping the tile art uses (`resolveDeviceId`), so
+ *  a device id carrying merged `CabIR`/`ConvRvb` suffixes still finds its row. `null`
+ *  when the catalog has no strip name for the block (the `ACD_FxLoop*` pseudo-blocks,
+ *  and the few rows whose block_id identity the catalog itself flags as uncertain) —
+ *  callers fall back rather than inventing one. */
+export function stripNameFor(bid: string | null | undefined): string | null {
+  if (bid == null || bid === "") return null;
+  const id = resolveDeviceId(bid, (m) => STRIP_BY_BID.has(m));
+  return STRIP_BY_BID.get(id) ?? null;
 }
 
 /** Whether a block_id is a half-stack form on the device — a SINGLE block the unit

@@ -35,6 +35,7 @@ import type {
   DoctorPresetResult,
   DoctorSoundResult,
   FootswitchInfo,
+  SilenceHint,
 } from "../../lib/types";
 
 type Filter = "look" | "all";
@@ -59,6 +60,10 @@ export interface DoctorResultsProps {
   /** Sound key → the stimulus identity it was diagnosed with (the setup-stage
    *  instrument pick) — the prescription cards' A/B replays it. */
   stimulusByKey: Map<string, DoctorStimulus>;
+  /** 0-based list index → the preset's backup-scan silence hint (same source
+   *  the Level tab uses) — refines a sound's "no signal captured" error into
+   *  a specific JSON-visible cause. */
+  silenceHintByIndex: Map<number, SilenceHint>;
   onCheckMore: () => void;
 }
 
@@ -68,6 +73,7 @@ export function DoctorResults({
   footswitchInfo,
   graphByIndex,
   stimulusByKey,
+  silenceHintByIndex,
   onCheckMore,
 }: DoctorResultsProps) {
   const { t } = useTheme();
@@ -348,6 +354,7 @@ export function DoctorResults({
               footswitchInfo={footswitchInfo}
               graphByIndex={graphByIndex}
               stimulusByKey={stimulusByKey}
+              silenceHintByIndex={silenceHintByIndex}
               expanded={expanded}
               onToggleRow={toggleRow}
               referenceSound={referenceSound}

@@ -2,6 +2,46 @@
 use super::*;
 use crate::doctor;
 
+/// BUG→GATE (the silent-wrong-diagnosis class): a large preset's field-8 read is cut
+/// before its `ftsw` section, so the isolation fallback has no footswitch assignments.
+/// A FOOTSWITCH sound is DEFINED by those assignments — with none, the capture engages
+/// nothing and diagnoses the base sound under the switch's name. That sound must be
+/// reported as skipped, not measured. A BASE sound keeps the documented best-effort
+/// degrade: its isolation only silences other switches, so a missing one shifts the
+/// baseline without misnaming the sound.
+///
+/// Drives `resolve_sound_isolation` through its empty-graph branch with the cache
+/// pre-seeded, so no device read happens.
+#[test]
+fn an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound() {
+    let unreadable = |footswitch: Option<u32>| {
+        let mut cache = std::collections::HashMap::new();
+        // What the fallback read leaves behind when the body could not be read or its
+        // `ftsw` tail never arrived.
+        cache.insert(7u32, serde_json::Value::Null);
+        resolve_sound_isolation(&[], &[], None, footswitch, 7, &mut cache)
+    };
+    let fs = unreadable(Some(2));
+    let msg = fs.unresolved.expect("a footswitch sound must be skipped");
+    assert!(msg.contains("footswitch 3"), "1-based switch label: {msg}");
+    assert!(msg.contains("too large to read over USB"), "{msg}");
+
+    assert!(
+        unreadable(None).unresolved.is_none(),
+        "a base sound still degrades to no isolation rather than erroring"
+    );
+
+    // A readable `ftsw` resolves normally — the guard must not misfire on a preset whose
+    // switches are simply all empty (a legitimate saved state).
+    let mut cache = std::collections::HashMap::new();
+    cache.insert(7u32, serde_json::json!({ "ftsw": [[], [], []] }));
+    assert!(
+        resolve_sound_isolation(&[], &[], None, Some(2), 7, &mut cache)
+            .unresolved
+            .is_none()
+    );
+}
+
 /// The exact camelCase JSON the Doctor apply frontend sends deserializes into
 /// [`DoctorApplyJob`] — a `param` op and an `insert_node` op (the DoctorOp tag
 /// values + field renames pinned by doctor.rs's `doctor_op_serializes_camel_case`).
@@ -86,6 +126,7 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
         band_labels: Vec::new(),
         cut_through: None,
         error: None,
+        skipped_band_count: 0,
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["footswitch"], 0);
@@ -116,6 +157,7 @@ fn doctor_sound_result_cut_through_serializes_camel_case() {
             advisory: false,
         }),
         error: None,
+        skipped_band_count: 0,
     };
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["cutThrough"]["contrastDb"], 12.5);
@@ -332,6 +374,191 @@ fn floor_error_for_disarms_on_a_near_stationary_stimulus() {
     // stimulus spread ≤ STATIONARY_STIM_LU (0.30) can't discriminate by spread —
     // the guard must not fire even though the capture itself reads flat.
     assert_eq!(floor_error_for(0.01, 0.2), None);
+}
+
+// --- skipped_band_count: fix P3-4, SNR-gate transparency ---
+
+#[test]
+fn skipped_band_count_counts_false_entries() {
+    assert_eq!(skipped_band_count(Some(&[true, true, true])), 0);
+    assert_eq!(skipped_band_count(Some(&[true, false, true, false])), 2);
+    assert_eq!(skipped_band_count(Some(&[false, false])), 2);
+}
+
+#[test]
+fn skipped_band_count_absent_coverage_reads_zero() {
+    // No coverage computed at all (errored/showcase sound) reads as 0, not
+    // "everything gated".
+    assert_eq!(skipped_band_count(None), 0);
+}
+
+// --- resolve_sound_isolation: fix P3-1, scenes ride their saved overlay state ---
+
+#[test]
+fn resolve_sound_isolation_never_writes_for_a_scene_sound() {
+    // A scene sound must get NO force-bypass write — graph present (the bug: it
+    // used to route through `derived_force_bypass` with the base-forcing shape,
+    // `fs=None`, identical to the base isolation) AND graph absent (already
+    // correct pre-fix, must stay so). Base/footswitch are untouched by this fix
+    // and are covered by the `doctor_force_bypass`/`derived_force_bypass` tests
+    // elsewhere in this file.
+    let (preset, infos) = iso_ab_fixture();
+    let nodes = nodes_from(&preset);
+    let mut cache = std::collections::HashMap::new();
+    let iso = resolve_sound_isolation(&nodes, &infos, Some(0), None, 5, &mut cache);
+    assert!(iso.bypass.is_empty() && iso.params.is_empty());
+    // Graph absent too — the pre-existing empty-nodes behavior for scenes.
+    let iso = resolve_sound_isolation(&[], &infos, Some(0), None, 5, &mut cache);
+    assert!(iso.bypass.is_empty() && iso.params.is_empty());
+}
+
+// --- derived_param_writes: the FS-sound param twin of the isolation parity test ---
+
+#[test]
+fn derived_param_writes_matches_the_live_engine_on_every_sound() {
+    // The param derivation exists twice (offline `FootswitchInfo` walk vs live
+    // `ftsw` JSON `param_fn_values`) exactly like the isolation split above —
+    // the two must agree on base + every switch, including the param-only
+    // switch 2 (valueA 0.9) and the on-off-only switches (no param writes).
+    let (preset, infos) = iso_ab_fixture();
+    let ftsw = &preset["ftsw"];
+    let cases: Vec<Option<u32>> = std::iter::once(None)
+        .chain(infos.iter().map(|fi| Some(fi.switch)))
+        .collect();
+    for case in cases {
+        let derived = footswitch::derived_param_writes(&infos, case);
+        let live: Vec<(String, String, String, f32)> = case
+            .map(|sw| {
+                footswitch::param_fn_values(ftsw, sw)
+                    .into_iter()
+                    .map(|(g, n, p, a, _b)| (g, n, p, a))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(derived, live, "mismatch for footswitch={case:?}");
+    }
+    // And the param-only switch actually yields its engaged write — the case the
+    // Doctor used to capture as the base sound.
+    assert_eq!(
+        footswitch::derived_param_writes(&infos, Some(2)),
+        vec![("G1".into(), "MOD".into(), "gain".into(), 0.9_f32)]
+    );
+}
+
+#[test]
+fn resolve_sound_isolation_carries_param_writes_for_a_param_only_switch() {
+    // A param-only footswitch SOUND: no on-off isolation of its own beyond the
+    // siblings, and its `params` must carry the engaged valueA — with `wrote`
+    // semantics downstream keyed on either list being non-empty.
+    let (preset, infos) = iso_ab_fixture();
+    let nodes = nodes_from(&preset);
+    let mut cache = std::collections::HashMap::new();
+    let iso = resolve_sound_isolation(&nodes, &infos, None, Some(2), 5, &mut cache);
+    assert_eq!(
+        iso.params,
+        vec![("G1".into(), "MOD".into(), "gain".into(), 0.9_f32)]
+    );
+    let _ = preset; // fixture kept alive alongside its enumerated infos
+}
+
+// --- bypass_only_conflict: fix P3-2, refuse a scene-context write that would leak to base ---
+
+/// A minimal preset carrying one node (`ampA`/`ACD_TwinReverb`, group G1) with
+/// scene 0's overlay set to `overlay_params` — the ONE fixture shape
+/// `scene_overlay` itself is pinned against, shared from its own test module.
+use crate::probe_api::scene_jobs::scene_jobs_tests::with_scene0_overlay as preset_with_scene0_overlay;
+use crate::probe_api::scene_jobs::scene_jobs_tests::{hbe_boost_preset, HBE_NODE, HBE_PARAM};
+
+fn param_op(node_id: &str) -> doctor::DoctorOp {
+    doctor::DoctorOp::Param {
+        group_id: "G1".to_string(),
+        node_id: node_id.to_string(),
+        param: "outputLevel".to_string(),
+        value: 0.6,
+    }
+}
+
+#[test]
+fn bypass_only_conflict_refuses_on_a_bypass_only_overlay() {
+    // scene 0's overlay carries ONLY the bypass family — Scene Edit is OFF, the
+    // node's knobs are shared with base (`SceneWriteVerdict::Refuse`).
+    let preset = preset_with_scene0_overlay(serde_json::json!({ "bypass": false }));
+    let ops = vec![param_op("ampA")];
+    let reason = bypass_only_conflict(&preset, 0, &ops).expect("BypassOnly refuses");
+    assert!(reason.contains("ampA"));
+}
+
+#[test]
+fn bypass_only_conflict_allows_a_full_overlay() {
+    // scene 0's overlay carries a real knob alongside bypass — Scene Edit is ON,
+    // the write lands in the overlay, not base (`SceneWriteVerdict::WriteDirect`).
+    let preset =
+        preset_with_scene0_overlay(serde_json::json!({ "bypass": false, "outputLevel": 0.2 }));
+    let ops = vec![param_op("ampA")];
+    assert_eq!(bypass_only_conflict(&preset, 0, &ops), None);
+}
+
+#[test]
+fn bypass_only_conflict_ignores_insert_node_ops() {
+    // InsertNode is never scene-scoped (block topology is shared across every
+    // scene) — a BypassOnly overlay on an unrelated node must not block it.
+    let preset = preset_with_scene0_overlay(serde_json::json!({ "bypass": false }));
+    let ops = vec![doctor::DoctorOp::InsertNode {
+        group_id: "G1".to_string(),
+        before_fender_id: None,
+        fender_id: "ACD_TenBandEQStereo".to_string(),
+        params: Vec::new(),
+    }];
+    assert_eq!(bypass_only_conflict(&preset, 0, &ops), None);
+}
+
+#[test]
+fn bypass_only_conflict_refuses_on_an_absent_overlay_too() {
+    // Fix P3-2 widening: scene 1 of the fixture carries NO overlay for "ampA" at
+    // all (`SceneOverlay::Absent` → `SceneWriteVerdict::NeedsEnable`) — Doctor has
+    // no enable/repair pass, so this now refuses too instead of leaking to base
+    // (previously a prose-only, unenforced limitation).
+    let preset = preset_with_scene0_overlay(serde_json::json!({ "bypass": false }));
+    let ops = vec![param_op("ampA")];
+    let reason = bypass_only_conflict(&preset, 1, &ops).expect("Absent overlay refuses");
+    assert!(reason.contains("ampA"));
+}
+
+#[test]
+fn bypass_only_conflict_refuses_on_an_unknown_overlay() {
+    // No `scenes` array at all (mirrors a truncated field-8 read — 22/25 real
+    // presets read "scenes unknown") — `scene_write_verdict_for_param` can't tell Absent
+    // from a cut, so it refuses rather than risk either write shape.
+    let preset = serde_json::json!({});
+    let ops = vec![param_op("ampA")];
+    let reason = bypass_only_conflict(&preset, 0, &ops).expect("Unknown overlay refuses");
+    assert!(reason.contains("ampA"));
+}
+
+/// BUG→GATE (widened policy's second consumer, "Friedman HBE" preset 28):
+/// `bypass_only_conflict` calls the SAME `scene_write_verdict_for_param` the scene-leveling
+/// lane does, so its own audibility-cleared allow arm (`WriteDirect{lands_on_base:true}`)
+/// must reach Doctor too, not just the leveller. `hbe_boost_preset()` (shared from
+/// `scene_jobs_tests`) is the exact anatomy: `boost`/`ACD_Boost` bypassed in base, a
+/// bypass-only un-bypass overlay in ONLY scene 2 "Solo", no footswitch/EXP assign targeting
+/// it, and every other scene either pins its own `gain` (Full) or stays bypassed
+/// (bypass-only) — Solo is the sole scene the shared write is audible in. Doctor's prescribe
+/// for Solo must NOT report a conflict here.
+#[test]
+fn bypass_only_conflict_allows_the_audibility_cleared_shared_write() {
+    let preset = hbe_boost_preset();
+    let ops = vec![doctor::DoctorOp::Param {
+        group_id: "G1".to_string(),
+        node_id: HBE_NODE.to_string(),
+        param: HBE_PARAM.to_string(),
+        value: 4.0,
+    }];
+    assert_eq!(
+        bypass_only_conflict(&preset, 2, &ops),
+        None,
+        "Solo (scene 2): the shared write is audible only here, so Doctor must be allowed \
+         through, not refused as shared_with_base"
+    );
 }
 
 // --- doctor_apply BEFORE-clip cache ---

@@ -100,6 +100,8 @@ function mockHappyPath() {
               ],
               blocks: [],
               footswitches: [],
+              scene_handles: [],
+              base_handles: [],
             },
           ],
           song_presets: [],

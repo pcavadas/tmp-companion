@@ -235,6 +235,22 @@ impl Capture {
             .collect()
     }
 
+    /// [`Self::channel`], but a LOUD error when the capture doesn't carry the
+    /// index at all. For load-bearing ABSOLUTE indices (the dry-DI tap) —
+    /// `channel`'s zero-pad would masquerade a structurally missing channel as
+    /// "the player played nothing".
+    pub fn require_channel(&self, ch: usize) -> Result<Vec<f32>, String> {
+        if ch >= self.channels {
+            return Err(format!(
+                "capture carries {} channel(s) — no channel index {ch}; expected the \
+                 TMP's {TMP_NATIVE_CHANNELS}-channel USB-Out (is a non-TMP audio \
+                 device being matched?)",
+                self.channels
+            ));
+        }
+        Ok(self.channel(ch))
+    }
+
     /// The louder of the two PROCESSED channels (USB-Out 1/2 = capture channels
     /// 0/1), with its RMS. Channel 2+ (the dry instrument send) is excluded on
     /// purpose: a guitar plugged in during a leveling run would win a full
@@ -370,10 +386,38 @@ fn incremental_loudness_for(in_ch: usize, sample_rate: u32) -> Result<Incrementa
     }
 }
 
-/// Pick the TMP out of a cpal device iterator. The platform boundary — see
-/// `imp` below.
-fn find_device<I: Iterator<Item = Device>>(devs: I) -> Option<Device> {
-    imp::find_device(devs)
+/// The TMP's native per-side USB channel count (a 4-in / 4-out interface).
+const TMP_NATIVE_CHANNELS: u16 = 4;
+
+/// Among "tone master" name matches, the index of the device to open: the
+/// first carrying the TMP's NATIVE channel count, else the first match at all.
+/// An aggregate that merely CONTAINS the TMP (e.g. "Tone Master Pro + mic")
+/// also matches by name and can precede the physical unit in CoreAudio's
+/// unspecified enumeration order, but concatenates its sub-devices' channels —
+/// absolute indices (the dry-DI tap `DRY_INSTRUMENT_IN_CH` above all) then
+/// land on the wrong lane, silently measuring a microphone instead of the
+/// guitar. A TMP-only aggregate keeps the native count and layout, so the
+/// count test admits it. macOS-only: Linux resolves by `/proc/asound` PCM id
+/// (see the `imp` modules), so the native-count tiebreak isn't needed there.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pick_match_index(channel_counts: &[u16]) -> Option<usize> {
+    channel_counts
+        .iter()
+        .position(|&c| c == TMP_NATIVE_CHANNELS)
+        .or((!channel_counts.is_empty()).then_some(0))
+}
+
+/// Pick the TMP out of a cpal device iterator. The platform boundary — see the
+/// `imp` modules below. `channels_of` reports a candidate's channel count in the
+/// caller's direction (input vs output configs): the macOS `imp` uses it to
+/// prefer the native-4 unit over a name-matching aggregate; the Linux and
+/// fallback `imp`s resolve differently and ignore it.
+fn find_device<I, F>(devs: I, channels_of: F) -> Option<Device>
+where
+    I: Iterator<Item = Device>,
+    F: Fn(&Device) -> u16,
+{
+    imp::find_device(devs, channels_of)
 }
 
 /// The ALSA card `find_device` would resolve to on Linux, or `None` if no
@@ -387,13 +431,26 @@ pub(crate) fn linux_audio_card_id() -> Option<String> {
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::Device;
+    use super::{pick_match_index, Device};
 
-    /// CoreAudio names devices for cpal by their USB product string, and there is
-    /// exactly one cpal entry per physical device — a plain substring match is
-    /// unambiguous.
-    pub(super) fn find_device<I: Iterator<Item = Device>>(mut devs: I) -> Option<Device> {
-        devs.find(|d| d.to_string().to_lowercase().contains("tone master"))
+    /// CoreAudio names devices for cpal by their USB product string, so a "tone
+    /// master" substring is the match — but a "Tone Master Pro + mic" AGGREGATE
+    /// matches the same substring and can precede the physical unit in CoreAudio's
+    /// unspecified enumeration order, concatenating its sub-devices' channels so
+    /// absolute indices (the dry-DI tap) land on the wrong lane. Prefer the match
+    /// whose channel count is the native 4 (`channels_of` counts in the caller's
+    /// direction); a TMP-only aggregate keeps the native count, so it's still
+    /// admitted, and with no native match we fall back to the first name hit.
+    pub(super) fn find_device<I, F>(devs: I, channels_of: F) -> Option<Device>
+    where
+        I: Iterator<Item = Device>,
+        F: Fn(&Device) -> u16,
+    {
+        let mut matches: Vec<Device> = devs
+            .filter(|d| d.to_string().to_lowercase().contains("tone master"))
+            .collect();
+        let counts: Vec<u16> = matches.iter().map(channels_of).collect();
+        pick_match_index(&counts).map(|i| matches.swap_remove(i))
     }
 }
 
@@ -419,8 +476,14 @@ mod imp {
     /// `hw:` only ever advertises the physical count, so `pick_config` can only
     /// ever land on exactly 4 there. The resulting I32-only format is handled at
     /// the stream-callback boundary (`pick_config`, `fill_output_frames_f32`,
-    /// `read_input_frames_f32`).
-    pub(super) fn find_device<I: Iterator<Item = Device>>(mut devs: I) -> Option<Device> {
+    /// `read_input_frames_f32`). `_channels_of` is unused here — the `/proc/asound`
+    /// PCM-id resolution is already unambiguous, so the macOS native-count tiebreak
+    /// doesn't apply — but the parameter keeps `find_device`'s signature uniform.
+    pub(super) fn find_device<I, F>(mut devs: I, _channels_of: F) -> Option<Device>
+    where
+        I: Iterator<Item = Device>,
+        F: Fn(&Device) -> u16,
+    {
         let card_id = tmp_audio_card_id()?;
         let want = format!("hw:CARD={card_id},DEV=0");
         devs.find(|d| {
@@ -476,7 +539,11 @@ mod imp {
 mod imp {
     use super::Device;
 
-    pub(super) fn find_device<I: Iterator<Item = Device>>(_devs: I) -> Option<Device> {
+    pub(super) fn find_device<I, F>(_devs: I, _channels_of: F) -> Option<Device>
+    where
+        I: Iterator<Item = Device>,
+        F: Fn(&Device) -> u16,
+    {
         None
     }
 }
@@ -596,10 +663,14 @@ struct ReampStreams {
 /// config. Errors describe exactly which half is missing.
 fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
     let host = cpal::default_host();
-    let out_dev = find_device(host.output_devices().map_err(|e| e.to_string())?)
-        .ok_or("Tone Master Pro output device not found")?;
-    let in_dev = find_device(host.input_devices().map_err(|e| e.to_string())?)
-        .ok_or("Tone Master Pro input device not found")?;
+    let out_dev = find_device(host.output_devices().map_err(|e| e.to_string())?, |d| {
+        channels_rates_formats(d.supported_output_configs().ok()).0
+    })
+    .ok_or("Tone Master Pro output device not found")?;
+    let in_dev = find_device(host.input_devices().map_err(|e| e.to_string())?, |d| {
+        channels_rates_formats(d.supported_input_configs().ok()).0
+    })
+    .ok_or("Tone Master Pro input device not found")?;
 
     let out_cfg = pick_config(
         out_dev
@@ -1328,19 +1399,30 @@ impl LiveReamp {
 /// `secs` seconds WITHOUT playing anything. Used for Tier-2 calibration: with the
 /// device in normal mode and the user playing their real guitar, the dry
 /// instrument send appears on USB-Out 3 (input channel index 2) and lets us
-/// measure that instrument's actual output level.
+/// measure that instrument's actual output level. The config MUST carry that
+/// index — a sub-3-channel negotiation fails here, loudly, instead of letting
+/// `Capture::channel`'s zero-pad read as "the player played nothing".
 pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
     let host = cpal::default_host();
-    let in_dev = find_device(host.input_devices().map_err(|e| e.to_string())?)
-        .ok_or("Tone Master Pro input device not found")?;
+    let in_dev = find_device(host.input_devices().map_err(|e| e.to_string())?, |d| {
+        channels_rates_formats(d.supported_input_configs().ok()).0
+    })
+    .ok_or("Tone Master Pro input device not found")?;
     let in_cfg = pick_config(
         in_dev
             .supported_input_configs()
             .map_err(|e| e.to_string())?,
         sample_rate,
-        1,
+        (DRY_INSTRUMENT_IN_CH + 1) as u16,
     )
-    .ok_or_else(|| format!("no F32/I32 input config at {sample_rate} Hz"))?;
+    .ok_or_else(|| {
+        format!(
+            "no F32/I32 input config at {sample_rate} Hz with ≥{} channels — the dry \
+             instrument tap is USB-Out 3; is a non-TMP device named \"Tone Master\" \
+             selected?",
+            DRY_INSTRUMENT_IN_CH + 1
+        )
+    })?;
     let in_ch = in_cfg.channels() as usize;
 
     let captured = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
@@ -1840,6 +1922,53 @@ mod tests {
             sample_rate: 48_000,
         };
         assert_eq!(cap.stereo_mix(), vec![0.25, -0.5, 0.75]);
+    }
+
+    // ── the "calibration can't see the guitar" bug class ─────────────────────
+    // User-reported: Settings calibration read a fabricated-silent (or wrong-
+    // device) lane as "no instrument signal" while a mic-carrying aggregate
+    // named "Tone Master …" measured room sound instead of the dry DI.
+
+    #[test]
+    fn require_channel_errors_on_a_structurally_missing_dry_channel() {
+        // channel()'s zero-pad must NOT reach the dry-DI reader: a capture
+        // negotiated with too few channels fails loudly instead of reading
+        // synthesized silence as "the player played nothing".
+        let cap = Capture {
+            interleaved: vec![0.1, 0.2, 0.1, 0.2],
+            channels: 2,
+            sample_rate: 48_000,
+        };
+        let err = cap.require_channel(DRY_INSTRUMENT_IN_CH).unwrap_err();
+        assert!(err.contains("2 channel"), "unhelpful error: {err}");
+        // A carried index still reads the strict way.
+        assert_eq!(cap.require_channel(1).unwrap(), vec![0.2, 0.2]);
+    }
+
+    #[test]
+    fn require_channel_returns_the_dry_lane_on_a_native_capture() {
+        let cap = Capture {
+            interleaved: vec![1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.5, 4.0],
+            channels: TMP_NATIVE_CHANNELS as usize,
+            sample_rate: 48_000,
+        };
+        assert_eq!(
+            cap.require_channel(DRY_INSTRUMENT_IN_CH).unwrap(),
+            vec![3.0, 3.5]
+        );
+    }
+
+    #[test]
+    fn device_match_prefers_the_native_channel_count_over_an_aggregate() {
+        // A "Tone Master Pro + mic" aggregate matches the name substring too
+        // and CAN precede the physical unit in CoreAudio's unspecified
+        // enumeration order — the native 4-ch unit must win regardless.
+        assert_eq!(pick_match_index(&[6, 4]), Some(1));
+        assert_eq!(pick_match_index(&[4, 6]), Some(0));
+        // No native-count match: first match, so the channel guards downstream
+        // fail loudly instead of a blanket "device not found".
+        assert_eq!(pick_match_index(&[6, 2]), Some(0));
+        assert_eq!(pick_match_index(&[]), None);
     }
 
     #[test]

@@ -116,6 +116,16 @@ pub fn roster(preset: &Value) -> Vec<(String, String, String)> {
     out
 }
 
+/// The roster row for `node` (matched by nodeId OR FenderId — overlays and callers key by
+/// either): `(group, node_id, fender_id)`. The ONE id-or-fallback matching rule, shared by
+/// `scene_jobs::scene_overlay` and `leveller::FsParamTarget::from_preset` so the two can't
+/// drift.
+pub fn roster_entry(preset: &Value, node: &str) -> Option<(String, String, String)> {
+    roster(preset)
+        .into_iter()
+        .find(|(_, nid, fid)| nid == node || fid == node)
+}
+
 /// Count nodes whose id equals `id` across the graph.
 pub fn count_nodes_with_id(preset: &Value, id: &str) -> usize {
     let mut n = 0;

@@ -16,6 +16,11 @@ export default defineConfig({
   testDir: "./specs",
   fullyParallel: false,
   workers: 1, // the device is exclusive-seize
+  // Unconditional (not gated on CI, unlike the offline config): the online lane always
+  // CERTIFIES — a full passing run can record the online stamp. A committed `.only` would
+  // silently stamp a one-test run as covering the full tier, so it must fail loud here
+  // rather than just being a CI-only hygiene nit.
+  forbidOnly: true,
   reporter: [["list"]],
   // Real device: the ~22 s backup, real re-amp (×3 for the Level scenario), and the
   // per-test scratch seed/clear all add up — give each test generous room.

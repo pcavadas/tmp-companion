@@ -482,11 +482,13 @@ fn scene_jobs_saved_fallback_without_template_still_errors() {
 // a node that has none leaks the write to base — so Present/Absent/Unknown must be exact.
 
 #[test]
-fn scene_overlay_present_carries_bypass() {
+fn scene_overlay_full_carries_bypass() {
     let p = saved_preset();
-    // Base node is "ampA"; the scene-0 overlay is keyed by its FenderId.
-    let SceneOverlay::Present(params) = scene_overlay(&p, 0, "ampA") else {
-        panic!("scene 0 overlays ampA");
+    // Base node is "ampA"; the scene-0 overlay is keyed by its FenderId. It carries a KNOB
+    // (`outputLevel`) alongside `bypass`, so it is a FULL overlay — the node's Scene Edit
+    // flag is on and the enable-dropped write lands on the overlay.
+    let SceneOverlay::Full(params) = scene_overlay(&p, 0, "ampA") else {
+        panic!("scene 0 fully overlays ampA");
     };
     assert_eq!(params.get("bypass").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(
@@ -502,17 +504,18 @@ fn scene_overlay_resolves_by_fender_id() {
     let p = saved_preset();
     assert!(matches!(
         scene_overlay(&p, 0, "ACD_TwinReverb"),
-        SceneOverlay::Present(_)
+        SceneOverlay::Full(_)
     ));
 }
 
-// An overlay that does NOT carry bypass: Present, but the bake gate must not trip.
+// An overlay that does NOT carry bypass: still FULL (it carries a knob), but the bake gate
+// must not trip.
 #[test]
-fn scene_overlay_present_without_bypass() {
+fn scene_overlay_full_without_bypass() {
     let mut p = saved_preset();
     p["scenes"][1]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
         serde_json::json!({ "dspUnitParameters": { "outputLevel": 0.7 } });
-    let SceneOverlay::Present(params) = scene_overlay(&p, 1, "ampA") else {
+    let SceneOverlay::Full(params) = scene_overlay(&p, 1, "ampA") else {
         panic!("scene 1 overlays ampA");
     };
     assert!(!params.contains_key("bypass"));
@@ -589,167 +592,380 @@ fn scene_overlay_base_slot_is_unknown() {
     ));
 }
 
-// ── per-node bake gate: does ANY scene overlay CHANGE this node's param ────────────────
+// ── per-node bake gate (`scene_overlays_change_param`) — REMOVED 2026-08-19 ────────────
+//
+// The whole "does any scene overlay CHANGE this node's param" gate this section used to pin
+// is gone: `plan_footswitch_jobs`'s assign gate no longer reads scene data at all — it decides
+// bake-vs-assign purely off whether the switch already carries a `param` fn for the selected
+// control. The dozen-plus VALUE/truncation/ambiguity cases that lived here (plus the
+// truncation-only `without_scene0_bypass` fixture) existed solely to pin that removed
+// function; they went with it. `bake_gate_preset` survives BELOW — `restating_base_skips_a_
+// bypass_only_scene_which_inherits_the_bake` still needs its in-range `lastLoadedScene` — and
+// `scene_overlay_shape_classifies_bypass_only_vs_full` further down still stands too; both pin
+// `scene_overlay`/`scenes_restating_base`, neither of which this rule change touched.
 
-// `saved_preset`'s `lastLoadedScene` (2) is out of range for its 2-entry `scenes[]`, which the
-// bake gate correctly reads as a cut tail — so the gate's own fixture pins it in range.
+// `saved_preset`'s `lastLoadedScene` (2) is out of range for its 2-entry `scenes[]`; the
+// mirror-target fixture below needs it in range, so it pins that itself.
 fn bake_gate_preset() -> serde_json::Value {
     let mut p = saved_preset();
     p["lastLoadedScene"] = serde_json::json!(0);
     p
 }
 
-// Strip scene 0's `bypass` (keeping the overlay) so only a truncation signal can trip the gate.
-fn without_scene0_bypass() -> serde_json::Value {
-    let mut p = bake_gate_preset();
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
-        serde_json::json!({ "outputLevel": 0.9 });
+// ── three-state overlay split: Full vs BypassOnly (HW-verified fw 1.8.45) ───────────────
+//
+// A scene's per-node overlay can be BYPASS-ONLY — the block's Scene Edit flag is DISABLED,
+// so the scene carries only the bypass family and SHARES the node's knobs with base. A
+// scene-context param write with the enable dropped against such a node lands on BASE
+// (measured: base gain 2.5 → 7.0, the bypass-only overlay unchanged, other scenes' full
+// overlays untouched). Classifying it as a knob overlay is the bug this split fixes, so
+// each shape below is pinned exactly.
+
+/// `saved_preset()` with scene 0's `ampA` overlay replaced by `params`. `pub(crate)`
+/// so `commands::doctor_tests`' `bypass_only_conflict` tests share this fixture
+/// shape instead of re-typing it (both scan `scene_overlay` against `ampA`/`G1`/
+/// `ACD_TwinReverb`).
+pub(crate) fn with_scene0_overlay(params: serde_json::Value) -> serde_json::Value {
+    let mut p = saved_preset();
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+        serde_json::json!({ "dspUnitParameters": params });
     p
 }
 
-// Scene 0 overlays `bypass: false` over a base `bypass: true` — a real FLIP.
+// Overlay-shape table: which param maps classify BypassOnly (device Scene Edit flag
+// disabled, knobs shared with base) vs Full (a genuine knob overlay). `bypassType` and
+// `clipState` are per-block STATE keys widened into BYPASS_ONLY_KEYS (m4), not knobs — an
+// overlay of only those plus `bypass` must stay BypassOnly. An EMPTY param map overlays no
+// knob at all so it shares base exactly like the flag-disabled case (pinned so nobody "fixes"
+// it to Full — that would authorise the leak-to-base write). ONE real knob (`outputLevel`)
+// alongside bypass is enough to flip the whole overlay to Full.
 #[test]
-fn change_param_true_when_a_scene_flips_bypass() {
-    assert!(scene_overlays_change_param(
-        &bake_gate_preset(),
-        "ampA",
-        "bypass"
-    ));
+fn scene_overlay_shape_classifies_bypass_only_vs_full() {
+    let cases: [(&str, serde_json::Value, bool); 5] = [
+        ("bypass alone", serde_json::json!({ "bypass": false }), true),
+        (
+            "bypass + bypassType (firmware companion enum)",
+            serde_json::json!({ "bypass": true, "bypassType": "Post" }),
+            true,
+        ),
+        (
+            "bypass + clipState (per-block state, not a knob)",
+            serde_json::json!({ "bypass": true, "clipState": "off" }),
+            true,
+        ),
+        (
+            "bypass + outputLevel (one real knob rides along)",
+            serde_json::json!({ "bypass": false, "outputLevel": 0.4 }),
+            false,
+        ),
+        (
+            "empty param map (no knob overlaid at all)",
+            serde_json::json!({}),
+            true,
+        ),
+    ];
+    for (label, params, expect_bypass_only) in cases {
+        let p = with_scene0_overlay(params);
+        match scene_overlay(&p, 0, "ampA") {
+            SceneOverlay::BypassOnly(_) => assert!(
+                expect_bypass_only,
+                "{label}: classified BypassOnly, expected Full"
+            ),
+            SceneOverlay::Full(_) => assert!(
+                !expect_bypass_only,
+                "{label}: classified Full, expected BypassOnly"
+            ),
+            _ => panic!("{label}: expected Full or BypassOnly"),
+        }
+    }
 }
 
+// Mirror rule: a BypassOnly scene is NOT a mirror target. Its knobs are shared with base, so
+// it already follows base for the leveled param and inherits the bake automatically —
+// writing a mirror there would be the leak-to-base write the split exists to prevent.
 #[test]
-fn change_param_false_when_no_scene_overlays_bypass() {
-    assert!(!scene_overlays_change_param(
-        &without_scene0_bypass(),
-        "ampA",
-        "bypass"
-    ));
-}
-
-// The DEVICE-AUTHORED shape: the unit writes the FULL param set into every scene overlay, so
-// the key is always present. Only a value that DIFFERS from base changes what the scene
-// renders — an overlay restating base must read `false` for every param it carries, else the
-// gate collapses to "this preset has scenes" on every preset the unit itself wrote.
-#[test]
-fn change_param_false_when_a_full_overlay_restates_the_base_values() {
+fn restating_base_skips_a_bypass_only_scene_which_inherits_the_bake() {
     let mut p = bake_gate_preset();
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
-        serde_json::json!({ "bypass": true, "outputLevel": 0.4 });
-    assert!(!scene_overlays_change_param(&p, "ampA", "bypass"));
-    assert!(!scene_overlays_change_param(&p, "ampA", "outputLevel"));
-}
-
-// Pin the `SCENE_PARAM_EPS` (1e-6) tolerance itself: the restating test above uses exact
-// values, so it would stay green if the compare silently became `!=`. A float-noise delta
-// (1e-7) must read unchanged; a real (if small) authored delta (1e-4) must read changed.
-#[test]
-fn change_param_tolerance_splits_float_noise_from_a_real_delta() {
-    let mut p = bake_gate_preset();
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
-        serde_json::json!({ "bypass": true, "outputLevel": 0.400_000_1 });
-    assert!(
-        !scene_overlays_change_param(&p, "ampA", "outputLevel"),
-        "1e-7 off base is float noise, not an authored change"
+    // Scene 0: a FULL overlay restating base's outputLevel (0.4) → a genuine mirror target.
+    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+        serde_json::json!({ "dspUnitParameters": { "bypass": true, "outputLevel": 0.4 } });
+    // Scene 1: bypass-only → shares base's knobs → nothing to mirror.
+    p["scenes"][1]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+        serde_json::json!({ "dspUnitParameters": { "bypass": false } });
+    assert!(matches!(
+        scene_overlay(&p, 1, "ampA"),
+        SceneOverlay::BypassOnly(_)
+    ));
+    assert_eq!(
+        scenes_restating_base(&p, "ampA", "outputLevel"),
+        vec![0],
+        "only the FULL restating overlay is mirrored; the sharing scene inherits the bake"
     );
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
-        serde_json::json!({ "bypass": true, "outputLevel": 0.4001 });
+}
+
+// ── Part B: audibility-guarded BypassOnly shared write ──────────────────────────────────
+//
+// BUG (preset 28 "Friedman HBE", `ACD_Boost`/`gain`): base bypassed, `gain` 2.5. Dirt (scene
+// 0) and Crunch (scene 3) carry FULL overlays (their own bypass + gain). Clean (scene 1) is
+// bypass-only and stays bypassed. Solo (scene 2) is bypass-only and UN-bypassed — it is the
+// ONLY scene that can hear a plain leak-to-base write, because every OTHER scene either stays
+// bypassed or pins `gain` with its own overlay. `scene_write_verdict` used to refuse this
+// outright ("shares knobs with base"); `shared_write_is_scene_local` clears it.
+
+/// `hbe_boost_preset()`'s node id/param, named once so the matrix tests below don't repeat
+/// the literals. `pub(crate)` alongside the preset builder — `commands::doctor_tests`'
+/// `bypass_only_conflict` matrix reuses both rather than re-typing the anatomy.
+pub(crate) const HBE_NODE: &str = "boost";
+pub(crate) const HBE_PARAM: &str = "gain";
+
+/// The bug's exact shape: one node (`boost`/`ACD_Boost`, group G1) bypassed in base with
+/// `gain` 2.5, and 4 scenes — Dirt/Crunch (Full, own gain), Clean (bypass-only, stays
+/// bypassed), Solo (bypass-only, un-bypassed — the sole audible scene for a shared write).
+/// `pub(crate)` so `commands::doctor_tests` can drive `bypass_only_conflict` (the OTHER
+/// consumer of `scene_write_verdict_for_param`) against the exact same anatomy instead of
+/// re-typing it.
+pub(crate) fn hbe_boost_preset() -> serde_json::Value {
+    serde_json::json!({
+        "lastLoadedScene": 2,
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "boost", "FenderId": "ACD_Boost",
+              "dspUnitParameters": { "bypass": true, "gain": 2.5 } }
+        ] } },
+        "scenes": [
+            // Dirt: Full overlay, own gain — pins `gain` against base.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
+            // Clean: bypass-only, stays bypassed — the leak is silent here.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": true } } } } },
+            // Solo: bypass-only, un-bypassed — the ONLY scene that can hear the leak.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": false } } } } },
+            // Crunch: Full overlay, own gain — pins `gain` against base.
+            { "guitarNodes": { "G1": {
+                "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
+        ]
+    })
+}
+
+#[test]
+fn shared_write_is_scene_local_true_only_for_the_solo_scene() {
+    assert!(matches!(
+        scene_overlay(&hbe_boost_preset(), 2, HBE_NODE),
+        SceneOverlay::BypassOnly(_)
+    ));
     assert!(
-        scene_overlays_change_param(&p, "ampA", "outputLevel"),
-        "1e-4 off base is a real authored delta"
+        shared_write_is_scene_local(&hbe_boost_preset(), 2, HBE_NODE, HBE_PARAM),
+        "Solo is the only scene the shared write is audible in"
+    );
+    // Clean (scene 1) is ALSO bypass-only, but stays bypassed — the predicate is asked
+    // about scene 1 itself now, and it must refuse (the leak is silent there, so writing it
+    // there would be pointless AND it is not the scene answering "audible only here").
+    assert!(!shared_write_is_scene_local(
+        &hbe_boost_preset(),
+        1,
+        HBE_NODE,
+        HBE_PARAM
+    ));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_second_scene_is_audible_without_pinning() {
+    let mut p = hbe_boost_preset();
+    // Clean (scene 1) un-bypassed too, with NO Full overlay pinning `gain` there — now BOTH
+    // scene 1 and Solo would hear the shared write, so neither is scene-LOCAL to it.
+    p["scenes"][1]["guitarNodes"]["G1"]["ACD_Boost"] =
+        serde_json::json!({ "dspUnitParameters": { "bypass": false } });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_base_carries_no_bypass_key() {
+    let mut p = hbe_boost_preset();
+    p["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"] =
+        serde_json::json!({ "gain": 2.5 });
+    assert!(
+        !shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM),
+        "a missing base bypass key can't confirm the shared value is silent in base"
     );
 }
 
-// The leveled-param check the footswitch gate's second call makes: base 0.4 → scene 0.9.
 #[test]
-fn change_param_true_when_a_scene_changes_a_non_bypass_param() {
-    assert!(scene_overlays_change_param(
-        &bake_gate_preset(),
-        "ampA",
-        "outputLevel"
+fn shared_write_is_scene_local_false_when_audible_in_base() {
+    let mut p = hbe_boost_preset();
+    p["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"] =
+        serde_json::json!(false);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_on_truncated_scenes() {
+    let mut p = hbe_boost_preset();
+    // A scene footswitch assignment naming an index the 4-entry `scenes[]` doesn't reach —
+    // the same truncation signature `max_referenced_scene` exists to catch.
+    p["ftsw"] = serde_json::json!([[
+        { "func": "scene", "sceneSlot": 5, "isActive": true }
+    ]]);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_footswitch_on_off_row_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["ftsw"] = serde_json::json!([[
+        { "func": "on-off", "isActive": true,
+          "nodes": [{ "groupId": "G1", "nodeId": "boost" }] }
+    ]]);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_footswitch_param_function_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["ftsw"] = serde_json::json!([[
+        { "func": "param", "groupId": "G1", "nodeId": "boost", "parameterId": "gain",
+          "valueA": 0.0, "valueB": 1.0 }
+    ]]);
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_an_exp_binding_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["exp"] = serde_json::json!({
+        "exp1": [
+            { "func": "param", "groupId": "G1", "nodeId": "boost", "paramId": "gain",
+              "heel": 0.0, "toe": 1.0 }
+        ]
+    });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+// The three escapes `footswitch::node_targeted_by_assign` catches that the old, local
+// `scene_jobs::node_targeted_by_ftsw_or_exp` copy it replaced did NOT: a `toe` jack (the old
+// scan only checked `exp1`/`exp2`), an object-shaped jack body (the old scan assumed an array),
+// and a non-`"param"` func naming the node (the old scan matched `func:"param"` only). Each
+// must still make `shared_write_is_scene_local` refuse, exactly like the exp1/param case above.
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_toe_jack_assign_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["exp"] = serde_json::json!({
+        "toe": [
+            { "func": "param", "groupId": "G1", "nodeId": "boost", "paramId": "gain",
+              "heel": 0.0, "toe": 1.0 }
+        ]
+    });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_an_object_shaped_exp1_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    // No array wrapper — a single assignment object directly under the jack key.
+    p["exp"] = serde_json::json!({ "exp1": { "func": "volume", "nodeId": "boost" } });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_when_a_wah_func_exp_binding_targets_the_node() {
+    let mut p = hbe_boost_preset();
+    p["exp"] = serde_json::json!({
+        "exp2": [
+            { "func": "wah", "groupId": "G1", "nodeId": "boost", "heel": 0.0, "toe": 1.0 }
+        ]
+    });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+#[test]
+fn shared_write_is_scene_local_false_on_an_ambiguous_base_node_match() {
+    let mut p = hbe_boost_preset();
+    // A second base node answering to the SAME nodeId, in the mic graph — `base_node_matches`
+    // now reads two hits for "boost", which the predicate refuses outright.
+    p["audioGraph"]["micNodes"] = serde_json::json!({ "M1": [
+        { "nodeId": "boost", "FenderId": "ACD_Boost", "dspUnitParameters": { "bypass": true } }
+    ] });
+    assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
+}
+
+// ── verdict matrix: `scene_write_verdict_for_param` on the same doc ─────────────────────
+
+#[test]
+fn scene_write_verdict_for_param_allows_the_solo_write_direct_with_no_enable() {
+    let verdict = scene_write_verdict_for_param(&hbe_boost_preset(), 2, HBE_NODE, HBE_PARAM);
+    assert!(
+        matches!(
+            verdict,
+            SceneWriteVerdict::WriteDirect {
+                lands_on_base: true
+            }
+        ),
+        "the audibility-guarded shared write must land WriteDirect with lands_on_base=true"
+    );
+    assert!(
+        !matches!(verdict, SceneWriteVerdict::NeedsEnable),
+        "must NEVER enable Scene Edit here — that would reseed the overlay and wipe the \
+         scene's bypass flip"
+    );
+}
+
+#[test]
+fn scene_write_verdict_for_param_refuses_when_the_leak_is_not_scene_local() {
+    // Clean (scene 1) stays bypassed — the leak is silent there, so the predicate refuses
+    // (nothing gained by writing it), and the verdict keeps today's Refuse wording.
+    let verdict = scene_write_verdict_for_param(&hbe_boost_preset(), 1, HBE_NODE, HBE_PARAM);
+    match verdict {
+        SceneWriteVerdict::Refuse { scope, reason } => {
+            assert_eq!(scope, RefusedScope::SharedWithBase);
+            assert!(reason.contains("shares") && reason.contains(HBE_NODE));
+        }
+        _ => panic!("expected Refuse"),
+    }
+}
+
+#[test]
+fn scene_write_verdict_for_param_full_overlay_arm_unchanged() {
+    // Dirt (scene 0): a genuine Full overlay — WriteDirect regardless of the audibility
+    // guard, exactly like the paramless rule, and lands on the overlay (not base).
+    assert!(matches!(
+        scene_write_verdict_for_param(&hbe_boost_preset(), 0, HBE_NODE, HBE_PARAM),
+        SceneWriteVerdict::WriteDirect {
+            lands_on_base: false
+        }
     ));
 }
 
-// Two graph nodes answering to the same id: `scene_overlay` resolves the overlay off the
-// roster's FIRST match, so a value comparison could pit one instance's base against the
-// other's overlay. Ambiguous identity is unreadable state → conservative `true`.
 #[test]
-fn change_param_true_when_the_base_node_is_ambiguous() {
-    let mut p = bake_gate_preset();
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"]["dspUnitParameters"] =
-        serde_json::json!({ "bypass": true, "outputLevel": 0.4 });
-    let dup = p["audioGraph"]["guitarNodes"]["G1"][0].clone();
-    p["audioGraph"]["guitarNodes"]["G1"] = serde_json::json!([dup.clone(), dup]);
-    assert!(scene_overlays_change_param(&p, "ampA", "outputLevel"));
-}
-
-// The ambiguity case a per-overlay guard CANNOT catch: the duplicate lives in another group
-// (the same block in both parallel lanes) and the scene overlays only THAT copy. `scene_overlay`
-// looks under the first instance's group, finds nothing and reports `Absent` — so without the
-// up-front refusal this bakes off a scene state never read.
-#[test]
-fn change_param_true_when_a_duplicate_instance_is_the_one_the_scene_overlays() {
-    let mut p = bake_gate_preset();
-    let dup = p["audioGraph"]["guitarNodes"]["G1"][0].clone();
-    p["audioGraph"]["guitarNodes"]["G2"] = serde_json::json!([dup]);
-    // Only G2's copy is overlaid; G1's (the roster's first match) is not mentioned at all.
-    p["scenes"][0] = serde_json::json!({ "guitarNodes": { "G2": {
-        "ACD_TwinReverb": { "dspUnitParameters": { "outputLevel": 0.9 } }
-    } } });
-    assert!(scene_overlays_change_param(&p, "ampA", "outputLevel"));
-}
-
-#[test]
-fn change_param_false_for_a_sceneless_preset() {
-    let mut p = bake_gate_preset();
-    p["scenes"] = serde_json::json!([]);
-    // A preset with no scenes sits on base, which is not a `scenes[]` index.
-    p["lastLoadedScene"] = serde_json::json!(session::BASE_SCENE_SLOT);
-    assert!(!scene_overlays_change_param(&p, "ampA", "bypass"));
-}
-
-// The truncation case the bake gate exists for: `scenes` absent → unknown → never bake.
-#[test]
-fn change_param_true_when_scenes_key_absent() {
-    let mut p = bake_gate_preset();
-    p.as_object_mut().unwrap().remove("scenes");
-    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
-}
-
-#[test]
-fn change_param_true_when_a_scene_entry_is_truncated() {
-    let mut p = without_scene0_bypass();
-    p["scenes"][1] = serde_json::json!("truncated");
-    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
-}
-
-// The tail cut that SHORTENS `scenes[]`: the dropped scenes are invisible to a plain
-// `0..len` walk, so the gate must catch them via the indices the document still references
-// (`lastLoadedScene` here — scene 1 with only scene 0 left in the array).
-#[test]
-fn change_param_true_when_scenes_array_is_cut_short() {
-    let mut p = without_scene0_bypass();
-    let scene0 = p["scenes"][0].clone();
-    p["scenes"] = serde_json::json!([scene0]);
-    p["lastLoadedScene"] = serde_json::json!(1);
-    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
-}
-
-// Same cut, evidenced by a FOOTSWITCH scene assignment instead of `lastLoadedScene`.
-#[test]
-fn change_param_true_when_a_footswitch_references_a_dropped_scene() {
-    let mut p = without_scene0_bypass();
-    let scene0 = p["scenes"][0].clone();
-    p["scenes"] = serde_json::json!([scene0]);
-    p["ftsw"] = serde_json::json!([[{ "func": "scene", "sceneSlot": 3, "isActive": true }]]);
-    assert!(scene_overlays_change_param(&p, "ampA", "bypass"));
-}
-
-// A node no scene mentions is bakeable (a plain preset whose scenes touch other blocks).
-#[test]
-fn change_param_false_for_a_node_no_scene_mentions() {
-    assert!(!scene_overlays_change_param(
-        &bake_gate_preset(),
-        "otherNode",
-        "bypass"
+fn scene_write_verdict_for_param_absent_overlay_arm_unchanged() {
+    // A second node no scene ever mentions — Absent in every scene, unaffected by the
+    // BypassOnly-only audibility guard.
+    let mut p = hbe_boost_preset();
+    p["audioGraph"]["guitarNodes"]["G1"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "nodeId": "delay", "FenderId": "ACD_TapeDelay",
+            "dspUnitParameters": { "bypass": true, "level": 0.5 }
+        }));
+    assert!(matches!(
+        scene_write_verdict_for_param(&p, 2, "delay", "level"),
+        SceneWriteVerdict::NeedsEnable
     ));
+}
+
+#[test]
+fn scene_write_verdict_for_param_unknown_overlay_arm_unchanged() {
+    // No `scenes` array at all (mirrors a truncated field-8 read) — presence unanswerable.
+    let p = serde_json::json!({});
+    match scene_write_verdict_for_param(&p, 0, HBE_NODE, HBE_PARAM) {
+        SceneWriteVerdict::Refuse { scope, reason } => {
+            assert_eq!(scope, RefusedScope::Unknown);
+            assert!(reason.contains("truncated"));
+        }
+        SceneWriteVerdict::WriteDirect { .. } => {
+            panic!("expected Refuse(Unknown), got WriteDirect")
+        }
+        SceneWriteVerdict::NeedsEnable => panic!("expected Refuse(Unknown), got NeedsEnable"),
+    }
 }

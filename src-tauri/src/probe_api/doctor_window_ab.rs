@@ -67,7 +67,7 @@ fn capture_variant(
     pad_aware: bool,
 ) -> Result<Capture, String> {
     let (samples, rate) =
-        leveller::doctor_capture(slot, None, &[], stim_slice, Some(0.5), tail_ms, false)?;
+        leveller::doctor_capture(slot, None, &[], &[], stim_slice, Some(0.5), tail_ms, false)?;
     // `pad_aware`: true for the production-prepared 3 s arm (padded stim, body
     // PSD starts at `doctor_signal_start` — exactly `doctor_check`'s path);
     // false for the raw oracle/4 s slices, whose estimated onset feeds the body

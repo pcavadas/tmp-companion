@@ -58,6 +58,7 @@ interface DoctorCheckArgs {
     footswitch: number | null;
     tag: string | null;
     nodes: unknown[];
+    footswitches: { label: string }[];
   }[];
   restoreListIndex: number | null;
   onResult?: { onmessage?: (item: unknown) => void };
@@ -78,12 +79,28 @@ const SOLO_FOOTSWITCH = {
       fender_id: "ACD_BluesDriver",
       parameter_id: "gain",
       current: 0.5,
+      class: "level_linear",
     },
   ],
 };
 
+// An Other-class-only footswitch (no level candidate) — a plain on/off toggle, e.g.
+// a tuner mute. Zero level_params, so `footswitchesPerIndex` (Level's filtered map)
+// drops it entirely; the damage detector must still see it via the unfiltered feed.
+const BARE_FOOTSWITCH = {
+  switch: 5,
+  label: "Tuner",
+  link_group: null,
+  functions: [],
+  level_params: [],
+};
+
 function mockOnePreset(
-  opts: { hangCheck?: boolean; footswitch?: boolean } = {},
+  opts: {
+    hangCheck?: boolean;
+    footswitch?: boolean;
+    bareFootswitch?: boolean;
+  } = {},
 ) {
   lastDoctorArgs = null;
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
@@ -110,7 +127,10 @@ function mockOnePreset(
               scene_count: 0,
               scenes: [],
               blocks: [],
-              footswitches: opts.footswitch === true ? [SOLO_FOOTSWITCH] : [],
+              footswitches: [
+                ...(opts.footswitch === true ? [SOLO_FOOTSWITCH] : []),
+                ...(opts.bareFootswitch === true ? [BARE_FOOTSWITCH] : []),
+              ],
             },
           ],
           song_presets: [],
@@ -164,8 +184,10 @@ function mockOnePreset(
                   "Air",
                 ],
                 error: null,
+                skippedBandCount: 0,
               })),
               sceneConsistency: null,
+              levelingDamage: [],
             },
           ],
           stopped: false,
@@ -289,6 +311,44 @@ describe("DoctorView — select → setup → run → results", () => {
     expect(fsItem?.footswitch).toBe(3);
     expect(fsItem?.scene).toBeNull();
     expect(fsItem?.tag).toMatch(/^FS\d/);
+  });
+
+  // BUG→GATE: DoctorInput.footswitches must carry the FULL per-preset roster (incl. a
+  // switch with zero level candidates), not `footswitchesPerIndex`'s levelable-only
+  // subset — else the damage detector's offline force-bypass derivation can't see a
+  // toggle-only switch at all. The SELECT list still shows only the levelable switch
+  // as its own row (nothing to diagnose for a switch with no candidate as "a sound"),
+  // but the sound(s) that DO run must still report the bare switch in their roster.
+  it("DoctorInput.footswitches carries the FULL roster, not just levelable switches", async () => {
+    mockOnePreset({ footswitch: true, bareFootswitch: true });
+    renderView(true);
+    const user = userEvent.setup();
+
+    await screen.findByText("Studio Clean");
+    // Whole-row select: Base + the one SELECTABLE footswitch child (Solo) → 2 sounds.
+    // The bare Tuner switch has no level candidate, so it's not offered as its own
+    // row — it should still ride along on every sound's `footswitches` roster.
+    await user.click(screen.getAllByTitle("Select preset to check")[0]);
+    await user.click(
+      await screen.findByRole("button", { name: /check 2 sounds…/i }),
+    );
+    await screen.findByText("What are you playing?");
+    await user.click(
+      screen.getByRole("button", { name: /run check on 2 sounds/i }),
+    );
+    await screen.findByRole(
+      "button",
+      { name: /check other sounds/i },
+      { timeout: 3000 },
+    );
+
+    const items = lastDoctorArgs?.items ?? [];
+    expect(items.length).toBeGreaterThan(0);
+    for (const it of items) {
+      const labels = it.footswitches.map((f) => f.label);
+      expect(labels).toContain("Solo");
+      expect(labels).toContain("Tuner");
+    }
   });
 
   it("fires cancel_doctor_check on unmount while a check is in flight", async () => {

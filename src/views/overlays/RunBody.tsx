@@ -130,15 +130,20 @@ export function RunBody({
   const targetText = (it: RunItem): string =>
     `${it.targetName} · ${fmtLufs(resolvedTargetLufs(it, targetLufsByName))}`;
   const rowStatus = (it: RunItem): string => {
-    // Active-but-not-yet-streaming = loading the preset + engaging re-amp (no LUFS events
-    // yet), so "connecting…" is truer than "leveling…" for that pre-capture window — unless
-    // the backend handed a specific reason (e.g. the freshness barrier waiting out the TMP's
-    // lazy `saveCurrentPreset` commit window), which takes priority over the generic default.
+    // `activeMessage` is the backend's caption for an active row, and it reads two ways:
+    //  - a capture IS streaming -> it is the VERB before the live number. The ceiling
+    //    prepass sends "measuring", so its rows read `measuring · −18.9` while the solve's
+    //    message-less rows keep the default `leveling · −23.1`. Without this the prepass
+    //    was indistinguishable from the solve, and a run looked like it was leveling one
+    //    footswitch for a minute while the unit stepped through four (user report).
+    //  - nothing is streaming -> it is a NOTE, rendered verbatim (the freshness barrier
+    //    waiting out the TMP's lazy `saveCurrentPreset` commit window). Absent one,
+    //    "connecting…" is truer than "leveling…" for that pre-capture window.
     if (it.status === "active")
       return stopping
         ? "stopping…"
         : liveLufs !== null
-          ? `leveling · ${fmtLufs(liveLufs)}`
+          ? `${it.activeMessage ?? "leveling"} · ${fmtLufs(liveLufs)}`
           : (it.activeMessage ?? "connecting…");
     if (it.status === "result") return resultText(it);
     // A stopped run's tail would otherwise read as still-pending forever.

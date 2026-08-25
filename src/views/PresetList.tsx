@@ -359,7 +359,10 @@ export function PresetList(props: PresetListProps) {
 
       {/* Scroll body */}
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        <div style={{ position: "absolute", inset: 0, overflowY: "auto" }}>
+        <div
+          data-preset-list
+          style={{ position: "absolute", inset: 0, overflowY: "auto" }}
+        >
           {loading ? <PresetRowsSkeleton rows={10} /> : renderedRows}
         </div>
       </div>

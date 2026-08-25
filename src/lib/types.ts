@@ -45,13 +45,24 @@ export interface FootswitchFn {
   is_active: boolean;
 }
 
-/** A continuous block parameter the leveler can target (`footswitch::LevelParamCandidate`). */
+/** The classifier's verdict (mirrors `param_class::ParamClass`'s serialized snake_case
+ * spelling). Shared by every wire shape that carries a class — never "other" on the wire:
+ * both `LevelParamCandidate` and `SceneHandleCandidate` are built by
+ * `footswitch::level_candidates_for_node`, which admits only params the classifier
+ * recognises, so an unrecognised one is not a candidate at all. */
+export type ParamClass = "level_linear" | "level_db" | "wet_mix";
+
+/** A continuous block parameter the leveler can target (`footswitch::LevelParamCandidate`).
+ * `class` is the wire-carried single source of truth for ranking/labeling a control — the
+ * frontend must NOT re-derive it (there is no local classifier mirror; see `paramClass`
+ * removal history). */
 export interface LevelParamCandidate {
   group_id: string;
   node_id: string;
   fender_id: string;
   parameter_id: string;
   current: number;
+  class: ParamClass;
 }
 
 /** A block-acting footswitch (on/off + parameter change) with its leveling-candidate
@@ -110,6 +121,14 @@ export interface SetlistJobEntry {
 /** Result of leveling one preset (mirrors leveller::LevelResult). */
 export interface LevelResult {
   slot: number;
+  /** WHICH sound this row describes when it is a SCENE row: the 0-based `scenes[]`
+   * wire index. Null on every base / block / footswitch row.
+   *
+   * Identity, not decoration: `level_scenes_apply_batched` FILTERS failed scenes out
+   * of the array it returns, so it can be SHORTER than the `jobs` array that was sent
+   * and reading "which scene is row i?" by position mislabels every row after the
+   * first failure. */
+  scene_slot: number | null;
   ref_level: number;
   measured_lufs: number;
   constant_c: number;
@@ -145,6 +164,91 @@ export interface LevelResult {
    * does NOT hold the value this result reports (do not trust the number);
    * false = re-read and confirmed; null = not checked. */
   persist_mismatch: boolean | null;
+  /** The clamp's CAUSE from the shared taxonomy (mirrors `headroom_trade::ClampKind`) —
+   * null when the row is not clamped. Additive alongside `clamp_reason`, whose contract
+   * ("the leveled signal isn't reaching USB 1/2") is unchanged: this is the
+   * machine-readable cause. Render its `CLAMP_MESSAGES[kind]` verbatim — never re-word it. */
+  clamp_kind: ClampKind | null;
+  /** THE HEADROOM TRADE this run made (or, on a preview, WOULD make) — see `TradeSummary`.
+   * Stamped on EVERY row of a batch that traded (the trade moved the whole preset's gain
+   * structure, not one row's). Null on every untraded run and on every lane that has no
+   * trade (base, block, footswitch). */
+  trade: TradeSummary | null;
+}
+
+/** WHICH sound a trade row / clamp error describes (mirrors `headroom_trade::SoundId`,
+ * camelCase tagged union — `kind` discriminates). Additive on the wire: mirror only the
+ * variants below and treat the union as OPEN for future additive kinds. No `"base"` arm:
+ * `TradeSummary.benefiting` is scene-only by construction (the trade never benefits base
+ * — see its doc), so the wire never carries one. */
+export interface SoundId {
+  kind: "scene";
+  sceneSlot: number;
+}
+
+/** Why a sound could not be put on its target (mirrors `headroom_trade::ClampKind`,
+ * snake_case tokens). Distinct per cause so the UI can tell them apart without
+ * pattern-matching free text. */
+export type ClampKind =
+  | "scene_ceiling"
+  | "wet_floor"
+  | "trade_floor"
+  | "partial_trade"
+  | "no_authority";
+
+/** One user-facing sentence per `ClampKind` — the UI's OWN copy for the backend's clamp
+ * taxonomy (keyed by `ClampKind`, mirrors `headroom_trade::ClampKind`). This is a SEPARATE
+ * wording from `ClampKind::message()`, whose only caller builds an internal Rust error
+ * string; nothing cross-checks the two, so a taxonomy change on the backend does not fail
+ * loudly here — update this table by hand alongside it. */
+export const CLAMP_MESSAGES: Record<ClampKind, string> = {
+  scene_ceiling:
+    "this sound cannot reach the target — its level control is already at the limit",
+  wet_floor:
+    "this sound cannot reach the target without dropping the mix below the level that preserves the effect",
+  trade_floor:
+    "the base amp level ran out of room holding the base sound on target while headroom was traded for this one",
+  partial_trade:
+    "the traded headroom was backed out because a dependent write did not land — nothing was saved",
+  no_authority:
+    "the level control has no effect on the USB 1/2 output for this sound",
+};
+
+/** Why a headroom-trade raise was trimmed below what the worst benefiting deficit wanted
+ * (mirrors `headroom_trade::TradeCap`, snake_case). */
+export type TradeCap = "preset_level_max" | "base_fader_floor";
+
+/** ONE base amp a headroom trade moved (or WOULD move) — mirrors `headroom_trade::
+ * TradeAmpMove`. SNAKE_CASE: leveling-lane RESULT payloads stay snake_case even though
+ * command ARGS are camelCase (see the layer note on `TradeSummary`). */
+export interface TradeAmpMove {
+  group_id: string;
+  node_id: string;
+  parameter_id: string;
+  /** The `outputLevel` the preset carried BEFORE the trade — the Restore anchor. */
+  previous_value: number;
+  /** The SOLVED value the hold landed on. Null on an advisory: the fader response isn't
+   * algebraically predictable, so a run that didn't actually solve it invents nothing. */
+  value: number | null;
+}
+
+/** THE HEADROOM TRADE, on the wire (mirrors `headroom_trade::TradeSummary`, snake_case —
+ * leveling-lane RESULTS stay snake_case; only command ARGS are camelCase). `applied: false`
+ * = ADVISORY — a no-save run planned the trade but did not execute it, so every clamped
+ * benefiting row keeps its honest clamp; disclose it as "would trade…". */
+export interface TradeSummary {
+  applied: boolean;
+  /** dB added to the base `presetLevel`. */
+  raise_db: number;
+  previous_preset_level: number;
+  /** The raised `presetLevel` — exact either way, so an advisory can state it without
+   * measuring. */
+  preset_level: number;
+  base_amps: TradeAmpMove[];
+  /** Why the raise was trimmed below what the worst benefiting clamp wanted, if it was. */
+  cap: TradeCap | null;
+  /** The sounds the raise was bought for, by identity. */
+  benefiting: SoundId[];
 }
 
 /** Result of leveling one block-acting footswitch's engaged state
@@ -156,7 +260,9 @@ export interface FootswitchLevelResult {
   /** Solved switch-ON value written as the `param` function's `valueA`. */
   final_value: number;
   target_lufs: number;
-  /** Achieved engaged loudness at `final_value`. */
+  /** Achieved engaged loudness at `final_value` — always a real capture of the written
+   *  value (the wet floor is folded into the solve's bounds, so nothing unwritable is
+   *  ever probed). */
   predicted_lufs: number;
   /** The knob RAN OUT: the solved value sits at a bound and the target lies beyond it, so
    *  this sound cannot reach target at all — a re-run can't help. */
@@ -165,13 +271,27 @@ export interface FootswitchLevelResult {
    *  a compressed/noisy response, so the best point found was written and a RE-RUN can
    *  improve it. Distinct from `clamped` — never collapse the two. */
   unconverged: boolean;
+  /** Pinned to "not reaching USB 1/2" (off-branch/off-USB) — never set for a wet-floor
+   *  clamp (`wet_floor` below carries that cause instead). */
   clamp_reason: string | null;
+  /** The clamp's pinned bound is the wet/mix FLOOR (25% of the authored mix — going lower
+   *  guts the effect instead of quieting it). Rides only with `clamped: true`; the UI owns
+   *  the "verify by ear" advisory prose. */
+  wet_floor: boolean;
   saved: boolean;
   verify_lufs: number | null;
   iterations: number;
   dynamic_spread_lu: number | null;
   /** `"baked"` (value written onto the block) or `"assigned"` (param-change function written). */
   method: string;
+  /** Post-save param-level verify (see `verify_fs_persisted_writes`): true = the saved
+   * preset does NOT hold the value this result reports (do not trust the number);
+   * false = re-read and confirmed; null = not checked (no save, nothing written, the
+   * re-read failed, or a VERIFY row, which never writes). */
+  persist_mismatch: boolean | null;
+  /** The clamp's CAUSE from the shared taxonomy — see `LevelResult.clamp_kind`. Additive
+   * alongside `clamp_reason`/`wet_floor`, which keep their documented contracts verbatim. */
+  clamp_kind: ClampKind | null;
 }
 
 /** Result of leveling a whole setlist to one common target
@@ -179,6 +299,61 @@ export interface FootswitchLevelResult {
 export interface SetlistResult {
   target_lufs: number;
   results: LevelResult[];
+}
+
+/** One control a scene row could be leveled on (mirrors `commands::SceneHandleCandidate`,
+ * camelCase wire form — the struct's own `#[serde(rename_all = "camelCase")]`). Block
+ * DISPLAY info is groupId/nodeId/fenderId only — the frontend resolves the friendly name
+ * from the models catalog, same split as the amp candidates the Level view already sends. */
+export interface SceneHandleCandidate {
+  groupId: string;
+  nodeId: string;
+  fenderId: string;
+  parameterId: string;
+  /** The classifier's verdict. Never "other" — the backend only offers params it
+   * recognises as a candidate at all. */
+  class: ParamClass;
+  /** The param's usable [lo, hi] — NOT always [0,1] (e.g. ACD_Boost.gain is raw dB over
+   * [0,12]). For a wet_mix the low bound is already raised to the wet floor. */
+  range: [number, number];
+  /** The value AUTHORED IN THAT SCENE (overlay if present, else base). */
+  current: number;
+  /** Does writing this control in THIS scene affect ONLY this scene?
+   * "isolated" — the write stays here (an overlay exists, or Scene Edit will make one).
+   * "shared_with_base" — the node's Scene Edit is off, so this scene reads the BASE knob
+   *   and a write would change every scene sharing it. The backend REFUSES such a write —
+   *   disable selection, but keep it visible with the reason.
+   * "unknown" — the saved read couldn't answer (a truncated scenes tail); refused too. */
+  scope: "isolated" | "shared_with_base" | "unknown";
+  /** "full" = room in both directions. "lowers_only" = already at (or within a whisker
+   * of) the top of its range — this handle can only make the scene QUIETER. */
+  headroom: "full" | "lowers_only";
+}
+
+/** The handle candidates for ONE scene (mirrors `commands::SceneHandleRow`). */
+export interface SceneHandleRow {
+  /** 0-based `scenes[]` wire index — FS scenes only (base handles are the preset lane's
+   * own picker, `list_level_blocks`). */
+  sceneSlot: number;
+  /** The safe-preselect list: level-safe candidates only, never `"other"`. */
+  candidates: SceneHandleCandidate[];
+  /** EVERY numeric control of every block in this scene, class-annotated and level-class
+   * first — the combined block+param picker's source (a superset of `candidates`). */
+  allCandidates: SceneHandleCandidate[];
+}
+
+/** One switch's SCENE-CONTEXT answer for the leveling picker (D3) — mirrors
+ * `footswitch::FsSceneContext`, camelCase wire form. PICKER-PRESELECT ONLY: both fields
+ * are derived from a cache the real device ignores on recall, so neither may ever decide
+ * what a run WRITES — they only drive the wizard's default pick. */
+export interface FsSceneContext {
+  switch: number;
+  /** The 0-based `scenes[]` wire slots whose overlay ENABLES this switch, in scene order. */
+  enablingScenes: number[];
+  /** What to preselect: a scene slot iff EXACTLY ONE scene enables the switch, else null
+   * (base). The user may still override to any scene, including a non-enabling one — the
+   * picker flags that choice rather than blocking it. */
+  suggested: number | null;
 }
 
 /** A level-type block control discoverable from a preset
@@ -598,6 +773,22 @@ export interface BackupPresetRow {
    * `exp_mute` = an exp-pedal binding zeroes an amp outputLevel at one end (silence
    * only when a physical pedal sits there). Refines the "not on USB 1/2" verdict. */
   silence_hint: SilenceHint | null;
+  /** Per-scene leveling-handle candidates (`lib::backup_read::BackupPresetRow.scene_handles`),
+   * extracted from the SAME presetJson `list_scene_level_handles` reads live — the Set-up
+   * step's scene control picker resolves off this INSTANTLY instead of firing that command's
+   * live field-8 read on first open (device fallback stays wired for a row this doesn't
+   * cover). Empty for a scene-less/unparseable row. */
+  scene_handles: SceneHandleRow[];
+  /** Base-row leveling-handle candidates (`lib::backup_read::BackupPresetRow.base_handles`,
+   * GUITAR-ONLY — only the guitar chain reaches the USB-Out the leveler measures), same
+   * instant-first sourcing as `scene_handles` but with no overlay/scope concept — every
+   * entry's `scope` is `"isolated"` (a base write can't leak into another sound's overlay).
+   * Empty for an unparseable row OR a genuinely blockless preset — the frontend
+   * discriminates the two by MAP KEY PRESENCE (this slot has an entry vs. doesn't), never
+   * by list emptiness, so a real empty preset renders an empty picker and does not re-fire
+   * `list_level_blocks`'s live device read (mirroring `scene_handles`'s own discriminator —
+   * see `useLevelBlocks.ts`). */
+  base_handles: SceneHandleCandidate[];
 }
 
 /** A [`BackupPresetRow.silence_hint`] value. */
@@ -867,6 +1058,13 @@ export interface DoctorSoundResult {
   cutThrough: CutThrough | null;
   /** Set when this sound's capture failed (no diags then); the run continued. */
   error: string | null;
+  /** How many bands the SNR gate dropped as too quiet to trust — some checks
+   *  were silently skipped for lack of signal, not because the tone measured
+   *  clean. `> 0` IS "gated"; no separate bool rides alongside this. Required
+   *  (not `?`): the wire always sends it, and the DoctorResults.test.tsx
+   *  fixture factories (`baseSound`/`singlePresetResult`) default it, so a
+   *  backend rename here is a type error, not a silent `undefined`. */
+  skippedBandCount: number;
 }
 
 export interface DoctorSceneDeltaRow {
@@ -884,10 +1082,30 @@ export interface DoctorSceneConsistency {
   rx: DoctorRx[];
 }
 
+/** A leveling-damage kind (`doctor::LevelingDamageKind`). */
+export type DoctorLevelingDamageKind = "deletedEffect" | "sweptOther";
+
+/** One footswitch `param` assignment matching a leveling-damage signature
+ * (`doctor::LevelingDamageHint`) — backup-scan sourced, zero device captures.
+ * Advisory only: Doctor names the observed fact, no prescribed fix. */
+export interface DoctorLevelingDamageHint {
+  switch: number;
+  label: string;
+  nodeId: string;
+  fenderId: string;
+  parameterId: string;
+  kind: DoctorLevelingDamageKind;
+  detail: string;
+}
+
 export interface DoctorPresetResult {
   listIndex: number;
   sounds: DoctorSoundResult[];
   sceneConsistency: DoctorSceneConsistency | null;
+  /** Backup-scan-only advisories — see `DoctorLevelingDamageHint`. Required
+   *  (not `?`): the wire always sends this (possibly `[]`), and the
+   *  `singlePresetResult` test fixture factory defaults it. */
+  levelingDamage: DoctorLevelingDamageHint[];
 }
 
 export interface DoctorCheckResult {

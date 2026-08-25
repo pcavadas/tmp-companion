@@ -1,8 +1,9 @@
 //! Decode a device backup archive into preset/scene/song data.
 
 use crate::{
-    audiograph, decode_preset_scenes, filter_amp_candidates, footswitch, is_amp_model_id,
-    is_amp_output_level_param, session, LevelBlockArg,
+    audiograph, base_handle_candidates_scanned, decode_preset_scenes, filter_amp_candidates,
+    footswitch, is_amp_model_id, is_amp_output_level_param, scan_node_graph,
+    scene_handle_rows_scanned, session, LevelBlockArg, SceneHandleCandidate, SceneHandleRow,
 };
 use serde::Serialize;
 
@@ -51,6 +52,20 @@ pub struct BackupPresetRow {
     /// JSON-visible cause of a silent leveling capture ([`silence_hint`]), refining the
     /// generic "not on USB 1/2" verdict in the Level flow. `None` = no static cause.
     pub silence_hint: Option<&'static str>,
+    /// Per-scene leveling-handle candidates ([`crate::probe_api::scene_jobs::scene_handle_rows`]),
+    /// extracted from the SAME `presetJson` — so the Set-up step's scene control picker
+    /// resolves INSTANTLY off the backup row instead of firing `list_scene_level_handles`'s
+    /// live field-8 read on first open. Empty for a scene-less/unparseable row.
+    pub scene_handles: Vec<SceneHandleRow>,
+    /// Base-row leveling-handle candidates
+    /// ([`crate::probe_api::scene_jobs::base_handle_candidates_scanned`], GUITAR-ONLY — same
+    /// restriction as `session::extract_level_candidates`), same sourcing as `scene_handles`
+    /// — the Set-up step's Base control picker's instant-first source. Empty for an
+    /// unparseable row OR a genuinely blockless preset — the frontend discriminates the two
+    /// by MAP KEY PRESENCE (this slot has an entry vs. doesn't), never by list emptiness, so
+    /// a real empty preset renders an empty picker and does not re-fire `list_level_blocks`'s
+    /// live device read (mirroring `scene_handles`'s own discriminator).
+    pub base_handles: Vec<SceneHandleCandidate>,
 }
 
 /// One block in a backup preset's audioGraph roster (see [`BackupPresetRow::blocks`]).
@@ -130,12 +145,101 @@ impl BackupReadResult {
     }
 }
 
-/// Decode a streamed device backup archive (GNU-tar + LZ4-frame) IN MEMORY and read
-/// every preset + scene count out of its `databaseBackup` (= `/data/normalDb.db3`)
-/// SQLite entry via the system `sqlite3`. The DB is written to a temp file (sqlite
-/// needs a path) that is DELETED on every exit; the archive itself is never written
-/// to disk — nothing persists (no stacking backups).
-pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
+/// The backup's SQLite DB on a temp path (sqlite needs a path, not bytes), DELETED on
+/// every exit — the archive itself is never written to disk, so nothing persists.
+struct TempDb(std::path::PathBuf);
+impl Drop for TempDb {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Write the extracted DB to a temp file this process has just CREATED, and return
+/// its path ([`TempDb`] unlinks it on drop).
+///
+/// `create_new(true)` is where the safety lives, not the name: it is `O_EXCL`, so the
+/// open FAILS on an existing path — including a symlink someone planted to redirect
+/// our write onto a file of their choosing. The old path was `<pid>-<blob len>`,
+/// which any local process could predict and pre-create, and which two concurrent
+/// reads of the same backup also collided on. The suffix below only makes a retry
+/// converge; the guarantee comes from `O_EXCL` refusing to reuse a path, so a
+/// collision is answered by taking a different one rather than by trusting entropy.
+/// `0600` keeps the preset library — a user's own work — unreadable by other local
+/// accounts while it sits in a shared temp dir.
+fn create_private_temp_db(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
+    use std::io::Write as _;
+
+    let dir = std::env::temp_dir();
+    let mut collided = 0usize;
+    for attempt in 0..32u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let path = dir.join(format!(
+            "tmp-companion-backup-{}-{nanos:09}-{attempt}.db3",
+            std::process::id()
+        ));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            opts.mode(0o600);
+        }
+        let mut f = match opts.open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                collided += 1;
+                continue;
+            }
+            Err(e) => return Err(format!("create temp db ({}): {e}", path.display())),
+        };
+        if let Err(e) = f.write_all(bytes) {
+            // Nothing owns the file yet (no `TempDb`), so unlink it here.
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("write temp db: {e}"));
+        }
+        return Ok(path);
+    }
+    Err(format!(
+        "could not create a temp db in {} — 32 candidate paths all already existed \
+         ({collided} collisions); something is pre-creating them",
+        dir.display()
+    ))
+}
+
+/// One `sqlite3 -json` query against an extracted backup DB. An empty result set is
+/// `[]`, not an error.
+fn run_sql(db: &TempDb, sql: &str) -> Result<serde_json::Value, String> {
+    let out = std::process::Command::new("sqlite3")
+        .arg("-json")
+        .arg(&db.0)
+        .arg(sql)
+        .output()
+        .map_err(|e| format!("sqlite3 spawn ({e}); is the CLI on PATH?"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(serde_json::Value::Array(vec![]));
+    }
+    serde_json::from_str(s).map_err(|e| format!("parse sqlite json: {e}"))
+}
+
+/// The archive's member list plus its two extracted entries.
+struct BackupEntries {
+    db: TempDb,
+    members: Vec<(String, u64)>,
+    db_len: usize,
+    settings_bytes: Option<Vec<u8>>,
+}
+
+/// The tar/LZ4 half of a backup read: blob → the user-preset DB on a temp path. Shared
+/// by the whole-library [`read_backup_archive`] and the single-slot
+/// [`preset_json_from_backup`], so both see the same archive shape and the same errors.
+fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
     use std::io::Read;
 
     if blob.is_empty() {
@@ -208,38 +312,85 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         )
     })?;
 
-    // Write the DB to a temp file (sqlite needs a path); delete it on every exit.
-    struct TempDb(std::path::PathBuf);
-    impl Drop for TempDb {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let db_path = std::env::temp_dir().join(format!(
-        "tmp-companion-backup-{}-{}.db3",
-        std::process::id(),
-        blob.len()
-    ));
-    std::fs::write(&db_path, &db_bytes).map_err(|e| format!("write temp db: {e}"))?;
-    let _guard = TempDb(db_path.clone());
+    let db_path = create_private_temp_db(&db_bytes)?;
+    Ok(BackupEntries {
+        db: TempDb(db_path),
+        members,
+        db_len: db_bytes.len(),
+        settings_bytes,
+    })
+}
 
-    let run_sql = |sql: &str| -> Result<serde_json::Value, String> {
-        let out = std::process::Command::new("sqlite3")
-            .arg("-json")
-            .arg(&db_path)
-            .arg(sql)
-            .output()
-            .map_err(|e| format!("sqlite3 spawn ({e}); is the CLI on PATH?"))?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
-        let s = String::from_utf8_lossy(&out.stdout);
-        let s = s.trim();
-        if s.is_empty() {
-            return Ok(serde_json::Value::Array(vec![]));
-        }
-        serde_json::from_str(s).map_err(|e| format!("parse sqlite json: {e}"))
-    };
+/// The COMPLETE saved `presetJson` for ONE user slot, off a device backup — the
+/// canonical full-preset source when a slot-addressed field-8 read comes back
+/// TAIL-TRUNCATED. That truncation is per-slot-DETERMINISTIC, so re-reading the same
+/// slot cannot lengthen it; the backup DB is the only transport that carries the whole
+/// document.
+///
+/// `device_slot` is the DB `slot` = list index + 1 (see [`BackupPresetRow::slot`]).
+/// NAME-GUARDED (danger.md's address-space rule): the caller states the name it expects
+/// at that slot and the row is refused on a mismatch, because a second connection sits
+/// between whatever read the name and this backup transfer — a preset body silently
+/// taken from the WRONG slot would drive writes and a save against the wrong preset.
+pub(crate) fn preset_json_from_backup(
+    blob: &[u8],
+    device_slot: i64,
+    expect_name: &str,
+) -> Result<serde_json::Value, String> {
+    let entries = extract_backup_entries(blob)?;
+    let rows = run_sql(
+        &entries.db,
+        &format!(
+            "SELECT slot, displayName, presetJson FROM UserPresets WHERE slot = {device_slot}"
+        ),
+    )?;
+    backup_row_preset_json(&rows, device_slot, expect_name)
+}
+
+/// [`preset_json_from_backup`]'s decision, split out so the name guard is testable with
+/// no archive in the loop: take the row for `device_slot` and refuse it unless it still
+/// names `expect_name`. Pure.
+fn backup_row_preset_json(
+    rows: &serde_json::Value,
+    device_slot: i64,
+    expect_name: &str,
+) -> Result<serde_json::Value, String> {
+    let row = rows
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| format!("device slot {device_slot} has no row in the backup DB"))?;
+    let name = row
+        .get("displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if name != expect_name {
+        return Err(format!(
+            "backup row for device slot {device_slot} is named {name:?}, not the expected \
+             {expect_name:?} — refusing to read a preset body from a slot that moved"
+        ));
+    }
+    let js = row
+        .get("presetJson")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("backup row for device slot {device_slot} carries no presetJson"))?;
+    serde_json::from_str(js)
+        .map_err(|e| format!("backup presetJson for device slot {device_slot} did not parse: {e}"))
+}
+
+/// Decode a streamed device backup archive (GNU-tar + LZ4-frame) IN MEMORY and read
+/// every preset + scene count out of its `databaseBackup` (= `/data/normalDb.db3`)
+/// SQLite entry via the system `sqlite3`. The DB is written to a temp file (sqlite
+/// needs a path) that is DELETED on every exit; the archive itself is never written
+/// to disk — nothing persists (no stacking backups).
+pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
+    let entries = extract_backup_entries(blob)?;
+    let BackupEntries {
+        db,
+        members,
+        db_len,
+        settings_bytes,
+    } = entries;
+    let run_sql = |sql: &str| -> Result<serde_json::Value, String> { run_sql(&db, sql) };
 
     // Pull the full plaintext preset doc per row; scene names + footswitch tags are
     // parsed in Rust by the SAME decoder the live field-3 / field-8 path uses
@@ -333,6 +484,13 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
     let mut presets = Vec::new();
     let mut parsed = 0usize;
     let mut failed = 0usize;
+    // The picker-candidate derivation below (`scene_handle_rows_scanned` / `base_handle_candidates_scanned`)
+    // is real per-preset CPU — see `scene_handle_rows`'s SCAN-COST doc — and this loop runs
+    // for the WHOLE library (hundreds of presets) on every connection. Timed as one total
+    // across the loop, logged once at the end, so a regression here (e.g. a preset shape
+    // that pushes many nodes into the `BypassOnly` scope arm) shows up in the log rather than
+    // silently stretching startup.
+    let mut handle_derivation_time = std::time::Duration::ZERO;
     for r in rows.as_array().map(Vec::as_slice).unwrap_or(&[]) {
         let name = r.get("displayName").and_then(|v| v.as_str()).unwrap_or("");
         if session::is_empty_slot_name(name) {
@@ -395,6 +553,26 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
                     .map(|ftsw| footswitch::enumerate_block_footswitches(ftsw, v))
             })
             .unwrap_or_default();
+        // Set-up step picker candidates — same source document, so the instant-first path
+        // never needs a live device read for a preset the backup already covers. Empty vecs
+        // for an unparseable row (no `parsed_graph`), matching every other derivation above.
+        // ONE graph walk (`scan_node_graph`) feeds BOTH derivations — `scene_handle_rows` and
+        // `base_handle_candidates` (Base) and `scene_handle_rows` (Scene) used to each rebuild their own nodeId→params map and
+        // roster on this SAME preset, back-to-back; the scan is shared and passed by
+        // reference into both `*_scanned` cores instead.
+        let handle_start = std::time::Instant::now();
+        let (scene_handles, base_handles) = match parsed_graph.as_ref() {
+            Some(g) => {
+                let scan = scan_node_graph(g);
+                (
+                    scene_handle_rows_scanned(g, &scan),
+                    base_handle_candidates_scanned(&scan),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        handle_derivation_time += handle_start.elapsed();
+
         presets.push(BackupPresetRow {
             slot: r.get("slot").and_then(|v| v.as_i64()).unwrap_or(-1),
             name: name.to_string(),
@@ -405,13 +583,20 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             graph,
             footswitches,
             silence_hint: parsed_graph.as_ref().and_then(silence_hint),
+            scene_handles,
+            base_handles,
         });
     }
+    log::info!(
+        "backup read: picker-candidate derivation (scene_handles + base_handles) took \
+         {handle_derivation_time:?} across {} preset(s)",
+        presets.len()
+    );
     let scene_mode = format!("parsed scenes from presetJson ({parsed} ok, {failed} unparseable)");
 
     Ok(BackupReadResult {
         members,
-        db_bytes: db_bytes.len(),
+        db_bytes: db_len,
         total_rows,
         scene_mode,
         presets,
@@ -523,6 +708,35 @@ fn is_active_amp_node(v: &serde_json::Value, group_id: &str, node_id: &str) -> b
         }
     }
     false
+}
+
+/// The device mixer's `USB 3` strip — the dry-instrument send's OWN fader, mute
+/// and Pre/Post — decoded from a `settingsBackup` JSON (`mixerSaveData.usb3`, the
+/// bytes [`BackupReadResult::settings_bytes`] persists to `support/device-settings.json`).
+/// `None` when the snapshot lacks the strip. The Tier-2 calibration pre-flight
+/// (#124) reads it: a muted strip is no dry send at all (a fw 1.8.58 unit shipped
+/// with USB 3/4 muted), and `POST` makes the fader scale the send `PRE` sends at a
+/// fixed 0 dBFS reference.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Usb3Strip {
+    pub mute: bool,
+    /// Mixer fader, 0.0..=1.0 (1.0 = unity).
+    pub fader: f32,
+    /// `true` = PRE (fader-independent, the default); `false` = POST.
+    pub pre: bool,
+}
+
+pub(crate) fn usb3_strip(settings_json: &str) -> Option<Usb3Strip> {
+    let v: serde_json::Value = serde_json::from_str(settings_json).ok()?;
+    let s = v.get("mixerSaveData")?.get("usb3")?;
+    Some(Usb3Strip {
+        mute: s.get("muteActive")?.as_bool()?,
+        fader: s.get("faderLevel").and_then(|f| f.as_f64()).unwrap_or(1.0) as f32,
+        pre: s
+            .get("preEnabled")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(true),
+    })
 }
 
 #[cfg(test)]

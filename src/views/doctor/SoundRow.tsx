@@ -19,6 +19,7 @@ import { LevelIndicator } from "./LevelIndicator";
 import { MatchCard } from "./MatchCard";
 import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
 import { bandLayoutsMatch } from "./matchModel";
+import { offbranchStatus } from "../level/leveling";
 import {
   diagKicker,
   isPossible,
@@ -33,7 +34,14 @@ import type {
   DoctorSoundResult,
   FootswitchInfo,
   GraphNode,
+  SilenceHint,
 } from "../../lib/types";
+
+/** The Doctor capture's own silent-inject error string (`leveller::NO_SIGNAL_CAPTURED`,
+ *  surfaced verbatim as `DoctorSoundResult.error`) — the ONE case a backup-scan silence
+ *  hint refines. `FLOOR_READ_ERR` (a stimulus that never reached the device — a
+ *  different failure class, not "output routing") is deliberately left alone. */
+const NO_SIGNAL_CAPTURED = "no signal captured";
 
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
@@ -130,6 +138,11 @@ export interface SoundRowProps {
   /** The stimulus identity this sound was diagnosed with (setup-stage
    *  instrument pick) — its prescription cards' A/B replays it. */
   stimulus?: DoctorStimulus;
+  /** This sound's preset's backup-scan silence hint (same source + rendering
+   *  as the Level tab's offbranch row status, `leveling.ts::offbranchStatus`)
+   *  — refines a "no signal captured" error into the JSON-visible cause when
+   *  the backup scan found one. */
+  silenceHint?: SilenceHint;
   open: boolean;
   onToggle: () => void;
   /** This row's page-wide composite id (`${listIndex}|${sound.key}`) — how
@@ -151,6 +164,7 @@ export function SoundRow({
   nodes,
   footswitches,
   stimulus,
+  silenceHint,
   open,
   onToggle,
   id,
@@ -162,6 +176,13 @@ export function SoundRow({
   const { t } = useTheme();
   const hasDiags = sound.diags.length > 0;
   const isError = sound.error != null;
+  // A silent-inject capture refines to the SAME offbranch status text the
+  // Level tab shows for the identical failure — never the raw backend string.
+  // Any other error (a real device/connection failure) is shown verbatim.
+  const errorText = sound.error?.includes(NO_SIGNAL_CAPTURED)
+    ? offbranchStatus(silenceHint)
+    : sound.error;
+  const coverageGated = sound.skippedBandCount > 0;
   const sev = soundSev(sound);
   const tone = sevTone(t, sev);
   const isTagged = sound.scene != null || sound.footswitch != null;
@@ -188,7 +209,12 @@ export function SoundRow({
     bandLayoutsMatch(referenceSound, sound);
 
   return (
-    <div style={{ borderTop: `0.5px solid ${t.hairline}` }}>
+    <div
+      // e2e hook: count a preset card's rendered sound rows, mirroring
+      // TargetEditCard/BlockEditor's `data-target-card`/`data-candidate`.
+      data-sound-row={sound.key}
+      style={{ borderTop: `0.5px solid ${t.hairline}` }}
+    >
       <div
         onClick={expandable ? onToggle : undefined}
         style={{
@@ -251,7 +277,7 @@ export function SoundRow({
                 textOverflow: "ellipsis",
               }}
             >
-              {sound.error}
+              {errorText}
             </span>
           ) : hasDiags ? (
             diags.map((d) => (
@@ -295,6 +321,14 @@ export function SoundRow({
                 finding="Sounds good"
                 size="tiny"
               />
+            </span>
+          )}
+          {!isError && coverageGated && (
+            <span
+              title={`Some checks skipped — signal too quiet on ${String(sound.skippedBandCount)} band${sound.skippedBandCount === 1 ? "" : "s"}`}
+              style={{ display: "inline-flex", flexShrink: 0, opacity: 0.7 }}
+            >
+              <Icon name="info" size={12} stroke={t.mutedInk} />
             </span>
           )}
         </span>

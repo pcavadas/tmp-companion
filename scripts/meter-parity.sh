@@ -136,18 +136,10 @@ companion_lufs() {
     | cut -d= -f2 || true
 }
 
-# The independent BS.1770 read: ffmpeg's ebur128 filter, taken at FULL precision
-# from the filter's metadata rather than the one-decimal end-of-run summary (see
-# the precision note in the header). `lavfi.r128.I` is emitted repeatedly as the
-# integration proceeds, so the LAST value is the final integrated loudness.
-# `|| true` for the same reason as `companion_lufs` above.
-ffmpeg_lufs() {
-  ffmpeg -hide_banner -nostats -i "$1" \
-    -af ebur128=metadata=1,ametadata=print:key=lavfi.r128.I:file=- -f null - 2>&1 \
-    | grep -o 'lavfi\.r128\.I=.*' \
-    | tail -1 \
-    | cut -d= -f2 || true
-}
+# The independent BS.1770 read (`ffmpeg_lufs`) lives in the shared lib — ONE home for
+# the full-precision `lavfi.r128.I` extraction, shared with `scripts/level-validate.sh`.
+# shellcheck source=scripts/lib/ebur128.sh disable=SC1091
+. "$REPO/scripts/lib/ebur128.sh"
 
 WAVS=()
 if [ -n "$INPUT_DIR" ]; then

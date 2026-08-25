@@ -127,12 +127,19 @@ pub(crate) fn settle_or_cancel(ms: u64) -> Result<(), String> {
 }
 
 /// Bounded wait for the monitor to ack a pause (≈ `PAUSE_WAIT_TRIES × 25 ms`). The
-/// monitor pumps in ~120 ms windows, so it checks the flag ~8×/sec; 40 × 25 ms = 1 s
-/// is generous. If the budget is exceeded (monitor mid-connect on a flooded
-/// device), the command proceeds anyway — `hid.rs`'s bounded `IOHIDDeviceOpen` retry
-/// (≤0.48 s on `0xe00002c5`) absorbs the residual race, the same safety net that
-/// already covers `with_released_seize`'s own drop→reconnect lag.
-const PAUSE_WAIT_TRIES: u32 = 40;
+/// monitor pumps in ~120 ms windows, so it checks the flag ~8×/sec, and an idle
+/// monitor acks well inside 1 s. The budget is 4 s because the monitor can't ack
+/// while it is mid-HANDSHAKE: a `graph=none` re-snapshot cycle (drop → 3 s backoff
+/// → re-handshake, `monitor.rs`) held the ack ~1 s past the old 1 s budget on a
+/// real run, and the calibration's own `Session::connect` then raced the still-
+/// seized device — its re-amp OFF never reached the unit and the take read as
+/// "no instrument signal". Waiting costs nothing when the monitor is idle (the
+/// loop exits on the ack) and is exactly right when it is busy. If the budget is
+/// still exceeded (wedged monitor), the command proceeds anyway — `hid.rs`'s
+/// bounded `IOHIDDeviceOpen` retry (≤0.48 s on `0xe00002c5`) absorbs the residual
+/// race, the same safety net that already covers `with_released_seize`'s own
+/// drop→reconnect lag.
+const PAUSE_WAIT_TRIES: u32 = 160;
 const PAUSE_WAIT_STEP_MS: u64 = 25;
 
 /// RAII guard returned by [`lock_device_op`]: holds [`DEVICE_OP_LOCK`] AND keeps the

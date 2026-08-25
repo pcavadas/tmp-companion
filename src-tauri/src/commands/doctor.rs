@@ -76,11 +76,34 @@ fn saved_bypass_map(nodes: &[doctor::DoctorNode]) -> std::collections::HashMap<S
     map
 }
 
-/// Resolve the force-bypass isolation for a diagnosed sound — one policy for
+/// What a diagnosed sound's capture must WRITE before engaging — one policy for
 /// doctor_check AND doctor_apply so the audition can never observe a different
-/// bypass state than the diagnosis. Graph present → offline derivation; graph
-/// absent → scene sounds get no isolation (their overrides define them), other
-/// sounds fall back to ONE cached live field-8 read per preset.
+/// state than the diagnosis. `bypass` is the force-bypass isolation; `params` is
+/// the measured footswitch's `param`-function engaged `valueA` writes (a footswitch
+/// SOUND is its on-off flips PLUS its param jumps — without the latter a param-only
+/// switch would capture the base sound).
+pub(crate) struct SoundIsolation {
+    pub(crate) bypass: Vec<(String, String, bool)>,
+    pub(crate) params: Vec<(String, String, String, f32)>,
+    /// Set when this sound's state could not be resolved at all — the caller must
+    /// report the sound as errored instead of capturing it. A FOOTSWITCH sound IS its
+    /// isolation (`ftsw` decides which blocks are on and which params jump), so an
+    /// unresolvable one captures the base sound and diagnoses the wrong thing under the
+    /// switch's name. Base sounds stay best-effort: their isolation only silences other
+    /// switches, so a missing one degrades the baseline rather than misnaming it.
+    pub(crate) unresolved: Option<String>,
+}
+
+/// Resolve the pre-engage writes for a diagnosed sound — one policy for
+/// doctor_check AND doctor_apply so the audition can never observe a different
+/// bypass/param state than the diagnosis. A SCENE sound always gets NO
+/// write, graph present or not: it rides its own saved overlay/bypass state
+/// (as-played — the scene recall itself asserts whatever the player hears),
+/// so forcing every footswitch block off here would diagnose a baseline the
+/// player never actually hears. Base/footswitch sounds keep the baseline
+/// isolation: graph present → offline derivation (`derived_force_bypass` +
+/// `derived_param_writes`); graph absent → ONE cached live field-8 read per
+/// preset (`doctor_force_bypass` + `param_fn_values`).
 fn resolve_sound_isolation(
     nodes: &[doctor::DoctorNode],
     footswitches: &[footswitch::FootswitchInfo],
@@ -88,18 +111,24 @@ fn resolve_sound_isolation(
     footswitch: Option<u32>,
     list_index: u32,
     preset_cache: &mut std::collections::HashMap<u32, serde_json::Value>,
-) -> Vec<(String, String, bool)> {
+) -> SoundIsolation {
+    if scene.is_some() {
+        return SoundIsolation {
+            bypass: Vec::new(),
+            params: Vec::new(),
+            unresolved: None,
+        };
+    }
     if !nodes.is_empty() {
-        // A scene sound is measured against the SAME all-switches-off baseline
-        // as the base sound: the scene-consistency check compares scene
-        // loudness against base, which is captured with every footswitch
-        // block forced off, so a preset saved with a switch engaged would
-        // otherwise poison the deltas — scenes never trigger a device read
-        // either way.
-        let fs = if scene.is_some() { None } else { footswitch };
-        footswitch::derived_force_bypass(footswitches, &saved_bypass_map(nodes), fs)
-    } else if scene.is_some() {
-        Vec::new()
+        SoundIsolation {
+            bypass: footswitch::derived_force_bypass(
+                footswitches,
+                &saved_bypass_map(nodes),
+                footswitch,
+            ),
+            params: footswitch::derived_param_writes(footswitches, footswitch),
+            unresolved: None,
+        }
     } else {
         // Base/footswitch sounds fall back to the legacy live field-8 read
         // (cached per list index across that preset's base + footswitch
@@ -108,7 +137,10 @@ fn resolve_sound_isolation(
         // degrades to no isolation (best-effort, like `level_preset`), never
         // fails the run.
         if let std::collections::hash_map::Entry::Vacant(e) = preset_cache.entry(list_index) {
-            let preset = match read_slot_preset_parsed(list_index) {
+            // `ftsw` is required of this read: a large preset's field-8 body is cut
+            // before it, and a partial one derives a partial isolation — which for a
+            // footswitch sound means capturing something the switch does not make.
+            let preset = match read_slot_preset_complete(list_index, &["ftsw"]) {
                 Ok((p, _, _)) => p,
                 Err(err) => {
                     log::warn!(
@@ -124,11 +156,31 @@ fn resolve_sound_isolation(
             crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         }
         let preset = &preset_cache[&list_index];
-        doctor_force_bypass(
-            preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
-            preset,
-            footswitch,
-        )
+        let ftsw = preset.get("ftsw").unwrap_or(&serde_json::Value::Null);
+        SoundIsolation {
+            bypass: doctor_force_bypass(ftsw, preset, footswitch),
+            params: footswitch
+                .map(|sw| {
+                    footswitch::param_fn_values(ftsw, sw)
+                        .into_iter()
+                        .map(|(g, n, p, a, _b)| (g, n, p, a))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            // A footswitch SOUND is defined by `ftsw` — no readable `ftsw` means the
+            // capture would engage nothing and diagnose the base sound under the
+            // switch's name. Report the sound instead of inventing it. A base sound
+            // keeps the documented best-effort degrade.
+            unresolved: footswitch.filter(|_| ftsw.as_array().is_none()).map(|sw| {
+                format!(
+                    "footswitch {} on preset {}: the saved footswitch assignments could not \
+                     be read (the preset is too large to read over USB), so this switch's \
+                     sound cannot be isolated — skipped",
+                    sw + 1,
+                    list_index + 1
+                )
+            }),
+        }
     }
 }
 
@@ -137,9 +189,10 @@ fn resolve_sound_isolation(
 /// preset, so the loop resets this to `None` (same effect as the run's start).
 struct PrevSound {
     list_index: u32,
-    /// It sent force-bypass writes (its `fb` was non-empty) — the working copy is
-    /// polluted and only a reload clears it (a scene recall re-asserts ONLY the
-    /// scene's own overrides, not the forced bypasses).
+    /// It sent working-copy writes — force-bypass isolation OR a footswitch's
+    /// param-function `valueA` jumps (`SoundIsolation`, either list non-empty).
+    /// Only a reload clears the pollution (a scene recall re-asserts ONLY the
+    /// scene's own overrides, not foreign bypasses or param values).
     wrote: bool,
 }
 
@@ -163,6 +216,19 @@ fn doctor_skip_load(prev: Option<&PrevSound>, list_index: u32, is_scene: bool) -
 fn floor_error_for(profile_spread_lu: f64, stimulus_spread_lu: f64) -> Option<&'static str> {
     leveller::floor_suspect(profile_spread_lu, stimulus_spread_lu)
         .then_some(leveller::FLOOR_READ_ERR)
+}
+
+/// How many bands a coverage vector (`doctor::output_coverage_with_body`'s
+/// output) marks NOT covered — the count `sound_of` stamps onto
+/// `DoctorSoundResult.skippedBandCount` (D4, SNR-gate transparency; `> 0` IS
+/// "gated", no separate bool). `None` (no coverage computed at all — an
+/// errored or showcase sound) reads as 0, same as an all-covered vector: this
+/// can under-report "gated" in that case, never over-report. Split out for a
+/// unit test with no capture data (mirrors [`floor_error_for`]'s split).
+fn skipped_band_count(coverage: Option<&[bool]>) -> u32 {
+    coverage
+        .map(|c| u32::try_from(c.iter().filter(|covered| !**covered).count()).unwrap_or(0))
+        .unwrap_or(0)
 }
 
 /// The instrument a sound is judged as — from its topology, guitar by default.
@@ -215,6 +281,14 @@ pub struct DoctorSoundResult {
     pub cut_through: Option<doctor::CutThrough>,
     /// Set when this sound's capture failed (no diags then); the run continues.
     pub error: Option<String>,
+    /// How many of this sound's bands the SNR gate (`doctor::output_coverage_with_body`)
+    /// dropped as too quiet to trust against its own noise floor — some rules were
+    /// silently skipped for lack of signal, not because the tone measured clean.
+    /// 0 on the unconfident-onset fallback too (every band reads "covered" there,
+    /// see that fn's doc) and on an errored/showcase sound (no coverage computed
+    /// at all) — this can under-report in those cases, never over-report. No
+    /// separate gated/not-gated bool rides alongside this — `> 0` IS "gated".
+    pub skipped_band_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -223,6 +297,11 @@ pub struct DoctorPresetResult {
     pub list_index: u32,
     pub sounds: Vec<DoctorSoundResult>,
     pub scene_consistency: Option<doctor::SceneConsistency>,
+    /// Backup-scan-only advisories (zero device captures): footswitch `param`
+    /// assignments whose shape matches the pre-`param_class` leveler's damage
+    /// signatures. Computed from the SAME `footswitches` `doctor_check` was
+    /// given, independent of whether any sound's capture succeeded.
+    pub leveling_damage: Vec<doctor::LevelingDamageHint>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -355,9 +434,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     })
                 }
             };
-            // Force-bypass isolation for this sound — the shared
-            // `resolve_sound_isolation` policy (see its doc).
-            let fb = resolve_sound_isolation(
+            // Pre-engage writes for this sound (isolation bypasses + the footswitch's
+            // param-function valueA jumps) — the shared `resolve_sound_isolation`
+            // policy (see its doc).
+            let iso = resolve_sound_isolation(
                 &item.nodes,
                 &item.footswitches,
                 item.scene,
@@ -365,6 +445,13 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 item.list_index,
                 &mut preset_cache,
             );
+            // An unresolvable footswitch sound never reaches a capture: folding it into
+            // `stim` reports it through the loop's own per-sound error path (a skipped
+            // sound, never an aborted run) instead of measuring the wrong sound.
+            let stim = match &iso.unresolved {
+                Some(e) => Err(e.clone()),
+                None => stim,
+            };
             let family = instrument_of(item);
             let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
             let tail_ms = u64::from(doctor::doctor_tail_ms(&item.nodes));
@@ -378,14 +465,24 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 // to the user (D4), so it needs the un-mixed capture's stereo-measured
                 // Loudness alongside the average-mixdown `samples` bands/PSD run on —
                 // see `doctor_capture_with_loudness`'s doc.
+                // ⟦P1/P4⟧ PREMISE-CHECK SEAM — see `validate_log::emit_doctor`'s doc.
+                let validate = crate::validate_log::doctor_log_path().map(|_| {
+                    crate::validate_log::ValidationRow::doctor(
+                        item.list_index,
+                        item.scene,
+                        item.footswitch,
+                    )
+                });
                 let (samples, rate, stereo_loudness) = leveller::doctor_capture_with_loudness(
                     item.list_index,
                     item.scene,
-                    &fb,
+                    &iso.bypass,
+                    &iso.params,
                     stim,
                     Some(0.5),
                     tail_ms,
                     skip_load,
+                    validate.as_ref(),
                 )?;
                 // Align the body/tail split to where the stimulus actually starts
                 // (I/O latency); low confidence keeps the legacy un-aligned split.
@@ -468,7 +565,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     coverage_by_item.insert(i, cov);
                     prev = Some(PrevSound {
                         list_index: item.list_index,
-                        wrote: !fb.is_empty(),
+                        wrote: !iso.bypass.is_empty() || !iso.params.is_empty(),
                     });
                     let _ = on_result.send(DoctorProgressItem {
                         key: item.key.clone(),
@@ -515,6 +612,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let (item, _, kind) = &resolved[i];
             let instrument = instrument_of(item);
             let band_labels = instrument.labels_owned();
+            let cov = coverage_by_item.get(&i);
             let (diags, lufs_v, tail, bal) = match profile {
                 Some(p) => (
                     // Diagnosed at ALL three playback levels (each finding tagged
@@ -527,7 +625,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                         (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
                         instrument,
                         *kind,
-                        coverage_by_item.get(&i).map(Vec::as_slice),
+                        cov.map(Vec::as_slice),
                     ),
                     p.integrated_lufs,
                     p.tail_ratio_db,
@@ -536,6 +634,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 None => (Vec::new(), 0.0, 0.0, Vec::new()),
             };
             let cut_through = profile.and_then(|p| doctor::cut_through(p, instrument));
+            // SNR-gate transparency (D4): how many bands the coverage gate
+            // dropped for THIS capture — absent (errored/showcase sound) reads
+            // as 0, never as "gated" (see `skipped_band_count`'s doc).
+            let skipped = skipped_band_count(cov.map(Vec::as_slice));
             DoctorSoundResult {
                 key: item.key.clone(),
                 list_index: item.list_index,
@@ -550,6 +652,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 band_labels,
                 cut_through,
                 error: err.cloned(),
+                skipped_band_count: skipped,
             }
         };
         // Preserve the original sound/preset order: merge by index into
@@ -575,11 +678,30 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     list_index: sound.list_index,
                     sounds: vec![sound],
                     scene_consistency: None,
+                    leveling_damage: Vec::new(),
                 }),
             }
         }
+        // list_index → footswitches, ONE pass over `resolved` (first-occurrence-wins,
+        // same semantics the old per-preset `.find()` had — every item of a preset
+        // carries the SAME `footswitches`) — an O(P) `.find()` scan of `resolved`
+        // repeated per preset was quadratic-shaped on a full library run.
+        let mut footswitches_by_list_index: std::collections::HashMap<u32, &[footswitch::FootswitchInfo]> =
+            std::collections::HashMap::new();
+        for (it, _, _) in &resolved {
+            footswitches_by_list_index
+                .entry(it.list_index)
+                .or_insert_with(|| it.footswitches.as_slice());
+        }
         // Sound consistency per preset — needs the base sound as the reference.
         for p in &mut presets {
+            // Leveling-damage advisories (fix P3-5): pure backup-scan data, so
+            // this runs regardless of whether any sound's capture succeeded.
+            let footswitches = footswitches_by_list_index
+                .get(&p.list_index)
+                .copied()
+                .unwrap_or(&[]);
+            p.leveling_damage = doctor::leveling_damage_hints(footswitches);
             let base = p
                 .sounds
                 .iter()
@@ -824,16 +946,21 @@ pub(crate) fn ops_session(
 /// `lastLoadedScene`), not necessarily the diagnosed scene — omitting the recall
 /// let a scene-2 prescription silently write scene-0's overlay (or base) instead.
 ///
-/// KNOWN LIMITATION (not fixed here): this recall alone is not sufficient when
-/// the diagnosed node has NO EXISTING overlay in that scene — a bare
-/// `changeParameter` still leaks to base in that case (`set_node_scene_edit` is
-/// what forces the overlay into existence, per leveling's `set_knob`/`set_knobs`).
-/// Adding `set_node_scene_edit` here isn't a free fix: it reseeds the node's
-/// scene overlay from base, wiping any OTHER already-scene-edited params on that
-/// node — the same reseed-wipes-siblings bug leveling's `set_knob`/`set_knobs`
-/// has (fixed there by a measure-the-diff-and-repair pass; no equivalent repair
-/// exists for Doctor yet). Doctor prescriptions stay on the
-/// pre-existing-overlay-only path until one lands here.
+/// KNOWN LIMITATION, now REFUSED rather than silently leaked: when the
+/// diagnosed node has NO EXISTING overlay in `scene`
+/// ([`SceneWriteVerdict::NeedsEnable`]), a bare `changeParameter` here would
+/// leak to base — `set_node_scene_edit` is what forces the overlay into
+/// existence, per leveling's `set_knob`/`set_knobs`, but enabling it here
+/// isn't a free fix: it reseeds the node's scene overlay from base, wiping
+/// any OTHER already-scene-edited params on that node — the same
+/// reseed-wipes-siblings bug leveling's `set_knob`/`set_knobs` has (fixed
+/// there by a measure-the-diff-and-repair pass; no equivalent repair exists
+/// for Doctor). So Doctor never attempts either shape: `doctor_apply` refuses
+/// the apply before this fn ever runs, for the Absent case and for a
+/// `SceneOverlay::BypassOnly` node the audibility guard does NOT clear — see
+/// [`bypass_only_conflict`], which now reads the same
+/// [`scene_write_verdict_for_param`] the leveling lane does instead of
+/// re-deriving a narrower (BypassOnly-only) rule.
 fn apply_ops_under_scene(
     s: &mut Session,
     scene: Option<u32>,
@@ -845,6 +972,50 @@ fn apply_ops_under_scene(
         leveller::SETTLE_AFTER_SET_MS,
     ));
     apply_doctor_ops(s, ops)
+}
+
+/// Does `ops` contain a scene-context `Param` write [`scene_write_verdict_for_param`]
+/// won't hand to a plain enable-dropped `changeParameter`? Reads the SAME write-landing
+/// policy the leveling lane consults (`leveller::set_knobs`), rather than
+/// re-deriving a narrower rule: `Refuse` (BypassOnly, and not audibility-guarded —
+/// shares knobs with base; Unknown — truncated field-8 read, 22/25 real presets)
+/// surfaces its reason verbatim; `NeedsEnable` (Absent overlay) ALSO refuses HERE,
+/// even though the verdict itself says a write is possible — Doctor has no
+/// `set_node_scene_edit` + measure-the-diff repair pass (see
+/// [`apply_ops_under_scene`]'s doc), so enabling would reseed the node's other
+/// scene-edited params from base with nothing to repair the collateral damage.
+/// `WriteDirect` proceeds either way it's produced: a Full overlay (enable already
+/// on), or a BypassOnly node whose leak-to-base write `shared_write_is_scene_local`
+/// confirms is audible ONLY in this scene — Doctor sends the SAME enable-dropped
+/// `changeParameter` in both cases, so there is nothing scene-specific to repair.
+/// Pure — takes the already-read preset JSON, so it's unit-testable without a live
+/// session (mirrors [`floor_error_for`]'s split, same reason: `ops_session` itself
+/// needs `Session::connect`). Returns the first conflicting op's user-facing
+/// refusal reason; `None` = safe to proceed.
+///
+/// `InsertNode` ops are never scene-scoped (block topology is shared across
+/// every scene of a preset — only DSP parameters are per-scene), so only
+/// `Param` ops are checked.
+fn bypass_only_conflict(
+    preset: &serde_json::Value,
+    scene: u32,
+    ops: &[doctor::DoctorOp],
+) -> Option<String> {
+    ops.iter().find_map(|op| match op {
+        doctor::DoctorOp::Param { node_id, param, .. } => {
+            match scene_write_verdict_for_param(preset, scene, node_id, param) {
+                SceneWriteVerdict::WriteDirect { .. } => None,
+                SceneWriteVerdict::Refuse { reason, .. } => Some(reason),
+                SceneWriteVerdict::NeedsEnable => Some(format!(
+                    "{node_id} has no scene overlay yet in scene {scene} — Doctor can't safely \
+                     create one here (that would reseed the node's other scene-edited params \
+                     from base with no repair pass); level Base instead, or set up the scene's \
+                     overlay in Pro Control first"
+                )),
+            }
+        }
+        _ => None,
+    })
 }
 
 /// Apply a prescription LIVE onto the edit buffer (never saved) and return the
@@ -874,6 +1045,25 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         job.profile_id.as_deref(),
     )?;
     with_released_seize(state.session.clone(), move || {
+        // Refuse a scene-context Param write BEFORE touching device state (no
+        // BEFORE-clip capture, no force-bypass writes) whenever
+        // `scene_write_verdict_for_param` won't hand it a safe enable-dropped landing —
+        // see `bypass_only_conflict`'s doc. One extra field-8 read, paid only
+        // when relevant (a scene sound with a Param op) — the same read
+        // `resolve_sound_isolation`'s empty-graph fallback already pays
+        // elsewhere in this file. A read failure here also refuses (`?`):
+        // "can't confirm this is safe" must never authorise the write.
+        if let Some(scene) = job.scene {
+            if job.ops.iter().any(|op| matches!(op, doctor::DoctorOp::Param { .. })) {
+                let (preset, _, _) = read_slot_preset_parsed(job.list_index)?;
+                crate::settle(std::time::Duration::from_millis(
+                    leveller::RECONNECT_GAP_MS,
+                ));
+                if let Some(reason) = bypass_only_conflict(&preset, scene, &job.ops) {
+                    return Err(reason);
+                }
+            }
+        }
         let calibration = if from_capture {
             None
         } else {
@@ -885,12 +1075,13 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         // be measured (and heard) over the space the verdicts were made in.
         let stim = leveller::doctor_stim_slice(read_stimulus_calibrated(&stim_path, calibration)?);
         let run = || -> Result<DoctorApplyResult, String> {
-            // Isolation for the diagnosed sound — the SAME `resolve_sound_isolation`
-            // policy `doctor_check` uses (one policy so the A/B can never observe
-            // a different bypass state than the diagnosis; empty `nodes` falls
-            // back to the live field-8 read). Inside `run` (unlike the stimulus read): its
-            // empty-graph fallback is a live device read the backstop must cover.
-            let fb = resolve_sound_isolation(
+            // Pre-engage writes for the diagnosed sound — the SAME
+            // `resolve_sound_isolation` policy `doctor_check` uses (one policy so the
+            // A/B can never observe a different bypass OR param state than the
+            // diagnosis; empty `nodes` falls back to the live field-8 read). Inside
+            // `run` (unlike the stimulus read): its empty-graph fallback is a live
+            // device read the backstop must cover.
+            let iso = resolve_sound_isolation(
                 &job.nodes,
                 &job.footswitches,
                 job.scene,
@@ -898,6 +1089,11 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                 job.list_index,
                 &mut std::collections::HashMap::new(),
             );
+            // Same rule as the diagnosis loop: an unisolatable footswitch sound must not
+            // be auditioned — the A/B would compare two captures of the wrong sound.
+            if let Some(e) = &iso.unresolved {
+                return Err(e.clone());
+            }
             // The Doctor capture tail for this chain — the ONE home of the policy
             // (`doctor::doctor_tail_ms`); empty `nodes` conservatively keeps the
             // full wash-analysis tail, same default as before this fix.
@@ -931,7 +1127,8 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                     let (before, rate) = leveller::doctor_capture(
                         job.list_index,
                         job.scene,
-                        &fb,
+                        &iso.bypass,
+                        &iso.params,
                         &stim,
                         None,
                         tail_ms,
@@ -972,8 +1169,14 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             //     auto-restores"), and a stranded mutated buffer would let a
             //     sibling card Apply on top of it.
             let after_clip = match (|| -> Result<String, String> {
-                let (after, rate) =
-                    leveller::doctor_capture_on_session(&mut s, &fb, &stim, None, tail_ms)?;
+                let (after, rate) = leveller::doctor_capture_on_session(
+                    &mut s,
+                    &iso.bypass,
+                    &iso.params,
+                    &stim,
+                    None,
+                    tail_ms,
+                )?;
                 Ok(format!(
                     "data:audio/wav;base64,{}",
                     base64_encode(&wav_bytes(&after, rate)?)

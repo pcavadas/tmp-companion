@@ -12,9 +12,20 @@
 #                                    else non-zero (used by the pre-push hook +
 #                                    the Claude gh-pr PreToolUse hook)
 #   scripts/gates.sh --check-online  exit 0 iff an ONLINE stamp matches this tree
-#   scripts/gates.sh --record-online  write an ONLINE stamp for this tree (called
-#                                    by the online e2e runner AFTER it passes —
-#                                    this script never runs the device itself)
+#                                    AND covers every spec in the canonical online
+#                                    set (see --online-spec-set)
+#   scripts/gates.sh --record-online <spec>...
+#                                    write an ONLINE stamp for this tree naming the
+#                                    specs that passed (called by the online e2e
+#                                    runner AFTER it passes — this script never
+#                                    runs the device itself)
+#   scripts/gates.sh --online-spec-set  print the canonical online spec set, one
+#                                    name per line (read-only; the single source
+#                                    of truth for the full online tier)
+#   scripts/gates.sh --key            print the tree KEY for the current working tree
+#                                    (read-only; lets a caller — e.g. the online e2e
+#                                    runner — snapshot the key before a long run and
+#                                    compare it after, to detect a mid-run edit)
 #
 # ── Scope detection ────────────────────────────────────────────────────────
 # Changed files = the working tree vs origin/main (merge-base) + untracked. The
@@ -75,19 +86,49 @@ compute_key() {
   tmp_index="$(mktemp)"
   cp -f "$git_dir/index" "$tmp_index" 2>/dev/null || true   # warm the stat cache → fast add
   GIT_INDEX_FILE="$tmp_index" git add -A >/dev/null 2>&1 || true
+  # Prose (*.md, docs/) is excluded from the key so documentation edits don't
+  # orphan a green/online stamp; code and config still re-key. '*.md' must stay
+  # quoted (git pathspec, not shell glob) — an unquoted glob would expand against
+  # the CWD instead of being passed through to git. The `|| true` guard covers a
+  # tree with no md files (git rm errors on a pathspec that matches nothing).
+  # --ignore-unmatch: without it, ONE unmatched pathspec aborts the whole `git rm`
+  # atomically (nothing is removed) — e.g. a tree with no docs/ dir at all would
+  # silently leave prose IN the key, quietly undoing the exclusion above.
+  GIT_INDEX_FILE="$tmp_index" git rm -r --cached -q --ignore-unmatch -- '*.md' docs/ >/dev/null 2>&1 || true
+  # COVERAGE.md IS CODE, not prose: `fixture_gates` (src-tauri/src/lib.rs) parses it at
+  # TEST TIME to cross-check e2e spec coverage, so an edit to it must still re-key the
+  # stamps like any other code change — re-add it after the blanket *.md exclusion above.
+  GIT_INDEX_FILE="$tmp_index" git add -- e2e/fixtures/COVERAGE.md 2>/dev/null || true
   tree="$(GIT_INDEX_FILE="$tmp_index" git write-tree 2>/dev/null || true)"
   rm -f "$tmp_index"
   printf '%s' "$tree"
+}
+
+# Canonical online spec set — the SINGLE SOURCE OF TRUTH for the full online
+# tier, kept on ONE greppable line so a Rust gate (src-tauri/src/lib.rs) can
+# parse it verbatim and assert it against scripts/e2e.sh's own hand-maintained
+# default-spec literal (the two are separate mirrors on purpose — see that
+# gate's doc comment — this line is what it diffs against). Consumed here by
+# --check-online (which specs a stamp must cover) and --online-spec-set.
+ONLINE_SPEC_SET="doctor.online level.online songs copy"
+online_spec_set() {
+  # shellcheck disable=SC2086  # deliberate word-split: one spec name per printf line
+  printf '%s\n' $ONLINE_SPEC_SET
 }
 
 KEY="$(compute_key)"
 green_stamp="$stamp_dir/green-$KEY"
 online_stamp="$stamp_dir/online-$KEY"
 
-write_stamp() { # <stamp-path> <prefix>  — one stamp per tree; orphan the stale ones
+write_stamp() { # <stamp-path> <prefix> [content]  — one stamp per tree; orphan the
+                 # stale ones. No content → empty file (green stamp path, unchanged).
   mkdir -p "$stamp_dir"
   rm -f "$stamp_dir/$2"-*
-  : > "$1"
+  if [ -n "${3:-}" ]; then
+    printf '%s\n' "$3" > "$1"
+  else
+    : > "$1"
+  fi
 }
 
 case "$MODE" in
@@ -97,18 +138,45 @@ case "$MODE" in
     exit 1
     ;;
   --check-online)
-    if [ -f "$online_stamp" ]; then exit 0; fi
-    printf 'gates: no fresh ONLINE stamp for this tree — run the online e2e lane\n' >&2
+    if [ ! -f "$online_stamp" ]; then
+      printf 'gates: no fresh ONLINE stamp for this tree — run the online e2e lane\n' >&2
+      exit 1
+    fi
+    covered=1
+    while IFS= read -r spec; do
+      [ -z "$spec" ] && continue
+      grep -qxF "$spec" "$online_stamp" || covered=0
+    done < <(online_spec_set)
+    if [ "$covered" -eq 1 ]; then exit 0; fi
+    printf 'gates: ONLINE stamp does not cover the full online tier (found: %s)\n' \
+      "$(tr '\n' ' ' < "$online_stamp")" >&2
     exit 1
     ;;
   --record-online)
-    write_stamp "$online_stamp" online
-    printf 'gates: online stamp recorded for this tree\n'
+    shift
+    if [ "$#" -eq 0 ]; then
+      printf 'gates: --record-online requires the spec names that passed, e.g.\n' >&2
+      printf '  gates.sh --record-online doctor.online level.online songs copy\n' >&2
+      printf 'the runner records this automatically on a full passing lane — manual\n' >&2
+      printf 'recording must name the specs that actually passed.\n' >&2
+      exit 1
+    fi
+    online_content="$(printf '%s\n' "$@")"
+    write_stamp "$online_stamp" online "$online_content"
+    printf 'gates: online stamp recorded for this tree (%s)\n' "$*"
+    exit 0
+    ;;
+  --online-spec-set)
+    online_spec_set
+    exit 0
+    ;;
+  --key)
+    printf '%s\n' "$KEY"
     exit 0
     ;;
   run) ;;
   *)
-    printf 'gates: unknown mode %s (use: --check | --check-online | --record-online | no arg)\n' "$MODE" >&2
+    printf 'gates: unknown mode %s (use: --check | --check-online | --record-online <spec>... | --online-spec-set | --key | no arg)\n' "$MODE" >&2
     exit 2
     ;;
 esac

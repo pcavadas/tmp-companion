@@ -28,6 +28,7 @@ import {
   redistributeHeadroom,
   restoreRedistribution,
   commonReachableTarget,
+  toFootswitchJobWire,
   type CeilingArg,
   type PreviousKnob,
 } from "../../lib/invoke";
@@ -57,6 +58,8 @@ import type {
   Profile,
   LevelBlock,
   SilenceHint,
+  ClampKind,
+  TradeSummary,
 } from "../../lib/types";
 
 // AMP model ids (the catalog's amp categories) — the amp's outputLevel knob is the
@@ -126,6 +129,14 @@ interface LevelOutcomeFields {
   /** Footswitch rows only — `LevelResult` (preset/scene) has no such field, so it stays
    *  optional and those lanes simply never report an unconverged row. */
   unconverged?: boolean;
+  /** Footswitch rows only: the clamp's pinned bound is the wet/mix floor, not headroom —
+   *  see `FootswitchLevelResult.wet_floor`. */
+  wet_floor?: boolean;
+  /** The clamp's CAUSE from the shared taxonomy — see `LevelResult.clamp_kind`. */
+  clamp_kind?: ClampKind | null;
+  /** THE HEADROOM TRADE this row's batch made — see `LevelResult.trade`. Footswitch
+   *  results have no trade lane, so this stays optional/undefined there. */
+  trade?: TradeSummary | null;
 }
 
 // A `clamp_reason` is set ONLY when the leveled signal isn't effectively reaching the USB 1/2
@@ -148,13 +159,19 @@ const valueOf = (r: LevelOutcomeFields): number =>
   r.verify_lufs ?? r.predicted_lufs;
 // Resolve to a SINGLE by-ear cause. If a row is both dynamic AND rebalance-uncertain (rare —
 // rebalance is opt-in), "dynamic" wins INTENTIONALLY: it's the primary, more common ear-check
-// signal. Each row resolves to one cause; the summary footnote counts whichever each resolved to.
+// signal. `wet_floor` ranks between them: it's definitionally a CLAMP cause (why the row
+// stopped where it did), not a measurement-quality flag like `dynamic`, but it only ever
+// rides on a footswitch row, which never sets `verify_by_ear` (scene-only) — so the two
+// can't actually collide in practice. Each row resolves to one cause; the summary footnote
+// counts whichever each resolved to.
 const byEarCause = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
   (r.dynamic_spread_lu ?? 0) >= DYNAMIC_SPREAD_LU
     ? "dynamic"
-    : r.verify_by_ear
-      ? "rebalance"
-      : undefined;
+    : r.wet_floor
+      ? "wet_floor"
+      : r.verify_by_ear
+        ? "rebalance"
+        : undefined;
 
 /** A run row that levels via amp `outputLevel` in scene mode — not Base (`presetLevel`), not
  *  a block-acting footswitch. The run loop batches these; redistribution compensates them. */
@@ -340,6 +357,22 @@ export function useLevelingFlow({
       setStage("run");
       publish(0, false, false);
 
+      // INVARIANT (BUG 2): at most ONE row is ever "active". The reported bug — several
+      // rows all rendering "leveling · <the same LUFS>" at once — traced to nothing ever
+      // clearing a row OUT of "active" when the channel (or the optimistic
+      // `markGroupActive` pre-flip) named a NEW one active; `RunBody` renders the one
+      // shared `liveLufs` on every row whose `status === "active"`, so a stale active row
+      // kept showing the new row's live number too. Every site that flips a row active
+      // must go through this so a future call site can't reintroduce the bug — it demotes
+      // any OTHER currently-active row back to "queued" (never touching an already-
+      // resolved "result" row) before promoting the target.
+      const setSoleActive = (target: RunItem) => {
+        for (const w of work) {
+          if (w !== target && w.status === "active") w.status = "queued";
+        }
+        target.status = "active";
+      };
+
       // Envelope-follower presets get the "envelope" cause over any result-derived
       // one: the effect tracks the stimulus envelope, so the measurement itself is
       // suspect no matter how clean the numbers look.
@@ -385,10 +418,12 @@ export function useLevelingFlow({
           const entry = entries.get(key);
           if (!entry) return;
           if (status === "active") {
-            entry.item.status = "active";
-            // e.g. the freshness barrier's "waiting for the device to commit the previous
-            // save…" — shown verbatim while no capture is streaming yet (see RunBody's
-            // rowStatus). Cleared once the row resolves so a later re-run's default
+            setSoleActive(entry.item);
+            // The row's caption: the ceiling prepass's "measuring" (rendered as the verb
+            // before the live number, since a capture IS streaming), or the freshness
+            // barrier's "waiting for the device to commit the previous save…" (shown
+            // verbatim, since nothing is). See RunBody's rowStatus. Cleared once the row
+            // resolves — or when a cancelled sweep reverts it — so a later re-run's default
             // "connecting…" isn't shadowed by a stale message.
             entry.item.activeMessage = message ?? null;
             publish(entry.idx, false, false);
@@ -396,6 +431,8 @@ export function useLevelingFlow({
             entry.item.activeMessage = null;
             entry.item.outcome = outcomeOf(result);
             entry.item.value = valueOf(result);
+            entry.item.clampKind = result.clamp_kind ?? null;
+            entry.item.trade = result.trade ?? null;
             entry.item.spreadLu = result.dynamic_spread_lu;
             entry.item.verifyByEar = causeOf(result);
             finishItem(entry.item, entry.idx);
@@ -418,7 +455,7 @@ export function useLevelingFlow({
       const markGroupActive = <K>(entries: Map<K, BatchEntry>, idx: number) => {
         const rows = [...entries.values()];
         if (rows.length === 0) return;
-        rows[0].item.status = "active";
+        setSoleActive(rows[0].item);
         publish(idx, false, false);
       };
       const sweepUnresolved = <K>(entries: Map<K, BatchEntry>) => {
@@ -427,8 +464,15 @@ export function useLevelingFlow({
           // follow-up run), but the optimistic `markGroupActive` row never got a
           // backend result — revert it or it spins "stopping…" forever on the
           // finished run (the final done publish picks this mutation up).
+          // Drop its caption with it: a cancelled row never reaches `finishItem`,
+          // which is the only other place that clears one, and every prepass row
+          // now carries "measuring" — so leaving it would shadow the next run's
+          // "connecting…" on each row the stopped run had already reached.
           for (const entry of entries.values()) {
-            if (entry.item.status === "active") entry.item.status = "queued";
+            if (entry.item.status === "active") {
+              entry.item.status = "queued";
+              entry.item.activeMessage = null;
+            }
           }
           return;
         }
@@ -462,12 +506,18 @@ export function useLevelingFlow({
         const causeOf = causeFor(it.slot);
 
         if (it.isBase || (it.footswitch == null && it.sceneSlot == null)) {
-          it.status = "active";
+          setSoleActive(it);
           publish(i, false, false);
           try {
             if (it.isBase) {
               const res = await levelPreset(
-                buildLevelJob(it.slot, targetLufs, profile, true),
+                buildLevelJob(
+                  it.slot,
+                  targetLufs,
+                  profile,
+                  true,
+                  it.baseHandle,
+                ),
               );
               it.outcome = outcomeOf(res);
               it.value = valueOf(res);
@@ -476,6 +526,8 @@ export function useLevelingFlow({
               it.previousLevel = res.previous_level;
               it.truePeakDbtp = res.true_peak_dbtp;
               it.verifyByEar = causeOf(res);
+              it.clampKind = res.clamp_kind ?? null;
+              it.trade = res.trade ?? null;
             } else {
               // A scene item with no wire slot — nothing to level.
               it.outcome = "skipped";
@@ -520,23 +572,13 @@ export function useLevelingFlow({
             await levelFootswitchesApply(
               {
                 slot: it.slot,
-                jobs: group.flatMap((g) =>
-                  g.footswitch != null
-                    ? [
-                        {
-                          switch: g.footswitch.switchIndex,
-                          levGroupId: g.footswitch.levGroupId,
-                          levNodeId: g.footswitch.levNodeId,
-                          levParameterId: g.footswitch.levParameterId,
-                          targetLufs: targetOf(g),
-                          // The row name IS the switch's current display label
-                          // (`footswitchName`) — sent so the backend can keep it when
-                          // an assign adds a second function to an unlabelled switch.
-                          displayLabel: g.sceneName,
-                        },
-                      ]
-                    : [],
-                ),
+                jobs: group.flatMap((g) => {
+                  if (g.footswitch == null) return [];
+                  // The backend never creates a footswitch function any more (assign
+                  // only edits an EXISTING `param` fn or refuses), so there is nothing
+                  // for a row's display name to travel over the wire for.
+                  return [toFootswitchJobWire(g.footswitch, targetOf(g))];
+                }),
                 save: true,
                 topologyId: profile?.topology_id ?? null,
                 calibrationLufs: profile?.calibration_lufs ?? null,
@@ -583,7 +625,13 @@ export function useLevelingFlow({
             ampBlocks(await listLevelBlocks(it.slot));
           candCache.set(it.slot, cands);
         }
-        if (cands.length === 0) {
+        // A row that names its own control (`handle`) needs no amp candidate — mirrors
+        // the backend's own mixed-batch guard (`level_scenes_apply_batched`'s doc). Only
+        // bail LOCALLY (no device call at all) when NOBODY in the group has a handle;
+        // a mixed group still dispatches, and the backend reports the amp-needing rows
+        // skipped individually via the progress channel.
+        const groupHasHandle = group.some((g) => g.handle != null);
+        if (cands.length === 0 && !groupHasHandle) {
           group.forEach((g, k) => {
             g.outcome = "skipped";
             finishItem(g, i + k);
@@ -597,18 +645,26 @@ export function useLevelingFlow({
         const resolveScene = batchResolve(byScene, causeOf);
         markGroupActive(byScene, i);
         // ponytail: per-scene outcomes arrive via the Channel (`onResult`), NOT the returned
-        // Promise value (deliberately discarded — the returned LevelResult[] carries no scene_slot,
-        // so it can't be reconciled by scene without a backend contract change). Consequence: the
-        // offline e2e HTTP bridge no-ops the Channel, so scene rows there resolve to "skipped"
-        // (their physics is gated at the command level instead — see level-defaults.spec.ts). If a
-        // dropped-stream-item-online hardening is ever needed, add scene_slot to the return + reconcile here.
+        // Promise value (deliberately discarded). `LevelResult` DOES now carry `scene_slot`
+        // (identity, not position — the batch filters failed scenes out of the array it
+        // returns), so a reconcile-by-scene off the return value is available if a
+        // dropped-stream-item hardening is ever wanted; it simply isn't needed while the
+        // Channel is the live progress path and this call is awaited to completion.
+        // Consequence, unchanged: the offline e2e HTTP bridge no-ops the Channel, so scene
+        // rows there resolve to "skipped" (their physics is gated at the command level
+        // instead — see level-defaults.spec.ts).
         try {
           await levelScenesApplyBatched(
             {
               slot: it.slot,
+              // Unlike the footswitch job's `lev*` fields (plain `String`s that reject an
+              // explicit `null`), `handle` is `Option`/serde-defaulted on the Rust side —
+              // an `undefined` value here is simply OMITTED by JSON serialization (never
+              // sent as `null`).
               jobs: group.map((g) => ({
                 sceneSlot: g.sceneSlot ?? 0,
                 targetLufs: targetOf(g),
+                handle: g.handle,
               })),
               candidates: cands,
               save: true,

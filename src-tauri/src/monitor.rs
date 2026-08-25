@@ -115,6 +115,25 @@ pub(crate) fn startup_graph() -> Option<ActiveGraph> {
         .and_then(|s| s.graph.clone())
 }
 
+/// The cached name of ONE slot — clones a single `String`, never the 504-entry list.
+///
+/// This is the address guard for `slot_read`'s backup fallback, and it must not come off
+/// a live list read issued on a session that has just streamed a large preset body: that
+/// is exactly the back-to-back shape the list reassembly is documented to come back short
+/// on, and an empty name makes the fallback refuse. HW, 2026-08-19: reading the Hiwatt's
+/// scene handles failed with "the preset list did not answer with the slot's name, so a
+/// backup re-read cannot be addressed safely" — the preset was readable off a backup the
+/// whole time; only its NAME was missing. The snapshot is the same list the UI shows,
+/// costs no device I/O and takes no lock on the device.
+pub(crate) fn startup_preset_name(slot: u32) -> Option<String> {
+    crate::lock_ok(snapshot_slot()).as_ref().and_then(|s| {
+        s.presets
+            .iter()
+            .find(|e| e.slot == slot)
+            .map(|e| e.name.clone())
+    })
+}
+
 pub(crate) fn last_connect_error() -> Option<String> {
     crate::lock_ok(error_slot()).clone()
 }

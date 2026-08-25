@@ -421,6 +421,8 @@ const pRow = (slot: number, name: string) => ({
   graph: emptyGraph,
   footswitches: [],
   silence_hint: null,
+  scene_handles: [],
+  base_handles: [],
 });
 
 // Presets at device slots 8 / 58 / 100 (→ list indices 7 / 57 / 99). Bindings:
