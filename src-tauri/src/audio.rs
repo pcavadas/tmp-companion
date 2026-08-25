@@ -1141,7 +1141,7 @@ const ENERGY_ABS_FLOOR: f64 = 1e-5;
 /// an engage click into the floor (not trigger on it) while sitting inside the
 /// Doctor pad's ~230 ms floor coverage (`leveller::DOCTOR_PAD_MS` + true
 /// latency). HW-derived (`fs13_wash_envelope_2ms` fixture, 11 real captures).
-const ONSET_ENERGY_FLOOR_WINDOW_MS: usize = 150;
+pub(crate) const ONSET_ENERGY_FLOOR_WINDOW_MS: usize = 150;
 /// Amplitude step (dB, RMS) above the floor that marks the true onset — the
 /// real floor sits −90…−100 dB with a few dB of engage-pop wobble; the step
 /// itself is ~60 dB, so 12 dB clears the wobble with wide margin.
@@ -1164,10 +1164,15 @@ const ONSET_ENERGY_HOLD_HOPS: usize = 3;
 /// Returns `None` when no hop ever qualifies (a silent capture) or when the
 /// floor window is already within [`ENERGY_HOT_FROM_ZERO_DB`] of the loudest
 /// hop in the capture (no silent pre-roll to step away from — the capture is
-/// hot from sample 0). Note the reachable floor is
-/// [`ONSET_ENERGY_FLOOR_WINDOW_MS`] of latency at minimum (the search starts
-/// only after the floor window), so a negative-latency capture can be found
-/// only down to `-ONSET_ENERGY_FLOOR_WINDOW_MS`.
+/// hot from sample 0). The search only ever begins AFTER the floor window, so
+/// a signal that starts INSIDE the first [`ONSET_ENERGY_FLOOR_WINDOW_MS`] of
+/// the capture is never scanned for — it reads as hot-from-zero and this
+/// returns `None`, not a found-but-early onset. Relative to a pad of `P` ms
+/// (see `leveller::DOCTOR_PAD_MS`), that bounds the negative latency this can
+/// ever report at `-(P - ONSET_ENERGY_FLOOR_WINDOW_MS)` — an envelope, not a
+/// tightly-attained bound, since the floor window itself rounds UP to a whole
+/// number of [`ENERGY_FLOOR_HOP_MS`] sub-hops, making the practical reach a
+/// few ms tighter than the nominal figure.
 pub(crate) fn estimate_signal_start(capture: &[f32], rate: u32) -> Option<usize> {
     if capture.is_empty() {
         return None;

@@ -57,7 +57,7 @@ in the same check.
   the envelope correlator only when the step doesn't fire — the correlator's
   own confidence gate can't detect a PEAKLESS correlation curve, which is what
   a wash/reverb chain actually produces (HW-measured flat, 0.27–0.37 across
-  every lag 0–250 ms, on a 65%-wet plate).
+  every lag 0–250 ms, on a 65%-wet plate, fw 1.8.45).
 - **spiky** — dynamics-spread rule (clean chains only).
 - **resonant / boxy** — ENABLED since the 2026-07-17 parametric-EQ
   ground-truth round (`LOCALIZED_RULES_ENABLED = true`). Lineage: three
@@ -140,7 +140,7 @@ number rather than the `stereo_mix` average's mono-equivalent reading.
 The body/tail split is onset-aligned: `leveller::doctor_onset` locates the
 stimulus in the capture via a floor-relative energy step first, falling back
 to `audio::estimate_onset` (correlation ≥ 0.15 at a plausible ≤ 120 ms lag —
-recalibrated from HW latency measurements, true latency 30–34 ms) only when
+recalibrated from HW latency measurements, true latency 30–34 ms, fw 1.8.45) only when
 the step doesn't fire — see the `washed` bullet above for why the correlator
 alone isn't trusted as primary. The pad's silence→signal edge makes the
 energy step reliably confident on real chains, and `doctor_onset`'s

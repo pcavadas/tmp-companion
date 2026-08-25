@@ -9,7 +9,7 @@
 //! The `pad_aware: true` arm's onset now goes through `leveller::doctor_onset`
 //! (floor-relative energy step, primary — the correlator's confidence gate
 //! can't detect a peakless correlation curve, HW-measured flat on a 65%-wet
-//! reverb chain); `pad_aware: false` keeps the raw `audio::estimate_onset`
+//! reverb chain, fw 1.8.45); `pad_aware: false` keeps the raw `audio::estimate_onset`
 //! correlator unchanged (it captures on the RAW unpadded stimulus, so the
 //! padded stimulus the energy step needs isn't available there).
 

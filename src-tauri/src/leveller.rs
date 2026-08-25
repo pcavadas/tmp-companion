@@ -158,9 +158,22 @@ const DOCTOR_ONSET_MAX_LATENCY_MS: i64 = audio::ONSET_MAX_PLAUSIBLE_LAG_MS as i6
 /// lands before the pad "would" end) is real and unrepresentable by the
 /// correlator's forward-only lag search — but not unbounded, or an unrelated
 /// early energy step (e.g. an engage pop the floor step still let through)
-/// would be accepted as if it were the true onset. Kept local — there is no
-/// negative-lag counterpart on the correlator side to derive it from.
-const DOCTOR_ONSET_MIN_LATENCY_MS: i64 = -100;
+/// would be accepted as if it were the true onset. This is NOT a plausibility
+/// choice — it's `audio::estimate_signal_start`'s physical reach: that
+/// detector only ever searches AFTER its own [`audio::ONSET_ENERGY_FLOOR_WINDOW_MS`]
+/// of the capture, so a step inside that window is never found (reads as
+/// hot-from-zero, `None`) rather than found-but-early. Relative to
+/// [`DOCTOR_PAD_MS`], the detector can NEVER report an onset earlier than
+/// `DOCTOR_PAD_MS - ONSET_ENERGY_FLOOR_WINDOW_MS` before the pad "ends" (an
+/// envelope, not a tightly-attained bound — the floor window's own hop
+/// rounding makes the PRACTICAL reach a few ms tighter still, see the
+/// `negative_latency_at_the_reachable_bound_is_found` test) — so an energy
+/// step implying anything more negative than that cannot be this preset's
+/// true onset; it's an unrelated early artifact (e.g. an engage pop) and must
+/// fall through to the correlator instead.
+const DOCTOR_ONSET_MIN_LATENCY_MS: i64 =
+    -((DOCTOR_PAD_MS - audio::ONSET_ENERGY_FLOOR_WINDOW_MS) as i64);
+const _: () = assert!(DOCTOR_ONSET_MIN_LATENCY_MS < 0);
 
 /// Doctor's onset seam: a floor-relative energy step (primary — deterministic
 /// on every wet/dry chain because the Doctor stimulus always carries a played
@@ -11439,6 +11452,68 @@ mod onset_gate {
             onset.body_end(),
             onset.signal_start + body_len_full,
             "body_end must be the true signal_start + the full body length"
+        );
+    }
+
+    /// Pins `DOCTOR_ONSET_MIN_LATENCY_MS` at the derived `-50` and confirms a
+    /// step at the detector's practical reach is still FOUND. `-50` is an
+    /// envelope, not an attained bound: the floor window rounds UP to whole
+    /// `ENERGY_FLOOR_HOP_MS` sub-hops (150 -> 160 ms), so a step inside that
+    /// last sub-hop contaminates the floor reference and reads as None (sweep:
+    /// found at <=41 ms early, None from 42 ms). The test uses `pad - 40 ms`
+    /// (exactly the internal cutoff, zero contamination) as the robust point.
+    #[test]
+    fn negative_latency_at_the_reachable_bound_is_found() {
+        assert_eq!(
+            DOCTOR_ONSET_MIN_LATENCY_MS,
+            -50,
+            "the derivation must still land on -50 ms (pad {} - floor window {})",
+            DOCTOR_PAD_MS,
+            audio::ONSET_ENERGY_FLOOR_WINDOW_MS
+        );
+        let pad = doctor_pad_samples(); // 200 ms
+        let stim_padded = doctor_stim_slice(vec![0.0f32; doctor_stim_samples()]);
+        // 40 ms early = 160 ms into the capture — the internal floor-window
+        // cutoff (see the doc comment above for why not the nominal 50 ms).
+        let signal_start_samples = pad - SR as usize * 40 / 1000;
+        let mut capture: Vec<f32> = (0..signal_start_samples)
+            .map(|i| ((i * 7919) % 1000) as f32 / 1000.0 * 0.002 - 0.001) // tiny floor
+            .collect();
+        capture.extend(std::iter::repeat_n(0.5f32, SR as usize / 5)); // 200 ms loud
+        let found = audio::estimate_signal_start(&capture, SR)
+            .expect("a step at the detector's practical reach should be found");
+        let err = (found as i64 - signal_start_samples as i64).unsigned_abs() as usize;
+        assert!(
+            err <= HOP,
+            "signal_start {found} vs expected {signal_start_samples} (±1 hop)"
+        );
+        let onset = doctor_onset(&stim_padded, &capture, SR);
+        assert_eq!(onset.source, OnsetSource::Energy);
+    }
+
+    /// A step 75 ms early (125 ms into the capture — inside the floor window,
+    /// beyond the reachable bound) must NOT be reported as an energy onset:
+    /// `estimate_signal_start` cannot see it (its search never runs there),
+    /// and `doctor_onset` must not claim `OnsetSource::Energy` for it either.
+    #[test]
+    fn negative_latency_beyond_the_reachable_bound_falls_back() {
+        let pad = doctor_pad_samples(); // 200 ms
+        let stim_padded = doctor_stim_slice(vec![0.0f32; doctor_stim_samples()]);
+        // 75 ms early = 125 ms into the capture — inside the floor window.
+        let signal_start_samples = pad - SR as usize * 75 / 1000;
+        let mut capture: Vec<f32> = (0..signal_start_samples)
+            .map(|i| ((i * 7919) % 1000) as f32 / 1000.0 * 0.002 - 0.001) // tiny floor
+            .collect();
+        capture.extend(std::iter::repeat_n(0.5f32, SR as usize / 5)); // 200 ms loud
+        assert!(
+            audio::estimate_signal_start(&capture, SR).is_none(),
+            "a step inside the floor window must not be found by the energy detector"
+        );
+        let onset = doctor_onset(&stim_padded, &capture, SR);
+        assert_ne!(
+            onset.source,
+            OnsetSource::Energy,
+            "doctor_onset must not claim an energy onset beyond the reachable bound"
         );
     }
 
