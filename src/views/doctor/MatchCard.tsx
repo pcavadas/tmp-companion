@@ -31,7 +31,7 @@ import type {
 } from "../../lib/types";
 
 const RESIDUAL_LINE =
-  "Big spectral gap — an EQ can only get partway; a different cab/amp choice may be the honest fix.";
+  "Big tonal gap. EQ can only fix part of it — try a different cab or amp instead.";
 
 export interface MatchCardProps {
   sound: DoctorSoundResult;

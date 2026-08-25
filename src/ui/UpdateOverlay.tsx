@@ -88,7 +88,7 @@ export function UpdateOverlay({ u }: UpdateOverlayProps) {
         <Toast
           status="downloading"
           title={`Downloading ${version}…`}
-          message="A minute or two left · feel free to keep working"
+          message="About a minute or two left. You can keep working while it downloads."
           percent={u.percent}
         />
       );

@@ -285,7 +285,7 @@ export function SetlistDetail({
             color: t.mutedInk,
           }}
         >
-          reading this setlist…
+          Reading this setlist…
         </div>
       ) : songsInList.length === 0 ? (
         <PaneEmpty

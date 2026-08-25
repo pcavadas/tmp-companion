@@ -187,9 +187,9 @@ export function BugReportDialog({
               textWrap: "pretty",
             }}
           >
-            Bundles recent logs, device settings, and app info into a file —
-            describe what happened below and send it straight to the maintainer,
-            or save it to Downloads to attach manually.
+            Bundles recent logs, device settings, and app info into a file.
+            Describe what happened, then send it to the maintainer, or save it
+            to Downloads to attach yourself.
           </div>
 
           <div
@@ -270,15 +270,15 @@ export function BugReportDialog({
                 fontWeight: 500,
               }}
             >
-              Report #{reportId} sent — quote this ID if you contact me or want
-              your data deleted.
+              Report #{reportId} sent. Keep this ID — you&apos;ll need it if you
+              contact me or ask me to delete your data.
             </div>
           )}
 
           {sendFallbackPath != null && (
             <AlertBanner>
-              Couldn&apos;t send — the bundle was saved to {sendFallbackPath}{" "}
-              instead; you can send it manually.
+              Couldn&apos;t send the report. It saved to {sendFallbackPath}{" "}
+              instead — you can send it yourself.
             </AlertBanner>
           )}
 

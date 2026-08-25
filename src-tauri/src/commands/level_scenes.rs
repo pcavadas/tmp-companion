@@ -578,7 +578,7 @@ impl BatchTrade {
 
     /// Re-stamp the clamp taxonomy on the rows a FAILED trade was supposed to rescue, so the
     /// UI says "the trade ran out of base fader" / "the trade was backed out" instead of the
-    /// generic "this sound cannot reach the target". Only CLAMPED benefiting rows are touched;
+    /// generic "this sound can't reach the target". Only CLAMPED benefiting rows are touched;
     /// a row that reached its target is untouched whatever the trade did.
     ///
     /// An ADVISORY (no-save) run leaves every kind alone: those rows clamp for their own

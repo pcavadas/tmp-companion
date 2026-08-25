@@ -203,15 +203,15 @@ export type ClampKind =
  * loudly here — update this table by hand alongside it. */
 export const CLAMP_MESSAGES: Record<ClampKind, string> = {
   scene_ceiling:
-    "this sound cannot reach the target — its level control is already at the limit",
+    "this sound can't reach the target because its level control is already maxed out",
   wet_floor:
-    "this sound cannot reach the target without dropping the mix below the level that preserves the effect",
+    "this sound can't reach the target without turning the effect's mix down too far to still work",
   trade_floor:
-    "the base amp level ran out of room holding the base sound on target while headroom was traded for this one",
+    "giving this sound headroom used up the base amp's spare room, so the base sound slipped off target",
   partial_trade:
-    "the traded headroom was backed out because a dependent write did not land — nothing was saved",
+    "a related write failed, so the headroom trade was undone. Nothing was saved.",
   no_authority:
-    "the level control has no effect on the USB 1/2 output for this sound",
+    "this level control has no effect on the sound coming out of USB 1/2",
 };
 
 /** Why a headroom-trade raise was trimmed below what the worst benefiting deficit wanted

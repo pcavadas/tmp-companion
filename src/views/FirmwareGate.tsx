@@ -36,10 +36,10 @@ export function FirmwareGate({
       title="This firmware hasn’t been tested"
       body={
         <>
-          TMP Companion has only been tested with firmware {FW_MIN} and later.
-          Your Tone Master Pro is running{" "}
-          <span style={{ fontFamily: t.mono, color: t.warn }}>{detected}</span>{" "}
-          — leveling and other features may not behave as expected.
+          TMP Companion is tested only on firmware {FW_MIN} and later. Your Tone
+          Master Pro is running{" "}
+          <span style={{ fontFamily: t.mono, color: t.warn }}>{detected}</span>.
+          Leveling and other features may not work right.
         </>
       }
       bodyMaxWidth={440}

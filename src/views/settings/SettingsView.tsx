@@ -139,19 +139,19 @@ const CATEGORIES: Category[] = [
     id: "targets",
     label: "Loudness targets",
     icon: "sliders",
-    desc: "The leveling target stack — set each level, rename to match how you play, reorder to taste.",
+    desc: "Your loudness targets. Set each level, rename it, and drag to reorder.",
   },
   {
     id: "instruments",
     label: "Instruments",
     icon: "cable",
-    desc: "Calibrate each guitar once so presets can be leveled for any of them, chosen per preset at level time.",
+    desc: "Calibrate each instrument once. Then pick it for any preset when you level.",
   },
   {
     id: "playback",
     label: "Playback level",
     icon: "wave",
-    desc: "The volume you’ll play at — targets are compensated for how the ear hears bass.",
+    desc: "The volume you play at. Bass targets adjust to match it.",
   },
   {
     id: "about",
@@ -533,11 +533,11 @@ export function SettingsView({
                       lineHeight: 1.45,
                     }}
                   >
-                    Your instruments and offsets are stored here, but{" "}
+                    Your instruments and offsets are saved on this Mac.{" "}
                     <strong style={{ color: t.ink }}>
-                      calibrating needs the unit connected
-                    </strong>{" "}
-                    — it listens through the device input.
+                      Calibrating needs the unit connected
+                    </strong>
+                    , because it listens through the device input.
                   </span>
                 </div>
               )}
@@ -551,8 +551,8 @@ export function SettingsView({
                   marginBottom: t.space6,
                 }}
               >
-                Play the way you gig — mix chords and lead, pick and fingers,
-                include EBow if you use one, all in one take.
+                Play the way you gig: mix chords and lead, pick and fingers.
+                Include EBow if you use one. Record it all in one take.
               </div>
 
               {profiles.map((p) =>
@@ -642,10 +642,9 @@ export function SettingsView({
                     textWrap: "pretty",
                   }}
                 >
-                  Based on the equal-loudness curves: at lower SPL the ear’s
-                  sensitivity to low frequencies falls off fastest, so bass
-                  needs a touch more level to stay perceptually even with the
-                  mids.
+                  Your ears hear less bass at low volume. So at quiet and
+                  rehearsal levels, bass presets get a small boost to sound as
+                  full as they do on stage.
                 </div>
               </div>
             )}
@@ -674,8 +673,7 @@ export function SettingsView({
           >
             <Icon name="lock" size={13} stroke={t.faint} />
             Instruments and loudness targets are the only data this app keeps on
-            your Mac. Everything else — presets, scenes, songs — lives on the
-            device.
+            your Mac. Presets, scenes, and songs live on the device, not here.
           </span>
         }
         right={null}

@@ -291,7 +291,7 @@ export function SaveOverlay({
               padding: `${String(t.space4)}px ${String(t.space2)}px`,
             }}
           >
-            Writing to the unit — please keep it connected.
+            Writing to the unit. Keep it connected.
           </span>
         )}
       </DialogFooter>

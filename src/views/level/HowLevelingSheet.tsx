@@ -34,12 +34,12 @@ const LEVEL_BEATS: readonly (readonly [IconName, string, string])[] = [
 const LEVEL_CASES: readonly { name: string; sub: string; sets: string }[] = [
   {
     name: "The whole preset",
-    sub: "an alternate preset from your list",
+    sub: "another preset in your list",
     sets: "Output level",
   },
   {
     name: "A scene",
-    sub: "an alternate sound on a footswitch",
+    sub: "a different sound on a footswitch",
     sets: "Amp volume",
   },
   {
@@ -200,7 +200,7 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
             marginBottom: t.space6,
           }}
         >
-          Every level run does the same three things:
+          Every leveling run does the same three things:
         </div>
         <LevelBeatStrip />
         <div
@@ -311,8 +311,8 @@ export function HowLevelingSheet({ onClose }: HowLevelingSheetProps) {
             }}
           >
             For two amps, it balances them to equal loudness first, then levels
-            the pair. And if your target is out of reach, it sets the loudest it
-            can &mdash; and tells you the exact level it reached.
+            the pair. If your target is out of reach, it sets the loudest level
+            it can. It also tells you the exact number it reached.
           </span>
         </div>
       </DialogBody>
