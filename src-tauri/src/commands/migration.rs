@@ -266,7 +266,7 @@ pub(crate) async fn audit_loudness(
             } else {
                 -120.0
             };
-            let loud = leveller::measure_processed(cap)?;
+            let loud = leveller::measure_processed(&cap)?;
             measures.push(lint::AuditMeasure {
                 list_index: slot,
                 peak_dbfs,

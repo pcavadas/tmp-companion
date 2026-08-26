@@ -1,10 +1,16 @@
 // src/views/overlays/SetupBody.tsx — wizard step 2, "Set up".
 //
 // Everything chosen in the LIST (the scene tree) WILL be leveled — this step never
-// re-gates inclusion. Its single job is to set each sound's INSTRUMENT + TARGET:
-//   • A top "Apply to" bar is a brush that writes to every row at once — or, when the
-//     user ticks a few rows, to just those. Ticking is a bulk-edit convenience only.
-//   • Each row also carries its OWN instrument + target pickers.
+// re-gates inclusion. Its single job is to set each sound's INSTRUMENT + TARGET +
+// LEVELING HANDLE (D2 — every row levels against ONE user-chosen block+param control,
+// picked from `BlockLevelPick`'s two dropdowns — block, then control; Base rows
+// default to the "Preset level" pseudo-option, Scene rows to "Amp output level",
+// Footswitch rows always carry a real pick):
+//   • A top "Apply to" bar is a brush that writes instrument + target to every row at
+//     once — or, when the user ticks a few rows, to just those. Ticking is a bulk-edit
+//     convenience only.
+//   • Each row also carries its OWN instrument + target pickers, plus its own handle
+//     (and, for footswitches, scene-context — D3) pickers.
 // On "Level N sounds" it hands the flow one SetupChoice per option. The footer's
 // "I've backed up with Pro Control" checkbox gates the button (an inline backup
 // acknowledgment — there is no separate Back-up step). Re-level skips the ack (the
@@ -12,7 +18,11 @@
 //
 // History (do not reintroduce): an earlier build put inclusion checkboxes here,
 // forcing users to pick sounds twice (list + dialog). The list is the single place
-// you choose WHAT to level; this step only chooses HOW.
+// you choose WHAT to level; this step only chooses HOW. A later build gave footswitch
+// rows a "Verify only" default + "Make level-neutral" opt-in and scene rows a
+// match/offset target-mode chip — both REMOVED: every row levels now (the backend
+// dropped the verify-only footswitch mode entirely), and the combined handle picker
+// replaced the target-mode concept.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -27,13 +37,37 @@ import { usePickedRows } from "../../lib/usePickedRows";
 import { WizardFooter, WizTitle } from "./WizardShell";
 import { ByEarChip } from "./ByEarChip";
 import { Pick, type PickOption } from "./Pick";
-import { FsParamPick } from "./FsParamPick";
 import {
-  defaultParamIndex,
+  BlockLevelPick,
+  type BlockLevelHandle,
+  type BlockLevelFetch,
+} from "./BlockLevelPick";
+import { PickWarnNote } from "./PickWarnNote";
+import {
+  useSceneHandles,
+  type HandleFetchState,
+} from "../level/useSceneHandles";
+import {
+  useLevelBlocks,
+  type BaseBlockFetchState,
+} from "../level/useLevelBlocks";
+import {
+  useFootswitchSceneContexts,
+  type FsContextFetchState,
+} from "../level/useFootswitchSceneContexts";
+import {
+  footswitchNameForCandidate,
   instCalState,
+  setupRowHookKey,
   targetFromCandidate,
 } from "../level/leveling";
-import type { SetupOption, SetupChoice } from "../level/leveling";
+import type {
+  SetupOption,
+  SetupChoice,
+  BaseHandlePick,
+  FootswitchTarget,
+} from "../level/leveling";
+import type { LevelParamCandidate } from "../../lib/types";
 
 export type { SetupChoice };
 
@@ -177,6 +211,175 @@ function CalibrationOnboardingBanner({ show }: { show: boolean }) {
   );
 }
 
+/** A footswitch row's leveling controls (D2 + D3): `BlockLevelPick`'s two-dropdown
+ *  block+param picker — NO pseudo-option (the backend removed the verify-only "no
+ *  handle" row entirely, so every FS row must carry a real handle) — stacked over
+ *  the scene-context picker
+ *  (which scene, if any, this switch's sound is measured and solved in). Picking a
+ *  scene that doesn't actually turn the switch on is ALLOWED — flagged, never blocked
+ *  (D3). `sceneContext` is the EFFECTIVE value to display, resolved by the caller
+ *  (the row's own pick, else the lazily-fetched `suggested`, else the carried-forward
+ *  default) so this stays a pure renderer. */
+function FsRowControls({
+  switchIndex,
+  levelParams,
+  fsSceneNames,
+  handle,
+  onHandleChange,
+  sceneContext,
+  ctxState,
+  onOpenSceneContext,
+  onSceneContextChange,
+}: {
+  switchIndex: number;
+  levelParams: LevelParamCandidate[];
+  fsSceneNames: string[];
+  handle: BlockLevelHandle | null;
+  onHandleChange: (h: BlockLevelHandle | null) => void;
+  sceneContext: number | null;
+  ctxState: FsContextFetchState;
+  onOpenSceneContext: () => void;
+  onSceneContextChange: (v: number | null) => void;
+}) {
+  const { t } = useTheme();
+  const candidates: BlockLevelFetch = {
+    status: "resolved",
+    list: levelParams.map((c) => ({
+      groupId: c.group_id,
+      nodeId: c.node_id,
+      fenderId: c.fender_id,
+      parameterId: c.parameter_id,
+      paramClass: c.class,
+    })),
+  };
+  const sceneOptions: PickOption[] = [
+    { id: "base", label: "Base" },
+    ...fsSceneNames.map((name, i) => ({
+      id: String(i),
+      label: name || `Scene ${String(i + 1)}`,
+    })),
+  ];
+  const enabling =
+    ctxState.status === "resolved"
+      ? (ctxState.row?.enablingScenes ?? null)
+      : null;
+  const nonEnabling =
+    sceneContext != null &&
+    enabling != null &&
+    !enabling.includes(sceneContext);
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: t.space2,
+        minWidth: 0,
+      }}
+    >
+      <BlockLevelPick
+        handle={handle}
+        onHandleChange={(h) => {
+          onHandleChange(h);
+        }}
+        candidates={candidates}
+        onOpen={() => undefined}
+      />
+      <Pick
+        grow
+        value={sceneContext == null ? "base" : String(sceneContext)}
+        options={sceneOptions}
+        onChange={(id) => {
+          onSceneContextChange(id === "base" ? null : Number(id));
+        }}
+        onOpen={onOpenSceneContext}
+        muted={sceneContext == null}
+        tid={`fsctx:${String(switchIndex)}`}
+      />
+      {nonEnabling && (
+        <PickWarnNote>
+          FS{String(switchIndex + 1)} doesn’t turn on in that scene
+        </PickWarnNote>
+      )}
+    </div>
+  );
+}
+
+/** `useLevelBlocks` (Base rows) → the combined picker's candidate list. TWO sources ride
+ *  the SAME `BaseCandidate` shape now: the backup-derived arm carries a real `paramClass`
+ *  (`base_handles`, classified backend-side, same table the scene picker uses), while the
+ *  device-fallback arm (`list_level_blocks` → `session::LevelBlock`) carries none — that
+ *  wire shape was never annotated, and this is a deliberate divergence, not a gap to
+ *  "fix" by classifying frontend-side (there is no local classifier mirror; see
+ *  `LevelParamCandidate`'s doc in `types.ts`). `BlockLevelPick`'s `rank()` already sorts
+ *  an `undefined` class after every classified one, so the fallback arm's candidates
+ *  simply fall in last, exactly as they always have. */
+function baseCandidatesFetch(state: BaseBlockFetchState): BlockLevelFetch {
+  if (state.status !== "resolved") return { status: state.status };
+  return {
+    status: "resolved",
+    list: state.blocks.map((b) => ({
+      groupId: b.group_id,
+      nodeId: b.node_id,
+      fenderId: b.model_id,
+      parameterId: b.parameter_id,
+      paramClass: b.paramClass,
+      lowersOnly: b.headroom === "lowers_only",
+    })),
+  };
+}
+
+/** A non-"isolated" scene-handle candidate's disabled reason — mirrors
+ *  `SceneHandleCandidate.scope`'s doc. `"isolated"` candidates aren't disabled at
+ *  all, so this is only ever called for the other two. */
+function sceneDisabledTitle(
+  scope: "isolated" | "shared_with_base" | "unknown",
+): string | undefined {
+  if (scope === "shared_with_base")
+    return "shared with the base preset — changes every scene sharing it";
+  if (scope === "unknown") return "could not be confirmed for this scene";
+  return undefined;
+}
+
+/** `BlockLevelCandidate`'s disabled/disabledTitle pair, paired atomically so a
+ *  disabled row can never come out of this without its reason. */
+function sceneDisabledFields(
+  scope: "isolated" | "shared_with_base" | "unknown",
+): { disabled: true; disabledTitle: string } | { disabled?: false } {
+  const title = sceneDisabledTitle(scope);
+  return title != null ? { disabled: true, disabledTitle: title } : {};
+}
+
+/** `list_scene_level_handles`'s `allCandidates` (Scene rows) → the combined picker's
+ *  candidate list — the full class-annotated superset, level-class first. */
+function sceneCandidatesFetch(state: HandleFetchState): BlockLevelFetch {
+  if (state.status !== "resolved") return { status: state.status };
+  return {
+    status: "resolved",
+    list: state.allCandidates.map((c) => ({
+      groupId: c.groupId,
+      nodeId: c.nodeId,
+      fenderId: c.fenderId,
+      parameterId: c.parameterId,
+      paramClass: c.class,
+      lowersOnly: c.headroom === "lowers_only",
+      ...sceneDisabledFields(c.scope),
+    })),
+  };
+}
+
+/** One row's editable choices, keyed by `SetupOption.key`. `handle` is Base/Scene/FS
+ *  rows' chosen leveling control (D2) — `null` = the pseudo-option's default path on
+ *  a Base/Scene row; always seeded non-null on a footswitch row. `sceneContext` is
+ *  footswitch-row-only (D3): `undefined` = not yet explicitly picked by the user —
+ *  the effective value falls back to the lazily-fetched `suggested`, then the
+ *  carried-forward default. */
+interface RowChoice {
+  inst: string;
+  target: string;
+  handle: BlockLevelHandle | null;
+  sceneContext: number | null | undefined;
+}
+
 export interface SetupBodyProps {
   /** The exact scenes picked in the list — all of them WILL be leveled. */
   options: SetupOption[];
@@ -252,36 +455,80 @@ export function SetupBody({
     return [...by.values()].sort((a, b) => a.slot - b.slot);
   }, [options]);
 
-  // Per-row instrument + target — the real values that get leveled.
-  const [rowInst, setRowInst] = useState<Record<string, string>>(() => {
-    const m: Record<string, string> = {};
-    options.forEach((o) => (m[o.key] = defaultInst));
-    return m;
-  });
-  const [rowTarget, setRowTarget] = useState<Record<string, string>>(() => {
-    const m: Record<string, string> = {};
-    options.forEach((o) => (m[o.key] = defaultTarget));
-    return m;
-  });
-  const setOneInst = (k: string, v: string) => {
-    setRowInst((p) => ({ ...p, [k]: v }));
-  };
-  const setOneTarget = (k: string, v: string) => {
-    setRowTarget((p) => ({ ...p, [k]: v }));
-  };
-
-  // Which block parameter levels each footswitch (index into the row's `levelParams`).
-  // Seeded with the tone-safe default; only footswitch rows with candidates appear.
-  const [rowParam, setRowParam] = useState<Record<string, number>>(() => {
-    const m: Record<string, number> = {};
+  // One per-row choice map — instrument/target + the leveling handle (+ footswitch
+  // scene context), all seeded in one pass and patched with one setter.
+  const [rows, setRows] = useState<Partial<Record<string, RowChoice>>>(() => {
+    const m: Partial<Record<string, RowChoice>> = {};
     options.forEach((o) => {
-      if (o.footswitch != null && o.levelParams && o.levelParams.length > 0)
-        m[o.key] = defaultParamIndex(o.levelParams);
+      m[o.key] = {
+        inst: defaultInst,
+        target: defaultTarget,
+        handle:
+          o.footswitch != null
+            ? {
+                groupId: o.footswitch.levGroupId,
+                nodeId: o.footswitch.levNodeId,
+                parameterId: o.footswitch.levParameterId,
+              }
+            : o.isBase
+              ? (o.baseHandle ?? null)
+              : (o.sceneHandle ?? null),
+        sceneContext: undefined,
+      };
     });
     return m;
   });
-  const setOneParam = (k: string, i: number) => {
-    setRowParam((p) => ({ ...p, [k]: i }));
+  const patchRow = (k: string, partial: Partial<RowChoice>) => {
+    setRows((p) => {
+      const cur = p[k];
+      // Every option's key was seeded at mount — an unseeded key is unreachable, but
+      // guard rather than assume so the map's real (possibly-undefined) index type
+      // holds (this tsconfig has no `noUncheckedIndexedAccess`, so the honest guard
+      // has to be written by hand rather than inferred).
+      if (!cur) return p;
+      return { ...p, [k]: { ...cur, ...partial } };
+    });
+  };
+
+  // Leveling-handle candidates. Base/Scene resolve INSTANT-FIRST off the startup backup
+  // scan (no device I/O — see `useLevelBlocks`/`useSceneHandles`), falling back to a real
+  // device read (load+discovery / a field-8 read) only for a row the backup didn't cover.
+  // Footswitch candidates need no fetch at all — the switch's own `level_params` are
+  // already in hand. The scene-context picker (D3) stays a real, lazy device read.
+  const {
+    prefetch: fetchHandlesFor,
+    candidatesFor,
+    hasBackupData: sceneHasBackup,
+  } = useSceneHandles();
+  const {
+    prefetch: fetchBlocksFor,
+    blocksFor,
+    hasBackupData: baseHasBackup,
+  } = useLevelBlocks();
+  const { prefetch: fetchFsContextFor, contextFor } =
+    useFootswitchSceneContexts();
+
+  // Eagerly warm every group's Base/Scene candidates on Set-up step render — SCAN-ONLY:
+  // gated on `hasBackupData` so this provably cannot reach the device. A slot the backup
+  // scan didn't cover (map key absent — including the "ready but failed" scan shape,
+  // where every map is empty) is left unfetched here; its row falls back to a real device
+  // read LAZILY, only if the user actually opens that row's own picker (the `onOpen`
+  // handlers below, unchanged). Idempotent either way (`useLazySlotCache`'s per-mount
+  // `fetchedSlotsRef`), so re-running this on every render (the fetchers are fresh
+  // closures, not memoized — matching every other call site in this file) only re-checks
+  // already-fetched slots, never re-fetches them.
+  useEffect(() => {
+    groups.forEach((g) => {
+      if (baseHasBackup(g.slot)) fetchBlocksFor(g.slot);
+      if (sceneHasBackup(g.slot)) fetchHandlesFor(g.slot);
+    });
+  }, [groups, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
+
+  // A footswitch row's D3 default: the lazily-fetched `suggested` scene, when resolved.
+  const fsSuggestedFor = (o: SetupOption): number | null => {
+    if (o.footswitch == null) return null;
+    const st = contextFor(o.slot, o.footswitch.switchIndex);
+    return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
   };
 
   // Bulk-edit selection (which rows the "Apply to" bar writes to). Empty = all.
@@ -299,17 +546,23 @@ export function SetupBody({
   const [bulkTarget, setBulkTarget] = useState(defaultTarget);
   const applyBulkInst = (v: string) => {
     setBulkInst(v);
-    setRowInst((p) => {
+    setRows((p) => {
       const n = { ...p };
-      targetsForBulk().forEach((k) => (n[k] = v));
+      targetsForBulk().forEach((k) => {
+        const cur = n[k];
+        if (cur) n[k] = { ...cur, inst: v };
+      });
       return n;
     });
   };
   const applyBulkTarget = (v: string) => {
     setBulkTarget(v);
-    setRowTarget((p) => {
+    setRows((p) => {
       const n = { ...p };
-      targetsForBulk().forEach((k) => (n[k] = v));
+      targetsForBulk().forEach((k) => {
+        const cur = n[k];
+        if (cur) n[k] = { ...cur, target: v };
+      });
       return n;
     });
   };
@@ -318,24 +571,69 @@ export function SetupBody({
 
   const start = () => {
     const choices: SetupChoice[] = options.map((o) => {
-      // Bake the chosen candidate into the footswitch row's leveling target; Base +
-      // scene rows pass through unchanged.
+      const row = rows[o.key];
       let option = o;
-      if (o.footswitch != null && o.levelParams && o.levelParams.length > 0) {
-        const idx = rowParam[o.key];
-        if (idx >= 0 && idx < o.levelParams.length)
-          option = {
-            ...o,
-            footswitch: targetFromCandidate(
+      if (o.footswitch != null) {
+        const chosenHandle = row?.handle;
+        const candidate = chosenHandle
+          ? (o.levelParams ?? []).find(
+              (c) =>
+                c.group_id === chosenHandle.groupId &&
+                c.node_id === chosenHandle.nodeId &&
+                c.parameter_id === chosenHandle.parameterId,
+            )
+          : undefined;
+        const suggested = fsSuggestedFor(o);
+        const sceneContext =
+          row?.sceneContext !== undefined
+            ? row.sceneContext
+            : (suggested ?? o.footswitch.sceneContext);
+        const target: FootswitchTarget = candidate
+          ? targetFromCandidate(
               o.footswitch.switchIndex,
-              o.levelParams[idx],
-            ),
-          };
+              sceneContext,
+              candidate,
+            )
+          : { ...o.footswitch, sceneContext };
+        option = {
+          ...o,
+          footswitch: target,
+          // LABEL PROVENANCE. `sceneName` is the Level list's row name for a footswitch
+          // (never sent to the backend — the assign gate only ever edits an EXISTING
+          // `param` fn or refuses, so there is no on-device `customLabel` write to keep
+          // in sync any more). It was chosen back in `chosenFrom`, which only knew the
+          // tone-safe DEFAULT candidate — so a user who overrode that pick here would
+          // otherwise see the row still named after a block the run never touched.
+          // Re-derive it from the candidate actually being leveled. A LABELED switch
+          // keeps its own name: that string is the player's, and nothing about picking
+          // a different knob makes it wrong.
+          ...(o.fsUnlabeled === true && candidate
+            ? { sceneName: footswitchNameForCandidate(candidate) }
+            : {}),
+        };
+      } else if (o.isBase) {
+        // `chosen` (a `BlockLevelHandle`) already carries exactly the three fields a
+        // `BaseHandlePick` needs — no block-list re-lookup required. `block_value`
+        // is ALWAYS `null` at dispatch (`buildLevelJob`): the run's own fresh
+        // saved-doc read anchors the wet floor instead (`level_preset.rs`'s
+        // block-value fallback), for either source, so there is nothing here to
+        // resolve from a live read.
+        const chosen = row?.handle;
+        const baseHandle: BaseHandlePick | null = chosen
+          ? {
+              groupId: chosen.groupId,
+              nodeId: chosen.nodeId,
+              parameterId: chosen.parameterId,
+            }
+          : null; // the "Preset level" pseudo-option (D2 default)
+        option = { ...o, baseHandle };
+      } else if (o.sceneSlot != null) {
+        option = { ...o, sceneHandle: row?.handle ?? null };
       }
       return {
         option,
-        instId: rowInst[o.key] ?? defaultInst,
-        targetName: rowTarget[o.key] ?? defaultTarget,
+        instId: row?.inst ?? defaultInst,
+        targetName: row?.target ?? defaultTarget,
       };
     });
     if (choices.length) onStart(choices);
@@ -423,6 +721,7 @@ export function SetupBody({
           >
             <SetupGroupHeader slot={g.slot} name={g.name} />
             {g.opts.map((o) => {
+              const row = rows[o.key];
               const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
               const nameLabel = o.isBase ? "Whole preset" : o.sceneName;
               const sub = o.isBase
@@ -433,6 +732,7 @@ export function SetupBody({
               return (
                 <PresetOptionRow
                   key={o.key}
+                  setupRowKey={setupRowHookKey(o)}
                   name={nameLabel}
                   tag={tag ?? undefined}
                   isBase={o.isBase}
@@ -442,18 +742,61 @@ export function SetupBody({
                     togglePick(o.key);
                   }}
                   title="Tick to bulk-edit this row with the bar above"
-                  columns="132px 108px 108px"
+                  columns="192px 108px 108px"
                 >
-                  {/* Footswitch rows: choose which block parameter to level. Base +
-                      scene rows keep the column empty so the pickers stay aligned. */}
+                  {/* Every row's own leveling handle (D2): Base/Scene get
+                      `BlockLevelPick`'s two-dropdown (block, then control) picker
+                      with a pseudo-default; footswitch rows also carry the D3
+                      scene-context picker. Base rows without scenes still qualify
+                      for the Base picker (they're the whole preset). */}
                   {o.footswitch != null &&
                   o.levelParams &&
                   o.levelParams.length > 0 ? (
-                    <FsParamPick
-                      params={o.levelParams}
-                      index={rowParam[o.key]}
-                      onChange={(i) => {
-                        setOneParam(o.key, i);
+                    <FsRowControls
+                      switchIndex={o.footswitch.switchIndex}
+                      levelParams={o.levelParams}
+                      fsSceneNames={o.fsSceneNames ?? []}
+                      handle={row?.handle ?? null}
+                      onHandleChange={(h) => {
+                        patchRow(o.key, { handle: h });
+                      }}
+                      sceneContext={
+                        row?.sceneContext !== undefined
+                          ? row.sceneContext
+                          : (fsSuggestedFor(o) ?? o.footswitch.sceneContext)
+                      }
+                      ctxState={contextFor(o.slot, o.footswitch.switchIndex)}
+                      onOpenSceneContext={() => {
+                        fetchFsContextFor(o.slot);
+                      }}
+                      onSceneContextChange={(v) => {
+                        patchRow(o.key, { sceneContext: v });
+                      }}
+                    />
+                  ) : o.isBase ? (
+                    <BlockLevelPick
+                      pseudoLabel="Preset level"
+                      handle={row?.handle ?? null}
+                      onHandleChange={(h) => {
+                        patchRow(o.key, { handle: h });
+                      }}
+                      candidates={baseCandidatesFetch(blocksFor(o.slot))}
+                      onOpen={() => {
+                        fetchBlocksFor(o.slot);
+                      }}
+                    />
+                  ) : o.sceneSlot != null ? (
+                    <BlockLevelPick
+                      pseudoLabel="Amp output level"
+                      handle={row?.handle ?? null}
+                      onHandleChange={(h) => {
+                        patchRow(o.key, { handle: h });
+                      }}
+                      candidates={sceneCandidatesFetch(
+                        candidatesFor(o.slot, o.sceneSlot),
+                      )}
+                      onOpen={() => {
+                        fetchHandlesFor(o.slot);
                       }}
                     />
                   ) : (
@@ -461,19 +804,19 @@ export function SetupBody({
                   )}
                   <Pick
                     grow
-                    value={rowInst[o.key] ?? defaultInst}
+                    value={row?.inst ?? defaultInst}
                     options={instrumentOptions}
                     onChange={(v) => {
-                      setOneInst(o.key, v);
+                      patchRow(o.key, { inst: v });
                     }}
                   />
                   <Pick
                     grow
                     tid={`target:${g.name}`}
-                    value={rowTarget[o.key] ?? defaultTarget}
+                    value={row?.target ?? defaultTarget}
                     options={targetOptions}
                     onChange={(v) => {
-                      setOneTarget(o.key, v);
+                      patchRow(o.key, { target: v });
                     }}
                   />
                 </PresetOptionRow>

@@ -5,8 +5,9 @@ over USB, to read, level, copy, and back up **your own** presets. It is an
 independent, unaffiliated project — see [NOTICE](NOTICE) and [INTEROP.md](INTEROP.md).
 
 Built with [Tauri 2](https://tauri.app) (Rust backend + React/TypeScript frontend).
-macOS-only, universal (Apple Silicon & Intel) — it uses CoreAudio for re-amp
-measurement and IOKit for exclusive USB-HID access.
+Ships on macOS, universal (Apple Silicon & Intel) — CoreAudio for re-amp
+measurement, IOKit for exclusive USB-HID access. Linux is a supported
+development platform (hidraw + ALSA) — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features
 

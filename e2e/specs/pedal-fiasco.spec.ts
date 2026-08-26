@@ -8,6 +8,7 @@ import {
   isOnline,
   reampCounters,
   reampOff,
+  selectBaseOnly,
   simEvents,
 } from "../fixtures/scenario";
 
@@ -60,12 +61,13 @@ test.describe("Pedal fiasco — a silent capture writes nothing", () => {
       timeout: 20_000,
     });
 
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    // Base-only selection (expand → tick "Base Preset"): both presets now carry
+    // footswitches of their own (P4-B fixture rebuild), and a whole-preset tick would sweep
+    // those in too — their own VERIFY-mode captures would consume the one-shot capture fault
+    // armed below before 402's Base ever measures, defeating the premise.
     for (const p of [SCENARIO[1], SCENARIO[2]]) {
-      await filter.fill(p.name);
-      await page.getByTitle("Select preset to level").first().click();
+      await selectBaseOnly(page, p.name);
     }
-    await filter.fill("");
 
     // Silence 402's next capture → its base measure hits NO_SIGNAL → off-branch, no write.
     await armCaptureFault(page, SCENARIO[2].slot);

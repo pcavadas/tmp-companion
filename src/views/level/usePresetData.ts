@@ -52,7 +52,32 @@ export function toPresetRow(p: PresetEntry): PresetRow {
   return { slot: p.slot, name: p.name, empty: isEmptyName(p.name) };
 }
 
-export function usePresetData(connected: boolean) {
+export interface UsePresetDataOptions {
+  /** Which footswitch roster THIS caller's own `footswitchInfo` (and hence its
+   *  selection mechanics — `childKeys`, `chosenFrom`, whole-preset ticking) is built
+   *  from: `"levelable"` (default) is the pre-BUG-1 behaviour — a switch with zero
+   *  level_params is invisible to this view's tree entirely, which is what Doctor's
+   *  own SELECT list still relies on (a non-levelable FS has nothing to diagnose as
+   *  its own sound). `"all"` is Level's BUG-1 fix: the FULL roster, so a non-levelable
+   *  switch still gets a row (disabled, with a reason) instead of vanishing.
+   *
+   *  This is a per-CALLER choice, not a data-layer one, because `footswitchInfo` here
+   *  drives BOTH the rendered rows AND their `fswKey` addressing (childKeys/toggle) —
+   *  those two must read the SAME array (position-indexed) or a row's checkbox can
+   *  silently toggle a DIFFERENT switch's key than the one it renders. Mixing
+   *  `"levelable"` rendering with `"all"`-derived keys (or vice versa) reintroduces
+   *  that misalignment, so don't thread `allFootswitchInfo` into a `"levelable"`
+   *  caller's own tree/selection — only into a reader that doesn't address by
+   *  position (e.g. Doctor's damage detector, which reads `allFootswitchInfo`
+   *  directly, never through this option). */
+  footswitchRoster?: "levelable" | "all";
+}
+
+export function usePresetData(
+  connected: boolean,
+  opts: UsePresetDataOptions = {},
+) {
+  const { footswitchRoster = "levelable" } = opts;
   const { phase, setPhase, mountedRef, runLoad } = useDeviceLoad();
   const [rows, setRows] = useState<PresetRow[]>([]);
   const [store, setStore] = useState<Store | null>(null);
@@ -73,7 +98,14 @@ export function usePresetData(connected: boolean) {
   // by 0-based LIST INDEX (= backup device slot − 1).
   const lib = useSyncExternalStore(subscribeLibraryScan, getLibraryScan);
   const { sceneInfo, ready } = lib;
-  const footswitchInfo = lib.footswitchesPerIndex;
+  // Per-caller roster (see `UsePresetDataOptions.footswitchRoster`'s doc): Doctor
+  // takes the default `footswitchesPerIndex` (levelable-only, unchanged from before
+  // BUG 1); Level opts into the full `allFootswitchesByIndex` roster so a
+  // non-levelable switch still gets a row (disabled) instead of vanishing.
+  const footswitchInfo =
+    footswitchRoster === "all"
+      ? lib.allFootswitchesByIndex
+      : lib.footswitchesPerIndex;
   const scan: ScanState = { scanning: lib.scanning, percent: lib.percent };
 
   // rows + sceneInfo + footswitchInfo in refs so the stable toggle callbacks see the
@@ -273,6 +305,9 @@ export function usePresetData(connected: boolean) {
     sceneCount,
     sceneInfo,
     footswitchInfo,
+    /** Every footswitch (incl. Other-class-only, no level candidate) — Doctor's damage
+     *  detector needs the full roster, not the levelable-only `footswitchInfo` list. */
+    allFootswitchInfo: lib.allFootswitchesByIndex,
     ampCandidates: lib.ampCandidates,
     blocksByIndex: lib.blocksByIndex,
     silenceHintByIndex: lib.silenceHintByIndex,

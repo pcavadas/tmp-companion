@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 
 // Shared scenario setup for the dual-mode specs. The working presets live at slots
-// 400-404 (the high scratch zone, clear of the user's real presets) and are the SAME
+// 400-409 (the high scratch zone, clear of the user's real presets) and are the SAME
 // fixed presets in both modes (deterministic — same blocks every run, validated against).
 // OFFLINE they are baked into the backup fixture + the startup snapshot, so `ensureScenario`
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
@@ -16,18 +16,31 @@ export interface Preset {
 }
 
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
-// (401/402/403/404/405/406), so a slot-numbered name would read off-by-one in the backup view.
-// The Reference is the Copy source; Target 1/2 are the edited presets; Realistic (gtrParallel1,
-// scenes + an off-branch footswitch) is the physics-spec fixture (level-defaults.spec.ts);
-// Preset24 (4 drive pedals into a saturated amp, no scenes) is the stale-load-incident fixture
-// (level-fs-preset24.spec.ts) — see e2e/fixtures/scenario-loudness.json's "405" entry.
+// (401/402/.../410), so a slot-numbered name would read off-by-one in the backup view.
+// WHICH USE CASE EACH FIXTURE CARRIES: e2e/fixtures/COVERAGE.md (the matrix), pinned by
+// `fixture_gates` in src-tauri/src/lib.rs. In brief — Rig: scene overlays, footswitch classes
+// and the two Doctor damage signatures; Pedalboard: scene-free, the Copy source, EXP + link
+// groups + a second-bank switch; Edge: gtrSplit, 8 scenes, the baked 2.6 kHz EQ-ring Doctor
+// oracle and the off-USB lane, plus (P4-C) a `shared_write_is_scene_local` Boost/Solo
+// anatomy — bypassed in base, un-bypassed ONLY by scene 3 "Solo"; Parallel: both lane amps live (joint-k / rebalance);
+// Hiwatt 3S: a VERBATIM device export (the scene-conformance oracle — do not edit);
+// Preset24: the stale-load / saturated-pedal footswitch fixture (level-fs-preset24.spec.ts).
+// P3 additions (ADDITIONS, not replacements — 404/405 stay untouched): Combined Level: the
+// new-flow leveling fixture (FS-alone, scene-alone "BASE SCENE", scene-that-enables-an-FS,
+// parallel Deluxe Reverb + Marshall Plexi, a post-cab compressor). Doctor Oracle: 14
+// mixed-shape footswitches, one per Doctor spectral check, all bypassed in base. Preset24
+// Min / Hiwatt Min: the smallest presets still reproducing each incident's own bug class.
 export const SCENARIO: Preset[] = [
-  { slot: 400, name: "E2E Reference" },
-  { slot: 401, name: "E2E Target 1" },
-  { slot: 402, name: "E2E Target 2" },
-  { slot: 403, name: "E2E Realistic" },
+  { slot: 400, name: "E2E Rig" },
+  { slot: 401, name: "E2E Pedalboard" },
+  { slot: 402, name: "E2E Edge" },
+  { slot: 403, name: "E2E Parallel" },
   { slot: 404, name: "E2E Hiwatt 3S" },
   { slot: 405, name: "E2E Preset24" },
+  { slot: 406, name: "E2E Combined Level" },
+  { slot: 407, name: "E2E Doctor Oracle" },
+  { slot: 408, name: "E2E Preset24 Min" },
+  { slot: 409, name: "E2E Hiwatt Min" },
 ];
 
 export async function invoke(
@@ -56,11 +69,11 @@ export async function listPresets(page: Page): Promise<Preset[]> {
   return (await invoke(page, "list_presets")) as Preset[];
 }
 
-/** Ensure every scenario preset exists at its slot (400-405). Offline: baked into the
+/** Ensure every scenario preset exists at its slot (400-409). Offline: baked into the
  *  fixture + snapshot, so a name check suffices (SimDevice state is disposable).
  *  ONLINE: always route through the ownership-verified seed — it verifies every
  *  occupied target by fixture CONTENT MARKER (not name; a user preset coincidentally
- *  named "E2E Target 1" fails the seed loudly instead of being blessed and later
+ *  named "E2E Pedalboard" fails the seed loudly instead of being blessed and later
  *  saved-over / cleared), imports only what's missing, and fast-no-ops when the
  *  server's verified-seed flag is armed (the runner's `e2e_mark_seeded` POST after its
  *  fresh-process seed, or a prior verified call this run — cleared by a STRUCTURAL
@@ -87,6 +100,112 @@ export async function ensureScenario(page: Page): Promise<void> {
   // The seed sweeps strays + imports over minutes, so it gets a long request
   // timeout (ordinary commands keep the default).
   await invoke(page, "e2e_seed_scenario", {}, 240_000);
+}
+
+/** Open the Level tab on a fresh page and wait for the connected header. Dismisses the
+ *  one-shot startup backup disclaimer when present (localStorage-gated — only the first
+ *  load). Shared by every spec that opens Level cold (was a byte-identical local copy in
+ *  level-defaults.spec.ts and level-setup.spec.ts). */
+export async function openLevel(page: Page): Promise<void> {
+  await page.goto("/");
+  const disclaimer = page.getByRole("button", { name: /backed up/i });
+  if (await disclaimer.isVisible().catch(() => false)) await disclaimer.click();
+  await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
+    timeout: 20_000,
+  });
+}
+
+/** Select ONLY a preset's Base row (never its scenes/footswitches) — expand the caret, then
+ *  tick the "Base Preset" child row alone. Every scenario fixture now carries children, so the
+ *  top-level whole-preset checkbox is no longer "Base only" for any of them — this helper is
+ *  what keeps a base-clamp test isolated to exactly one selected row (one
+ *  `data-pick="target:NAME"]` element, no strict-mode collision). */
+export async function selectBaseOnly(page: Page, name: string): Promise<void> {
+  const filter = page.getByPlaceholder(/Filter by name or slot/i);
+  await filter.fill(name);
+  await page
+    .getByTitle(/Show Base/)
+    .first()
+    .click();
+  await page.getByText("Base Preset", { exact: true }).click();
+  await filter.fill("");
+}
+
+/** Pick a per-preset target by its option id ("Rhythm"/"Crunch"/"Lead") on a Base-only
+ *  selection. Uses `data-pick-option="target:<name>:<id>"` (Pick.tsx) rather than the
+ *  option's TEXT — a text-based `getByText(label,{exact:true}).last()` proved unreliable
+ *  once a SECOND preset's picker opens while an earlier preset is already bound to the same
+ *  label: Playwright's own actionability wait ("visible, enabled, stable" all pass) still
+ *  hung on click, retried hundreds of times, and eventually timed out with "<div></div>
+ *  subtree intercepts pointer events" — `.last()`'s re-resolved match apparently isn't a
+ *  stable target across retries. The attribute selector is unique per (row, option) pair by
+ *  construction, so there is never more than one match to begin with. */
+export async function pickBaseTarget(
+  page: Page,
+  name: string,
+  label: string,
+): Promise<void> {
+  await page.locator(`[data-pick="target:${name}"]`).click();
+  await page.locator(`[data-pick-option="target:${name}:${label}"]`).click();
+}
+
+/** Drive the Level wizard's Base flow end to end for one or more presets: select each
+ *  preset's Base row, submit, pick and confirm each target label, submit, and wait for
+ *  Done/Accept. */
+export async function runBaseLevel(
+  page: Page,
+  targets: { preset: Preset; label: string }[],
+): Promise<void> {
+  await openLevel(page);
+  for (const { preset } of targets) {
+    await selectBaseOnly(page, preset.name);
+  }
+  const n = String(targets.length);
+  await page
+    .getByRole("button", { name: new RegExp(`Level ${n} preset`) })
+    .click();
+  await page.getByText(/I.ve backed up with Pro Control/i).click();
+  for (const { preset, label } of targets) {
+    await pickBaseTarget(page, preset.name, label);
+  }
+  // The picks must actually BIND — assert each row's trigger now reads its target (guards
+  // a silent display-vs-value no-op an always-solving fake re-amp would otherwise hide).
+  for (const { preset, label } of targets) {
+    await expect(
+      page.locator(`[data-pick="target:${preset.name}"]`),
+    ).toContainText(label);
+  }
+  await page
+    .getByRole("button", { name: new RegExp(`Level ${n} sound`) })
+    .click();
+  await expect(
+    page.getByRole("button", { name: /^(Done|Accept)$/ }),
+  ).toBeVisible({
+    timeout: 240_000,
+  });
+}
+
+/** Open Doctor and select each preset in `presets` by name (filter → click "Select preset
+ *  to check" → clear filter). Shared by every doctor spec's selection step (was a
+ *  byte-identical loop in doctor.spec.ts and doctor.online.spec.ts). */
+export async function selectPresetsForCheck(
+  page: Page,
+  presets: Preset[],
+): Promise<void> {
+  await page.getByRole("button", { name: "Doctor" }).click();
+  const filter = page.getByPlaceholder(/Filter by name or slot/i);
+  for (const p of presets) {
+    await filter.fill(p.name);
+    await page.getByTitle("Select preset to check").first().click();
+  }
+  await filter.fill("");
+}
+
+/** Click "Check N sounds" then "Run check on N sounds" — the two-step Doctor run trigger,
+ *  always immediately after `selectPresetsForCheck`. */
+export async function runDoctorCheck(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
+  await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
 }
 
 /** Best-effort invoke: swallow errors (offline lacks some commands; online a teardown
@@ -196,7 +315,7 @@ export async function isOnline(page: Page): Promise<boolean> {
 }
 
 /** End-of-scenario teardown. ONLINE the fixtures stay RESIDENT in the scratch slots
- *  (400-405): the run-start pristine-checking seed self-repairs anything a run leveled,
+ *  (400-409): the run-start pristine-checking seed self-repairs anything a run leveled,
  *  so clearing here only forces the next run to re-import everything (~2 min of device
  *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
  *  TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per slot) for the
@@ -207,7 +326,7 @@ export async function isOnline(page: Page): Promise<boolean> {
  *  OFFLINE this is a NO-OP, because it has nothing left to undo: the `page` fixture POSTs
  *  `/sim/reset` before EVERY test, and that rebuilds the whole SimDevice from scratch —
  *  presets, scenes, songs, setlists, the re-amp latch and any armed capture fault — then
- *  reinstalls the 400-404 snapshot. So isolation between tests comes from the reset, not
+ *  reinstalls the 400-409 snapshot. So isolation between tests comes from the reset, not
  *  from this teardown, and the 7 bridged commands here were pure cost. Two things that do
  *  survive the reset are deliberately unaffected: the cumulative re-amp counters (every
  *  spec baseline-DIFFS them via `expectReampBalanced`) and `SCENARIO_VERIFIED` (read only
@@ -216,7 +335,7 @@ export async function isOnline(page: Page): Promise<boolean> {
 export async function clearScenario(page: Page): Promise<void> {
   // Ask the SERVER, never `process.env.TMP_E2E_ONLINE` — `scripts/e2e.sh` sets that var
   // only on the `cargo run` server invocation, so the Playwright process does NOT inherit
-  // it (same trap documented in level-rerun.spec.ts). An env check here would read
+  // it (same trap documented in level.spec.ts's merged idempotency test). An env check here would read
   // "offline" during an ONLINE run and skip the device recovery — no re-amp OFF, leaving
   // the unit input-muted.
   if (!(await isOnline(page))) return;

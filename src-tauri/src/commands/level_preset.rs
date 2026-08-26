@@ -3,6 +3,15 @@
 use crate::*;
 
 /// One leveling job from the UI: a preset slot + the LUFS target to hit.
+///
+/// PER-ROW HANDLE AND TARGET (the base row's half of the contract). `target_lufs` is THIS
+/// row's target — the user's per-row override when they set one, else the global; the wizard
+/// resolves that before dispatch, so nothing here needs a "global vs override" flag.
+/// `block_*` is the row's optional user-chosen HANDLE: present = level by driving that block
+/// control, absent = the **`presetLevel` pseudo-handle**, which is the base row's default and
+/// the only handle no block can express (it is the preset's master amplitude, not a node
+/// param). Scene rows carry the same pair on `SceneLevelJobArg`, footswitch rows on
+/// `FootswitchLevelJob` — three row kinds, one shape.
 #[derive(serde::Deserialize)]
 pub(crate) struct LevelJob {
     slot: u32,
@@ -205,26 +214,47 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         let mut previous_level: Option<f32> = None;
         let result = match block {
             Some((group_id, node_id, parameter_id)) => {
-                let (lo, hi) = knob_bounds(block_value.unwrap_or(0.5));
-                let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
+                // CLASS GATE + RANGE, replacing the value-sniffed `knob_bounds(current)`:
+                // the picker can offer ANY block param, and sweeping a non-level control
+                // (a distortion knob, say) changes the sound the player wrote rather than
+                // its loudness — the exact hazard the footswitch lane already refuses.
+                // `param_class::classify` keys on the block's FenderId, so this arm now
+                // ALWAYS pays the one field-8 read the saving path already paid; the same
+                // read still supplies `restore_scene`. An unreadable preset REFUSES rather
+                // than guessing a class — the safe direction, and no offline spec exercises
+                // this arm (every fixture job sends a null block triple).
+                let saved = crate::read_saved_preset(slot);
+                let Some(preset) = saved.as_ref() else {
+                    return Err(format!(
+                        "could not read preset {} to classify {parameter_id} on {node_id} — \
+                         leveling an unclassified parameter could change the sound instead of \
+                         its loudness",
+                        slot + 1
+                    ));
+                };
+                // `block_value` — the value the picker displayed — stays the wet-floor
+                // anchor, falling back to the saved graph. Everything else (FenderId
+                // resolution, classification, the shared refusal) is
+                // `FsParamTarget::classified`, so this lane and the scene HANDLE lane
+                // cannot answer the same control two ways.
+                let authored = block_value
+                    .or_else(|| node_param_f64(preset, &node_id, &parameter_id).map(|v| v as f32))
+                    .unwrap_or(0.0);
+                let target =
+                    leveller::FsParamTarget::classified(preset, &node_id, &parameter_id, authored)?;
+                let (lo, hi) = target.bounds();
                 // A saving block-knob run measures/applies in base context too, so its save
-                // must re-stamp the original `lastLoadedScene` like the whole-preset arm —
-                // this arm has no other preset read to fold the lookup into, so pay one
-                // field-8 read only when actually saving.
+                // must re-stamp the original `lastLoadedScene` like the whole-preset arm.
                 if save {
-                    // `read_saved_preset` owns this exact sequence: one field-8 read
-                    // (logged on failure) + the single post-read reconnect gap.
-                    let saved = crate::read_saved_preset(slot);
-                    opts.restore_scene = saved.as_ref().and_then(crate::last_loaded_scene);
-                    if let Some(p) = saved.as_ref() {
-                        crate::warn_missing_restore_scene(
-                            "level_preset(block)",
-                            slot,
-                            p,
-                            opts.restore_scene,
-                        );
-                    }
+                    opts.restore_scene = crate::last_loaded_scene(preset);
+                    crate::warn_missing_restore_scene(
+                        "level_preset(block)",
+                        slot,
+                        preset,
+                        opts.restore_scene,
+                    );
                 }
+                let knob = leveller::LevelKnob::Block { group_id, node_id, parameter_id, scene_slot: None };
                 // Pre-dispatch cancel: nothing has touched the device yet — early-return
                 // (the leveller bails at its own pre-measure checkpoint) so the run-end
                 // backstop below is skipped, mirroring the None arm's cancel path.
@@ -237,9 +267,13 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // Isolate the Base measurement: force EVERY footswitch on/off block OFF so we
                 // measure the clean base sound, not "base + whatever pedals are saved on".
                 // ponytail: costs one ~1 s preset read per Base run (even presets with no FS
-                // blocks). Optimization path: thread an all-on/off force-list hint from the
-                // frontend backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered
-                // to levelable-param switches, while isolation needs ALL on-off blocks).
+                // blocks) — and, on a preset whose field-8 tail is CUT, a whole device backup
+                // (`slot_read`'s complete-or-fail re-read, 60 s cap) before the run starts.
+                // Optimization path: thread an all-on/off force-list hint from the frontend
+                // backup scan onto LevelJob (NOT footswitchesPerIndex — that's filtered to
+                // levelable-param switches, while isolation needs ALL on-off blocks). That hint
+                // would remove BOTH costs at once: the startup backup scan is complete by
+                // construction, so it needs no truncation fallback at all.
                 if cancelled() {
                     // `previous_level` is still None here (the isolation read below hasn't
                     // run yet) — fine, since `level_preset` bails at the pre-measure cancel
@@ -254,49 +288,71 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                         cancelled,
                     );
                 }
-                // Best-effort: isolation is a quality improvement, not a precondition for
-                // leveling at all. A read hiccup (or, offline, a preset-read the fake device
-                // doesn't model) must not fail the whole Base run — degrade to no isolation
-                // (pre-this-feature behavior) instead of propagating the error.
-                let force_bypass: Vec<(String, String, bool)> = match read_slot_preset_parsed(slot)
-                {
-                    Ok((preset, _, _)) => {
-                        // The same read carries the pre-run presetLevel — the revert anchor —
-                        // and the original `lastLoadedScene`, which the save must re-stamp
-                        // (the base-context measurement leaves base active; saving there
-                        // rewrites the preset's on-load scene to base — HW, Hiwatt slot 31).
-                        previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
-                        opts.restore_scene = crate::last_loaded_scene(&preset);
-                        crate::warn_missing_restore_scene(
-                            "level_preset",
-                            slot,
-                            &preset,
-                            opts.restore_scene,
-                        );
-                        footswitch::all_onoff_blocks(
-                            preset.get("ftsw").unwrap_or(&serde_json::Value::Null),
-                        )
-                        .into_iter()
-                        .map(|(g, n)| (g, n, true))
-                        .collect()
-                    }
+                // BASE MEANS BASE — every footswitch-owned on-off block is forced OFF, so the
+                // measurement describes the preset with nothing switched on. A preset saved
+                // with a pedal engaged does NOT measure that pedal here; that sound is its own
+                // footswitch row's job (user directive, 2026-08-20).
+                //
+                // This REVERTS a 2026-08-19 change that measured base as saved. That change was
+                // argued from an external ffmpeg read of −18.3 LUFS against a −23.0 target on
+                // "Plumes+BD2+OCD" — a real number, but a CONFOUNDED one: on the same day, on
+                // that same preset, the block's own footswitch row was clamping in every
+                // multi-row batch (see the isolation note in `footswitch.rs`), which by itself
+                // leaves the recalled sound exactly that hot. With the clamp fixed, base and
+                // its pedal row are separately reachable, and re-measuring is unambiguous
+                // (HW, 2026-08-20, ffmpeg `ebur128`, the player's own DI): base-as-saved and
+                // the FS6 row are the SAME sound — both −22.99 LUFS — while base with the four
+                // pedals off sits 4.7 LU away at −27.69. Measuring base as saved spends one of
+                // the run's rows on a duplicate and never levels the no-pedals sound at all.
+                //
+                // `ftsw` is LOAD-BEARING now, so the read must deliver it WHOLE: it sits at the
+                // tail, exactly where a large preset's field-8 read gets cut, and a short `ftsw`
+                // yields a short force list — pedals left on, and the wrong `presetLevel` SAVED.
+                // `read_slot_preset_complete` re-reads off a device backup when a required
+                // section is truncated, so an unreadable `ftsw` REFUSES instead of guessing.
+                // The same read still supplies the revert anchor and the save's `restore_scene`.
+                let preset = match read_slot_preset_complete(slot, &["ftsw"]) {
+                    Ok((preset, _, _)) => preset,
+                    // Returns BEFORE the run-end `reamp_off_guaranteed` backstop, which is safe
+                    // only because nothing has engaged re-amp yet on this path: every step above
+                    // is a pure read. Same rule as the block arm's early refusal.
                     Err(e) => {
-                        log::warn!(
-                            "level_preset slot={slot}: base-isolation preset read failed ({e}), leveling without isolation"
-                        );
-                        Vec::new()
+                        return Err(format!(
+                            "could not read preset {}'s footswitch assignments ({e}) — they \
+                             define which blocks are switched off for the Base measurement, and \
+                             leveling without them would save a level solved for the wrong sound",
+                            slot + 1
+                        ))
                     }
                 };
-                // The isolation read opened (or tried to open) its own session either way —
-                // gap before level_preset reconnects, else the quick reopen risks the HID
-                // open-lockout (0xe00002c5).
+                // The original `lastLoadedScene` must be re-stamped by the save: the
+                // base-context measurement leaves base active, and saving there would
+                // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
+                previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
+                opts.restore_scene = crate::last_loaded_scene(&preset);
+                crate::warn_missing_restore_scene("level_preset", slot, &preset, opts.restore_scene);
+                // THE base isolation list — shared with the Doctor's own base sound
+                // (`doctor_force_bypass`'s `None` arm) so the two definitions of "base" cannot
+                // drift apart: every on-off block any footswitch owns, forced bypassed.
+                let force = crate::commands::doctor::doctor_force_bypass(
+                    &preset["ftsw"],
+                    &preset,
+                    None,
+                );
+                log::info!(
+                    "level_preset slot={slot}: base isolation forces {} footswitch-owned \
+                     block(s) off",
+                    force.len()
+                );
+                // That read opened its own session — gap before level_preset reconnects, else
+                // the quick reopen risks the HID open-lockout (0xe00002c5).
                 crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
                 leveller::level_preset(
                     slot,
                     &stim,
                     target_lufs,
                     opts,
-                    &force_bypass,
+                    &force,
                     previous_level,
                     cancelled,
                 )
@@ -463,8 +519,32 @@ pub(crate) async fn calibrate_profile(
     secs: f32,
 ) -> Result<CalibrateResult, String> {
     let app2 = app.clone();
+    let settings_path = crate::commands::presets::device_settings_path(&app);
     with_released_seize(state.session.clone(), move || {
-        let (mono, _peak) = crate::probe_api::stimulus::capture_dry_di(secs)?;
+        // #124 pre-flight: the device mixer's USB 3 strip, from the settings snapshot
+        // the startup backup read persisted (`support/device-settings.json`). The
+        // snapshot can be STALE — the mixer may have been touched since connecting —
+        // and the two halves treat that risk DIFFERENTLY on purpose:
+        //
+        // - MUTE only ever EXPLAINS a take that produced nothing. It is handed to
+        //   `capture_dry_di`, which consults it solely on its silent-take path, so a
+        //   take that lands despite a "muted" snapshot is simply a newer mixer state
+        //   and wins. It is deliberately NOT prepended to arbitrary capture errors —
+        //   doing so turned a mid-capture unplug into a confident "USB 3 is MUTED".
+        // - The POST/off-unity FADER does veto a take that landed, because a landed
+        //   take persists the capture as the leveling stimulus (injected verbatim at
+        //   gain 1), so a fader-scaled one corrupts every later re-amp invisibly.
+        //   `usb3_fader_fault` carries the full reasoning and the replug recovery.
+        let strip = settings_path
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|json| crate::backup_read::usb3_strip(&json));
+        let (mono, _peak) = crate::probe_api::stimulus::capture_dry_di(secs, strip.as_ref())?;
+        if let Some(f) = strip
+            .as_ref()
+            .and_then(crate::probe_api::stimulus::usb3_fader_fault)
+        {
+            return Err(f);
+        }
         // Reject a capture that's mostly silence (a valid capture becomes the stimulus,
         // so a few plucks + long gaps would inject a mostly-dead re-amp signal).
         if active_window_fraction(&mono, 48_000) < 0.5 {

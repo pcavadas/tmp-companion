@@ -28,10 +28,44 @@
 //! `/sim/commit-latency` bridge route, default 0 ms) — even 0 ms changes LOAD's
 //! semantics from "preserve whatever `presetLevel` was last set" to "materialize this
 //! slot's own committed doc", which is what makes the stale-load class reproducible
-//! offline at all. The doc is `presetLevel` PLUS a footswitch bake's own baked param
-//! (`SavedDoc`) — narrower than a full merged presetJson (scene overlays and `ftsw`
-//! ASSIGN edits do NOT round-trip through a save; `SavedDoc`'s doc comment has the
-//! deviation rationale). See `saved_levels`' field doc for the exact read/load asymmetry.
+//! offline at all. The doc is `presetLevel` PLUS a footswitch bake's own baked param PLUS a
+//! scene deferred save's own overlay param PLUS the `ftsw` array (`SavedDoc`) — narrower
+//! than a full merged presetJson still (the CAPTURE MODEL doesn't reseed a scene overlay's
+//! write on load, only its TEXT round-trips; `SavedDoc`'s doc comment has the residual
+//! deviation). See `saved_levels`' field doc for the exact read/load asymmetry.
+//!
+//! **Footswitch assignment writes (HW semantics, no dedicated echo):**
+//! `setFootswitchAssignment`(54) and `clearFootswitchAssignment`(55) edit the WORKING-COPY
+//! `ftsw` array — live but unsaved until a `saveCurrentPreset`, exactly as on the unit. The
+//! schema has no confirm echo for either (unlike `nodeReplaced`), so the fake answers them
+//! with NOTHING and the caller confirms the only way hardware allows: a
+//! `currentPresetDataRequest`(2) re-prompt, whose `currentPresetDataChanged`(3) push renders
+//! the edited `ftsw` (`Session::live_ftsw`; the read-back branch of
+//! `leveller::write_fs_values_on_session`'s confirm gate). A set REPLACES the function at
+//! `functionIndex` or APPENDS when the index is at/past the switch's function count; a clear
+//! SPLICES, shifting the switch's remaining functions down. The `swap` flag is decoded and
+//! recorded on the [`SimEvent`] but models no behavioural difference — its device semantics
+//! are empirically unresolved (`proto::set_footswitch_assignment`) and production always
+//! sends `false`.
+//!
+//! **Scene recall semantics (HW-verified fw 1.8.45, this week):** a `loadScene` recall
+//! merges the scene's JSON overlay onto base PER PARAM, not per node — a FULL overlay
+//! masks base for every param it lists, but a bypass-only overlay (`{bypass: …}`) masks
+//! ONLY `bypass`; every other param renders base, with NO retention from whatever scene
+//! was recalled before ([`SimState::rendered_param`] / [`SimState::rendered_bypass`],
+//! resolved fresh on every call, never cached). `scenes[].ftswStates` is a DERIVED CACHE
+//! the real device ignores on recall — the sim never reads that key either, deriving a
+//! footswitch's active state from the materialized block-bypass state alone. A
+//! `changeParameter` write accepts RAW values outside `[0,1]` (dB-calibrated params like
+//! `ACD_Boost.gain`) with no clamp. And a scene-context write with no preceding
+//! `setNodeSceneEdit(enable=true)` lands on BASE only when the node's overlay in that scene
+//! is NOT Full-shaped (BypassOnly, empty, or absent — Scene Edit disabled/never
+//! materialized); against a Full-shaped overlay it lands ON the overlay EVEN FOR a param
+//! the overlay doesn't yet carry, extending it per-param with siblings and base untouched
+//! (HW-verified fw 1.8.45, crafted Full-partial overlay — see `overlay_is_full_shaped`'s
+//! doc). The Scene-Edit flag state decides the landing, never per-param containment
+//! (`F_CHANGE_PARAMETER`'s `landing_scene`). See `scene_context_tests` for the pinning
+//! tests, one per fact.
 //!
 //! [`Session`]: crate::session::Session
 //! [`HidTransport`]: crate::hid::HidTransport
@@ -80,6 +114,16 @@ const F_SET_PRESET_LEVEL: u32 = 76;
 const F_CHANGE_PARAMETER: u32 = 12;
 const F_LOAD_SCENE: u32 = 101;
 const F_SET_NODE_SCENE_EDIT: u32 = 107;
+/// `setFootswitchAssignment`(54) / `clearFootswitchAssignment`(55) — the `ftsw` working-copy
+/// setters (`proto::set_footswitch_assignment`). NO dedicated confirm echo on the real device
+/// (`Session::set_footswitch_assignment`'s doc), so neither replies here either: the caller
+/// confirms through the field-2 re-prompt above.
+const F_SET_FOOTSWITCH_ASSIGNMENT: u32 = 54;
+const F_CLEAR_FOOTSWITCH_ASSIGNMENT: u32 = 55;
+/// `currentPresetDataRequest`(2) — the WORKING-COPY re-prompt (`proto::current_preset_data_request`).
+/// The device answers with a fresh `currentPresetDataChanged`(3) push; that is the ONLY way a
+/// caller reads back an edit with no dedicated echo (`Session::live_ftsw`).
+const F_CURRENT_PRESET_DATA_REQUEST: u32 = 2;
 /// `presetDataRequest`(8) — the slot-addressed saved-preset ("field-8") read.
 const F_PRESET_DATA_REQUEST: u32 = 8;
 /// `presetDataChanged`(9) — its reply, carrying PLAINTEXT `presetJson`(3).
@@ -152,6 +196,27 @@ pub enum SimEvent {
         node: String,
         enable: bool,
     },
+    /// `setFootswitchAssignment`(54) — a working-copy `ftsw[addr]` function write. `index` is
+    /// the REQUESTED 0-based function slot (an `index` past the switch's current function count
+    /// APPENDS, so the landed slot can be lower — see [`SimState::ftsw_set`]). `function_json`
+    /// is the raw wire string, so a test can parse the exact `valueA`/`valueB` that went out.
+    /// `swap` is the wire flag verbatim; the fake models no behavioural difference for it (the
+    /// semantics are HW-unverified — `proto::set_footswitch_assignment`).
+    SetFootswitchAssignment {
+        addr: u32,
+        index: u32,
+        function_json: String,
+        swap: bool,
+    },
+    /// `clearFootswitchAssignment`(55) — remove function `index` from `ftsw[addr]`.
+    ClearFootswitchAssignment { addr: u32, index: u32 },
+    /// `SettingsMessage(3) → reampModeActive(30)` — the re-amp toggle (`true` = engage).
+    /// Recorded because the ENGAGE is the only ordering landmark a capture has: everything a
+    /// measurement sets up (the scene recall, the isolation bypasses, the pinned handle) is
+    /// only in that capture if it went out BEFORE the engage — re-amp latches preset state at
+    /// engage (`danger.md`), so "the write happened" and "the write was heard" are different
+    /// facts and only the order tells them apart.
+    ReAmp(bool),
 }
 
 struct SimState {
@@ -176,6 +241,21 @@ struct SimState {
     /// overrides it for a test that needs a specific pre-edit roster (e.g. to exercise
     /// an over-cap refusal).
     preset_json: String,
+    /// Lazy cache of a parsed [`SimState::scene_render_json_source`], shared by
+    /// `overlay_is_full_shaped` (every scene-context `changeParameter` on the live dispatch
+    /// path) and the two `#[cfg(test)]` renderers — each used to clone the source string and
+    /// re-parse it on every call. INVALIDATED (set back to `None`) at every WIRE-DRIVEN point
+    /// the SOURCE STRING can change: `F_LOAD_PRESET` (a slot change picks a different e2e
+    /// scenario doc) and [`SimDevice::with_preset_json`] (the plain-build override). A save
+    /// does NOT invalidate it — `record_save`/`with_patched_doc` patch the ECHOED text
+    /// (`current_preset_data_changed`), never `scene_render_json_source`'s own raw scenario
+    /// read. `current_scene` does NOT invalidate it either — the cache is the un-recalled
+    /// document; scene selection is applied fresh on every read via
+    /// [`crate::probe_api::scene_jobs::scene_overlay`]. A test that pokes `current_slot`
+    /// directly on a live `SimState` (bypassing `F_LOAD_PRESET`) — e.g. `physics_tests` —
+    /// must clear this itself if it exercises the cache; today none of those tests do
+    /// (they only reach `model_lufs`, which never reads this field).
+    parsed_preset_cache: Option<serde_json::Value>,
 
     // ── DSP state for the offline physics-faithful capture model (`e2e_capture`) ──
     // Pure state writes updated by the wire setters below; the setters echo nothing
@@ -210,6 +290,32 @@ struct SimState {
     /// `bypass`. Drives the off-branch verdict: a switch that bypasses the sidecar's
     /// `routedNode` mutes the routed sound → silence. Cleared on `loadPreset`.
     bypass_writes: HashMap<String, bool>,
+    /// `(scene, group, node)` triples that have had `setNodeSceneEdit(enable=true)` sent
+    /// THIS session, since the last `loadPreset` — the gate `F_CHANGE_PARAMETER` checks
+    /// before routing a scene-context write onto BASE instead of the scene (HW fw
+    /// 1.8.45, module header): a write against a node with NO recorded enable, whose
+    /// scene overlay is not Full-shaped, lands on base rather than extending the overlay.
+    /// Scene-keyed only (base writes never consult this set). Cleared on `loadPreset`,
+    /// same as `param_writes`/`bypass_writes`.
+    ///
+    /// KNOWN OFFLINE DIVERGENCE: on hardware a Scene-Edit enable does NOT survive a
+    /// reconnect (session-scoped, like the re-amp toggle and the loaded scene itself),
+    /// but this set lives on `SimState`, which this fake's `Arc<Mutex<_>>` persists
+    /// ACROSS `Session` instances — the sim has no transport-level "new connection"
+    /// signal distinct from a wire message, so there is no cheap seam to clear it on
+    /// reconnect without one. An offline spec must not rely on a write landing on the
+    /// overlay ACROSS a fresh connection without re-sending the enable — only
+    /// `loadPreset` is a trustworthy reset point here.
+    scene_edit_enabled: std::collections::HashSet<(u32, String, String)>,
+    /// The WORKING-COPY `ftsw` array once a `setFootswitchAssignment`(54) /
+    /// `clearFootswitchAssignment`(55) has edited it this load; `None` = untouched, so the
+    /// rendered doc keeps whatever `ftsw` its source text (or the saved doc) carries. Held as
+    /// the whole array rather than per-`(addr, index)` edits because a CLEAR splices and
+    /// SHIFTS the switch's remaining functions down — index-keyed edits could not compose with
+    /// that. Materialized lazily by [`SimState::base_ftsw`] and cleared on `loadPreset`
+    /// alongside `param_writes`/`bypass_writes` (a fresh load discards the edit buffer), so a
+    /// field-3 render after a load shows the SAVED `ftsw`, never a stale unsaved one.
+    ftsw_working: Option<serde_json::Value>,
     /// Whether re-amp is engaged (the `SettingsMessage` toggle). Latched at capture; a
     /// capture with re-amp OFF returns silence (the real device routes no USB return).
     reamp_on: bool,
@@ -256,14 +362,27 @@ struct SimState {
 /// INSTANCE, never the process-global scenario `OnceLock`s: a save mutates one slot's
 /// own copy, never the shared immutable fixture text.
 ///
-/// DEVIATION from the plan's full "merged presetJson" (module header, `record_save`'s
-/// doc): scene-overlay writes and `ftsw` ASSIGNMENT edits are NOT merged in — only a
-/// BAKED (`func: "on-off"`, no assign) footswitch's own leveled param survives a
-/// save→load round trip. No offline spec exercises a scene-outputLevel or an ASSIGN
-/// switch's `valueA` through a save→load round trip (the ASSIGN wire op itself,
-/// `SetFootswitchAssignment`, isn't modeled by `handle` at all — an assign write falls
-/// through to a silent no-op reply, same as today), so widening past what
-/// `level-fs-preset24.spec.ts` actually needs was left undone rather than half-built.
+/// REMAINING DEVIATION from the plan's full "merged presetJson" (module header,
+/// `record_save`'s doc): `scene_params` (the fold below) makes the SAVED DOCUMENT TEXT
+/// correctly carry a scene overlay's write (`witness_value_in_doc`'s scene-indexed witness
+/// and `persisted_value`'s scene-overlay read both consult it — Fix 2, closing the gap this
+/// note used to record as "no offline spec reads one back through a save"). What is STILL
+/// NOT modeled: `F_LOAD_PRESET` reseeds only the `SCENE_BASE` entries of `param_writes` on a
+/// fresh load (that handler's own comment), never `scene_params` — so after a save→load
+/// round trip the rendered TEXT holds the leveled scene value while the CAPTURE MODEL
+/// (`model_lufs`, which reads `param_writes`, not the doc text) still renders that scene's
+/// PRE-level loudness. A future spec that re-measures a scene AFTER its own save must reseed
+/// `param_writes` from `scene_params` on load first, or its capture will silently disagree
+/// with the saved document it just read (post-review amendment 4).
+///
+/// `ftsw` ASSIGN edits DO round-trip now (they did not before field 54 was modeled), because
+/// the production Assign flow has three readers that a non-persisting `ftsw` makes lie:
+/// `leveller::verify_fs_persisted_writes` re-reads FIELD-8 and looks the solved value up as
+/// `ftsw`'s `valueA` (`ftsw_value_a`) — without persistence every offline Assign row reports
+/// `persist_mismatch: true`; `leveller::witness_value_in_doc` resolves a `SaveWitness::Param`
+/// against `ftsw`'s `valueA` too (for an Assign the block's own `dspUnitParameters` value
+/// exists but can NEVER match), so an unpersisted assign starves `ensure_fresh_load` into its
+/// time-gated fallback; and the post-load field-3 echo would show the pre-run assignment.
 #[cfg(feature = "e2e")]
 #[derive(Clone, Default)]
 struct SavedDoc {
@@ -271,6 +390,13 @@ struct SavedDoc {
     /// Baked `(group, node, param) → value` overlay — a footswitch bake's own knob,
     /// SCENE_BASE-scoped only (see the deviation note above).
     params: HashMap<(String, String, String), f32>,
+    /// Scene-scoped `(scene, group, node, param) → value` overlay — a scene deferred save's
+    /// own knob (see the deviation note above for what this does and does not fix).
+    scene_params: HashMap<(u32, String, String, String), f32>,
+    /// The whole saved `ftsw` array once a footswitch set/clear has been saved for this slot;
+    /// `None` = never edited, so the slot's own fixture text still owns it. Stored whole for
+    /// the same reason [`SimState::ftsw_working`] is (a clear SHIFTS indices).
+    ftsw: Option<serde_json::Value>,
 }
 
 #[cfg(feature = "e2e")]
@@ -300,12 +426,15 @@ impl Default for SimState {
                 {"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}
             ]}}}"#
                 .to_string(),
+            parsed_preset_cache: None,
             current_slot: 0,
             current_scene: None,
             saved_scene: HashMap::new(),
             preset_level: 1.0,
             param_writes: HashMap::new(),
             bypass_writes: HashMap::new(),
+            scene_edit_enabled: std::collections::HashSet::new(),
+            ftsw_working: None,
             reamp_on: false,
             #[cfg(feature = "e2e")]
             fail_capture_slot: None,
@@ -324,6 +453,271 @@ impl SimState {
     fn scene_key(&self) -> i64 {
         self.current_scene.map_or(SCENE_BASE, i64::from)
     }
+
+    /// The JSON a scene-recall render resolves against: the slot's real scenario fixture
+    /// when one exists (e2e only — same precedence as [`load_echo_json`]), else
+    /// `preset_json` (so [`SimDevice::with_preset_json`] drives a plain, non-e2e test
+    /// too). Called only by [`SimState::parsed_preset`], which caches the parse — see that
+    /// method and [`SimState::parsed_preset_cache`] for the invalidation contract.
+    fn scene_render_json_source(&self) -> String {
+        #[cfg(feature = "e2e")]
+        {
+            if let Some(j) = scenario_json_for(self.current_slot) {
+                return j.to_string();
+            }
+        }
+        self.preset_json.clone()
+    }
+
+    /// Parse [`SimState::scene_render_json_source`] once and cache it — shared by
+    /// `overlay_is_full_shaped` (the live `F_CHANGE_PARAMETER` dispatch path) and the two
+    /// `#[cfg(test)]` renderers below, which each used to clone the source string and
+    /// re-parse it on every call. See [`SimState::parsed_preset_cache`] for the
+    /// invalidation contract; a stale cache here would silently falsify offline gates, so
+    /// every call site that can change the source string clears it first.
+    fn parsed_preset(&mut self) -> Option<&serde_json::Value> {
+        if self.parsed_preset_cache.is_none() {
+            let json = self.scene_render_json_source();
+            self.parsed_preset_cache = serde_json::from_str(&json).ok();
+        }
+        self.parsed_preset_cache.as_ref()
+    }
+
+    /// `scene`'s own overlay value for `(node, param)`, from the cached parsed doc — Full
+    /// and BypassOnly overlays both carry the raw per-scene body (Absent/Unknown carry
+    /// none). A BypassOnly overlay only ever carries the bypass-family keys
+    /// (`scene_jobs::BYPASS_ONLY_KEYS`), so a non-bypass `param` against one naturally
+    /// misses here and the caller falls through to base — the SAME classifier
+    /// [`SimState::overlay_is_full_shaped`] uses, so the two can't read a shape
+    /// differently. Shared by `rendered_param` (any param) and `rendered_bypass` (asked
+    /// for `"bypass"`).
+    #[cfg(any(test, feature = "e2e"))]
+    fn scene_overlay_value(
+        &mut self,
+        scene: u32,
+        node: &str,
+        param: &str,
+    ) -> Option<serde_json::Value> {
+        use crate::probe_api::scene_jobs::SceneOverlay;
+        let doc = self.parsed_preset()?;
+        match crate::probe_api::scene_jobs::scene_overlay(doc, scene, node) {
+            SceneOverlay::Full(params) | SceneOverlay::BypassOnly(params) => {
+                params.get(param).cloned()
+            }
+            SceneOverlay::Absent | SceneOverlay::Unknown => None,
+        }
+    }
+
+    /// The BASE graph node's own `(group, node, param)` value, from the cached parsed doc —
+    /// the un-overlaid fallback both renderers fall through to. Shared walk, replacing what
+    /// used to be a hand-rolled `guitarNodes` traversal duplicated in three places.
+    #[cfg(any(test, feature = "e2e"))]
+    fn base_graph_value(
+        &mut self,
+        group: &str,
+        node: &str,
+        param: &str,
+    ) -> Option<serde_json::Value> {
+        let doc = self.parsed_preset()?;
+        doc.get("audioGraph")?
+            .get("guitarNodes")?
+            .get(group)?
+            .as_array()?
+            .iter()
+            .find(|n| n.get("nodeId").and_then(|x| x.as_str()) == Some(node))?
+            .get("dspUnitParameters")?
+            .get(param)
+            .cloned()
+    }
+
+    /// The EFFECTIVE value of `(group, node, param)` a `loadScene` recall renders RIGHT
+    /// NOW (HW fw 1.8.45): an explicit `changeParameter` write for the active scene wins;
+    /// else the active scene's own JSON overlay carries the param (a FULL overlay masks
+    /// base for every param it lists, a bypass-only overlay masks nothing else); else an
+    /// explicit BASE write; else base's own static value. Resolved fresh every call from
+    /// the cached parsed doc, so recalling a DIFFERENT scene never retains a value the new
+    /// scene's own overlay doesn't carry
+    /// (pin: `scene_recall_renders_the_overlay_per_param_with_no_retention_from_the_prior_scene`).
+    /// Test-only: its sole caller is [`SimDevice::rendered_param`] (`#[cfg(test)]`).
+    #[cfg(any(test, feature = "e2e"))]
+    fn rendered_param(&mut self, group: &str, node: &str, param: &str) -> Option<f64> {
+        let scene_key = self.scene_key();
+        // 1. An explicit write for the address space under measurement (the active
+        // scene, or base) always wins.
+        if let Some(v) = self.param_writes.get(&(
+            scene_key,
+            group.to_string(),
+            node.to_string(),
+            param.to_string(),
+        )) {
+            return Some(f64::from(*v));
+        }
+        // 2. In a real scene, that scene's own JSON overlay (a FULL overlay masks base
+        // for every param it lists; a bypass-only overlay masks nothing else — fact 1).
+        if let Some(scene) = self.current_scene {
+            if let Some(pv) = self
+                .scene_overlay_value(scene, node, param)
+                .and_then(|v| v.as_f64())
+            {
+                return Some(pv);
+            }
+        }
+        // 3. Falls through to BASE: an explicit base write (e.g. fact 4's landing site)
+        // wins over the static fixture's own base value — a scene inheriting base must
+        // see what base was just WRITTEN to, not the pristine fixture body.
+        if scene_key != SCENE_BASE {
+            if let Some(v) = self.param_writes.get(&(
+                SCENE_BASE,
+                group.to_string(),
+                node.to_string(),
+                param.to_string(),
+            )) {
+                return Some(f64::from(*v));
+            }
+        }
+        self.base_graph_value(group, node, param)
+            .and_then(|v| v.as_f64())
+    }
+
+    /// The EFFECTIVE `bypass` a `loadScene` recall renders RIGHT NOW for `(group, node)` —
+    /// the bypass analogue of [`SimState::rendered_param`], and the mechanism behind fact
+    /// 2 (HW fw 1.8.45): it derives from an explicit `changeParameter` bool write, else
+    /// the active scene's own overlay, else base — and NEVER consults a fixture's
+    /// `ftswStates` array (a derived cache the real device also ignores on recall), by
+    /// construction: nothing in this method's lookup chain ever reads that key. Two callers:
+    /// [`SimDevice::rendered_bypass`] (`#[cfg(test)]`, the scene-recall pins) and — under
+    /// `e2e` — [`model_lufs`]'s leveled-param activation, which needs it to tell "the run
+    /// forced this block OFF" from "the run never touched it and the preset has it ON" (see
+    /// that predicate's doc).
+    #[cfg(any(test, feature = "e2e"))]
+    fn rendered_bypass(&mut self, group: &str, node: &str) -> Option<bool> {
+        if let Some(b) = self.bypass_writes.get(node) {
+            return Some(*b);
+        }
+        if let Some(scene) = self.current_scene {
+            if let Some(bv) = self
+                .scene_overlay_value(scene, node, "bypass")
+                .and_then(|v| v.as_bool())
+            {
+                return Some(bv);
+            }
+        }
+        self.base_graph_value(group, node, "bypass")
+            .and_then(|v| v.as_bool())
+    }
+
+    /// The value `(group, node, param)` is AUTHORED at for the sound under measurement —
+    /// [`SimState::rendered_param`] with the `param_writes` steps removed: the active
+    /// scene's own overlay, else base's static value. This is the value the sidecar's C was
+    /// calibrated against, so it is the anchor a WRITE's loudness delta is measured from
+    /// ([`wet_mix_gain_db`]); reading `rendered_param` instead would return the write itself
+    /// and the delta would collapse to zero.
+    #[cfg(feature = "e2e")]
+    fn authored_param(&mut self, group: &str, node: &str, param: &str) -> Option<f64> {
+        if let Some(scene) = self.current_scene {
+            if let Some(v) = self
+                .scene_overlay_value(scene, node, param)
+                .and_then(|v| v.as_f64())
+            {
+                return Some(v);
+            }
+        }
+        self.base_graph_value(group, node, param)
+            .and_then(|v| v.as_f64())
+    }
+
+    /// The `ftsw` array a working-copy edit starts from: the slot's own SAVED array when a
+    /// save has already changed it this run (e2e's lazy-commit doc), else the pristine source
+    /// document's own `ftsw`, else an empty array (the plain build's default two-node graph
+    /// carries no `ftsw` key — an edit against it materializes one, exactly as a real preset
+    /// with an empty switch would render).
+    fn base_ftsw(&mut self) -> serde_json::Value {
+        #[cfg(feature = "e2e")]
+        {
+            let slot0 = self.current_slot;
+            if let Some(f) = self.committed_doc(slot0).ftsw.clone() {
+                return f;
+            }
+        }
+        self.parsed_preset()
+            .and_then(|d| d.get("ftsw").cloned())
+            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()))
+    }
+
+    /// Apply `setFootswitchAssignment`(54) to the working copy: put `func` at
+    /// `ftsw[addr][index]`. An `index` inside the switch's existing function list REPLACES that
+    /// function; an `index` at or past its length APPENDS (the only two shapes
+    /// `commands::level_footswitch::resolve_footswitch_job` ever asks for — an existing match's
+    /// index, or `sw.len()`). Padding the gap with nulls instead would render an `ftsw` that
+    /// `leveller::param_fn_present` mis-reads, so the fake never does it. Missing switches
+    /// ahead of `addr` are materialized as empty function lists.
+    fn ftsw_set(&mut self, addr: u32, index: u32, func: serde_json::Value) {
+        self.with_working_ftsw(addr, |switches| {
+            if (index as usize) < switches.len() {
+                switches[index as usize] = func;
+            } else {
+                switches.push(func);
+            }
+        });
+    }
+
+    /// Apply `clearFootswitchAssignment`(55): remove function `index` from `ftsw[addr]`,
+    /// SPLICING the switch's remaining functions down a slot (the array shape the preset JSON
+    /// carries has no holes). An out-of-range `index` is a no-op — the device has nothing to
+    /// remove either. The shift is the unverified half of this op: production only ever clears
+    /// a switch's LAST-resolved `param` function (`FsWrite::Bake`'s `clear_stale`), and both
+    /// confirm paths (`footswitch::existing_param_fn_index` returning `None`) read the same
+    /// whether or not siblings shifted.
+    fn ftsw_clear(&mut self, addr: u32, index: u32) {
+        self.with_working_ftsw(addr, |switches| {
+            if (index as usize) < switches.len() {
+                switches.remove(index as usize);
+            }
+        });
+    }
+
+    /// Take-or-base the working `ftsw` array, run `f` against switch `addr`'s function list,
+    /// and write the array back to `ftsw_working` — the byte-identical take/write-back
+    /// prelude and epilogue [`SimState::ftsw_set`]/[`SimState::ftsw_clear`] used to
+    /// duplicate.
+    fn with_working_ftsw(&mut self, addr: u32, f: impl FnOnce(&mut Vec<serde_json::Value>)) {
+        let mut arr = match self.ftsw_working.take() {
+            Some(a) => a,
+            None => self.base_ftsw(),
+        };
+        f(ftsw_switch_list(&mut arr, addr));
+        self.ftsw_working = Some(arr);
+    }
+
+    /// True when scene `scene`'s overlay for `node` is FULL-shaped — routed straight
+    /// through the production classifier ([`crate::probe_api::scene_jobs::scene_overlay`])
+    /// off the cached parsed doc, so this sim's landing rule tracks the real classifier BY
+    /// CONSTRUCTION (micNodes overlays, FenderId-keyed overlay entries, and `Unknown`
+    /// handling all included — the old hand-rolled walk here covered only
+    /// `guitarNodes`/node-id keying and folded `Unknown` into "not full", which happened to
+    /// give the same conservative answer for that one shape but was a second, divergeable
+    /// copy of the real rule). `scene_overlay` resolves the node's group itself off the
+    /// roster, so no `group` argument is needed here.
+    ///
+    /// The landing gate below (fact 4) needs exactly this — Full-shaped or not — and NOT
+    /// "does the overlay carry THIS param": HW-verified fw 1.8.45 (crafted Full-partial
+    /// overlay: a TubeScreamer scene-0 overlay carrying `blend`/`overdrive`/`tone` but not
+    /// `level`, base `level` 0.65) proved an enable-less `changeParameter(level, …)` lands
+    /// IN the overlay — EXTENDING it per-param, siblings unchanged, base untouched — not on
+    /// base. The Scene-Edit flag state alone decides the landing.
+    ///
+    /// False when the node has NO overlay at all in this scene (Absent), the overlay is
+    /// Unknown (base slot, or an unparseable cached doc), or BypassOnly — all land on BASE
+    /// below, per the HW-proven leak-to-base for "no per-scene knobs materialized here".
+    fn overlay_is_full_shaped(&mut self, scene: u32, node: &str) -> bool {
+        let Some(doc) = self.parsed_preset() else {
+            return false;
+        };
+        matches!(
+            crate::probe_api::scene_jobs::scene_overlay(doc, scene, node),
+            crate::probe_api::scene_jobs::SceneOverlay::Full(_)
+        )
+    }
 }
 
 #[cfg(feature = "e2e")]
@@ -341,6 +735,9 @@ impl SimState {
                 committed: SavedDoc {
                     preset_level: scenario_preset_level(slot0).unwrap_or(1.0),
                     params: HashMap::new(),
+                    scene_params: HashMap::new(),
+                    // `None` = the slot's own fixture `ftsw` is still the saved truth.
+                    ftsw: None,
                 },
                 pending: None,
             })
@@ -379,7 +776,8 @@ impl SimState {
 
     /// Record a save: the CURRENT working `preset_level`, plus the CURRENTLY-COMMITTED
     /// baked params merged with this session's own SCENE_BASE `param_writes` (a footswitch
-    /// bake), becomes `slot0`'s pending doc, landing after [`SimState::commit_latency`].
+    /// bake) AND its scene-scoped `param_writes` (a scene deferred save — `scene_params`,
+    /// Fix 2), becomes `slot0`'s pending doc, landing after [`SimState::commit_latency`].
     /// Even a 0 ms latency changes LOAD's semantics (module header) — a genuinely non-zero
     /// latency additionally REPRODUCES the same-slot stale-load incident (a load before the
     /// deadline still sees the OLD committed doc). Merging onto the CURRENT committed params
@@ -391,16 +789,38 @@ impl SimState {
         self.ever_saved.insert(slot0);
         let level = self.preset_level;
         let mut params = self.pending_level_entry(slot0).committed.params.clone();
+        let mut scene_params = self
+            .pending_level_entry(slot0)
+            .committed
+            .scene_params
+            .clone();
         for ((scene, group, node, param), v) in &self.param_writes {
             if *scene == SCENE_BASE {
                 params.insert((group.clone(), node.clone(), param.clone()), *v);
+            } else {
+                // Registration filter (post-review amendment 5): fold every non-base scene
+                // key, cast the wire `i64` scene index down to the witness/overlay's `u32`.
+                scene_params.insert(
+                    (*scene as u32, group.clone(), node.clone(), param.clone()),
+                    *v,
+                );
             }
         }
+        // `ftsw` persists WHOLESALE: the working copy was itself materialized from the saved
+        // array (`base_ftsw`), so it already carries every earlier save's functions — there is
+        // nothing to merge, and merging per-index could not express a clear's shift anyway. No
+        // working-copy edit this session leaves the saved array exactly as it was.
+        let ftsw = self
+            .ftsw_working
+            .clone()
+            .or_else(|| self.pending_level_entry(slot0).committed.ftsw.clone());
         let deadline = std::time::Instant::now() + self.commit_latency();
         self.pending_level_entry(slot0).pending = Some((
             SavedDoc {
                 preset_level: level,
                 params,
+                scene_params,
+                ftsw,
             },
             deadline,
         ));
@@ -433,36 +853,34 @@ fn scenario_preset_level(slot0: u32) -> Option<f32> {
 }
 
 /// Patch `audioGraph.presetLevel` PLUS a footswitch bake's own baked `(group, node,
-/// param)` overlay into a preset-JSON BODY TEXT — the fields the lazy-commit model
-/// synthesizes into the field-3/field-8 JSON string itself (the rest of that TEXT —
-/// `scenes`, `ftsw`, scene-scoped param overlays — stays exactly the committed scenario
-/// body; no offline caller reads THOSE back through a save round trip, so deep-merging
-/// them is out of scope here — see the module header's deviation note). Patching the
-/// baked params into this TEXT (not just `SimState::param_writes`, which is what
-/// `model_lufs` actually reads) matters for two READERS of the text itself:
-/// `leveller::witness_value_in_doc` compares a `SaveWitness::Param` against the
-/// FIELD-3 echo, and `verify_fs_persisted_writes`'s post-save field-8 read expects the
-/// just-baked value to show up in the SAVED document, not the pristine fixture body —
-/// without this, both would see the pre-bake value forever and report a false
-/// persist-mismatch / a permanently-stale witness compare. Falls back to the original
-/// bytes on a parse failure, which never happens for a committed fixture but a caller
-/// must still get SOMETHING. Patches `audioGraph.guitarNodes` groups ONLY: a `micNodes`
-/// baked param would silently patch nothing — no current fixture routes one; extend the
-/// group lookup here FIRST if a mic-path fixture ever bakes a param, or its persist
-/// verify reads the pristine value and reports a false mismatch with no diagnostic.
+/// param)` overlay PLUS every scene deferred save's own `(scene, group, node, param)`
+/// overlay (Fix 2, [`patch_scene_overlays`]) into a preset-JSON BODY TEXT — the fields the
+/// lazy-commit model synthesizes into the field-3/field-8 JSON string itself (the rest of
+/// that TEXT — `ftsw`, every OTHER scene field — stays exactly the committed scenario body;
+/// no offline caller reads those back through a save round trip, so deep-merging them is out
+/// of scope here). Patching the baked params into this TEXT (not just
+/// `SimState::param_writes`, which is what `model_lufs` actually reads — and, for the scene
+/// overlay, does NOT reseed on load; see `SavedDoc`'s deviation note) matters for readers of
+/// the text itself: `leveller::witness_value_in_doc` compares a `SaveWitness::Param` against
+/// the FIELD-3 echo (both the base-baked and the scene-indexed shape), and
+/// `leveller::persisted_value`'s post-save field-8 read expects the just-written value to
+/// show up in the SAVED document, not the pristine fixture body — without this, both would
+/// see the pre-write value forever and report a false persist-mismatch / a permanently-stale
+/// witness compare. Falls back to the original bytes on a parse failure, which never happens
+/// for a committed fixture but a caller must still get SOMETHING. Patches
+/// `audioGraph.guitarNodes` groups ONLY for the base overlay: a `micNodes` baked param would
+/// silently patch nothing — no current fixture routes one; extend the group lookup here
+/// FIRST if a mic-path fixture ever bakes a param, or its persist verify reads the pristine
+/// value and reports a false mismatch with no diagnostic.
 #[cfg(feature = "e2e")]
-fn with_patched_doc(
-    json: &str,
-    level: f32,
-    params: &HashMap<(String, String, String), f32>,
-) -> String {
+fn with_patched_doc(json: &str, doc: &SavedDoc) -> String {
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(json) else {
         return json.to_string();
     };
     if let Some(ag) = v.get_mut("audioGraph") {
-        ag["presetLevel"] = serde_json::json!(level);
+        ag["presetLevel"] = serde_json::json!(doc.preset_level);
         if let Some(groups) = ag.get_mut("guitarNodes").and_then(|g| g.as_object_mut()) {
-            for ((group, node, param), value) in params {
+            for ((group, node, param), value) in &doc.params {
                 let Some(nodes) = groups.get_mut(group).and_then(|g| g.as_array_mut()) else {
                     continue;
                 };
@@ -475,6 +893,87 @@ fn with_patched_doc(
                 }
             }
         }
+    }
+    patch_scene_overlays(&mut v, &doc.scene_params);
+    serde_json::to_string(&v).unwrap_or_else(|_| json.to_string())
+}
+
+/// Patch `scene_params` entries (`record_save`'s fold) into `scenes[scene].{guitarNodes,
+/// micNodes}.<group>` of the already-parsed doc `v` — [`with_patched_doc`]'s scene-overlay
+/// sibling. Resolves the node's own `(node_id, fender_id)` off ONE `audiograph::roster(v)` walk
+/// hoisted before the loop (the per-entry `roster_entry` call this used to make was a fresh
+/// whole-graph rebuild EVERY entry — the hot-path cost this hoist resolves), then locates and
+/// writes the overlay entry through [`crate::probe_api::scene_jobs::scene_overlay_entry_mut`] —
+/// the write-side counterpart of `scene_jobs::scene_overlay_for`'s read, so the two can never key
+/// a node differently. A node no longer in the base graph, or a scene/group the doc doesn't
+/// carry, is silently skipped — nothing to patch onto.
+#[cfg(feature = "e2e")]
+fn patch_scene_overlays(
+    v: &mut serde_json::Value,
+    scene_params: &HashMap<(u32, String, String, String), f32>,
+) {
+    let roster = crate::audiograph::roster(v);
+    for ((scene, group, node, param), value) in scene_params {
+        let Some((_, node_id, fender_id)) = roster
+            .iter()
+            .find(|(_, nid, fid)| nid == node || fid == node)
+        else {
+            continue;
+        };
+        let Some(entry) = crate::probe_api::scene_jobs::scene_overlay_entry_mut(
+            v,
+            *scene,
+            (group, node_id, fender_id),
+        ) else {
+            continue;
+        };
+        // Coerce a non-object `dspUnitParameters` (or none yet) to `{}` ONCE, then write —
+        // `scene_overlay_entry_mut` already seeds a FRESH entry with an object, so this only
+        // ever fires for a pre-existing entry whose shape is off.
+        if !entry
+            .get("dspUnitParameters")
+            .is_some_and(|d| d.is_object())
+        {
+            entry["dspUnitParameters"] = serde_json::json!({});
+        }
+        entry["dspUnitParameters"][param] = serde_json::json!(value);
+    }
+}
+
+/// `ftsw[addr]`'s function list, growing the switch array (with empty lists) and coercing a
+/// non-array `ftsw`/switch entry as needed — so an edit against a document with no `ftsw` key,
+/// or one whose switch `addr` was never authored, still lands somewhere readable.
+fn ftsw_switch_list(ftsw: &mut serde_json::Value, addr: u32) -> &mut Vec<serde_json::Value> {
+    if !ftsw.is_array() {
+        *ftsw = serde_json::Value::Array(Vec::new());
+    }
+    let switches = ftsw.as_array_mut().expect("coerced to an array above");
+    while switches.len() <= addr as usize {
+        switches.push(serde_json::Value::Array(Vec::new()));
+    }
+    let sw = &mut switches[addr as usize];
+    if !sw.is_array() {
+        *sw = serde_json::Value::Array(Vec::new());
+    }
+    sw.as_array_mut().expect("coerced to an array above")
+}
+
+/// Overlay a whole `ftsw` array onto a preset-JSON BODY TEXT. `None` (no edit, no saved
+/// override) returns the text VERBATIM — deliberately, so the common path never pays a
+/// re-serialize that would reorder the document's keys (`serde_json::Value` is a `BTreeMap`
+/// here). Falls back to the original bytes on a parse failure, like [`with_patched_doc`].
+fn with_ftsw(json: &str, ftsw: Option<&serde_json::Value>) -> String {
+    let Some(ftsw) = ftsw else {
+        return json.to_string();
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return json.to_string();
+    };
+    match v.as_object_mut() {
+        Some(o) => {
+            o.insert("ftsw".to_string(), ftsw.clone());
+        }
+        None => return json.to_string(),
     }
     serde_json::to_string(&v).unwrap_or_else(|_| json.to_string())
 }
@@ -526,7 +1025,11 @@ impl SimDevice {
     /// refusal end-to-end.
     #[cfg(test)]
     pub fn with_preset_json(self, json: &str) -> SimDevice {
-        self.state.lock().expect("sim lock").preset_json = json.to_string();
+        {
+            let mut st = self.state.lock().expect("sim lock");
+            st.preset_json = json.to_string();
+            st.parsed_preset_cache = None; // the source string just changed — drop the stale parse
+        }
         self
     }
 
@@ -605,6 +1108,26 @@ impl SimDevice {
             .copied()
     }
 
+    /// The EFFECTIVE value of `(group, node, param)` a `loadScene` recall renders RIGHT
+    /// NOW for the CURRENTLY active scene — [`SimState::rendered_param`]. Test-only.
+    #[cfg(test)]
+    pub fn rendered_param(&self, group: &str, node: &str, param: &str) -> Option<f64> {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .rendered_param(group, node, param)
+    }
+
+    /// The EFFECTIVE `bypass` a `loadScene` recall renders RIGHT NOW for `(group, node)` —
+    /// [`SimState::rendered_bypass`]. Test-only.
+    #[cfg(test)]
+    pub fn rendered_bypass(&self, group: &str, node: &str) -> Option<bool> {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .rendered_bypass(group, node)
+    }
+
     /// Parse one request body and produce the device's framed reply reports.
     fn handle(&self, body: &[u8]) -> Vec<Vec<u8>> {
         let top = proto::parse(body);
@@ -622,7 +1145,9 @@ impl SimDevice {
             if let Some(sm) = proto::first_bytes(&top, TMS_SETTINGS) {
                 if let Some(re) = proto::first_bytes(&proto::parse(sm), F_REAMP_SETTING) {
                     let on = proto::first_varint(&proto::parse(re), 1).unwrap_or(0) != 0;
-                    self.state.lock().expect("sim lock").reamp_on = on;
+                    let mut st = self.state.lock().expect("sim lock");
+                    st.reamp_on = on;
+                    st.events.push(SimEvent::ReAmp(on));
                 }
             }
             return Vec::new();
@@ -639,6 +1164,9 @@ impl SimDevice {
             // knob writes + forced bypasses) — reseeded from the slot's own COMMITTED doc
             // just below (e2e only; see that block's doc for why a plain build can't).
             st.current_slot = slot0;
+            // A different slot resolves to a different `scene_render_json_source` (e2e:
+            // its own scenario doc) — drop the stale cached parse.
+            st.parsed_preset_cache = None;
             st.current_scene = match st.saved_scene.get(&slot0).copied() {
                 Some(scene) => scene,
                 // No recorded save this run → the FIXTURE's own `lastLoadedScene`, so a
@@ -648,6 +1176,8 @@ impl SimDevice {
             };
             st.param_writes.clear();
             st.bypass_writes.clear();
+            st.scene_edit_enabled.clear();
+            st.ftsw_working = None;
             // Lazy-commit doc (e2e only — module header): a load restores THIS slot's own
             // committed `presetLevel` AND baked param overlay, faithfully INCLUDING the
             // stale-load corruption window while an earlier save is still pending — but
@@ -682,6 +1212,17 @@ impl SimDevice {
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
             reports.extend(frame_multi(&current_preset_data_changed(&json)));
             return reports;
+        }
+        if proto::first_bytes(&f, F_CURRENT_PRESET_DATA_REQUEST).is_some() {
+            // `currentPresetDataRequest`(2) → a fresh `currentPresetDataChanged`(3) push of the
+            // WORKING COPY (unsaved `ftsw` edits included — `load_echo_json`). This is the
+            // device's re-prompt, and the ONLY confirm channel the no-dedicated-echo setters
+            // have: `Session::live_ftsw` sends exactly this and reads `ftsw` off the reply.
+            // Also fires inside the handshake burst, which is faithful — the real unit pushes
+            // its current preset there too.
+            let current_slot = st.current_slot;
+            let json = load_echo_json(&mut st, current_slot);
+            return frame_multi(&current_preset_data_changed(&json));
         }
         if let Some(dr) = proto::first_bytes(&f, F_PRESET_DATA_REQUEST) {
             // presetDataRequest{ listEnum(1), presetSlot(2) } → presetDataChanged(9) with the
@@ -777,13 +1318,24 @@ impl SimDevice {
                 Some(wire_slot)
             };
             st.events.push(SimEvent::LoadScene(wire_slot));
+            // A recall runs the device's own level-apply — base included — silently
+            // reverting an unsaved working-copy `presetLevel` to the currently-SAVED
+            // value (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
+            // doc still read the prior 0.32; `leveller::recall_reassert_save`'s doc has
+            // the full evidence). Mirrors `load_preset`'s own committed-level restore
+            // exactly — same e2e-only gate, same `ever_saved` condition — rather than
+            // inventing a parallel rule.
+            let current_slot = st.current_slot;
+            #[cfg(feature = "e2e")]
+            if st.ever_saved.contains(&current_slot) {
+                st.preset_level = st.committed_doc(current_slot).preset_level;
+            }
             // Push `currentPresetDataChanged`(3) so the un-engaged scene-leveling PRE-PASS can
             // classify each scene's routing (the real device pushes the scene graph on a scene
             // CHANGE). The sim carries one graph, and the physics model reads the written
             // `outputLevel` node-agnostically, so re-serving the same graph per scene is enough
             // for the amp pick to resolve — without it, the pre-pass harvests nothing and every
             // scene fails to classify ("read failed").
-            let current_slot = st.current_slot;
             let json = load_echo_json(&mut st, current_slot);
             return frame_multi(&current_preset_data_changed(&json));
         }
@@ -802,13 +1354,40 @@ impl SimDevice {
                 .and_then(|(_, val)| val.as_f32());
             if let Some(v) = float_val {
                 st.events.push(SimEvent::ChangeParameter {
+                    // The event records the ACTIVE-SCENE CONTEXT the write was sent
+                    // under, not where it landed (`scene_context_tests` asserts on this
+                    // meaning) — the landing key below can differ per fact 4.
                     scene,
                     group: group.clone(),
                     node: node.clone(),
                     param: param.clone(),
                     value: v,
                 });
-                st.param_writes.insert((scene, group, node, param), v);
+                // Fact 4 (HW fw 1.8.45, revised): a scene-context write with NO preceding
+                // `setNodeSceneEdit(enable=true)` for this (scene, group, node) lands on
+                // BASE only when that node's overlay in this scene is NOT Full-shaped
+                // (BypassOnly, empty, or altogether absent — Scene Edit disabled/never
+                // materialized). Against a FULL-shaped overlay the write lands ON the
+                // overlay EVEN FOR a param it doesn't yet carry, extending it per-param —
+                // the Scene-Edit flag state decides the landing, not per-param containment
+                // (see `overlay_is_full_shaped`'s doc for the crafted-fixture HW evidence).
+                // Copied out of `st` up front: `overlay_is_full_shaped` below now needs
+                // `&mut st` (the cached-parse lookup), which the match scrutinee borrowing
+                // `st.current_scene` directly would conflict with.
+                let current_scene = st.current_scene;
+                let landing_scene = match current_scene {
+                    Some(sc)
+                        if !st
+                            .scene_edit_enabled
+                            .contains(&(sc, group.clone(), node.clone()))
+                            && !st.overlay_is_full_shaped(sc, &node) =>
+                    {
+                        SCENE_BASE
+                    }
+                    _ => scene,
+                };
+                st.param_writes
+                    .insert((landing_scene, group, node, param), v);
             } else if param == "bypass" {
                 let on = proto::first_varint(&inner, 7).unwrap_or(0) != 0;
                 st.events.push(SimEvent::Bypass {
@@ -830,6 +1409,17 @@ impl SimDevice {
                 node: node.clone(),
                 enable,
             });
+            // Fact 4's gate (F_CHANGE_PARAMETER, above): track which (scene, group, node)
+            // triples have had Scene Edit enabled THIS session, since the last load.
+            if let Some(sc) = st.current_scene {
+                if enable {
+                    st.scene_edit_enabled
+                        .insert((sc, group.clone(), node.clone()));
+                } else {
+                    st.scene_edit_enabled
+                        .remove(&(sc, group.clone(), node.clone()));
+                }
+            }
             // HW-confirmed (B): enabling Scene Edit on a node RESEEDS that node's scene
             // overlay from base — any prior override for OTHER params on this node in the
             // active scene is lost, replaced by whatever the node currently holds at base.
@@ -850,6 +1440,48 @@ impl SimDevice {
                 });
                 st.param_writes.extend(reseed);
             }
+            return Vec::new();
+        }
+        if let Some(sfa) = proto::first_bytes(&f, F_SET_FOOTSWITCH_ASSIGNMENT) {
+            // SetFootswitchAssignment{ footswitchAddress(1), functionIndex(2), functionJson(3),
+            // swap(4) } — arrives through `Session::send_chunked_collect` (a `param`
+            // functionJson overflows one 60 B report), but the fake's `transact_chunked` is
+            // handed the WHOLE assembled body, so there is nothing to reassemble here.
+            //
+            // Applies to the WORKING COPY (`ftsw_working`), NOT the saved doc: on hardware the
+            // edit is live-but-unsaved until a `saveCurrentPreset`, and it is the field-3
+            // re-prompt above — never a dedicated echo — that confirms it, which is exactly the
+            // read-back branch `leveller::write_fs_values_on_session` falls to. Hence NO reply
+            // (`Session::set_footswitch_assignment`'s "no dedicated confirm echo").
+            let inner = proto::parse(sfa);
+            let addr = proto::first_varint(&inner, 1).unwrap_or(0) as u32;
+            let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
+            let function_json = str_field(&inner, 3);
+            // The wire flag verbatim. Its device semantics are empirically TBD
+            // (`proto::set_footswitch_assignment`; `probe --ftsw-validate` is the resolver) and
+            // production always sends `false`, so the fake records it and models no behavioural
+            // difference rather than inventing one.
+            let swap = proto::first_varint(&inner, 4).unwrap_or(0) != 0;
+            st.events.push(SimEvent::SetFootswitchAssignment {
+                addr,
+                index,
+                function_json: function_json.clone(),
+                swap,
+            });
+            if let Ok(func) = serde_json::from_str::<serde_json::Value>(&function_json) {
+                st.ftsw_set(addr, index, func);
+            }
+            return Vec::new();
+        }
+        if let Some(cfa) = proto::first_bytes(&f, F_CLEAR_FOOTSWITCH_ASSIGNMENT) {
+            // ClearFootswitchAssignment{ footswitchAddress(1), functionIndex(2) } — the same
+            // working-copy + no-echo model as field 54 above.
+            let inner = proto::parse(cfa);
+            let addr = proto::first_varint(&inner, 1).unwrap_or(0) as u32;
+            let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
+            st.events
+                .push(SimEvent::ClearFootswitchAssignment { addr, index });
+            st.ftsw_clear(addr, index);
             return Vec::new();
         }
         if proto::first_bytes(&f, F_NODE_JSON_REQUEST).is_some() {
@@ -965,9 +1597,25 @@ pub fn live_events() -> Vec<SimEvent> {
 //    header) now models it — see `e2e/specs/level-fs-preset24.spec.ts` for full offline
 //    footswitch-leveling coverage, including a save→load round trip of the baked value
 //    (`SimState::param_writes` reseeded from the lazy-commit `SavedDoc` on load).
-// What offline-green STILL does NOT prove: a scene-outputLevel CLAMP verdict, an ASSIGN-path
-// footswitch (only BAKE is modeled — no `SetFootswitchAssignment` wire op in `handle`), and
-// parallel-lane summation (joint-k) — still online-only classes.
+//  • The ASSIGN-path footswitch WIRE flow is modeled too (module header): `handle` applies
+//    `setFootswitchAssignment`(54)/`clearFootswitchAssignment`(55) to the working-copy `ftsw`,
+//    the field-2 re-prompt renders it back for the confirm gate, and a save persists it into
+//    `SavedDoc::ftsw` so the field-8 persist verify and the `ensure_fresh_load` witness both
+//    resolve. The CAPTURE side is modeled too, as of the wet-floor fix: `model_lufs`'s
+//    leveled-param predicate also fires on "no bypass write for the node AND the recall
+//    renders it ENGAGED", which is exactly an Assign's isolation shape
+//    (`siblings_off_excluding` forces only the OTHER switches' blocks off). A swept param
+//    still only moves the modeled loudness when the slot declares it in `leveledParams`, so
+//    an assign on an UNDECLARED param reads a flat response (a headroom clamp) rather than
+//    the curve the real preset has.
+//  • Two leveled-param curves, deliberately asymmetric (`LeveledCurve`): the drive pedal's
+//    `saturatedPedal` REPLACES the flat law (an absolute post-DSP loudness), while `wetMix`
+//    is a DELTA added to it and is zero unless the run actually WROTE the param — so
+//    declaring a wet-mix param cannot perturb any capture that does not sweep it.
+// What offline-green STILL does NOT prove: a scene-outputLevel CLAMP verdict, the loudness
+// RESPONSE of any param outside `leveledParams`, and parallel-lane summation (joint-k) —
+// still online-only classes. The wet-mix curve is NOT HW-measured (see `wet_mix_gain_db`):
+// an offline wet solve proves the OUTCOME PLUMBING, never the real preset's numbers.
 
 /// Arm the currently-installed fake so `slot`'s NEXT capture returns silence once (the
 /// `POST /sim/fault` bridge endpoint). No-op when no fake is installed (online).
@@ -1023,7 +1671,7 @@ impl SimDevice {
         if !st.reamp_on {
             return silent_capture(stimulus.len(), rate);
         }
-        match model_lufs(&st, sidecar(), stored_levels()) {
+        match model_lufs(&mut st, sidecar(), stored_levels()) {
             Some(l_model) => scale_stimulus(stimulus, rate, l_model),
             None => silent_capture(stimulus.len(), rate), // off-branch
         }
@@ -1051,7 +1699,7 @@ impl SimState {
 /// the sidecar C table and the presetJson-derived stored knob map.
 #[cfg(feature = "e2e")]
 fn model_lufs(
-    st: &SimState,
+    st: &mut SimState,
     sidecar: &Sidecar,
     stored: &std::collections::HashMap<u32, StoredLevels>,
 ) -> Option<f64> {
@@ -1074,26 +1722,42 @@ fn model_lufs(
             return None;
         }
     }
-    // Leveled-param response (preset-024-class drive pedal into a saturated amp):
-    // overrides the flat C law for exactly the ENGAGED declared block's own knob — Base
-    // and every OTHER switch's isolated measurement (this block bypassed) fall through
-    // to the ordinary formula below unperturbed.
-    if let Some(lp) = entry.and_then(|e| {
+    // Leveled-param response: the declared block's OWN knob drives loudness, but only while
+    // that block is ENGAGED for the sound under measurement. Two shapes count as engaged,
+    // and both are needed because the two footswitch WRITE PLANS isolate differently:
+    //  * `bypass_writes[node] == Some(false)` — the run force-ENGAGED it. That is a BAKE
+    //    row's own isolated measurement (`FsLevelPlan::Bake`, 405's off-in-base pedals).
+    //  * NO bypass write for the node AND the recall renders it engaged
+    //    ([`SimState::rendered_bypass`]) — the run never touched it and the preset has it
+    //    ON. That is an ASSIGN row (`FsLevelPlan::Assign`, every levelable switch on 400):
+    //    `siblings_off_excluding` forces only the OTHER switches' blocks off, so the
+    //    LEVELED block gets no bypass write at all. Without this arm the declared param had
+    //    no authority over the capture on an Assign row and the solve read a flat response.
+    // Base and every OTHER switch's isolated measurement force this block OFF
+    // (`bypass_writes[node] == Some(true)`), so they fall through unperturbed.
+    let leveled: Option<LeveledParam> = entry.and_then(|e| {
         e.leveled_params
             .iter()
-            .find(|lp| st.bypass_writes.get(&lp.node).copied() == Some(false))
-    }) {
-        let key = (
-            st.scene_key(),
-            lp.group.clone(),
-            lp.node.clone(),
-            lp.param.clone(),
-        );
-        let v = st.param_writes.get(&key).copied()?;
-        let c = saturated_pedal_lufs(v)?;
-        let preset_term = 20.0 * f64::from(st.preset_level.max(1e-6)).log10();
-        return Some(c + preset_term);
-    }
+            .find(|lp| match st.bypass_writes.get(&lp.node).copied() {
+                Some(bypassed) => !bypassed,
+                None => st.rendered_bypass(&lp.group, &lp.node) == Some(false),
+            })
+            .cloned()
+    });
+    let preset_term = 20.0 * f64::from(st.preset_level.max(1e-6)).log10();
+    // The two curves' contributions are computed at ONE site (`leveled_contribution`) so a
+    // future third `LeveledCurve` variant fails to compile there instead of silently reading
+    // flat. What they DO with that contribution stays deliberately ASYMMETRIC — see
+    // `Contribution` for why — and is resolved exhaustively right here too.
+    let contribution = match leveled.as_ref() {
+        Some(lp) => Some(leveled_contribution(st, lp)?),
+        None => None,
+    };
+    let wet_term = match contribution {
+        Some(Contribution::Absolute(c)) => return Some(c + preset_term),
+        Some(Contribution::Delta(d)) => d,
+        None => 0.0,
+    };
     // Scene overlay C falls back to base; an unlisted preset falls back to a flat default.
     let c = entry.map_or(sidecar.default, |e| e.c_for(st.current_scene));
     let stored_ol = stored
@@ -1106,8 +1770,71 @@ fn model_lufs(
     } else {
         0.0
     };
-    let preset_term = 20.0 * f64::from(st.preset_level.max(1e-6)).log10();
-    Some(c + preset_term + ol_term)
+    Some(c + preset_term + ol_term + wet_term)
+}
+
+/// One [`LeveledParam`]'s contribution to the modeled loudness — the two curves are
+/// deliberately ASYMMETRIC and must not be "unified":
+///  * `Absolute` (`SaturatedPedal`) REPLACES the flat `C` law — it is an absolute post-DSP
+///    loudness (a drive pedal into a saturated amp swamps the chain, so the sidecar's C no
+///    longer describes the sound at all).
+///  * `Delta` (`WetMix`) is added ON TOP of the flat law — a reverb's mix knob perturbs the
+///    same calibrated sound the sidecar C already measures.
+#[cfg(feature = "e2e")]
+enum Contribution {
+    Absolute(f64),
+    Delta(f64),
+}
+
+/// Evaluate `lp`'s [`LeveledCurve`] into its [`Contribution`] — the ONE site both curves are
+/// computed from (this used to be two complementary filters at two call sites in
+/// `model_lufs`, one filtering `== SaturatedPedal` and early-returning, the other filtering
+/// `!= WetMix` to 0.0; an exhaustive `match lp.curve` here means a future third variant fails
+/// to compile instead of silently reading flat). `None` propagates `model_lufs`'s off-branch
+/// silence for an engaged-but-unrendered `SaturatedPedal` block, not a curve failure.
+#[cfg(feature = "e2e")]
+fn leveled_contribution(st: &mut SimState, lp: &LeveledParam) -> Option<Contribution> {
+    // The current param value for the sound under measurement — shared by both curves.
+    let key = (
+        st.scene_key(),
+        lp.group.clone(),
+        lp.node.clone(),
+        lp.param.clone(),
+    );
+    let written = st.param_writes.get(&key).copied();
+    match lp.curve {
+        LeveledCurve::SaturatedPedal => {
+            // The leveler's own sweep write when there is one; otherwise the block's
+            // AUTHORED value, rendered through the same chain a `loadScene` recall uses
+            // (`rendered_param`). Without that fallback a capture of this block ENGAGED but
+            // NEVER WRITTEN — exactly a VERIFY row's engaged capture, which writes no param
+            // by definition — returned `None` and the model reported it as off-branch
+            // SILENCE, making the whole verify-vs-level distinction unobservable offline.
+            let v = match written {
+                Some(v) => v,
+                None => st.rendered_param(&lp.group, &lp.node, &lp.param)? as f32,
+            };
+            Some(Contribution::Absolute(saturated_pedal_lufs(v)?))
+        }
+        LeveledCurve::WetMix => {
+            // `0.0` whenever the run has written NO value for the declared param — the whole
+            // safety argument for the widened activation predicate above. The sidecar's C is
+            // calibrated on the sound AS AUTHORED, so an unswept capture must read exactly the
+            // C it always did; making the term structurally zero (rather than arithmetically
+            // zero via an anchor that happens to match) is what keeps a base run, a scene run,
+            // a Doctor capture and a VERIFY row on slot 400 byte-identical to before this
+            // branch existed — including scene 1 "Lead", whose FULL overlay authors a
+            // different `mix` (0.55) than base.
+            let Some(written) = written else {
+                return Some(Contribution::Delta(0.0));
+            };
+            let delta = match st.authored_param(&lp.group, &lp.node, &lp.param) {
+                Some(authored) => wet_mix_gain_db(f64::from(written), authored),
+                None => 0.0,
+            };
+            Some(Contribution::Delta(delta))
+        }
+    }
 }
 
 /// The stereo meter's fixed gain over mono for a DUAL-MONO signal (identical
@@ -1205,24 +1932,62 @@ struct SlotLoudness {
     /// leveller's off-branch verdict. See the `model_lufs` off-branch checks. Optional.
     #[serde(default)]
     offbranch_switch_node: Option<String>,
-    /// Blocks/params whose OWN knob drives loudness through [`saturated_pedal_lufs`]
-    /// instead of the flat `C + preset_term + ol_term` law — a drive pedal feeding a
-    /// saturated amp (preset-024-class; notes/leveling.md). Activates ONLY while that
-    /// block is ENGAGED (`bypass_writes[node] == Some(false)` — i.e. under ITS OWN
-    /// isolated footswitch measurement); every other slot's empty default vector leaves
-    /// this branch dead, so it can never perturb an existing scenario's numbers.
+    /// Blocks/params whose OWN knob drives the modeled loudness instead of (or on top of)
+    /// the flat `C + preset_term + ol_term` law — see [`LeveledCurve`] for the two shapes.
+    /// Activates only while that block is ENGAGED for the sound under measurement (the
+    /// two-armed predicate in [`model_lufs`]); every other slot's empty default vector
+    /// leaves the branch dead, so it can never perturb an existing scenario's numbers.
     #[serde(default)]
     leveled_params: Vec<LeveledParam>,
 }
 
-/// One block/param whose knob feeds [`saturated_pedal_lufs`] instead of the flat C law —
-/// see [`SlotLoudness::leveled_params`].
+/// One block/param whose knob drives the modeled loudness — see
+/// [`SlotLoudness::leveled_params`].
 #[cfg(feature = "e2e")]
 #[derive(serde::Deserialize, Clone)]
 struct LeveledParam {
     group: String,
     node: String,
     param: String,
+    #[serde(default)]
+    curve: LeveledCurve,
+}
+
+/// Which response a [`LeveledParam`]'s knob follows. The default keeps every pre-existing
+/// sidecar entry (405's four drive pedals, written before this field existed) on the curve
+/// it was authored against.
+#[cfg(feature = "e2e")]
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+enum LeveledCurve {
+    /// [`saturated_pedal_lufs`] — an ABSOLUTE post-DSP loudness that REPLACES the flat law.
+    #[default]
+    SaturatedPedal,
+    /// [`wet_mix_gain_db`] — a DELTA in LU added to the flat law.
+    WetMix,
+}
+
+/// A wet/dry `mix` knob's loudness DELTA, in LU, moving from `authored` to `v` — the offline
+/// response for slot 400's spring-reverb mix (`ACD_TMSpring63.mix`, the wet-floor fixture).
+///
+/// Shape: `20·log10(1 + m)`, i.e. the wet return summing with a unity dry path, its amplitude
+/// scaled linearly by the mix control. Three properties earn it:
+///  * **Monotonic and smooth** over the whole `[0, 1]` range, so the bounded secant in
+///    `leveller::solve_param_secant` brackets and converges instead of chasing a dip — a
+///    crossfade law (`(1−m)² + (k·m)²`) is NOT monotonic and would fight the solver.
+///  * **Modest authority**: +6.02 dB from fully dry to full wet, which is what a reverb mix
+///    actually buys you. Around the authored 0.42 that is −2.18 LU down at the wet floor
+///    (0.105) and +2.98 LU up at full wet.
+///  * **Zero at the anchor** by construction, so an UNSWEPT capture cannot move (see
+///    [`leveled_contribution`], which never even calls this without a write).
+///
+/// Not a hardware-measured curve — no wet-mix sweep has been captured off the unit. It is a
+/// plausible, solver-friendly stand-in whose only job is to give the offline Assign-path
+/// solve real authority, so the WET-FLOOR outcome is reachable offline.
+#[cfg(feature = "e2e")]
+pub(crate) fn wet_mix_gain_db(v: f64, authored: f64) -> f64 {
+    let g = |m: f64| 20.0 * (1.0 + m.clamp(0.0, 1.0)).log10();
+    g(v) - g(authored)
 }
 
 /// Preset-024-class ("TR+BD2+BMP") saturated-amp response for a drive pedal's OWN
@@ -1234,7 +1999,7 @@ struct LeveledParam {
 /// matching the HW note that the bracket-expansion probe down there reads NO_SIGNAL, not
 /// merely "very quiet".
 #[cfg(feature = "e2e")]
-fn saturated_pedal_lufs(v: f32) -> Option<f64> {
+pub(crate) fn saturated_pedal_lufs(v: f32) -> Option<f64> {
     let v = f64::from(v);
     if v <= 0.10 {
         return None;
@@ -1276,7 +2041,9 @@ struct Sidecar {
 /// The amp's stored `outputLevel` per (slot, scene), derived at load from the presetJson.
 #[cfg(feature = "e2e")]
 struct StoredLevels {
-    /// The base amp `outputLevel` (the single guitarNodes node carrying one).
+    /// The base amp `outputLevel` — the FIRST guitarNodes node carrying one, scanning
+    /// `G1..G7` in order (see [`stored_from_preset`]: the fixtures keep every amp in one
+    /// sound at the same value, so "first" is unambiguous).
     base: Option<f32>,
     /// Per-scene overlay `outputLevel` (0-based); `None` = the scene inherits `base`.
     scenes: Vec<Option<f32>>,
@@ -1340,17 +2107,30 @@ fn load_stored_levels() -> Option<std::collections::HashMap<u32, StoredLevels>> 
 }
 
 /// Extract the amp's base + per-scene stored `outputLevel` from one preset's decoded JSON.
-/// The base graph (`guitarNodes.G1`) is an ARRAY of node objects; a scene overlay
-/// (`scenes[i].guitarNodes.G1`) is a MAP of `nodeId → { dspUnitParameters }`.
+/// The base graph (`guitarNodes.<group>`) is an ARRAY of node objects; a scene overlay
+/// (`scenes[i].guitarNodes.<group>`) is a MAP of `nodeId → { dspUnitParameters }`.
+///
+/// It scans EVERY guitar group in `G1..G7` order, not just `G1`. A trunk-amp preset is
+/// unaffected (its amp is the first `outputLevel` anywhere), but a `gtrParallel*` fixture
+/// puts its amps in the split LANES, and a `G1`-only probe silently fell back to `1.0` for
+/// those — which desyncs written-over-stored and, worse, hid a scene deliberately saved
+/// with the amp output at ZERO (the routing-clamp case: with `stored_ol == 0` the model's
+/// `ol_term` collapses to 0, so the knob provably has no authority over the capture).
+/// `serde_json::Map` is a BTreeMap here, so the group order is the sorted key order and the
+/// pick is deterministic; the fixtures additionally keep every amp in one sound at the SAME
+/// `outputLevel` (pinned by `fixture_gates`), so WHICH amp is picked cannot matter.
 #[cfg(feature = "e2e")]
 fn stored_from_preset(pj: &serde_json::Value) -> StoredLevels {
-    let g1 = pj
+    let base = pj
         .get("audioGraph")
         .and_then(|a| a.get("guitarNodes"))
-        .and_then(|g| g.get("G1"));
-    let base = g1
-        .and_then(|arr| arr.as_array())
-        .and_then(|arr| arr.iter().find_map(node_output_level));
+        .and_then(|g| g.as_object())
+        .and_then(|groups| {
+            groups
+                .values()
+                .filter_map(|arr| arr.as_array())
+                .find_map(|arr| arr.iter().find_map(node_output_level))
+        });
     let scenes = pj
         .get("scenes")
         .and_then(|s| s.as_array())
@@ -1358,9 +2138,13 @@ fn stored_from_preset(pj: &serde_json::Value) -> StoredLevels {
             arr.iter()
                 .map(|sc| {
                     sc.get("guitarNodes")
-                        .and_then(|g| g.get("G1"))
-                        .and_then(|nodes| nodes.as_object())
-                        .and_then(|m| m.values().find_map(node_output_level))
+                        .and_then(|g| g.as_object())
+                        .and_then(|groups| {
+                            groups
+                                .values()
+                                .filter_map(|nodes| nodes.as_object())
+                                .find_map(|m| m.values().find_map(node_output_level))
+                        })
                 })
                 .collect()
         })
@@ -1390,10 +2174,15 @@ fn load_echo_json(st: &mut SimState, slot0: u32) -> Vec<u8> {
     #[cfg(feature = "e2e")]
     if let Some(j) = scenario_json_for(slot0) {
         let doc = st.committed_doc(slot0).clone();
-        return with_patched_doc(j, doc.preset_level, &doc.params).into_bytes();
+        let patched = with_patched_doc(j, &doc);
+        // `ftsw`: the UNSAVED working copy when this session has edited it, else the slot's
+        // saved array — the field-3 push is the LIVE document, which is what makes it the
+        // confirm channel for the no-echo footswitch setters.
+        let ftsw = st.ftsw_working.as_ref().or(doc.ftsw.as_ref());
+        return with_ftsw(&patched, ftsw).into_bytes();
     }
     let _ = slot0;
-    st.preset_json.as_bytes().to_vec()
+    with_ftsw(&st.preset_json, st.ftsw_working.as_ref()).into_bytes()
 }
 
 /// The field-8 (`presetDataChanged`) read body for `slot0` — the slot's static scenario
@@ -1408,7 +2197,10 @@ fn saved_slot_json_body(
     #[cfg(feature = "e2e")]
     {
         let doc = st.readable_doc(slot0).clone();
-        saved_slot_json(slot0).map(|j| with_patched_doc(j, doc.preset_level, &doc.params))
+        // NO working copy here: field-8 is the SAVED document, so an unsaved `ftsw` edit must
+        // be invisible to it (that asymmetry against the field-3 render above is the point —
+        // `verify_fs_persisted_writes` reads this to decide whether the assign PERSISTED).
+        saved_slot_json(slot0).map(|j| with_ftsw(&with_patched_doc(j, &doc), doc.ftsw.as_ref()))
     }
     #[cfg(not(feature = "e2e"))]
     {
@@ -1645,7 +2437,7 @@ mod physics_tests {
         let sc = one_slot(401, -16.0, vec![], None);
         let stored = std::collections::HashMap::new();
         let loud = model_lufs(
-            &SimState {
+            &mut SimState {
                 current_slot: 401,
                 preset_level: 0.5,
                 ..Default::default()
@@ -1655,7 +2447,7 @@ mod physics_tests {
         )
         .unwrap();
         let quiet = model_lufs(
-            &SimState {
+            &mut SimState {
                 current_slot: 401,
                 preset_level: 0.25,
                 ..Default::default()
@@ -1695,7 +2487,7 @@ mod physics_tests {
                 st.param_writes
                     .insert((0, "G1".into(), "amp".into(), "outputLevel".into()), w);
             }
-            model_lufs(&st, &sc, &stored).unwrap()
+            model_lufs(&mut st, &sc, &stored).unwrap()
         };
         let as_stored = with_write(None);
         assert!(
@@ -1719,12 +2511,12 @@ mod physics_tests {
         };
         st.bypass_writes.insert("ACD_Amp".into(), true);
         assert!(
-            model_lufs(&st, &sc, &stored).is_none(),
+            model_lufs(&mut st, &sc, &stored).is_none(),
             "bypassing the routed amp must silence the capture"
         );
         st.bypass_writes.insert("ACD_Amp".into(), false);
         assert!(
-            model_lufs(&st, &sc, &stored).is_some(),
+            model_lufs(&mut st, &sc, &stored).is_some(),
             "un-bypassed, the sound is measurable"
         );
     }
@@ -1746,7 +2538,7 @@ mod physics_tests {
             if let Some(b) = byp {
                 st.bypass_writes.insert("ACD_TubeScreamer".into(), b);
             }
-            model_lufs(&st, &sc, &stored)
+            model_lufs(&mut st, &sc, &stored)
         };
         assert!(
             with_bypass(Some(false)).is_none(),
@@ -1881,6 +2673,7 @@ mod physics_tests {
                     group: "G1".into(),
                     node: "pedal".into(),
                     param: "level".into(),
+                    curve: LeveledCurve::SaturatedPedal,
                 }],
             },
         );
@@ -1894,25 +2687,43 @@ mod physics_tests {
             preset_level: 1.0,
             ..Default::default()
         };
-        // Not engaged (no write at all) — the ordinary flat C, unperturbed by the pedal
-        // curve: the "don't touch existing scenarios" guarantee, pinned at the boundary.
+        // Not engaged: no bypass write AND the default graph has no such node, so the
+        // recall renders nothing — the ordinary flat C, unperturbed by the pedal curve.
+        // (A node the recall renders ENGAGED does activate the branch with no bypass write;
+        // that arm is pinned by `model_lufs_leveled_param_activates_on_a_base_engaged_block`.)
         assert!(
-            (model_lufs(&st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6,
+            (model_lufs(&mut st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6,
             "unengaged must fall through to the flat C"
         );
-        // Engaged (bypass=false) but nothing written yet for the leveled param → no
+        // Engaged (bypass=false), nothing written AND no authored value in the graph → no
         // signal, never a silent fallback to the flat C (which would mask a real bug).
         st.bypass_writes.insert("pedal".into(), false);
         assert!(
-            model_lufs(&st, &sc, &stored).is_none(),
-            "engaged with no written value must not silently read as the flat C"
+            model_lufs(&mut st, &sc, &stored).is_none(),
+            "engaged with neither a write nor an authored value must not read as the flat C"
+        );
+        // Engaged with the block's AUTHORED value and still no write — a VERIFY row's
+        // engaged capture, which writes no param by definition. It must render the pedal
+        // curve at the authored 0.5, NOT off-branch silence (which is what made the whole
+        // verify-vs-level distinction unobservable offline).
+        st.preset_json = serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "nodeId": "pedal", "dspUnitParameters": { "level": 0.5 } }
+            ] } }
+        })
+        .to_string();
+        st.parsed_preset_cache = None;
+        let authored = model_lufs(&mut st, &sc, &stored).expect("authored value renders");
+        assert!(
+            (authored - saturated_pedal_lufs(0.5).unwrap()).abs() < 1e-6,
+            "an unwritten engaged block must render its authored 0.5, got {authored}"
         );
         // Engaged with a mid-cliff value → the curve's own arithmetic.
         st.param_writes.insert(
             (SCENE_BASE, "G1".into(), "pedal".into(), "level".into()),
             0.1857,
         );
-        let lufs = model_lufs(&st, &sc, &stored).unwrap();
+        let lufs = model_lufs(&mut st, &sc, &stored).unwrap();
         // PR2 re-baseline: +3 from the mono-era -26 (the cliff's floor anchor moved
         // -62 → -59, same -420*(v-0.10) slope).
         assert!(
@@ -1921,7 +2732,104 @@ mod physics_tests {
         );
         // Forced OFF again (a sibling's own isolated measurement) — back to the flat C.
         st.bypass_writes.insert("pedal".into(), true);
-        assert!((model_lufs(&st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6);
+        assert!((model_lufs(&mut st, &sc, &stored).unwrap() - (-10.0)).abs() < 1e-6);
+    }
+
+    /// The ASSIGN arm of the activation predicate plus the `wetMix` curve's two guarantees,
+    /// on one sidecar: a block ENGAGED IN BASE with NO bypass write (an Assign row's
+    /// isolation forces only siblings off) activates the branch, an UNSWEPT capture still
+    /// reads the flat C exactly, and a SWEPT one moves by the curve's delta from the
+    /// AUTHORED value. The middle assertion is the whole blast-radius argument for widening
+    /// the predicate — every base / scene / Doctor / verify capture on such a block is
+    /// unswept by definition.
+    #[test]
+    fn model_lufs_leveled_param_activates_on_a_base_engaged_block() {
+        let mut slots = std::collections::HashMap::new();
+        slots.insert(
+            "999".to_string(),
+            SlotLoudness {
+                base: -15.0,
+                scenes: vec![],
+                routed_node: None,
+                offbranch_switch_node: None,
+                leveled_params: vec![LeveledParam {
+                    group: "G1".into(),
+                    node: "verb".into(),
+                    param: "mix".into(),
+                    curve: LeveledCurve::WetMix,
+                }],
+            },
+        );
+        let sc = Sidecar {
+            slots,
+            default: -18.0,
+        };
+        let stored = std::collections::HashMap::new();
+        let mut st = SimState {
+            current_slot: 999,
+            preset_level: 1.0,
+            preset_json: serde_json::json!({
+                "audioGraph": { "guitarNodes": { "G1": [
+                    { "nodeId": "verb", "dspUnitParameters": { "bypass": false, "mix": 0.42 } }
+                ] } }
+            })
+            .to_string(),
+            ..Default::default()
+        };
+        st.parsed_preset_cache = None;
+        // Engaged in base, no bypass write, NOTHING swept → the flat C, to the bit.
+        assert!(
+            (model_lufs(&mut st, &sc, &stored).unwrap() - (-15.0)).abs() < 1e-9,
+            "an unswept wet-mix declaration must not move the capture"
+        );
+        // Swept DOWN to the wet floor (0.25 x the authored 0.42) → quieter by the curve.
+        st.param_writes.insert(
+            (SCENE_BASE, "G1".into(), "verb".into(), "mix".into()),
+            0.105,
+        );
+        let floored = model_lufs(&mut st, &sc, &stored).unwrap();
+        // `param_writes` is f32, so widen through the SAME rounding the model sees.
+        let expect = -15.0 + wet_mix_gain_db(f64::from(0.105_f32), 0.42);
+        assert!(
+            (floored - expect).abs() < 1e-9,
+            "the wet floor must read the curve's own delta ({expect}), got {floored}"
+        );
+        assert!(floored < -15.0, "less wet must be QUIETER: {floored}");
+        // Swept UP → louder, and monotone across the whole range.
+        st.param_writes
+            .insert((SCENE_BASE, "G1".into(), "verb".into(), "mix".into()), 1.0);
+        let full = model_lufs(&mut st, &sc, &stored).unwrap();
+        assert!(full > -15.0, "full wet must be LOUDER: {full}");
+        // Forced OFF by a sibling's isolation → the branch is dead again even with a write.
+        st.bypass_writes.insert("verb".into(), true);
+        assert!((model_lufs(&mut st, &sc, &stored).unwrap() - (-15.0)).abs() < 1e-9);
+    }
+
+    /// The wet-mix curve's contract: zero at its anchor, monotonically increasing, and a
+    /// modest +6.02 dB from fully dry to full wet (see [`wet_mix_gain_db`]'s doc for why the
+    /// shape has to be monotone — the bounded secant brackets on it).
+    #[test]
+    fn wet_mix_curve_is_monotone_zero_at_the_anchor_and_modest() {
+        assert!(wet_mix_gain_db(0.42, 0.42).abs() < 1e-12);
+        let mut prev = f64::NEG_INFINITY;
+        for i in 0..=100 {
+            let v = f64::from(i) / 100.0;
+            let g = wet_mix_gain_db(v, 0.42);
+            assert!(g > prev, "not monotone at {v}: {g} <= {prev}");
+            prev = g;
+        }
+        let span = wet_mix_gain_db(1.0, 0.0);
+        assert!(
+            (span - 6.0206).abs() < 0.01,
+            "dry -> full wet must be +6.02 dB, got {span}"
+        );
+        // The floor sits ~2.2 LU under the authored mix — enough authority for a solve,
+        // far too little to reach an absurd target (which is what the wet floor reports).
+        let to_floor = wet_mix_gain_db(0.105, 0.42);
+        assert!(
+            (to_floor - (-2.177)).abs() < 0.01,
+            "authored -> wet floor must be about -2.18 LU, got {to_floor}"
+        );
     }
 
     // ── lazy-commit `presetLevel` (the same-slot stale-load incident, at the sim layer) ──
@@ -2078,6 +2986,43 @@ mod physics_tests {
             sim.preset_level()
         );
     }
+
+    /// A `loadScene` recall — base sentinel included — runs the device's own
+    /// level-apply exactly like `load_preset` does, silently reverting an unsaved
+    /// working-copy `presetLevel` to the currently-COMMITTED value (danger.md's
+    /// `loadScene` recall entry; HW: `probe --levelpreset 400 -24 save` solved 0.3096
+    /// and the saved doc still read the prior 0.32; `leveller::recall_reassert_save`'s
+    /// doc comment has the full evidence). FAILS before the fix: the old `F_LOAD_SCENE`
+    /// handler never touched `preset_level` at all, so a live-set value would have
+    /// survived the recall unperturbed.
+    #[test]
+    fn scene_recall_reverts_an_unsaved_preset_level_to_the_committed_value() {
+        let sim = SimDevice::new(); // default 0 ms commit latency
+        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.81).unwrap();
+        s.save_current_preset(401).unwrap(); // commits 0.81, marks 401 `ever_saved`
+
+        // A real scene recall.
+        s.set_preset_level(0.55).unwrap(); // unsaved working-copy write, e.g. a solved level
+        s.load_scene(0).unwrap();
+        assert!(
+            (sim.preset_level() - 0.81).abs() < 1e-3,
+            "a scene recall must revert an unsaved presetLevel to the committed value, got {}",
+            sim.preset_level()
+        );
+
+        // The base sentinel recall (`BASE_SCENE_SLOT`) is the SAME mechanism, not a
+        // special case — danger.md is explicit that base is included.
+        s.set_preset_level(0.42).unwrap(); // another unsaved working-copy write
+        s.load_scene(crate::session::BASE_SCENE_SLOT).unwrap();
+        assert!(
+            (sim.preset_level() - 0.81).abs() < 1e-3,
+            "the base recall must revert an unsaved presetLevel exactly like a real \
+             scene recall, got {}",
+            sim.preset_level()
+        );
+    }
 }
 
 // ─── scene-context model tests (the bug this PR fixes was invisible without these) ──
@@ -2193,6 +3138,285 @@ mod scene_context_tests {
             reseeded,
             Some(0.7),
             "enabling Scene Edit again must reseed drive from base (0.7), not keep 0.2"
+        );
+    }
+
+    // ── HW fw 1.8.45 findings (this week) ──────────────────────────────────────────
+
+    const PER_PARAM_OVERLAY_FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
+        {"FenderId":"X","nodeId":"amp","dspUnitParameters":{"bypass":false,"gain":2.5}}
+    ]}},
+    "scenes":[
+        {"guitarNodes":{"G1":{"amp":{"dspUnitParameters":{"bypass":false,"gain":5.0}}}}},
+        {"guitarNodes":{"G1":{"amp":{"dspUnitParameters":{"bypass":false}}}}}
+    ]}"#;
+
+    // (1) A FULL overlay (scene 0) masks base for every param it lists; a bypass-only
+    // overlay (scene 1) masks only `bypass` — every other param, incl. `gain`, renders
+    // BASE, with no retention of whatever the previously recalled scene rendered.
+    #[test]
+    fn scene_recall_renders_the_overlay_per_param_with_no_retention_from_the_prior_scene() {
+        let sim = SimDevice::new().with_preset_json(PER_PARAM_OVERLAY_FIXTURE);
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(6).unwrap();
+        s.load_scene(0).unwrap(); // scene 0: a FULL overlay (gain: 5.0)
+        assert_eq!(
+            sim.rendered_param("G1", "amp", "gain"),
+            Some(5.0),
+            "a full overlay must mask base's gain"
+        );
+        s.load_scene(1).unwrap(); // scene 1: a bypass-only overlay (no gain key)
+        assert_eq!(
+            sim.rendered_param("G1", "amp", "gain"),
+            Some(2.5),
+            "a bypass-only overlay must render BASE for gain (2.5), not retain scene 0's 5.0"
+        );
+    }
+
+    // (2) `ftswStates` is a derived cache the device ignores on recall — a crafted
+    // fixture whose `ftswStates[0]` says the switch is active must NOT override the
+    // materialized bypass state (here: the overlay bypasses the block → FS inactive).
+    #[test]
+    fn scene_recall_ignores_the_stored_ftsw_states_cache_and_derives_from_materialized_bypass() {
+        const FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"X","nodeId":"fx","dspUnitParameters":{"bypass":false}}
+        ]}},
+        "scenes":[
+            {"guitarNodes":{"G1":{"fx":{"dspUnitParameters":{"bypass":true}}}},
+             "ftswStates":[true]}
+        ]}"#;
+        let sim = SimDevice::new().with_preset_json(FIXTURE);
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(10).unwrap();
+        s.load_scene(0).unwrap();
+        assert_eq!(
+            sim.rendered_bypass("G1", "fx"),
+            Some(true),
+            "the overlay's own bypass=true must govern (FS inactive, block silent) even \
+             though this fixture's ftswStates[0] — a cache the real device ignores on \
+             recall — claims the switch is active"
+        );
+    }
+
+    // (3) `changeParameter` accepts RAW values outside [0,1] (dB-calibrated params like
+    // `ACD_Boost.gain`) with no clamp and no rejection.
+    #[test]
+    fn parameter_writes_accept_raw_values_outside_0_1() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(7).unwrap();
+        s.change_parameter("G1", "ACD_Boost", "gain", 7.0).unwrap();
+        assert_eq!(
+            sim.param_write(SCENE_BASE, "G1", "ACD_Boost", "gain"),
+            Some(7.0),
+            "a dB-calibrated raw write outside [0,1] must not be clamped or rejected"
+        );
+    }
+
+    // (4) A scene-context write with no preceding Scene Edit enable, on a node whose
+    // overlay in this scene is bypass-only, lands on BASE (and thus on every scene
+    // sharing that knob) — the bypass-only overlay itself is left untouched, and other
+    // scenes' FULL overlays are untouched too.
+    #[test]
+    fn scene_context_write_without_scene_edit_enable_on_a_bypass_only_overlay_lands_on_base() {
+        const FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"X","nodeId":"amp","dspUnitParameters":{"bypass":false,"gain":2.5}}
+        ]}},
+        "scenes":[
+            {"guitarNodes":{"G1":{"amp":{"dspUnitParameters":{"bypass":false}}}}},
+            {"guitarNodes":{"G1":{"amp":{"dspUnitParameters":{"bypass":false,"gain":9.9}}}}}
+        ]}"#;
+        let sim = SimDevice::new().with_preset_json(FIXTURE);
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(8).unwrap();
+        s.load_scene(0).unwrap(); // scene 0: bypass-only overlay on "amp" — no enable sent
+        s.change_parameter("G1", "amp", "gain", 7.0).unwrap();
+        assert_eq!(
+            sim.param_write(SCENE_BASE, "G1", "amp", "gain"),
+            Some(7.0),
+            "no Scene Edit enable + a bypass-only overlay must route the write to BASE"
+        );
+        assert_eq!(
+            sim.param_write(0, "G1", "amp", "gain"),
+            None,
+            "the bypass-only overlay itself must stay untouched — no partial scene entry"
+        );
+        assert_eq!(
+            sim.rendered_param("G1", "amp", "gain"),
+            Some(7.0),
+            "scene 0 has no overlay for gain, so it must now render the just-written base value"
+        );
+        // The existing enable+reseed behavior must remain green (pinned separately by
+        // `enabling_scene_edit_reseeds_the_node_from_base`); here we only need scene 1's
+        // OWN full overlay to be untouched by our scene-0 base write.
+        s.load_scene(1).unwrap();
+        assert_eq!(
+            sim.rendered_param("G1", "amp", "gain"),
+            Some(9.9),
+            "scene 1's own full overlay must be untouched by scene 0's base-routed write"
+        );
+    }
+
+    // (4, revised) A scene-context write with no preceding Scene Edit enable, on a node
+    // whose overlay in this scene IS Full-shaped but doesn't yet carry the written param,
+    // lands ON the overlay — extending it per-param — not on base. HW-verified fw 1.8.45,
+    // crafted Full-partial overlay: a TubeScreamer scene-0 overlay carrying
+    // blend/overdrive/tone but not `level` (base `level` 0.65); an enable-less
+    // `changeParameter(level, 0.22)` landed IN the overlay, every sibling param survived
+    // unchanged (no reseed), and base stayed 0.65.
+    #[test]
+    fn scene_context_write_without_scene_edit_enable_on_a_full_overlay_extends_it_per_param() {
+        const FIXTURE: &str = r#"{"audioGraph":{"guitarNodes":{"G1":[
+            {"FenderId":"ACD_TubeScreamer","nodeId":"ts","dspUnitParameters":
+                {"bypass":false,"blend":0.5,"overdrive":0.3,"tone":0.4,"level":0.65}}
+        ]}},
+        "scenes":[
+            {"guitarNodes":{"G1":{"ts":{"dspUnitParameters":
+                {"bypass":false,"blend":0.41,"overdrive":0.0,"tone":0.5}}}}}
+        ]}"#;
+        let sim = SimDevice::new().with_preset_json(FIXTURE);
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(9).unwrap();
+        s.load_scene(0).unwrap(); // scene 0: Full overlay missing `level` — no enable sent
+        s.change_parameter("G1", "ts", "level", 0.22).unwrap();
+        assert_eq!(
+            sim.param_write(0, "G1", "ts", "level"),
+            Some(0.22),
+            "an enable-less write of a param absent from a FULL overlay must land IN the \
+             overlay (extending it), not fall through to base"
+        );
+        assert_eq!(
+            sim.param_write(SCENE_BASE, "G1", "ts", "level"),
+            None,
+            "base must stay untouched by the overlay-extending write"
+        );
+        assert_eq!(
+            sim.rendered_param("G1", "ts", "blend"),
+            Some(0.41),
+            "the overlay's own sibling params must survive unchanged — no reseed"
+        );
+        assert_eq!(
+            sim.rendered_param("G1", "ts", "level"),
+            // `rendered_param` widens the stored f32 write to f64 — compare against the
+            // same widened value, not the f64 literal (0.22f32 as f64 != 0.22f64).
+            Some(f64::from(0.22f32)),
+            "scene 0 must now render the just-extended level"
+        );
+    }
+}
+
+// ─── ftsw working-copy model, PLAIN (non-e2e) build ─────────────────────────────────────
+//
+// The e2e-only gates for field 54/55 live in `e2e_server_tests` (they need a scenario fixture
+// whose `ftsw` carries real switches). These cover what those cannot: the same wire ops
+// against the DEFAULT graph, which has no `ftsw` key at all — the document every plain-build
+// `Session` test sees.
+//
+// They assert on the RENDERED field-3 body rather than through `Session::live_ftsw`, and that
+// is deliberate. `best_json_payload` reassembles with `proto::reassemble_streams`, which by
+// design does NOT close the stream on the trailing `0x35` frame (an interleaved single-frame
+// must not truncate a large push), so the LAST ≤60 B of every field-3 document are dropped —
+// the "systematic tail truncation" `reassemble_streams_final`'s doc describes. `serde_json`'s
+// map is a `BTreeMap`, so in this tiny default document `ftsw` sorts LAST and lands entirely
+// inside that dropped tail; in a real preset (and in every e2e scenario fixture) `ftsw` sits
+// ~4 KB in, far ahead of it, which is exactly what `Session::live_ftsw`'s own doc records.
+// Reading the render directly keeps these tests on the fake's contract instead of re-testing
+// the session reader's documented lossiness.
+#[cfg(test)]
+mod ftsw_tests {
+    use super::*;
+    use crate::session::Session;
+
+    /// The `param` functionJson shape the leveler's Assign branch writes, trimmed to the keys
+    /// the read-back helpers match on. Carries `valueType` (numeric) because the real
+    /// composer (`leveller.rs`) does too — its absence makes fw 1.8.45 silently discard the
+    /// whole IMPORTED preset at its lazy commit (see `notes/gotchas.md`).
+    const PARAM_FN: &str = r#"{"func":"param","groupId":"G1","nodeId":"n1","parameterId":"level","valueA":0.7,"valueB":0.2,"valueType":2}"#;
+
+    /// The field-3 body the fake would push for the current slot, parsed.
+    fn rendered(sim: &SimDevice) -> serde_json::Value {
+        let mut st = sim.state.lock().expect("sim lock");
+        let slot = st.current_slot;
+        let body = load_echo_json(&mut st, slot);
+        serde_json::from_slice(&body).expect("the rendered field-3 body is valid JSON")
+    }
+
+    /// A `setFootswitchAssignment` MATERIALIZES `ftsw` on a document that carries none, and
+    /// the render carries it — the working-copy half of the Assign confirm gate in a build
+    /// with no scenario fixtures.
+    #[test]
+    fn a_set_materializes_ftsw_on_a_graph_that_has_none() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(7).unwrap();
+        assert!(
+            rendered(&sim).get("ftsw").is_none(),
+            "the default graph carries no ftsw key until an edit creates one"
+        );
+        s.set_footswitch_assignment(2, 0, PARAM_FN, false, None)
+            .unwrap();
+        let doc = rendered(&sim);
+        let live = doc
+            .get("ftsw")
+            .expect("the edit must materialize an ftsw array");
+        assert_eq!(
+            crate::footswitch::existing_param_fn_value_a(live, 2, "n1", "level"),
+            Some(0.7),
+            "switch 2 must render the written param fn: {live}"
+        );
+        // Switches ahead of the addressed one are materialized EMPTY, never holes — the shape
+        // `footswitch::existing_param_fn_index` walks.
+        assert_eq!(
+            live.as_array().map(Vec::len),
+            Some(3),
+            "the array grows to cover addr 2: {live}"
+        );
+        assert!(
+            live[0].as_array().is_some_and(Vec::is_empty)
+                && live[1].as_array().is_some_and(Vec::is_empty),
+            "unaddressed switches are empty function lists: {live}"
+        );
+    }
+
+    /// A `clearFootswitchAssignment` removes the function, and a fresh load discards the whole
+    /// UNSAVED edit — the plain-build mirror of the device's edit-buffer semantics (a plain
+    /// build has no `SavedDoc`, so nothing can persist it).
+    #[test]
+    fn a_clear_removes_the_function_and_a_load_discards_the_unsaved_edit() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(7).unwrap();
+        s.set_footswitch_assignment(1, 0, PARAM_FN, false, None)
+            .unwrap();
+        s.clear_footswitch_assignment(1, 0).unwrap();
+        let doc = rendered(&sim);
+        let live = doc
+            .get("ftsw")
+            .expect("ftsw stays materialized after the clear");
+        assert_eq!(
+            crate::footswitch::existing_param_fn_index(live, 1, "n1", "level"),
+            None,
+            "the cleared function must be gone: {live}"
+        );
+        s.set_footswitch_assignment(1, 0, PARAM_FN, false, None)
+            .unwrap();
+        s.load_preset(7).unwrap();
+        assert!(
+            rendered(&sim).get("ftsw").is_none(),
+            "a fresh load discards the unsaved ftsw edit buffer"
+        );
+        assert_eq!(
+            sim.events()
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    SimEvent::SetFootswitchAssignment { .. }
+                        | SimEvent::ClearFootswitchAssignment { .. }
+                ))
+                .count(),
+            3,
+            "every ftsw wire op is recorded: {:?}",
+            sim.events()
         );
     }
 }

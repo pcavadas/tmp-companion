@@ -1,6 +1,6 @@
 # TMP Companion — overview
 
-A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that controls a Fender Tone Master Pro over USB. It renders its own UI and talks to the device with an exclusive-seize HID session.
+A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that controls a Fender Tone Master Pro over USB. It renders its own UI and talks to the device with an exclusive-seize (macOS) or `flock`-exclusive (Linux) HID session. macOS is the shipping platform; Linux is a supported development platform, including re-amp — see `CONTRIBUTING.md`'s "Developing on Linux".
 
 > **This file is the architecture map.** `CLAUDE.md` deliberately does not carry a module tree — the per-module docs are the authority (see [Where things live](#where-things-live)). The UI is **click-only**: no keyboard shortcuts, no command palette.
 
@@ -21,10 +21,10 @@ A macOS-only Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that
 
 ## Platform constraints
 
-- macOS 12+, universal (Apple Silicon & Intel). The IOKit HID seize and cpal CoreAudio paths are `cfg(target_os = "macos")` — arch-agnostic, no `target_arch` gating.
-- Exclusive HID seize blocks Pro Control — the app surfaces a "close Pro Control" error if it is running.
+- **Ships:** macOS 12+, universal (Apple Silicon & Intel). **Dev-only:** Linux, via a hidraw (`hid.rs`) + ALSA `hw:` (`audio.rs`) `imp` seam on each of the two platform-boundary modules — see their own headers for the measured detail (device resolution, format, the WirePlumber device-contention rule Linux dev machines need).
+- Exclusive HID seize on macOS blocks Pro Control — the app surfaces a "close Pro Control" error if it is running. On Linux `flock` locks out only another TMP Companion process; Fender ships no Pro Control for Linux.
 - The device is single-connection: every device command is serialized through a process-global lock.
-- Behaviour is firmware-version dependent (validated on 1.7.75 and 1.8.45).
+- Behaviour is firmware-version dependent (validated on 1.7.75, 1.8.45, 1.8.58).
 
 ## Where things live
 

@@ -83,7 +83,10 @@ export function LevelView({
     toggleAll,
     targetLufsByName,
     refresh,
-  } = usePresetData(connected);
+    // BUG 1: Level's own list/selection needs the FULL footswitch roster (a switch
+    // with no level control still gets a row, disabled with a reason) — Doctor keeps
+    // the default levelable-only roster (see `UsePresetDataOptions`'s doc).
+  } = usePresetData(connected, { footswitchRoster: "all" });
 
   const live = useLiveDevice(connected);
 

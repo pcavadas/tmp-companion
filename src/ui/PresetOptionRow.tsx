@@ -32,6 +32,16 @@ export interface PresetOptionRowProps {
   columns: string;
   /** The trailing cells — one grid item per `columns` track. */
   children: ReactNode;
+  /** e2e hook: the row's own IDENTITY key (`leveling.ts`'s `setupRowHookKey` —
+   *  `p<slot>` / `s<slot>:<sceneSlot>` / `f<slot>:sw<switch>`), so a spec can scope a
+   *  query to THIS row instead of colliding with every other row of the same preset
+   *  (`data-pick="target:<name>"` is shared across every selected row of one preset —
+   *  see SetupBody.tsx). DISTINCT from the row's React `key`/selection key
+   *  (`SetupOption.key`), which is positional within the levelable-filtered
+   *  footswitch list and must stay that way for `sel`/`rows` Map lookups — see
+   *  `setupRowHookKey`'s doc for why the hook can't share it. Optional: Doctor's
+   *  DoctorSetup call site has no leveling row keys and omits it. */
+  setupRowKey?: string;
 }
 
 export function PresetOptionRow({
@@ -44,10 +54,12 @@ export function PresetOptionRow({
   title,
   columns,
   children,
+  setupRowKey,
 }: PresetOptionRowProps) {
   const { t } = useTheme();
   return (
     <div
+      data-setup-row={setupRowKey}
       style={{
         display: "grid",
         gridTemplateColumns: `26px 1fr ${columns}`,

@@ -398,21 +398,15 @@ impl SoundProfile {
     pub fn from_capture_with_psd(
         samples: &[f32],
         rate: u32,
-        stimulus_samples: usize,
-        onset: usize,
+        body_len: usize,
+        body_start: usize,
+        tail_ms: u32,
         family: Family,
         body_psd: &crate::psd::Psd,
         stim_psd: Option<&crate::psd::Psd>,
     ) -> Result<SoundProfile, String> {
         Self::from_capture_with_psd_loudness(
-            samples,
-            rate,
-            stimulus_samples,
-            onset,
-            family,
-            body_psd,
-            stim_psd,
-            None,
+            samples, rate, body_len, body_start, tail_ms, family, body_psd, stim_psd, None,
         )
     }
 
@@ -430,8 +424,9 @@ impl SoundProfile {
     pub fn from_capture_with_psd_loudness(
         samples: &[f32],
         rate: u32,
-        stimulus_samples: usize,
-        onset: usize,
+        body_len: usize,
+        body_start: usize,
+        tail_ms: u32,
         family: Family,
         body_psd: &crate::psd::Psd,
         stim_psd: Option<&crate::psd::Psd>,
@@ -453,7 +448,7 @@ impl SoundProfile {
             bands,
             integrated_lufs,
             spread_lu: loudness.spread_lu(),
-            tail_ratio_db: tail_energy_ratio(samples, rate, stimulus_samples, onset),
+            tail_ratio_db: tail_energy_ratio(samples, rate, body_len, body_start, tail_ms),
             air_flatness: body_psd.flatness(6000.0, 12000.0),
             // Localization runs on the TRANSFER (capture − stimulus, dB) so
             // the deterministic stimulus's own spectral ridges cancel — raw
@@ -1082,8 +1077,9 @@ pub const OUTPUT_SNR_MARGIN_DB: f64 = 8.0;
 /// per capture matters (`doctor_check`'s capture path shares one `body_psd`
 /// across the profile + this coverage gate, see `commands/doctor.rs`).
 /// `signal_start` is the pad-shifted start of real signal
-/// ([`crate::leveller::doctor_signal_start`]); a confident onset always lands
-/// it well past MIN_FLOOR_SAMPLES thanks to the 200 ms stimulus preamble,
+/// ([`crate::leveller::doctor_onset`]'s `signal_start` field); a confident
+/// onset always lands it well past MIN_FLOOR_SAMPLES thanks to the 200 ms
+/// stimulus preamble,
 /// so the guard below fires only on the UNCONFIDENT-onset fallback
 /// (`signal_start == 0`) — then every band reads covered WITHOUT touching
 /// `body_psd`, the legacy permissive behavior.
@@ -1115,24 +1111,39 @@ pub fn output_coverage_with_body(
 /// keeps ringing → closer to 0). Returns −80 (a "silent tail" floor) when the
 /// capture has no tail window.
 ///
-/// `onset` is where the stimulus actually starts in the capture (the buffer
-/// begins at stream start, BEFORE the audio propagated through cpal/USB/DSP —
-/// see `audio::estimate_onset`). Splitting at `stimulus_samples` alone leaks the
-/// last ~latency of body-level signal into the tail, inflating a bone-dry
-/// preset's ratio toward the washed threshold (~−17 dB vs the −13 dB gate for a
-/// 50 ms leak into a multi-second tail). Pass 0 to keep the un-aligned legacy split.
+/// `body_start`/`body_len` are [`crate::leveller::DoctorOnset`]'s fields (the
+/// body window is `[body_start, body_start + body_len)`) — `body_start` is
+/// where the stimulus actually starts in the capture (the buffer begins at
+/// stream start, BEFORE the audio propagated through cpal/USB/DSP; see
+/// `crate::leveller::doctor_onset`). Splitting at `body_len` alone (from
+/// sample 0) leaks the last ~latency of body-level signal into the tail,
+/// inflating a bone-dry preset's ratio toward the washed threshold (~−17 dB vs
+/// the −13 dB gate for a 50 ms leak into a multi-second tail); pass
+/// `body_start: 0` to keep the un-aligned legacy split.
+///
+/// The tail window itself is PINNED to `tail_ms` past the body end (clamped to
+/// the capture length) rather than "everything after the body" — a
+/// wall-clock-length capture tail otherwise shifts this ratio ~0.3 dB per
+/// 100 ms of extra tail with no signal difference, confounding the
+/// split-point comparison this function exists to make robust. The window is
+/// the RECIPE's tail (whatever `tail_ms` the caller captured with), so a
+/// longer oracle capture measures its own longer tail rather than being
+/// clipped to a shorter production pin.
 pub fn tail_energy_ratio(
     samples: &[f32],
-    _rate: u32,
-    stimulus_samples: usize,
-    onset: usize,
+    rate: u32,
+    body_len: usize,
+    body_start: usize,
+    tail_ms: u32,
 ) -> f64 {
-    let body_end = onset.saturating_add(stimulus_samples);
-    if samples.len() <= body_end || stimulus_samples == 0 {
+    let body_end = body_start.saturating_add(body_len);
+    if samples.len() <= body_end || body_len == 0 {
         return -80.0;
     }
-    let body = rms_f64(&samples[onset..body_end]);
-    let tail = rms_f64(&samples[body_end..]);
+    let body = rms_f64(&samples[body_start..body_end]);
+    let tail_window = (rate as usize / 1000) * tail_ms as usize;
+    let tail_end = body_end.saturating_add(tail_window).min(samples.len());
+    let tail = rms_f64(&samples[body_end..tail_end]);
     if body <= 0.0 {
         return -80.0;
     }
@@ -2839,6 +2850,113 @@ pub fn diagnose_levels(
     out
 }
 
+// ─── leveling-damage advisories (backup-scan only, zero device captures) ──────
+
+/// Signature match for a footswitch `param` assignment shaped like the OLD
+/// (pre-`param_class`) leveler's damage — a value baked into a wire assignment
+/// the CURRENT classifier would never let the leveler write today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LevelingDamageKind {
+    /// `valueA` (the engaged value) sits near 0 on a WET-MIX param whose base
+    /// (`valueB`) is materially higher — the field case: a chorus `mix`
+    /// assign-leveled to 0.0, silencing the effect whenever the switch engages.
+    DeletedEffect,
+    /// The assignment sweeps an OTHER-class param — never a loudness control
+    /// ([`crate::param_class::ParamClass::Other`]) — so the CURRENT leveler's
+    /// `is_levelable_param` gate could never have produced it. The field case: a
+    /// phaser "leveled" via `ratehz`. NOT proof of leveler damage on its own — a
+    /// footswitch can legitimately sweep any param via Pro Control — hence the
+    /// factual (not accusatory) `detail` wording.
+    SweptOther,
+}
+
+/// One footswitch `param` assignment matching a leveling-damage signature —
+/// backup-scan sourced (`DoctorInput.footswitches`), zero device captures.
+/// Advisory only: the correct value is unknown, so Doctor names the observed
+/// fact rather than prescribing a fix (no `Rx`/`DoctorOp`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelingDamageHint {
+    pub switch: u32,
+    pub label: String,
+    pub node_id: String,
+    pub fender_id: String,
+    pub parameter_id: String,
+    pub kind: LevelingDamageKind,
+    /// Factual one-liner naming engaged vs base values (e.g. "mix: engaged
+    /// 0.00, base 0.42") — never "the old leveler damaged this".
+    pub detail: String,
+}
+
+/// The wet-mix base (`valueB`) must clear this to call the drop material — a
+/// base already near zero has nothing to delete. The materiality floor;
+/// how far `valueA` must fall below `valueB` is [`leveller::WET_FLOOR_FRACTION`]
+/// (below), not a number invented here.
+const DELETED_EFFECT_BASE_MIN: f64 = 0.15;
+/// Minimum relative move (of the base) to count as a genuine sweep for
+/// [`LevelingDamageKind::SweptOther`] — the param's unit is unknown by
+/// definition (Other-class ranges are meaningless per `param_class`'s doc), so
+/// a relative gate replaces an absolute one; the additive floor covers a
+/// nearly-zero base.
+const SWEPT_OTHER_REL: f64 = 0.05;
+const SWEPT_OTHER_ABS_FLOOR: f64 = 1e-3;
+
+/// Scan a preset's block-acting footswitches for `param` assignments matching
+/// either damage signature — pure, no device I/O (see module doc). Only
+/// `func: "param"` assignments with both `valueA`/`valueB` present are
+/// candidates (an `on-off` function carries neither). The classifier keys on
+/// the ACTED-ON block's `fender_id`, exactly like
+/// [`crate::footswitch::is_levelable_param`] (kept private there — this
+/// re-derives the classification rather than depending on it, since the
+/// predicate answers a different question: "may the CURRENT leveler write
+/// this" vs "does an EXISTING assignment match a damage shape"). The
+/// `DeletedEffect` threshold IS the leveler's own wet-floor invariant, negated:
+/// [`leveller::WET_FLOOR_FRACTION`] is the floor the CURRENT leveler refuses to
+/// cross, so `valueA` sitting below `WET_FLOOR_FRACTION × valueB` is a value the
+/// current leveler would never have written — a 94% wet kill (`0.05` vs base
+/// `0.90`) matches this and would NOT have fired the old absolute `<=0.02` gate.
+pub fn leveling_damage_hints(
+    footswitches: &[crate::footswitch::FootswitchInfo],
+) -> Vec<LevelingDamageHint> {
+    let mut out = Vec::new();
+    for fs in footswitches {
+        for f in &fs.functions {
+            if f.func != "param" {
+                continue;
+            }
+            let (Some(param), Some(a), Some(b)) = (&f.parameter_id, f.value_a, f.value_b) else {
+                continue;
+            };
+            let class = crate::param_class::classify(&f.fender_id, param).class;
+            let kind = if class == crate::param_class::ParamClass::WetMix
+                && a < f64::from(crate::leveller::WET_FLOOR_FRACTION) * b
+                && b >= DELETED_EFFECT_BASE_MIN
+            {
+                Some(LevelingDamageKind::DeletedEffect)
+            } else if class == crate::param_class::ParamClass::Other
+                && (a - b).abs() > b.abs() * SWEPT_OTHER_REL + SWEPT_OTHER_ABS_FLOOR
+            {
+                Some(LevelingDamageKind::SweptOther)
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
+                out.push(LevelingDamageHint {
+                    switch: fs.switch,
+                    label: fs.label.clone(),
+                    node_id: f.node_id.clone(),
+                    fender_id: f.fender_id.clone(),
+                    parameter_id: param.clone(),
+                    kind,
+                    detail: format!("{param}: engaged {a:.2}, base {b:.2}"),
+                });
+            }
+        }
+    }
+    out
+}
+
 // ─── scene consistency ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -2974,8 +3092,8 @@ mod onset_split_tests {
         let mut cap = vec![0.0f32; lag];
         cap.extend(std::iter::repeat_n(0.5f32, stim_n)); // body
         cap.extend(std::iter::repeat_n(0.0005f32, tail_n)); // truly dry tail
-        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0);
-        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
+        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0, crate::leveller::DOCTOR_TAIL_MS);
+        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag, crate::leveller::DOCTOR_TAIL_MS);
         assert!(
             unaligned > -20.0,
             "leak should inflate the unaligned tail (got {unaligned:.1})"
@@ -2995,8 +3113,8 @@ mod onset_split_tests {
         let mut cap = vec![0.0f32; lag];
         cap.extend(std::iter::repeat_n(0.5f32, stim_n));
         cap.extend(std::iter::repeat_n(0.25f32, tail_n)); // ringing reverb
-        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0);
-        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag);
+        let unaligned = tail_energy_ratio(&cap, SR, stim_n, 0, crate::leveller::DOCTOR_TAIL_MS);
+        let aligned = tail_energy_ratio(&cap, SR, stim_n, lag, crate::leveller::DOCTOR_TAIL_MS);
         assert!((unaligned - aligned).abs() < 2.0);
         assert!(aligned > -13.0); // stays on the washed side
     }
@@ -3860,17 +3978,26 @@ mod tests {
         let wet_tail = vec![0.3f32; (rate / 2) as usize];
         let dry: Vec<f32> = body.iter().chain(dry_tail.iter()).copied().collect();
         let wet: Vec<f32> = body.iter().chain(wet_tail.iter()).copied().collect();
-        let d = tail_energy_ratio(&dry, rate, body.len(), 0);
-        let w = tail_energy_ratio(&wet, rate, body.len(), 0);
+        let d = tail_energy_ratio(&dry, rate, body.len(), 0, crate::leveller::DOCTOR_TAIL_MS);
+        let w = tail_energy_ratio(&wet, rate, body.len(), 0, crate::leveller::DOCTOR_TAIL_MS);
         assert!(w > d, "wet tail must read hotter ({w} vs {d})");
         assert!(w > -6.0 && d < -40.0);
     }
 
     #[test]
     fn tail_ratio_guards_short_capture() {
-        assert_eq!(tail_energy_ratio(&[0.1; 100], 48_000, 100, 0), -80.0);
-        assert_eq!(tail_energy_ratio(&[0.1; 50], 48_000, 100, 0), -80.0);
-        assert_eq!(tail_energy_ratio(&[], 48_000, 0, 0), -80.0);
+        assert_eq!(
+            tail_energy_ratio(&[0.1; 100], 48_000, 100, 0, crate::leveller::DOCTOR_TAIL_MS),
+            -80.0
+        );
+        assert_eq!(
+            tail_energy_ratio(&[0.1; 50], 48_000, 100, 0, crate::leveller::DOCTOR_TAIL_MS),
+            -80.0
+        );
+        assert_eq!(
+            tail_energy_ratio(&[], 48_000, 0, 0, crate::leveller::DOCTOR_TAIL_MS),
+            -80.0
+        );
     }
 
     // ── graph-driven prescriptions ──
@@ -4748,6 +4875,89 @@ mod tests {
         assert!(scene_consistency("Rhythm", f64::NEG_INFINITY, &ok, Instrument::Guitar).is_none());
     }
 
+    // ── leveling-damage advisories (fix P3-5, backup-scan only) ──
+
+    /// One `param`-function footswitch, single assignment — the shape
+    /// `leveling_damage_hints` scans.
+    fn fs_param(
+        switch: u32,
+        fender_id: &str,
+        param: &str,
+        value_a: Option<f64>,
+        value_b: Option<f64>,
+    ) -> crate::footswitch::FootswitchInfo {
+        crate::footswitch::FootswitchInfo {
+            switch,
+            label: "MOD".to_string(),
+            link_group: None,
+            functions: vec![crate::footswitch::FootswitchFn {
+                func: "param".to_string(),
+                group_id: "G1".to_string(),
+                node_id: "n1".to_string(),
+                fender_id: fender_id.to_string(),
+                parameter_id: Some(param.to_string()),
+                value_a,
+                value_b,
+                is_active: false,
+            }],
+            level_params: Vec::new(),
+            all_params: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn leveling_damage_deleted_effect_fires_on_zeroed_wet_mix() {
+        // The field case: chorus `mix` assign-leveled to 0.0, base 0.42.
+        let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.0), Some(0.42))];
+        let hints = leveling_damage_hints(&fs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].kind, LevelingDamageKind::DeletedEffect);
+        assert_eq!(hints[0].parameter_id, "mix");
+    }
+
+    #[test]
+    fn leveling_damage_deleted_effect_fires_on_a_wet_floor_violation_not_just_zero() {
+        // A 94% wet kill (engaged 0.05, base 0.90) — below WET_FLOOR_FRACTION (0.25)
+        // × base (0.225) — is a value today's leveler would have refused to write.
+        // The OLD absolute `<=0.02` gate missed this (0.05 > 0.02); the wet-floor
+        // invariant catches it.
+        let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.05), Some(0.90))];
+        let hints = leveling_damage_hints(&fs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].kind, LevelingDamageKind::DeletedEffect);
+    }
+
+    #[test]
+    fn leveling_damage_swept_other_fires_on_moved_other_param() {
+        // The field case: a phaser "leveled" via `ratehz` (an Other-class param —
+        // never in `defaults`/`blockOverrides`).
+        let fs = [fs_param(1, "ACD_Phaser", "ratehz", Some(4.0), Some(0.5))];
+        let hints = leveling_damage_hints(&fs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].kind, LevelingDamageKind::SweptOther);
+    }
+
+    #[test]
+    fn leveling_damage_ignores_healthy_assignments() {
+        // A wet-mix param with a healthy (non-zeroed) engaged value, an on-off
+        // function (no valueA/valueB at all), and an Other-class param that
+        // didn't actually move (engaged == base) must all stay silent.
+        let healthy_mix = fs_param(0, "ACD_TCEChorus", "mix", Some(0.5), Some(0.42));
+        let mut on_off = fs_param(2, "ACD_DriveX", "bypass", None, None);
+        on_off.functions[0].func = "on-off".to_string();
+        on_off.functions[0].parameter_id = None;
+        let unmoved_other = fs_param(3, "ACD_Phaser", "ratehz", Some(0.5), Some(0.5));
+        assert!(leveling_damage_hints(&[healthy_mix, on_off, unmoved_other]).is_empty());
+    }
+
+    #[test]
+    fn leveling_damage_deleted_effect_needs_a_material_base() {
+        // valueA≈0 alone isn't enough — the base must have been materially wet
+        // (a base already near zero has nothing to delete).
+        let fs = [fs_param(0, "ACD_TCEChorus", "mix", Some(0.0), Some(0.05))];
+        assert!(leveling_damage_hints(&fs).is_empty());
+    }
+
     #[test]
     fn footswitch_worst_gets_advisory_not_trim() {
         // A footswitch sound (no wire scene index) as the worst jump: there is
@@ -4804,6 +5014,7 @@ mod tests {
             48_000,
             48_000,
             0,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &psd,
             None,
@@ -5030,6 +5241,7 @@ mod tests {
             RATE,
             samples.len(),
             0,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &psd,
             None,
@@ -5056,6 +5268,7 @@ mod tests {
             RATE,
             stim_samples,
             onset,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &body_psd(&samples, RATE, onset),
             None,
@@ -5068,6 +5281,7 @@ mod tests {
             RATE,
             stim_samples,
             onset,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &explicit_body,
             None,
@@ -5350,6 +5564,7 @@ mod tests {
             RATE,
             samples.len(),
             0,
+            crate::leveller::DOCTOR_TAIL_MS,
             Family::Guitar,
             &psd,
             Some(&stim_psd),
@@ -5720,8 +5935,8 @@ mod tests {
         };
         let rows: Vec<Value> = serde_json::from_str(&raw).unwrap();
         let preset: Value = serde_json::from_str(rows[0]["presetJson"].as_str().unwrap()).unwrap();
-        // The reference preset (TweedDeluxe + pedals, no cab) exercises the
-        // insert paths with REAL device JSON, through the SAME graph decoder
+        // The first scenario preset ("E2E Rig": two amps + cab + pedals) exercises
+        // the insert paths with REAL device JSON, through the SAME graph decoder
         // the backup scan uses (so the DoctorNode mapping is exercised too).
         let nodes: Vec<DoctorNode> = crate::session::extract_active_graph(&preset, None)
             .nodes

@@ -12,6 +12,7 @@ import { SlotLabel } from "../../ui/SlotLabel";
 import { SevDot, SoundRow } from "./SoundRow";
 import type { DoctorStimulus } from "./PrescriptionCard";
 import { SceneConsistency } from "./SceneConsistency";
+import { LevelingDamageRow } from "./LevelingDamageRow";
 import {
   presetLookCount,
   presetWorstSev,
@@ -24,6 +25,7 @@ import type {
   DoctorPresetResult,
   DoctorSoundResult,
   FootswitchInfo,
+  SilenceHint,
 } from "../../lib/types";
 
 export interface PresetResultCardProps {
@@ -37,6 +39,9 @@ export interface PresetResultCardProps {
   /** Sound key → the stimulus identity it was diagnosed with — threaded into
    *  every prescription card so its A/B replays the diagnosis stimulus. */
   stimulusByKey: Map<string, DoctorStimulus>;
+  /** 0-based list index → the preset's backup-scan silence hint (same source
+   *  as the Level tab) — refines a sound's "no signal captured" error. */
+  silenceHintByIndex: Map<number, SilenceHint>;
   /** Open row ids, keyed `${listIndex}|${sound.key}` (and `|consistency`). */
   expanded: Set<string>;
   onToggleRow: (id: string) => void;
@@ -66,6 +71,7 @@ export function PresetResultCard({
   footswitchInfo,
   graphByIndex,
   stimulusByKey,
+  silenceHintByIndex,
   expanded,
   onToggleRow,
   referenceSound,
@@ -108,6 +114,7 @@ export function PresetResultCard({
         nodes={presetNodes}
         footswitches={presetFootswitches ?? []}
         stimulus={stimulusByKey.get(sound.key)}
+        silenceHint={silenceHintByIndex.get(preset.listIndex)}
         open={expanded.has(id)}
         onToggle={() => {
           onToggleRow(id);
@@ -122,9 +129,14 @@ export function PresetResultCard({
   };
 
   const consistencyId = `${String(preset.listIndex)}|consistency`;
+  const damageId = `${String(preset.listIndex)}|leveling-damage`;
+  const levelingDamage = preset.levelingDamage;
 
   return (
     <div
+      // e2e hook: scope per-preset selectors (e.g. diagnosis chip counts) to one
+      // preset's card, mirroring TargetEditCard's `data-target-card`.
+      data-preset-card={presetName}
       style={{
         flexShrink: 0,
         borderRadius: 14,
@@ -202,6 +214,13 @@ export function PresetResultCard({
             }}
           />
         )}
+        <LevelingDamageRow
+          hints={levelingDamage}
+          open={expanded.has(damageId)}
+          onToggle={() => {
+            onToggleRow(damageId);
+          }}
+        />
         {healthy.length > 0 &&
           (showHealthy ? (
             healthy.map(row)

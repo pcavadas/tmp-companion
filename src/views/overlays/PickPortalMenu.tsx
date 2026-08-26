@@ -4,6 +4,13 @@
 // card's own (clipped) coordinate space. `Pick` measures via `menuRef` and feeds back
 // the resolved left/top (flipped above when it would overflow the card bottom); until
 // then the menu renders hidden to avoid a wrong-position flash.
+//
+// The backdrop carries `data-pick-backdrop` (e2e hook only, unused by app code): it is a
+// full-card `inset:0` div with no text content, so a spec closing an open picker must
+// target IT directly (`page.locator('[data-pick-backdrop]').click()`) rather than a text
+// locator elsewhere on the card — any such locator resolves to an element the backdrop
+// itself covers, and Playwright's actionability check refuses to click through it (an
+// indefinite "<div></div> intercepts pointer events" retry, not a fast failure).
 
 import { createPortal } from "react-dom";
 
@@ -38,6 +45,7 @@ export function PickPortalMenu({
     <>
       <div
         onClick={onClose}
+        data-pick-backdrop=""
         style={{ position: "absolute", inset: 0, zIndex: 60 }}
       />
       <div

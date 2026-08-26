@@ -1,30 +1,41 @@
 {
-  "_comment": "Hand-authored C table for the offline physics-faithful capture model (src-tauri/src/sim_device.rs::e2e_capture). Per-slot base + per-scene C = the sound's max-reachable LUFS at presetLevel=1.0 with outputLevel at its stored value; the model shifts by 20*log10(presetLevel) and a scene-relative outputLevel term. Stored knob values are NOT here — they are derived from scenario-presets.json (never duplicated). C values are chosen so the shipped default targets (-23/-21/-19) solve cleanly on these presets. Keys are 0-based LIST INDICES (device userSlot = index+1). PR2 re-baseline: every C (and the shipped defaults) is +3.0103 LU (rounded to +3) from its mono-era value, so ceilings and targets shift together and every clamp relationship below is preserved exactly.",
+  "_comment": "Hand-authored C table for the offline physics-faithful capture model (src-tauri/src/sim_device.rs::e2e_capture). Per-slot base + per-scene C = the sound's max-reachable LUFS at presetLevel=1.0 with outputLevel at its stored value; the model shifts by 20*log10(presetLevel) and a scene-relative outputLevel term. Stored knob values are NOT here — they are derived from scenario-presets.json (never duplicated). C values are chosen so the shipped default targets (-23/-21/-19) solve cleanly on most sounds, and so exactly the intended rows CLAMP (slot 400 scene 2 'Ceiling', slot 402 scene 5 'Quiet', the 401/403 base rows at -19). Keys are 0-based LIST INDICES (device userSlot = index+1). PR2 re-baseline: every C (and the shipped defaults) is +3.0103 LU from its mono-era value. P4-A: the whole table was re-derived for the rebuilt fixtures — see e2e/fixtures/COVERAGE.md for which use-case row each number carries. A slot may also declare `leveledParams` — blocks whose OWN knob drives the capture — each entry `{group, node, param, curve}`, where `curve` is `saturatedPedal` (the default: an ABSOLUTE loudness that REPLACES the flat law; 405's drive pedals) or `wetMix` (a DELTA in LU added to the flat law, zero unless the run sweeps the param; 400's spring-reverb mix).",
   "slots": {
     "400": {
-      "_comment": "E2E Reference — the REDISTRIBUTION loud class (single-amp): base C=-15 SOLVES below presetLevel 1.0 at every default target (headroom to spare), but scene 0 C=-27 (stored outputLevel 0.4, so max reach ~-28.9 at presetLevel 0.32) CLAMPS at any default target. A whole-preset run therefore leaves Base done + scene 0 clamped → the Summary offers 'Give clamped scenes headroom'. scene 1 C=-14 solves.",
+      "_comment": "E2E Rig (gtrSeries, two amps + an amp flip, 4 full-overlay scenes; the amp outputLevel is EQUAL on both amps in every sound, so the sim's single-node stored-level probe is unambiguous). Base C=-15 solves below presetLevel 1.0 at every default target. Scene ceilings, with presetLevel 0.32 (-9.90 LU) and the stored amp outputLevel in brackets: Rhythm [0.35] reads -23.90 with +9.12 dB of boost left (every default solves), Lead [0.45] reads -21.90 with +6.94 left, Ceiling [1.00] reads -23.90 with ZERO headroom — the scene-clamp row, and it clamps at EVERY shipped default, which is what makes it the redistribution fixture — and Shared [0.30] reads -25.90 with +10.46 left. WET-FLOOR row (COVERAGE row 18): `leveledParams` declares the SPRING switch's own `ACD_TMSpring63.mix` on the `wetMix` curve — curve rationale is `sim_device::wet_mix_gain_db`'s own Rust doc, not restated here. AT presetLevel 1.0 (the sim's default, until a base solve/save on this slot shifts it): SPRING reads -15 at the authored 0.42, -17.18 at the wet floor (0.25 x 0.42 = 0.105), -12.02 at full wet — so -70 is UNREACHABLE (pins at the floor, `wet_floor: true`) while -16 is reachable at mix ~0.27, 1.18 LU clear of the floor. `presetLevel` shifts both absolute numbers together, so a spec must LEARN a reachable target from a dry run (the `level-rerun.spec.ts` idiom) rather than hard-code -16; the Rust gates hard-code it safely because each runs `save: false` on a fresh SimDevice.",
       "base": -15.0,
-      "scenes": [-27.0, -14.0],
-      "routedNode": "ACD_DeluxeReverb65BlondeVibratoNoFxCabIR"
+      "scenes": [-14.0, -12.0, -14.0, -16.0],
+      "leveledParams": [
+        {
+          "group": "G1",
+          "node": "ACD_TMSpring63",
+          "param": "mix",
+          "curve": "wetMix"
+        }
+      ]
     },
     "401": {
-      "_comment": "Ceiling -20: solvable at Crunch/Rhythm (-21/-23, quieter) but CLAMPS at Lead (-19, louder than the ceiling) — the re-level-clamped loop (level-defaults.spec.ts): level at Lead → clamp, re-level at Crunch → resolves to done.",
+      "_comment": "E2E Pedalboard (gtrSeries, ZERO scenes — the copy/import + doctor-apply simple-chain fixture). Ceiling -20: solvable at Crunch/Rhythm (-21/-23, quieter) but CLAMPS at Lead (-19, louder than the ceiling) — the re-level-clamped loop.",
       "base": -20.0
     },
-    "402": { "base": -13.0 },
+    "402": {
+      "_comment": "E2E Edge (gtrSplit, 8 scenes, Target 2's baked 2.6 kHz EQ ring preserved verbatim). Base C=-13 solves at every default. Every scene reads its C -9.90 LU (presetLevel 0.32) with the stored amp outputLevel 0.4 (+7.96 dB of boost left), so scenes 0-4/6/7 all solve; scene 5 'Quiet' at C=-48 reads -57.90 — ~35 dB below any default target, so it CLAMPS and is the DOCTOR SNR-badge sound (quiet, NOT silent: `loudest_loudness` errors on true silence, so this is driven by a low C, never a zeroed knob). `offbranchSwitchNode` is the OUT-2 lane block (`ACD_KingOfTone` in G3): this preset routes OUT 2 away from USB 1/2 (`outputMixerSettings.USB12Input.out2 = false`), so engaging that switch under its own isolated measurement captures dead air — the leveller's off-branch routing clamp (\"no signal on USB 1/2\").",
+      "base": -13.0,
+      "scenes": [-13.0, -12.0, -14.0, -11.0, -15.0, -48.0, -12.5, -15.5],
+      "offbranchSwitchNode": "ACD_KingOfTone"
+    },
     "403": {
-      "_comment": "E2E Realistic (gtrParallel1). Base C=-25 → CLAMPS at any shipped default target (-23/-21/-19 are all louder than -25), the first-session mass-clamp reality on the presetLevel path (fully faithful). 4 scenes solvable via amp outputLevel (C above the targets). FS1 (BRANCH B) is off-branch: offbranchSwitchNode silences it when engaged.",
-      "base": -25.0,
-      "scenes": [-19.0, -13.0, -15.0, -14.0],
-      "offbranchSwitchNode": "ACD_TubeScreamer"
+      "_comment": "E2E Parallel (gtrParallel1, BOTH lane amps active → the joint-k / rebalance / bleed fixture). Neither amp lives in G1, so the sim's stored-outputLevel probe finds none and falls back to 1.0 — which is EXACTLY what both amps are authored at, in base and in every scene, so written/stored is faithful and the joint-k write is deterministic (one k, two identical values). Base C=-20 solves at -23/-21 and CLAMPS at -19. The scene ceilings are loud (-9…-6 → -18.90…-15.90 after the presetLevel term) so every default target is reached by LOWERING the amps — the only direction available at outputLevel 1.0. Scene 2 'Clean' is the exception and the point: it is saved with BOTH lane amps' output at ZERO, so its job has no authority over the capture and returns the ROUTING clamp instead of a headroom one (its C below is never reached).",
+      "base": -20.0,
+      "scenes": [-9.0, -8.0, -7.0, -6.0]
     },
     "404": {
-      "_comment": "E2E Hiwatt 3S — the CORRUPTION-CLASS fixture (a real 1.8.45 unit's 3-scene + 'Base Scene' preset, saved lastLoadedScene=3, 4 block-acting footswitches). Base C=-17 and scene 3 C=-31 are the MEASUREMENT-CONTEXT discriminator: a base run recalled to base solves -23 (presetLevel ~0.5, done), while the pre-fix unrecalled run measures scene 3 (its saved lastLoadedScene) and CLAMPS (-23 is 8 dB above that ceiling). Scenes 0/1/2 are authored ABOVE -23 so the scene-wipe run converges on amp outputLevel; scene 3 is excluded from that job list (its ceiling is the context probe, not a levelable sound).",
+      "_comment": "E2E Hiwatt 3S — the CORRUPTION-CLASS fixture, kept VERBATIM (a real 1.8.45 unit's 3-scene + 'Base Scene' preset, saved lastLoadedScene=3, 4 block-acting footswitches). Base C=-17 and scene 3 C=-31 are the MEASUREMENT-CONTEXT discriminator: a base run recalled to base solves -23 (presetLevel ~0.5, done), while the pre-fix unrecalled run measures scene 3 (its saved lastLoadedScene) and CLAMPS (-23 is 8 dB above that ceiling). Scenes 0/1/2 are authored ABOVE -23 so the scene-wipe run converges on amp outputLevel; scene 3 is excluded from that job list (its ceiling is the context probe, not a levelable sound).",
       "base": -17.0,
       "scenes": [-17.0, -15.0, -19.0, -31.0]
     },
     "405": {
-      "_comment": "E2E Preset24 — the STALE-LOAD-INCIDENT fixture (notes/leveling.md's 'Saturated-amp response shape', preset 024 'TR+BD2+BMP'): 4 drive pedals (Plumes/BluesDriver/ObsessiveDrive/Rat, ftsw 5-8) feeding a saturated amp, no scenes. Base C=-21 puts base leveling to -23 at presetLevel≈0.794 (PT=20*log10(0.794)≈-2 LU) — NOT exactly 1.0, so the base solve is a genuine (non-boundary) solve. Each pedal's OWN knob overrides the flat C law via `leveledParams` (see `saturated_pedal_lufs`): silent ≤0.10, a ~42 LU cliff 0.10→0.20, a compressed plateau above 0.3. The FS targets (-23 Plumes/BluesDriver, -21 ObsessiveDrive/Rat) sit ON the cliff (required curve value = target − PT = -21/-19), inside the linear segment a bracketed secant solves in one step — this is the exact HW pathology `fs_bracket_expansion` was added for (seeds 0.25/0.75 both land in the flat plateau, short of both targets).",
+      "_comment": "E2E Preset24 — the STALE-LOAD-INCIDENT fixture (notes/leveling.md's 'Saturated-amp response shape', preset 024 'TR+BD2+BMP'): 4 drive pedals (Plumes/BluesDriver/ObsessiveDrive/Rat, ftsw 5-8) feeding a saturated amp, no scenes. P4-A added a CabSimTMS after the amp (the standing cab rule) — the amp node, its outputLevel and every pedal assignment are untouched, so the save/load TIMING semantics this fixture exists for are unchanged. Base C=-21 puts base leveling to -23 at presetLevel≈0.794 (PT=20*log10(0.794)≈-2 LU) — NOT exactly 1.0, so the base solve is a genuine (non-boundary) solve. Each pedal's OWN knob overrides the flat C law via `leveledParams` (see `saturated_pedal_lufs`): silent <=0.10, a ~42 LU cliff 0.10->0.20, a compressed plateau above 0.3. The FS targets (-23 Plumes/BluesDriver, -21 ObsessiveDrive/Rat) sit ON the cliff (required curve value = target - PT = -21/-19), inside the linear segment a bracketed secant solves in one step — this is the exact HW pathology `fs_bracket_expansion` was added for (seeds 0.25/0.75 both land in the flat plateau, short of both targets).",
       "base": -21.0,
       "leveledParams": [
         { "group": "G1", "node": "ACD_Plumes", "param": "level" },
@@ -32,6 +43,21 @@
         { "group": "G1", "node": "ACD_ObsessiveDrive", "param": "level" },
         { "group": "G1", "node": "ACD_Rat", "param": "volume" }
       ]
+    },
+    "406": {
+      "_comment": "E2E Combined Level (gtrParallel1, parallel Deluxe Reverb + Marshall Plexi, both lanes live). Base C=-16 solves at every default. scenes[0] 'SCRATCH' is the unjudged filler (kept at the base C); scenes[1] 'BASE SCENE' and scenes[2] 'LEAD' are the judged rows and are authored a few LU apart (-14/-11) so per-scene leveling math has real signal to solve against.",
+      "base": -16.0,
+      "scenes": [-16.0, -14.0, -11.0]
+    },
+    "407": {
+      "_comment": "E2E Doctor Oracle (gtrSeries, amp+cab + 5 bypassed defect blocks + 14 defect footswitches). Base C=-14 solves at every default. scenes[0] 'SCRATCH' is the unjudged filler (kept at the base C); scenes[1] 'SCENE JUMP' is authored well below base (-30, a 16 LU drop) so the scene-consistency loudness-jump check has a real jump to detect.",
+      "base": -14.0,
+      "scenes": [-14.0, -30.0]
+    },
+    "409": {
+      "_comment": "E2E Hiwatt Min (gtrSeries, single amp+cab, the minimal scene/overlay-conformance repro). Base C=-18 solves at every default. scenes[0] 'RHYTHM' and scenes[1] 'Base Scene' are authored mildly apart (-17/-19).",
+      "base": -18.0,
+      "scenes": [-17.0, -19.0]
     }
   },
   "default": -15.0

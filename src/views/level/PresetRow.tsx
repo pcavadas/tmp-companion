@@ -21,6 +21,7 @@ import { SlotLabel } from "../../ui/SlotLabel";
 import {
   baseKey,
   childKeys,
+  footswitchLevelable,
   footswitchName,
   fswKey,
   sceneKeyOf,
@@ -284,19 +285,33 @@ export function PresetRow({
               }}
             />
           ))}
-          {fswArr.map((f, i) => (
-            <SceneRow
-              key={`f${String(i)}`}
-              kind="fs"
-              tag={`FS${String(f.switch + 1)}`}
-              name={footswitchName(f)}
-              sub="footswitch"
-              selected={sel.has(fswKey(row.slot, i))}
-              onToggle={() => {
-                onToggleKey(fswKey(row.slot, i));
-              }}
-            />
-          ))}
+          {fswArr.map((f, i) => {
+            // BUG 1: a footswitch with no level-class parameter (e.g. "PHASER" →
+            // ACD_PhaserP90) still gets a row — disabled, with a reason — never
+            // silently omitted. `footswitchLevelable` is the SAME predicate
+            // `childKeys` uses to exclude it from the selectable/counted set, so the
+            // two can't disagree again.
+            const levelable = footswitchLevelable(f);
+            return (
+              <SceneRow
+                key={`f${String(i)}`}
+                kind="fs"
+                tag={`FS${String(f.switch + 1)}`}
+                name={footswitchName(f)}
+                sub={levelable ? "footswitch" : "no level control"}
+                selected={sel.has(fswKey(row.slot, i))}
+                onToggle={() => {
+                  onToggleKey(fswKey(row.slot, i));
+                }}
+                disabled={!levelable}
+                disabledTitle={
+                  levelable
+                    ? undefined
+                    : "This footswitch has no level control to adjust"
+                }
+              />
+            );
+          })}
         </>
       )}
     </>

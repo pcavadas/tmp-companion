@@ -87,6 +87,8 @@ function mockOnePreset() {
               scenes: [],
               blocks: [],
               footswitches: [],
+              scene_handles: [],
+              base_handles: [],
             },
           ],
           song_presets: [],
@@ -216,11 +218,14 @@ function footswitchResultStub(over: Record<string, unknown> = {}) {
     // silently read as `undefined` instead of failing the way the real contract does.
     unconverged: false,
     clamp_reason: null,
+    wet_floor: false,
     saved: true,
     verify_lufs: -22,
     iterations: 1,
     dynamic_spread_lu: null,
     method: "baked",
+    persist_mismatch: null,
+    clamp_kind: null,
     ...over,
   };
 }
@@ -237,6 +242,7 @@ const SOLO_FOOTSWITCH = {
       fender_id: "ACD_BluesDriver",
       parameter_id: "gain",
       current: 0.5,
+      class: "level_linear",
     },
   ],
 };
@@ -295,6 +301,8 @@ function mockLevelingFixture(
                   ]
                 : [],
               footswitches: opts.footswitch ? [SOLO_FOOTSWITCH] : [],
+              scene_handles: [],
+              base_handles: [],
             },
           ],
           song_presets: [],
@@ -303,20 +311,21 @@ function mockLevelingFixture(
           setlist_songs: [],
         });
       case "level_footswitches_apply": {
+        // Every row levels now (D2 — the backend removed the verify-only mode
+        // entirely), so every job resolves the same way.
         const job = args as {
           jobs: { switch: number }[];
           onResult?: { onmessage?: (item: unknown) => void };
         };
-        const result = footswitchResultStub();
-        job.jobs.forEach((j) =>
+        job.jobs.forEach((j) => {
           job.onResult?.onmessage?.({
             switch: j.switch,
             status: "done",
-            result,
+            result: footswitchResultStub(),
             message: null,
-          }),
-        );
-        return Promise.resolve(job.jobs.map(() => result));
+          });
+        });
+        return Promise.resolve(job.jobs.map(() => footswitchResultStub()));
       }
       case "level_preset":
         return Promise.resolve(
@@ -352,6 +361,13 @@ function mockLevelingFixture(
         );
         return Promise.resolve(results);
       }
+      // No candidates in these fixtures — the point is exercising the target-mode
+      // pick, not the handle picker's candidate list (see SceneLevelPick.test.tsx).
+      case "list_scene_level_handles":
+        return Promise.resolve([
+          { sceneSlot: 0, candidates: [] },
+          { sceneSlot: 1, candidates: [] },
+        ]);
       default:
         return Promise.resolve(null);
     }
@@ -718,7 +734,10 @@ describe("LevelView — full leveling wizard e2e", () => {
     expect(
       await screen.findByText("Set instrument & target"),
     ).toBeInTheDocument();
-    // Setup carries the footswitch-specific sub-text (never "scene" / "preset" copy).
+    // D2: every row levels now (the verify-only default + "Make level-neutral" opt-in
+    // are gone) — the sub-text says so, and the row already carries a real handle
+    // (SOLO_FOOTSWITCH's one candidate, tone-safe-classified `level_linear`) with no
+    // picker interaction required.
     expect(
       screen.getByText("evens this footswitch out to your target"),
     ).toBeInTheDocument();
@@ -731,14 +750,6 @@ describe("LevelView — full leveling wizard e2e", () => {
     // The footswitch lane fired; a footswitch-only run never levels the preset base.
     expect(fired("level_footswitches_apply")).toBe(true);
     expect(fired("level_preset")).toBe(false);
-    // The row's DISPLAY label rides along on the job: the assign path writes it as the
-    // switch's `customLabel` when the switch has none, so adding a second function
-    // doesn't flip the unit's pedalboard display to "MULTI".
-    const fsArgs = vi
-      .mocked(invoke)
-      .mock.calls.find(([cmd]) => cmd === "level_footswitches_apply")?.[1] as
-      { jobs: { displayLabel?: string }[] } | undefined;
-    expect(fsArgs?.jobs[0].displayLabel).toBe("Solo");
     // The bake/assign `method` is never surfaced to the user.
     expect(screen.queryByText(/baked/i)).toBeNull();
     expect(screen.queryByText(/assigned/i)).toBeNull();
@@ -777,6 +788,8 @@ describe("LevelView — full leveling wizard e2e", () => {
                 scenes: [],
                 blocks: [],
                 footswitches: [],
+                scene_handles: [],
+                base_handles: [],
               },
             ],
             song_presets: [],
@@ -882,6 +895,8 @@ describe("LevelView — full leveling wizard e2e", () => {
                 ],
                 blocks: [],
                 footswitches: [],
+                scene_handles: [],
+                base_handles: [],
               },
             ],
             song_presets: [],

@@ -9,6 +9,7 @@ import type { CSSProperties } from "react";
 import type { ThemeTokens } from "../../theme/tokens";
 import type {
   DoctorDiag,
+  DoctorLevelingDamageHint,
   DoctorPresetResult,
   DoctorSceneConsistency,
   DoctorSev,
@@ -89,6 +90,13 @@ export function sceneConsistencySev(sc: DoctorSceneConsistency): Sev {
   return Math.abs(sc.worstDeltaDb) > SCENE_JUMP_HIGH_DB ? "high" : "med";
 }
 
+/** The severity of the synthetic "Leveling damage" row: factual, never "high"
+ *  on its own (see `presetWorstSev`'s note) — "med" once there is at least
+ *  one advisory to look at, "ok" (nothing to render) with none. */
+export function levelingDamageSev(hints: DoctorLevelingDamageHint[]): Sev {
+  return hints.length > 0 ? "med" : "ok";
+}
+
 /** The worst severity across one sound's diagnoses ("ok" when it has none). An
  *  errored sound carries no severity (it shows a message, not a diagnosis). */
 export function soundSev(sound: DoctorSoundResult): Sev {
@@ -117,14 +125,22 @@ export function presetWorstSev(preset: DoctorPresetResult): Sev {
     if (sceneConsistencySev(sc) === "high") return "high";
     if (worst === "ok") worst = "med";
   }
+  // Leveling-damage advisories are factual, not tonal — never bump to "high"
+  // on their own, but a preset carrying one is still worth a look.
+  if (levelingDamageSev(preset.levelingDamage) === "med" && worst === "ok") {
+    worst = "med";
+  }
   return worst;
 }
 
-/** How many things the card status badge counts: every diagnosis plus the
- *  scene-consistency finding (one, when present). */
+/** How many things the card status badge counts: every diagnosis, the
+ *  scene-consistency finding (one, when present), plus every leveling-damage
+ *  advisory. */
 export function presetLookCount(preset: DoctorPresetResult): number {
   const diags = preset.sounds.reduce((n, s) => n + s.diags.length, 0);
-  return diags + (preset.sceneConsistency ? 1 : 0);
+  return (
+    diags + (preset.sceneConsistency ? 1 : 0) + preset.levelingDamage.length
+  );
 }
 
 /** The uppercase mono severity kicker shown in an expanded diagnosis panel. */

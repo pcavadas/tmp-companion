@@ -26,6 +26,10 @@
 //!   probe --setlists               list every Setlist on the device (names)
 //!   probe --setlist-songs          list the songs each Setlist contains (slots → names)
 //!   probe --activegraph            print the current preset's live signal-chain graph
+//!   probe --audio-devices          NO-DEVICE (HID): enumerate host audio devices (cpal) —
+//!                                  names, exact ALSA PCM id (Linux), channels, rates,
+//!                                  sample formats, and which one find_tmp() would pick.
+//!                                  Linux also prints the /proc/asound Fender-VID card table.
 //!   probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <FENDER_ID>] [--slot N] [--commit]
 //!                                  ADD a block to the device's CURRENT ACTIVE preset via
 //!                                  live insertNode (field 34). No --commit = DRY RUN
@@ -35,10 +39,19 @@
 //!   probe --measure-wav <wav>      NO-DEVICE: measure a WAV through the PRODUCTION output-side
 //!                                  convention (stereo for ≥2-ch, mono for 1-ch) — the Companion
 //!                                  side of `scripts/meter-parity.sh` (ffmpeg ebur128 ground truth)
-//!   probe --dump-wav <dir>         (ADD-ON flag on --measure-current/--measure-scene) also
-//!                                  writes the captured processed pair to a 32-bit-float WAV in
-//!                                  <dir>, named from slot/scene — feeds real captures into
-//!                                  `scripts/meter-parity.sh`. No effect on any other flag.
+//!   probe --measure-footswitch <slot> <switch> <topology> [--lev <group>:<node>:<param>]
+//!                                  [--target <lufs>] [--dump-wav <dir>]
+//!                                  READ-ONLY footswitch twin of --measure-scene: re-measure ONE
+//!                                  switch's ENGAGED sound through the production capture path
+//!                                  (shared isolation derivation, ASSIGN valueA replay, ONE
+//!                                  engage, guaranteed re-amp OFF). --target + --dump-wav arm the
+//!                                  P5 validation row consumed by `scripts/level-validate.sh`.
+//!   probe --dump-wav <dir>         (ADD-ON flag on --measure-current/--measure-scene/
+//!                                  --measure-footswitch) also writes the captured processed pair
+//!                                  to a 32-bit-float WAV in <dir>, named from slot/scene (or the
+//!                                  validation row's label) — feeds real captures into
+//!                                  `scripts/meter-parity.sh` and `scripts/level-validate.sh`.
+//!                                  No effect on any other flag.
 //!   probe --capture-reference <slot> <topology> <out.wav>
 //!                                  OFFLINE-HARNESS: capture one full ~6.8s re-amp clip
 //!                                  to build the adaptive-tuning corpus (DEVICE OP)
@@ -67,6 +80,11 @@
 //!                                  each after-capture's fired verdicts against the recipe's
 //!                                  must_fire/must_not_fire, prints a HIT/MISS/VIOLATION
 //!                                  table. Never saves; loads the slot; ends re-amp OFF.
+//!   probe --doctor-fs <listIdx> <switch>
+//!                                  ONE footswitch SOUND through the production Doctor seam
+//!                                  (on-off isolation + the switch's param-func valueA writes),
+//!                                  printing the diagnosis verdicts — the FS twin of the defect
+//!                                  sweep. Read-only; ends re-amp OFF.
 //!   probe --doctor-window-ab <slots_csv> --stim <wav> [--family <guitar|bass|bass-vi>] [--out <report.json>]
 //!                                  CAPTURE-WINDOW A/B evidence arm: per slot, captures the
 //!                                  oracle (full 6s stim + the pinned 2.5s oracle tail —
@@ -97,10 +115,17 @@
 //!                                  (stimulus via TMP_LEVELLER_STIMULUS)
 //!   probe --measure-current <topology> [sceneSlot] [calibrationLUFS]
 //!                                  measure current live state without changing levels
+//!   probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…
+//!                                  one isolated capture at an explicit presetLevel ×
+//!                                  block-param point, optionally in a scene context —
+//!                                  headroom-trade physics instrumentation. Read-only.
 //!   probe --measure-scene <slot> <sceneSlot> <topology> [calibrationLUFS]
+//!                                  [--target <lufs>] [--dump-wav <dir>]
 //!                                  load preset+scene, then measure without changing levels
 //!                                  (slot = 0-BASED list index, same convention as
-//!                                  --levelpreset — NOT the 1-based device userSlot)
+//!                                  --levelpreset — NOT the 1-based device userSlot).
+//!                                  --target + --dump-wav also append a P5 validation row
+//!                                  to TMP_E2E_VALIDATE_LOG (scripts/level-validate.sh).
 //!   probe --capture-input [secs]   GATE 1: report USB-Out per-channel levels while
 //!                                  you play (identifies the dry-instrument channel)
 //!   probe --agc-test <slot>        GATE 2: full vs half re-amp inject on a CLEAN
@@ -188,12 +213,15 @@ fn main() {
     // Every LUFS this binary printed would then be fabricated but perfectly plausible.
     // `scripts/e2e.sh` builds probe with that feature INTO THE SAME target dir, clobbering
     // the production binary; this has silently invalidated hardware measurements twice.
-    // Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never measures.
+    // Fail loudly instead. `--seed-scenario` is the one arm e2e.sh needs and never measures;
+    // `--audio-devices` only enumerates the host's audio devices, so no capture can be faked.
     #[cfg(feature = "e2e")]
-    let seed_scenario_only =
-        args.get(1).is_some_and(|arg| arg == "--seed-scenario") && args.len() == 2;
+    let capture_free_only = args.len() == 2
+        && args
+            .get(1)
+            .is_some_and(|arg| arg == "--seed-scenario" || arg == "--audio-devices");
     #[cfg(feature = "e2e")]
-    if std::env::var("TMP_E2E_ONLINE").is_err() && !seed_scenario_only {
+    if std::env::var("TMP_E2E_ONLINE").is_err() && !capture_free_only {
         eprintln!(
             "[probe] REFUSING TO RUN: this is an `--features e2e` build without TMP_E2E_ONLINE, \
              so audio captures would be FAKE (stimulus passthrough), not the device.\n\
@@ -206,6 +234,19 @@ fn main() {
         match tmp_companion_lib::probe_active_graph() {
             Ok(graph) => {
                 print!("{graph}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--audio-devices") {
+        match tmp_companion_lib::probe_audio_devices() {
+            Ok(report) => {
+                print!("{report}");
                 return;
             }
             Err(e) => {
@@ -267,6 +308,61 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--dump-list") {
+        // --dump-list <listEnum> <fromSlot> <toSlot> <outDir> — field-8 sweep over a
+        // slot range of any preset list (My=1, Cloud=3, Factory=4), JSON per slot to
+        // outDir. Read-only census instrumentation.
+        let le: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let from: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let to: u32 = args.get(i + 3).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let dir = args.get(i + 4).cloned().unwrap_or_default();
+        if le == 0 || from == 0 || to < from || dir.is_empty() {
+            eprintln!("usage: probe --dump-list <listEnum> <fromSlot> <toSlot> <outDir>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_dump_list(le, from, to, &dir) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--scene-node-doc") {
+        // --scene-node-doc <listIdx> <group> <node> <scene…>  — probe_scene_doc
+        // generalized to a caller-chosen node: rendered field-3 params + ftsw active
+        // flags after each recall, in the given order (non-destructive).
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let group = args.get(i + 2).cloned().unwrap_or_default();
+        let node = args.get(i + 3).cloned().unwrap_or_default();
+        let scenes: Vec<u32> = args
+            .iter()
+            .skip(i + 4)
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if idx == u32::MAX || group.is_empty() || node.is_empty() || scenes.is_empty() {
+            eprintln!("usage: probe --scene-node-doc <listIdx> <group> <node> <scene…>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_scene_node_doc(idx, &group, &node, &scenes) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--knob-sweep") {
         // --knob-sweep <listIdx> <group> <node> <param> <v1,v2,…>  (TMP_LEVELLER_STIMULUS=<wav>)
         let idx: u32 = args
@@ -298,6 +394,75 @@ fn main() {
             std::process::exit(2);
         }
         match tmp_companion_lib::probe_knob_sweep(idx, &group, &node, &param, &values) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--measure-pair") {
+        // --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…  — P0
+        // repro instrumentation: one isolated capture at an explicit presetLevel ×
+        // block-param point (headroom-trade physics), optionally in a SCENE context
+        // (loadScene before the writes, scene latches at engage). Bundled stimulus;
+        // read-only (working copy).
+        let idx: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let topology = args.get(i + 2).cloned().unwrap_or_default();
+        let preset_level: f32 = args
+            .get(i + 3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(f32::NAN);
+        // ONE discriminator decides both the scene and where the writes start —
+        // `--scene N` is recognized only immediately after the fixed args (matches
+        // the printed usage; a stray later token is a parse error, not a silent pick).
+        let has_scene = args.get(i + 4).map(String::as_str) == Some("--scene");
+        let scene: Option<u32> = if has_scene {
+            args.get(i + 5).and_then(|s| s.parse().ok())
+        } else {
+            None
+        };
+        let wstart = if has_scene { i + 6 } else { i + 4 };
+        // Strict parse: any malformed g:n:p=v token collapses the whole set to None →
+        // usage error, never a silently shortened write set.
+        let writes: Option<Vec<(String, String, String, f32)>> = args[wstart..]
+            .iter()
+            .take_while(|a| !a.starts_with("--"))
+            .map(|tok| {
+                let (path, val) = tok.split_once('=')?;
+                let mut it = path.split(':');
+                let (g, n, p) = (it.next()?, it.next()?, it.next()?);
+                if it.next().is_some() {
+                    return None;
+                }
+                Some((
+                    g.to_string(),
+                    n.to_string(),
+                    p.to_string(),
+                    val.parse().ok()?,
+                ))
+            })
+            .collect();
+        let (Some(writes), false) = (writes, has_scene && scene.is_none()) else {
+            eprintln!(
+                "usage: probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…"
+            );
+            std::process::exit(2);
+        };
+        if idx == u32::MAX || topology.is_empty() || !preset_level.is_finite() {
+            eprintln!(
+                "usage: probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…"
+            );
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_measure_pair(idx, &topology, preset_level, scene, &writes) {
             Ok(report) => {
                 print!("{report}");
                 return;
@@ -395,6 +560,33 @@ fn main() {
         };
         let block = flag_arg(&args, "--block");
         match tmp_companion_lib::probe_doctor_inject(slot, &gains, block.as_deref()) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--doctor-fs") {
+        // --doctor-fs <listIdx> <switch>  — one FS sound through the production Doctor
+        // seam (isolation + param-func valueA writes), print the diagnosis verdicts.
+        let slot: u32 = args
+            .get(i + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        let switch: u32 = args
+            .get(i + 2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        if slot == u32::MAX || switch == u32::MAX {
+            eprintln!("usage: probe --doctor-fs <listIdx> <switch>");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_doctor_fs(slot, switch) {
             Ok(report) => {
                 print!("{report}");
                 return;
@@ -611,6 +803,66 @@ fn main() {
             after.as_deref(),
             slot,
             commit,
+        ) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(i) = args.iter().position(|a| a == "--measure-footswitch") {
+        // --measure-footswitch <slot> <switch> <topology> [--lev <group>:<node>:<param>]
+        //                      [--target <lufs> --dump-wav <dir>]
+        // READ-ONLY: the footswitch twin of --measure-scene. slot = 0-based list index.
+        // --lev is the ASSIGN switch's leveled param triple (the same one
+        // --level-footswitch drove); omit it for a BAKED switch, whose engaged sound IS
+        // the base value. --target + --dump-wav together arm the P5 validation row (a
+        // WAV plus one TMP_E2E_VALIDATE_LOG line) — see scripts/level-validate.sh.
+        let slot = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
+        let switch = args.get(i + 2).and_then(|s| s.parse::<u32>().ok());
+        let topology = args.get(i + 3).cloned().unwrap_or_default();
+        if slot.is_none() || switch.is_none() || topology.is_empty() || topology.starts_with("--") {
+            eprintln!(
+                "usage: probe --measure-footswitch <slot(0-based list index)> <switch> <topology_id> \
+                 [--lev <group>:<node>:<param>] [--target <lufs>] [--dump-wav <dir>]"
+            );
+            std::process::exit(2);
+        }
+        let lev_raw = flag_arg(&args, "--lev");
+        let lev_parts: Vec<String> = lev_raw
+            .as_deref()
+            .map(|s| s.split(':').map(str::to_string).collect())
+            .unwrap_or_default();
+        if lev_raw.is_some() && lev_parts.len() != 3 {
+            eprintln!("[probe] --lev takes <group>:<node>:<param>");
+            std::process::exit(2);
+        }
+        let lev = (lev_parts.len() == 3).then(|| {
+            (
+                lev_parts[0].as_str(),
+                lev_parts[1].as_str(),
+                lev_parts[2].as_str(),
+            )
+        });
+        let target = flag_arg(&args, "--target").and_then(|s| s.parse::<f64>().ok());
+        let dump_dir = flag_arg(&args, "--dump-wav");
+        eprintln!(
+            "[probe] measuring slot={} switch={} topology={topology} lev={lev:?}…",
+            slot.unwrap(),
+            switch.unwrap(),
+        );
+        match tmp_companion_lib::probe_measure_footswitch(
+            slot.unwrap(),
+            switch.unwrap(),
+            &topology,
+            lev,
+            target,
+            dump_dir.as_deref(),
         ) {
             Ok(report) => {
                 print!("{report}");
@@ -1959,12 +2211,15 @@ fn main() {
         eprintln!(
             "[probe] measuring current live LUFS topology={topology} scene={scene_slot:?} calibration={calibration_lufs:?}…"
         );
+        // No `--target` here on purpose: a validation row needs a stable slot identity,
+        // and `--measure-current` measures "whatever is loaded". Use `--measure-scene`.
         match tmp_companion_lib::probe_measure_current_lufs(
             &topology,
             None,
             scene_slot,
             calibration_lufs,
             dump_dir.as_deref(),
+            None,
         ) {
             Ok(report) => {
                 println!("{report}");
@@ -1987,7 +2242,7 @@ fn main() {
         let topology = args.get(i + 3).cloned().unwrap_or_default();
         if slot.is_none() || scene_slot.is_none() || topology.is_empty() {
             eprintln!(
-                "usage: probe --measure-scene <slot(0-based list index)> <sceneSlot> <topology_id> [calibrationLUFS]"
+                "usage: probe --measure-scene <slot(0-based list index)> <sceneSlot> <topology_id> [calibrationLUFS] [--target <lufs>] [--dump-wav <dir>]"
             );
             std::process::exit(2);
         }
@@ -1995,6 +2250,9 @@ fn main() {
         // Optional ADD-ON flag, unrelated to the positional args above: also write
         // the captured processed pair to a WAV in <dir> for `scripts/meter-parity.sh`.
         let dump_dir = flag_arg(&args, "--dump-wav");
+        // `--target <lufs>` + `--dump-wav <dir>` also append a P5 validation row to
+        // TMP_E2E_VALIDATE_LOG for `scripts/level-validate.sh` (see probe_api/level.rs).
+        let target = flag_arg(&args, "--target").and_then(|s| s.parse::<f64>().ok());
         eprintln!(
             "[probe] measuring slot={} scene={} topology={topology} calibration={calibration_lufs:?}…",
             slot.unwrap(),
@@ -2006,6 +2264,7 @@ fn main() {
             scene_slot,
             calibration_lufs,
             dump_dir.as_deref(),
+            target,
         ) {
             Ok(report) => {
                 println!("{report}");
@@ -2205,7 +2464,7 @@ fn main() {
         // --redistribute-persist-check <scratchSlot> <expectedName>
         // PR5 go/no-go: do presetLevel + base amp outputLevel + scene overlay all
         // persist through ONE save? Point at a prepared scratch preset with an amp +
-        // ≥1 scene (e.g. E2E Reference at 400 after --seed-scenario). 0-based list index;
+        // ≥1 scene (e.g. E2E Rig at 400 after --seed-scenario). 0-based list index;
         // name-guarded; restores the slot afterward.
         let slot: u32 = args
             .get(i + 1)

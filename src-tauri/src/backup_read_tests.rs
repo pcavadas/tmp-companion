@@ -1,6 +1,40 @@
 use super::*;
 use crate::session;
 
+/// The truncation fallback: a slot-addressed field-8 read of a LARGE preset is cut
+/// before its `ftsw`/`scenes` tail (per-slot-deterministic — a re-read cannot lengthen
+/// it), so the caller re-reads the COMPLETE body off a device backup. The read must be
+/// NAME-GUARDED in the same address space as the writes it feeds (danger.md): a second
+/// connection sits between whatever named the slot and this transfer, and a body taken
+/// from the wrong slot would drive footswitch writes and a save against another preset.
+#[test]
+fn backup_slot_read_returns_the_complete_body_and_refuses_a_slot_that_moved() {
+    // A body whose tail sections are exactly what a truncated field-8 read loses.
+    let preset_json = r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[{"nodeId":"ACD_Comp","FenderId":"ACD_Comp","dspUnitParameters":{"bypass":false}}]}},"ftsw":[[{"func":"on-off","groupId":"G1","nodeId":"ACD_Comp"}],[]],"info":{"displayName":"Big Rig"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    // Device slot 401 = list index 400. The whole document comes back, `ftsw` included.
+    let doc = preset_json_from_backup(&archive, 401, "Big Rig").expect("complete body");
+    assert_eq!(
+        doc["ftsw"].as_array().map(Vec::len),
+        Some(2),
+        "the backup carries the ftsw section the field-8 partial cut off"
+    );
+    assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
+
+    // The occupant changed since the slot was named → refuse, never substitute.
+    let err = preset_json_from_backup(&archive, 401, "Some Other Preset")
+        .expect_err("a renamed occupant must refuse");
+    assert!(err.contains("Big Rig") && err.contains("refusing"), "{err}");
+
+    // A slot with no row is a refusal too, not an empty preset.
+    assert!(preset_json_from_backup(&archive, 402, "Big Rig").is_err());
+}
+
 #[test]
 fn backup_preset_scenes_parse_names_and_fs_tags() {
     // The DB presetJson is the same plaintext shape as the live field-3 doc:
@@ -228,6 +262,80 @@ fn backup_carries_songs_setlists_membership() {
             },
         ],
     );
+}
+
+/// The Set-up step's instant-first picker candidates: `scene_handles`/`base_handles` are
+/// derived off the SAME `presetJson` the rest of the row reads, so a preset with a real
+/// block + scene overlay gets populated candidates with no live device round-trip.
+#[test]
+fn backup_row_carries_scene_and_base_handle_candidates() {
+    // One amp block (an `outputLevel` candidate), one FS scene whose overlay carries its
+    // OWN knob (Full — isolated) so both derivations have something concrete to assert.
+    let preset_json = r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+        {"nodeId":"amp","FenderId":"ACD_TwinReverb65NoFx",
+         "dspUnitParameters":{"outputLevel":0.5,"bypass":false}}
+    ]}},"scenes":[
+        {"guitarNodes":{"G1":{"ACD_TwinReverb65NoFx":{"dspUnitParameters":{"outputLevel":0.3}}}}}
+    ]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (5, 'Handle Test', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    let result = read_backup_archive(&archive).expect("decode archive");
+    let row = result
+        .presets
+        .iter()
+        .find(|p| p.name == "Handle Test")
+        .expect("the row is present");
+
+    // base_handles: the amp's outputLevel, base value, always "isolated" (no overlay
+    // concept for Base).
+    assert_eq!(
+        row.base_handles.len(),
+        1,
+        "one level-classified base control"
+    );
+    let base = &row.base_handles[0];
+    assert_eq!(base.node_id, "amp");
+    assert_eq!(base.parameter_id, "outputLevel");
+    assert_eq!(base.current, 0.5);
+    assert_eq!(base.scope, "isolated");
+
+    // scene_handles: one row (the one FS scene), the overlay's own 0.3 — a genuine knob
+    // overlay is "isolated" too, same as `list_scene_level_handles` would answer live.
+    assert_eq!(row.scene_handles.len(), 1, "one FS scene row");
+    let scene0 = &row.scene_handles[0];
+    assert_eq!(scene0.scene_slot, 0);
+    let cand = scene0
+        .candidates
+        .iter()
+        .find(|c| c.node_id == "amp" && c.parameter_id == "outputLevel")
+        .expect("amp outputLevel candidate");
+    assert_eq!(cand.current, 0.3, "the scene's own overlay value");
+    assert_eq!(cand.scope, "isolated");
+}
+
+/// A row whose `presetJson` fails to parse (`scene_count: -1`) gets empty `scene_handles`
+/// / `base_handles` — same "unparseable ⇒ empty" contract as `amp_candidates`/`blocks`.
+#[test]
+fn backup_row_handle_candidates_are_empty_when_preset_json_does_not_parse() {
+    let archive = build_backup_archive(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (6, 'Broken', 'not json at all');",
+    );
+
+    let result = read_backup_archive(&archive).expect("decode archive");
+    let row = result
+        .presets
+        .iter()
+        .find(|p| p.name == "Broken")
+        .expect("the row is present");
+
+    assert_eq!(row.scene_count, -1, "unparseable presetJson");
+    assert!(row.scene_handles.is_empty());
+    assert!(row.base_handles.is_empty());
 }
 
 /// The archive's `settingsBackup` entry (the device's settings.json) round-trips
@@ -479,7 +587,7 @@ fn build_scenario_fixture() {
     let reference = decoded
         .presets
         .iter()
-        .find(|r| r.name == "E2E Reference")
+        .find(|r| r.name == "E2E Rig")
         .expect("Reference present");
     assert!(
         !reference.graph.stages.is_empty(),

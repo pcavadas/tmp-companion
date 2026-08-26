@@ -1,0 +1,81 @@
+{
+  "defaults": {
+    "outputLevel": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "level": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "output": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "volume": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "levelA": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "levelB": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "mainLevel": {
+      "class": "level_linear",
+      "range": [0, 1]
+    },
+    "makeupgaindb": {
+      "class": "level_db",
+      "range": [0, 24]
+    },
+    "mix": {
+      "class": "wet_mix",
+      "range": [0, 1]
+    },
+    "wetdrymix": {
+      "class": "wet_mix",
+      "range": [0, 1]
+    },
+    "blend": {
+      "class": "wet_mix",
+      "range": [0, 1]
+    },
+    "drywet": {
+      "class": "wet_mix",
+      "range": [0, 1]
+    },
+    "reverb": {
+      "class": "wet_mix",
+      "range": [0, 1]
+    },
+    "loudness": {
+      "class": "level_linear",
+      "range": [0, 1]
+    }
+  },
+  "ampOverrides": {
+    "volume": {
+      "class": "other"
+    },
+    "reverb": {
+      "class": "other"
+    }
+  },
+  "blockOverrides": {
+    "ACD_TMRumbleV3": {
+      "level": {
+        "class": "other"
+      }
+    },
+    "ACD_Boost": {
+      "gain": {
+        "class": "level_db",
+        "range": [0, 12]
+      }
+    }
+  }
+}

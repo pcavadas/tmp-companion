@@ -15,17 +15,28 @@
 // commit) → run (steps the chosen scenes) → summary.
 
 import type {
+  ClampKind,
   FootswitchInfo,
   LevelJob,
   LevelParamCandidate,
+  ParamClass,
   Profile,
   SceneInfo,
   SilenceHint,
+  TradeSummary,
 } from "../../lib/types";
 import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
-import { shortFallback } from "../../models/blockArt";
+// `SceneHandlePick` is declared ONCE, as the `levelScenesApplyBatched` wire type in
+// invoke.ts (its `SceneLevelJobWire.handle` field) — re-exported below so
+// `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
+// either module without a second, driftable copy.
+import type { SceneHandlePick } from "../../lib/invoke";
+import { blockArtTile, shortFallback } from "../../models/blockArt";
+import { stripNameFor } from "../../models/catalog";
 import { slotLabel } from "../../lib/format";
+
+export type { SceneHandlePick };
 
 // ── selection scene-key helpers (shared by the list + the flow) ─────────────
 
@@ -39,13 +50,31 @@ export const baseKey = (slot: number): string => `p${String(slot)}`;
 /** The key for the i-th (0-based) footswitch scene of a preset slot. */
 export const sceneKeyOf = (slot: number, i: number): string =>
   `s${String(slot)}:${String(i)}`;
-/** The key for the i-th (0-based) levelable FOOTSWITCH of a preset slot. `i` indexes
- *  the SAME levelable footswitch list everywhere (the backup-cached, level-params-
- *  filtered one), so the key is stable across the list, selection, and the flow. */
+/** The key for the i-th (0-based) FOOTSWITCH of a preset slot — `i` is that switch's
+ *  ORIGINAL POSITION in the backup-cached per-preset footswitch array (the full
+ *  roster, levelable or not, since BUG 1: a switch with no level control still gets a
+ *  row, disabled), so the key stays stable across the list, selection, and the flow
+ *  regardless of which siblings are levelable. */
 export const fswKey = (slot: number, i: number): string =>
   `f${String(slot)}:${String(i)}`;
+/** THE ONE shared definition of "this footswitch can be leveled" — a real level-class
+ *  candidate to solve. Every consumer that decides whether a footswitch row is
+ *  selectable/counted (`childKeys`, `footswitchTarget`) or disabled-with-a-reason
+ *  (`PresetRow`'s row builder) must call this, not re-derive `level_params.length`
+ *  itself — that duplication is exactly how BUG 1 (a "PHASER" switch with no level
+ *  control silently vanishing between the list and the wizard) happened: `childKeys`
+ *  counted the row as selectable while the row builder dropped it. */
+export function footswitchLevelable(f: FootswitchInfo): boolean {
+  return f.level_params.length > 0;
+}
+
 /** Every selectable child key for a preset: Base, then one per FS scene, then one per
- *  levelable footswitch. Scenes and footswitches share the key space (distinct prefix). */
+ *  levelable footswitch. Scenes and footswitches share the key space (distinct
+ *  prefix). A footswitch with no level control (`!footswitchLevelable`) is NOT
+ *  selectable — it is shown in the list disabled instead (`PresetRow`) — but its
+ *  SIBLINGS keep their true array position: this flatMaps over the full array rather
+ *  than filtering first, so a later levelable switch's `fswKey` index can't shift
+ *  when an earlier one is skipped. */
 export function childKeys(
   slot: number,
   scenes: SceneInfo[],
@@ -54,39 +83,78 @@ export function childKeys(
   return [
     baseKey(slot),
     ...scenes.map((_, i) => sceneKeyOf(slot, i)),
-    ...footswitches.map((_, i) => fswKey(slot, i)),
+    ...footswitches.flatMap((f, i) =>
+      footswitchLevelable(f) ? [fswKey(slot, i)] : [],
+    ),
   ];
 }
 
-/** The leveling coordinates a footswitch row carries into `levelFootswitchesApply`:
- *  the `ftsw` switch index + the block param to solve (the backend classifies bake vs
- *  assign). Built from `FootswitchInfo` (switch + its first level candidate). */
+/** The leveling coordinates a footswitch row carries into `levelFootswitchesApply`: the
+ *  `ftsw` switch index + the block param to solve + the scene context it is measured in
+ *  (D3). Every row levels now — the old verify-only "no handle" mode is gone backend-side
+ *  ("every row levels" — `FootswitchLevelJob`'s doc), so this is a plain shape, not a
+ *  discriminated union. */
 export interface FootswitchTarget {
   /** 0-based `ftsw` array index (the wire footswitch address). */
   switchIndex: number;
   levGroupId: string;
   levNodeId: string;
   levParameterId: string;
+  /** THE SCENE CONTEXT this switch's sound is measured and solved in (D3): a 0-based
+   *  `scenes[]` wire slot, or `null` = the preset's BASE sound (the historical default).
+   *  `null` until `list_footswitch_scene_contexts` resolves the picker's `suggested`
+   *  scene AND the user (or the picker's own default-fill) picks it. */
+  sceneContext: number | null;
 }
 
-/** Block params that change loudness without changing the SOUND — the tone-safe
- *  leveling targets. Anything else (gain/tone/drive…) also alters the tone. */
-const LOUDNESS_PARAMS = new Set([
-  "level",
-  "outputLevel",
-  "output",
-  "mix",
-  "volume",
-  "loudness",
-]);
-/** True when adjusting this parameter changes loudness only (not the tone). */
-export const isLoudnessParam = (p: string): boolean => LOUDNESS_PARAMS.has(p);
-/** The tone-safe default candidate index: the first loudness-only param, else the
- *  first candidate. Replaces the old alphabetical-first `[0]` pick, which could land
- *  on a gain/tone knob and change the sound while leveling. */
+/** Rank a candidate's WIRE-CARRIED class for `defaultParamIndex`: a genuine level
+ *  control (linear or dB) ranks above a wet/dry mix (which changes loudness but also
+ *  the effect's presence). There is no "unclassified" rank to skip — the backend
+ *  (`footswitch::level_candidates_for_node`) admits only params the classifier
+ *  recognises, so every candidate the frontend ever sees already carries a real class. */
+const CLASS_RANK: Record<ParamClass, number> = {
+  level_linear: 0,
+  level_db: 0,
+  wet_mix: 1,
+};
+
+/** Friendly labels for the technical parameter ids (fallback: capitalize the id).
+ *  Shared by `FsParamPick` and `SceneLevelPick` — the two "which block parameter"
+ *  pickers — so the dictionary can't drift between them. */
+const PARAM_LABELS: Partial<Record<string, string>> = {
+  level: "Level",
+  outputLevel: "Output level",
+  output: "Output",
+  mix: "Mix",
+  volume: "Volume",
+  gain: "Gain",
+  drive: "Drive",
+  tone: "Tone",
+  fuzz: "Fuzz",
+  treble: "Treble",
+  bass: "Bass",
+  presence: "Presence",
+};
+export function paramLabel(p: string): string {
+  return PARAM_LABELS[p] ?? (p ? p.charAt(0).toUpperCase() + p.slice(1) : "");
+}
+
+/** The tone-safe default candidate index: the best-classified (level over wet-mix)
+ *  candidate off the WIRE `class` field, tie-broken to the first match. Returns `-1`
+ *  only for an EMPTY list — every candidate the backend offers already carries a real
+ *  (never "other") class, so a non-empty list always has a valid default; callers with
+ *  a non-empty `params` can treat the result as always `>= 0`. */
 export function defaultParamIndex(params: LevelParamCandidate[]): number {
-  const i = params.findIndex((c) => isLoudnessParam(c.parameter_id));
-  return i >= 0 ? i : 0;
+  let bestIdx = -1;
+  let bestRank = Number.POSITIVE_INFINITY;
+  params.forEach((c, i) => {
+    const rank = CLASS_RANK[c.class];
+    if (rank < bestRank) {
+      bestRank = rank;
+      bestIdx = i;
+    }
+  });
+  return bestIdx;
 }
 
 /** The apply-to-all instrument's place on the good → better → best ladder that drives
@@ -103,10 +171,12 @@ export function instCalState(
   return o.calibrated ? "cal" : "uncal";
 }
 
-/** Build leveling coordinates from a specific candidate (the user's chosen param, or
- *  the default). The backend classifies bake vs assign from these ids. */
+/** Build a footswitch target from a specific candidate (the user's explicit pick, or the
+ *  tone-safe default). The backend classifies bake vs assign from these ids.
+ *  `sceneContext` — see `FootswitchTarget.sceneContext` (D3); `null` = base. */
 export function targetFromCandidate(
   switchIndex: number,
+  sceneContext: number | null,
   c: LevelParamCandidate,
 ): FootswitchTarget {
   return {
@@ -114,6 +184,7 @@ export function targetFromCandidate(
     levGroupId: c.group_id,
     levNodeId: c.node_id,
     levParameterId: c.parameter_id,
+    sceneContext,
   };
 }
 
@@ -152,28 +223,75 @@ export function instrumentName(
 
 /** The row name for a footswitch: the player's own `customLabel` when set, else the
  *  toggled block's friendly name (many presets leave the label blank — a nameless row
- *  is useless, so fall back to e.g. "Tube Screamer" from the leveled block's id). */
+ *  is useless, so fall back to e.g. "Tube Screamer" from the leveled block's id).
+ *
+ *  Never sent to the backend (the assign gate only ever edits an EXISTING `param` fn or
+ *  refuses — it never writes a switch's on-device `customLabel`), but still not an
+ *  arbitrary pick: it names the row after the tone-safe DEFAULT level param (the same
+ *  one Set up recommends), and only falls further back to the switch's own
+ *  toggled/adjusted block (its first function's `fender_id`) when there is no
+ *  classifiable level param at all — so the displayed name stays a meaningful guess. */
+/** The fallback row name for an UNLABELED switch, given the candidate that will actually
+ *  be leveled — the block that candidate lives on.
+ *
+ *  Split out of [`footswitchName`] because the name is chosen TWICE at different moments:
+ *  once at list-build time (`chosenFrom`, which only knows the tone-safe DEFAULT candidate)
+ *  and again at run-start, if the user overrode that default in Set up. The second call
+ *  keeps the DISPLAYED row name honest about what is actually being leveled — never sent
+ *  to the backend, but naming it after the default while leveling something else would
+ *  still mislead the player reading their own Level list. */
+export function footswitchNameForCandidate(c: LevelParamCandidate): string {
+  return blockStripName(c.fender_id);
+}
+
+/** The name the UNIT prints under a footswitch for a block, for rows whose switch has
+ *  no `customLabel` of its own — so the Level list reads the same as the hardware the
+ *  player is looking at.
+ *
+ *  BUG→FIX (2026-08-20, "Plumes+BD2+OCD"): this used to be `shortFallback(fender_id)`,
+ *  which merely de-camel-cases the internal id — `ACD_BluesDriver` → "Blues Driver".
+ *  That is the name of the pedal Fender EMULATES, not any name the device shows: the
+ *  unit's strip reads "Sapphire OD" and the control picker one column over already read
+ *  "SAPPHIRE DRIVE". Three names for one block, none of them matching the unit.
+ *
+ *  Order: the device's own strip name (`name8`), else the Model Guide name, else the
+ *  old de-camel-cased id so an uncatalogued or user block still gets something. */
+function blockStripName(fenderId: string): string {
+  return (
+    stripNameFor(fenderId) ??
+    blockArtTile(fenderId).fullName ??
+    shortFallback(fenderId)
+  );
+}
+
 export function footswitchName(f: FootswitchInfo): string {
   const label = f.label.trim();
   if (label) return label;
-  if (f.level_params.length > 0)
-    return shortFallback(
-      f.level_params[defaultParamIndex(f.level_params)].fender_id,
-    );
+  if (f.level_params.length > 0) {
+    // Every candidate the backend offers already carries a real (never "other") class,
+    // so `idx` is always >= 0 here in practice — the `undefined` guard exists only so a
+    // future loosening of that backend guarantee fails to the function fallback below
+    // instead of silently naming the row after `level_params[0]`.
+    const idx = defaultParamIndex(f.level_params);
+    const picked = idx >= 0 ? f.level_params[idx] : undefined;
+    if (picked) return footswitchNameForCandidate(picked);
+  }
+  if (f.functions.length > 0) return blockStripName(f.functions[0].fender_id);
   return "Footswitch";
 }
 
-/** Resolve a levelable footswitch's DEFAULT leveling coordinates (its tone-safe
- *  candidate). The Set up step can override the candidate per row; null when the
- *  footswitch has no candidate (it should have been filtered out upstream). */
+/** Resolve a levelable footswitch's DEFAULT row target: the tone-safe default candidate
+ *  (D2 — every row levels against a combined block+param dropdown, best candidate
+ *  pre-selected), base scene context (D3's `suggested` scene isn't known synchronously —
+ *  the combined picker's lazy fetch fills it in once opened). `null` when the footswitch
+ *  is not `footswitchLevelable` (no leveling candidate at all) — callers must NOT rely
+ *  on this being pre-filtered upstream: the list shows such a switch too, disabled with
+ *  a reason (BUG 1), so `chosenFrom` still has to cope with one reaching it. */
 function footswitchTarget(f: FootswitchInfo): FootswitchTarget | null {
-  // Length-guard rather than `!candidate` — the array index type lies (no
-  // noUncheckedIndexedAccess), so the truthiness check reads as "always truthy".
-  if (f.level_params.length === 0) return null;
-  return targetFromCandidate(
-    f.switch,
-    f.level_params[defaultParamIndex(f.level_params)],
-  );
+  if (!footswitchLevelable(f)) return null;
+  const idx = defaultParamIndex(f.level_params);
+  if (idx < 0) return null;
+  return targetFromCandidate(f.switch, null, f.level_params[idx]);
 }
 
 // ── setup: one selectable row (Base or an FS scene) ─────────────────────────
@@ -202,6 +320,61 @@ export interface SetupOption {
    *  picker). Present only on footswitch rows; the chosen one is baked into
    *  `footswitch` when the run starts. */
   levelParams?: LevelParamCandidate[];
+  /** Footswitch rows only: the switch carries NO `customLabel` on the device, so
+   *  `sceneName` above is a derived fallback naming the DEFAULT candidate's block — not
+   *  the player's own name for the switch.
+   *
+   *  Re-checked at run-start, not just at list-build: `sceneName` is the Level list's row
+   *  name (never sent to the backend). If the user picks a different candidate in Set up,
+   *  the row must be RE-NAMED after the block actually being leveled (`SetupBody.start`),
+   *  or the DISPLAYED row keeps naming a block the run never touched. A LABELED switch is
+   *  never renamed: that string is the player's, not ours. */
+  fsUnlabeled?: boolean;
+  /** Scene rows only: the user's chosen leveling control, INSTEAD of the active amp's
+   *  `outputLevel` — undefined/null = the amp default (every existing caller). */
+  sceneHandle?: SceneHandlePick | null;
+  /** Base rows only: the user's chosen leveling control, INSTEAD of the master
+   *  `presetLevel` — undefined/null = the "Preset level" pseudo-handle default (D2). */
+  baseHandle?: BaseHandlePick | null;
+  /** Footswitch rows only: this switch's preset's own scene NAMES, index-aligned with
+   *  the wire `scenes[]` slots — the scene-context picker's label source (D3). Undefined
+   *  for Base/scene rows. */
+  fsSceneNames?: string[];
+}
+
+/** A user-chosen BASE leveling control — the block param `level_preset` should drive
+ *  INSTEAD of the master `presetLevel` (mirrors `LevelJob.block_*`). Carries no reading:
+ *  `buildLevelJob` always sends `block_value: null` for EITHER source (backup-derived or
+ *  device-fallback) — the run's own fresh saved-doc read anchors the wet floor instead
+ *  (`level_preset.rs`'s block-value fallback, the same read that already serves
+ *  classification, at zero extra device I/O), so there is nothing to carry here or
+ *  re-resolve on a carried-forward re-level pick. */
+export interface BaseHandlePick {
+  groupId: string;
+  nodeId: string;
+  parameterId: string;
+}
+
+/** The e2e-hook identity for a setup row (`PresetOptionRow`'s `data-setup-row`) —
+ *  DELIBERATELY DISTINCT from `SetupOption.key` (the SELECTION key: `sel`/`rows` Map
+ *  lookups and the React list key, unchanged by this function). A footswitch's `key`
+ *  is `fswKey`'s POSITION within the levelable-filtered footswitch list, so a fixture
+ *  edit that adds/removes an earlier switch's level candidate silently shifts every
+ *  LATER switch's position — and hence a spec's `f<slot>:<i>` selector, with no
+ *  signal that it now points at a different row. The hook instead names the row by
+ *  the DEVICE SWITCH NUMBER (`FootswitchTarget.switchIndex`, sourced from
+ *  `FootswitchInfo.switch` — see `footswitchTarget`), which is stable under any
+ *  filtered-list reshuffle. A scene row's hook stays `s<slot>:<sceneSlot>`:
+ *  `sceneSlot` is already the wire `scenes[]` index (`chosenFrom`'s "the row index IS
+ *  the 0-based wire sceneSlot"), i.e. already an IDENTITY, not a filtered-list
+ *  position, so it needs no translation. Base rows keep `p<slot>` (nothing to
+ *  disambiguate). */
+export function setupRowHookKey(o: SetupOption): string {
+  if (o.footswitch != null) {
+    return `f${String(o.slot)}:sw${String(o.footswitch.switchIndex)}`;
+  }
+  if (o.sceneSlot != null) return sceneKeyOf(o.slot, o.sceneSlot);
+  return baseKey(o.slot);
 }
 
 /** A chosen setup row + its resolved instrument id and target name (the setup
@@ -272,6 +445,8 @@ export function chosenFrom(
             hasScenes: true,
             footswitch: target,
             levelParams: f.level_params,
+            fsUnlabeled: f.label.trim() === "",
+            fsSceneNames: scenes.map((sc) => sc.name),
           });
         }
       });
@@ -317,14 +492,34 @@ export interface RunItem {
   targetName: string;
   // live + final:
   status: "queued" | "active" | "result";
-  /** Backend-supplied reason the row is active with no capture yet (e.g. the freshness
-   *  barrier's "waiting for the device to commit the previous save…" — a same-slot load can
-   *  land inside the TMP's lazy `saveCurrentPreset` commit window). Scene/footswitch channel
-   *  items only; null/undefined falls back to the row's generic "connecting…". */
+  /** Backend-supplied caption for an active row, rendered two ways by `RunBody`'s
+   *  `rowStatus` depending on whether a capture is streaming:
+   *   - streaming -> it is the VERB before the live number. The ceiling prepass sends
+   *     "measuring", giving `measuring · −18.9`; a message-less solve row reads `leveling · …`.
+   *   - not streaming -> it is a NOTE, shown verbatim (the freshness barrier's "waiting for
+   *     the device to commit the previous save…" — a same-slot load can land inside the TMP's
+   *     lazy `saveCurrentPreset` commit window); absent one the row reads "connecting…".
+   *  A message sent while a capture streams is therefore a verb by construction — that is the
+   *  contract the backend's `leveller::PREPASS_ACTIVE_MSG` documents on its side. Scene/
+   *  footswitch channel items only; cleared when the row resolves or a cancelled sweep
+   *  reverts it, so a later re-run's default is never shadowed by a stale caption. */
   activeMessage?: string | null;
   outcome?: Outcome;
-  /** Measured loudness (verify/predicted), or null. */
+  /** Measured (predicted) loudness, or null. */
   value?: number | null;
+  /** Scene rows only: this row's handle pick, carried from Set up into the dispatch
+   *  (mirrors `SetupOption.sceneHandle`). */
+  handle?: SceneHandlePick | null;
+  /** Base rows only: this row's handle pick, carried from Set up into the dispatch
+   *  (mirrors `SetupOption.baseHandle`). */
+  baseHandle?: BaseHandlePick | null;
+  /** The clamp's CAUSE from the shared taxonomy, when clamped — render
+   *  `CLAMP_MESSAGES[clampKind]` verbatim. Null/undefined on a non-clamped row. */
+  clampKind?: ClampKind | null;
+  /** THE HEADROOM TRADE this row's batch made (or, on a preview, WOULD make) — see
+   *  `TradeSummary`. Stamped on every row of a batch that traded. Null/undefined
+   *  otherwise. */
+  trade?: TradeSummary | null;
   /** Dynamics spread of the measure capture (LU); drives the "dynamic" by-ear cause. */
   spreadLu?: number | null;
   /** The preset's saved `presetLevel` before this run wrote it — enables the Summary
@@ -337,9 +532,11 @@ export interface RunItem {
   /** Cause of the "verify by ear" marker (undefined = no flag): `envelope` = the preset
    *  contains an envelope-follower effect, which tracks the synthetic stimulus differently
    *  than real playing (the measurement itself is suspect); `dynamic` = peaks ride
-   *  above the gated average; `rebalance` = shallow lane-mute isolation made the parallel
-   *  balance approximate. Resolved to a single cause when the RunItem is built. */
-  verifyByEar?: "envelope" | "dynamic" | "rebalance";
+   *  above the gated average; `wet_floor` = a footswitch's wet-mix clamp is pinned at the
+   *  25% floor, not headroom (`FootswitchLevelResult.wet_floor`); `rebalance` = shallow
+   *  lane-mute isolation made the parallel balance approximate. Resolved to a single
+   *  cause when the RunItem is built. */
+  verifyByEar?: "envelope" | "dynamic" | "wet_floor" | "rebalance";
   /** The preset's backup-scan silence hint, stamped at item build — refines the
    *  offbranch row status (see `offbranchStatus`). */
   silenceHint?: SilenceHint;
@@ -415,6 +612,8 @@ export function optionToRunItem(
     instId,
     targetName,
     status: "queued",
+    handle: o.sceneHandle,
+    baseHandle: o.baseHandle,
   };
 }
 
@@ -434,6 +633,8 @@ export function runItemToOption(it: RunItem): SetupOption {
     tag: it.tag,
     hasScenes: !it.isBase || it.tag != null,
     footswitch: it.footswitch ?? null,
+    sceneHandle: it.handle,
+    baseHandle: it.baseHandle,
   };
 }
 
@@ -449,6 +650,9 @@ export function buildLevelJob(
   targetLufs: number,
   profile: Profile | null,
   save: boolean,
+  /** The row's user-chosen leveling control (D2), instead of the master `presetLevel`.
+   *  `null`/undefined = the "Preset level" pseudo-handle default. */
+  handle?: BaseHandlePick | null,
 ): LevelJob {
   return {
     slot,
@@ -457,9 +661,11 @@ export function buildLevelJob(
     topology_id: profile?.topology_id ?? null,
     calibration_lufs: profile?.calibration_lufs ?? null,
     profile_id: profile?.id ?? null,
-    block_group_id: null,
-    block_node_id: null,
-    block_parameter_id: null,
+    block_group_id: handle?.groupId ?? null,
+    block_node_id: handle?.nodeId ?? null,
+    block_parameter_id: handle?.parameterId ?? null,
+    // ALWAYS null — see `BaseHandlePick`'s doc: the run's own fresh saved-doc read
+    // anchors the wet floor, for either candidate source.
     block_value: null,
   };
 }

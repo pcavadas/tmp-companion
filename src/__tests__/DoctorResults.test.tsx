@@ -28,9 +28,11 @@ import type {
   DoctorApplyResult,
   DoctorCheckResult,
   DoctorDiag,
+  DoctorLevelingDamageHint,
   DoctorOp,
   DoctorSoundResult,
   FootswitchInfo,
+  SilenceHint,
 } from "../lib/types";
 
 const NAMES = new Map<number, string>([
@@ -69,9 +71,11 @@ function fixture(): DoctorCheckResult {
             ],
             cutThrough: null,
             error: null,
+            skippedBandCount: 0,
           },
         ],
         sceneConsistency: null,
+        levelingDamage: [],
       },
       {
         listIndex: 1,
@@ -133,6 +137,7 @@ function fixture(): DoctorCheckResult {
             ],
             cutThrough: null,
             error: null,
+            skippedBandCount: 0,
           },
           {
             key: "p1s1",
@@ -183,6 +188,7 @@ function fixture(): DoctorCheckResult {
             ],
             cutThrough: null,
             error: null,
+            skippedBandCount: 0,
           },
         ],
         sceneConsistency: {
@@ -203,6 +209,7 @@ function fixture(): DoctorCheckResult {
             },
           ],
         },
+        levelingDamage: [],
       },
       {
         listIndex: 2,
@@ -228,9 +235,11 @@ function fixture(): DoctorCheckResult {
             ],
             cutThrough: null,
             error: "The capture came back silent — check the cable.",
+            skippedBandCount: 0,
           },
         ],
         sceneConsistency: null,
+        levelingDamage: [],
       },
     ],
     stopped: false,
@@ -240,6 +249,7 @@ function fixture(): DoctorCheckResult {
 function renderResults(
   result: DoctorCheckResult = fixture(),
   onCheckMore: () => void = () => undefined,
+  silenceHintByIndex: Map<number, SilenceHint> = new Map<number, SilenceHint>(),
 ) {
   return render(
     <ThemeProvider>
@@ -249,6 +259,7 @@ function renderResults(
         footswitchInfo={new Map()}
         graphByIndex={new Map()}
         stimulusByKey={new Map()}
+        silenceHintByIndex={silenceHintByIndex}
         onCheckMore={onCheckMore}
       />
     </ThemeProvider>,
@@ -315,6 +326,7 @@ describe("DoctorResults — summary + cards", () => {
               ],
               cutThrough: null,
               error: null,
+              skippedBandCount: 0,
             },
           ],
           sceneConsistency: {
@@ -326,6 +338,7 @@ describe("DoctorResults — summary + cards", () => {
             worstDeltaDb: 7,
             rx: [],
           },
+          levelingDamage: [],
         },
       ],
       stopped: false,
@@ -366,9 +379,11 @@ describe("DoctorResults — summary + cards", () => {
               ],
               cutThrough: null,
               error: null,
+              skippedBandCount: 0,
             },
           ],
           sceneConsistency: null,
+          levelingDamage: [],
         },
       ],
       stopped: false,
@@ -552,6 +567,7 @@ describe("DoctorResults — healthy collapse", () => {
               ],
               cutThrough: null,
               error: null,
+              skippedBandCount: 0,
             },
             {
               key: "p1s1",
@@ -574,9 +590,11 @@ describe("DoctorResults — healthy collapse", () => {
               ],
               cutThrough: null,
               error: null,
+              skippedBandCount: 0,
             },
           ],
           sceneConsistency: null,
+          levelingDamage: [],
         },
       ],
       stopped: false,
@@ -616,6 +634,145 @@ describe("DoctorResults — Level jumps (scene consistency) row", () => {
     expect(
       screen.queryByRole("button", { name: /apply to the unit/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// Minimal one-sound, one-preset fixtures for the P3 fix tests below — full
+// band layout so SoundRow renders normally, everything else at safe defaults.
+function baseSound(
+  overrides: Partial<DoctorSoundResult> = {},
+): DoctorSoundResult {
+  return {
+    key: "p0",
+    listIndex: 0,
+    scene: null,
+    footswitch: null,
+    label: "Test Sound",
+    tag: null,
+    diags: [],
+    integratedLufs: -20,
+    tailRatioDb: 0,
+    balanceDb: [0, 0, 0, 0, 0, 0],
+    bandLabels: ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"],
+    cutThrough: null,
+    error: null,
+    skippedBandCount: 0,
+    ...overrides,
+  };
+}
+
+function singlePresetResult(
+  sound: DoctorSoundResult,
+  levelingDamage: DoctorLevelingDamageHint[] = [],
+): DoctorCheckResult {
+  return {
+    presets: [
+      {
+        listIndex: sound.listIndex,
+        sounds: [sound],
+        sceneConsistency: null,
+        levelingDamage,
+      },
+    ],
+    stopped: false,
+  };
+}
+
+describe("DoctorResults — silence-hint refines a silent-capture error (P3-3)", () => {
+  beforeEach(resetMocks);
+
+  function silentFixture(errorText: string): DoctorCheckResult {
+    return singlePresetResult(
+      baseSound({ label: "Broken Base", error: errorText }),
+    );
+  }
+
+  it("shows the backup-scan cause instead of the raw error when the capture was silent", () => {
+    renderResults(
+      silentFixture("no signal captured"),
+      undefined,
+      new Map([[0, "amp_zero"]]),
+    );
+    expect(screen.getByText("amp output at zero")).toBeInTheDocument();
+    expect(screen.queryByText("no signal captured")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the generic offbranch status with no hint", () => {
+    renderResults(silentFixture("no signal captured"));
+    expect(screen.getByText("not on USB 1/2")).toBeInTheDocument();
+  });
+
+  it("leaves an unrelated error message untouched even with a hint on file", () => {
+    renderResults(
+      silentFixture("no stimulus reached the device (captured only silence)"),
+      undefined,
+      new Map([[0, "amp_zero"]]),
+    );
+    expect(
+      screen.getByText(
+        "no stimulus reached the device (captured only silence)",
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("DoctorResults — SNR-gate transparency badge (P3-4)", () => {
+  beforeEach(resetMocks);
+
+  it("shows a titled badge when the coverage gate dropped bands", () => {
+    renderResults(
+      singlePresetResult(
+        baseSound({
+          label: "Quiet DI",
+          skippedBandCount: 2,
+        }),
+      ),
+    );
+    expect(
+      screen.getByTitle("Some checks skipped — signal too quiet on 2 bands"),
+    ).toBeInTheDocument();
+  });
+
+  it("stays hidden on a fully-covered capture", () => {
+    renderResults(singlePresetResult(baseSound({ label: "Clean" })));
+    expect(screen.queryByTitle(/some checks skipped/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("DoctorResults — leveling-damage advisory row (P3-5)", () => {
+  beforeEach(resetMocks);
+
+  const hint: DoctorLevelingDamageHint = {
+    switch: 0,
+    label: "MOD",
+    nodeId: "n1",
+    fenderId: "ACD_TCEChorus",
+    parameterId: "mix",
+    kind: "deletedEffect",
+    detail: "mix: engaged 0.00, base 0.42",
+  };
+
+  it("surfaces even when the preset's only finding is a damage advisory", async () => {
+    const user = userEvent.setup();
+    renderResults(
+      singlePresetResult(baseSound({ label: "Clean Base" }), [hint]),
+    );
+    // Not filtered out of "Needs a look" despite zero diags/errors — the
+    // regression this fix targets (`presetLookCount` must count it).
+    expect(screen.getByText("Leveling damage")).toBeInTheDocument();
+    expect(screen.getByText("1 assignment worth checking")).toBeInTheDocument();
+    await user.click(screen.getByText("Leveling damage"));
+    expect(
+      screen.getByText("mix: engaged 0.00, base 0.42"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("drops to ~0 when engaged — the effect goes silent"),
+    ).toBeInTheDocument();
+  });
+
+  it("stays hidden when there are no advisories", () => {
+    renderResults(singlePresetResult(baseSound({ label: "Clean Base" })));
+    expect(screen.queryByText("Leveling damage")).not.toBeInTheDocument();
   });
 });
 
@@ -919,9 +1076,17 @@ describe("DoctorResults — shared-block caption", () => {
       bandLabels: ["Lows", "Low-mids", "Mids", "High-mids", "Highs", "Air"],
       cutThrough: null,
       error: null,
+      skippedBandCount: 0,
     };
     return {
-      presets: [{ listIndex: 0, sounds: [sound], sceneConsistency: null }],
+      presets: [
+        {
+          listIndex: 0,
+          sounds: [sound],
+          sceneConsistency: null,
+          levelingDamage: [],
+        },
+      ],
       stopped: false,
     };
   }
@@ -970,6 +1135,7 @@ describe("DoctorResults — shared-block caption", () => {
           footswitchInfo={fsInfo}
           graphByIndex={new Map()}
           stimulusByKey={new Map()}
+          silenceHintByIndex={new Map()}
           onCheckMore={() => undefined}
         />
       </ThemeProvider>,
@@ -1102,9 +1268,11 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
               ],
               cutThrough: null,
               error: null,
+              skippedBandCount: 0,
             },
           ],
           sceneConsistency: null,
+          levelingDamage: [],
         },
       ],
       stopped: false,
@@ -1187,9 +1355,11 @@ describe("DoctorResults — severity (possible verdicts)", () => {
               ],
               cutThrough: null,
               error: null,
+              skippedBandCount: 0,
             },
           ],
           sceneConsistency: null,
+          levelingDamage: [],
         },
       ],
       stopped: false,

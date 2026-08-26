@@ -115,6 +115,74 @@ pub fn probe_export_preset(list_enum: u32, slot: u32) -> Result<String, String> 
     ))
 }
 
+/// `probe --dump-list <listEnum> <fromSlot> <toSlot> <outDir>` — repro
+/// instrumentation: field-8 `presetDataRequest(listEnum, slot)` sweep over a slot
+/// range on ONE connection (the `--slotread-x` Exp-E shape: `connection_request`
+/// re-arm before each read, growth-stability harvest), writing each reply's decoded
+/// JSON to `<outDir>/list<enum>_slot<NNN>.json`. Validates whether non-My lists
+/// (Factory=4, Cloud=3) answer the slot-addressed read at all, and builds the
+/// preset-census corpus. Read-only: no LoadPreset, no writes.
+pub fn probe_dump_list(
+    list_enum: u32,
+    from_slot: u32,
+    to_slot: u32,
+    out_dir: &str,
+) -> Result<String, String> {
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("create {out_dir}: {e}"))?;
+    let mut s = Session::connect()?;
+    s.drain_until_quiet(250, 20)?;
+    let mut out = format!(
+        "[probe --dump-list] listEnum={list_enum} slots {from_slot}..={to_slot} → {out_dir}\n"
+    );
+    let (mut ok, mut miss) = (0u32, 0u32);
+    for slot in from_slot..=to_slot {
+        s.raw.clear();
+        s.send_and_collect(&proto::connection_request(), 100)?;
+        s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
+        s.send_and_collect(
+            &proto::preset_data_request(list_enum as u64, slot as u64, None),
+            200,
+        )?;
+        let (mut last, mut stable) = (0usize, 0u32);
+        for _ in 0..24 {
+            s.pump_collect(150)?;
+            let len = s.try_preset_data_json().map(|b| b.len()).unwrap_or(0);
+            if len > 0 && len == last {
+                stable += 1;
+                if stable >= 2 {
+                    break;
+                }
+            } else {
+                stable = 0;
+            }
+            last = len;
+        }
+        match s.try_preset_data_json() {
+            Some(raw) => {
+                let decoded = match proto::lz4_block_decompress(&raw) {
+                    Ok(d) if !d.is_empty() => d,
+                    _ => raw.clone(),
+                };
+                let path = format!("{out_dir}/list{list_enum}_slot{slot:03}.json");
+                std::fs::write(&path, &decoded).map_err(|e| format!("write {path}: {e}"))?;
+                let complete = serde_json::from_slice::<serde_json::Value>(&decoded).is_ok();
+                out += &format!(
+                    "  slot {slot}: {} B{}\n",
+                    decoded.len(),
+                    if complete { "" } else { " (truncated)" }
+                );
+                ok += 1;
+            }
+            None => {
+                out += &format!("  slot {slot}: NO REPLY\n");
+                miss += 1;
+            }
+        }
+    }
+    out += &format!("done: {ok} written, {miss} missing\n");
+    Ok(out)
+}
+
 /// `probe --factory-list`: connect (the full handshake already requests the
 /// My/Factory/Cloud lists) and print every FACTORY preset as `slot<TAB>name`,
 /// one per line. Empty slots print as their device-supplied label (usually `--`)

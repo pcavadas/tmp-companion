@@ -56,11 +56,11 @@ static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 
 /// Commands whose SUCCESS persists a STRUCTURAL/body mutation over a resident fixture
 /// slot — as opposed to a value-only write (e.g. leveling's `presetLevel`/`outputLevel`
-/// saves), which within-run drift is deliberately tolerated via spec ORDERING (doctor
-/// must run before level-strict — see `scripts/e2e.sh`). A structural save invalidates
+/// saves), which within-run drift is deliberately tolerated via spec ORDERING (doctor.online
+/// must run before level.online — see `scripts/e2e.sh`). A structural save invalidates
 /// [`SCENARIO_VERIFIED`] so the NEXT spec's `ensureScenario` re-verifies the device and
 /// re-imports only what drifted, rather than trusting a fixture that's since been
-/// mutilated (root cause: `copy.spec.ts` stripping E2E Target 2's trailing EQ block,
+/// mutilated (root cause: `copy.spec.ts` stripping E2E Edge's trailing EQ block,
 /// then `doctor.spec.ts` asserting on the resonance that block used to carry).
 ///
 /// Any new command that saves structural edits to a fixture slot must join this list —
@@ -75,7 +75,7 @@ const STRUCTURAL_SAVE_CMDS: [&str; 2] = ["copy_apply", "doctor_save"];
 /// nothing persisted and there is nothing to invalidate. Value-only leveling saves are
 /// deliberately excluded from the set: adding them would cost a device re-verify per
 /// spec inside the HID open-lockout danger window (`.claude/rules/danger.md`), and
-/// within-run value drift is already handled by ordering doctor before level-strict.
+/// within-run value drift is already handled by ordering doctor.online before level.online.
 #[cfg(feature = "e2e")]
 fn note_structural_save(cmd: &str) {
     if STRUCTURAL_SAVE_CMDS.contains(&cmd) {
@@ -93,9 +93,36 @@ pub(crate) fn e2e_showcase() -> bool {
     std::env::var("TMP_E2E_SHOWCASE").is_ok()
 }
 
+/// Minimal stderr logger, the twin of `probe`'s: the shared library modules
+/// (leveller floor guards, the footswitch ceiling prepass, session retries)
+/// diagnose through `log::*`, which is silently DROPPED without an installed
+/// logger. In the app tauri-plugin-log owns it; this harness had NO logger at
+/// all, so an ONLINE run's whole device-side diagnosis was invisible — the
+/// `fs prepass switch=N ceiling=…` lines that explain a clamped row went
+/// nowhere, and the server log carried only its two startup lines.
+#[cfg(feature = "e2e")]
+struct StderrLog;
+
+#[cfg(feature = "e2e")]
+impl log::Log for StderrLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+    fn flush(&self) {}
+}
+
 #[cfg(feature = "e2e")]
 pub fn run_e2e_server() {
     use std::net::TcpListener;
+
+    if log::set_logger(&StderrLog).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
 
     let online = e2e_online();
     // OFFLINE only: default the backup fixture so `read_library_via_backup` decodes it
@@ -156,9 +183,11 @@ pub fn run_e2e_server() {
             level_preset,
             list_level_blocks,
             level_scenes_apply_batched,
+            list_scene_level_handles,
             common_reachable_target,
             cancel_scene_leveling,
             level_footswitches_apply,
+            list_footswitch_scene_contexts,
             doctor_check,
             cancel_doctor_check,
             doctor_apply,
@@ -238,25 +267,28 @@ fn e2e_install_offline_fake() {
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim); // expose its event log to /sim/events
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
-    // The 6 scenario presets at slots 400-405 — same slots the online tier seeds by
+    // The 10 scenario presets at slots 400-409 — same slots the online tier seeds by
     // cloning, and the same presets baked into the backup fixture, so one set of specs
     // runs in both modes. `ensureScenario` finds them present offline and skips seeding.
+    // Keep this list in sync with `e2e/fixtures/scenario.ts`'s `SCENARIO` array (and the
+    // twin inline snapshot `e2e_server_tests.rs` builds for its own in-process tests) —
+    // nothing derives one from the other.
     let presets = vec![
         session::PresetEntry {
             slot: 400,
-            name: "E2E Reference".into(),
+            name: "E2E Rig".into(),
         },
         session::PresetEntry {
             slot: 401,
-            name: "E2E Target 1".into(),
+            name: "E2E Pedalboard".into(),
         },
         session::PresetEntry {
             slot: 402,
-            name: "E2E Target 2".into(),
+            name: "E2E Edge".into(),
         },
         session::PresetEntry {
             slot: 403,
-            name: "E2E Realistic".into(),
+            name: "E2E Parallel".into(),
         },
         session::PresetEntry {
             slot: 404,
@@ -266,10 +298,26 @@ fn e2e_install_offline_fake() {
             slot: 405,
             name: "E2E Preset24".into(),
         },
+        session::PresetEntry {
+            slot: 406,
+            name: "E2E Combined Level".into(),
+        },
+        session::PresetEntry {
+            slot: 407,
+            name: "E2E Doctor Oracle".into(),
+        },
+        session::PresetEntry {
+            slot: 408,
+            name: "E2E Preset24 Min".into(),
+        },
+        session::PresetEntry {
+            slot: 409,
+            name: "E2E Hiwatt Min".into(),
+        },
     ];
     // Hero graph, decoded from the SAME backup fixture `read_library_via_backup` already
     // serves — the showcase installer below does the identical thing for its curated `.bin`.
-    // The fixture holds ONLY the 5 scenario presets (device slots 401-405, list 400-404), so
+    // The fixture holds all 10 scenario presets (device slots 401-410, list 400-409), so
     // the hero is simply its first entry; there is no preset 001 offline to prefer.
     //
     // Not cosmetic: with the snapshot's graph `None`, the frontend's `startScanAfterGraph`
@@ -400,7 +448,7 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
 /// ONLINE-e2e DETERMINISTIC scratch setup: sweep stray imports, then place EVERY
 /// committed scenario preset (`e2e/fixtures/scenario-presets.json` — the SAME
 /// presetJsons baked into the offline backup fixture) at its list index
-/// (400-405; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
+/// (400-409; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
 /// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
 /// before the server starts, dodges the in-process `0xe00002c5` open lockout that
 /// aborted in-spec seeds). This command is the fallback for specs run without the
@@ -485,7 +533,7 @@ async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
 /// the empty state. SAFETY: refuses unless the slot currently holds `expect_name` (read in
 /// the same session) — so a wrong index can never clear a real preset — and, ONLINE, also
 /// requires the seed's fixture content marker (a name is not ownership: a user preset
-/// coincidentally named "E2E Target 1" must never be cleared; fail-closed). Offline the
+/// coincidentally named "E2E Pedalboard" must never be cleared; fail-closed). Offline the
 /// marker check is skipped — SimDevice state is disposable and serves no field-8 bodies.
 #[cfg(feature = "e2e")]
 #[tauri::command]
@@ -589,7 +637,7 @@ async fn e2e_reamp_off(state: State<'_, AppState>) -> Result<(), String> {
     .await
 }
 
-/// STRICT-HARNESS measure for the post-leveling audio gate (`level-strict.spec.ts`
+/// STRICT-HARNESS measure for the post-leveling audio gate (`level.online.spec.ts`
 /// online, `level-fs-preset24.spec.ts` offline): re-measure one sound of `slot` exactly
 /// as the leveling lane measured it (scene as-is / base isolation / footswitch engaged
 /// state with the saved ASSIGN `valueA` re-played) and return its integrated LUFS, so
@@ -612,8 +660,31 @@ struct FsLevRef {
     parameter_id: String,
 }
 
+/// P5 EXTERNAL-VALIDATION metadata for one re-measure (optional; omit and the command
+/// behaves exactly as before). The SPEC supplies it because the spec is what knows the
+/// target it drove the leveling lane with and what that lane reported back — the server
+/// keeps no cross-command memory, and inferring it from a result vec by position is the
+/// mislabeling bug this redesign removed (see `LevelResult::scene_slot`).
+///
+/// Emission still only happens when `TMP_E2E_VALIDATE_LOG` is set, so passing this on an
+/// ordinary `bun run e2e` costs nothing.
+#[cfg(feature = "e2e")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ValidateArg {
+    /// What the leveling run promised this sound would render at.
+    target_lufs: f64,
+    /// The run's own verdicts, forwarded so the consumer can SKIP (not FAIL) a row that
+    /// was never reachable or whose save did not verify.
+    #[serde(default)]
+    clamped: bool,
+    #[serde(default)]
+    persist_mismatch: Option<bool>,
+}
+
 #[cfg(feature = "e2e")]
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn e2e_measure_sound(
     app: tauri::AppHandle<tauri::test::MockRuntime>,
     state: State<'_, AppState>,
@@ -622,18 +693,51 @@ async fn e2e_measure_sound(
     footswitch: Option<u32>,
     topology_id: String,
     lev: Option<FsLevRef>,
+    validate: Option<ValidateArg>,
 ) -> Result<f64, String> {
     let stim_path = resolve_stimulus(&app, None, Some(topology_id))?;
     with_released_seize(state.session.clone(), move || {
         let stim = read_stimulus_calibrated(&stim_path, None)?;
+        // The label/identity is built from THIS call's own coordinates — the sound being
+        // measured names itself, so a mid-batch failure upstream can never shift a row.
+        let row = validate.map(|v| {
+            let base = match (scene, footswitch) {
+                (Some(s), _) => crate::validate_log::ValidationRow::scene(slot, s, v.target_lufs),
+                (None, Some(sw)) => {
+                    crate::validate_log::ValidationRow::footswitch(slot, sw, v.target_lufs)
+                }
+                (None, None) => crate::validate_log::ValidationRow::base(slot, v.target_lufs),
+            };
+            base.with_flags(v.clamped, v.persist_mismatch)
+        });
         if scene.is_some() {
-            return leveller::measure_sound_asis_strict(slot, scene, &[], None, &stim)
-                .map(|l| l.integrated_lufs);
+            return leveller::measure_sound_asis_strict(
+                slot,
+                scene,
+                &[],
+                None,
+                &stim,
+                row.as_ref(),
+            )
+            .map(|l| l.integrated_lufs);
         }
         // Base / footswitch context: the ONE shared isolation derivation the leveling +
         // Doctor lanes use (`doctor_force_bypass` over the SAVED doc) — not a private copy.
         let saved = read_saved_preset(slot)
             .ok_or_else(|| format!("field-8 read failed for slot {slot}"))?;
+        // BOTH contexts isolate, through the SAME derivation, because that is what
+        // `commands::level_preset` and `commands::level_footswitch` each solve for: a base
+        // row is the preset with every footswitch-owned on-off block forced off, a footswitch
+        // row is that one switch engaged with every sibling off. `footswitch` (None for base)
+        // is the only thing that differs, and `doctor_force_bypass` already branches on it.
+        //
+        // THIS MUST TRACK `level_preset`'s DEFINITION OF BASE, in the same commit, or the
+        // yardstick judges a sound no run ever targeted — and it fails silently, as a level
+        // miss. HW has now demonstrated the trap in BOTH directions on "Plumes+BD2+OCD":
+        // when the lane measured as-saved and this still isolated, base verified at -23.00
+        // in-run and re-measured -32.54 (exactly 20*log10(0.2916/0.8744), the ratio of the
+        // two presetLevels); reverse the pair and the error simply changes sign. The preset
+        // was correct both times; the yardstick was not.
         let force =
             crate::commands::doctor::doctor_force_bypass(&saved["ftsw"], &saved, footswitch);
         // An ASSIGN switch's engaged sound = the leveled param at its saved `valueA`; a
@@ -641,17 +745,35 @@ async fn e2e_measure_sound(
         // from the CALLER — the spec owns the same pinned coordinates it fed the leveling
         // lane — so there is no second in-server param picker to diverge from the wizard's
         // `defaultParamIndex` choice.
+        //
+        // The two ways of writing nothing are NOT the same, so this resolves the anchor
+        // through `FsAssignAnchor` rather than a bare `Option`: writing nothing because the
+        // switch has no assignment on this node is correct (every `on-off` switch in the
+        // Hiwatt fixture bakes, and its engaged sound IS the saved state), but writing
+        // nothing because the switch assigns some OTHER parameter — or because the matching
+        // function's `valueA` is unusable — silently measures the BASE sound and files it
+        // under the switch's identity. An external validator sees a plausible number on a
+        // correctly-named row and cannot tell. Fail loudly instead.
         let fs_value = match (footswitch, lev) {
-            (Some(sw), Some(l)) => footswitch::existing_param_fn_value_a(
-                &saved["ftsw"],
-                sw,
-                &l.node_id,
-                &l.parameter_id,
-            )
-            .map(|v| ((l.group_id, l.node_id, l.parameter_id), v as f32)),
+            (Some(sw), Some(l)) => {
+                match footswitch::resolve_assign_anchor(
+                    &saved["ftsw"],
+                    sw,
+                    &l.node_id,
+                    &l.parameter_id,
+                ) {
+                    footswitch::FsAssignAnchor::Value(v) => {
+                        Some(((l.group_id, l.node_id, l.parameter_id), v as f32))
+                    }
+                    footswitch::FsAssignAnchor::NoAssignment => None,
+                    footswitch::FsAssignAnchor::Mismatch(why) => {
+                        return Err(format!("slot {slot}: {why}"))
+                    }
+                }
+            }
             _ => None,
         };
-        leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim)
+        leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim, row.as_ref())
             .map(|l| l.integrated_lufs)
     })
     .await
@@ -730,7 +852,8 @@ fn e2e_route(
             "200 OK",
             serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),
         ),
-        // Verification-harness read endpoints (see e2e/specs/level-rerun.spec.ts).
+        // Verification-harness read endpoints (see e2e/specs/level.spec.ts's and
+        // e2e/specs/level.online.spec.ts's idempotency tests).
         ("GET", "/reamp/counters") => {
             use std::sync::atomic::Ordering;
             let on = crate::session::REAMP_ON_COUNT.load(Ordering::Relaxed);

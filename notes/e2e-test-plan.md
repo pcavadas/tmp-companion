@@ -25,7 +25,7 @@ Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,Err
 - **`bash scripts/e2e.sh online`** — ONLINE against the real unit (songs → copy → level, one at a
   time, ~9 min). Preconditions: the unit plugged in + **rested**, and **Pro Control closed** (it
   holds the exclusive HID seize). The script pre-flights the handshake, runs each spec in its own
-  invocation, and ALWAYS recovers the unit on exit (reamp-off + guarded scratch-clear of the scenario slots (`SCRATCH_SLOTS`, 400–405) +
+  invocation, and ALWAYS recovers the unit on exit (reamp-off + guarded scratch-clear of the scenario slots (`SCRATCH_SLOTS`, 400–409) +
   recall 001) — even on Ctrl-C or a killed run.
 
 Add `copy` / `level` / `songs` to run a single spec (e.g. `bash scripts/e2e.sh online level`).

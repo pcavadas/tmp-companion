@@ -86,10 +86,13 @@ pub fn probe_set_param(
             "refusing --set-param on {slot}: scratch-zone only {SCRATCH_SLOTS:?}"
         ));
     }
-    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-        return Err(format!(
-            "refusing value {value}: block parameters are normalised 0.0..=1.0"
-        ));
+    // `changeParameter` carries the value in the block's OWN real units verbatim (dB, Hz,
+    // …), never range-checked by the wire — disproven this session on hardware:
+    // `ACD_Boost.gain` accepts raw dB 0/2.5/5, ~1:1 dB→LUFS (see `param_class`'s doc). This
+    // seam is a scratch-zone diagnostic (the caller), so the only guard that belongs here
+    // is a sane wire value, not a guessed range.
+    if !value.is_finite() {
+        return Err(format!("refusing non-finite value {value}"));
     }
     let mut s = Session::connect()?;
     s.load_preset(slot)?;
@@ -405,7 +408,19 @@ pub fn probe_reamp_off() -> Result<(), String> {
 /// the primary; it stays only as a fallback for older firmware. Without this, FS-scene
 /// leveling found zero amp candidates and silently skipped every scene (the device
 /// never switched scenes).
+///
+/// DANGER — every path below LOADS `slot`, so this is a stale-load site (`danger.md`'s
+/// lazy-commit clause): a discovery load inside a same-slot save's commit window
+/// materializes the PRE-save doc and its own commit reverts that save (the preset-24
+/// class). The barrier lives HERE so EVERY caller of the block-discovery seam is guarded,
+/// present and future — which imposes the seam's contract: a caller MUST NOT hold a device
+/// session when it calls (the barrier and the discovery each open their own), and `slot`
+/// is the 0-based list index, the registry's own key space. Probe processes never save
+/// through the registry, so there the barrier is a zero-cost no-op. `op_aborted` is the
+/// right cancel hook: the UI path enters through `with_released_seize`, whose
+/// `lock_device_op` clears the flag.
 pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
+    crate::leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     match discover_blocks_rich(slot) {
         Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
         Ok(_) => log::info!("rich block discovery for slot={slot}: loaded but no level blocks"),
@@ -427,7 +442,9 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
             let text = String::from_utf8_lossy(&raw);
             let value = session::tolerant_parse_json(&text)
                 .ok_or_else(|| format!("{first_err}; fallback field-3 JSON did not parse"))?;
-            let blocks = session::extract_level_blocks(&value);
+            // Same picker gate as `current_preset_blocks` above — this is the last fallback
+            // of the SAME enumeration, so it must not offer a different control set.
+            let blocks = session::extract_level_candidates(&value);
             if blocks.is_empty() {
                 Err(format!(
                     "{first_err}; fallback field-3 JSON had no level blocks"
@@ -442,8 +459,10 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
 /// 1.8.45-safe block discovery: a single rich lean session loads the preset via
 /// `send_and_collect` (NOT `load_preset`, which discards the reports the field-3 push
 /// rides on) and reads the level blocks from the accumulated push bodies. Mirrors the
-/// bench intel session + `prepass_scene_docs`.
-pub(crate) fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
+/// bench intel session + `prepass_scene_docs`. Private on purpose: this is the
+/// deliberately-UNBARRIERED inner half of `load_then_discover_blocks` — every outside
+/// caller must come through the wrapper and its commit-window barrier.
+fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
     let mut s = Session::connect()?;
     s.rich_warmup()?;
     s.rich_load_collect(slot)?;
@@ -788,8 +807,8 @@ pub fn probe_save_load_test(
 /// the go/no-go gate the plan mandates running FIRST.
 ///
 /// Point it at a prepared SCRATCH preset that carries an amp (a guitarNodes node with
-/// an `outputLevel` control) and ≥1 footswitch scene — e.g. the e2e "E2E Reference"
-/// after `probe --seed-scenario` (e.g. "E2E Realistic" at 403, whose amp id is short
+/// an `outputLevel` control) and ≥1 footswitch scene — e.g. the e2e "E2E Rig"
+/// after `probe --seed-scenario` (e.g. "E2E Parallel" at 403, whose amp id is short
 /// enough to fit a single-report `changeParameter`). It reads the slot's current values,
 /// applies three DISTINCTIVE test values (base 0.30, scene[1] 0.66, presetLevel 0.42) all
 /// on ONE live-edit session, saves ONCE, reconnects, reads back, and asserts. Then —
@@ -992,7 +1011,15 @@ fn scene_count(preset: &serde_json::Value) -> usize {
 }
 
 /// A scene overlay's `outputLevel` for `node_id` (`scenes[i].guitarNodes.<group>.<nodeId>`),
-/// `None` when the scene carries no overlay for that node.
+/// `None` when the scene carries no `outputLevel` under that node.
+///
+/// Deliberately does NOT classify the overlay the way `scene_jobs::scene_overlay` does
+/// (`Full` / `BypassOnly` / `Absent` / `Unknown`): this is a pure VALUE lookup, so it is
+/// the equivalent of that enum's shared `Full | BypassOnly` arm and a bypass-only overlay
+/// correctly reads `None` (no `outputLevel` key to report). Nothing here infers overlay
+/// PRESENCE to gate a `setNodeSceneEdit`: both enable sites in this module
+/// (`write_three_and_save`, `probe_scene_write_cell`) are caller-driven diagnostic axes on
+/// a SCRATCH slot, which is what makes the reseed they exercise safe.
 fn scene_overlay_output_level(
     preset: &serde_json::Value,
     scene_slot: u32,

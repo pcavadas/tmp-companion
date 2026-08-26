@@ -140,7 +140,14 @@ pub fn probe_bake_validate(
     let stim = read_stimulus_calibrated(&stim_path, None)?;
     // One read → the node's value, base bypass, switch fn count, engaged force-list, and
     // the saved `lastLoadedScene` (the commit's save must re-stamp it).
-    type Snap = (f64, bool, usize, Vec<(String, String, bool)>, Option<u32>);
+    type Snap = (
+        f64,
+        bool,
+        usize,
+        Vec<(String, String, bool)>,
+        Option<u32>,
+        leveller::FsParamTarget,
+    );
     let snapshot = || -> Result<Snap, String> {
         let (p, _, _) = read_slot_preset_parsed(slot)?;
         let ftsw = p.get("ftsw").cloned().unwrap_or(serde_json::Value::Null);
@@ -151,16 +158,19 @@ pub fn probe_bake_validate(
             .unwrap_or(usize::MAX);
         let engaged = footswitch::engaged_bypass_for_switch(&ftsw, &p, switch);
         let restore = crate::last_loaded_scene(&p);
+        // The classified solve target, off this SAME read — no extra field-8 round trip.
+        let lev_param = leveller::FsParamTarget::from_preset(&p, node, param);
         Ok((
             v,
             footswitch::block_bypassed_in_base(&p, node),
             fns,
             engaged,
             restore,
+            lev_param,
         ))
     };
 
-    let (orig, byp0, fns0, engaged, restore) = snapshot()?;
+    let (orig, byp0, fns0, engaged, restore, lev_param) = snapshot()?;
     let mut out = format!(
         "[probe --bake-validate] slot {} · FS{switch} · {group}/{node}.{param}\n  before: value={orig:.4} bypass={byp0} switch_fns={fns0}\n",
         slot + 1
@@ -183,6 +193,7 @@ pub fn probe_bake_validate(
         true,
         false,
         restore,
+        &lev_param,
     )?;
     out += &format!(
         "  baked: method={} value={:.4}{}\n",
@@ -192,7 +203,7 @@ pub fn probe_bake_validate(
     );
 
     // Verify field-8: the value landed, bypass unchanged, NO param fn added.
-    let (after, byp1, fns1, _, _) = snapshot()?;
+    let (after, byp1, fns1, _, _, _) = snapshot()?;
     let landed = (after - r.final_value as f64).abs() < 1e-3;
     out += &format!(
         "  after : value={after:.4} bypass={byp1} switch_fns={fns1}  ⇒  {}\n",
@@ -217,7 +228,7 @@ pub fn probe_bake_validate(
         s.save_current_preset(slot)?;
     }
     let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
-    let (restored, _, _, _, _) = snapshot()?;
+    let (restored, _, _, _, _, _) = snapshot()?;
     out += &format!(
         "  restore: value={restored:.4}  ⇒  {}\n",
         if (restored - orig).abs() < 1e-3 {
@@ -306,7 +317,8 @@ pub fn probe_fs_sweep(
     for v in values {
         // A silent point is DATA here (the knob's bottom end), not a failure — record it
         // and keep sweeping instead of aborting the whole curve like the solver does.
-        match leveller::measure_fs_at((group, node, param), &engaged, &stim, *v) {
+        // Probe sweep of a saved preset: no run-owned `presetLevel` to assert.
+        match leveller::measure_fs_at(None, (group, node, param), &engaged, &stim, *v, None) {
             Ok(l) => {
                 out += &format!(
                     "  {param}={v:.3} → integrated {:.3} LUFS  short-term-max {:.3}  spread {:.2} LU\n",
@@ -545,6 +557,75 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
     Ok(out)
 }
 
+/// READ-ONLY re-measure of ONE footswitch's ENGAGED sound — the footswitch twin of
+/// `probe --measure-scene`, and the flag that closes P5's external-validation hole (a
+/// footswitch row used to be leveled with no independent capture path, so it could only
+/// be reported as "not externally verified").
+///
+/// Composes EXISTING primitives, adding no engage/disengage sequencing of its own:
+/// * `commands::doctor::doctor_force_bypass` over the SAVED doc — the ONE shared
+///   isolation derivation the leveling, Doctor and strict-harness lanes use (siblings
+///   off + this switch's own engaged flip, isActive-aware);
+/// * `footswitch::existing_param_fn_value_a` — an ASSIGN switch's engaged sound is its
+///   leveled param at the saved `valueA`; a BAKED switch (or one with no `param`
+///   function on `lev`) needs no write, its engaged sound IS the base value;
+/// * `leveller::measure_sound_asis_strict` — the same floor-guarded production capture
+///   path (fresh load → base recall → isolation → ONE engage → guaranteed re-amp OFF)
+///   that `e2e_measure_sound` drives online, including its `--dump-wav`-shaped
+///   external-validation add-on.
+///
+/// `lev` is `Some((group, node, param))` for an ASSIGN switch — the same triple the
+/// `--level-footswitch` run used. `dump_dir`/`target_lufs` arm the validation row (a
+/// WAV plus one line in `TMP_E2E_VALIDATE_LOG`) exactly like `--measure-scene`'s dump.
+/// Read-only throughout: every write lands on a throwaway connection's working copy and
+/// nothing is ever saved.
+pub fn probe_measure_footswitch(
+    slot: u32,
+    switch: u32,
+    topology_id: &str,
+    lev: Option<(&str, &str, &str)>,
+    target_lufs: Option<f64>,
+    dump_dir: Option<&str>,
+) -> Result<String, String> {
+    let stim = read_stimulus_calibrated(&super::stimulus::probe_stimulus_path(topology_id)?, None)?;
+    let saved = crate::read_saved_preset(slot)
+        .ok_or_else(|| format!("field-8 read failed for slot {slot}"))?;
+    let force = crate::commands::doctor::doctor_force_bypass(&saved["ftsw"], &saved, Some(switch));
+    let fs_value = lev.and_then(|(g, n, p)| {
+        footswitch::existing_param_fn_value_a(&saved["ftsw"], switch, n, p)
+            .map(|v| ((g.to_string(), n.to_string(), p.to_string()), v as f32))
+    });
+    // `--dump-wav <dir>` routes through the SAME validation-log add-on the online lane
+    // uses, so `scripts/level-validate.sh` consumes one row shape from both callers. The
+    // row needs a promised target; without one there is nothing to validate against, so
+    // the dump is simply not armed (the measurement still prints).
+    let row = match (dump_dir, target_lufs) {
+        (Some(dir), Some(target)) => Some(
+            crate::validate_log::ValidationRow::footswitch(slot, switch, target).with_wav_dir(dir),
+        ),
+        _ => None,
+    };
+    let result =
+        leveller::measure_sound_asis_strict(slot, None, &force, fs_value, &stim, row.as_ref());
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the device DROPS
+    // an in-session OFF sent on a session that has idled >~1 s, and this lane's capture
+    // idles ~7 s — so `engage_capture_disengage`'s in-session disengage cannot be trusted
+    // as the last word). A standalone `probe --measure-footswitch` would otherwise be able
+    // to leave the unit input-muted. Bound BEFORE the `?` for exactly that reason: an Err
+    // path is the one that most needs the OFF. Same shape as `probe --levelpreset`
+    // (`probe_api/level.rs`) — no added gap, so the two probe arms behave identically.
+    leveller::reamp_off_guaranteed("probe --measure-footswitch");
+    let loud = result?;
+    Ok(format!(
+        "slot={slot} switch={switch} topology={topology_id} lev={lev:?} \
+         integrated_lufs={:.3} short_term_max_lufs={:.3} spread_lu={:.3} isolation_blocks={}\n",
+        loud.integrated_lufs,
+        loud.short_term_max_lufs,
+        loud.spread_lu(),
+        force.len(),
+    ))
+}
+
 /// Probe entry: level one footswitch on the active/`slot` preset for HW re-validation.
 /// DRY by default (measure + solve, no write); `commit` writes `valueA` + saves.
 /// Stimulus via `TMP_LEVELLER_STIMULUS` (+ optional `TMP_LEVELLER_CAL_LUFS`).
@@ -576,8 +657,8 @@ pub fn probe_level_footswitch(
         lev_node_id: lev_node.to_string(),
         lev_parameter_id: lev_param.to_string(),
         target_lufs,
-        // probe: no UI row label to preserve.
-        display_label: None,
+        // probe: solve-and-write, never the verify-only row.
+        scene_context: None,
     };
     let plan = footswitch::plan_footswitch_jobs(
         &ftsw,
@@ -635,6 +716,7 @@ pub fn probe_level_footswitch(
         commit,
         true,
         restore,
+        &leveller::FsParamTarget::from_preset(&preset, lev_node, lev_param),
     )?;
     let mut out = format!(
         "[probe --level-footswitch] preset slot {} · FS{switch} · {lev_group}/{lev_node}.{lev_param}  ({})\n",
@@ -704,7 +786,7 @@ pub fn probe_fs_batch(list_index: u32, values: Vec<f32>) -> Result<String, Strin
                 lev_node_id: p.node_id.clone(),
                 lev_parameter_id: p.parameter_id.clone(),
                 target_lufs: -24.0,
-                display_label: None,
+                scene_context: None,
             })
         })
         .collect();
@@ -800,10 +882,11 @@ pub fn probe_set_param_save(
     value: f32,
     save: bool,
 ) -> Result<String, String> {
-    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-        return Err(format!(
-            "refusing value {value}: block parameters are normalised 0.0..=1.0"
-        ));
+    // `changeParameter` carries the value in the block's OWN real units verbatim (dB,
+    // Hz, …) — not all params are `[0,1]` (HW: `ACD_Boost.gain` accepts raw dB; see
+    // `param_class`'s doc). A diagnostic seam only guards a sane wire value.
+    if !value.is_finite() {
+        return Err(format!("refusing non-finite value {value}"));
     }
     let (preset, _, _) = read_slot_preset_parsed(list_index)?;
     let name = preset

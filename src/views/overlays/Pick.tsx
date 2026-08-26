@@ -7,13 +7,15 @@
 // when rendered outside a wizard card. The two menu deliveries are dedicated components
 // (PickPortalMenu / PickInlineMenu); Pick owns the trigger, state, and the option rows.
 
-import { useContext, useLayoutEffect, useRef, useState } from "react";
+import { useContext } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { DialogCardCtx } from "./wizardContext";
 import { PickPortalMenu } from "./PickPortalMenu";
 import { PickInlineMenu } from "./PickInlineMenu";
+import { usePickAnchor } from "./usePickAnchor";
+import { pickTriggerBorder } from "./pickTriggerChrome";
 
 export interface PickOption {
   id: string;
@@ -34,17 +36,17 @@ export interface PickProps {
    *  the apply-to-all value (not yet overridden). */
   muted?: boolean;
   /** e2e hook: stable `data-pick` selector on the trigger (e.g. `target:E2E P400`) so a
-   *  test can open a specific row's picker without relying on portal layout. */
+   *  test can open a specific row's picker without relying on portal layout. Each option
+   *  row also carries `data-pick-option="<tid>:<option.id>"` once the menu is open — a
+   *  text-based option match (`getByText(label,{exact:true})`) breaks once TWO rows are
+   *  bound to option text that's ALSO the trigger's own closed-state label (e.g. two
+   *  presets both already showing "Lead"); the attribute selector has no such collision
+   *  and doesn't depend on DOM append order. */
   tid?: string;
-}
-
-interface Anchor {
-  left: number;
-  below: number;
-  above: number;
-  width: number;
-  cardW: number;
-  cardH: number;
+  /** Fired once the menu has opened — a lazy per-preset fetch trigger (e.g. the
+   *  footswitch scene-context picker's `list_footswitch_scene_contexts`). Idempotent,
+   *  safe to call on every open. Omit for a Pick whose options need no device read. */
+  onOpen?: () => void;
 }
 
 export function Pick({
@@ -55,68 +57,27 @@ export function Pick({
   title,
   muted,
   tid,
+  onOpen,
 }: PickProps) {
   const { t } = useTheme();
-  const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<Anchor | null>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  // The portal target card element, captured from the context ref in `openMenu` (an
-  // event handler) so render never reads `ref.current` — `open`/`anchor`/`cardEl` are
-  // all set together when the menu opens, so the portal renders in the same pass.
-  const [cardEl, setCardEl] = useState<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const cardRef = useContext(DialogCardCtx);
+  const { open, anchor, pos, cardEl, menuRef, triggerRef, openMenu, close } =
+    usePickAnchor(cardRef, { onOpen });
   // `options[0]` is `PickOption | undefined` at runtime (the array can be empty), but
   // this tsconfig has no `noUncheckedIndexedAccess` — spell the real type out so the
   // empty-list fallback below isn't seen as redundant.
   const first: PickOption | undefined =
     options.length > 0 ? options[0] : undefined;
-  const cur = options.find((o) => o.id === value) ?? first;
+  const found = options.find((o) => o.id === value);
+  // DANGER-rule guard (danger.md's Pick/BlockPick trap): a non-empty `value` the
+  // current `options` set doesn't contain must NEVER silently fall back to
+  // `options[0]` — a store without a "Crunch" target once displayed "Rhythm" while
+  // the run submitted "crunch", a silent wrong-target write. Show the raw stored id
+  // in a warning state instead: honest (states what's ACTUALLY selected), even
+  // though it isn't as pretty as a resolved label.
+  const stale = value !== "" && found === undefined;
+  const cur = found ?? (stale ? undefined : first);
 
-  const openMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const card = cardRef?.current;
-    if (!card || !triggerRef.current) {
-      // No card context (Pick used outside a wizard) → trigger-anchored inline menu.
-      setAnchor(null);
-      setOpen((o) => !o);
-      return;
-    }
-    const tr = triggerRef.current.getBoundingClientRect();
-    const cr = card.getBoundingClientRect();
-    setAnchor({
-      left: tr.left - cr.left,
-      below: tr.bottom - cr.top + 4,
-      above: tr.top - cr.top,
-      width: tr.width,
-      cardW: cr.width,
-      cardH: cr.height,
-    });
-    setCardEl(card);
-    setPos(null);
-    setOpen(true);
-  };
-
-  // Two-pass: render hidden to measure, then place (clamped horizontally, flipped above
-  // when it would overflow the card bottom).
-  useLayoutEffect(() => {
-    if (!open || !anchor || !menuRef.current) return;
-    const mw = menuRef.current.offsetWidth;
-    const mh = menuRef.current.offsetHeight;
-    const left = Math.min(
-      Math.max(8, anchor.left),
-      Math.max(8, anchor.cardW - mw - 8),
-    );
-    let top = anchor.below;
-    if (top + mh > anchor.cardH - 8) top = Math.max(8, anchor.above - mh - 4);
-    setPos({ left, top });
-  }, [open, anchor]);
-
-  const close = () => {
-    setOpen(false);
-    setPos(null);
-  };
   const pick = (id: string) => {
     close();
     onChange(id);
@@ -127,6 +88,7 @@ export function Pick({
     return (
       <div
         key={o.id}
+        data-pick-option={tid ? `${tid}:${o.id}` : undefined}
         onClick={(e) => {
           e.stopPropagation();
           pick(o.id);
@@ -183,7 +145,7 @@ export function Pick({
     >
       <div
         onClick={openMenu}
-        title={title}
+        title={stale ? `"${value}" is no longer offered` : title}
         data-pick={tid}
         style={{
           display: "flex",
@@ -191,24 +153,32 @@ export function Pick({
           gap: t.space3,
           height: 26,
           padding: `0 ${String(t.space3)}px 0 ${String(t.space4)}px`,
-          border: `0.5px solid ${open ? t.accent : t.hairlineStrong}`,
+          border: pickTriggerBorder(t, { open, warn: stale }),
           borderRadius: 6,
           background: t.bg,
           cursor: "pointer",
           whiteSpace: "nowrap",
         }}
       >
+        {stale && (
+          <Icon
+            name="warn-tri"
+            size={11}
+            stroke={t.sevWarn}
+            strokeWidth={1.7}
+          />
+        )}
         <span
           style={{
             fontFamily: t.mono,
             fontSize: 10.5,
-            color: muted ? t.faint : t.ink,
+            color: stale ? t.sevWarn : muted ? t.faint : t.ink,
             flex: 1,
             overflow: "hidden",
             textOverflow: "ellipsis",
           }}
         >
-          {cur ? cur.label : "—"}
+          {stale ? value : cur ? cur.label : "—"}
         </span>
         <Icon
           name="chev-down"

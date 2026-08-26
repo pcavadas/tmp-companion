@@ -73,12 +73,131 @@ pub(crate) fn decode_preset_scenes(json: &[u8]) -> Result<PresetScenes, String> 
 }
 
 pub(crate) fn read_preset_scenes_fresh(list_index: u32) -> Result<PresetScenes, String> {
+    read_slot_scenes_raw(list_index).map(|(_, scenes)| scenes)
+}
+
+/// One fresh field-8 read returning BOTH the raw bytes (for truncation detection) and
+/// the decoded scenes — the connect/drain/read incantation lives here once so the
+/// fresh and complete-read paths cannot drift.
+fn read_slot_scenes_raw(list_index: u32) -> Result<(Vec<u8>, PresetScenes), String> {
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
     let json = s
         .read_slot_preset_json(list_index + 1)?
         .ok_or_else(|| format!("no preset scene data returned for slot {}", list_index + 1))?;
-    decode_preset_scenes(&json)
+    let scenes = decode_preset_scenes(&json)?;
+    Ok((json, scenes))
+}
+
+/// Does a field-8 [`PresetScenes`] read look like it landed on the scene-tail cut
+/// (notes/gotchas.md's field-8 slot-addressed-read entry — the partial is
+/// device-truncated at a PER-SLOT-DETERMINISTIC size, so retrying cannot help)? Either
+/// tell fires:
+/// - a repaired scene name is empty — the tolerant unwind lands mid-object, so the
+///   scene survives but its `sceneName` sits past the cut, or
+/// - `scenes.scenes.len()` doesn't cover every scene the doc itself REFERENCES
+///   ([`footswitch::max_referenced_scene`]). It returns an INDEX, so the strict tell
+///   is `len() <= max_ref` — a doc referencing index 3 needs >= 4 scenes.
+///
+/// Conservative in the other direction: an unparseable doc (`doc: None`) reads as NOT
+/// truncated (nothing left to compare `scenes` against) rather than forcing every
+/// caller through the backup fallback. `doc` is the tolerant parse of the SAME raw
+/// bytes `scenes` was decoded from — parsed once by the caller and threaded through.
+pub(crate) fn preset_scenes_look_truncated(
+    doc: Option<&serde_json::Value>,
+    scenes: &PresetScenes,
+) -> bool {
+    if scenes.scenes.iter().any(String::is_empty) {
+        return true;
+    }
+    let Some(doc) = doc else {
+        return false;
+    };
+    footswitch::max_referenced_scene(doc).is_some_and(|m| scenes.scenes.len() <= m as usize)
+}
+
+/// Build [`PresetScenes`] from the backup row matching `list_index`, guarded on BOTH
+/// slot and name — see [`read_preset_scenes_complete`]'s doc comment for why. `field8_name`
+/// is the field-8 partial's own `info.displayName` (read from the TRUNCATION-PROOF prefix,
+/// well before the scene-tail cut). Pure (no device I/O), so it's testable without hardware.
+pub(crate) fn scenes_from_backup_row(
+    list_index: u32,
+    field8_name: &str,
+    rows: &[BackupPresetRow],
+) -> Result<PresetScenes, String> {
+    let device_slot = i64::from(list_index) + 1;
+    let row = rows.iter().find(|r| r.slot == device_slot).ok_or_else(|| {
+        format!(
+            "read_preset_scenes_complete: backup has no row for slot {device_slot} \
+             (field-8 name {field8_name:?})"
+        )
+    })?;
+    if row.name != field8_name {
+        return Err(format!(
+            "read_preset_scenes_complete: backup row for slot {device_slot} is named \
+             {:?}, but the field-8 partial for the same slot says {field8_name:?} — \
+             refusing a scene list that may belong to a different preset",
+            row.name
+        ));
+    }
+    // scene_count == -1 means the backup row's presetJson didn't parse (backup_read.rs)
+    // — its empty `scenes` would silently re-enter the exact under-enumeration this
+    // fallback exists to eliminate, so refuse instead of returning zero scenes.
+    if row.scene_count < 0 {
+        return Err(format!(
+            "read_preset_scenes_complete: backup row for slot {device_slot} \
+             ({field8_name:?}) has an unparseable presetJson (scene_count=-1) — \
+             refusing its empty scene list"
+        ));
+    }
+    Ok(PresetScenes {
+        scenes: row.scenes.iter().map(|s| s.name.clone()).collect(),
+        fs: row.scenes.iter().map(|s| s.fs).collect(),
+        footswitches: row.footswitches.clone(),
+    })
+}
+
+/// Complete-JSON fallback for [`read_preset_scenes_fresh`]. The field-8 partial's scene
+/// tail truncates at a per-slot-deterministic size — retrying the same read cannot help
+/// (notes/gotchas.md's field-8 entry). When [`preset_scenes_look_truncated`] fires, this
+/// instead reads the preset's COMPLETE `presetJson` off the device backup
+/// ([`Session::device_backup`] + [`read_backup_archive`], the same decode
+/// `read_library_via_backup` uses) — a fresh connection, since the backup is its own
+/// multi-second transfer and re-amp rules keep it off any held session.
+///
+/// Name-guarded (danger.md's address-space rule — this enumeration feeds per-scene
+/// `outputLevel` writes + saves): a second connection sits between the two reads, so the
+/// backup row is accepted ONLY when its slot AND name match the field-8 partial's own
+/// `info.displayName`. A scene list silently read from the WRONG preset would level the
+/// wrong sounds.
+pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScenes, String> {
+    let (json, scenes) = read_slot_scenes_raw(list_index)?;
+    let doc = session::tolerant_parse_json(&String::from_utf8_lossy(&json));
+    if !preset_scenes_look_truncated(doc.as_ref(), &scenes) {
+        return Ok(scenes);
+    }
+    let field8_name = doc
+        .as_ref()
+        .and_then(|d| d.pointer("/info/displayName"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let max_ref = doc.as_ref().and_then(footswitch::max_referenced_scene);
+    log::warn!(
+        "read_preset_scenes_complete: slot {} {field8_name:?} scene list truncated by the \
+         field-8 partial ({} of {} scenes) — reading the complete list via device backup",
+        list_index + 1,
+        scenes.scenes.len(),
+        max_ref
+            .map(|m| format!("≥{}", m + 1))
+            .unwrap_or_else(|| "?".to_string()),
+    );
+
+    let mut s = Session::connect()?;
+    let (blob, _stats) = s.device_backup(60, |_| {})?;
+    drop(s);
+    let backup = read_backup_archive(&blob)?;
+    scenes_from_backup_row(list_index, &field8_name, &backup.presets)
 }
 
 /// Pure-lazy scene read for one preset. It never loads the preset: the command reads
@@ -370,7 +489,7 @@ pub(crate) async fn read_library_via_backup<R: tauri::Runtime>(
 /// `settingsBackup` bytes ([`BackupReadResult::settings_bytes`]) land for a future
 /// "support bundle" export. `None` (logged) when the config dir can't be resolved;
 /// never fails the backup read.
-fn device_settings_path<R: tauri::Runtime>(
+pub(crate) fn device_settings_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Option<std::path::PathBuf> {
     match profiles::app_config_dir(app) {
@@ -454,4 +573,175 @@ pub(crate) async fn list_user_irs(state: State<'_, AppState>) -> Result<Vec<User
         Ok(find_user_irs(&bodies))
     })
     .await
+}
+
+#[cfg(test)]
+mod truncation_fallback_tests {
+    use super::*;
+
+    fn scene_switch(slot: u64, label: &str) -> serde_json::Value {
+        serde_json::json!({ "func": "scene", "sceneSlot": slot, "customLabel": label, "isActive": true })
+    }
+
+    fn decoded(raw: &[u8]) -> PresetScenes {
+        decode_preset_scenes(raw).expect("well-formed fixture should decode")
+    }
+
+    #[test]
+    fn empty_name_tell_fires_even_when_no_scene_index_is_underreferenced() {
+        // Mid-object-cut shape: 3 scene objects, the 3rd missing `sceneName` (the
+        // tolerant repair's signature — the object survives, the name doesn't). `ftsw`
+        // only reaches sceneSlot 1, so the COUNT tell alone would read `false` — this
+        // fixture isolates the empty-name tell.
+        let raw = serde_json::json!({
+            "ftsw": [[scene_switch(0, "Dirt")], [scene_switch(1, "Crunch")]],
+            "lastLoadedScene": 0,
+            "scenes": [{"sceneName": "Dirt"}, {"sceneName": "Crunch"}, {}],
+        })
+        .to_string();
+        let scenes = decoded(raw.as_bytes());
+        assert_eq!(scenes.scenes, vec!["Dirt", "Crunch", ""]);
+        let doc = session::tolerant_parse_json(&raw);
+        assert!(preset_scenes_look_truncated(doc.as_ref(), &scenes));
+    }
+
+    #[test]
+    fn referenced_index_beyond_scenes_len_fires_with_every_name_present() {
+        // 3 complete names (no empty-name tell), but a footswitch references
+        // sceneSlot 3 — an INDEX that needs >= 4 scenes. HBE ANATOMY's own shape: the
+        // 4th scene (referenced by its footswitch) is missing entirely, not merely
+        // unnamed.
+        let raw = serde_json::json!({
+            "ftsw": [[scene_switch(3, "Clean")]],
+            "lastLoadedScene": 0,
+            "scenes": [
+                {"sceneName": "Dirt"}, {"sceneName": "Crunch"}, {"sceneName": "Solo"}
+            ],
+        })
+        .to_string();
+        let scenes = decoded(raw.as_bytes());
+        assert!(scenes.scenes.iter().all(|n| !n.is_empty()));
+        let doc = session::tolerant_parse_json(&raw);
+        assert!(preset_scenes_look_truncated(doc.as_ref(), &scenes));
+    }
+
+    #[test]
+    fn complete_four_scene_doc_is_not_truncated() {
+        // `lastLoadedScene: 8` is the wire BASE sentinel, not a `scenes[]` index — a
+        // preset saved in base is a common real state, and if the BASE_SCENE_SLOT
+        // exclusion in `footswitch::max_referenced_scene` regressed, 8 would outrank
+        // the real max (3) and this 4-scene, complete doc would misread as truncated.
+        let raw = serde_json::json!({
+            "ftsw": [[scene_switch(3, "Clean")]],
+            "lastLoadedScene": 8,
+            "scenes": [
+                {"sceneName": "Dirt"}, {"sceneName": "Crunch"},
+                {"sceneName": "Solo"}, {"sceneName": "Clean"}
+            ],
+        })
+        .to_string();
+        let scenes = decoded(raw.as_bytes());
+        assert_eq!(scenes.scenes.len(), 4);
+        let doc = session::tolerant_parse_json(&raw);
+        assert!(!preset_scenes_look_truncated(doc.as_ref(), &scenes));
+    }
+
+    fn backup_row(slot: i64, name: &str, scenes: Vec<SceneInfo>) -> BackupPresetRow {
+        BackupPresetRow {
+            slot,
+            name: name.to_string(),
+            scene_count: scenes.len() as i64,
+            scenes,
+            amp_candidates: Vec::new(),
+            blocks: Vec::new(),
+            graph: session::ActiveGraph::default(),
+            footswitches: vec![footswitch::FootswitchInfo {
+                switch: 1,
+                label: "Boost".to_string(),
+                link_group: None,
+                functions: Vec::new(),
+                level_params: Vec::new(),
+                all_params: Vec::new(),
+            }],
+            silence_hint: None,
+            scene_handles: Vec::new(),
+            base_handles: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn name_mismatch_is_refused_naming_both_names() {
+        // Non-overlapping names (neither is a substring of the other) so the two
+        // `contains` checks below can't both pass off a single name in the message.
+        let rows = vec![backup_row(
+            25,
+            "Guitar Layers",
+            vec![SceneInfo {
+                name: "Dirt".to_string(),
+                fs: Some(1),
+            }],
+        )];
+        let err = match scenes_from_backup_row(24, "HBE ANATOMY", &rows) {
+            Ok(_) => panic!("mismatched name must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("Guitar Layers"), "{err}");
+        assert!(err.contains("HBE ANATOMY"), "{err}");
+    }
+
+    #[test]
+    fn no_matching_slot_is_refused() {
+        let rows = vec![backup_row(3, "Other Preset", vec![])];
+        let err = match scenes_from_backup_row(24, "HBE ANATOMY", &rows) {
+            Ok(_) => panic!("no row for the slot must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("25"), "{err}"); // list_index 24 → 1-based device slot 25
+    }
+
+    #[test]
+    fn unparseable_backup_row_is_refused_not_returned_as_zero_scenes() {
+        // scene_count == -1 marks a backup row whose presetJson didn't parse
+        // (backup_read.rs) — slot and name both match, but accepting its empty
+        // `scenes` would silently re-enter the under-enumeration this fallback
+        // exists to eliminate.
+        let mut row = backup_row(25, "HBE ANATOMY", vec![]);
+        row.scene_count = -1;
+        let err = match scenes_from_backup_row(24, "HBE ANATOMY", &[row]) {
+            Ok(_) => panic!("an unparseable backup row must be refused"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unparseable"), "{err}");
+    }
+
+    #[test]
+    fn matching_row_maps_names_fs_and_footswitches() {
+        let rows = vec![backup_row(
+            25,
+            "HBE ANATOMY",
+            vec![
+                SceneInfo {
+                    name: "Dirt".to_string(),
+                    fs: Some(1),
+                },
+                SceneInfo {
+                    name: "Crunch".to_string(),
+                    fs: None,
+                },
+                SceneInfo {
+                    name: "Solo".to_string(),
+                    fs: Some(3),
+                },
+                SceneInfo {
+                    name: "Clean".to_string(),
+                    fs: Some(4),
+                },
+            ],
+        )];
+        let scenes = scenes_from_backup_row(24, "HBE ANATOMY", &rows).expect("matching row");
+        assert_eq!(scenes.scenes, vec!["Dirt", "Crunch", "Solo", "Clean"]);
+        assert_eq!(scenes.fs, vec![Some(1), None, Some(3), Some(4)]);
+        assert_eq!(scenes.footswitches.len(), 1);
+        assert_eq!(scenes.footswitches[0].label, "Boost");
+    }
 }

@@ -6,7 +6,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ActiveGraph, BackupReadResult } from "../lib/types";
+import type {
+  ActiveGraph,
+  BackupReadResult,
+  FootswitchInfo,
+} from "../lib/types";
 import {
   ensureLibraryScan,
   getLibraryScan,
@@ -37,6 +41,8 @@ const row = (slot: number, name: string) => ({
   graph: emptyGraph,
   footswitches: [],
   silence_hint: null,
+  scene_handles: [],
+  base_handles: [],
 });
 
 // device slots 8 / 58 → list indices 7 / 57; three song→preset bindings.
@@ -155,7 +161,7 @@ describe("libraryScan — songs↔presets axis data", () => {
   });
 
   it("caches only LEVELABLE footswitches per index (filters empty level_params)", async () => {
-    const levelable = {
+    const levelable: FootswitchInfo = {
       switch: 4,
       label: "Solo",
       link_group: null,
@@ -167,6 +173,7 @@ describe("libraryScan — songs↔presets axis data", () => {
           fender_id: "ACD_BluesDriver",
           parameter_id: "gain",
           current: 0.5,
+          class: "level_linear",
         },
       ],
     };
@@ -199,6 +206,66 @@ describe("libraryScan — songs↔presets axis data", () => {
     ]);
     // slot 58 → index 57: no footswitches → no map entry at all.
     expect(lib.footswitchesPerIndex.has(57)).toBe(false);
+  });
+
+  // BUG→GATE: the doctor lane's damage detector reads DoctorInput.footswitches off
+  // `useDoctorFlow`'s `footswitchesByIndex`, which App wires from `allFootswitchInfo`
+  // (this store's `allFootswitchesByIndex`) — NOT the levelable-only
+  // `footswitchesPerIndex`. Before the fix, an Other-class-only switch (like "Tuner"
+  // here, zero level candidates) was invisible to Doctor's offline force-bypass
+  // isolation because the ONE feed both tabs shared was pre-filtered for Level's
+  // reason (nothing to solve), which has nothing to do with Doctor's reason (it still
+  // toggles a block).
+  it("keeps the FULL footswitch roster in allFootswitchesByIndex, unfiltered", async () => {
+    const levelable: FootswitchInfo = {
+      switch: 4,
+      label: "Solo",
+      link_group: null,
+      functions: [],
+      level_params: [
+        {
+          group_id: "G1",
+          node_id: "N4",
+          fender_id: "ACD_BluesDriver",
+          parameter_id: "gain",
+          current: 0.5,
+          class: "level_linear",
+        },
+      ],
+    };
+    const bare = {
+      switch: 5,
+      label: "Tuner",
+      link_group: null,
+      functions: [],
+      level_params: [], // not levelable — but still a real footswitch Doctor must see
+    };
+    const backup: BackupReadResult = {
+      ...BACKUP,
+      presets: [
+        { ...row(8, "Plexi Crunch"), footswitches: [levelable, bare] },
+        row(58, "Stadium Lead"),
+      ],
+    };
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(backup)
+        : Promise.resolve(null),
+    );
+
+    await ensureLibraryScan();
+    const lib = getLibraryScan();
+
+    // Both switches survive — Level's own filtered map still drops the bare one.
+    expect(lib.allFootswitchesByIndex.get(7)?.map((f) => f.label)).toEqual([
+      "Solo",
+      "Tuner",
+    ]);
+    expect(lib.footswitchesPerIndex.get(7)?.map((f) => f.label)).toEqual([
+      "Solo",
+    ]);
+    // A preset with no footswitches at all still gets no entry in either map.
+    expect(lib.allFootswitchesByIndex.has(57)).toBe(false);
   });
 });
 

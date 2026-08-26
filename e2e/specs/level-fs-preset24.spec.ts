@@ -14,6 +14,10 @@ import {
   reampOff,
 } from "../fixtures/scenario";
 
+// COVERAGE rows 36, 16 — the lazy-save (stale-load) incident, and the FS level opt-in
+// BAKE lane it runs on: 405's four drive switches each declare the pedal's own
+// `level`/`volume` in `scenario-loudness.json`'s `leveledParams`, so `saturated_pedal_lufs`
+// (not the flat C law) drives every solve this file asserts.
 // BUG→GATE (2026-08-02 HW incident): `saveCurrentPreset` commits LAZILY (T+45-100s on the
 // real unit) — a same-slot `loadPreset` inside that window materializes the PRE-save preset.
 // The incident: base saved presetLevel 0.4377, the footswitch batch's own load 2s later
@@ -35,7 +39,8 @@ import {
 // (sim_device.rs) round-trips the baked value through a save→load exactly like `presetLevel`.
 //
 // OFFLINE-ONLY: ±0.1 LU assumes the sim's exact deterministic model; the online strict
-// harness (level-strict.spec.ts) keeps a HW-noise-sized DELTA_FS (1.0) for the same reason.
+// harness (level.online.spec.ts, absorbed from level-strict.spec.ts) keeps a
+// HW-noise-sized DELTA_FS (1.0) for the same reason.
 
 const PRESET24 = SCENARIO[5]; // E2E Preset24
 const BASE_TARGET = -26;
@@ -189,7 +194,7 @@ test.describe("Level — footswitch stale-load fixture (offline deterministic mo
     }
 
     // Re-measure the PERSISTED sim state from a FRESH load (the strict harness's own seam,
-    // `e2e_measure_sound` — see level-strict.spec.ts) — proves the SAVED preset actually
+    // `e2e_measure_sound` — see level.online.spec.ts) — proves the SAVED preset actually
     // sounds at target, not merely that the run reported it.
     const heardBase = await measureSound(page);
     expect(

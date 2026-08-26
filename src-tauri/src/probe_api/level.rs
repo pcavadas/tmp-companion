@@ -15,11 +15,11 @@ use crate::session;
 use crate::session::Session;
 use crate::LevelBlockArg;
 
-/// The one engaged/floor criterion the diagnostic arms share: finite chain audio
-/// meaningfully above the stationary floor, with real dynamics (a floor read is
-/// near-flat). NaN comparisons are false, so a failed measure reads "not engaged".
+/// The engaged/floor criterion the diagnostic arms share, delegating to the ONE
+/// definition ([`leveller::is_engaged`]) so this file's FLOOR/SILENT headline and
+/// `validate_log`'s `engaged` verdict can never drift apart.
 fn is_engaged(l: &lufs::Loudness) -> bool {
-    l.integrated_lufs.is_finite() && l.integrated_lufs > -50.0 && l.spread_lu() > 0.5
+    leveller::is_engaged(l)
 }
 
 /// DIAGNOSTIC (reamp-stuck investigation): PASSIVE re-amp state read — zero HID
@@ -121,7 +121,7 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
             // anything on the known scenario preset — a unit without the seeded
             // fixture at 400 (empty slot, or some unrelated user preset) could
             // invert it. Name-confirm in the same list space before loading.
-            super::slot_write::confirm_slot_name(400, "E2E Reference")?;
+            super::slot_write::confirm_slot_name(400, "E2E Rig")?;
             let mut s = Session::connect_lean()?;
             s.load_preset(400)?;
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -206,12 +206,19 @@ pub fn probe_reamp_multi_engage(topology_id: &str, cycles: u32) -> Result<String
 /// capture with everything derived from it): a failed inject reads as the device's
 /// stationary output floor, so the headline is stamped FLOOR/SILENT when the capture
 /// fails `probe_reamp_state`'s engaged criterion instead of being retried.
+///
+/// `target_lufs` + `dump_dir` together arm the P5 external-validation row: the capture
+/// is written to a WAV and one expectation line is appended to `TMP_E2E_VALIDATE_LOG`
+/// (`crate::validate_log`) so `scripts/level-validate.sh` can judge the SAME audio with
+/// ffmpeg's `ebur128`. Without `target_lufs` the `--dump-wav` add-on behaves exactly as
+/// before (a bare WAV, no row) — there is nothing to validate a capture against.
 pub fn probe_measure_current_lufs(
     topology_id: &str,
     slot: Option<u32>,
     scene_slot: Option<u32>,
     calibration_lufs: Option<f32>,
     dump_dir: Option<&str>,
+    target_lufs: Option<f64>,
 ) -> Result<String, String> {
     let stim_path = probe_stimulus_path(topology_id)?;
     let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
@@ -221,7 +228,15 @@ pub fn probe_measure_current_lufs(
     // argmax (broadband RMS across ALL channels incl. the ch2 dry DI tap) stays
     // observable per measurement even though it no longer drives the headline.
     // No floor-guard retry (diagnostic seam).
-    let cap = leveller::capture_asis_full(slot, scene_slot, &stim)?;
+    let capture = leveller::capture_asis_full(slot, scene_slot, &stim);
+    // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the device DROPS
+    // an in-session OFF sent on a session that has idled >~1 s, and this ~7 s capture
+    // always has). Fired HERE, immediately after the one engage, rather than at the tail:
+    // every path below this line — the `?`, the `--target`-without-slot refusal, a
+    // `measure_processed` failure — is an early return that would otherwise leave the unit
+    // input-muted. Same shape as `probe --levelpreset` below: bind, back off, then `?`.
+    leveller::reamp_off_guaranteed("probe --measure-current");
+    let cap = capture?;
     let (win, _) = cap.loudest_channel();
     let mut per_channel = String::new();
     for c in 0..cap.channels {
@@ -245,12 +260,32 @@ pub fn probe_measure_current_lufs(
     }
     // `--dump-wav <dir>` ADD-ON (pure add-on: `dump_dir` is `None` on every call
     // site that doesn't pass `--dump-wav`, so behaviour is byte-identical then).
-    // Writes BEFORE the `measure_processed` move below — `dump_processed_capture`
-    // only borrows `cap`. Feeds `scripts/meter-parity.sh` real device captures
+    // Both this and `measure_processed` below only BORROW `cap`. Feeds
+    // `scripts/level-validate.sh` / `scripts/meter-parity.sh` real device captures
     // once the device is back online; this write path itself is untested on real
     // hardware (device unavailable at implementation time).
-    let dump_note = match dump_dir {
-        Some(dir) => {
+    // The P5 validation row (below) does its OWN dump into the row's directory, so the
+    // two never both write: `--target` upgrades `--dump-wav` from a bare file to a file
+    // plus an expectation an external meter can judge it against.
+    let validate = match (dump_dir, target_lufs) {
+        (Some(dir), Some(target)) => Some(match (slot, scene_slot) {
+            (Some(s), Some(sc)) if sc != crate::session::BASE_SCENE_SLOT => {
+                crate::validate_log::ValidationRow::scene(s, sc, target).with_wav_dir(dir)
+            }
+            (Some(s), _) => crate::validate_log::ValidationRow::base(s, target).with_wav_dir(dir),
+            // No slot = "whatever is loaded"; there is no stable identity to record, so
+            // this stays a plain dump.
+            (None, _) => {
+                return Err(
+                    "--target needs an explicit slot (use --measure-scene, not --measure-current)"
+                        .to_string(),
+                )
+            }
+        }),
+        _ => None,
+    };
+    let dump_note = match (dump_dir, validate.is_some()) {
+        (Some(dir), false) => {
             let label = format!(
                 "measure_slot-{}_scene-{}",
                 slot.map(|s| s.to_string())
@@ -264,11 +299,19 @@ pub fn probe_measure_current_lufs(
                 Err(e) => format!("  --dump-wav FAILED: {e}\n"),
             }
         }
+        _ => String::new(),
+    };
+    let loud =
+        leveller::measure_processed(&cap).map_err(|e| format!("processed measure failed: {e}"))?;
+    // AFTER the measure: the row carries the engage verdict, which is derived from the
+    // loudness of this very capture (`validate_log::emit`'s doc).
+    let validate_note = match &validate {
+        Some(row) => {
+            crate::validate_log::emit(row, &cap, &loud);
+            format!("  validation row emitted: {}\n", row.label)
+        }
         None => String::new(),
     };
-    // Moves `cap` — everything above that needed it (the per-channel loop, the dump) is done.
-    let loud =
-        leveller::measure_processed(cap).map_err(|e| format!("processed measure failed: {e}"))?;
     // No floor-guard retry on this diagnostic seam, so a silent/failed inject WOULD
     // print the device's stationary floor as if it were a measurement — stamp the
     // headline with `probe_reamp_state`'s engaged/floor criterion instead.
@@ -278,7 +321,7 @@ pub fn probe_measure_current_lufs(
         "  << FLOOR/SILENT — not a valid measurement (failed inject?)"
     };
     Ok(format!(
-        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}{verdict}\n{per_channel}{dump_note}",
+        "slot={} topology={topology_id} scene={} integrated_lufs={:.3} short_term_max_lufs={:.3}{verdict}\n{per_channel}{dump_note}{validate_note}",
         slot.map(|s| s.to_string())
             .unwrap_or_else(|| "current".to_string()),
         scene_slot
@@ -621,9 +664,18 @@ pub fn probe_channels(slot: u32) -> Result<String, String> {
 /// each input channel's peak/RMS in dBFS. Validates that the dry instrument
 /// (USB-Out 3 → input channel index 2) is capturable for Tier-2 calibration.
 pub fn probe_capture_input(secs: f32) -> Result<String, String> {
-    // Ensure normal mode (re-amp OFF) so the rear instrument input flows.
-    if let Ok(mut s) = Session::connect() {
-        let _ = s.set_reamp_mode(false);
+    // Force normal mode (re-amp OFF) so the front instrument input flows —
+    // VERIFIED, same discipline as `capture_dry_di`: a swallowed OFF on a unit
+    // stuck in re-amp reads as an all-silent take (both jacks muted, USB-Out 3/4
+    // disabled) and would misdirect the very diagnosis this probe exists for.
+    {
+        // `connect_lean` for the same reason as `capture_dry_di`: a bare setter needs
+        // no handshake payload, and the lean shape is the narrowest open onto a device
+        // whose exclusive-open lockout every failed attempt would restart.
+        let mut s = Session::connect_lean()
+            .map_err(|e| format!("could not reach the device to switch re-amp OFF ({e})"))?;
+        s.set_reamp_mode(false)
+            .map_err(|e| format!("re-amp OFF was not accepted by the device ({e})"))?;
     }
     std::thread::sleep(std::time::Duration::from_millis(300));
     let cap = audio::capture_input(secs, 48_000)?;

@@ -1,6 +1,6 @@
 # Contributing
 
-TMP Companion is a macOS-first Tauri 2 app (Rust backend + React/TypeScript frontend) that talks to a Fender Tone Master Pro over USB. macOS is the platform it ships on; Linux builds, passes every gate, and talks to the device, minus the re-amp features — see [Developing on Linux](#developing-on-linux). This file is the onramp; the depth lives elsewhere:
+TMP Companion is a macOS-first Tauri 2 app (Rust backend + React/TypeScript frontend) that talks to a Fender Tone Master Pro over USB. macOS is the platform it ships on; Linux is a supported development platform, including re-amp (Level, Doctor) — see [Developing on Linux](#developing-on-linux). This file is the onramp; the depth lives elsewhere:
 
 - **Before touching the device:** [`.claude/rules/danger.md`](.claude/rules/danger.md) — the always-loaded danger rules (data loss, device wedging, machine crashes).
 - **Start here:** [`CLAUDE.md`](CLAUDE.md) — the index to those rules, plus the traps that fire while running a command.
@@ -28,11 +28,30 @@ CI (`.github/workflows/ci.yml`) runs all of the above plus the offline Playwrigh
 
 ### Developing on Linux
 
-The app **ships** on macOS. Linux is a supported _development_ platform and partially a working one: the crate builds and passes every gate there, and it talks to a real Tone Master Pro over `hidraw`.
+The app **ships** on macOS. Linux is a supported _development_ platform, and Level/Doctor (re-amp) work there too: the crate builds and passes every gate, talks to a real Tone Master Pro over `hidraw`, and measures/levels/diagnoses over ALSA.
 
-**Works on Linux:** every gate (`cargo check`/`clippy`/`fmt`/`test --lib`, the whole frontend toolchain, the offline Playwright e2e against `SimDevice`), and real device I/O — connect, preset list, the backup scan.
+**Works on Linux:** every gate (`cargo check`/`clippy`/`fmt`/`test --lib`, the whole frontend toolchain, the offline Playwright e2e against `SimDevice`), real device I/O — connect, preset list, the backup scan — and re-amp: the **Level** and **Doctor** tabs, HW-validated end to end (measure → solve → apply, and a full Doctor spectral sweep) against a real unit.
 
-**Does not work on Linux:** anything needing re-amp, i.e. the **Level and Doctor** tabs. The `cpal` code paths compile, but `audio.rs`'s `pick_config` admits only `SampleFormat::F32` configs — a constraint written against CoreAudio, which is where every re-amp rule in `.claude/rules/danger.md` was measured. Nothing there has been re-measured on Linux: the device's supported `cpal` configs have not been enumerated, and whether PipeWire card ownership breaks the discrete channel routing re-amp depends on is an open question. Both are prerequisites for the work, not conclusions from it. Treat those two tabs as macOS-only for now.
+The TMP's ALSA `hw:` interface is **S32_LE (I32) only — no F32** (HW-measured; `probe --audio-devices` prints the exact formats/channels/rates a box actually has). `audio.rs`'s `pick_config` accepts F32 or I32, converting at the stream-callback boundary, and resolves the device via `/proc/asound` by USB vendor id rather than the CoreAudio-shaped name-substring match (which is ambiguous on Linux — see `audio.rs`'s module header for the measured detail).
+
+**PipeWire will contend for the device.** WirePlumber claims USB-audio devices as system sinks/sources by default, which blocks `tmp-companion`'s exclusive `hw:` open with `EBUSY` whenever it's actively holding the card. Exclude the TMP:
+
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d
+cat > ~/.config/wireplumber/wireplumber.conf.d/51-tmp-companion-ignore.conf <<'EOF'
+monitor.alsa.rules = [
+  {
+    matches = [
+      { device.vendor.id = "0x1ed8", device.product.id = "0x0047" }
+    ]
+    actions = { update-props = { device.disabled = true } }
+  }
+]
+EOF
+systemctl --user restart wireplumber pipewire pipewire-pulse
+```
+
+The TMP then stops appearing as a normal system audio device (by design — it's exclusive to this app). Remove the file and restart the same services to reverse it.
 
 System dependencies (Debian/Ubuntu):
 
@@ -40,8 +59,6 @@ System dependencies (Debian/Ubuntu):
 sudo apt install libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
                  librsvg2-dev libasound2-dev
 ```
-
-`libasound2-dev` is needed even though re-amp does not work yet: `cpal` is an unconditional dependency and must still compile.
 
 **Device access.** `/dev/hidraw*` is root-only by default, so without a udev rule the app fails to open the unit with `EACCES`:
 
@@ -52,7 +69,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 `udevadm trigger` re-applies the rule to an already-connected unit, so no replug is needed. Verify with `ls /dev/hidraw*` and `getfacl /dev/hidrawN` — the rule grants the logged-in user access via an ACL, so you should see a `user:<you>:rw-` entry rather than a group change.
 
-Then follow the build steps above. **Order matters** — `bun run build` must precede any `cargo` command, because `tauri-build`'s `generate_context!` panics when `dist/` is absent, and `dist/` is gitignored. Once that build has run, sanity-check the connection with `cargo run --bin probe`, which should print your preset list.
+Then follow the build steps above. **Order matters** — `bun run build` must precede any `cargo` command, because `tauri-build`'s `generate_context!` panics when `dist/` is absent, and `dist/` is gitignored. Once that build has run, sanity-check the connection with `cargo run --bin probe`, which should print your preset list, and `cargo run --bin probe -- --audio-devices` to inspect audio-device enumeration and ALSA resolution — on Linux it also prints the `hw:CARD=…` card the production resolver lands on. The report's own `find_tmp()` pick is a diagnostic, not the production `audio::find_device` path.
 
 **`bun run tauri dev` shows only a taskbar entry, no window?** On some KDE/GNOME Wayland + GPU driver combinations, WebKitGTK's window maps but never paints. `bun run tauri dev` already works around this automatically (`scripts/tauri-dev-env.sh` forces `GDK_BACKEND=x11` when it detects a Linux Wayland session); if it recurs anyway, see [→ evidence](notes/gotchas.md#bun-run-tauri-dev-shows-only-a-taskbar-entry-no-window-on-kdegnome-wayland).
 

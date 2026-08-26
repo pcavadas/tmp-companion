@@ -5,27 +5,42 @@ import {
   ensureScenario,
   expectReampBalanced,
   isOnline,
+  openLevel,
   reampCounters,
   reampOff,
+  runDoctorCheck,
+  selectPresetsForCheck,
 } from "../fixtures/scenario";
 
-// Doctor journey — runs identically offline (fake re-amp: the "capture" is the raw
-// stimulus, so every sound measures finite and identical) and online (real re-amp
-// captures, ~15 s/sound). The oracle is the FLOW: select → set up → run →
+// Doctor journey — runs identically offline (fake re-amp: the sim's physics model
+// scales the stimulus by each sound's sidecar C, so every sound measures finite —
+// levels differ per scene, spectra don't) and online (real re-amp captures,
+// ~15 s/sound). The oracle is the FLOW: select → set up → run →
 // auto-advance → a Results page that renders every checked preset with either
 // diagnosis cards or "All clear". Diagnosis CONTENT is sound-dependent, so the spec
 // never asserts a specific tag; the prescription-content regressions (existing-comp
 // advisory, presetLevel preservation) are backend-validated in doctor.rs unit tests
 // and the probe/HW lane, not here.
 //
-// ONLINE seeding note: scripts/e2e.sh seeds the scenario via `probe --seed-scenario`
-// BEFORE the server starts (fresh-process seeding dodges the in-process 0xe00002c5
-// open lockout that aborted in-spec seeds) and POSTs `e2e_mark_seeded`, which arms the
-// server's verified-seed flag; `ensureScenario` here always calls `e2e_seed_scenario`
-// online, which fast-no-ops on that flag and only pays the full ownership-verified
-// in-process seed on direct playwright runs (or after a clear). If the runner's seed
-// fails all attempts, check nothing else holds the device (Pro Control, a stale
-// server/app), rest a minute, rerun.
+// ONLINE e2e suite consolidation (8→4 files): this file's first test below now runs
+// OFFLINE ONLY (test.skip'd online) — its online-specific assertions (the E2E Edge
+// EQ-ring chip + "cut the 2 kHz band" prescription, plus the cross-card ring-chip
+// scoping proof on the other two presets) moved to `doctor.online.spec.ts`, which runs
+// the same 3-preset selection online — see that file's own header for why. The offline
+// FLOW proof here (select → check → run → Results, three presets' cards render) is
+// unaffected and keeps running here exactly as before. The second test below
+// (leveling-damage advisories) is now explicitly offline-only too — it performs zero
+// device captures (a backup-scan read only), so an online run of it proved nothing extra.
+//
+// ONLINE seeding note (kept for the file's own online-tier assertions, if any are ever
+// re-added): scripts/e2e.sh seeds the scenario via `probe --seed-scenario` BEFORE the
+// server starts (fresh-process seeding dodges the in-process 0xe00002c5 open lockout
+// that aborted in-spec seeds) and POSTs `e2e_mark_seeded`, which arms the server's
+// verified-seed flag; `ensureScenario` here always calls `e2e_seed_scenario` online,
+// which fast-no-ops on that flag and only pays the full ownership-verified in-process
+// seed on direct playwright runs (or after a clear). If the runner's seed fails all
+// attempts, check nothing else holds the device (Pro Control, a stale server/app),
+// rest a minute, rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
     // Re-amp OFF rescue FIRST — a mid-test failure before the balance gate must not strand
@@ -34,42 +49,49 @@ test.describe("Doctor — select, check, results", () => {
     await clearScenario(page);
   });
 
+  // COVERAGE row 28 — Doctor's as-played scenes (400/401/402 all selected, exercising
+  // the scene/footswitch doctor paths).
   test("checks three presets end to end and lands on Results", async ({
     page,
   }) => {
+    // OFFLINE ONLY (trade, ONLINE e2e consolidation): the online-only assertions this
+    // test used to carry now live in `doctor.online.spec.ts`, which runs the identical
+    // 3-preset selection — see this file's own header. Running this flow online too
+    // would just duplicate that run's device time for no extra proof; the FLOW itself
+    // is identical in both tiers, so nothing online-specific is lost.
+    test.skip(
+      await isOnline(page),
+      "online half moved to doctor.online.spec.ts",
+    );
+    // ~29 real sounds across the three intact fixtures (E2E Rig + Pedalboard + Edge, base +
+    // scenes + footswitches) at ~12-18 s/capture online, plus the pristine-check reseed and
+    // backup scan before the run even starts — worst case ≈ 900 s, matching the terminal
+    // wait below; the budget here adds headroom on top.
+    test.setTimeout(1_200_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    await page.goto("/");
-    await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
-    await expect(page.getByText(/connected · \d+\.\d+/)).toBeVisible({
-      timeout: 20_000,
-    });
+    await openLevel(page);
 
-    await page.getByRole("button", { name: "Doctor" }).click();
-
-    // Select the two PLAIN scenario presets (Base only → 1 sound each) AND the
-    // Reference preset (Base + 2 scenes + block-acting footswitches) so the run
-    // exercises the scene/footswitch doctor paths too — the sound count is
-    // scenario-shape-dependent, so the buttons match on /\d+ sounds/.
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    // Select E2E Pedalboard + E2E Edge (401/402) AND E2E Rig (400, base + 4 scenes +
+    // block-acting footswitches) so the run exercises the scene/footswitch doctor paths
+    // too — the sound count is scenario-shape-dependent, so the buttons match on
+    // /\d+ sounds/.
     const picked = [SCENARIO[0], SCENARIO[1], SCENARIO[2]];
-    for (const p of picked) {
-      await filter.fill(p.name);
-      await page.getByTitle("Select preset to check").first().click();
-    }
-    await filter.fill("");
+    await selectPresetsForCheck(page, picked);
+    await runDoctorCheck(page);
 
-    await page.getByRole("button", { name: /Check \d+ sounds/ }).click();
-
-    // Set up: keep the defaults, run.
-    await page.getByRole("button", { name: /Run check on \d+ sounds/ }).click();
-
-    // The run auto-advances to Results on a natural finish. Progress events don't
-    // stream over the bridge, so the only signal is the terminal Results page.
+    // The run auto-advances to Results on a natural finish. Progress events don't stream
+    // over the bridge, so the only signal is the terminal Results page — but a rejected run
+    // (backend/IPC failure) renders LoadErrorPane's "The check couldn't finish: …" within
+    // seconds instead (DoctorView.tsx). The error pane is a fast-fail: match it in the wait
+    // so a dropped device reports in seconds, then assert it wasn't the branch we took.
     await expect(
-      page.getByText(/presets? need a look|All clear/).first(),
-    ).toBeVisible({ timeout: 240_000 });
+      page
+        .getByText(/presets? need a look|All clear|check couldn.t finish/)
+        .first(),
+    ).toBeVisible({ timeout: 900_000 });
+    await expect(page.getByText(/check couldn.t finish/)).toHaveCount(0);
 
     // The default "Needs a look" filter HIDES fully-clean presets (DoctorResults
     // `shown`), so flip to "Everything" first when the filter strip is present (it
@@ -85,54 +107,83 @@ test.describe("Doctor — select, check, results", () => {
       await expect(page.getByText(p.name).first()).toBeVisible();
     }
 
-    // STRICT diagnosis oracle (online-only — the offline fake capture is a
-    // stimulus passthrough, so no real spectrum exists to diagnose): the checked
-    // set carries one KNOWN defect and two known-healthy controls, and the
-    // Doctor must call both sides correctly.
-    //  * "E2E Target 2" ships a fixture-injected post-cab EQ-5 parametric with
-    //    two stacked +12 dB Q14 peaks at 2.6 kHz — the calibration suite's
-    //    `resonant_peq` DefectRecipe (its Q14 saturation ceiling ≈17 dB clears
-    //    the resonant height gate on any chain) — and MUST be flagged with the
-    //    localized "Rings at N kHz" resonant chip. Resonant is the tilt-robust
-    //    oracle: it fires on the transfer's LOCAL octave-median-envelope excess,
-    //    so the bright/scooped broadband sweep every scenario chain measures
-    //    (which silences broadband verdicts like Muddy) cannot mask it. The
-    //    anchored regex tolerates PSD peak-fit wobble in the decimal and skips
-    //    the Rx title (which embeds the same phrase); broadband side-effects of
-    //    the +12 dB stack (harsh/fizzy) may co-fire and stay unasserted.
-    //  * The two healthy presets must produce NO resonant chip anywhere, so
-    //    exactly ONE renders in Everything view (HW sweep: resonant fired on
-    //    Target 2 alone — 22 dB, Q 24 — across all five scenario presets).
-    //  * Opening the defect preset's own sound row must surface the RIGHT
-    //    prescription — the cut at the EQ-10 band nearest the MEASURED ring
-    //    (2.5–2.7 kHz all map log-nearest to the 2 kHz band; the chain owns a
-    //    parametric EQ, so the Rx is the point-at-your-EQ advisory).
-    if (await isOnline(page)) {
-      await expect(page.getByText(/^Rings at 2\.\d kHz$/)).toHaveCount(1);
-      await page.getByText(picked[2].name).last().click();
-      await expect(
-        page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/).first(),
-      ).toBeVisible();
-      // Collapse the defect row again so the cut-through assertion below can only
-      // resolve against picked[1]'s freshly expanded row, never this one.
-      await page.getByText(picked[2].name).last().click();
-      await expect(
-        page.getByText(/Rings at 2\.\d kHz — cut the 2 kHz band/),
-      ).toHaveCount(0);
-    }
-
     // Expanding any measured sound row surfaces the cut-through estimate —
     // `cutThrough` is non-null for every successful guitar capture, so this is
-    // deterministic (unlike diagnosis content, which stays unasserted). A plain
-    // preset's base row is labeled with the preset name, so the LAST match is
-    // the clickable sound row (the first is the card header).
-    await page.getByText(picked[1].name).last().click();
+    // deterministic (unlike diagnosis content, which stays unasserted). Scope the
+    // click inside the card's first [data-sound-row] header — a page-wide
+    // getByText(name) can resolve into advisory-panel body text (see the Edge
+    // ring-row click above for the incident).
+    await page
+      .locator(`[data-preset-card="${picked[1].name}"] [data-sound-row]`)
+      .first()
+      .getByText(picked[1].name)
+      .first()
+      .click();
     await expect(
       page.getByText("Cut-through (estimated)").first(),
     ).toBeVisible();
 
     // Standing re-amp-OFF safety gate — the doctor capture path must disengage re-amp
     // at least as often as it engages (checked before any teardown rescue).
+    await expectReampBalanced(page, reampBase);
+  });
+
+  // COVERAGE rows 32, 33 (leveling-damage advisories). Deterministic offline:
+  // `LevelingDamageRow`'s hints are a BACKUP-SCAN read (zero device captures — see
+  // src/views/doctor/LevelingDamageRow.tsx's own header), not diagnosis content, so this is
+  // an exception to this file's "diagnosis content is sound-dependent, never asserted
+  // directly" rule.
+  //
+  // MATRIX MISMATCH (row 35, the SNR "some checks skipped" badge): COVERAGE.md lists it
+  // Offline, on the premise that 402's "Quiet" scene (sidecar C=-48) reads quiet enough
+  // offline to trip the coverage gate. Empirically it doesn't — an actual offline run
+  // here renders a normal diagnosis on the Quiet scene ("Gets lost in the mix"), no
+  // coverage-gated badge. The cause is NOT a missing C model (the offline capture DOES
+  // ride scenario-loudness.json via the same audio::reamp_capture seam): coverage
+  // compares the body PSD against the SAME capture's pre-onset floor, and the offline
+  // scale_stimulus scales body and preamble uniformly, so coverage is level-invariant
+  // offline however quiet the scene. This row is backend/online only.
+  test("400 surfaces its two leveling-damage advisories (backup-scan-only, zero captures)", async ({
+    page,
+  }) => {
+    // OFFLINE ONLY (ONLINE e2e consolidation): this row is a backup-scan read with zero
+    // device captures (see the header above), so an online run proves nothing an offline
+    // run doesn't already — it was only ever incidentally online because this file had
+    // no per-test mode split before.
+    test.skip(
+      await isOnline(page),
+      "zero captures — offline proves this identically",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+
+    await openLevel(page);
+    await selectPresetsForCheck(page, [SCENARIO[0]]); // E2E Rig
+    await runDoctorCheck(page);
+    await expect(
+      page.getByText(/presets? need a look|All clear/).first(),
+    ).toBeVisible({ timeout: 240_000 });
+
+    const everything = page.getByRole("radio", { name: "Everything" });
+    if (await everything.isVisible().catch(() => false)) {
+      await everything.click();
+    }
+
+    // E2E Rig's card: the "Leveling damage" finding row, its 2-assignment chip, and — once
+    // expanded — both signatures' factual copy (VERB KILL's deletedEffect, WAH SWEEP's
+    // sweptOther). This is read straight from the backup scan, not from any capture.
+    await expect(page.getByText("Leveling damage").first()).toBeVisible();
+    await expect(
+      page.getByText(/2 assignments worth checking/).first(),
+    ).toBeVisible();
+    await page.getByText("Leveling damage").first().click();
+    await expect(
+      page.getByText(/drops to ~0 when engaged — the effect goes silent/),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/isn.t a level control — engaging it changes tone/),
+    ).toBeVisible();
+
     await expectReampBalanced(page, reampBase);
   });
 });

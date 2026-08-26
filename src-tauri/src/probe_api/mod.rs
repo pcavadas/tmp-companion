@@ -7,10 +7,12 @@
 /// List indices the e2e scenario fixtures own and the only slots a destructive
 /// or working-copy-writing probe experiment may target. Shared by every guard
 /// that gates a probe write — a single declaration so widening or shifting the
-/// scratch zone is one edit, not four.
-pub(crate) const SCRATCH_SLOTS: [u32; 6] = [400, 401, 402, 403, 404, 405];
+/// scratch zone is one edit, not four. 406-409 are the P3 leveling-doctor-fixtures
+/// additions (combined leveling / doctor oracle / two minimal-incident-repro slots).
+pub(crate) const SCRATCH_SLOTS: [u32; 10] = [400, 401, 402, 403, 404, 405, 406, 407, 408, 409];
 
 pub(crate) mod analyze;
+pub(crate) mod audio_devices;
 pub(crate) mod doctor_calib;
 pub(crate) mod doctor_defects;
 pub(crate) mod doctor_inject;
@@ -76,6 +78,7 @@ impl Drop for ReampOffGuard {
     }
 }
 
+pub use audio_devices::*;
 pub use doctor_calib::*;
 pub use doctor_defects::*;
 pub use doctor_inject::*;

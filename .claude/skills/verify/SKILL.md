@@ -73,7 +73,9 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
    must do X" without a spec/test asserting X is not done — PR #74 shipped "2 consecutive
    leveling runs must produce the same result" as a requirement with no gate anywhere asserting
    it, and the requirement quietly broke in production before this harness caught it
-   (`e2e/specs/level-rerun.spec.ts` is that gate now).
+   (`e2e/specs/level.spec.ts`'s idempotency test — offline — and `e2e/specs/level.online.spec.ts`'s
+   idempotency test — online — are that gate now; merged/absorbed from the now-deleted
+   `level-rerun.spec.ts`, e2e suite consolidation).
 2. **A deferred fix ships WITH a tracking marker + an expected-fail note**, naming the limit
    inline at the skip site (e.g. `test.skip(..., "harness limit: needs a field-8 read model")`).
    Expected-fail annotations are reserved for harness-internal infrastructure limits — **never**
