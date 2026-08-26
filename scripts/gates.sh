@@ -35,7 +35,8 @@
 #   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + test --lib
 #   e2e-relev (any code side, e2e/,      → offline e2e (bun run e2e)
 #              scripts/e2e.sh)
-#   *.sh touched                        → shellcheck (only if installed)
+#   *.sh touched                        → shellcheck (only if installed) +
+#                                          tauri-dev-env.spec.sh
 #
 # ── Stamp model ────────────────────────────────────────────────────────────
 # The stamp KEY is the git tree-object id of the whole working tree (tracked +
@@ -277,6 +278,10 @@ if [ "$want_shell" -eq 1 ] && command -v shellcheck >/dev/null 2>&1; then
   if [ -n "$sh_files_list" ]; then
     run_gate "shellcheck" shellcheck_files "$sh_files_list"
   fi
+fi
+
+if [ "$want_shell" -eq 1 ] && [ -f scripts/tauri-dev-env.spec.sh ]; then
+  run_gate "tauri-dev-env spec" /bin/bash scripts/tauri-dev-env.spec.sh
 fi
 
 if [ "$want_frontend" -eq 1 ]; then
