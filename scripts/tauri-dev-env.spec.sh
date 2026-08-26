@@ -7,8 +7,10 @@
 #
 # Fixture: a temp dir prepended to PATH holds stub `uname` and `tauri`
 # binaries, so no real Wayland session or tauri install is needed. The
-# `tauri` stub echoes the GDK_BACKEND it saw and the args it was forwarded,
-# which is what each case below asserts against.
+# `tauri` stub echoes the GDK_BACKEND it saw, plus argc and one `arg=<...>`
+# line per argument it was forwarded — never `"$*"`, which joins on IFS and
+# so cannot tell quoted `"$@"` forwarding apart from an unquoted `$@` that
+# word-splits a multi-word argument.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +28,10 @@ chmod +x "$stub_dir/uname"
 cat > "$stub_dir/tauri" <<'STUB'
 #!/bin/sh
 printf 'GDK_BACKEND=%s\n' "${GDK_BACKEND:-}"
-printf 'args=%s\n' "$*"
+printf 'argc=%s\n' "$#"
+for a in "$@"; do
+  printf 'arg=%s\n' "$a"
+done
 STUB
 chmod +x "$stub_dir/tauri"
 
@@ -41,7 +46,7 @@ run_case() {
   backend_in="$4"
   expected_backend="$5"
   shift 5
-  expected_args="$*"
+  expected_args="$(printf 'argc=%s\n' "$#"; for a in "$@"; do printf 'arg=%s\n' "$a"; done)"
 
   if [ "$backend_in" = "-" ]; then
     out="$(PATH="$stub_dir:$PATH" SPEC_UNAME="$uname_val" XDG_SESSION_TYPE="$session" \
@@ -60,7 +65,7 @@ run_case() {
   fi
 
   actual_backend="$(printf '%s\n' "$out" | sed -n 's/^GDK_BACKEND=//p')"
-  actual_args="$(printf '%s\n' "$out" | sed -n 's/^args=//p')"
+  actual_args="$(printf '%s\n' "$out" | grep -E '^(argc|arg)=')"
 
   if [ "$actual_backend" != "$expected_backend" ]; then
     printf 'FAIL %s: GDK_BACKEND=%s, expected %s\n' "$label" "$actual_backend" "$expected_backend"
@@ -68,7 +73,7 @@ run_case() {
     return
   fi
   if [ "$actual_args" != "$expected_args" ]; then
-    printf 'FAIL %s: args=%s, expected %s\n' "$label" "$actual_args" "$expected_args"
+    printf 'FAIL %s: args=\n%s\nexpected:\n%s\n' "$label" "$actual_args" "$expected_args"
     fail=1
     return
   fi
@@ -92,6 +97,9 @@ run_case "build + Linux + wayland -> no-op (not dev)" \
 
 run_case "dev + Linux + wayland + extra args -> forwarded verbatim" \
   Linux wayland - x11 dev --foo bar
+
+run_case "dev + Linux + wayland + multi-word arg -> word boundary preserved" \
+  Linux wayland - x11 dev --label "two words"
 
 if [ "$fail" -ne 0 ]; then
   printf '\ntauri-dev-env.spec.sh: FAILED\n' >&2
