@@ -17,11 +17,9 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  contents: read
 
-# Keep husky's git hooks OFF this runner: `bun install` (prepare → husky) wires
+# Keep husky's git hooks OFF every job here: `bun install` (prepare → husky) wires
 # .husky/pre-push into the checkout, so semantic-release's `git push --tags`
 # re-ran the LOCAL gate suite here and died — every tag push failed since the
 # hook landed (#84). ci.yml on the PR is the authoritative gate; HUSKY=0 makes
@@ -30,9 +28,191 @@ env:
   HUSKY: "0"
 
 jobs:
+  # Resolves the version the CURRENT commit set would release, ahead of the real
+  # semantic-release run, so the Linux build jobs (which need to bump
+  # tauri.conf.json before building) know what to bump to. `semantic-release
+  # --dry-run` always exits 0 whether or not a release is due — it fails only on
+  # a genuine crash — so a nonzero exit here is treated as a real error, and "no
+  # release due" is read from the ABSENCE of the "next release version is …" log
+  # line rather than from the exit code.
+  resolve-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Resolve next release version (dry run)
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OUT="$(bunx semantic-release --dry-run 2>&1)" || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          VERSION="$(printf '%s\n' "$OUT" | grep -oE 'next release version is [0-9][0-9A-Za-z.+-]*' | awk '{print $NF}' | tail -n1)"
+          echo "resolve-version: next version = ${VERSION:-<none — nothing releasable>}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  # Alpha Linux artifact, built in the same run as the macOS release but never
+  # blocking it (continue-on-error): a broken Linux bundle should cost this run
+  # its Linux asset, not the signed/notarized macOS DMG. See
+  # notes/linux-packaging.md for the full pipeline rationale.
+  build-deb:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.version != ''
+    continue-on-error: true
+    runs-on: ubuntu-22.04 # oldest still-offered Ubuntu image → lowest glibc floor
+    timeout-minutes: 30
+    env:
+      # Routed through env rather than inline `${{ }}` in run: even though this
+      # value is already regex-constrained to [0-9A-Za-z.+-] by resolve-version's
+      # own extraction — no reason to interpolate a workflow expression directly
+      # into a shell command when a plain env var does the same job.
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          key: linux-deb
+
+      - name: Install Linux system dependencies
+        # Same list as ci.yml's build-test job — Tauri's Linux webview stack + asound
+        # for cpal.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
+            librsvg2-dev libasound2-dev
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Bump version
+        run: node scripts/bump-version.mjs "$VERSION"
+
+      - name: Build frontend (also produces dist/ for tauri-build)
+        run: bun run build
+
+      - name: Build the .deb bundle
+        # tauri.linux.conf.json auto-merges (Tauri picks it up by platform on a
+        # Linux host) — no --config/--bundles flag needed beyond selecting deb here
+        # so this job doesn't also attempt the rpm target.
+        run: bun run tauri build --bundles deb
+
+      - name: Stage the bundle for the release job
+        run: |
+          set -euo pipefail
+          mkdir -p release-linux
+          cp src-tauri/target/release/bundle/deb/*.deb release-linux/
+          printf '%s' "$VERSION" > release-linux/version.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-deb
+          path: release-linux
+          retention-days: 1
+          if-no-files-found: error
+
+  build-rpm:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.version != ''
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    # GitHub offers no Fedora RUNNER, but a container on an Ubuntu host gives a
+    # genuine Fedora build: the binary links Fedora's libraries and the rpm's
+    # `depends` names (sqlite, alsa-lib, webkit2gtk4.1, …) resolve natively there,
+    # instead of an Ubuntu-linked binary carrying hand-written Fedora dependency
+    # names with no compiler/linker to catch a mismatch. fedora:43 is the oldest
+    # still-supported Fedora release as of this writing (Fedora 42 reached EOL in
+    # May 2026) — bump this alongside Fedora's own release cadence.
+    container:
+      image: fedora:43
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      # A bare fedora image has none of this. Installed BEFORE actions/checkout
+      # (which needs git) and before any JS-based action needing a working shell.
+      # nodejs is required explicitly here — unlike the hosted ubuntu-22.04 runner
+      # image build-deb uses, this container has no Node.js preinstalled, and
+      # scripts/bump-version.mjs needs `node` on PATH.
+      - name: Install Fedora build dependencies
+        run: |
+          dnf install -y git nodejs gcc gcc-c++ make pkgconf-pkg-config \
+            webkit2gtk4.1-devel openssl-devel librsvg2-devel libxdo-devel \
+            libappindicator-gtk3-devel alsa-lib-devel
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          key: linux-rpm
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Bump version
+        run: node scripts/bump-version.mjs "$VERSION"
+
+      - name: Build frontend (also produces dist/ for tauri-build)
+        run: bun run build
+
+      - name: Build the .rpm bundle
+        # Tauri's rpm bundler is the pure-Rust `rpm` crate — no `rpmbuild` needed.
+        run: bun run tauri build --bundles rpm
+
+      - name: Stage the bundle for the release job
+        run: |
+          set -euo pipefail
+          mkdir -p release-linux
+          cp src-tauri/target/release/bundle/rpm/*.rpm release-linux/
+          printf '%s' "$VERSION" > release-linux/version.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-rpm
+          path: release-linux
+          retention-days: 1
+          if-no-files-found: error
+
   release:
+    needs: [resolve-version, build-deb, build-rpm]
+    # Runs whether the Linux jobs succeeded, failed (continue-on-error), or were
+    # skipped (nothing releasable) — this job's own behavior is unchanged from
+    # before the Linux jobs existed either way. Only a cancelled run, or a genuine
+    # resolve-version failure (as opposed to "nothing to release"), skips it.
+    if: ${{ !cancelled() && needs.resolve-version.result == 'success' }}
     runs-on: macos-14 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
     environment: release # gates the Apple signing/notarization secrets to this env
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     # Backstop a hung `notarytool --wait`: without this the job inherits the 360-min
     # default and can burn ~6h on the 10×-cost macOS runner. A normal run is ~7 min.
     timeout-minutes: 60
@@ -68,6 +248,19 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib
+
+      # Never blocks: a missing/failed Linux build (skipped job, or the download
+      # itself finding no artifact) just means release-build.sh finds no
+      # release-linux/ to stage, and .releaserc.json's Linux asset globs match
+      # nothing — @semantic-release/github logs that per-asset and continues, it
+      # does not fail the release.
+      - name: Download Linux build artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: linux-*
+          path: release-linux
+          merge-multiple: true
 
       - name: Release
         env:

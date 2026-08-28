@@ -6,8 +6,10 @@ independent, unaffiliated project — see [NOTICE](NOTICE) and [INTEROP.md](INTE
 
 Built with [Tauri 2](https://tauri.app) (Rust backend + React/TypeScript frontend).
 Ships on macOS, universal (Apple Silicon & Intel) — CoreAudio for re-amp
-measurement, IOKit for exclusive USB-HID access. Linux is a supported
-development platform (hidraw + ALSA) — see [CONTRIBUTING.md](CONTRIBUTING.md).
+measurement, IOKit for exclusive USB-HID access. Also publishes an **alpha**
+`.deb`/`.rpm` for Linux (hidraw + ALSA) — see
+[notes/linux-packaging.md](notes/linux-packaging.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Features
 
@@ -34,6 +36,10 @@ page. macOS 12+ — a universal build for **Apple Silicon & Intel**.
 
 The app is code-signed and notarized, so it opens normally — just copy
 **TMP Companion.app** to `/Applications` and launch it.
+
+An **alpha** `.deb`/`.rpm` for Linux is published alongside each macOS release —
+see [notes/linux-packaging.md](notes/linux-packaging.md) for what "alpha" means
+here and why there's no AppImage.
 
 Plug in your Tone Master Pro and close Fender's Pro Control first — the app needs
 exclusive USB access.
