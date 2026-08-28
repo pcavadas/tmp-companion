@@ -737,11 +737,20 @@ pub fn probe_redistribute(
 /// mirroring the runner's write shape incl. a re-amp capture per write), then ONE
 /// final save. The caller exports the slot afterwards and checks which writes
 /// persisted. `TMP_DEFER_FINAL` picks the final-save shape:
-///   `asis`   — save with the last-written scene active (does one save persist ALL
-///              accumulated unsaved scene overlays?)
-///   `return` — `loadScene(first written scene)` again, then save (does re-recalling
-///              a scene REVERT its own unsaved write?)
-///   `base`   — `loadScene(8)`, then save (the restore-original-state shape).
+///   `asis`     — save with the last-written scene active (does one save persist ALL
+///                accumulated unsaved scene overlays?)
+///   `return`   — `loadScene(first written scene)` again, then save (does re-recalling
+///                a scene REVERT its own unsaved write?)
+///   `base`     — `loadScene(8)`, then save (the restore-original-state shape).
+///   `other:<N>`— `loadScene(N)`, N not necessarily in `writes`, then save. Added
+///                2026-08-28 to test the shape `save_deferred_scene_writes` actually
+///                runs (`restore_scene` need not be one of the batch's written
+///                scenes) — `return`/`base` never covered a recall of a scene the
+///                writes loop never touched.
+/// `TMP_DEFER_NO_ENABLE=1` skips the `set_node_scene_edit` enable before each write,
+/// reproducing production's `WriteDirect` path (a Full overlay never gets the enable —
+/// see `scene_write_verdict_for_param`); unset always sends it, the original probe
+/// shape.
 pub fn probe_defer_scenes(
     list_index: u32,
     group_id: String,
@@ -752,8 +761,10 @@ pub fn probe_defer_scenes(
     let stim_path = probe_stimulus_path("guitar-singlecoil")?;
     let stim = read_stimulus_calibrated(&stim_path, None)?;
     let final_mode = std::env::var("TMP_DEFER_FINAL").unwrap_or_else(|_| "asis".into());
+    let no_enable = std::env::var("TMP_DEFER_NO_ENABLE").as_deref() == Ok("1");
     let mut out = format!(
-        "=== defer-scenes idx {list_index} {group_id}/{node_id} writes={writes:?} final={final_mode} ===\n"
+        "=== defer-scenes idx {list_index} {group_id}/{node_id} writes={writes:?} \
+         final={final_mode} no_enable={no_enable} ===\n"
     );
 
     {
@@ -767,8 +778,10 @@ pub fn probe_defer_scenes(
         let mut s = Session::connect()?;
         s.load_scene(*scene)?;
         std::thread::sleep(Duration::from_millis(150));
-        s.set_node_scene_edit(&group_id, &node_id, true)?;
-        std::thread::sleep(Duration::from_millis(300));
+        if !no_enable {
+            s.set_node_scene_edit(&group_id, &node_id, true)?;
+            std::thread::sleep(Duration::from_millis(300));
+        }
         s.change_parameter(&group_id, &node_id, "outputLevel", *value)?;
         std::thread::sleep(Duration::from_millis(300));
         let lufs = leveller::engage_measure_disengage(&mut s, &stim)?.integrated_lufs;
@@ -790,9 +803,44 @@ pub fn probe_defer_scenes(
             std::thread::sleep(Duration::from_millis(300));
             out += "final: recalled base (8), saving…\n";
         }
+        other if other.starts_with("other:") => {
+            let scene: u32 = other["other:".len()..].parse().map_err(|_| {
+                format!("--defer-scenes: invalid TMP_DEFER_FINAL scene in '{other}'")
+            })?;
+            s.load_scene(scene)?;
+            std::thread::sleep(Duration::from_millis(300));
+            out += &format!("final: recalled UNRELATED scene {scene}, saving…\n");
+        }
+        // 2026-08-28: does turning the final recall into a real WRITE (a no-op
+        // self-reassert of the recalled scene's OWN unchanged value) rescue an
+        // earlier, unrelated scene's still-pending write — as opposed to a bare
+        // `loadScene` with nothing written afterward?
+        other if other.starts_with("keepalive:") => {
+            let rest = &other["keepalive:".len()..];
+            let (scene_s, value_s) = rest.split_once(':').ok_or_else(|| {
+                format!("--defer-scenes: expected keepalive:<scene>:<value>, got '{other}'")
+            })?;
+            let scene: u32 = scene_s.parse().map_err(|_| {
+                format!("--defer-scenes: invalid TMP_DEFER_FINAL scene in '{other}'")
+            })?;
+            let value: f32 = value_s.parse().map_err(|_| {
+                format!("--defer-scenes: invalid TMP_DEFER_FINAL value in '{other}'")
+            })?;
+            s.load_scene(scene)?;
+            std::thread::sleep(Duration::from_millis(150));
+            s.change_parameter(&group_id, &node_id, "outputLevel", value)?;
+            std::thread::sleep(Duration::from_millis(300));
+            out += &format!(
+                "final: recalled scene {scene} and re-wrote its own outputLevel={value} \
+                 (keep-alive), saving…\n"
+            );
+        }
         _ => out += "final: saving as-is (last scene active)…\n",
     }
     s.save_current_preset(list_index)?;
     out += "saved\n";
+    // Guaranteed fresh re-amp OFF — this probe engages per write via
+    // `engage_measure_disengage`; a dropped OFF strands the unit input-muted.
+    leveller::reamp_off_guaranteed("probe_defer_scenes");
     Ok(out)
 }

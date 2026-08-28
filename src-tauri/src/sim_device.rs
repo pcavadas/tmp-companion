@@ -1312,11 +1312,32 @@ impl SimDevice {
             // `BASE_SCENE_SLOT` (8) sentinel that recalls base (not a real `scenes[]`
             // entry — HW-confirmed; `session::BASE_SCENE_SLOT`).
             let wire_slot = proto::first_varint(&proto::parse(ls), 1).unwrap_or(0) as u32;
-            st.current_scene = if wire_slot == crate::session::BASE_SCENE_SLOT {
+            let next_scene = if wire_slot == crate::session::BASE_SCENE_SLOT {
                 None
             } else {
                 Some(wire_slot)
             };
+            // fw 1.8.58: switching scenes DISCARDS whatever scene-overlay write was still
+            // pending for the scene being switched AWAY from (HW, 2026-08-28 — see
+            // `notes/gotchas.md`'s scene-leveling entry; `leveller::save_scene_now` is the
+            // fix). Without this the sim models the OLD fw 1.8.45 contract ("unsaved scene
+            // writes survive recalls"), and any offline gate for that bug passes vacuously.
+            // Scoped deliberately:
+            // * only the scene being LEFT, and only on an actual change — a no-op recall of
+            //   the already-active scene is not a switch.
+            // * `SCENE_BASE`-keyed entries are NEVER dropped. A scene-context write with no
+            //   Scene Edit arm lands on base (the fw "fact 4" leak modelled below), and those
+            //   base writes DO survive a scene switch on HW — the `probe --defer-scenes`
+            //   finding that still holds.
+            // Already-saved values are unaffected: `record_save` has folded them into
+            // `committed_doc` by then, and this only clears the pending-write buffer.
+            if st.current_scene != next_scene {
+                if let Some(leaving) = st.current_scene {
+                    let leaving = i64::from(leaving);
+                    st.param_writes.retain(|(scene, ..), _| *scene != leaving);
+                }
+            }
+            st.current_scene = next_scene;
             st.events.push(SimEvent::LoadScene(wire_slot));
             // A recall runs the device's own level-apply — base included — silently
             // reverting an unsaved working-copy `presetLevel` to the currently-SAVED

@@ -2376,6 +2376,117 @@ fn hiwatt_scene_leveling_never_reseeds_an_existing_overlay() {
     );
 }
 
+/// BUG→GATE (HW 2026-08-28, fw 1.8.58): a multi-scene batch must persist EVERY scene it
+/// levels, not just the last one it touched.
+///
+/// The device stopped holding more than one scene's unsaved overlay write across a
+/// `loadScene` switch somewhere between fw 1.8.45 and 1.8.58 (believed a Fender firmware
+/// regression — see `notes/gotchas.md`'s scene-leveling entry). The old design deferred
+/// every scene's write to ONE batch-end save, so on 1.8.58 a 4-scene run lost all four
+/// values while still reporting them as solved. `leveller::save_scene_now` fixes it by
+/// saving each scene right after its own write.
+///
+/// This gate is only meaningful because `SimDevice`'s `F_LOAD_SCENE` models the discard
+/// (added alongside this test) — without that the sim keeps every pending write and the
+/// assertion passes whether or not the fix is present. Asserts on the SAVED DOCUMENT
+/// (`read_saved_preset` + `scene_overlay`), never on a re-capture: `F_LOAD_PRESET` reseeds
+/// only base-keyed writes, never `scene_params`, so a re-measure would disagree with the
+/// document for unrelated reasons.
+#[test]
+fn a_multi_scene_batch_persists_every_scene_not_just_the_last_one() {
+    let _serial = serial();
+    let sim = hiwatt_sim();
+
+    // Premise: every job scene really does carry its own overlay for the amp, so each solved
+    // value has a distinct place to land and the gate cannot pass vacuously on a flat fixture.
+    let before = crate::read_saved_preset(HIWATT).expect("field-8 read");
+    for scene in 0..3u32 {
+        assert!(
+            matches!(
+                crate::scene_overlay(&before, scene, HIWATT_AMP),
+                crate::SceneOverlay::Full(_)
+            ),
+            "fixture premise: scene {scene} must carry an overlay for {HIWATT_AMP}"
+        );
+    }
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![level_scenes_apply_batched])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let amp = serde_json::json!([{
+        "groupId": "G1", "nodeId": HIWATT_AMP, "parameterId": "outputLevel", "value": 0.69
+    }]);
+    // Scenes 0/1/2 only — scene 3 ("Base Scene") is the measurement-context probe and clamps
+    // here by design (see `hiwatt_scene_leveling_never_reseeds_an_existing_overlay`).
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": HIWATT,
+            "jobs": (0..3).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -23.0})).collect::<Vec<_>>(),
+            "candidates": amp,
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    let rows = res.as_array().expect("results array");
+    assert_eq!(rows.len(), 3, "one result per scene: {rows:?}");
+
+    // The bug was SILENT in the report and only visible in the saved bytes: every row said
+    // "solved", while the document kept its old values. So compare the two directly.
+    let saved = crate::read_saved_preset(HIWATT).expect("field-8 read after the batch");
+    for row in rows {
+        let scene = row
+            .get("scene_slot")
+            .and_then(serde_json::Value::as_u64)
+            .expect("row carries scene_slot") as u32;
+        // A clamped row legitimately may not have moved; only gate rows that report a write.
+        let Some(reported) = row.get("final_level").and_then(serde_json::Value::as_f64) else {
+            continue;
+        };
+        let crate::SceneOverlay::Full(params) = crate::scene_overlay(&saved, scene, HIWATT_AMP)
+        else {
+            panic!("scene {scene} lost its overlay entirely after the batch save");
+        };
+        let persisted = params
+            .get("outputLevel")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or_else(|| panic!("scene {scene} overlay has no outputLevel after the save"));
+        assert!(
+            (persisted - reported).abs() < 1e-3,
+            "scene {scene}: the run reported outputLevel {reported} but the SAVED document \
+             holds {persisted} — a multi-scene batch must persist every scene, not just the \
+             last one touched (fw 1.8.58 scene-switch discard)"
+        );
+        assert_ne!(
+            row.get("persist_mismatch")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "scene {scene} must not be stamped persist_mismatch: {row:?}"
+        );
+    }
+
+    // Each scene is saved as it completes, so the batch issues more than the single historical
+    // batch-end save — that extra persistence IS the fix, and pinning it here keeps a future
+    // "optimisation" back to one deferred save from silently reintroducing the bug.
+    let saves = sim
+        .events()
+        .iter()
+        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(s) if *s == HIWATT))
+        .count();
+    assert!(
+        saves >= 3,
+        "expected a save per leveled scene (plus the batch-end restore save), got {saves}"
+    );
+}
+
 /// BUG→GATE (2026-07-27 report, the MEASUREMENT CONTEXT): a preset loads into its SAVED
 /// `lastLoadedScene`, so a base measurement that does not recall base first measures THAT
 /// scene. The reported preset saves `lastLoadedScene = 3`, and the authored C table puts scene

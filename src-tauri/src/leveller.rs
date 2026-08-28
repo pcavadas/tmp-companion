@@ -2360,10 +2360,20 @@ fn recall_base(s: &mut Session) -> Result<(), String> {
 
 /// Recall the preset's ORIGINAL `lastLoadedScene` right before a save, so the save
 /// re-stamps it instead of whatever scene the run left active (HW: a base-context
-/// leveling save silently rewrote the preset's on-load scene, 3 → 8). Unsaved writes
-/// survive the recall (HW, `probe --defer-scenes`). `None` = no recall (old behavior).
+/// leveling save silently rewrote the preset's on-load scene, 3 → 8).
+/// `None` = no recall (old behavior).
 /// The ONE pre-save recall shared by `apply_levels`, `save_deferred_scene_writes`, and
 /// `write_fs_values_on_session` — a settle-timing fix here fixes all three.
+///
+/// **This recall DESTROYS any still-pending scene-overlay write** on fw 1.8.58 — not
+/// only for the scene being recalled, but for whatever scene the device is switching
+/// AWAY from (HW, 2026-08-28; see `notes/gotchas.md`'s scene-leveling entry). The
+/// older claim here that "unsaved writes survive the recall (HW, `probe
+/// --defer-scenes`)" held on fw 1.8.45 and no longer does. Callers must therefore have
+/// already PERSISTED anything they care about before calling this — the scene batch
+/// does exactly that via `save_scene_now` — so that by the time this runs there is
+/// nothing left to lose. Do NOT try to fix a caller by re-asserting the write after
+/// the recall: that shape was HW-tested and does not work.
 fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<(), String> {
     if let Some(scene) = restore_scene {
         s.load_scene(scene)?;
@@ -2380,11 +2390,20 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
 /// `presetLevel` is silently reverted to the SAVED value right before the save
 /// persists it (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
 /// doc still read the prior 0.32; caught by the online `level.online.spec.ts` base
-/// idempotency test). Node/overlay writes are immune (the footswitch
-/// `switch_at_target` re-run spec proves `valueA` persists through the recall), so
-/// only `reassert_pl` — the unsaved level a caller solved (`apply_levels`) or
-/// raised (`redistribute_clamped_headroom`) — needs re-writing, and only when a
-/// recall actually ran. Timing stays under the idle-gap cliff: recall +
+/// idempotency test). `reassert_pl` — the unsaved level a caller solved
+/// (`apply_levels`) or raised (`redistribute_clamped_headroom`) — is re-written here,
+/// and only when a recall actually ran.
+///
+/// **Node/overlay writes are NOT immune, despite what this doc used to claim.** The
+/// old justification ("the footswitch `switch_at_target` re-run spec proves `valueA`
+/// persists through the recall") conflated a footswitch ASSIGN — a different wire
+/// message — with a scene-overlay `changeParameter`. On fw 1.8.58 a pending scene
+/// overlay write is destroyed by this recall (HW, 2026-08-28 —
+/// `notes/gotchas.md`). There is deliberately no `reassert` for them: re-asserting
+/// after the recall was HW-tested and DOES NOT WORK. Scene writes must be persisted
+/// before this runs (`save_scene_now`); see `recall_original_scene`'s doc.
+///
+/// Timing stays under the idle-gap cliff: recall +
 /// `SETTLE_AFTER_SET_MS` → set + `SETTLE_AFTER_SET_MS` → save. The re-assert
 /// deliberately does NOT defeat the restore: `setPresetLevel` emits no
 /// `loadScene`, so the scene the save stamps is still the recalled one (pinned by
@@ -5694,6 +5713,26 @@ fn run_scene_jobs(
                             LevelKnob::PresetLevel => None,
                         }
                     }));
+                    // Save THIS scene right now rather than leaving it for the batch-end
+                    // deferred save (`save_deferred_scene_writes`'s doc) — fw 1.8.58 no
+                    // longer reliably holds more than one scene's unsaved overlay write
+                    // across a `loadScene` switch, so deferring every scene to one final
+                    // save can lose all but the last one touched. Skipped for a headroom
+                    // trade (`hold.is_some()`): its raised `presetLevel` still needs the
+                    // batch-end recall+reassert, and interleaving that with a per-scene
+                    // save here hasn't been HW-validated — the trade path keeps the OLD
+                    // deferred shape. `save` false means this is a dry run (no persistence
+                    // at all is intended); `save_scene_now`'s own failure never aborts the
+                    // batch — `verify_persisted_writes` below is the safety net that
+                    // reports the truth either way.
+                    if save && hold.is_none() {
+                        if let Err(e) = save_scene_now(slot) {
+                            log::warn!(
+                                "save_scene_now failed for slot {slot} scene {}: {e}",
+                                job.scene_slot
+                            );
+                        }
+                    }
                 }
                 solved_scene_outcome(job.scene_slot, job.target_lufs, s, t0.elapsed().as_millis())
             }
@@ -5793,16 +5832,54 @@ fn run_scene_jobs(
     Ok(outcomes)
 }
 
-/// The scene batch's ONE persist: recall the preset's original active scene (so the
+/// Persist ONE scene's just-written overlay IMMEDIATELY, instead of leaving it for
+/// the batch-end deferred save — see `save_deferred_scene_writes`'s doc for why this
+/// exists: on fw 1.8.58 the device no longer reliably holds MULTIPLE scenes' unsaved
+/// overlay writes across a `loadScene` switch (HW, 2026-08-28 — see below), so a
+/// multi-scene batch that defers every write to one final save can lose all but the
+/// last scene touched. Saving right after each scene's own write sidesteps this
+/// entirely: the connection the caller's write left open is dropped, but the device's
+/// ACTIVE scene persists across a reconnect (HW-confirmed), so a bare reconnect +
+/// `saveCurrentPreset` — no `loadScene` call at all — correctly stamps that scene's
+/// value with nothing else to disturb it. HW: two independent single-scene writes,
+/// each saved this way ~30 s apart (inside the documented lazy-commit window), both
+/// persisted with no collision. One retry on a fresh connection, mirroring
+/// `save_deferred_scene_writes` (the realistic failure is the HID open lockout, not
+/// the save itself).
+fn save_scene_now(slot: u32) -> Result<(), String> {
+    let attempt = || -> Result<(), String> {
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+        let mut s = Session::connect()?;
+        s.save_current_preset(slot)
+    };
+    attempt().or_else(|e| {
+        log::warn!("per-scene save failed ({e}); retrying on a fresh connection");
+        attempt()
+    })
+}
+
+/// The scene batch's FINAL persist: recall the preset's original active scene (so the
 /// save stamps the same base/scene/footswitch state the preset had before the run —
 /// a save stamps `lastLoadedScene` + switch states from the working state), then ONE
-/// `saveCurrentPreset` persisting every accumulated unsaved scene overlay. HW
-/// (`probe --defer-scenes`, fw 1.8.45): unsaved scene-edit writes survive scene
-/// recalls and reconnects; re-recalling a written scene does NOT revert it; base
-/// recall = wire slot 8; the single save persists ALL accumulated overlays. One
-/// retry on a fresh connection (the realistic failure is the HID open lockout, not
-/// the save itself). The connection never toggles re-amp, so the post-re-amp
-/// save-drop cannot bite.
+/// `saveCurrentPreset`. Historically this was also the batch's ONLY save, relying on
+/// the device holding every accumulated unsaved scene overlay until this one save
+/// (HW, `probe --defer-scenes`, fw 1.8.45: unsaved scene-edit writes survive scene
+/// recalls and reconnects; re-recalling a written scene does NOT revert it). **That
+/// no longer holds on fw 1.8.58** — HW, 2026-08-28: a write to one scene reverted
+/// after a bare recall of a DIFFERENT, never-written scene; a multi-scene batch lost
+/// EVERY scene's write, not just the one colliding with `restore_scene` (the narrower
+/// symptom `notes/gotchas.md` originally recorded — that citation turned out to be a
+/// single-scene repro, never independently re-verified against a real multi-scene
+/// batch). Root cause is believed to be a Fender firmware regression between 1.8.45
+/// and 1.8.58, not a bug in this recall/save sequence. `run_scene_jobs` now calls
+/// `save_scene_now` immediately after each scene job (see its doc), so by the time
+/// THIS function runs nothing is left pending — it exists purely to re-stamp
+/// `lastLoadedScene` (and, for a headroom trade, to persist the raised `presetLevel`
+/// the trade left unsaved — trades still rely on the OLD deferred-everything shape and
+/// are NOT covered by the per-scene fix; see `run_scene_jobs`'s `hold` handling). One
+/// retry on a fresh connection (the realistic failure is the HID open lockout, not the
+/// save itself). The connection never toggles re-amp, so the post-re-amp save-drop
+/// cannot bite.
 fn save_deferred_scene_writes(
     slot: u32,
     restore_scene: Option<u32>,
