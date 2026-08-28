@@ -673,9 +673,15 @@ mod imp {
         if fd < 0 {
             let err = IoError::last_os_error();
             // EACCES is the overwhelmingly common first-run failure: the node defaults
-            // to root-only. Name the fix rather than surfacing a bare errno.
+            // to root-only. Name the fix rather than surfacing a bare errno. The .deb/
+            // .rpm packages install and reload the udev rule automatically at install
+            // time (packaging/linux/postinst.sh) — a stale rule state here means either
+            // a source build that skipped that step, or udev genuinely needing a nudge.
             let hint = if err.raw_os_error() == Some(libc::EACCES) {
-                " — no permission for the hidraw node; install the udev rule (see CONTRIBUTING.md), then unplug and replug the unit"
+                " — no permission for the hidraw node; try \
+                 `sudo udevadm control --reload-rules && sudo udevadm trigger` \
+                 (no replug needed), or if not installed from the .deb/.rpm package, \
+                 install packaging/udev/70-fender-tone-master-pro.rules"
             } else {
                 ""
             };
