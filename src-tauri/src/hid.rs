@@ -102,6 +102,15 @@ impl Hid {
     }
 }
 
+/// Whether the TMP is currently attached, WITHOUT opening or seizing it — the
+/// Linux hotplug poller's only building block (`watcher.rs`'s `imp`), since
+/// hidraw has no IOHIDManager-style matching-callback equivalent. Reuses the
+/// same sysfs walk `open_device()` uses rather than a second matcher.
+#[cfg(target_os = "linux")]
+pub fn device_present() -> bool {
+    imp::find_hidraw().is_ok()
+}
+
 impl Drop for Hid {
     fn drop(&mut self) {
         let _ = self.cmd_tx.send(Cmd::Close);
@@ -645,7 +654,11 @@ mod imp {
     use std::time::{Duration, Instant};
 
     /// Locate the TMP's `/dev/hidraw*` node via sysfs.
-    fn find_hidraw() -> Result<CString, String> {
+    ///
+    /// `pub(super)`: also called by `device_present()` above `imp`, for the
+    /// hotplug poller — the only reason this needs to reach past `imp`'s own
+    /// boundary.
+    pub(super) fn find_hidraw() -> Result<CString, String> {
         let dir = std::fs::read_dir("/sys/class/hidraw")
             .map_err(|e| format!("cannot list /sys/class/hidraw ({e}) — is hidraw available?"))?;
         let mut seen = 0usize;
