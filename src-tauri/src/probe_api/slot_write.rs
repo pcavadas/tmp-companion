@@ -1243,8 +1243,15 @@ pub fn probe_set_scene_param(
         restore_scene: saved_doc.as_ref().and_then(crate::last_loaded_scene),
         ..Default::default()
     };
-    let (saved, _) =
-        leveller::apply_levels(slot, &[], &[(&knob, value)], opts, true, saved_doc.as_ref())?;
+    let (saved, _) = leveller::apply_levels(
+        slot,
+        &[],
+        &[(&knob, value)],
+        opts,
+        true,
+        saved_doc.as_ref(),
+        &[],
+    )?;
     Ok(format!(
         "[probe --set-scene-param] slot {} · scene {} · {group}/{node}.{param} = {value:.4}  ⇒  {}\n",
         slot + 1,

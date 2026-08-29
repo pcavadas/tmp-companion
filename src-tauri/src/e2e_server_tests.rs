@@ -3158,6 +3158,8 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
         handle: Some(handle),
         // Legacy order: the solve takes its own as-is capture (no reordered prepass here).
         prepass: None,
+        // This test's job isn't a base job — nothing to isolate.
+        force_bypass: vec![],
     };
     let outcomes = crate::leveller::level_scenes_oneshot(
         404,
@@ -3168,6 +3170,8 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
         saved.as_ref(),
         // No headroom trade in this fixture run.
         None,
+        // Nothing was isolated for this job, so nothing to undo.
+        &[],
         |_, _| {},
         || false,
     )
@@ -3472,6 +3476,43 @@ fn batched_scene_app() -> (tauri::App<MockRuntime>, WebviewWindow<MockRuntime>) 
     (app, webview)
 }
 
+/// Every `SceneLevelProgressItem` a run streamed over `onResult`, in the order sent.
+type CapturedChannel = std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>;
+
+/// `batched_scene_app`'s sibling for a test that needs the whole PROGRESS-ITEM SEQUENCE, not
+/// just the command's return value — e.g. "no item ever named slot 8" or "some `done` item
+/// carried the trade" (F5). The mock runtime's own eval-based `Channel` only remembers the
+/// LAST script it evaluated (`MockWebviewDispatcher::last_evaluated_script`), so a sequence
+/// assertion needs a `channel_interceptor` instead: it fires on every message a
+/// `tauri::ipc::Channel` sends, in order, before the (here, inert) mock eval — exactly the
+/// hook `JavaScriptChannelId::channel_on` documents.
+fn batched_scene_app_capturing_channel() -> (
+    tauri::App<MockRuntime>,
+    WebviewWindow<MockRuntime>,
+    CapturedChannel,
+) {
+    let captured: CapturedChannel = Default::default();
+    let sink = captured.clone();
+    let app = tauri::test::mock_builder()
+        .channel_interceptor(move |_webview, _callback_fn, _index, body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+                    sink.lock().unwrap().push(v);
+                }
+            }
+            // Consumed — there is no JS engine behind the mock webview to hand it to anyway.
+            true
+        })
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![level_scenes_apply_batched])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    (app, webview, captured)
+}
+
 /// The row a batched scene result names. Base rides the wire as a NULL `scene_slot` — the
 /// `BASE_SCENE_SLOT` sentinel is not a `scenes[]` index (`outcome_to_level_result`).
 fn scene_row(rows: &[serde_json::Value], scene: Option<u64>) -> Option<&serde_json::Value> {
@@ -3717,12 +3758,18 @@ impl crate::hid::HidTransport for CancelAtSceneWrite {
 /// back nothing would leave the preset carrying a gain-structure change the UI never mentioned
 /// and cannot offer to restore (danger.md — see ⟦F1⟧'s doc).
 ///
-/// JOB ORDER IS LOAD-BEARING, and so is which row triggers. The benefiting scene is the row
-/// that WRITES its own overlay (base is left exactly at target by the hold), so it
-/// is the cancel's trigger — and a third job follows it purely so the stop has an unstarted
-/// job to land on. It has to land at a LOOP TOP with at least one row already attempted: land
-/// it earlier and the runner takes its pre-solve exit, which reloads the preset and discards
-/// the untraded-for pair, exactly as the back-out does.
+/// JOB ORDER IS LOAD-BEARING, and so is which row triggers — and A1/A4 (`base-LAST` sort,
+/// "base's isolated prepass capture must run LAST in PHASE 1") changed what that order IS:
+/// `scene_jobs` is sorted so BASE always runs LAST, whatever position it held on the wire, and
+/// PHASE 3 shares that same order. So base is now the batch's own reliable "never runs" job —
+/// the trigger must fire on the SECOND job instead of the first, or the stop lands before even
+/// ONE row completes. Slot 404's scene 1 ("Rhythm") is, like scene 3, a Full-overlay
+/// beneficiary of this same trade (its own authored `outputLevel` also clamps and gets raised —
+/// see `TRADE_SCENE`'s doc for the fixture's physics), so it is the trigger: scene 3 (still
+/// first among the wire's non-base jobs) completes untouched, scene 1's own write stops the
+/// run, and base — sorted last — never starts. It has to land at a LOOP TOP with at least one
+/// row already attempted: land it earlier and the runner takes its pre-solve exit, which
+/// reloads the preset and discards the untraded-for pair, exactly as the back-out does.
 #[test]
 fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed() {
     let _serial = serial();
@@ -3735,7 +3782,8 @@ fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed()
         crate::session::e2e_transport::set_factory(Box::new(move || {
             Box::new(CancelAtSceneWrite {
                 sim: sf.clone(),
-                scene: TRADE_SCENE as i64,
+                // The SECOND job to run post-sort (base-last) — see the doc above.
+                scene: 1,
                 fired: ff.clone(),
             })
         }));
@@ -3767,15 +3815,16 @@ fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed()
     assert_eq!(
         rows.len(),
         2,
-        "base + the scene that finished come back; the stop landed on the LAST job's loop \
-         top — the historical shape returned an EMPTY vec here: {rows:?}"
+        "the two non-base scenes that finished come back; the stop landed on BASE's loop top \
+         (base sorts last post-A1/A4) — the historical shape returned an EMPTY vec here: \
+         {rows:?}"
     );
     assert!(
-        scene_row(&rows, Some(1)).is_none(),
-        "the unstarted job emits no row: {rows:?}"
+        scene_row(&rows, None).is_none(),
+        "base — sorted last — is the unstarted job and emits no row: {rows:?}"
     );
     assert!(
-        scene_row(&rows, None).is_some() && scene_row(&rows, Some(TRADE_SCENE)).is_some(),
+        scene_row(&rows, Some(1)).is_some() && scene_row(&rows, Some(TRADE_SCENE)).is_some(),
         "and the two that ran name themselves: {rows:?}"
     );
 
@@ -3813,6 +3862,238 @@ fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed()
         "the raised pair stands — backing it out would leave every solved scene off target by \
          the raise while the run reported it on: got {}",
         sim.preset_level()
+    );
+}
+
+// ───────────── A1/A9: the "base anchor" — the trade fires on a WIZARD-SHAPED run ─────────
+//
+// The wizard never sends a wire job for base itself (that lane is `level_preset`'s, run
+// separately) — so `plan_trade_for_batch`'s gate #2 ("a base row in `scene_jobs`") would
+// otherwise never see one on a real wizard run, and the trade above would stay reachable
+// only from a hand-built `base_requested` batch no UI path produces. `base_anchor` (A1) is
+// the fix: it keeps a base job alive through PHASE 1/2 with no wire target of its own, then
+// strips it before PHASE 3. This section proves the anchor reaches the SAME trade the
+// `base_requested` shape does, and that its isolation (A3/A4 — "base means base") never
+// leaks into the saved preset.
+
+/// ⟦A9(i)⟧ THE ANCHOR REACHES THE SAME TRADE A `base_requested` BATCH DOES — same fixture
+/// (404/scene 3), same raise, but the wizard's OWN shape: ONE wire job (the clamped scene)
+/// plus a bare `baseAnchor`, no slot-8 job at all. If the anchor's target didn't get the
+/// same offset a real wire job's does (A1's doc), or if PHASE 3 failed to strip the
+/// anchor-only base job, this would either trade against the wrong number or double-solve
+/// base on top of `level_preset`'s own apply — both regressions this pins.
+#[test]
+fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let _cancel_reset = SceneCancelReset;
+    let (sim, from) = trade_sim();
+    let (_app, webview, captured) = batched_scene_app_capturing_channel();
+
+    // The wizard's shape: no slot-8 job — base rides ONLY the anchor.
+    let jobs = serde_json::json!([
+        {"sceneSlot": TRADE_SCENE, "targetLufs": -21.0}
+    ]);
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": TRADE_SLOT, "jobs": jobs, "candidates": trade_amp_candidates(),
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "baseAnchor": {"targetLufs": -21.0},
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    let rows = res.as_array().expect("results array").clone();
+
+    // Base's own `outputLevel` is never solved by THIS batch when it arrived only as an
+    // anchor — that write belongs to the wizard's separate `level_preset` lane.
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the wire job (the clamped scene) comes back — no anchor-only base row: {rows:?}"
+    );
+    let trade = rows[0]["trade"].clone();
+    assert_eq!(
+        trade["applied"],
+        serde_json::json!(true),
+        "an anchored base still lands an applied (not advisory) trade: {trade}"
+    );
+    let raise_db = trade["raise_db"].as_f64().expect("raise_db");
+    assert!(
+        (raise_db - 4.437).abs() < 0.1,
+        "the anchor must drive the IDENTICAL trade math as a base_requested batch (same \
+         fixture, same targets): {trade}"
+    );
+    let raised_pl = trade["preset_level"].as_f64().expect("preset_level") as f32;
+    let fader = trade["base_amps"][0]["value"]
+        .as_f64()
+        .expect("a landed trade solved the fader") as f32;
+
+    // BOTH HALVES persist even though base's own row never rode this batch's PHASE 3.
+    assert_eq!(
+        sim.events()[from..]
+            .iter()
+            .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(s) if *s == TRADE_SLOT))
+            .count(),
+        1,
+        "one deferred save persists the anchor-driven pair: {:?}",
+        &sim.events()[from..]
+    );
+    let saved = crate::read_saved_preset(TRADE_SLOT).expect("the saved preset re-reads");
+    let saved_pl = crate::audiograph::preset_level(&saved).expect("saved presetLevel") as f32;
+    assert!(
+        (saved_pl - raised_pl).abs() < 1e-3,
+        "the SAVED document carries the raised presetLevel from an anchor-only trade, got \
+         {saved_pl}"
+    );
+    let saved_fader =
+        crate::commands::level_footswitch::node_param_f64(&saved, TRADE_AMP, "outputLevel")
+            .expect("saved base outputLevel") as f32;
+    assert!(
+        (saved_fader - fader).abs() < 1e-3,
+        "…and the lowered base fader alongside it, got {saved_fader} vs the reported {fader}"
+    );
+
+    // Scene 3's own saved `outputLevel` sits at its solved value (its Full overlay pins the
+    // knob independently of base, which is why it benefited from the raise at all).
+    let solved = rows[0]["final_level"].as_f64().expect("final_level");
+    let scene_saved_output = match crate::scene_overlay(&saved, TRADE_SCENE as u32, TRADE_AMP) {
+        crate::SceneOverlay::Full(params) => params
+            .get("outputLevel")
+            .and_then(serde_json::Value::as_f64)
+            .expect("scene 3's Full overlay carries its own outputLevel"),
+        _ => panic!("scene 3 must keep a Full overlay for its own outputLevel after the batch"),
+    };
+    assert!(
+        (scene_saved_output - solved).abs() < 1e-3,
+        "scene 3's SAVED outputLevel must equal the row's own solved value: saved \
+         {scene_saved_output} vs solved {solved}"
+    );
+
+    // NO progress item ever named slot 8 — the anchor-only base has no frontend row to
+    // route one to (A1's suppression at both the prepass `started` and the PHASE-3
+    // `on_scene` send sites — moot for the latter since the job is stripped before PHASE 3,
+    // but the prepass DOES run a base capture and must stay silent about it).
+    let items = captured.lock().unwrap();
+    assert!(
+        !items.is_empty(),
+        "the channel-interceptor capture must actually see the run's progress items, or this \
+         gate is vacuous"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|it| it["sceneSlot"].as_u64() == Some(u64::from(session::BASE_SCENE_SLOT))),
+        "an anchor-only base must stream NO progress item at all: {items:?}"
+    );
+    // F5: at least one `done` item discloses the trade over the channel, not just the
+    // command's awaited return — the wizard's row-by-row UI reads the channel, not the
+    // return value.
+    assert!(
+        items
+            .iter()
+            .any(|it| it["status"] == "done" && !it["result"]["trade"].is_null()),
+        "at least one done item must carry the trade summary: {items:?}"
+    );
+}
+
+/// ⟦A9(ii)⟧ THE ANCHOR'S BASE CAPTURE IS ISOLATED, AND THE ISOLATION NEVER PERSISTS. Slot 400
+/// ("E2E Rig") saves its "DRIVE" footswitch's own `ACD_TubeScreamer` bypass=false — exactly
+/// the shape `base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved`
+/// pins for `level_preset`'s own base lane ("base means base": preset 28's TubeScreamer was
+/// saved ON too). A1/A3/A4 give the BATCH command the identical isolation whenever base is in
+/// plan, anchor or not — this is the anchor half of that gate.
+///
+/// LUFS can't prove it: the offline capture model's C table carries no bypass term (same
+/// SCOPE HONESTY as the `level_preset` gate above), so this pins the two device-visible
+/// facts instead — the isolation WROTE (`changeParameter` on `bypass`, modeled as
+/// `SimEvent::Bypass` because the wire message differs from a float `ChangeParameter`), and
+/// by the batch's one save the working copy is clean again: the SAVED preset still reads
+/// bypass=false, exactly what the user's preset already had.
+#[test]
+fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let _cancel_reset = SceneCancelReset;
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+        (
+            "TMP_E2E_BACKUP_FIXTURE",
+            "/../e2e/fixtures/backup-fixture.bin",
+        ),
+        (
+            "TMP_E2E_STIMULUS",
+            "/resources/samples/guitar-humbucker.wav",
+        ),
+    ]);
+    crate::leveller::clear_slot_save_registry();
+    const RIG: u32 = 400;
+    const TUBE_SCREAMER: &str = "ACD_TubeScreamer";
+
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+
+    // Fixture premise: the pedal really is saved ON, or "isolation never leaked" would pass
+    // vacuously with no isolation ever needed.
+    let saved_before = crate::read_saved_preset(RIG).expect("400 field-8 read");
+    assert!(
+        !crate::footswitch::block_bypassed_in_base(&saved_before, TUBE_SCREAMER),
+        "fixture premise: 400's DRIVE pedal (TubeScreamer) must be saved ON (bypass=false)"
+    );
+
+    let from = sim.events().len();
+    let (_app, webview) = batched_scene_app();
+    let amp = serde_json::json!([{
+        "groupId": "G1", "nodeId": "ACD_JC120",
+        "parameterId": "outputLevel", "value": 0.35
+    }]);
+    let jobs = serde_json::json!([{"sceneSlot": 0, "targetLufs": -23.0}]);
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": RIG, "jobs": jobs, "candidates": amp,
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "baseAnchor": {"targetLufs": -23.0},
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    assert!(
+        res.as_array().is_some_and(|a| !a.is_empty()),
+        "the scene job must actually solve: {res:?}"
+    );
+
+    // THE ISOLATED CAPTURE: the pedal was forced off during the run.
+    let events = sim.events()[from..].to_vec();
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            crate::sim_device::SimEvent::Bypass { node, on: true } if node == TUBE_SCREAMER
+        )),
+        "the anchor's base capture must isolate the footswitch-owned pedal exactly like \
+         `level_preset`'s own base lane: {events:?}"
+    );
+
+    // …AND NEVER PERSISTED: the saved preset still reads the pedal ON, exactly as the user
+    // left it — the working copy was cleaned before the batch's one save.
+    let saved_after = crate::read_saved_preset(RIG).expect("400 field-8 re-read");
+    assert!(
+        !crate::footswitch::block_bypassed_in_base(&saved_after, TUBE_SCREAMER),
+        "the isolation must NEVER reach the saved preset — the pedal must still read ON"
     );
 }
 

@@ -250,12 +250,41 @@ fn base_fader_room_db(base_fader: f32) -> f64 {
     (20.0 * (base_fader as f64 / BASE_FADER_FLOOR as f64).log10()).max(0.0)
 }
 
-/// Does a base `presetLevel` rise raise this scene's ceiling? TRUE iff the scene's amp node
-/// carries its OWN overlay for the scene — then the compensating base-fader drop cannot
-/// reach it. `Absent`/`BypassOnly` inherit base's knobs (net-zero); `Unknown` (a truncated
-/// field-8 read) is answered NO, the conservative side: a wrong YES churns the base pair for
-/// a sound that gains nothing and leaves every other sound quieter.
+/// Does raising base `presetLevel` and re-leveling this scene's OWN row actually put the row
+/// somewhere the compensating base-fader drop can't take back? Answered off `SceneOverlay`'s
+/// "scene-writable" shape, not off ceiling-inheritance physics: `Full` already carries its own
+/// pinned `outputLevel`, so the raise lands there whole. `Absent` has no overlay YET, but
+/// `set_knobs`' Scene Edit enable MATERIALIZES one the moment this scene's own row is solved
+/// (PHASE 3) — after that write the scene is exactly as independent of base as a `Full` scene
+/// always was, so it benefits too (the earlier "Absent inherits base, net-zero" answer was
+/// only true of an UNWRITTEN scene, and every benefiting scene in this batch gets written).
+/// `BypassOnly` is REFUSED outright by `set_knobs` for a scene-scoped write (its Scene Edit
+/// flag is off, knobs share base) — a raise buys it nothing, since no per-scene write can ever
+/// land. `Unknown` (a truncated field-8 read) stays the conservative NO: a wrong YES churns the
+/// base pair for a sound that may gain nothing and leaves every other sound quieter.
 pub fn benefits_from_base_raise(overlay: &crate::probe_api::scene_jobs::SceneOverlay<'_>) -> bool {
+    matches!(
+        overlay,
+        crate::probe_api::scene_jobs::SceneOverlay::Full(_)
+            | crate::probe_api::scene_jobs::SceneOverlay::Absent
+    )
+}
+
+/// Does a base `presetLevel` rise raise THIS SCENE'S ALREADY-MEASURED prepass reading by
+/// exactly `raise_db`, so the write phase can reuse it instead of re-measuring? Narrower than
+/// [`benefits_from_base_raise`] on purpose: that predicate asks "will this scene end up
+/// independent of base once PHASE 3 writes it", which is true for `Full` AND `Absent` (the
+/// enable materializes the overlay). This one asks "is the reading ALREADY taken — before that
+/// write — the right one to shift", which is true ONLY for `Full`: its prepass capture already
+/// rendered through the scene's OWN pinned `outputLevel`, untouched by the base-fader drop, so
+/// `+raise_db` is exact. An `Absent` scene's prepass rendered through BASE's fader (no overlay
+/// existed yet) — raise UP and base-fader drop DOWN net to ~zero at that moment — so shifting
+/// it by `+raise_db` would predict a ceiling the scene never had; the reading is dropped
+/// instead ([`crate::leveller::retarget_prepass_after_trade`]) and the scene's own PHASE-3
+/// solve re-measures fresh, AFTER its own overlay exists.
+pub fn retains_prepass_after_raise(
+    overlay: &crate::probe_api::scene_jobs::SceneOverlay<'_>,
+) -> bool {
     matches!(overlay, crate::probe_api::scene_jobs::SceneOverlay::Full(_))
 }
 
@@ -551,17 +580,37 @@ mod tests {
 
     // The benefit answer comes from the OVERLAY STRUCTURE, and an unreadable one is answered
     // NO — the conservative side (a wrong YES churns the base pair and leaves every other
-    // sound quieter for nothing).
+    // sound quieter for nothing). Full AND Absent both accept: `set_knobs`' Scene Edit enable
+    // materializes an overlay for an Absent scene the moment PHASE 3 writes it, so by the time
+    // the raise matters that scene is exactly as independent of base as a Full one.
     #[test]
-    fn benefit_is_read_off_the_overlay_and_unknown_answers_no() {
+    fn benefit_is_read_off_the_overlay_full_and_absent_accept_bypassonly_and_unknown_refuse() {
         use crate::probe_api::scene_jobs::SceneOverlay;
         let params = serde_json::Map::new();
         assert!(benefits_from_base_raise(&SceneOverlay::Full(&params)));
+        assert!(
+            benefits_from_base_raise(&SceneOverlay::Absent),
+            "the enable materializes the overlay when PHASE 3 writes this scene's own row"
+        );
         assert!(!benefits_from_base_raise(&SceneOverlay::BypassOnly(
             &params
         )));
-        assert!(!benefits_from_base_raise(&SceneOverlay::Absent));
         assert!(!benefits_from_base_raise(&SceneOverlay::Unknown));
+    }
+
+    // `retains_prepass_after_raise` is the NARROWER, Full-only predicate: an Absent scene
+    // benefits from the eventual raise but its ALREADY-TAKEN prepass reading rendered through
+    // base's (not yet raised) fader and must be dropped, not shifted.
+    #[test]
+    fn retains_prepass_after_raise_is_full_only() {
+        use crate::probe_api::scene_jobs::SceneOverlay;
+        let params = serde_json::Map::new();
+        assert!(retains_prepass_after_raise(&SceneOverlay::Full(&params)));
+        assert!(!retains_prepass_after_raise(&SceneOverlay::Absent));
+        assert!(!retains_prepass_after_raise(&SceneOverlay::BypassOnly(
+            &params
+        )));
+        assert!(!retains_prepass_after_raise(&SceneOverlay::Unknown));
     }
 
     // Every clamp cause has its own wording — the taxonomy exists so the UI can tell them

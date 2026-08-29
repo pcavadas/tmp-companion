@@ -210,6 +210,11 @@ export interface UseLevelingFlowDeps {
   /** Per-preset amp `outputLevel` candidates from the SAME backup read, keyed by
    *  0-based list index — so a scene run never needs a live discovery round-trip. */
   ampCandidates: Map<number, AmpCandidate[]>;
+  /** Per-preset count of `ampCandidates` nodes NOT bypassed in the base graph
+   *  (`LibraryScan.baseActiveAmpCountByIndex`), keyed by 0-based list index — the
+   *  redistribute gate's single-amp signal. Always populated: `LibraryScan` computes it
+   *  for every scanned preset, and `usePresetData`/`LevelView` pass it straight through. */
+  baseActiveAmpCountByIndex: Map<number, number>;
   /** Per-preset block roster (fender_ids) from the SAME backup read, keyed by
    *  0-based list index — drives the envelope-follower verify-by-ear cause. */
   blocksByIndex: Map<number, string[]>;
@@ -229,6 +234,7 @@ export function useLevelingFlow({
   sceneInfo,
   footswitchInfo,
   ampCandidates,
+  baseActiveAmpCountByIndex,
   blocksByIndex,
   silenceHintByIndex,
   targetLufsByName,
@@ -644,6 +650,19 @@ export function useLevelingFlow({
         );
         const resolveScene = batchResolve(byScene, causeOf);
         markGroupActive(byScene, i);
+        // Keep this preset's already-force-appended BASE job alive through the batch's
+        // prepass + headroom-trade phases (issue 1 — the trade is otherwise unreachable
+        // from the wizard, which levels Base via the separate `levelPreset` lane). The
+        // base row for this slot ran FIRST (the run's base-first sort) and already holds
+        // its result by the time this group dispatches, so its TARGET is available here —
+        // look it up in `work`, not `group` (the base row is never part of a scene group).
+        // Omit the key entirely (not `null`) when the preset has no base row selected:
+        // conditional spread drops it from the serialized args, matching "no trade to
+        // plan" rather than sending an anchor nothing asked for.
+        const baseItem = work.find((w) => w.slot === it.slot && w.isBase);
+        const baseAnchor = baseItem
+          ? { targetLufs: targetOf(baseItem) }
+          : undefined;
         // ponytail: per-scene outcomes arrive via the Channel (`onResult`), NOT the returned
         // Promise value (deliberately discarded). `LevelResult` DOES now carry `scene_slot`
         // (identity, not position — the batch filters failed scenes out of the array it
@@ -672,6 +691,7 @@ export function useLevelingFlow({
               topologyId: profile?.topology_id ?? null,
               calibrationLufs: profile?.calibration_lufs ?? null,
               profileId: profile?.id ?? null,
+              ...(baseAnchor ? { baseAnchor } : {}),
             },
             (item) => {
               resolveScene(
@@ -758,6 +778,14 @@ export function useLevelingFlow({
   // Which presets in a finished run can be redistributed: a SINGLE-amp preset whose Base was
   // leveled and did NOT clamp (presetLevel < 1.0 ⇒ headroom) with ≥1 headroom-clamped scene.
   // Multi-amp presets are excluded in v1 (compensating one amp would drift the others).
+  //
+  // "Single-amp" gates on `baseActiveAmpCountByIndex` (bypassed-in-base amps excluded), NOT
+  // the raw node count of `ampCandidates` — that set is deliberately over-inclusive (amp-flip
+  // presets need a bypassed-in-base amp as a candidate for the scene where it IS live), so a
+  // preset with one live amp + one base-bypassed one would fail a raw-count gate (the
+  // Friedman HBE class: a bypassed Twin Reverb counted as a second amp). `=== 1`, not `<= 1` —
+  // a count of 0 means no active amp at all and must not offer a doomed redistribute. A slot
+  // missing from the map (nothing scanned it) is treated as not-single-amp, never offered.
   const redistributablePresets = useCallback(
     (items: RunItem[]): number[] =>
       [...new Set(items.map((it) => it.slot))].filter((slot) => {
@@ -766,16 +794,10 @@ export function useLevelingFlow({
         const clamps = group.filter(
           (it) => isSceneItem(it) && it.outcome === "clamped",
         );
-        const nodes = new Set(
-          (ampCandidates.get(slot) ?? [])
-            .filter((a) => a.parameterId === "outputLevel")
-            .map((a) => a.nodeId),
-        );
-        return (
-          base?.outcome === "done" && clamps.length > 0 && nodes.size === 1
-        );
+        const singleAmp = baseActiveAmpCountByIndex.get(slot) === 1;
+        return base?.outcome === "done" && clamps.length > 0 && singleAmp;
       }),
-    [ampCandidates],
+    [baseActiveAmpCountByIndex],
   );
 
   // What a redistribution would rewrite (for the Summary's opt-in enumeration), or null when

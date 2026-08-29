@@ -37,6 +37,7 @@ const row = (slot: number, name: string) => ({
   scene_count: 0,
   scenes: [],
   amp_candidates: [],
+  base_active_amp_count: 0,
   blocks: [],
   graph: emptyGraph,
   footswitches: [],

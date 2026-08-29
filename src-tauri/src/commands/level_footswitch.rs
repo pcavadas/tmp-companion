@@ -284,7 +284,7 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     switch: first.switch,
                     status: "active".into(),
                     result: None,
-                    message: Some("waiting for the device to commit the previous save…".into()),
+                    message: Some(leveller::WAITING_FOR_COMMIT_MSG.into()),
                 });
             }
         }

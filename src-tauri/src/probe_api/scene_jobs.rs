@@ -498,6 +498,10 @@ pub(crate) fn build_scene_jobs_with_handles(
                         // Filled by `leveller::prepass_scene_ceilings` when the caller runs
                         // the reordered (measure-everything-first) run.
                         prepass: None,
+                        // Base isolation (A3/A4), when this job is the base row, is stamped
+                        // onto it AFTER this builder returns — see
+                        // `commands::level_scenes::level_scenes_apply_batched`.
+                        force_bypass: Vec::new(),
                     }
                 }
                 Err(reason) => skip_scene_job(*scene, target_lufs, reason),
@@ -518,6 +522,7 @@ fn skip_scene_job(scene: u32, target_lufs: f64, reason: String) -> leveller::Sce
         handle: None,
         // A skip job is never measured, so it never carries a prepass reading.
         prepass: None,
+        force_bypass: Vec::new(),
     }
 }
 
@@ -580,6 +585,7 @@ fn handle_scene_job(
         rebalanceable: false,
         handle: Some(target),
         prepass: None,
+        force_bypass: Vec::new(),
     }
 }
 
@@ -623,7 +629,19 @@ pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
 /// refuses rather than returning a partial one. Same GAP CONTRACT as its sibling: no sleep
 /// before the read, one `RECONNECT_GAP_MS` after it.
 pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::Value, String> {
-    let result = crate::read_slot_preset_complete(list_index, &["scenes"]).map(|(p, _, _)| p);
+    read_saved_preset_complete_sections(list_index, &["scenes"])
+}
+
+/// [`read_saved_preset_complete`] with an explicit required-sections list — A3's widened read
+/// for a batch that carries a BASE row: the base isolation derivation additionally needs
+/// `ftsw` (`doctor_force_bypass`'s own input), and a partial `ftsw` under-isolates silently
+/// rather than erroring, so it must be COMPLETE-OR-FAIL exactly like `scenes` already is. Same
+/// GAP CONTRACT as the sibling above (no sleep before the read, one `RECONNECT_GAP_MS` after).
+pub(crate) fn read_saved_preset_complete_sections(
+    list_index: u32,
+    sections: &[&str],
+) -> Result<serde_json::Value, String> {
+    let result = crate::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p);
     crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     result
 }

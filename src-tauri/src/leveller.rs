@@ -408,6 +408,13 @@ fn measure_at_level(
 /// stored preset even on the `save=true` path) and treated as a skip by the frontend.
 pub const CANCELLED: &str = "cancelled";
 
+/// The freshness barrier's player-facing caption — shared verbatim by `commands::level_scenes`
+/// and `commands::level_footswitch`, whose independent barrier call sites (both gate on
+/// `slot_save_pending_commit`) must read identically to the player regardless of which lane hit
+/// the wait.
+pub(crate) const WAITING_FOR_COMMIT_MSG: &str =
+    "waiting for the device to commit the previous save…";
+
 /// Reload the stored preset to discard temporary level edits made while
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
@@ -1695,6 +1702,7 @@ pub fn apply_level(
         opts,
         reload_preset,
         None,
+        &[],
     )
 }
 
@@ -1710,6 +1718,13 @@ pub fn apply_levels(
     opts: LevelOptions,
     reload_preset: bool,
     saved: Option<&serde_json::Value>,
+    // A4: a BASE job's isolation list — "base means base" (a scene job's is always empty; it
+    // rides its own overlay instead). Written AFTER `set_knobs`/the intended-`presetLevel`
+    // assert and BEFORE the settle/engage, mirroring `arm_measurement`'s "SCENE CONTEXT FIRST,
+    // ISOLATION LAST" ordering (that seam is for a single `LevelKnob`; this one already has its
+    // own recall via `set_knobs`, so the ordering is reproduced here rather than routed through
+    // it).
+    force_bypass: &[(String, String, bool)],
 ) -> Result<(bool, Option<f64>), String> {
     if reload_preset {
         ensure_fresh_load(slot, &mut || crate::op_aborted())?;
@@ -1739,6 +1754,12 @@ pub fn apply_levels(
         {
             set_knob(&mut s, &LevelKnob::PresetLevel, pl, None)?;
         }
+    }
+    // ISOLATION LAST — after every knob/level write above, before the settle/engage below
+    // (`capture_on_session`'s rule: a scene recall inside `set_knobs` would otherwise revert
+    // bypasses written earlier on this connection).
+    for (g, n, byp) in force_bypass {
+        s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
 
@@ -2804,10 +2825,18 @@ pub(crate) fn reamp_off_guaranteed(tag: &str) {
 /// The assert is INSERTED into the breaker, never spliced over it: recall → 300 → set → 300 →
 /// hb → 300 → hb → 300 → engage. Every idle gap stays ≤300 ms and the cadence above survives
 /// intact; the engage simply lands ~1200 ms post-recall instead of ~900 ms.
+// A4/F11: this seam does NOT route through `arm_measurement` — it recalls a SCENE, not a
+// single `LevelKnob`, so there is no knob to hand that seam's `LevelKnob`-shaped API. The same
+// ordering rule applies by hand instead: SCENE CONTEXT FIRST (the `load_scene` recall), THE
+// INTENDED `presetLevel` next (between the recall and isolation — a `presetLevel` set before
+// the recall would be reverted by it), ISOLATION LAST (`load_scene` re-asserts the scene's own
+// bypass state, so bypasses written before it are silently undone — `capture_on_session`'s
+// rule) — immediately before the engage.
 fn measure_scene_asis(
     scene_slot: u32,
     stimulus: &[f32],
     intended_preset_level: Option<f32>,
+    force_bypass: &[(String, String, bool)],
 ) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     s.load_scene(scene_slot)?;
@@ -2815,6 +2844,9 @@ fn measure_scene_asis(
     if let Some(pl) = intended_preset_level {
         set_knob(&mut s, &LevelKnob::PresetLevel, pl, None)?;
         settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    }
+    for (g, n, byp) in force_bypass {
+        s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
     s.heartbeat()?;
     settle_or_cancel(SETTLE_AFTER_SET_MS)?;
@@ -4739,6 +4771,17 @@ pub struct SceneJob {
     /// redistribution runner, the probe benches) keeps the measure-inside-the-solve order
     /// byte-for-byte.
     pub prepass: Option<ScenePrepass>,
+    /// Isolation bypass writes `(group_id, node_id, forced_bypass)` this job's every capture
+    /// and write must re-assert — "base means base": preset 28's TubeScreamer is saved ON, so
+    /// an un-isolated base capture would measure it and silently under-isolate. Empty for every
+    /// scene job (a scene rides its own overlay). Non-empty only for a BASE job
+    /// (`scene_slot == session::BASE_SCENE_SLOT`), derived once by the app command
+    /// (`doctor_force_bypass`) and threaded through `measure_scene_asis`/`apply_levels`/
+    /// `apply_first_verified`/`correct_iter`'s trailing `force_bypass` parameter at every site
+    /// this job reaches one. The device working copy the isolation writes land in must be
+    /// clean again before the batch's terminal save — see `danger.md`'s PHASE-1/trade-hold
+    /// cleanup choreography; this field only carries WHAT to force, not when to undo it.
+    pub force_bypass: Vec<(String, String, bool)>,
 }
 
 /// One scene's PREPASS measurement: the reading every solve used to take as its own first
@@ -5020,7 +5063,14 @@ pub fn prepass_scene_ceilings(
         }
         on_scene(job.scene_slot);
         match require_live(
-            || measure_scene_asis(job.scene_slot, stimulus, intended_preset_level),
+            || {
+                measure_scene_asis(
+                    job.scene_slot,
+                    stimulus,
+                    intended_preset_level,
+                    &job.force_bypass,
+                )
+            },
             stimulus,
         ) {
             Ok(l) => {
@@ -5148,6 +5198,9 @@ pub fn level_scenes_oneshot(
     restore_scene: Option<u32>,
     saved: Option<&serde_json::Value>,
     hold: Option<&TradeHold>,
+    // A5/F2: `(group, node, ORIGINAL saved bypass)` for a base-requested job's own isolation
+    // (empty on every run that never isolated anything) — see `run_scene_jobs`'s param doc.
+    isolation_restore: &[(String, String, bool)],
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
@@ -5158,6 +5211,7 @@ pub fn level_scenes_oneshot(
         save,
         restore_scene,
         hold,
+        isolation_restore,
         on_scene,
         cancelled,
         move |job: &SceneJob| match &job.handle {
@@ -5236,6 +5290,14 @@ pub struct TradeHold {
     /// The solved base amp `outputLevel` writes, in `PersistedWrite` form (scene slot
     /// `BASE_SCENE_SLOT` — `persisted_value` reads those straight off the base graph).
     pub writes: Vec<PersistedWrite>,
+    /// A5/F2 DETECTION: `(group_id, node_id, expected_bypass)` for every node the hold's own
+    /// base job isolated — `expected_bypass` is what the SAVED document held for that node
+    /// BEFORE isolation (`footswitch::block_bypassed_in_base`), i.e. what `undo_base_isolation`
+    /// already wrote back. Empty when the base job carried no isolation. Threaded to
+    /// `verify_persisted_writes` so a silently dropped inverse write is visible at the
+    /// post-save re-read — that function checks only `node_param_f64` numeric values otherwise
+    /// and a bypass bool is invisible to it.
+    pub force_bypass_restore: Vec<(String, String, bool)>,
 }
 
 /// EXECUTE the benefit-aware headroom trade: raise base `presetLevel` by exactly the planned
@@ -5376,12 +5438,111 @@ pub fn apply_headroom_trade(
         }
         return Err(failure);
     }
+    // A5/F2: the hold landed with base's isolation still forced live in the device's working
+    // copy (every capture above re-asserted it via `base_job.force_bypass`). A preset load is
+    // FORBIDDEN from here on — the raise and the solved fader are UNSAVED deferred writes, and
+    // "never load before `save_deferred_scene_writes`" applies literally: a reload would wipe
+    // them just as surely as it undoes the isolation. So the isolation is undone with INVERSE
+    // writes instead, on their own fresh connection, and a failure to do so backs the WHOLE
+    // trade out rather than let the batch's terminal save persist every pedal forced off.
+    //
+    // This owner is LOAD-BEARING on the anchor-only path: when base arrived only as an anchor
+    // (no wire job of its own) it is stripped from PHASE 3 before `run_scene_jobs` ever runs,
+    // so that function's OWN pre-save isolation-restore list sees an empty batch and this call
+    // is the only place left in the whole run that can clean base's isolation up. On a
+    // `base_requested` run base survives into PHASE 3, where `run_scene_jobs`' own pre-save
+    // guard restores it too — so this call is merely redundant-but-cheap there, not required.
+    if !base_job.force_bypass.is_empty() {
+        if let Err(e) = undo_base_isolation(&base_job.force_bypass, saved) {
+            return Err(bail(
+                ClampKind::PartialTrade,
+                format!(
+                    "the base isolation could not be undone after the trade landed ({e}) — \
+                     backing the whole trade out rather than risk saving every isolated pedal \
+                     forced off"
+                ),
+            ));
+        }
+    }
     Ok(TradeApplied {
         raise_db: plan.raise_db,
         preset_level: raised,
         previous_preset_level: preset_level,
         base_levels: solved.levels,
     })
+}
+
+/// A5/F2's SHARED WRITER: push a precomputed `(group, node, ORIGINAL saved bypass)` list back
+/// onto the device, on its OWN fresh connection, without ever loading the preset (either
+/// caller may be holding UNSAVED deferred writes — the trade's raise/fader, or the batch's own
+/// solved scene values — that a load would discard).
+///
+/// `recall_base` FIRST is load-bearing, not decorative: the scene-context rule says a bare
+/// write with no preceding recall lands in whatever scene the connection currently holds, and
+/// this fresh connection holds none — an un-recalled inverse write would risk creating (or
+/// polluting) a SCENE overlay for the forced node instead of restoring its BASE value.
+fn write_isolation_restore(restore: &[(String, String, bool)]) -> Result<(), String> {
+    if restore.is_empty() {
+        return Ok(());
+    }
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+    let mut s = Session::connect()?;
+    recall_base(&mut s)?;
+    for (g, n, original) in restore {
+        s.change_parameter_bool(g, n, "bypass", *original)?;
+    }
+    Ok(())
+}
+
+/// A5/F2's SHARED DERIVATION: `(group, node, ORIGINAL saved bypass)` for a set of forced-bypass
+/// nodes, read straight off the SAVED document (`footswitch::block_bypassed_in_base`) — the
+/// value the batch found there before isolation ever touched it, so the pedal ends up exactly
+/// where the user's preset already had it, never a guessed inverse of the forced flag. This is
+/// the ONE derivation shared by `undo_base_isolation` (the trade hold's own cleanup),
+/// `commands::level_scenes::isolation_restore_for_batch` (the base-requested job's PHASE-3
+/// cleanup) and `trade_for_batch`'s landed-trade detection — previously three independent
+/// copies that had drifted on the `saved == None` case.
+///
+/// `saved == None` returns EMPTY, never a guessed `false` for every node: there is nothing to
+/// restore TO, and a blind `false` would risk actively un-bypassing a pedal the player had
+/// deliberately engaged. Leaving the isolation in place is the conservative answer —
+/// `verify_persisted_writes`' own forced-bypass check still catches a leak at the post-save
+/// re-read. Every caller here only reaches `None` defensively (each planner refuses its trade
+/// or batch without a saved doc), so this warns once rather than failing.
+pub(crate) fn isolation_restore_list(
+    force_bypass: &[(String, String, bool)],
+    saved: Option<&serde_json::Value>,
+) -> Vec<(String, String, bool)> {
+    let Some(saved_doc) = saved else {
+        if !force_bypass.is_empty() {
+            log::warn!(
+                "isolation_restore_list: no saved document to restore {} forced bypass(es) \
+                 from — returning no restore rather than guess",
+                force_bypass.len()
+            );
+        }
+        return Vec::new();
+    };
+    force_bypass
+        .iter()
+        .map(|(g, n, _forced)| {
+            (
+                g.clone(),
+                n.clone(),
+                crate::footswitch::block_bypassed_in_base(saved_doc, n),
+            )
+        })
+        .collect()
+}
+
+/// A5/F2: reverse a base job's isolation bypass writes after a landed headroom trade hold. Thin
+/// wrapper over `isolation_restore_list` (the derivation) + `write_isolation_restore` (the
+/// writer) — see the former's doc for the `saved == None` policy.
+fn undo_base_isolation(
+    force_bypass: &[(String, String, bool)],
+    saved: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    write_isolation_restore(&isolation_restore_list(force_bypass, saved))
 }
 
 /// The base hold FAILED — name the cause. Pure, so the three-way mapping is unit-testable
@@ -5581,7 +5742,7 @@ pub fn redistribute_clamped_headroom(
         // firmware's lazy commit is still in flight — either way the spot-verify reads the
         // level this run intended, never a stale one.
         match require_live(
-            || measure_scene_asis(check.scene_slot, stimulus, Some(new_preset_level)),
+            || measure_scene_asis(check.scene_slot, stimulus, Some(new_preset_level), &[]),
             stimulus,
         ) {
             Ok(l) => {
@@ -5608,6 +5769,77 @@ pub fn redistribute_clamped_headroom(
     Ok(outcomes)
 }
 
+/// A5/F2 DETECTION: union two `(group, node, expected_bypass)` isolation-restore lists, deduped
+/// by node — `base_restore` (already-derived, e.g. the trade hold's own expectations) wins ties,
+/// since a base row carries exactly one isolation set and both sources describe the SAME nodes
+/// when they overlap. Pure so the union rule is unit-testable without a device: `verify_
+/// persisted_writes` must check every node EITHER source isolated, whether a trade landed, a
+/// base-requested job's own solve isolated it, or (rare) both.
+fn union_isolation_restore(
+    base_restore: &[(String, String, bool)],
+    other_restore: &[(String, String, bool)],
+) -> Vec<(String, String, bool)> {
+    let mut v = base_restore.to_vec();
+    for (g, n, expected) in other_restore {
+        if !v.iter().any(|(_, vn, _)| vn == n) {
+            v.push((g.clone(), n.clone(), *expected));
+        }
+    }
+    v
+}
+
+#[cfg(test)]
+mod union_isolation_restore_tests {
+    use super::*;
+
+    fn entry(node: &str, expected: bool) -> (String, String, bool) {
+        ("G1".to_string(), node.to_string(), expected)
+    }
+
+    #[test]
+    fn both_empty_is_empty() {
+        assert!(union_isolation_restore(&[], &[]).is_empty());
+    }
+
+    // NO-TRADE CASE: a base-requested run with no headroom trade has nothing in the hold's
+    // own list, but its OWN isolation still needs to reach the verify — the union must not
+    // require a non-empty first argument to carry the second through.
+    #[test]
+    fn an_empty_hold_list_still_carries_the_runs_own_isolation() {
+        let other = vec![entry("pedal", false)];
+        assert_eq!(union_isolation_restore(&[], &other), other);
+    }
+
+    #[test]
+    fn an_empty_other_list_still_carries_the_holds_isolation() {
+        let base = vec![entry("pedal", true)];
+        assert_eq!(union_isolation_restore(&base, &[]), base);
+    }
+
+    // Both sources describe the SAME node (a trade landed AND the base row itself isolated
+    // something) — the union must not double-count it, and the base list's own expectation
+    // wins rather than being silently overwritten.
+    #[test]
+    fn a_shared_node_is_deduped_with_the_base_lists_value_winning() {
+        let base = vec![entry("pedal", true)];
+        let other = vec![entry("pedal", false)];
+        assert_eq!(
+            union_isolation_restore(&base, &other),
+            vec![entry("pedal", true)]
+        );
+    }
+
+    #[test]
+    fn distinct_nodes_from_both_sources_are_all_kept() {
+        let base = vec![entry("a", true)];
+        let other = vec![entry("b", false)];
+        let got = union_isolation_restore(&base, &other);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&entry("a", true)));
+        assert!(got.contains(&entry("b", false)));
+    }
+}
+
 /// The ONE scene-batch scaffold shared by [`level_scenes_oneshot`] and
 /// [`level_scenes_rebalance`] — only the per-job `solve` differs. Owning the loop in
 /// one place matters beyond dedup: the loop has a SINGLE EXIT so the deferred-save
@@ -5630,6 +5862,15 @@ fn run_scene_jobs(
     // it (HW). Re-asserting it is what makes the trade's two halves land TOGETHER; `None`
     // (every untraded run) is byte-identical to the previous behaviour.
     hold: Option<&TradeHold>,
+    // A5/F2 (TRADE-PATH GAP): when the BASE job itself is one of `jobs` (base_requested — not
+    // stripped as anchor-only upstream), its own solve routes through `jointk_one_scene` →
+    // `apply_levels(defer: true)`, which re-asserts `job.force_bypass` on EVERY capture and
+    // never undoes it — that seam exists to keep the isolation alive across a multi-capture
+    // secant, not to clean it up, so a trade's own `undo_base_isolation` (which ran BEFORE this
+    // job even solved) is left stale the moment base solves again. `(group, node, ORIGINAL
+    // saved bypass)`, same derivation `undo_base_isolation` uses — empty on every run that
+    // never isolated anything.
+    isolation_restore: &[(String, String, bool)],
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     mut cancelled: impl FnMut() -> bool,
     mut solve: impl FnMut(&SceneJob) -> Result<SceneSolve, String>,
@@ -5643,6 +5884,14 @@ fn run_scene_jobs(
     // just as unsaved and just as load-bearing as the scene overlays, so the post-save re-read
     // has to cover them too.
     let mut written: Vec<PersistedWrite> = hold.map(|h| h.writes.clone()).unwrap_or_default();
+    // A5/F2 DETECTION: the union of both isolation-restore sources — the trade hold's own
+    // expectations (see `TradeHold::force_bypass_restore`'s doc) AND this run's own
+    // `isolation_restore` (the base-requested path, cleaned up below).
+    let force_bypass_restore = union_isolation_restore(
+        hold.map(|h| h.force_bypass_restore.as_slice())
+            .unwrap_or(&[]),
+        isolation_restore,
+    );
     // Every writing scene verifies + self-corrects (see `jointk_one_scene`): a downstream
     // compressor undershoots the open-loop solve per scene, so the canary-only model isn't
     // enough. Cost is one verify capture per off-target scene (none when already at target).
@@ -5711,6 +5960,28 @@ fn run_scene_jobs(
     // Guaranteed fresh re-amp OFF (each `measure_knob_at`/`apply_level` already
     // disengages, but an interrupted capture can strand it).
     let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
+    // A5/F2 (TRADE-PATH GAP): undo the base-requested isolation HERE, straight after the last
+    // capture and BEFORE the one save below — this is the only place left that can, since every
+    // capture in the loop above re-asserted `force_bypass` and dropped its own session without
+    // ever clearing it (see the param doc). FAILURE here is not survivable: the working copy
+    // still carries every isolated pedal forced off, and this batch's OWN deferred writes are
+    // just as unsaved as that isolation — so a failed cleanup abandons the whole batch (reload,
+    // exactly like `apply_headroom_trade`'s own back-out) rather than let the save below persist
+    // a pedal in a state the player never authored. A lost batch beats a corrupted save.
+    if attempted && !isolation_restore.is_empty() {
+        if let Err(e) = write_isolation_restore(isolation_restore) {
+            if let Err(e2) = restore_saved_preset(slot) {
+                log::warn!(
+                    "restore_saved_preset failed backing the batch out after a failed base \
+                     isolation cleanup (slot {slot}): {e2}"
+                );
+            }
+            return Err(format!(
+                "the base isolation could not be undone before the save ({e}) — abandoning \
+                 this batch's unsaved writes rather than risk saving a pedal forced off"
+            ));
+        }
+    }
     // Did the run PERSIST a headroom trade? Only then is there anything to disclose on a
     // cancel: with nothing attempted the save below never fires and the reload two blocks down
     // discards the pair whole, so reporting a landed trade there would be a lie.
@@ -5746,14 +6017,14 @@ fn run_scene_jobs(
             // A cancelled run that LANDED A TRADE returns its outcomes (see below), so they
             // need the same persist verdict a completed run's get.
             if trade_persisted {
-                verify_persisted_writes(slot, &written, &mut outcomes);
+                verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
             }
         } else {
             save_deferred_scene_writes(slot, restore_scene, reassert_pl, scene_witness)?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
             // after every audio step. A stopped run with no trade returns CANCELLED below and
             // its outcomes are discarded, so it is not worth a read.
-            verify_persisted_writes(slot, &written, &mut outcomes);
+            verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
         }
     }
     // ⟦3b⟧ CANCELLED BEFORE THE FIRST SOLVE. Nothing was deferred, so `save && attempted` above
@@ -5956,12 +6227,20 @@ pub(crate) fn persist_mismatches(
 /// one field-8 read per preset per run, after all capture work — and the one thing that stops
 /// a summary from reporting pre-wipe numbers as persisted. `writes` pairs a scene slot with
 /// the values solved for it; scenes that wrote nothing are not checked.
+///
+/// `force_bypass_restore` is A5/F2's DETECTION half: `(group_id, node_id, expected_bypass)` for
+/// every node a trade's base isolation forced — this function otherwise reads only
+/// `node_param_f64` numeric values (`persist_mismatches`), so a silently DROPPED inverse write
+/// (the pedal saved forced OFF) would be invisible without it. A mismatch here is loud: it
+/// means the run's own isolation cleanup did not land, so the saved preset carries a pedal in a
+/// state the player never authored.
 fn verify_persisted_writes(
     slot: u32,
     writes: &[PersistedWrite],
+    force_bypass_restore: &[(String, String, bool)],
     outcomes: &mut [BatchedSceneOutcome],
 ) {
-    if writes.is_empty() {
+    if writes.is_empty() && force_bypass_restore.is_empty() {
         return;
     }
     // `save_deferred_scene_writes` has just closed its session and `read_saved_preset` sleeps
@@ -6011,6 +6290,29 @@ fn verify_persisted_writes(
         log::warn!(
             "slot {slot} scene {scene}: the leveled value is UNCONFIRMED, not lost — {detail}"
         );
+    }
+    // A5/F2 DETECTION: confirm every isolated node's bypass came back to what the pre-run
+    // saved document held. A mismatch here means the trade's inverse-write cleanup silently
+    // dropped — the saved preset now carries this pedal forced OFF — so it is stamped on the
+    // BASE outcome (the only row a base isolation fact can attach to) and logged loudly.
+    let mut isolation_leaked = false;
+    for (_g, node_id, expected) in force_bypass_restore {
+        let got = crate::footswitch::block_bypassed_in_base(&saved, node_id);
+        if got != *expected {
+            isolation_leaked = true;
+            log::error!(
+                "slot {slot}: base isolation on {node_id} did NOT persist as restored — saved \
+                 bypass is {got}, expected {expected}; the trade's inverse write was dropped"
+            );
+        }
+    }
+    if isolation_leaked {
+        if let Some(base_outcome) = outcomes
+            .iter_mut()
+            .find(|o| o.scene_slot == crate::session::BASE_SCENE_SLOT)
+        {
+            base_outcome.persist_mismatch = Some(true);
+        }
     }
 }
 
@@ -6387,7 +6689,14 @@ fn scene_prologue(
         Some(p) => (p.asis, p.spread),
         None => {
             let loudness = require_live(
-                || measure_scene_asis(job.scene_slot, stimulus, intended_preset_level),
+                || {
+                    measure_scene_asis(
+                        job.scene_slot,
+                        stimulus,
+                        intended_preset_level,
+                        &job.force_bypass,
+                    )
+                },
                 stimulus,
             )?;
             (loudness.integrated_lufs, loudness.spread_lu())
@@ -6437,9 +6746,13 @@ fn jointk_one_scene(
     floor: f32,
     // The run's own `presetLevel` — its solved value, or the UNSAVED raise a headroom trade is
     // holding — re-asserted on the as-is capture below (`measure_scene_asis`). `None` = assert
-    // nothing. NOT threaded into `apply_first_verified`/`correct_iter`: those capture through
-    // the shared `capture_on_session` seam, whose `ref_level: None` contract ("capture at the
-    // preset's OWN stored level") is Doctor's too and is deliberately left alone.
+    // nothing. STALE CLAIM CORRECTED (2026-08-29): `apply_first_verified`/`correct_iter` do NOT
+    // route through `capture_on_session` (that seam is Doctor's + the isolated-block-knob
+    // paths) — they capture through `apply_levels`' own `engage_measure_disengage`, and DO
+    // thread `intended_preset_level` through it (`LevelOptions::intended_preset_level`, set
+    // below). What is NOT threaded into those two is `force_bypass` from a caller-supplied
+    // literal here — they take it from `job.force_bypass` instead (A4: base's isolation lives
+    // on the job, not a parallel parameter chain).
     intended_preset_level: Option<f32>,
 ) -> Result<SceneSolve, String> {
     let prologue = scene_prologue(job, stimulus, intended_preset_level)?;
@@ -6478,6 +6791,7 @@ fn jointk_one_scene(
         expected_db,
         measured,
         saved,
+        &job.force_bypass,
     )?;
     let (best_lufs, best_levels, clamp_reason, writes) = match v0 {
         Some(v0) if verify => {
@@ -6494,6 +6808,7 @@ fn jointk_one_scene(
                 saved,
                 floor,
                 intended_preset_level,
+                &job.force_bypass,
             )?;
             (
                 c.lufs,
@@ -6690,7 +7005,16 @@ fn handle_one_scene(
         None,
         handle,
         SCENE_HANDLE_CORRECT_MAX,
-        |v| measure_knob_at(stimulus, knob, v, &[], saved, intended_preset_level),
+        |v| {
+            measure_knob_at(
+                stimulus,
+                knob,
+                v,
+                &job.force_bypass,
+                saved,
+                intended_preset_level,
+            )
+        },
     )?;
     // The sweep left the LAST probed value in the working copy, not necessarily the best
     // one — write the solved value explicitly (unsaved under `defer`; the batch-end save
@@ -6707,6 +7031,9 @@ fn handle_one_scene(
         opts,
         false,
         saved,
+        // A4: "base means base" applies to a handle-driven base row too — the user's own
+        // control is still measured/written with base's isolation asserted.
+        &job.force_bypass,
     )?;
     // Reported on the SCENE lane's band (`KNOB_TOL_LU`), not the tighter footswitch one the
     // search accepts on: a handle row and an amp row in the same batch must mean the same
@@ -6773,9 +7100,12 @@ fn apply_first_verified(
     expected_db: f64,
     baseline_lufs: f64,
     saved: Option<&serde_json::Value>,
+    // A4: the job's isolation list — empty for every scene job, the base row's own list when
+    // this apply is base's (both a plain base solve and the headroom trade's hold).
+    force_bypass: &[(String, String, bool)],
 ) -> Result<(Option<f64>, u32), String> {
     let targets = zip_targets(knobs, levels);
-    let v0 = apply_levels(slot, stimulus, &targets, opts, false, saved)?.1;
+    let v0 = apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1;
     match v0 {
         Some(v)
             if opts.verify
@@ -6784,7 +7114,7 @@ fn apply_first_verified(
         {
             crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             Ok((
-                apply_levels(slot, stimulus, &targets, opts, false, saved)?.1,
+                apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1,
                 1,
             ))
         }
@@ -6834,6 +7164,9 @@ fn correct_iter(
     // `apply_levels`, whose `set_knobs` recalls the scene and reverts an unsaved level, so
     // omitting it here reverts the whole loop to measuring the SAVED level.
     intended_preset_level: Option<f32>,
+    // A4: the job's isolation list, forwarded to every `apply` inside the loop below — same
+    // contract as `apply_first_verified`'s.
+    force_bypass: &[(String, String, bool)],
 ) -> Result<Correction, String> {
     let max_base = base
         .iter()
@@ -6855,7 +7188,7 @@ fn correct_iter(
             ..Default::default()
         };
         let targets = zip_targets(knobs, levels);
-        Ok(apply_levels(slot, stimulus, &targets, opts, false, saved)?.1)
+        Ok(apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1)
     };
 
     let k0 = levels0[0] as f64 / (base[0].max(1e-3)) as f64; // shared factor (uniform across lanes)
@@ -7156,6 +7489,9 @@ pub fn level_scenes_rebalance(
     restore_scene: Option<u32>,
     saved: Option<&serde_json::Value>,
     hold: Option<&TradeHold>,
+    // A5/F2: `(group, node, ORIGINAL saved bypass)` for a base-requested job's own isolation
+    // (empty on every run that never isolated anything) — see `run_scene_jobs`'s param doc.
+    isolation_restore: &[(String, String, bool)],
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
@@ -7168,6 +7504,7 @@ pub fn level_scenes_rebalance(
         save,
         restore_scene,
         hold,
+        isolation_restore,
         on_scene,
         cancelled,
         |job| {
@@ -7312,6 +7649,7 @@ fn rebalance_one_scene(
         expected_db,
         combined.integrated_lufs,
         saved,
+        &job.force_bypass,
     )?;
     let (best_lufs, best_levels, clamp_reason, corr_writes) = match v0 {
         Some(v0) if verify => {
@@ -7328,6 +7666,7 @@ fn rebalance_one_scene(
                 saved,
                 LEVEL_MIN,
                 intended_preset_level,
+                &job.force_bypass,
             )?;
             (c.lufs, c.levels, c.clamp_reason, c.writes)
         }
@@ -7559,6 +7898,7 @@ pub fn level_preset_block(
             opts,
             false,
             overlays,
+            &[],
         )?;
 
         Ok(LevelResult {
@@ -7747,6 +8087,7 @@ mod persist_verify_tests {
         let hold = TradeHold {
             preset_level: 0.72,
             writes: Vec::new(),
+            force_bypass_restore: Vec::new(),
         };
         assert_eq!(
             scene_capture_level(Some(&hold), Some(&saved)),
@@ -11030,6 +11371,7 @@ mod reordered_run_tests {
             rebalanceable: false,
             handle: None,
             prepass: None,
+            force_bypass: Vec::new(),
         }
     }
 

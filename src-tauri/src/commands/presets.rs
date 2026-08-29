@@ -653,6 +653,7 @@ mod truncation_fallback_tests {
             scene_count: scenes.len() as i64,
             scenes,
             amp_candidates: Vec::new(),
+            base_active_amp_count: 0,
             blocks: Vec::new(),
             graph: session::ActiveGraph::default(),
             footswitches: vec![footswitch::FootswitchInfo {

@@ -110,6 +110,16 @@ export interface LevelJob {
   block_value: number | null;
 }
 
+/** Keeps the wizard's already-force-appended BASE job alive through the scene batch's
+ * prepass + headroom-trade phases (it is stripped again before the per-scene solve) —
+ * mirrors `commands::level_scenes::BaseAnchorArg`, camelCase wire form (this command's
+ * arg structs follow the `SceneLevelJobWire` camelCase convention, not `LevelJob`'s
+ * snake_case one). Omit the whole `baseAnchor` key when the run has no base row for
+ * this preset — there is nothing to anchor. */
+export interface BaseAnchor {
+  targetLufs: number;
+}
+
 /** One entry in a setlist common-target job (mirrors lib::SetlistJobEntry).
  * Keys snake_case (nested inside `{ entries: [...] }`). */
 export interface SetlistJobEntry {
@@ -756,6 +766,13 @@ export interface BackupPresetRow {
   scene_count: number;
   scenes: SceneInfo[];
   amp_candidates: AmpCandidate[];
+  /** Count of `amp_candidates` nodes NOT bypassed in the base graph (`lib::backup_read`,
+   * derived alongside `amp_candidates`) — the redistribute gate's single-amp signal. A
+   * global bypass filter on `amp_candidates` itself is forbidden (amp-flip presets need
+   * bypassed-in-base amps as candidates too), so this rides as a separate count instead.
+   * `=== 1`, not `<= 1`: a genuinely blockless base (0) must not offer a doomed
+   * redistribute. */
+  base_active_amp_count: number;
   /** Every block in the preset's audioGraph (`lib::BackupBlock`). Drives the
    * per-preset CPU total + "blocks present in the selection" lists. */
   blocks: BackupBlock[];

@@ -33,6 +33,14 @@ pub struct BackupPresetRow {
     /// `presetJson` audioGraph at backup time — so per-scene leveling never has to
     /// run a live block-discovery session. Empty for a scene-less/unparseable row.
     pub amp_candidates: Vec<LevelBlockArg>,
+    /// A7: how many DISTINCT `amp_candidates` nodes are NOT bypassed in the BASE graph —
+    /// the redistribute single-amp gate's narrower signal. `amp_candidates` is deliberately
+    /// over-inclusive (an amp-flip preset — amp A live in scene 0, B in scene 1 — needs its
+    /// bypassed-in-base amp as a candidate too, so a global bypass filter in
+    /// `filter_amp_candidates`/`extract_level_blocks` is forbidden), so the redistribute gate
+    /// needs this NARROWER count instead of `amp_candidates.len()`. `0` for a scene-less/
+    /// unparseable row, matching every other derivation on this row.
+    pub base_active_amp_count: usize,
     /// Every block in the preset's audioGraph (`(group, node_id, fender_id)`), parsed
     /// from the same `presetJson`. Drives Bulk Block Edit's Step-1 "blocks present"
     /// list + per-preset CPU total without any extra device round-trip. Empty for an
@@ -66,6 +74,71 @@ pub struct BackupPresetRow {
     /// a real empty preset renders an empty picker and does not re-fire `list_level_blocks`'s
     /// live device read (mirroring `scene_handles`'s own discriminator).
     pub base_handles: Vec<SceneHandleCandidate>,
+}
+
+/// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
+/// `amp_candidates` node ids NOT bypassed in `graph`'s base `dspUnitParameters`. Extracted so
+/// the redistribute single-amp gate's narrower signal is unit-testable with no DB/backup scan
+/// in the loop. See the field's own doc for why a global bypass filter can't live in
+/// `filter_amp_candidates`/`extract_level_blocks` instead (an amp-flip preset needs its
+/// bypassed-in-base amp as a candidate too).
+fn base_active_amp_count(graph: &serde_json::Value, amp_candidates: &[LevelBlockArg]) -> usize {
+    let mut active: Vec<&str> = amp_candidates
+        .iter()
+        .map(|c| c.node_id.as_str())
+        .filter(|node_id| !footswitch::block_bypassed_in_base(graph, node_id))
+        .collect();
+    active.sort_unstable();
+    active.dedup();
+    active.len()
+}
+
+#[cfg(test)]
+mod base_active_amp_count_tests {
+    use super::*;
+
+    fn candidate(node_id: &str) -> LevelBlockArg {
+        LevelBlockArg {
+            group_id: "G1".into(),
+            node_id: node_id.into(),
+            parameter_id: "outputLevel".into(),
+            value: 0.5,
+        }
+    }
+
+    // A9: both amps active in base → both count.
+    #[test]
+    fn both_active_amps_count() {
+        let graph = serde_json::json!({ "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "amp1", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } },
+            { "nodeId": "amp2", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } }
+        ] } } });
+        let candidates = [candidate("amp1"), candidate("amp2")];
+        assert_eq!(base_active_amp_count(&graph, &candidates), 2);
+    }
+
+    // A9: THE redistribute-gate case — a bypassed second amp (an amp-flip preset's other lane,
+    // live only in some scene) must NOT count as base-active, so the gate can offer
+    // redistribution on a genuinely single-live-amp base.
+    #[test]
+    fn a_bypassed_second_amp_counts_as_one() {
+        let graph = serde_json::json!({ "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "amp1", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } },
+            { "nodeId": "amp2", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "outputLevel": 0.5, "bypass": true } }
+        ] } } });
+        let candidates = [candidate("amp1"), candidate("amp2")];
+        assert_eq!(base_active_amp_count(&graph, &candidates), 1);
+    }
+
+    #[test]
+    fn no_candidates_counts_zero() {
+        let graph = serde_json::json!({ "audioGraph": { "guitarNodes": {} } });
+        assert_eq!(base_active_amp_count(&graph, &[]), 0);
+    }
 }
 
 /// One block in a backup preset's audioGraph roster (see [`BackupPresetRow::blocks`]).
@@ -525,6 +598,13 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             .as_ref()
             .map(|v| filter_amp_candidates(session::extract_level_blocks(v)))
             .unwrap_or_default();
+        // A7: distinct `amp_candidates` node ids NOT bypassed in the base graph — see the
+        // field's own doc for why this is narrower than `amp_candidates.len()` and why a
+        // global bypass filter can't live in `filter_amp_candidates` itself.
+        let base_active_amp_count = parsed_graph
+            .as_ref()
+            .map(|g| base_active_amp_count(g, &amp_candidates))
+            .unwrap_or(0);
         let blocks = parsed_graph
             .as_ref()
             .map(|v| {
@@ -579,6 +659,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             scene_count,
             scenes,
             amp_candidates,
+            base_active_amp_count,
             blocks,
             graph,
             footswitches,

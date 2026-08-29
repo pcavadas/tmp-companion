@@ -45,6 +45,7 @@ import type {
   DoctorApplyResult,
   DoctorOp,
   SupportBundleResult,
+  BaseAnchor,
 } from "./types";
 
 // isTauri lives in ./log (the dependency-free end of the invoke→log edge — a
@@ -165,6 +166,10 @@ export const levelScenesApplyBatched = (
     topologyId: string | null;
     calibrationLufs: number | null;
     profileId: string | null;
+    /** Keeps the wizard's force-appended BASE job alive through the batch's prepass +
+     *  headroom-trade phases (see `BaseAnchor`). Omitted/undefined = today's behavior
+     *  (no base job in the batch; base still levels via the separate `levelPreset` lane). */
+    baseAnchor?: BaseAnchor | null;
   },
   onResult: (item: SceneLevelProgressItem) => void,
 ): Promise<LevelResult[]> => {
