@@ -235,7 +235,11 @@ export function DoctorSetup({
               <SetupGroupHeader slot={g.slot} name={g.name} />
               {g.opts.map((o) => {
                 const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
-                const nameLabel = o.isBase ? "Whole preset" : o.sceneName;
+                // `chosenFrom` already resolves the base row's own label to "Base
+                // Preset" (hasScenes) or "Whole preset" (a scene-less preset) — a
+                // hardcoded "Whole preset" here silently relabeled every multi-scene
+                // preset's base row (issue 2, BUG→GATE).
+                const nameLabel = o.sceneName;
                 return (
                   <PresetOptionRow
                     key={o.key}

@@ -23,6 +23,12 @@ pub(crate) struct SceneLevelProgressItem {
     status: String,
     result: Option<leveller::LevelResult>,
     message: Option<String>,
+    /// B6 (issue 6b): a batch-wide caption ("Saving preset…" / "Verifying…") for the
+    /// deferred-save/persist-verify phases, which have no single scene to report progress
+    /// against. Rides on its OWN item — see [`tail_progress_item`] — never alongside a real
+    /// per-scene `result`/`message`, so `message` (the active row's own caption) never has to
+    /// double as this and start lying about which row it describes.
+    tail: Option<String>,
 }
 
 /// One scene-leveling request from the wizard: a wire scene slot + its OWN loudness
@@ -536,6 +542,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 status: "active".to_string(),
                 result: None,
                 message: Some(leveller::WAITING_FOR_COMMIT_MSG.to_string()),
+                tail: None,
             });
         }
         leveller::ensure_fresh_load(slot, &mut || SCENE_LEVEL_CANCEL.load(SeqCst))?;
@@ -815,6 +822,11 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     trade.summary.as_ref(),
                 ));
             };
+            // B6: the deferred-save/persist-verify batch-wide captions — see
+            // `tail_progress_item`'s doc for why the row key is safe to ignore.
+            let on_tail = |tail: &str| {
+                let _ = on_result.send(tail_progress_item(tail));
+            };
             // PHASE 3 — the writes, on the existing batch runner, unchanged.
             // `rebalance` (opt-in) equalizes a path-MERGE scene's two lanes before joint-k;
             // non-mergeable scenes fall through to the same joint-k either way.
@@ -829,6 +841,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     trade.hold.as_ref(),
                     &isolation_restore,
                     on_scene,
+                    on_tail,
                     cancelled,
                 )
             } else {
@@ -842,6 +855,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     trade.hold.as_ref(),
                     &isolation_restore,
                     on_scene,
+                    on_tail,
                     cancelled,
                 )
             }?;
@@ -873,6 +887,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                         status: "cancelled".to_string(),
                         result: None,
                         message: Some(leveller::CANCELLED.to_string()),
+                        tail: None,
                     });
                 }
                 Ok(outcomes
@@ -889,6 +904,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     status: "cancelled".to_string(),
                     result: None,
                     message: Some(e),
+                    tail: None,
                 });
                 Ok(Vec::new())
             }
@@ -1399,6 +1415,7 @@ fn scene_progress_item(
             status: "active".to_string(),
             result: None,
             message: active_message.map(str::to_string),
+            tail: None,
         },
         Some(o) => match &o.failure {
             None => SceneLevelProgressItem {
@@ -1406,14 +1423,51 @@ fn scene_progress_item(
                 status: "done".to_string(),
                 result: Some(outcome_to_level_result(slot, save, o, trade)),
                 message: None,
+                tail: None,
             },
             Some(e) => SceneLevelProgressItem {
                 scene_slot: scene,
                 status: "error".to_string(),
                 result: None,
                 message: Some(e.clone()),
+                tail: None,
             },
         },
+    }
+}
+
+/// B6 (issue 6b): a batch-wide caption for a phase with no single scene to attach to — the
+/// deferred-save start ("Saving preset…") and the post-save persist-verify start
+/// ("Verifying…"). Rides its OWN [`SceneLevelProgressItem`].
+///
+/// `scene_slot: u32::MAX` — a DEDICATED sentinel, deliberately NOT `session::BASE_SCENE_SLOT`
+/// (8). This item type is shared by TWO frontend consumers (`level_scenes_apply_batched`'s
+/// `on_result` and `redistribute_headroom`'s), and they key their per-batch row maps
+/// differently: the scene lane's `byScene` (`useLevelingFlow.ts`) is built only from the
+/// group's own scene rows, so `BASE_SCENE_SLOT` would in fact miss there — but the
+/// redistribute lane's `bySound` map is SEEDED with `[BASE_SCENE_SLOT, base]` (it tracks the
+/// base row's own progress on this same channel), so a tail item keyed on `BASE_SCENE_SLOT`
+/// would be silently mistaken for a base-row update in THAT lane — exactly the regression the
+/// plan warns "the redistribute runner shares the seam and must not regress" about. `u32::MAX`
+/// is outside every real scene slot (0..7), `BASE_SCENE_SLOT` (8) included, and outside any
+/// value either consumer's map could ever hold, so `batchResolve`'s (and the redistribute
+/// callback's own) entry lookup misses on it in BOTH lanes and silently drops the synthetic
+/// row — the same "unknown key is ignored" path that already protects a `cancelled`-status
+/// item today.
+///
+/// `status`/`result`/`message` are dummy values here: `batchResolve` reads `tail` BEFORE the
+/// entry lookup that would ever look at them (see the frontend's own doc on that ordering), so
+/// they never surface. The redistribute lane's own callback does not read `tail` at all yet
+/// (B-FRONT scope) — until it does, a tail item there is a harmless no-op: an unmatched key
+/// (`bySound.get(u32::MAX)`) returns `undefined` and the callback's own `if (!target) return;`
+/// drops it, same as any other unrecognised row.
+fn tail_progress_item(tail: &str) -> SceneLevelProgressItem {
+    SceneLevelProgressItem {
+        scene_slot: u32::MAX,
+        status: "active".to_string(),
+        result: None,
+        message: None,
+        tail: Some(tail.to_string()),
     }
 }
 
@@ -1679,6 +1733,11 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
             // Redistribution never runs the headroom trade — no summary to disclose.
             let _ = on_result.send(scene_progress_item(slot, true, scene, done, None, None));
         };
+        // B6: the redistribute runner shares the tail-caption seam — see
+        // `redistribute_clamped_headroom`'s own doc.
+        let on_tail = |tail: &str| {
+            let _ = on_result.send(tail_progress_item(tail));
+        };
         let cancelled = || SCENE_LEVEL_CANCEL.load(SeqCst);
         let outcome = leveller::redistribute_clamped_headroom(
             slot,
@@ -1688,6 +1747,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
             restore_scene,
             saved.as_ref(),
             on_scene,
+            on_tail,
             cancelled,
         );
         let result = match outcome {
@@ -1708,6 +1768,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
                     status: "cancelled".to_string(),
                     result: None,
                     message: Some(e.clone()),
+                    tail: None,
                 });
                 Err(e)
             }
@@ -2564,6 +2625,79 @@ mod scene_handle_tests {
         assert_eq!(
             find_boost_gain(&rows[2]).expect("Solo gain").scope,
             "shared_with_base"
+        );
+    }
+
+    // ── Part C: `enables_block` (issue 5 — Boost preselect) ─────────────────────────────
+
+    // THE E2E-Edge shape: base-bypassed Boost, Solo (scene 2) is the ONLY scene whose own
+    // overlay positively un-bypasses it (`bypass: false`) — that is exactly the signal the
+    // frontend should preselect on.
+    #[test]
+    fn enables_block_is_true_only_on_the_scene_that_un_bypasses_a_base_bypassed_node() {
+        let rows = scene_handle_rows(&hbe_boost_preset());
+        assert_eq!(rows.len(), 4);
+        assert!(
+            !find_boost_gain(&rows[0]).expect("Dirt gain").enables_block,
+            "Dirt's overlay keeps bypass:true — it doesn't enable the block"
+        );
+        assert!(
+            !find_boost_gain(&rows[1]).expect("Clean gain").enables_block,
+            "Clean's overlay ALSO keeps bypass:true"
+        );
+        assert!(
+            find_boost_gain(&rows[2]).expect("Solo gain").enables_block,
+            "Solo's overlay is the one that flips bypass:false — THE preselect signal"
+        );
+        assert!(
+            !find_boost_gain(&rows[3])
+                .expect("Crunch gain")
+                .enables_block,
+            "Crunch's overlay keeps bypass:true"
+        );
+        // The wire name B-FRONT reads: camelCase `enablesBlock`, not the Rust field name.
+        let json =
+            serde_json::to_value(find_boost_gain(&rows[2]).expect("Solo gain")).expect("serialize");
+        assert_eq!(json["enablesBlock"], serde_json::json!(true));
+    }
+
+    // A node already ACTIVE in base has nothing for a scene to "enable" — even a scene whose
+    // overlay carries `bypass: false` (redundantly restating base) must not preselect it.
+    #[test]
+    fn enables_block_is_false_when_the_node_is_already_active_in_base() {
+        let mut preset = hbe_boost_preset();
+        preset["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"] =
+            serde_json::json!(false);
+        let rows = scene_handle_rows(&preset);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(
+                !find_boost_gain(row)
+                    .unwrap_or_else(|| panic!("scene {i} gain"))
+                    .enables_block,
+                "scene {i}: base is already active, so no scene can \"enable\" it"
+            );
+        }
+    }
+
+    // A `BypassOnly` overlay that keeps `bypass: true` (Clean, scene 1) never enables the
+    // block, matching the isolated assertion above but pinned as its own test per the plan.
+    #[test]
+    fn enables_block_is_false_for_a_bypass_only_overlay_that_stays_bypassed() {
+        let rows = scene_handle_rows(&hbe_boost_preset());
+        assert!(matches!(
+            scene_overlay(&hbe_boost_preset(), 1, "boost"),
+            SceneOverlay::BypassOnly(_)
+        ));
+        assert!(!find_boost_gain(&rows[1]).expect("Clean gain").enables_block);
+    }
+
+    // Base rows have no scene/overlay concept — `enables_block` is unconditionally false.
+    #[test]
+    fn enables_block_is_always_false_on_base_handle_candidates() {
+        let base = base_handle_candidates(&hbe_boost_preset());
+        assert!(
+            base.iter().all(|c| !c.enables_block),
+            "Base has nothing to enable relative to: {base:?}"
         );
     }
 }

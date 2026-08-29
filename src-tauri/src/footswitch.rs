@@ -79,9 +79,26 @@ pub struct FootswitchInfo {
 /// longer all `[0,1]`, so the RANGE now comes from `ParamInfo.range`, never from the
 /// observed value.
 ///
-/// Returns the classifier's verdict on a hit (`Some(class)`, never `Other`) rather than a
-/// bare bool, so [`level_candidates_for_node`] classifies each key exactly ONCE and reuses
-/// the verdict for the candidate's `class` field instead of calling `classify` again.
+/// Product rule: Mix is never offered as a leveling control (issue 3: "hide Mix
+/// everywhere"). The ONE predicate both [`is_levelable_param`] (the safe-default source) and
+/// [`all_numeric_candidates_for_node`] (the combined-picker source) gate on, so the two can
+/// never disagree about Mix.
+fn class_is_offerable(class: crate::param_class::ParamClass) -> bool {
+    !matches!(class, crate::param_class::ParamClass::WetMix)
+}
+
+/// Returns the classifier's verdict on a hit (`Some(class)`, never `Other`, never `WetMix`)
+/// rather than a bare bool, so [`level_candidates_for_node`] classifies each key exactly
+/// ONCE and reuses the verdict for the candidate's `class` field instead of calling
+/// `classify` again.
+///
+/// `WetMix` is rejected alongside `Other` (via [`class_is_offerable`]) — Mix is never a
+/// SUGGESTED/pickable level control. The wet-floor machinery this gate does NOT touch:
+/// `WetMix` the enum variant, `FsParamTarget::wet_floor`/`WET_FLOOR_FRACTION`/
+/// `ClampKind::WetFloor`, and the `"wet_floor"` wire variant all stay — Doctor's damage
+/// detector classifies independently of this gate, and a handle EXPLICITLY named (already
+/// saved on a preset, or set via `handle_scene_job`) still classifies and floors correctly.
+/// This gate only decides what gets OFFERED as a default/pickable candidate.
 fn is_levelable_param(
     fender_id: &str,
     key: &str,
@@ -89,7 +106,7 @@ fn is_levelable_param(
 ) -> Option<crate::param_class::ParamClass> {
     val.as_f64()?;
     let class = crate::param_class::classify(fender_id, key).class;
-    (class != crate::param_class::ParamClass::Other).then_some(class)
+    (class_is_offerable(class) && class != crate::param_class::ParamClass::Other).then_some(class)
 }
 
 /// ONE node's leveling-candidate params, in stable (sorted-key) order — the candidate
@@ -137,6 +154,12 @@ pub fn level_candidates_for_node(
 /// [`level_candidates_for_node`]'s, which never is) — that is the annotation the picker sorts
 /// and warns on. `ParamInfo.range` is meaningless for `Other`, so a consumer must read the
 /// class before trusting a range.
+///
+/// `WetMix` params are filtered out entirely (via [`class_is_offerable`]) — otherwise
+/// Mix would stay manually pickable through this all-params picker even though
+/// [`is_levelable_param`] excludes it from the safe-default candidate list. This is the
+/// picker source, not the classifier: `WetMix` the class, and the wet-floor solve/clamp
+/// machinery it feeds elsewhere, are untouched.
 pub fn all_numeric_candidates_for_node(
     group_id: &str,
     node_id: &str,
@@ -147,13 +170,17 @@ pub fn all_numeric_candidates_for_node(
         .iter()
         .filter_map(|(k, v)| {
             let current = v.as_f64()?;
+            let class = crate::param_class::classify(fender_id, k).class;
+            if !class_is_offerable(class) {
+                return None;
+            }
             Some(LevelParamCandidate {
                 group_id: group_id.to_string(),
                 node_id: node_id.to_string(),
                 fender_id: fender_id.to_string(),
                 parameter_id: k.clone(),
                 current,
-                class: crate::param_class::classify(fender_id, k).class,
+                class,
             })
         })
         .collect();
@@ -163,8 +190,9 @@ pub fn all_numeric_candidates_for_node(
         use crate::param_class::ParamClass::*;
         match class {
             LevelLinear | LevelDb => 0,
-            WetMix => 1,
-            Other => 2,
+            // `WetMix` never reaches this closure (filtered above) — wildcard keeps the
+            // match exhaustive without naming it.
+            _ => 2,
         }
     };
     out.sort_by(|a, b| {
@@ -1092,11 +1120,13 @@ pub struct FsSceneContext {
     pub switch: u32,
     /// The 0-based `scenes[]` wire slots whose overlay ENABLES this switch, in scene order.
     pub enabling_scenes: Vec<u32>,
-    /// What to preselect: `Some(i)` iff EXACTLY ONE scene enables the switch — then that scene
-    /// is unambiguously the sound the player reaches by tapping it. `None` = level it in the
-    /// BASE context, which is both the historical behaviour and the only defensible answer when
-    /// zero scenes (nothing to infer) or several (no single right one) enable it. The user may
-    /// still override to any scene, including a non-enabling one; the picker flags that.
+    /// What to preselect: `Some(first)` — the first scene (ascending order) that enables this
+    /// switch — whenever at least one scene enables it; `None` = level it in the BASE context,
+    /// the only defensible answer when zero scenes enable it (nothing to infer). Issue 4: a
+    /// switch enabled by SEVERAL scenes previously fell back to `None` ("no single right one"),
+    /// but leaving a multi-scene switch unsuggested is worse than picking its earliest scene —
+    /// the player's most common path to it. The user may still override to any scene, including
+    /// a non-enabling one; the picker flags that.
     pub suggested: Option<u32>,
 }
 
@@ -1138,8 +1168,8 @@ pub fn scene_contexts_for_switches(preset: &Value) -> Vec<FsSceneContext> {
             FsSceneContext {
                 switch: switch as u32,
                 suggested: match enabling_scenes.as_slice() {
-                    [one] => Some(*one),
-                    _ => None,
+                    [first, ..] => Some(*first),
+                    [] => None,
                 },
                 enabling_scenes,
             }
@@ -1152,7 +1182,7 @@ mod tests {
     use super::*;
 
     /// A 3-scene / 3-switch preset: switch 0 enabled by scene 1 ALONE (the auto-detect case),
-    /// switch 1 by scenes 0 and 2 (ambiguous), switch 2 by nobody.
+    /// switch 1 by scenes 0 and 2 (preselects the first, scene 0), switch 2 by nobody.
     fn scene_context_preset() -> Value {
         serde_json::json!({
             "ftsw": [[], [], []],
@@ -1164,18 +1194,21 @@ mod tests {
         })
     }
 
-    // (D3) EXACTLY ONE enabling scene auto-detects; zero or several fall back to base — the
-    // only two answers that don't guess on the player's behalf.
+    // (D3, revised for issue 4) A switch enabled by ONE scene auto-detects that scene; a
+    // switch enabled by SEVERAL scenes now preselects the FIRST (ascending) rather than
+    // falling back to base — only zero enabling scenes falls back.
     #[test]
-    fn a_switch_enabled_by_exactly_one_scene_preselects_that_scene() {
+    fn a_switch_enabled_by_a_scene_preselects_the_first_enabling_scene() {
         let rows = scene_contexts_for_switches(&scene_context_preset());
         assert_eq!(rows.len(), 3, "one row per switch");
         assert_eq!(rows[0].enabling_scenes, vec![1]);
         assert_eq!(rows[0].suggested, Some(1));
-        assert_eq!(rows[1].enabling_scenes, vec![0, 2]);
+        assert_eq!(rows[1].enabling_scenes, vec![0, 2], "ascending scene order");
         assert_eq!(
-            rows[1].suggested, None,
-            "two enabling scenes: no single right one"
+            rows[1].suggested,
+            Some(0),
+            "issue 4: several enabling scenes preselect the FIRST rather than falling back to \
+             base — the player's most common path to this switch"
         );
         assert!(rows[2].enabling_scenes.is_empty());
         assert_eq!(rows[2].suggested, None, "nothing enables it: base");
@@ -1233,8 +1266,13 @@ mod tests {
         let names: Vec<&str> = all.iter().map(|c| c.parameter_id.as_str()).collect();
         assert_eq!(
             names,
-            vec!["level", "blend", "tone"],
-            "every NUMERIC param, level-class first then wet/mix then the rest: {all:?}"
+            vec!["level", "tone"],
+            "every NUMERIC param except WetMix (issue 3: Mix is hidden everywhere), \
+             level-class first then the rest: {all:?}"
+        );
+        assert!(
+            !names.contains(&"blend"),
+            "'blend' classifies WetMix — excluded from the combined picker too: {all:?}"
         );
         assert!(
             all.iter().all(|c| c.node_id == "n1" && c.group_id == "G1"),
@@ -1661,8 +1699,9 @@ mod tests {
                 // the TM Rumble it is an amp knob that must never be swept for loudness.
                 { "nodeId": "rumble", "FenderId": "ACD_TMRumbleV3", "dspUnitParameters": {
                     "level": 0.5, "bypass": false }},
-                // A wet/mix control IS a candidate — it moves loudness — but it carries the
-                // WetMix class, which is what arms the solver's floor.
+                // A wet/mix control is EXCLUDED from the candidate list (issue 3: "hide
+                // Mix everywhere") even though it moves loudness — it still carries the
+                // WetMix class when explicitly named, which is what arms the solver's floor.
                 { "nodeId": "chorus", "FenderId": "ACD_Chorus", "dspUnitParameters": {
                     "mix": 0.8, "rate": 0.3, "bypass": false }}
             ]}, "micNodes": {} },
@@ -1702,15 +1741,16 @@ mod tests {
             "ACD_TMRumbleV3.level is an amp knob, not a level control — never a candidate"
         );
 
-        assert_eq!(
-            params_of(2),
-            vec!["mix"],
-            "a wet/mix control IS a candidate ('rate' is not)"
+        assert!(
+            params_of(2).is_empty(),
+            "issue 3: Mix is hidden everywhere — a wet/mix control is no longer a candidate \
+             ('rate' still is not, for the usual unrecognised-param reason)"
         );
         assert_eq!(
             crate::param_class::classify("ACD_Chorus", "mix").class,
             crate::param_class::ParamClass::WetMix,
-            "…and it carries WetMix, which is what arms the solver's wet floor"
+            "…the class itself is untouched: an explicitly-named 'mix' handle still \
+             classifies as WetMix, which is what arms the solver's wet floor"
         );
     }
 

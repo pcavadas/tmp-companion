@@ -49,6 +49,8 @@ export interface LevelingWizardProps {
   liveLufs: number | null;
   /** Rolling per-hop momentary levels (dB) for the decorative live VU bars. */
   liveTrace: number[];
+  /** A batch-wide caption (issue 6b) — see `RunBody`'s own doc. */
+  runTailMessage?: string | null;
   // callbacks
   onCancel: () => void;
   onStart: (choices: SetupChoice[]) => void;
@@ -82,6 +84,7 @@ export function LevelingWizard({
   runStopping,
   liveLufs,
   liveTrace,
+  runTailMessage,
   onCancel,
   onStart,
   onRunCancel,
@@ -129,6 +132,7 @@ export function LevelingWizard({
           stopping={runStopping}
           liveLufs={liveLufs}
           liveTrace={liveTrace}
+          tailMessage={runTailMessage}
           instrumentName={instrumentName}
           targetLufsByName={targetLufsByName}
           onCancel={onRunCancel}

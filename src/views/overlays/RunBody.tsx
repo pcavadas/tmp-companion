@@ -62,6 +62,12 @@ export interface RunBodyProps {
   liveLufs: number | null;
   /** Rolling per-hop momentary levels (dB, newest last) driving the live VU bars. */
   liveTrace: number[];
+  /** A batch-wide caption ("Saving…" / "Verifying…", issue 6b) — the deferred-save /
+   *  persist-verify phase after every row in the current group already resolved, so no
+   *  row's own status cell can show it. Rendered in the header subtitle IN PREFERENCE to
+   *  the default "N presets · N sounds · saves automatically" line while set. Optional —
+   *  defaults to null so every existing RunBody render (no tail to show) is unaffected. */
+  tailMessage?: string | null;
   /** Resolve an instrument profile id to its display name (the Instrument column). */
   instrumentName: (id: string) => string;
   /** Resolve a target name to its LUFS (the Target column). */
@@ -81,6 +87,7 @@ export function RunBody({
   stopping,
   liveLufs,
   liveTrace,
+  tailMessage = null,
   instrumentName,
   targetLufsByName,
   onCancel,
@@ -199,7 +206,8 @@ export function RunBody({
             >
               {done
                 ? ""
-                : `${String(presetN)} preset${presetN === 1 ? "" : "s"} · ${String(total)} sound${total === 1 ? "" : "s"} · saves automatically`}
+                : (tailMessage ??
+                  `${String(presetN)} preset${presetN === 1 ? "" : "s"} · ${String(total)} sound${total === 1 ? "" : "s"} · saves automatically`)}
             </span>
           </div>
           <ProgressBar percent={pct} />

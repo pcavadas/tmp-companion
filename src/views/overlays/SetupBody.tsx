@@ -44,6 +44,12 @@ import {
 } from "./BlockLevelPick";
 import { PickWarnNote } from "./PickWarnNote";
 import {
+  bestEnabled,
+  blockKeyOf,
+  groupByBlock,
+  groupHead,
+} from "../level/blockLevelGroups";
+import {
   useSceneHandles,
   type HandleFetchState,
 } from "../level/useSceneHandles";
@@ -367,16 +373,55 @@ function sceneCandidatesFetch(state: HandleFetchState): BlockLevelFetch {
   };
 }
 
+/** Issue 5 (Boost preselect), altitude finding E: `SceneHandleCandidate.enablesBlock`
+ *  is a NODE-level fact echoed onto every candidate of that node, so naively taking
+ *  `candidates.find(c => c.enablesBlock)` risks naming a different param than the one
+ *  `BlockLevelPick`'s own "Recommended" tag would show for the same block — that tag
+ *  is computed off `allCandidates` (the combined-picker superset `sceneCandidatesFetch`
+ *  feeds the widget), grouped by block and resolved via `bestEnabled`
+ *  (`blockLevelGroups.ts`'s ONE "best control" rule). This finds the first ENABLING
+ *  block — in the row's own candidate order, not rank order — then defers to that same
+ *  `bestEnabled` rule over that same `allCandidates`-derived grouping, so the preselect
+ *  and the picker's tag can never disagree. `undefined` when the row hasn't resolved or
+ *  no candidate enables a block. */
+function enablingBlockHandle(
+  st: HandleFetchState,
+): BlockLevelHandle | undefined {
+  if (st.status !== "resolved") return undefined;
+  // First in the row's own emission order (contiguous per node) — not rank order.
+  const enablingSource = st.allCandidates.find((c) => c.enablesBlock === true);
+  if (!enablingSource) return undefined;
+  const key = blockKeyOf(enablingSource);
+  const fetch = sceneCandidatesFetch(st);
+  if (fetch.status !== "resolved") return undefined;
+  const group = groupByBlock(fetch.list).find((g) => {
+    const first = groupHead(g);
+    return first != null && blockKeyOf(first) === key;
+  });
+  const best = group ? bestEnabled(group) : undefined;
+  return best
+    ? {
+        groupId: best.groupId,
+        nodeId: best.nodeId,
+        parameterId: best.parameterId,
+      }
+    : undefined;
+}
+
 /** One row's editable choices, keyed by `SetupOption.key`. `handle` is Base/Scene/FS
- *  rows' chosen leveling control (D2) — `null` = the pseudo-option's default path on
- *  a Base/Scene row; always seeded non-null on a footswitch row. `sceneContext` is
- *  footswitch-row-only (D3): `undefined` = not yet explicitly picked by the user —
- *  the effective value falls back to the lazily-fetched `suggested`, then the
- *  carried-forward default. */
+ *  rows' chosen leveling control (D2). Base/FS rows always carry a concrete value
+ *  (never `undefined`) — `null` there is the pseudo-option's default path. On a Scene
+ *  row `undefined` means UNTOUCHED: `effectiveHandle` (below) resolves it to the
+ *  enabling-block preselect (issue 5) once candidates resolve, else the pseudo-option.
+ *  `null` on a Scene row is the user's own EXPLICIT pick of the pseudo-option — set only
+ *  by the row's own `onHandleChange`, so it can never be clobbered by a later-resolving
+ *  preselect. `sceneContext` is footswitch-row-only (D3): `undefined` = not yet
+ *  explicitly picked by the user — the effective value falls back to the
+ *  lazily-fetched `suggested`, then the carried-forward default. */
 interface RowChoice {
   inst: string;
   target: string;
-  handle: BlockLevelHandle | null;
+  handle: BlockLevelHandle | null | undefined;
   sceneContext: number | null | undefined;
 }
 
@@ -472,7 +517,11 @@ export function SetupBody({
               }
             : o.isBase
               ? (o.baseHandle ?? null)
-              : (o.sceneHandle ?? null),
+              : // Scene rows: `undefined` (not `null`) — UNTOUCHED, so `effectiveHandle`
+                // can still resolve the enabling-block preselect (issue 5) once this
+                // row's candidates land. A real carried-forward pick (`o.sceneHandle`
+                // non-null) stays concrete and is never touched by the preselect.
+                (o.sceneHandle ?? undefined),
         sceneContext: undefined,
       };
     });
@@ -524,6 +573,29 @@ export function SetupBody({
     });
   }, [groups, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
 
+  // Boost/enabling-block preselect (issue 5): a scene whose overlay un-bypasses a
+  // block the base graph keeps bypassed (`SceneHandleCandidate.enablesBlock`) should
+  // default its leveling handle to THAT block's own control, not "Amp output level" —
+  // the amp barely moves the sound the scene actually turns on. Computed at READ time
+  // (not written into `rows` via a render-phase `setRows`): a Scene row's `handle`
+  // stays `undefined` (UNTOUCHED) until the user makes an explicit pick, including the
+  // pseudo-option (also its own concrete `null`) — see `RowChoice`'s own doc. Candidates
+  // arrive ASYNC (the warm effect above / a row's own lazy `onOpen`), so this
+  // re-evaluates on every render rather than needing to catch a resolution transition;
+  // an untouched row simply renders its preselect (or the pseudo-option, unresolved)
+  // until the user acts or the candidates land.
+  const effectiveHandle = (
+    o: SetupOption,
+    row: RowChoice | undefined,
+  ): BlockLevelHandle | null => {
+    if (row?.handle !== undefined) return row.handle;
+    if (o.footswitch == null && o.sceneSlot != null) {
+      const preselect = enablingBlockHandle(candidatesFor(o.slot, o.sceneSlot));
+      if (preselect) return preselect;
+    }
+    return null;
+  };
+
   // A footswitch row's D3 default: the lazily-fetched `suggested` scene, when resolved.
   const fsSuggestedFor = (o: SetupOption): number | null => {
     if (o.footswitch == null) return null;
@@ -574,7 +646,7 @@ export function SetupBody({
       const row = rows[o.key];
       let option = o;
       if (o.footswitch != null) {
-        const chosenHandle = row?.handle;
+        const chosenHandle = effectiveHandle(o, row);
         const candidate = chosenHandle
           ? (o.levelParams ?? []).find(
               (c) =>
@@ -618,7 +690,7 @@ export function SetupBody({
         // saved-doc read anchors the wet floor instead (`level_preset.rs`'s
         // block-value fallback), for either source, so there is nothing here to
         // resolve from a live read.
-        const chosen = row?.handle;
+        const chosen = effectiveHandle(o, row);
         const baseHandle: BaseHandlePick | null = chosen
           ? {
               groupId: chosen.groupId,
@@ -628,7 +700,7 @@ export function SetupBody({
           : null; // the "Preset level" pseudo-option (D2 default)
         option = { ...o, baseHandle };
       } else if (o.sceneSlot != null) {
-        option = { ...o, sceneHandle: row?.handle ?? null };
+        option = { ...o, sceneHandle: effectiveHandle(o, row) };
       }
       return {
         option,
@@ -723,7 +795,11 @@ export function SetupBody({
             {g.opts.map((o) => {
               const row = rows[o.key];
               const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
-              const nameLabel = o.isBase ? "Whole preset" : o.sceneName;
+              // `chosenFrom` already resolves the base row's own label to "Base Preset"
+              // (hasScenes) or "Whole preset" (a scene-less preset) — a hardcoded
+              // "Whole preset" here silently relabeled every multi-scene preset's base
+              // row (issue 2, BUG→GATE).
+              const nameLabel = o.sceneName;
               const sub = o.isBase
                 ? "levels this preset against the others"
                 : o.footswitch != null
@@ -756,7 +832,7 @@ export function SetupBody({
                       switchIndex={o.footswitch.switchIndex}
                       levelParams={o.levelParams}
                       fsSceneNames={o.fsSceneNames ?? []}
-                      handle={row?.handle ?? null}
+                      handle={effectiveHandle(o, row)}
                       onHandleChange={(h) => {
                         patchRow(o.key, { handle: h });
                       }}
@@ -776,7 +852,7 @@ export function SetupBody({
                   ) : o.isBase ? (
                     <BlockLevelPick
                       pseudoLabel="Preset level"
-                      handle={row?.handle ?? null}
+                      handle={effectiveHandle(o, row)}
                       onHandleChange={(h) => {
                         patchRow(o.key, { handle: h });
                       }}
@@ -788,8 +864,12 @@ export function SetupBody({
                   ) : o.sceneSlot != null ? (
                     <BlockLevelPick
                       pseudoLabel="Amp output level"
-                      handle={row?.handle ?? null}
+                      handle={effectiveHandle(o, row)}
                       onHandleChange={(h) => {
+                        // A choice here — the pseudo option (`null`) included — is
+                        // EXPLICIT: `h` is always a concrete (non-`undefined`) value,
+                        // so `effectiveHandle` returns it verbatim from now on, never
+                        // falling through to the enabling-block preselect again.
                         patchRow(o.key, { handle: h });
                       }}
                       candidates={sceneCandidatesFetch(

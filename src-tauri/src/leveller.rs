@@ -5202,6 +5202,8 @@ pub fn level_scenes_oneshot(
     // (empty on every run that never isolated anything) — see `run_scene_jobs`'s param doc.
     isolation_restore: &[(String, String, bool)],
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    // B6: forwarded to `run_scene_jobs` verbatim — see its own doc.
+    on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
     let intended_preset_level = scene_capture_level(hold, saved);
@@ -5213,6 +5215,7 @@ pub fn level_scenes_oneshot(
         hold,
         isolation_restore,
         on_scene,
+        on_tail,
         cancelled,
         move |job: &SceneJob| match &job.handle {
             Some(handle) => handle_one_scene(
@@ -5634,6 +5637,10 @@ pub fn redistribute_clamped_headroom(
     restore_scene: Option<u32>,
     saved: Option<&serde_json::Value>,
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    // B6 (F10): "the redistribute runner shares the seam" — this runner doesn't go through
+    // `run_scene_jobs` (its own hand-rolled save + audio spot-verify below), so it takes the
+    // same tail-emitter shape directly rather than inheriting it.
+    mut on_tail: impl FnMut(&str),
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
     if cancelled() {
@@ -5727,6 +5734,7 @@ pub fn redistribute_clamped_headroom(
     // No separate scene witness here: `recall_reassert_save` (called inside
     // `save_deferred_scene_writes`) already registers the raised `new_preset_level` as this
     // save's `PresetLevel` witness — that single value identifies the whole save.
+    on_tail("Saving preset…");
     save_deferred_scene_writes(slot, restore_scene, Some(new_preset_level), None)?;
 
     // Post-save AUDIO spot-verify at the PERSISTED pl (the wrong-pl-solve guard). Pick a
@@ -5736,6 +5744,7 @@ pub fn redistribute_clamped_headroom(
         .iter()
         .find(|o| o.writes > 0 && o.final_lufs.is_some())
     {
+        on_tail("Verifying…");
         crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         // The save above persisted `new_preset_level`, so re-asserting it here is a
         // belt-and-braces no-op on a committed save and the CORRECT value while the
@@ -5872,6 +5881,12 @@ fn run_scene_jobs(
     // never isolated anything.
     isolation_restore: &[(String, String, bool)],
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    // B6 (F10): the seam widened to carry a batch-wide caption for the two phases below that
+    // have no single scene to report progress against — "Saving preset…" just before
+    // `save_deferred_scene_writes`, "Verifying…" just before `verify_persisted_writes`. A
+    // no-op closure (`|_| {}`) is the byte-identical-to-before default for any caller that
+    // doesn't want the captions.
+    mut on_tail: impl FnMut(&str),
     mut cancelled: impl FnMut() -> bool,
     mut solve: impl FnMut(&SceneJob) -> Result<SceneSolve, String>,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
@@ -6009,6 +6024,7 @@ fn run_scene_jobs(
             // The callee already warns internally on its own first failure; this
             // catches the case where its retry ALSO failed (cancelled path only —
             // the non-cancelled `?` below still surfaces a hard error to the caller).
+            on_tail("Saving preset…");
             if let Err(e) =
                 save_deferred_scene_writes(slot, restore_scene, reassert_pl, scene_witness)
             {
@@ -6017,13 +6033,16 @@ fn run_scene_jobs(
             // A cancelled run that LANDED A TRADE returns its outcomes (see below), so they
             // need the same persist verdict a completed run's get.
             if trade_persisted {
+                on_tail("Verifying…");
                 verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
             }
         } else {
+            on_tail("Saving preset…");
             save_deferred_scene_writes(slot, restore_scene, reassert_pl, scene_witness)?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
             // after every audio step. A stopped run with no trade returns CANCELLED below and
             // its outcomes are discarded, so it is not worth a read.
+            on_tail("Verifying…");
             verify_persisted_writes(slot, &written, &force_bypass_restore, &mut outcomes);
         }
     }
@@ -7493,6 +7512,8 @@ pub fn level_scenes_rebalance(
     // (empty on every run that never isolated anything) — see `run_scene_jobs`'s param doc.
     isolation_restore: &[(String, String, bool)],
     on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
+    // B6: forwarded to `run_scene_jobs` verbatim — see its own doc.
+    on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
     // Same rule as `level_scenes_oneshot`: a landed trade's raise is UNSAVED, and every
@@ -7506,6 +7527,7 @@ pub fn level_scenes_rebalance(
         hold,
         isolation_restore,
         on_scene,
+        on_tail,
         cancelled,
         |job| {
             // Non-mergeable scenes: plain joint-k (nothing to rebalance), self-correcting.

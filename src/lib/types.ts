@@ -338,6 +338,13 @@ export interface SceneHandleCandidate {
   /** "full" = room in both directions. "lowers_only" = already at (or within a whisker
    * of) the top of its range — this handle can only make the scene QUIETER. */
   headroom: "full" | "lowers_only";
+  /** True iff this scene's overlay UN-BYPASSES a node the base graph has bypassed (and
+   * the node carries at least one levelable param) — the scene's whole reason to exist
+   * is turning this block on, so its own control is the natural default handle, not the
+   * active amp's `outputLevel`. Optional: older data (a carried-forward re-level pick,
+   * or a backend that predates this field) omits it — treat missing as `false`, never
+   * as "unknown/preselect anyway". */
+  enablesBlock?: boolean;
 }
 
 /** The handle candidates for ONE scene (mirrors `commands::SceneHandleRow`). */

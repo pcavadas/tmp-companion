@@ -131,6 +131,11 @@ export interface SceneLevelProgressItem {
   status: "active" | "done" | "error" | "cancelled";
   result: LevelResult | null;
   message: string | null;
+  /** A batch-wide caption ("Saving…" / "Verifying…") emitted at the deferred-save and
+   *  persist-verify starts, AFTER every scene in the group already resolved — this item
+   *  carries no valid `sceneSlot`/row identity of its own (never key against it), only
+   *  the caption. Omitted/null outside those two windows. */
+  tail?: string | null;
 }
 
 /** A user-chosen scene leveling control (mirrors the backend's `SceneHandleArg`) — the

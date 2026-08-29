@@ -3173,6 +3173,7 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
         // Nothing was isolated for this job, so nothing to undo.
         &[],
         |_, _| {},
+        |_| {}, // B6: no progress channel in this fixture
         || false,
     )
     .expect("handle run");
