@@ -77,16 +77,26 @@ pub struct BackupPresetRow {
 }
 
 /// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
-/// `amp_candidates` node ids NOT bypassed in `graph`'s base `dspUnitParameters`. Extracted so
-/// the redistribute single-amp gate's narrower signal is unit-testable with no DB/backup scan
-/// in the loop. See the field's own doc for why a global bypass filter can't live in
-/// `filter_amp_candidates`/`extract_level_blocks` instead (an amp-flip preset needs its
-/// bypassed-in-base amp as a candidate too).
+/// `amp_candidates` (group, node) pairs NOT bypassed in `graph`'s base `dspUnitParameters`.
+/// Extracted so the redistribute single-amp gate's narrower signal is unit-testable with no
+/// DB/backup scan in the loop. See the field's own doc for why a global bypass filter can't
+/// live in `filter_amp_candidates`/`extract_level_blocks` instead (an amp-flip preset needs
+/// its bypassed-in-base amp as a candidate too).
+///
+/// Identity is the (group, node) PAIR, and the bypass lookup is group-scoped
+/// ([`crate::scenes::block_bypass_in_live_graph`], which resolves nodeId- and FenderId-keyed
+/// nodes alike): `extract_level_blocks` falls back to `FenderId` when a node carries no
+/// `nodeId`, so two same-model amps in different groups can share a bare node id — a
+/// node-only dedup would merge them and under-count, wrongly opening the single-amp gate on
+/// a two-live-amp preset. `!= Some(true)` keeps a bypass-less amp counted as active (an amp
+/// with no `bypass` param is always on).
 fn base_active_amp_count(graph: &serde_json::Value, amp_candidates: &[LevelBlockArg]) -> usize {
-    let mut active: Vec<&str> = amp_candidates
+    let mut active: Vec<(&str, &str)> = amp_candidates
         .iter()
-        .map(|c| c.node_id.as_str())
-        .filter(|node_id| !footswitch::block_bypassed_in_base(graph, node_id))
+        .filter(|c| {
+            crate::scenes::block_bypass_in_live_graph(graph, &c.group_id, &c.node_id) != Some(true)
+        })
+        .map(|c| (c.group_id.as_str(), c.node_id.as_str()))
         .collect();
     active.sort_unstable();
     active.dedup();
@@ -138,6 +148,44 @@ mod base_active_amp_count_tests {
     fn no_candidates_counts_zero() {
         let graph = serde_json::json!({ "audioGraph": { "guitarNodes": {} } });
         assert_eq!(base_active_amp_count(&graph, &[]), 0);
+    }
+
+    // Two same-model amps with NO `nodeId` share `extract_level_blocks`'s FenderId fallback
+    // as their node id — only the (group, node) pair keeps them distinct. A node-only dedup
+    // read this as ONE active amp and opened the single-amp gate on a two-live-amp preset.
+    #[test]
+    fn same_fallback_id_amps_in_two_groups_stay_distinct() {
+        let graph = serde_json::json!({ "audioGraph": { "guitarNodes": {
+            "G1": [{ "FenderId": "ACD_TwinReverb65NoFx",
+                     "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } }],
+            "G2": [{ "FenderId": "ACD_TwinReverb65NoFx",
+                     "dspUnitParameters": { "outputLevel": 0.5, "bypass": false } }]
+        } } });
+        let candidates = [
+            LevelBlockArg {
+                group_id: "G1".into(),
+                node_id: "ACD_TwinReverb65NoFx".into(),
+                parameter_id: "outputLevel".into(),
+                value: 0.5,
+            },
+            LevelBlockArg {
+                group_id: "G2".into(),
+                node_id: "ACD_TwinReverb65NoFx".into(),
+                parameter_id: "outputLevel".into(),
+                value: 0.5,
+            },
+        ];
+        assert_eq!(base_active_amp_count(&graph, &candidates), 2);
+    }
+
+    // An amp with no `bypass` param at all is always on — it must stay counted.
+    #[test]
+    fn a_bypassless_amp_counts_as_active() {
+        let graph = serde_json::json!({ "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "amp1", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "outputLevel": 0.5 } }
+        ] } } });
+        assert_eq!(base_active_amp_count(&graph, &[candidate("amp1")]), 1);
     }
 }
 
