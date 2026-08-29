@@ -1325,10 +1325,16 @@ impl SimDevice {
             // Scoped deliberately:
             // * only the scene being LEFT, and only on an actual change — a no-op recall of
             //   the already-active scene is not a switch.
-            // * `SCENE_BASE`-keyed entries are NEVER dropped. A scene-context write with no
-            //   Scene Edit arm lands on base (the fw "fact 4" leak modelled below), and those
-            //   base writes DO survive a scene switch on HW — the `probe --defer-scenes`
-            //   finding that still holds.
+            // * `SCENE_BASE`-keyed entries are NEVER dropped here. **This is the conservative
+            //   choice, not a proven one.** The footswitch lane's HW failure (2026-08-29) is
+            //   consistent with base writes ALSO being lost on the switch out of base — its
+            //   base bake ended pristine — but that is an inference from an end state, and
+            //   `enabling_scene_edit_reseeds_the_node_from_base` (below) encodes an OBSERVED
+            //   behaviour that requires a base override to survive a scene recall. Until a
+            //   targeted probe separates the two, the model stays scene-only. Nothing depends
+            //   on the looser reading: `write_fs_values_on_session` now saves its base writes
+            //   before the first mirror recall, so it is correct either way.
+            //
             // Already-saved values are unaffected: `record_save` has folded them into
             // `committed_doc` by then, and this only clears the pending-write buffer.
             if st.current_scene != next_scene {

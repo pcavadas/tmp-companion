@@ -4503,8 +4503,20 @@ fn write_fs_values_on_session(
     // Mirror each bake into the scenes whose overlay restated the base value (grouped by
     // scene: one recall, then that scene's writes back-to-back — the write must follow its
     // recall inside the ~400 ms idle-gap acceptance window; the overlay exists by
-    // construction, so no Scene Edit enable). Unsaved writes survive the recalls (HW,
-    // `probe --defer-scenes`); the single save below persists base + every overlay.
+    // construction, so no Scene Edit enable).
+    //
+    // **Every context is SAVED before the next `loadScene` switches away from it** — the base
+    // writes above included. On fw 1.8.58 a scene switch DESTROYS whatever writes are still
+    // pending for the context being left (HW, 2026-08-29; the scene lane's `save_scene_now`
+    // is the same fix). This function used to write base + every mirror scene and then save
+    // ONCE at the end, which on 1.8.58 persisted NOTHING: HW on list index 404 switch 2, the
+    // bake solved `output=0.4758` and reported `[SAVED to preset]` while base and scenes 0/1/2
+    // all kept the authored `0.55` — the save landed in `restore_scene` (3), which had no
+    // pending write of its own. Surfaced as `level.online.spec.ts:371` re-writing a switch it
+    // had just "saved", and as a ~0.68 LU gap between the solve's verify capture (measured on
+    // the live working copy) and an independent re-measure (reading the un-persisted stored
+    // value). Saves ride this same live-edit session, which never toggles re-amp, so the
+    // post-re-amp save-drop cannot bite.
     let mut by_scene: std::collections::BTreeMap<u32, Vec<&FsPendingWrite>> =
         std::collections::BTreeMap::new();
     for p in pending {
@@ -4514,6 +4526,12 @@ fn write_fs_values_on_session(
             }
         }
     }
+    // Persist the base-context writes before the first mirror recall leaves base. Skipped when
+    // there is nothing to mirror: the tail save below is then still in base context and covers
+    // them, and a redundant save is a real device write, not a no-op.
+    if !by_scene.is_empty() {
+        s.save_current_preset(slot)?;
+    }
     for (scene, writes) in &by_scene {
         s.load_scene(*scene)?;
         crate::settle(Duration::from_millis(SETTLE_AFTER_SCENE_RECALL_MS));
@@ -4521,6 +4539,9 @@ fn write_fs_values_on_session(
             s.change_parameter(&p.lev.0, &p.lev.1, &p.lev.2, p.value)?;
         }
         let _ = s.heartbeat();
+        // …and this scene's overlay writes before the next recall (or the restore recall)
+        // switches away from it.
+        s.save_current_preset(slot)?;
     }
     recall_original_scene(s, restore_scene)?;
     s.save_current_preset(slot)?;
