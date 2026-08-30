@@ -1413,13 +1413,17 @@ mod fixture_gates {
     /// fixture the same defect class can hide in.
     ///
     /// `backup_read::tests::scenario_fixture_matches_scenario_presets_json` (the
-    /// drift lock between this file and `scenario-presets.json`) does NOT catch a
-    /// stale `product_id`/`preset_id`: it compares decoded `BackupPresetRow`s, and
-    /// that struct never carries either field, so two archives that disagree on
-    /// them still compare equal. This test reads the raw `presetJson` column
-    /// directly (mirroring `backup_read::read_backup_archive`'s own LZ4-frame +
-    /// tar + `sqlite3` decode) instead of going through `BackupPresetRow`, so the
-    /// two fields the drift lock is blind to are actually checked.
+    /// drift lock between this file and `scenario-presets.json`) is now only HALF
+    /// blind: it compares decoded `BackupPresetRow`s, and that struct has carried
+    /// `preset_id` since #155, so a stale `preset_id` now fails that equality
+    /// compare. It stays blind to `product_id` — that field never made it onto the
+    /// struct — and even for `preset_id` an equality compare can't check the things
+    /// this raw-bytes gate exists for: that every `preset_id` is non-empty and that
+    /// no two presets in the fixture share one. This test reads the raw `presetJson`
+    /// column directly (mirroring `backup_read::read_backup_archive`'s own LZ4-frame
+    /// + tar + `sqlite3` decode) instead of going through `BackupPresetRow`, so
+    /// `product_id` drift and `preset_id` uniqueness/non-emptiness are both actually
+    /// checked.
     #[test]
     fn backup_fixture_uses_device_product_id_and_unique_preset_ids() {
         use std::io::Read;

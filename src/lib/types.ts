@@ -755,6 +755,12 @@ export interface AmpCandidate {
 export interface BackupPresetRow {
   slot: number;
   name: string;
+  /** The preset doc's identity uuid (`info.preset_id`), parsed from the same
+   * `presetJson` as every other field on this row. Absent for an unparseable
+   * row and for bodies written without the key (the showcase fixture). Read-only
+   * metadata — no frontend behaviour keys on it; the backend's cross-connection
+   * backup-row guards do. */
+  preset_id?: string | null;
   scene_count: number;
   scenes: SceneInfo[];
   amp_candidates: AmpCandidate[];
