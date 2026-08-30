@@ -795,7 +795,7 @@ export function SetupPage({
                   <div style={{ width: 118, flexShrink: 0 }}>
                     <Pick
                       grow
-                      tid={`target:${g.name}`}
+                      tid={`target:${setupRowHookKey(o)}`}
                       value={row?.target ?? defaultTarget}
                       options={targetOptions}
                       onChange={(v) => {

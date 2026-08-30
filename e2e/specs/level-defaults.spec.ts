@@ -28,9 +28,8 @@ import {
 // `e2e_server_tests.rs`'s `level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`
 // ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). The tests below therefore select
 // ONLY the Base row (never the whole preset) for the clamp cases: sweeping in a preset's
-// footswitches too would (a) collide on the shared `data-pick="target:NAME"` locator every
-// selected row of one preset carries, and (b) risks shifting the terminal Done-vs-Accept summary
-// text for reasons unrelated to the base clamp under test.
+// footswitches too risks shifting the terminal Done-vs-Accept summary text for reasons
+// unrelated to the base clamp under test.
 //
 // HARNESS LIMIT: per-SCENE/per-FOOTSWITCH outcomes hit the Channel-streaming seam offline
 // (asserted at the command level instead — see e2e_server_tests.rs
@@ -68,7 +67,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click(); // the inline commit gate
-    await pickBaseTarget(page, SCENARIO[1].name, "Lead"); // the loud default — this is what clamps
+    await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // the loud default — this is what clamps
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
       timeout: 240_000,
@@ -110,7 +109,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await pickBaseTarget(page, SCENARIO[1].name, "Lead"); // pick the LOUD target
+    await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // pick the LOUD target
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
       timeout: 240_000,
@@ -118,7 +117,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
 
     await page.getByRole("button", { name: /Re-level clamped/ }).click();
-    await pickBaseTarget(page, SCENARIO[1].name, "Crunch"); // QUIETER target
+    await pickBaseTarget(page, SCENARIO[1].slot, "Crunch"); // QUIETER target
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
       timeout: 240_000,

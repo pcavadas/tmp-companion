@@ -310,7 +310,8 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // yields a short force list — pedals left on, and the wrong `presetLevel` SAVED.
                 // `read_slot_preset_complete` re-reads off a device backup when a required
                 // section is truncated, so an unreadable `ftsw` REFUSES instead of guessing.
-                // The same read still supplies the revert anchor and the save's `restore_scene`.
+                // The same read still supplies `previous_level` (the idempotency-skip anchor,
+                // not a user-facing revert) and the save's `restore_scene`.
                 let preset = match read_slot_preset_complete(slot, &["ftsw"]) {
                     Ok((preset, _, _)) => preset,
                     // Returns BEFORE the run-end `reamp_off_guaranteed` backstop, which is safe
@@ -358,11 +359,11 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 )
             }
         };
-        // The revert anchor rides the result (Summary "Restore original"). In-memory
-        // only: a restart-surviving restore is a follow-up that ships WITH its reader UI.
-        // Only staple when this run actually SAVED (and the leveller left it unset) —
-        // the leveller returns `previous_level: None` itself both for its own idempotency
-        // skip AND the no-signal clamp, and neither has anything worth "restoring".
+        // `previous_level` rides the result for the re-run idempotency skip (see
+        // `level_unchanged`) — not a user-facing revert; design 1a has no in-app restore
+        // of any kind. Only staple when this run actually SAVED (and the leveller left it
+        // unset) — the leveller returns `previous_level: None` itself both for its own
+        // idempotency skip AND the no-signal clamp, and neither has anything to staple.
         let result = result.map(|mut r| {
             if r.saved && r.previous_level.is_none() {
                 r.previous_level = previous_level;

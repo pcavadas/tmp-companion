@@ -1,6 +1,7 @@
 import { test, expect } from "../fixtures/test";
 import {
   SCENARIO,
+  baseRowKey,
   clearScenario,
   ensurePresetGroupOpen,
   ensureScenario,
@@ -19,9 +20,9 @@ import {
 // amp flip). None of the six rebuilt fixtures is Base-only any more (see
 // e2e/fixtures/COVERAGE.md) — SCENARIO[1]/[2] ("E2E Pedalboard"/"E2E Edge") now carry
 // footswitches/scenes of their own, so the first test below selects each preset's Base
-// row EXPLICITLY (never the whole-preset tick) to keep one selected row per preset — the
-// `data-pick="target:NAME"]` trigger is shared by every selected row of a preset, and a
-// whole-preset tick on a footswitch/scene-bearing fixture would collide.
+// row EXPLICITLY (never the whole-preset tick) to keep one selected row per preset — a
+// whole-preset tick would sweep those in too and shift the terminal summary's
+// Done-vs-Accept text for reasons unrelated to what this test drives.
 // Loudness accuracy is the device's job; these prove the multi-preset, per-preset-target
 // flow AND the base+scene+footswitch flow end to end through the real backend.
 //
@@ -70,9 +71,9 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 
     // Select each preset's Base row explicitly (expand → tick "Base Preset") so exactly
     // ONE row per preset is selected — both now carry footswitches/scenes of their own,
-    // so a whole-preset tick would sweep those in too and collide on the shared
-    // `data-pick="target:NAME"]` trigger below. The filter narrows the list to each in
-    // turn; the selection persists across filters.
+    // so a whole-preset tick would sweep those in too and shift the terminal summary's
+    // Done-vs-Accept text. The filter narrows the list to each in turn; the selection
+    // persists across filters.
     const presets = [SCENARIO[1], SCENARIO[2]];
     for (const p of presets) {
       await selectBaseOnly(page, p.name);
@@ -84,22 +85,22 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // commit (there is no separate Back-up step).
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
-    // Two DIFFERENT per-preset targets (each preset has exactly one selected row — its
-    // Base — so its `target:NAME` trigger is unique, no collision).
+    // Two DIFFERENT per-preset targets — each row's own `target:<rowKey>` trigger is
+    // unique by construction now, regardless of how many other rows that preset has.
     const targets = [
-      { slot: SCENARIO[1].slot, name: SCENARIO[1].name, label: "Crunch" },
-      { slot: SCENARIO[2].slot, name: SCENARIO[2].name, label: "Lead" },
+      { slot: SCENARIO[1].slot, label: "Crunch" },
+      { slot: SCENARIO[2].slot, label: "Lead" },
     ];
-    for (const { slot, name, label } of targets) {
-      await ensurePresetGroupOpen(page, slot, name);
-      await pickBaseTarget(page, name, label);
+    for (const { slot, label } of targets) {
+      await ensurePresetGroupOpen(page, slot);
+      await pickBaseTarget(page, slot, label);
     }
     // The picks must actually BIND — assert each row's trigger now reads its target
     // (guards a silent display-vs-value no-op the always-solving fake re-amp would hide).
-    for (const { name, label } of targets) {
-      await expect(page.locator(`[data-pick="target:${name}"]`)).toContainText(
-        label,
-      );
+    for (const { slot, label } of targets) {
+      await expect(
+        page.locator(`[data-pick="target:${baseRowKey(slot)}"]`),
+      ).toContainText(label);
     }
 
     await page.getByRole("button", { name: /Start.*2 sound/ }).click();
@@ -245,8 +246,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 
     // Base-only, not the whole-preset checkbox: 401 now carries footswitches of its own
     // (P4-B fixture rebuild — see level-defaults.spec.ts's header), and a whole-preset
-    // tick would sweep those in too, colliding on the shared `data-pick="target:NAME"]`
-    // trigger `runBaseLevel` drives.
+    // tick would sweep those in too and shift the terminal summary's Done-vs-Accept text.
     const run = () =>
       runBaseLevel(page, [{ preset: SCENARIO[1], label: "Crunch" }]);
 

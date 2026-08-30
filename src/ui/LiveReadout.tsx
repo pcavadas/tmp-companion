@@ -3,12 +3,13 @@
 // caller supplies the formatter, unit, and caption so the primitive stays domain-free.
 
 import { useStyles, useTheme } from "../theme/ThemeContext";
+import { DASH } from "../lib/format";
 
 export interface LiveReadoutProps {
-  /** The current numeric value. */
-  value: number;
-  /** Formats `value` for display (default: `String`). */
-  format?: (n: number) => string;
+  /** The current numeric value, or `null` while nothing is measured yet. */
+  value: number | null;
+  /** Formats `value` for display (default: `String`, dash on `null`). */
+  format?: (n: number | null) => string;
   /** Small unit suffix beside the value (e.g. "LUFS"). */
   unit?: string;
   /** Uppercase caption beneath the value (e.g. "measuring…"). */
@@ -17,7 +18,7 @@ export interface LiveReadoutProps {
 
 export function LiveReadout({
   value,
-  format = String,
+  format = (n) => (n == null ? DASH : String(n)),
   unit,
   caption,
 }: LiveReadoutProps) {

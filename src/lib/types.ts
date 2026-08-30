@@ -156,15 +156,17 @@ export interface LevelResult {
    * Null when the measuring path has no full-capture meter. */
   dynamic_spread_lu: number | null;
   /** Set with `clamped` for the "no authority" case — the amp's outputLevel doesn't
-   * reach the USB 1/2 capture (off-branch / off-USB). Shown verbatim instead of a
-   * generic clamp. Null for the preset-level path / an ordinary headroom clamp. */
+   * reach the USB 1/2 capture (off-branch / off-USB). Not surfaced in the UI (design
+   * 1a shows one generic clamp message regardless of cause); used only to classify
+   * the row as offbranch. Null for the preset-level path / an ordinary headroom clamp. */
   clamp_reason: string | null;
   /** Rebalance "verify by ear": the lane-mute floor was too shallow to trust the
    * equal-solo balance (the overall target still landed). ORed with the spread flag. */
   verify_by_ear: boolean;
-  /** The preset's saved `presetLevel` BEFORE this run wrote it — the revert anchor
-   * for "Restore original". Null when the pre-run read failed or the path doesn't
-   * write `presetLevel` (block-knob / scene rows). */
+  /** The preset's saved `presetLevel` BEFORE this run wrote it — internal re-run
+   * idempotency data (a same-level re-run reloads the stored preset instead of
+   * rewriting it), not surfaced in the UI. Null when the pre-run read failed or the
+   * path doesn't write `presetLevel` (block-knob / scene rows). */
   previous_level: number | null;
   /** PREDICTED true peak (dBTP) at final_level, extrapolated from the reference
    * capture's measured true peak — an ESTIMATE, never a re-measurement. Only the

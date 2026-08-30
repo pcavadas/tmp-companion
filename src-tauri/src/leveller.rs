@@ -295,14 +295,16 @@ pub struct LevelResult {
     /// when the measuring path has no full-capture meter (live windows).
     pub dynamic_spread_lu: Option<f64>,
     /// When clamped for a SPECIFIC reason (currently "no authority" — the amp's
-    /// `outputLevel` doesn't reach the USB 1/2 capture), the UI shows this verbatim
-    /// instead of a generic "clamped". `None` for the preset-level path / plain clamp.
+    /// `outputLevel` doesn't reach the USB 1/2 capture), this is set. Not surfaced in
+    /// the UI (design 1a shows one generic clamp message regardless of cause); its
+    /// presence is used only to classify the row as `offbranch`. `None` for the
+    /// preset-level path / plain clamp.
     pub clamp_reason: Option<String>,
     /// The clamp's CAUSE from the shared taxonomy ([`crate::headroom_trade::ClampKind`]) —
     /// `None` when the row is not clamped. ADDITIVE alongside `clamp_reason`, whose contract
     /// ("the leveled signal isn't reaching USB 1/2", `.claude/rules/leveling-dsp.md`) is
-    /// unchanged: this is the machine-readable cause, that one stays the verbatim prose the
-    /// UI maps to `offbranch`. Mirrored in `src/lib/types.ts`.
+    /// unchanged: this is the machine-readable cause, that one stays the sentinel the UI
+    /// maps to `offbranch`. Mirrored in `src/lib/types.ts`.
     pub clamp_kind: Option<crate::headroom_trade::ClampKind>,
     /// Best-effort rebalance "verify by ear" flag (lane-mute bleed may have skewed the
     /// equal-solo balance). Distinct from `dynamic_spread_lu`; the UI ORs both.

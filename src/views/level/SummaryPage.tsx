@@ -19,7 +19,7 @@
 // disclosure features are gone from the wizard entirely; a clamped row's message is
 // always the one generic sentence below, regardless of clamp cause.
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Button } from "../../ui/primitives";
@@ -187,7 +187,7 @@ export function SummaryPage({
     bg: string,
     border: string,
     heading: string,
-    body: React.ReactNode,
+    body: ReactNode,
   ) => (
     <div
       style={{
@@ -283,7 +283,7 @@ export function SummaryPage({
               "x",
               t.warn,
               t.warnSoft,
-              "rgba(167,70,31,0.28)",
+              t.warnBorder,
               "Amp output at zero",
               <>
                 The amp’s output level is saved at{" "}
@@ -296,7 +296,7 @@ export function SummaryPage({
               "x",
               t.warn,
               t.warnSoft,
-              "rgba(167,70,31,0.28)",
+              t.warnBorder,
               "Expression pedal may be muting",
               <>
                 A pedal controls the amp’s output, with zero at one end. Park it
@@ -309,7 +309,7 @@ export function SummaryPage({
               "x",
               t.warn,
               t.warnSoft,
-              "rgba(167,70,31,0.28)",
+              t.warnBorder,
               "Needs routing on the unit",
               <>
                 Route {offbrRouting.length === 1 ? "it" : "them"} to{" "}
@@ -321,8 +321,8 @@ export function SummaryPage({
             guidanceBanner(
               "warn-tri",
               t.sevWarn,
-              "rgba(176,125,28,0.10)",
-              "rgba(176,125,28,0.3)",
+              t.sevWarnSoft,
+              t.sevWarnBorder,
               "Clamped — already maxed",
               <>
                 The knob is already all the way up. A quieter target would let

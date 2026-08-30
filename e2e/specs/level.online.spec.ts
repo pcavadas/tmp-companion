@@ -514,8 +514,8 @@ test.describe
     const reampBase = await reampCounters(page);
 
     // Each of the two presets carries footswitches/scenes of its own, so a whole-preset
-    // tick would sweep those in too — `runBaseLevel` selects each preset's Base row alone,
-    // so its `target:NAME` trigger stays unique per preset (no collision).
+    // tick would sweep those in too and shift the terminal summary's Done-vs-Accept text —
+    // `runBaseLevel` selects each preset's Base row alone.
     await runBaseLevel(page, [
       { preset: SCENARIO[1], label: "Crunch" },
       { preset: SCENARIO[2], label: "Lead" },

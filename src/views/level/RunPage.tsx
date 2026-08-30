@@ -127,7 +127,7 @@ export function RunPage({
           >
             <LiveVU values={liveTrace} />
             <LiveReadout
-              value={liveLufs ?? 0}
+              value={liveLufs}
               format={fmtLufs}
               unit="LUFS"
               caption={

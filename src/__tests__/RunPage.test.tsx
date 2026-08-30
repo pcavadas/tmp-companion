@@ -74,9 +74,10 @@ describe("RunPage live measuring strip", () => {
     expect(screen.queryByText("−30.0")).not.toBeInTheDocument();
   });
 
-  it("shows a 0.0 readout and the measuring caption while nothing streams yet, with the row itself connecting", () => {
+  it("shows a dash placeholder (never a fabricated 0.0) and the measuring caption while nothing streams yet, with the row itself connecting", () => {
     render(runPage(null));
-    expect(screen.getByText("0.0")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("0.0")).not.toBeInTheDocument();
     expect(screen.getByText("measuring FS7")).toBeInTheDocument();
     // The header readout has no live value to show yet, but the ROW's own status
     // cell still states its pre-capture state plainly.
