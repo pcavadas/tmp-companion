@@ -281,6 +281,112 @@ impl Drop for LiveLufsGuard {
     }
 }
 
+/// Pre-run guard for every leveling lane that accumulates UNSAVED scene writes
+/// across scene recalls and saves once at batch end (gap 2 of
+/// `notes/device-manual-gaps.md`): refuse before ANY device write when the device's
+/// `Scene Change Behavior` snapshot reads `DISCARD CHANGES`. Under `DISCARD` every
+/// recall silently reverts the recalled scene's unsaved edits (HW-confirmed on the
+/// touchscreen) — the batch-end save would then persist the reverted state, and a
+/// save has no revert (danger.md). Call sites: `level_scenes_apply_batched`,
+/// `level_footswitches_apply`, `redistribute_headroom`, `restore_redistribution`
+/// (the deferred-write lanes; the legacy per-scene lane and `level_setlist` save
+/// immediately / re-assert through `recall_reassert_save`, so they are safe under
+/// `DISCARD` and deliberately unguarded).
+///
+/// `settings_path` is the settings snapshot the startup backup read persisted
+/// (`support/device-settings.json`). It can be STALE — the touchscreen may have been
+/// edited since connecting — and the asymmetry mirrors `calibrate_profile`'s #124
+/// fader handling: only a positively-read `Discard` refuses (the failure it causes is
+/// silent corruption of a destructive save, and the wrongly-refused stale case is
+/// recovered by the same replug the message names, since a detach fires
+/// `resetLibraryScan` and the next connection re-reads the settings). An absent or
+/// unreadable snapshot, or an unknown ordinal, PROCEEDS — the factory default is
+/// `MAINTAIN CHANGES`, and blocking every fresh install on a missing snapshot would
+/// punish the common case on no evidence.
+///
+/// Refuse, not warn: the app is click-only for non-technical users, and a warning
+/// that can be clicked through recreates the corruption it exists to prevent. The
+/// guard fires regardless of `save` — even a no-save run's solves read state that
+/// `DISCARD` reverts mid-run, so its numbers would be garbage.
+pub(crate) fn scene_discard_guard(settings_path: Option<&std::path::Path>) -> Result<(), String> {
+    let behavior = crate::backup_read::read_settings_snapshot(settings_path)
+        .and_then(|json| crate::backup_read::scene_change_behavior(&json));
+    if behavior == Some(crate::backup_read::SceneChangeBehavior::Discard) {
+        return Err(
+            "this device's Scene Change Behavior is set to DISCARD CHANGES, which silently \
+             reverts the unsaved scene changes a leveling run accumulates before its save. \
+             On the unit's touchscreen, set SETTINGS \u{2192} Scene Change Behavior to \
+             MAINTAIN CHANGES, then unplug and replug the USB cable so the app re-reads the \
+             setting, and run leveling again."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod scene_discard_guard_tests {
+    use super::*;
+
+    /// A settings snapshot on disk, exactly as `persist_device_settings` leaves one
+    /// (`support/device-settings.json` — the guard's real input). Removed on drop.
+    struct Snapshot(std::path::PathBuf);
+    impl Drop for Snapshot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn snapshot(tag: &str, contents: &str) -> Snapshot {
+        let path = std::env::temp_dir().join(format!(
+            "tmp-companion-scene-discard-{}-{tag}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("write snapshot");
+        Snapshot(path)
+    }
+
+    // THE gate for gap 2: a snapshot that positively reads DISCARD refuses, and the
+    // message carries the two things the user needs — the touchscreen setting to
+    // change (by its on-unit name) and the replug that refreshes the stale snapshot.
+    #[test]
+    fn a_discard_snapshot_refuses_with_the_touchscreen_setting_named() {
+        let f = snapshot("discard", r#"{"sceneChangeBehavior":1,"mixerSaveData":{}}"#);
+        let err = scene_discard_guard(Some(&f.0)).expect_err("DISCARD must refuse");
+        assert!(err.contains("Scene Change Behavior"), "{err}");
+        assert!(err.contains("MAINTAIN CHANGES"), "{err}");
+        assert!(err.contains("replug"), "{err}");
+    }
+
+    #[test]
+    fn the_retain_default_proceeds() {
+        let f = snapshot("retain", r#"{"sceneChangeBehavior":0}"#);
+        assert!(scene_discard_guard(Some(&f.0)).is_ok());
+    }
+
+    // The deliberate asymmetry: no snapshot, no key, garbage JSON, or an ordinal the
+    // enum does not carry all PROCEED — the factory default is MAINTAIN, and only a
+    // positively-read DISCARD is evidence of the silent-revert mechanism.
+    #[test]
+    fn an_absent_or_unreadable_snapshot_proceeds() {
+        assert!(scene_discard_guard(None).is_ok());
+        assert!(
+            scene_discard_guard(Some(std::path::Path::new("/nonexistent/settings.json"))).is_ok()
+        );
+        for (tag, contents) in [
+            ("no-key", r#"{"mixerSaveData":{}}"#),
+            ("garbage", "not json"),
+            ("unknown-ordinal", r#"{"sceneChangeBehavior":7}"#),
+        ] {
+            let f = snapshot(tag, contents);
+            assert!(
+                scene_discard_guard(Some(&f.0)).is_ok(),
+                "must proceed on {contents:?}"
+            );
+        }
+    }
+}
+
 pub(crate) static SCENE_LEVEL_CANCEL: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -477,6 +583,9 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     if jobs.is_empty() {
         return Err("no scenes selected".to_string());
     }
+    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // before anything touches the device — see `scene_discard_guard`'s doc.
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     // A row that names its own control needs no amp candidate and no routing classification —
     // the user picked the knob. So this pre-device guard fires only for a batch where NOBODY
     // named one (every row is an amp-`outputLevel` joint-k row and the whole run is doomed);
@@ -1560,6 +1669,12 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
     if !worst_clamped_deficit_db.is_finite() || worst_clamped_deficit_db <= 0.0 {
         return Err("redistribution needs a positive clamped-scene deficit".to_string());
     }
+    // Gap-2 pre-run guard, same shape as the batch that offered this action: the
+    // redistribution accumulates its raise + per-scene writes UNSAVED across scene
+    // recalls and saves once at batch end. The offering batch passed the guard against
+    // the same snapshot, but nothing structurally pins this command to that run — a
+    // replug (which re-reads the settings) can sit between them.
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     SCENE_LEVEL_CANCEL.store(false, SeqCst);
     let offset = playback_offset_for(&app, topology_id.as_deref());
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
@@ -1725,12 +1840,18 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
 /// display name); a drifted list fails loudly rather than restoring onto a different preset.
 #[tauri::command]
 pub(crate) async fn restore_redistribution(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     slot: u32,
     preset_level: f32,
     knobs: Vec<PreviousKnob>,
     expected_name: String,
 ) -> Result<(), String> {
+    // Gap-2 pre-run guard, even though this is the RECOVERY path: the restore writes
+    // its groups across scene recalls and recalls base before its one save, so under
+    // DISCARD it would silently persist a PARTIAL restore — worse than refusing with
+    // the fix in hand (set MAINTAIN, replug, then Restore works).
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     with_released_seize(state.session.clone(), move || {
         let writes: Vec<leveller::PrevKnobWrite> = knobs
             .iter()
