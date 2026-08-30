@@ -52,6 +52,7 @@ function backupRow(slot: number, name: string, sceneHandles: SceneHandleRow[]) {
   return {
     slot,
     name,
+    preset_id: null,
     scene_count: sceneHandles.length,
     scenes: sceneHandles.map(() => ({ name: "Scene", fs: null })),
     amp_candidates: [],

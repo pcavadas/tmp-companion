@@ -136,7 +136,7 @@ pub(crate) fn read_slot_preset_complete(
         let mut s = Session::connect()?;
         s.device_backup(60, |_| {})?.0
     };
-    let expect_id = crate::library::preset_id_of(&preset).filter(|s| !s.is_empty());
+    let expect_id = crate::library::preset_id_of(&preset);
     let doc =
         backup_read::preset_json_from_backup(&blob, i64::from(slot) + 1, &tail.name, expect_id)
             .map_err(|e| {

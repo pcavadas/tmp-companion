@@ -79,6 +79,7 @@ function seedScan(rows: SceneHandleRow[]) {
           {
             slot: 1, // device slot 1 = list index 0
             name: "Friedman HBE",
+            preset_id: null,
             scene_count: 1,
             scenes: [],
             amp_candidates: [],

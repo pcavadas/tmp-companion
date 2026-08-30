@@ -32,8 +32,14 @@ pub fn decode_preset_bytes(bytes: &[u8]) -> Result<String, String> {
 
 /// A preset doc's identity uuid (`info.preset_id`) — the ONE home of that JSON
 /// walk, shared by the library ingest and the e2e stray-sweep ownership guard.
+/// Returns `None` for a missing OR EMPTY id — an empty string is not an identity
+/// and must never compare equal to another empty (the vacuous-pass hazard the
+/// #155 guards document).
 pub(crate) fn preset_id_of(value: &Value) -> Option<&str> {
-    value.pointer("/info/preset_id").and_then(Value::as_str)
+    value
+        .pointer("/info/preset_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 /// One `.preset` file ingested from the export folder, plus its reconciliation

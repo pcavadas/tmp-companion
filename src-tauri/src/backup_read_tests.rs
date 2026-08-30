@@ -128,6 +128,48 @@ fn backup_slot_read_accepts_on_name_alone_when_the_partial_could_not_identify_it
     assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 }
 
+/// Empty-string ids are normalized to absent on BOTH sides of this guard, mirroring
+/// `presets.rs`'s `empty_string_preset_ids_are_treated_as_absent_never_matched` on the
+/// sibling identity-guard site: an empty string is not an identity and must never
+/// compare equal to another empty.
+#[test]
+fn backup_slot_read_treats_empty_string_ids_as_absent() {
+    // (a) Body carries an empty-string preset_id: treated as absent, so it can never
+    // satisfy a present `expect_id` — must refuse as unidentifiable, not vacuously
+    // accept.
+    let empty_id_body = r#"{"info":{"displayName":"Big Rig","preset_id":""},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive_empty_body = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        empty_id_body.replace('\'', "''")
+    ));
+    let err = preset_json_from_backup(
+        &archive_empty_body,
+        401,
+        "Big Rig",
+        Some("aaaaaaaa-0000-0000-0000-000000000001"),
+    )
+    .expect_err("an empty-string body id must never satisfy a present expect_id");
+    assert!(
+        err.contains("aaaaaaaa-0000-0000-0000-000000000001")
+            && err.contains("carries no info.preset_id"),
+        "{err}"
+    );
+
+    // (b) `expect_id: Some("")` — empty-string expected id normalizes to `None`, so the
+    // identity check is skipped (fallback path): a matching name with a body that DOES
+    // carry a real id is still accepted.
+    let real_id_body = r#"{"info":{"displayName":"Big Rig","preset_id":"aaaaaaaa-0000-0000-0000-000000000001"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive_real_body = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        real_id_body.replace('\'', "''")
+    ));
+    let doc = preset_json_from_backup(&archive_real_body, 401, "Big Rig", Some(""))
+        .expect("empty-string expect_id falls back to slot+name");
+    assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
+}
+
 #[test]
 fn backup_preset_scenes_parse_names_and_fs_tags() {
     // The DB presetJson is the same plaintext shape as the live field-3 doc:

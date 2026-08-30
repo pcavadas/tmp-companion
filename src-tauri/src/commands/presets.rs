@@ -118,9 +118,9 @@ pub(crate) fn preset_scenes_look_truncated(
 
 /// Build [`PresetScenes`] from the backup row matching `list_index`, guarded on slot,
 /// name, AND `info.preset_id` — see [`read_preset_scenes_complete`]'s doc comment for
-/// why. `preset_id` is the only STABLE identity here: slot is positional (a save/move
-/// can renumber it) and `displayName` is user-editable and duplicable across presets,
-/// following the `preset_id`-over-`displayName` precedent in `probe_api/slot_write.rs`.
+/// why (`probe_api/slot_write.rs`'s `preset_id`-over-`displayName` precedent REFUSES
+/// outright on an absent id; this fallback instead warns-and-accepts on slot+name
+/// alone — a deliberate divergence, not an oversight to "restore consistency").
 /// `field8_name` is the field-8 partial's own `info.displayName` (read from the
 /// TRUNCATION-PROOF prefix, well before the scene-tail cut); `field8_id` is the same
 /// partial's `info.preset_id`. When the field-8 partial carries no id (older presets,
@@ -223,7 +223,6 @@ pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScene
     let field8_id = doc
         .as_ref()
         .and_then(|d| crate::library::preset_id_of(d))
-        .filter(|s| !s.is_empty())
         .map(str::to_string);
     let max_ref = doc.as_ref().and_then(footswitch::max_referenced_scene);
     log::warn!(

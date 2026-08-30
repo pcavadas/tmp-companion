@@ -1420,10 +1420,10 @@ mod fixture_gates {
     /// struct — and even for `preset_id` an equality compare can't check the things
     /// this raw-bytes gate exists for: that every `preset_id` is non-empty and that
     /// no two presets in the fixture share one. This test reads the raw `presetJson`
-    /// column directly (mirroring `backup_read::read_backup_archive`'s own LZ4-frame
-    /// + tar + `sqlite3` decode) instead of going through `BackupPresetRow`, so
-    /// `product_id` drift and `preset_id` uniqueness/non-emptiness are both actually
-    /// checked.
+    /// column directly (mirroring `backup_read::read_backup_archive`'s own
+    /// LZ4-frame + tar + `sqlite3` decode) instead of going through
+    /// `BackupPresetRow`, so `product_id` drift and `preset_id`
+    /// uniqueness/non-emptiness are both actually checked.
     #[test]
     fn backup_fixture_uses_device_product_id_and_unique_preset_ids() {
         use std::io::Read;

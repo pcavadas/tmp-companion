@@ -55,6 +55,7 @@ function backupRow(
   return {
     slot,
     name,
+    preset_id: null,
     scene_count: 0,
     scenes: [],
     amp_candidates: [],

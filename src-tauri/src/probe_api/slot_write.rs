@@ -175,9 +175,10 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
         .ok_or_else(|| format!("list index {slot}: no presetJson on the device (empty slot?)"))?;
     let expected_json = session::tolerant_parse_json(&String::from_utf8_lossy(&expected_raw))
         .ok_or_else(|| format!("list index {slot}: presetJson did not parse"))?;
-    let expected_id = expected_json
-        .pointer("/info/preset_id")
-        .and_then(|v| v.as_str())
+    // `preset_id_of` (not a raw pointer walk): it normalizes an EMPTY id to `None`,
+    // so a `""` here refuses like an absent id instead of vacuously matching a `""`
+    // read back from the capture below.
+    let expected_id = crate::library::preset_id_of(&expected_json)
         .ok_or_else(|| format!("list index {slot}: presetJson has no info.preset_id"))?
         .to_string();
     let expected_name = expected_json
