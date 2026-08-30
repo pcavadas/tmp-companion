@@ -567,8 +567,60 @@ if [ "$MODE" = soak ]; then
   exit $(( fail_total > 0 ))
 fi
 
+# ── Scene Change Behavior pre-flight (gap 2) ────────────────────────────────────
+# `level.online` drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
+# `level_footswitches_apply`), and `scene_discard_guard` refuses those outright when the
+# device's global Scene Change Behavior reads DISCARD CHANGES. Unchecked, that refusal
+# lands ~13 min into the run — after doctor.online has already spent its 8 — and takes
+# level.online's other three tests down with it (`describe.serial`). Seconds here instead.
+#
+# The snapshot must be REFRESHED, not merely read. It is written by a backup scan, so a
+# run that aborted on a stale DISCARD file would never rewrite it: the user could fix the
+# touchscreen setting, replug, and still be refused forever. `read_library_via_backup` is
+# the read that persists it (read-only on the device, ~20 s), and the verdict comes back
+# as a SERVER LOG line rather than a file this script would have to find — that path is
+# `app_config_dir()`-derived, so it varies by OS and bundle identifier. The line is
+# emitted by `commands::presets::persist_device_settings`; its three verdict words are a
+# contract with this function.
+#
+# Advisory on its own failure: a backup read that doesn't land leaves the real in-run
+# guard as the backstop, which is exactly today's behaviour. Only a positively-read
+# DISCARD stops the run.
+scene_change_preflight() {
+  log "pre-flight: refreshing the device settings snapshot (Scene Change Behavior)…"
+  if ! bridge_post '{"cmd":"read_library_via_backup","args":{}}' 180 | grep -q '"ok":true'; then
+    err "pre-flight: device backup read failed — skipping the Scene Change Behavior check"
+    return 0
+  fi
+  # LAST occurrence only: the log accumulates, and the refresh above is the current truth.
+  case "$(grep -o 'sceneChangeBehavior=[A-Za-z]*' "$SERVER_LOG" | tail -1)" in
+    *=DISCARD)
+      err "this device's Scene Change Behavior is set to DISCARD CHANGES."
+      err "  level.online drives the deferred-write leveling lanes, which refuse under it:"
+      err "  they accumulate UNSAVED scene edits across recalls and save once at the end,"
+      err "  and DISCARD silently reverts each edit on every recall."
+      err "  On the unit's touchscreen set SETTINGS -> Scene Change Behavior ->"
+      err "  MAINTAIN CHANGES, then unplug and replug the USB cable and rerun."
+      return 1 ;;
+    *=MAINTAIN) log "pre-flight: Scene Change Behavior is MAINTAIN — proceeding" ;;
+    *) log "pre-flight: Scene Change Behavior unreadable — proceeding (the in-run guard still applies)" ;;
+  esac
+  return 0
+}
+
 log "ONLINE e2e (real device) — seeding the scenario presets before the server starts"
 start_online_server
+
+# Only the deferred-write lanes are affected, so `scripts/e2e.sh online songs` (or copy,
+# or doctor.online) keeps running fine on a DISCARD unit — don't spend a backup read, or
+# refuse a legitimate run, for a spec set that never touches them.
+needs_scene_preflight=0
+for s in "${SPECS[@]:-}"; do
+  [ "$s" = "level.online" ] && needs_scene_preflight=1
+done
+if [ "$needs_scene_preflight" -eq 1 ]; then
+  scene_change_preflight || exit 1
+fi
 
 # Snapshot the tree KEY now, covering the whole ~40-min spec + validation window below
 # (seeding/server start are device work, not tracked-file work, so starting the window

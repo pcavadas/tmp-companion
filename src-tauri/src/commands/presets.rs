@@ -509,6 +509,26 @@ fn persist_device_settings(path: Option<&std::path::Path>, result: &mut BackupRe
     let Some(bytes) = result.settings_bytes.take() else {
         return;
     };
+    // Announce the one device global that can silently defeat a deferred-write leveling
+    // run (`level_scenes::scene_discard_guard` refuses outright on DISCARD). Read from
+    // the FRESH device bytes, before the write, so it is reported even when the snapshot
+    // can't be persisted at all. `scripts/e2e.sh`'s `scene_change_preflight` greps this
+    // exact line out of the server log rather than locating the snapshot itself — that
+    // path is `app_config_dir()`-derived and so varies by OS and bundle identifier. The
+    // three verdict words are that consumer's contract: reword them and the pre-flight
+    // silently degrades to "unreadable, proceed" (the in-run guard still fires, but ~13
+    // min later).
+    log::info!(
+        "device settings: sceneChangeBehavior={}",
+        match std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(crate::backup_read::scene_change_behavior)
+        {
+            Some(crate::backup_read::SceneChangeBehavior::Discard) => "DISCARD",
+            Some(crate::backup_read::SceneChangeBehavior::Retain) => "MAINTAIN",
+            None => "unknown",
+        }
+    );
     let Some(path) = path else { return };
     let write = || -> Result<(), String> {
         if let Some(parent) = path.parent() {

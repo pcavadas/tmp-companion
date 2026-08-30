@@ -55,6 +55,30 @@ scene-leveling test doc comments, and `e2e/fixtures/COVERAGE.md` rows 6/20.
 - **THE CAB RULE (standing user directive):** every guitar amp in every fixture is a combo, an amp+cab-merged model (a cab/IR-suffixed id), or a bare head with a cabinet block DOWNSTREAM IN ITS OWN LANE. Enforced by `fixture_gates::every_guitar_amp_in_every_fixture_reaches_a_cab`, which walks the production routing decoder's signal paths — so a trunk head with a cab in each parallel lane passes and a lane-less cab does not. `E2E Preset24` used to be the exception (four drives into a naked `ACD_TwinReverb65NoFx`); P4-A appended a cab to it. Its `scenario-loudness.json` `"405"` C was deliberately LEFT AT `-21`: offline the C table _is_ the model, so keeping it preserves every committed pedal-curve outcome; the real unit's own loudness is measured, never read from the table.
 - **Fixtures are generated, not hand-edited in place, and every regen bumps `FIXTURE_SOURCE_STAMP`'s `#rN` suffix** (`probe_api/seed_scenario.rs`) — a resident copy of an older rev must fail the pristine check and self-migrate. A regen also means rerunning `cargo test build_scenario_fixture -- --ignored` to rebuild `backup-fixture.bin`.
 
+## Online preconditions — the unit's own global settings count
+
+Beyond "plugged in + rested, Pro Control closed": the device's global **Scene Change
+Behavior must be MAINTAIN CHANGES** for any spec set containing `level.online`. That spec
+drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
+`level_footswitches_apply`), which `level_scenes::scene_discard_guard` refuses outright
+under DISCARD — so the run dies ~13 min in, after `doctor.online` has already spent its 8,
+and `describe.serial` takes level.online's other three tests down with it. It is a device
+misconfiguration, not a platform bug: any host fails identically.
+
+`scripts/e2e.sh`'s `scene_change_preflight` catches it in seconds instead. Two things about
+it are load-bearing and must not be "simplified":
+
+- **It REFRESHES the snapshot before reading it** (`read_library_via_backup`, read-only,
+  ~20 s). The snapshot is only ever written by a backup scan, so a pre-flight that aborted
+  on a stale DISCARD file would never rewrite it — the user could fix the touchscreen,
+  replug, and still be refused forever.
+- **It reads a SERVER LOG line, not the snapshot file.** That path is `app_config_dir()`-derived
+  and varies by OS _and_ bundle identifier (on one Linux box the e2e_server wrote
+  `~/.config/support/device-settings.json` while the app used `~/.config/dev.tmpcompanion.app/support/`),
+  so locating it from shell would be a latent macOS bug. The line comes from
+  `commands::presets::persist_device_settings`; its three verdict words
+  (`DISCARD`/`MAINTAIN`/`unknown`) are a contract between the two.
+
 ## `scripts/hw-e2e.sh` — the attended on-device layer
 
 Runs the full Level + Copy happy paths against the real unit **non-destructively** (dry `--levelpreset` with no save, `--replace-held` with no commit, `--device-backup` read, `--reamp-off`). Override its `LEVEL_SLOT` / `COPY_*` env vars per unit. It is **attended, not a CI gate**, and acquires the machine-global device lock like the online `e2e.sh` path.
