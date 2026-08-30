@@ -646,10 +646,13 @@ mod truncation_fallback_tests {
         assert!(!preset_scenes_look_truncated(doc.as_ref(), &scenes));
     }
 
+    const ROW_ID: &str = "aaaaaaaa-0000-0000-0000-000000000001";
+
     fn backup_row(slot: i64, name: &str, scenes: Vec<SceneInfo>) -> BackupPresetRow {
         BackupPresetRow {
             slot,
             name: name.to_string(),
+            preset_id: Some(ROW_ID.to_string()),
             scene_count: scenes.len() as i64,
             scenes,
             amp_candidates: Vec::new(),

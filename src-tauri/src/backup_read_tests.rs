@@ -338,6 +338,60 @@ fn backup_row_handle_candidates_are_empty_when_preset_json_does_not_parse() {
     assert!(row.base_handles.is_empty());
 }
 
+/// `BackupPresetRow::preset_id` carries the body's `info.preset_id` when the body has
+/// one, is `None` for a body missing the key, and is `None` for a row whose
+/// `presetJson` doesn't parse at all — the same "unparseable ⇒ empty/default" contract
+/// as every other derived field on this row (`scene_count`, `amp_candidates`, …).
+#[test]
+fn backup_rows_carry_preset_id_only_when_the_body_has_one() {
+    let has_id = serde_json::json!({
+        "info": {"displayName": "Has Id", "preset_id": "11111111-1111-1111-1111-111111111111"},
+        "scenes": [{"sceneName": "Rhythm", "uuid": "a"}]
+    })
+    .to_string();
+    let no_id = serde_json::json!({
+        "info": {"displayName": "No Id"},
+        "scenes": [{"sceneName": "Rhythm", "uuid": "a"}]
+    })
+    .to_string();
+
+    let sql = format!(
+        "CREATE TABLE UserPresets (id INTEGER PRIMARY KEY, slot INTEGER, isEmpty INTEGER, \
+         displayName TEXT, presetJson BLOB); \
+         INSERT INTO UserPresets VALUES (1, 1, 0, 'Has Id', '{}'); \
+         INSERT INTO UserPresets VALUES (2, 2, 0, 'No Id', '{}'); \
+         INSERT INTO UserPresets VALUES (3, 3, 0, 'Broken', '{{not json');",
+        has_id.replace('\'', "''"),
+        no_id.replace('\'', "''"),
+    );
+    let archive = build_backup_archive(&sql);
+    let result = read_backup_archive(&archive).expect("decode archive");
+
+    let row = |slot: i64| {
+        result
+            .presets
+            .iter()
+            .find(|p| p.slot == slot)
+            .unwrap_or_else(|| panic!("row for slot {slot} present"))
+    };
+
+    assert_eq!(
+        row(1).preset_id.as_deref(),
+        Some("11111111-1111-1111-1111-111111111111"),
+        "a body with an info.preset_id carries it"
+    );
+    assert!(
+        row(2).preset_id.is_none(),
+        "a body without preset_id carries None"
+    );
+    let broken = row(3);
+    assert!(
+        broken.preset_id.is_none(),
+        "an unparseable body carries None"
+    );
+    assert_eq!(broken.scene_count, -1, "unparseable presetJson");
+}
+
 /// The archive's `settingsBackup` entry (the device's settings.json) round-trips
 /// into `BackupReadResult::settings_bytes` — the capture the command layer persists
 /// to `<app_config_dir>/support/device-settings.json` for a later support bundle.
@@ -573,6 +627,38 @@ fn scenario_fixture_matches_scenario_presets_json() {
         "backup-fixture.bin is out of sync with scenario-presets.json — rerun \
          `cargo test build_scenario_fixture -- --ignored` and commit the regenerated fixture"
     );
+}
+
+/// This checks the STRUCT PLUMBING that the raw-bytes gate
+/// `backup_fixture_uses_device_product_id_and_unique_preset_ids` (lib.rs:1424+) is
+/// deliberately blind to — that gate reads the raw presetJson column, this one proves
+/// `BackupPresetRow` actually carries the id through `read_backup_archive`.
+#[test]
+fn scenario_fixture_rows_all_carry_distinct_preset_ids() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../e2e/fixtures/backup-fixture.bin"
+    ))
+    .expect("read committed backup-fixture.bin");
+    let result = read_backup_archive(&bytes).expect("decode committed fixture");
+
+    assert!(!result.presets.is_empty(), "fixture must have presets");
+
+    let ids: Vec<&str> = result
+        .presets
+        .iter()
+        .filter_map(|p| p.preset_id.as_deref())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        result.presets.len(),
+        "every row must carry a preset_id"
+    );
+
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ids.len(), "all preset_ids must be distinct");
 }
 
 #[test]

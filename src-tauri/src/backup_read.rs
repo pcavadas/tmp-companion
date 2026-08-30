@@ -22,6 +22,15 @@ pub struct BackupPresetRow {
     /// Device user slot (DB `slot`; = list index + 1).
     pub slot: i64,
     pub name: String,
+    /// The preset doc's identity uuid (`info.preset_id`), parsed from the SAME
+    /// `presetJson` every other field on this row comes from. The ONLY stable
+    /// identity a cross-connection lookup can key on — slot is positional and
+    /// `displayName` is user-editable and duplicable (`slot_write.rs`'s
+    /// preset_id-over-displayName precedent). `None` for an unparseable row, for a
+    /// body without the key, or for an EMPTY id — normalized away here so a
+    /// `Some("")` can never compare equal to another `Some("")` and pass a guard
+    /// vacuously (the hazard `lib.rs`'s fixture gates document).
+    pub preset_id: Option<String>,
     /// Number of scenes (`scenes.len()`); `-1` if the `presetJson` could not be
     /// parsed (full plaintext doc, so this is rare).
     pub scene_count: i64,
@@ -704,6 +713,11 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         presets.push(BackupPresetRow {
             slot: r.get("slot").and_then(|v| v.as_i64()).unwrap_or(-1),
             name: name.to_string(),
+            preset_id: parsed_graph
+                .as_ref()
+                .and_then(|g| crate::library::preset_id_of(g))
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             scene_count,
             scenes,
             amp_candidates,
