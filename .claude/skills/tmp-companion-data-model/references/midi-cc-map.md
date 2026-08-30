@@ -88,21 +88,6 @@ Global Settings → I/O → MIDI:
 - **Send MIDI PC/CC**: routes generated PC/CC messages to MIDI OUT and/or USB-C. Default `MIDI + USB`.
 - **Receive MIDI Clock**: when ON, TMP slaves its tempo to incoming Clock. All delay and modulation effects with an assigned Tap Division respond to incoming Clock.
 
-## Quick reference — most load-bearing CCs for automation (moved from `SKILL.md`)
-
-- `CC 1` / `CC 2` = EXP 1 / EXP 2 (physical jacks)
-- `CC 3` / `CC 4` = MIDI EXP 3 / MIDI EXP 4 (virtual, no jack)
-- `CC 7` = Master Volume
-- `CC 20` = FS Mode enable
-- `CC 21–24` and `CC 26–29` = Effects FS 1–8 toggles — **`CC 25` is skipped**, the range is not contiguous (gotcha 4)
-- `CC 30` = bulk FS 1–8 enable/disable (values 0–7 enable, 10–17 disable)
-- `CC 64` = Tap Tempo
-- `CC 65` = Toe Switch
-- `CC 66` / `CC 67` = Amp Control 1 / 2 (tip/ring)
-- `CC 68` = Tuner
-- `CC 69` / `CC 70` = Next Song / Previous Song
-- `CC 103–110` = Looper transport (REC/DUB, PLAY/STOP, 1-SHOT, UNDO, 1/2 SPEED, REVERSE, VOL UP, VOL DOWN)
-
 ## Gotchas
 
 1. **Receive Clock disables tap footswitch.** When `Receive MIDI Clock` is ON, the per-preset saved tempo is disregarded, the tap footswitch is locked out, and the tempo displayed in the Tap scribble strip + preset view reflects the externally received Clock.
