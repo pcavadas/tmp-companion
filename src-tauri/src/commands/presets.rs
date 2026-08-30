@@ -123,6 +123,8 @@ pub(crate) fn preset_scenes_look_truncated(
 pub(crate) fn scenes_from_backup_row(
     list_index: u32,
     field8_name: &str,
+    // #155: the identity guard itself lands in the next commit
+    _field8_id: Option<&str>,
     rows: &[BackupPresetRow],
 ) -> Result<PresetScenes, String> {
     let device_slot = i64::from(list_index) + 1;
@@ -182,6 +184,11 @@ pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScene
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
+    let field8_id = doc
+        .as_ref()
+        .and_then(|d| crate::library::preset_id_of(d))
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let max_ref = doc.as_ref().and_then(footswitch::max_referenced_scene);
     log::warn!(
         "read_preset_scenes_complete: slot {} {field8_name:?} scene list truncated by the \
@@ -197,7 +204,12 @@ pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScene
     let (blob, _stats) = s.device_backup(60, |_| {})?;
     drop(s);
     let backup = read_backup_archive(&blob)?;
-    scenes_from_backup_row(list_index, &field8_name, &backup.presets)
+    scenes_from_backup_row(
+        list_index,
+        &field8_name,
+        field8_id.as_deref(),
+        &backup.presets,
+    )
 }
 
 /// Pure-lazy scene read for one preset. It never loads the preset: the command reads
@@ -648,11 +660,16 @@ mod truncation_fallback_tests {
 
     const ROW_ID: &str = "aaaaaaaa-0000-0000-0000-000000000001";
 
-    fn backup_row(slot: i64, name: &str, scenes: Vec<SceneInfo>) -> BackupPresetRow {
+    fn backup_row_id(
+        slot: i64,
+        name: &str,
+        preset_id: Option<&str>,
+        scenes: Vec<SceneInfo>,
+    ) -> BackupPresetRow {
         BackupPresetRow {
             slot,
             name: name.to_string(),
-            preset_id: Some(ROW_ID.to_string()),
+            preset_id: preset_id.map(str::to_string),
             scene_count: scenes.len() as i64,
             scenes,
             amp_candidates: Vec::new(),
@@ -673,6 +690,10 @@ mod truncation_fallback_tests {
         }
     }
 
+    fn backup_row(slot: i64, name: &str, scenes: Vec<SceneInfo>) -> BackupPresetRow {
+        backup_row_id(slot, name, Some(ROW_ID), scenes)
+    }
+
     #[test]
     fn name_mismatch_is_refused_naming_both_names() {
         // Non-overlapping names (neither is a substring of the other) so the two
@@ -685,7 +706,7 @@ mod truncation_fallback_tests {
                 fs: Some(1),
             }],
         )];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", &rows) {
+        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows) {
             Ok(_) => panic!("mismatched name must be refused"),
             Err(e) => e,
         };
@@ -696,7 +717,7 @@ mod truncation_fallback_tests {
     #[test]
     fn no_matching_slot_is_refused() {
         let rows = vec![backup_row(3, "Other Preset", vec![])];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", &rows) {
+        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows) {
             Ok(_) => panic!("no row for the slot must be refused"),
             Err(e) => e,
         };
@@ -711,7 +732,7 @@ mod truncation_fallback_tests {
         // exists to eliminate.
         let mut row = backup_row(25, "HBE ANATOMY", vec![]);
         row.scene_count = -1;
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", &[row]) {
+        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &[row]) {
             Ok(_) => panic!("an unparseable backup row must be refused"),
             Err(e) => e,
         };
@@ -742,7 +763,8 @@ mod truncation_fallback_tests {
                 },
             ],
         )];
-        let scenes = scenes_from_backup_row(24, "HBE ANATOMY", &rows).expect("matching row");
+        let scenes =
+            scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows).expect("matching row");
         assert_eq!(scenes.scenes, vec!["Dirt", "Crunch", "Solo", "Clean"]);
         assert_eq!(scenes.fs, vec![Some(1), None, Some(3), Some(4)]);
         assert_eq!(scenes.footswitches.len(), 1);
