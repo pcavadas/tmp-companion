@@ -633,8 +633,8 @@ export function SummaryBody({
                   <strong style={{ color: t.ink }}>
                     Give clamped scenes headroom
                   </strong>{" "}
-                  raises the preset level, the base amp, and {redistPlan.scenes}{" "}
-                  scene
+                  adjusts the preset level, the base amp, and{" "}
+                  {redistPlan.scenes} scene
                   {redistPlan.scenes === 1 ? "" : "s"}
                   {redistPlan.presets > 1
                     ? ` across ${String(redistPlan.presets)} presets`

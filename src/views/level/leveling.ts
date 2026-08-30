@@ -1,9 +1,9 @@
 // src/views/level/leveling.ts — types + helpers for the unified leveling flow.
 //
 // The unit of leveling is a SCENE. A preset's BASE scene carries cross-preset
-// loudness ("matches this preset's loudness to your other presets" → preset
+// loudness ("matches this preset’s loudness to your other presets" → preset
 // `presetLevel`); an FS scene is leveled within its preset ("matches this scene's
-// loudness to the preset's base sound" → amp `outputLevel` in scene mode). The
+// loudness to the preset’s base sound" → amp `outputLevel` in scene mode). The
 // mechanism is never exposed: no block /
 // parameter selector, the target is implicit and fixed.
 //

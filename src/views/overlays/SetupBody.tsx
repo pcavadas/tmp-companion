@@ -725,10 +725,10 @@ export function SetupBody({
               const tag = o.isBase ? (o.hasScenes ? "BASE" : null) : o.tag;
               const nameLabel = o.isBase ? "Whole preset" : o.sceneName;
               const sub = o.isBase
-                ? "matches this preset's loudness to your other presets"
+                ? "matches this preset’s loudness to your other presets"
                 : o.footswitch != null
-                  ? "matches this footswitch's loudness to your target"
-                  : "matches this scene's loudness to the preset's base sound";
+                  ? "matches this footswitch’s loudness to your target"
+                  : "matches this scene’s loudness to the preset’s base sound";
               return (
                 <PresetOptionRow
                   key={o.key}

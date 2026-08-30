@@ -87,7 +87,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     // re-word it here if the backend's wording changes; update this string instead.
     await expect(
       page.getByText(
-        "this sound can't reach the target because its level control is already maxed out",
+        "this sound can’t reach the target because its level control is already maxed out",
       ),
     ).toBeVisible();
 

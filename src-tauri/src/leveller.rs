@@ -6589,7 +6589,7 @@ pub enum PinnedBound {
 /// ⟦8⟧ Only name a cause when a bound ACTUALLY pinned the solve (or a routing failure fired).
 /// An amp-`outputLevel` lane has no wet floor, so the only causes here are routing and the
 /// ordinary headroom clamp — but a row that merely ran out of secant captures MID-RANGE has
-/// neither. Telling the user "its level control is already at the limit" about a fader sitting
+/// neither. Telling the user "its level control is already maxed out" about a fader sitting
 /// at 0.4 is a false cause: a re-run can improve that row. `clamp_reason` is deliberately NOT
 /// filled in instead — `.claude/rules/leveling-dsp.md` pins that field to "no signal on
 /// USB 1/2" and the UI maps ANY non-null reason to the off-branch outcome.
@@ -8719,7 +8719,7 @@ mod tests {
     }
 
     // ⟦8⟧ Only a DIRECTION-BLOCKING pin names a cause. A row that merely ran out of secant
-    // captures mid-range is clamped with no false "already at the limit" claim.
+    // captures mid-range is clamped with no false "already maxed out" claim.
     #[test]
     fn only_a_direction_blocking_pin_counts_as_a_ceiling() {
         use super::PinnedBound;

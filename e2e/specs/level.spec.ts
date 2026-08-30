@@ -161,18 +161,18 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 
     // Set up must show all THREE row kinds — proven by their distinct sub-text copy.
     await expect(
-      page.getByText(/matches this preset's loudness to your other presets/),
+      page.getByText(/matches this preset’s loudness to your other presets/),
     ).toBeVisible(); // Base
     await expect(
-      page.getByText(/matches this scene's loudness/).first(),
+      page.getByText(/matches this scene’s loudness/).first(),
     ).toBeVisible(); // a footswitch SCENE
     // PR #144: the verify-only footswitch mode is gone — every block-acting FOOTSWITCH
-    // row now levels (the same "matches this footswitch's loudness" copy every such row
-    // carries, distinct from a scene row's "matches this scene's loudness to the preset's
+    // row now levels (the same "matches this footswitch’s loudness" copy every such row
+    // carries, distinct from a scene row's "matches this scene’s loudness to the preset's
     // base sound").
     await expect(
       page
-        .getByText(/matches this footswitch's loudness to your target/)
+        .getByText(/matches this footswitch’s loudness to your target/)
         .first(),
     ).toBeVisible(); // a block-acting FOOTSWITCH
     // The bake/assign mechanism is never surfaced.

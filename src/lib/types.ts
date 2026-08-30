@@ -203,13 +203,13 @@ export type ClampKind =
  * loudly here — update this table by hand alongside it. */
 export const CLAMP_MESSAGES: Record<ClampKind, string> = {
   scene_ceiling:
-    "this sound can't reach the target because its level control is already maxed out",
+    "this sound can’t reach the target because its level control is already maxed out",
   wet_floor:
-    "this sound can't reach the target without turning the effect's mix down too far to still work",
+    "this sound can’t reach the target without turning the effect’s mix down too far to still work",
   trade_floor:
-    "giving this sound headroom used up the base amp's spare room, so the base sound slipped off target",
+    "giving this sound headroom used up the base amp’s spare room, so the base sound slipped off target",
   partial_trade:
-    "a related write failed, so the headroom trade was undone. Nothing was saved.",
+    "a related write failed, so the headroom trade was undone and nothing was saved",
   no_authority:
     "this level control has no effect on the sound coming out of USB 1/2",
 };

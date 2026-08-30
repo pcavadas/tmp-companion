@@ -29,7 +29,7 @@ describe("PresetOptionRow", () => {
       <PresetOptionRow
         name="Rhythm"
         tag="FS1"
-        sub="matches this scene's loudness to the preset's base sound"
+        sub="matches this scene’s loudness to the preset’s base sound"
         isPicked={false}
         onTogglePick={() => undefined}
         columns="108px"
@@ -41,7 +41,7 @@ describe("PresetOptionRow", () => {
     expect(screen.getByText("FS1")).toBeTruthy();
     expect(
       screen.getByText(
-        "matches this scene's loudness to the preset's base sound",
+        "matches this scene’s loudness to the preset’s base sound",
       ),
     ).toBeTruthy();
     expect(screen.getByText("trailing-pick")).toBeTruthy();
