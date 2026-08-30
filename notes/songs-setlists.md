@@ -11,7 +11,7 @@ The Songs tab is device-backed: the unit is the source of truth. It reads songs 
 
 - Songs: add / rename / remove / set notes; per-song BPM.
 - Setlists: add / rename / remove; add / remove / move a song within a setlist.
-- `addSetlistSong` / `removeSetlistSong` / `moveSetlistSong` address a song by its **1-based position within the setlist** (not the global song slot); `moveSetlistSong` is an array splice.
+- `addSetlistSong` takes the **GLOBAL song slot** of the song to add; `removeSetlistSong` / `moveSetlistSong` address by **1-based position within the setlist** (`moveSetlistSong` is an array splice). See `commands/setlists.rs`.
 - Per-song BPM has no dedicated setter — it is `SettingsMessage.tapTempoBpm{value, originatorId=1}` applied to the **active** song, which requires the song to have a footswitch (`assignSongPreset`) and then be activated via `loadPreset{tabEnum=5, songSlot, songPresetSlot, presetSlot}`.
 
 ## Positional slot behaviour (load-bearing)

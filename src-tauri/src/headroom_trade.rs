@@ -141,22 +141,21 @@ impl ClampKind {
     pub fn message(self) -> &'static str {
         match self {
             Self::SceneCeiling => {
-                "this sound cannot reach the target — its level control is already at the limit"
+                "this sound can’t reach the target because its level control is already maxed out"
             }
             Self::WetFloor => {
-                "this sound cannot reach the target without dropping the mix below the level \
-                 that preserves the effect"
+                "this sound can’t reach the target without turning the effect’s mix down too \
+                 far to still work"
             }
             Self::TradeFloor => {
-                "the base amp level ran out of room holding the base sound on target while \
-                 headroom was traded for this one"
+                "giving this sound headroom used up the base amp’s spare room, so the base \
+                 sound slipped off target"
             }
             Self::PartialTrade => {
-                "the traded headroom was backed out because a dependent write did not land — \
-                 nothing was saved"
+                "a related write failed, so the headroom trade was undone and nothing was saved"
             }
             Self::NoAuthority => {
-                "the level control has no effect on the USB 1/2 output for this sound"
+                "this level control has no effect on the sound coming out of USB 1/2"
             }
         }
     }

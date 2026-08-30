@@ -2239,7 +2239,15 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
 /// `presetLevel` is silently reverted to the SAVED value right before the save
 /// persists it (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
 /// doc still read the prior 0.32; caught by the online `level.online.spec.ts` base
-/// idempotency test). Node/overlay writes are immune (the footswitch
+/// idempotency test). The revert is a LEAN-session behavior — every caller of this
+/// seam saves on a connection that did NOT `load_preset` in-session (the apply
+/// path's fresh connect, the post-verify fresh `s2`), and that is the shape both HW
+/// observations above come from. A live-edit session that loaded the preset ITSELF
+/// carries an unsaved `presetLevel` through scene recalls — base included — and the
+/// save (HW: `probe_redistribute_persist_check`'s `write_three_and_save`, fw
+/// 1.8.45-era: pl 0.42 read back against a saved 0.53 after `loadScene(1)` +
+/// `loadScene(BASE)` + save), which is why `restore_redistribution` does not route
+/// through this seam. Node/overlay writes are immune in either shape (the footswitch
 /// `switch_at_target` re-run spec proves `valueA` persists through the recall), so
 /// only `reassert_pl` — the unsaved level a caller solved (`apply_levels`) or
 /// raised (`redistribute_clamped_headroom`) — needs re-writing, and only when a
@@ -2272,8 +2280,10 @@ fn recall_reassert_save(
 /// Set the chosen knob to `value` on an open session (before re-amp engage). The
 /// single-knob case of `set_knobs` — see its doc for the recall/write ordering
 /// rules and what `saved` is for. Must be the FIRST write on the connection when
-/// `knob` is a `Block`: its own scene recall, base or otherwise, reverts any
-/// earlier unsaved write on this session AND re-asserts that scene's own bypass
+/// `knob` is a `Block`: its own scene recall, base or otherwise, reverts an
+/// earlier unsaved `presetLevel` on this session (the lean-session level-apply —
+/// callers here connect without an in-session `load_preset`; see
+/// `recall_reassert_save`'s shape split) AND re-asserts that scene's own bypass
 /// state (see `capture_on_session`'s doc), so a caller doing force-bypass
 /// isolation must write the bypasses AFTER this call, never before
 /// (`measure_knob_at`/`measure_fs_at` follow that order).
@@ -6761,7 +6771,7 @@ pub enum PinnedBound {
 /// ⟦8⟧ Only name a cause when a bound ACTUALLY pinned the solve (or a routing failure fired).
 /// An amp-`outputLevel` lane has no wet floor, so the only causes here are routing and the
 /// ordinary headroom clamp — but a row that merely ran out of secant captures MID-RANGE has
-/// neither. Telling the user "its level control is already at the limit" about a fader sitting
+/// neither. Telling the user "its level control is already maxed out" about a fader sitting
 /// at 0.4 is a false cause: a re-run can improve that row. `clamp_reason` is deliberately NOT
 /// filled in instead — `.claude/rules/leveling-dsp.md` pins that field to "no signal on
 /// USB 1/2" and the UI maps ANY non-null reason to the off-branch outcome.
@@ -8861,7 +8871,7 @@ mod tests {
     }
 
     // ⟦8⟧ Only a DIRECTION-BLOCKING pin names a cause. A row that merely ran out of secant
-    // captures mid-range is clamped with no false "already at the limit" claim.
+    // captures mid-range is clamped with no false "already maxed out" claim.
     #[test]
     fn only_a_direction_blocking_pin_counts_as_a_ceiling() {
         use super::PinnedBound;

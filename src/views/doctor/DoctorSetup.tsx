@@ -193,8 +193,8 @@ export function DoctorSetup({
               maxWidth: 620,
             }}
           >
-            Doctor listens differently for a bass than a bright single-coil.
-            Pick the instrument for each sound — {total} sound
+            Pick the instrument for each sound so the check is accurate —{" "}
+            {total} sound
             {total === 1 ? "" : "s"} · {presetCount} preset
             {presetCount === 1 ? "" : "s"}.
           </div>
@@ -250,7 +250,7 @@ export function DoctorSetup({
                     onTogglePick={() => {
                       togglePick(o.key);
                     }}
-                    title="Tick to bulk-set this row with the bar above"
+                    title="Tick this row to set it from the bar above"
                     columns="200px"
                   >
                     <Pick
@@ -279,7 +279,7 @@ export function DoctorSetup({
               }}
             >
               {anyNone
-                ? "Set an instrument for the most accurate check."
+                ? "Set an instrument for a better check."
                 : `Ready to check ${String(total)} sound${total === 1 ? "" : "s"}.`}
             </span>
           }

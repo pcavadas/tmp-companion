@@ -136,8 +136,8 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
         title="Doctor needs the Tone Master Pro"
         body={
           <>
-            Connect your unit over <UsbC /> and power it on to run diagnostics —
-            it will connect automatically.
+            Connect your unit over <UsbC /> and power it on to check your
+            presets. It connects on its own.
           </>
         }
         onScan={onScan}

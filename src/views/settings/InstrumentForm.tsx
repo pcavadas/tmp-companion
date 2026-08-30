@@ -122,7 +122,7 @@ export function InstrumentForm({
         }}
         onFocus={(e) => (e.currentTarget.style.borderColor = t.accent)}
         onBlur={(e) => (e.currentTarget.style.borderColor = t.hairlineStrong)}
-        placeholder="Instrument name (e.g. Telecaster)"
+        placeholder="Instrument name (for example, Telecaster)"
         style={plainInput(t, {
           border: `0.5px solid ${t.hairlineStrong}`,
           borderRadius: t.rMd,

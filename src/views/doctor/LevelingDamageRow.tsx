@@ -53,9 +53,9 @@ export function LevelingDamageRow({
           lineHeight: 1.55,
         }}
       >
-        These footswitch assignments don&rsquo;t look like level controls — no
-        device capture needed, this is read straight from the preset. Worth a
-        listen if they weren&rsquo;t set on purpose.
+        These footswitch assignments don&rsquo;t look like level controls. No
+        device capture needed — this is read straight from the preset. Check
+        them if you didn&rsquo;t set them on purpose.
       </div>
       <div
         style={{

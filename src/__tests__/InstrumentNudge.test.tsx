@@ -72,14 +72,14 @@ describe("InstrumentNudge rendering", () => {
     expect(
       screen.getByText(/Set an instrument for better results/),
     ).toBeTruthy();
-    expect(screen.getByText("calibrate")).toBeTruthy();
+    expect(screen.getByText("Calibrate")).toBeTruthy();
   });
 
   it("uncal → shows only the calibrate line", () => {
     renderSetup("tele");
     expect(screen.getByText("Calibrate")).toBeTruthy();
     expect(
-      screen.getByText(/this instrument for the best results/),
+      screen.getByText(/this instrument for more accurate levels/),
     ).toBeTruthy();
     expect(
       screen.queryByText(/Set an instrument for better results/),
@@ -90,7 +90,7 @@ describe("InstrumentNudge rendering", () => {
     renderSetup("strat");
     expect(screen.queryByText("calibrate")).toBeNull();
     expect(screen.queryByText("Calibrate")).toBeNull();
-    expect(screen.queryByText(/for the best/)).toBeNull();
+    expect(screen.queryByText(/for more accurate levels/)).toBeNull();
   });
 });
 

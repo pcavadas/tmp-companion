@@ -200,6 +200,10 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     profile_id: Option<String>,
     on_result: tauri::ipc::Channel<FootswitchLevelProgressItem>,
 ) -> Result<Vec<leveller::FootswitchLevelResult>, String> {
+    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // before anything touches the device — see `scene_discard_guard`'s doc
+    // (`level_scenes.rs`).
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
         &app,
         None,

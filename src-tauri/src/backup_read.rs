@@ -855,6 +855,14 @@ pub(crate) struct Usb3Strip {
     pub pre: bool,
 }
 
+/// Read a persisted settings snapshot (`support/device-settings.json`) into its JSON
+/// text — `None` for an absent path or unreadable file. The shared front half of every
+/// settings-snapshot pre-flight (#124's [`usb3_strip`], gap 2's
+/// [`scene_change_behavior`]).
+pub(crate) fn read_settings_snapshot(path: Option<&std::path::Path>) -> Option<String> {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+}
+
 pub(crate) fn usb3_strip(settings_json: &str) -> Option<Usb3Strip> {
     let v: serde_json::Value = serde_json::from_str(settings_json).ok()?;
     let s = v.get("mixerSaveData")?.get("usb3")?;
@@ -866,6 +874,32 @@ pub(crate) fn usb3_strip(settings_json: &str) -> Option<Usb3Strip> {
             .and_then(|b| b.as_bool())
             .unwrap_or(true),
     })
+}
+
+/// The global `Scene Change Behavior` setting (manual p.35), decoded from the same
+/// `settingsBackup` JSON [`usb3_strip`] reads (top-level `sceneChangeBehavior`).
+/// Ordinals HW-pinned (touchscreen vs stored value read side by side, fw 1.8.45):
+/// `0 = Retain / MAINTAIN CHANGES` (the factory default), `1 = Revert / DISCARD
+/// CHANGES`. Under `Discard` every scene recall reverts that scene's UNSAVED edits —
+/// exactly what a batched leveling run accumulates until its one deferred save
+/// (`notes/device-manual-gaps.md` gap 2), so the leveling pre-run guard
+/// (`scene_discard_guard`) refuses on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SceneChangeBehavior {
+    Retain,
+    Discard,
+}
+
+/// `None` for an absent key, a non-numeric value, or an unknown ordinal (the enum has
+/// exactly two HW-confirmed values; a third is a firmware we have not seen, not a
+/// license to guess).
+pub(crate) fn scene_change_behavior(settings_json: &str) -> Option<SceneChangeBehavior> {
+    let v: serde_json::Value = serde_json::from_str(settings_json).ok()?;
+    match v.get("sceneChangeBehavior")?.as_u64()? {
+        0 => Some(SceneChangeBehavior::Retain),
+        1 => Some(SceneChangeBehavior::Discard),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

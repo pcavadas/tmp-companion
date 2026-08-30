@@ -71,9 +71,9 @@ const PROBLEM: Record<ProblemKey, (it: RunItem) => Problem> = {
       short: "can’t hear it",
       msg:
         status === "amp output at zero"
-          ? "The amp’s output level is saved at 0 — raise it on the unit, then re-level."
+          ? "The amp’s output level is saved at 0. Raise it on the unit, then re-level."
           : status === "exp pedal may mute"
-            ? "A pedal controls the amp’s output with zero at one end — park it at the other end, then re-level."
+            ? "A pedal controls the amp’s output, with zero at one end. Park it at the other end, then re-level."
             : "Nothing came through USB 1/2, so we couldn’t hear this one.",
     };
   },
@@ -287,7 +287,7 @@ export function SummaryPage({
               "Amp output at zero",
               <>
                 The amp’s output level is saved at{" "}
-                <strong style={{ color: t.ink }}>0</strong> — raise it on the
+                <strong style={{ color: t.ink }}>0</strong>. Raise it on the
                 unit, then re-level.
               </>,
             )}
@@ -299,7 +299,7 @@ export function SummaryPage({
               "rgba(167,70,31,0.28)",
               "Expression pedal may be muting",
               <>
-                A pedal controls the amp’s output with zero at one end — park it
+                A pedal controls the amp’s output, with zero at one end. Park it
                 at the <strong style={{ color: t.ink }}>other end</strong>, then
                 re-level.
               </>,
@@ -552,7 +552,7 @@ export function SummaryPage({
               color: t.mutedInk,
             }}
           >
-            worth a quick listen — {byEarReasons.join("; ")}.
+            Worth a quick listen — {byEarReasons.join("; ")}.
           </span>
         </div>
       )}
@@ -576,8 +576,8 @@ export function SummaryPage({
               color: t.mutedInk,
             }}
           >
-            flagged rows are estimated to peak above −1 dBTP at the leveled
-            setting — if your interface or FRFR clips, pick a lower target.
+            Flagged rows are estimated to peak above −1 dBTP at the leveled
+            setting. If your interface or FRFR clips, pick a lower target.
           </span>
         </div>
       )}

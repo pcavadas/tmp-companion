@@ -297,7 +297,7 @@ Consequences that remain open: what the rows mean on a **Series** template, wher
 
 The manual never says where Output Assign lives. It is drawn as a global-looking 3 × 3 grid (p.18) inside a per-preset settings area, and nothing states whether changing it affects one preset or the whole unit.
 
-**Measured: loading a preset OVERWRITES the unit's global output-assign matrix with that preset's own `outputMixerSettings`.** Confirmed on a non-trivial pattern (not a coincidence of all-true rows): after loading slot 27 ("Split outputs"), all **9** cells of the global matrix matched that preset's block, including the three `false` ones; after loading slot 401 ("E2E Reference", all-true), the global matrix was all-true.
+**Measured: loading a preset OVERWRITES the unit's global output-assign matrix with that preset's own `outputMixerSettings`.** Confirmed on a non-trivial pattern (not a coincidence of all-true rows): after loading slot 27 ("Split outputs"), all **9** cells of the global matrix matched that preset's block, including the three `false` ones; after loading slot 401 ("E2E Reference", since renamed `E2E Rig`; all-true), the global matrix was all-true.
 
 | preset `outputMixerSettings` source | global `mixerSaveData` key |
 | ----------------------------------- | -------------------------- |
@@ -446,7 +446,7 @@ p.9: reordering presets "will renumber presets automatically." The manual never 
 
 **Measured: the firmware rewrites Song→preset bindings to follow the preset. Reordering is safe.**
 
-A scratch Song was bound to list index 400 ("E2E Reference") via `assignSongPreset`, then that preset was reordered 400 → 401:
+A scratch Song was bound to list index 400 ("E2E Reference" — since renamed `E2E Rig`, PR #144) via `assignSongPreset`, then that preset was reordered 400 → 401:
 
 |                | song row 0 `userPresetSlot`             | resolves to                           |
 | -------------- | --------------------------------------- | ------------------------------------- |
@@ -466,7 +466,7 @@ CREATE TRIGGER BeforeReorderPresetInUserPresetsRenumberUserPresetsSlots
 
 It shifts the intervening rows, using **negative slot values as a temporary namespace** to dodge the `slot INTEGER NOT NULL UNIQUE` constraint mid-shuffle, then flips the signs back. The renumber is enforced at the storage layer, so it applies to _every_ path that reorders a preset, not just the `moveUserPreset` wire op that was tested. The same schema also pins the addressing rule: `CHECK (ABS(slot) >= 1 AND ABS(slot) <= 504)`, i.e. slots are **1-based**, confirming `device slot = list index + 1`.
 
-**Note:** the SCRATCH consts in `stimulus.rs` (400–402) and `slot_write.rs` (400–402) both exclude list index 403 (`E2E Realistic`, the fourth e2e fixture) — reaching it via `--set-param`/`--switch-template`/reorder needs a code change, not an env override.
+**Note:** the scratch zone is now the single `SCRATCH_SLOTS` const (`probe_api/mod.rs`, list indices 400–409), which covers all ten e2e fixtures including 403 (`E2E Parallel`, formerly `E2E Realistic`) — the old per-file 400–402 consts that excluded 403 are gone.
 
 **Still open:** **MIDI PC mappings**, which address presets by bank + program number, were not tested and remain UNDOCUMENTED.
 

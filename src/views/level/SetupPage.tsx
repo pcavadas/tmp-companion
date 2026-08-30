@@ -131,14 +131,14 @@ function InstrumentNudge({
     >
       {state === "none" ? (
         <span>
-          Set an instrument for better results —{" "}
-          <CalibrateCue onCalibrate={onCalibrate}>calibrate</CalibrateCue> it
-          for the best.
+          Set an instrument for better results.{" "}
+          <CalibrateCue onCalibrate={onCalibrate}>Calibrate</CalibrateCue> it to
+          get more accurate levels.
         </span>
       ) : (
         <span>
           <CalibrateCue onCalibrate={onCalibrate}>Calibrate</CalibrateCue> this
-          instrument for the best results.
+          instrument for more accurate levels.
         </span>
       )}
     </div>
@@ -177,8 +177,8 @@ function CalibrationOnboardingBanner({ show }: { show: boolean }) {
           color: t.ink2,
         }}
       >
-        Level with your own guitar — a 2-minute calibration makes leveling match
-        your instrument. Settings → Instruments → Calibrate.
+        Level with your own guitar. A 2-minute calibration makes leveling match
+        your instrument. Find it in Settings → Instruments → Calibrate.
       </span>
       <button
         type="button"

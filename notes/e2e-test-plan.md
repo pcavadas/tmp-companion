@@ -22,13 +22,15 @@ Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,Err
 `scripts/e2e.sh` is the turn-key runner (also `bun run e2e`):
 
 - **`bash scripts/e2e.sh`** — OFFLINE, all specs against the SimDevice (fast, ~1.5 min, no hardware).
-- **`bash scripts/e2e.sh online`** — ONLINE against the real unit (songs → copy → level, one at a
-  time, ~9 min). Preconditions: the unit plugged in + **rested**, and **Pro Control closed** (it
-  holds the exclusive HID seize). The script pre-flights the handshake, runs each spec in its own
-  invocation, and ALWAYS recovers the unit on exit (reamp-off + guarded scratch-clear of the scenario slots (`SCRATCH_SLOTS`, 400–409) +
-  recall 001) — even on Ctrl-C or a killed run.
+- **`bash scripts/e2e.sh online`** — ONLINE against the real unit (doctor → level → songs → copy, one
+  at a time, ~40 min on the reference unit; varies by run). Preconditions: the unit plugged in +
+  **rested**, and **Pro Control closed** (it holds the exclusive HID seize). The script pre-flights the
+  handshake, runs each spec in its own invocation, and recovers the unit on every handled exit
+  (`trap cleanup EXIT INT TERM` — so Ctrl-C and `kill` included): reamp-off + recall 001, plus a
+  guarded clear of the scenario slots (`SCRATCH_SLOTS`, 400–409) only with `TMP_E2E_CLEAR_SCENARIO=1`.
+  A SIGKILL or host crash skips the traps — recover manually with `cargo run --bin probe -- --reamp-off`.
 
-Add `copy` / `level` / `songs` to run a single spec (e.g. `bash scripts/e2e.sh online level`).
+Add a spec name — `copy` / `songs` / `doctor.online` / `level.online` — to run a single spec (e.g. `bash scripts/e2e.sh online level.online`).
 
 The rest of this doc is the **coverage map** — the per-tab scenario inventory + the still-un-automated
 backlog (§9), independent of how the suite is launched. Markers below: **⌨️** = the scenario needs

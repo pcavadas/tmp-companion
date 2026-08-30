@@ -278,8 +278,8 @@ export function LevelView({
         title="Presets live on the Tone Master Pro"
         body={
           <>
-            Connect your unit over <UsbC /> and power it on to list your presets
-            — it will connect automatically.
+            Connect your unit over <UsbC /> and power it on. Your presets will
+            show up on their own.
           </>
         }
         onScan={onScan}

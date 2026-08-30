@@ -129,11 +129,11 @@ export function InstrumentRow({
         const warns: string[] = [];
         if (res.clipped)
           warns.push(
-            "signal clipped — re-calibrate with softer playing or the guitar volume rolled back",
+            "signal clipped — play softer, or turn the instrument volume down, then re-calibrate",
           );
         if (res.stimulus_shortfall_lu != null)
           warns.push(
-            `instrument hotter than the test signal can reproduce — leveling drives ~${res.stimulus_shortfall_lu.toFixed(1)} LU softer`,
+            `your instrument is louder than the test signal — leveling drives ~${res.stimulus_shortfall_lu.toFixed(1)} LU softer`,
           );
         setCalibWarn(warns.join("; ") || null);
         setPhase("idle");
@@ -178,7 +178,7 @@ export function InstrumentRow({
       : phase === "recording"
         ? "recording — play steadily"
         : phase === "error"
-          ? (calibErr ?? "too quiet to read — last attempt failed")
+          ? (calibErr ?? "too quiet to read — the last attempt failed")
           : calibrated
             ? `calibrated ${profile.calibration_lufs?.toFixed(1) ?? ""} LUFS${
                 calibWarn != null ? ` — ${calibWarn}` : ""
@@ -344,8 +344,8 @@ export function InstrumentRow({
                   lineHeight: 1.4,
                 }}
               >
-                some bands weren&rsquo;t played — a sparse take (e.g. only EBow
-                drones) limits tone analysis
+                some bands weren&rsquo;t played — a sparse take (for example,
+                only EBow drones) limits tone analysis
               </div>
             )}
         </div>

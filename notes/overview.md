@@ -2,7 +2,7 @@
 
 A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that controls a Fender Tone Master Pro over USB. It renders its own UI and talks to the device with an exclusive-seize (macOS) or `flock`-exclusive (Linux) HID session. macOS is the shipping platform; Linux is a supported development platform, including re-amp — see `CONTRIBUTING.md`'s "Developing on Linux".
 
-> **This file is the architecture map.** `CLAUDE.md` deliberately does not carry a module tree — the per-module docs are the authority (see [Where things live](#where-things-live)). The UI is **click-only**: no keyboard shortcuts, no command palette.
+> **This file is the architecture map.** `CLAUDE.md` deliberately does not carry a module tree — the per-module docs are the authority (see [Where things live](#where-things-live)). The UI is **click-only**: no keyboard shortcuts, no command palette (Enter/Escape inside a focused text input is exempt — see the carve-out in `CLAUDE.md`).
 
 ## Tabs
 
@@ -34,7 +34,7 @@ A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) tha
 
 ### Module docs are the authority
 
-**Read the module's own header rather than any prose summary.** 88 of 93 backend files carry a `//!` header and 175 of 198 frontend files carry a `//` header — between them that is the per-module documentation, kept next to the code it describes so it cannot drift the way a central tree does.
+**Read the module's own header rather than any prose summary.** 94 of 99 backend files carry a `//!` header and 263 of 288 frontend files carry a `//` header — between them that is the per-module documentation, kept next to the code it describes so it cannot drift the way a central tree does.
 
 ### Modules beyond the 6-tab UI
 

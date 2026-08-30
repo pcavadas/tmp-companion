@@ -13,7 +13,7 @@ TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` com
 
 `src/` splits into `theme/` (tokens + composed styles), `ui/` (primitives, `Icon`, `BlockArt` + the block-art SVG engine), `lib/` (typed `invoke` wrappers, `types.ts`, shared hooks), `models/` (the catalog data layer), `views/` (five feature folders — `level`, `doctor`, `copy`, `songs`, `settings` — plus a flat `CatalogView` and `views/overlays/` for the leveling wizard), and `App.tsx` (shell routing). Full file tree: `references/ui-components.md`.
 
-The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose).
+The app is **click-only by design** — no keyboard shortcuts, no command palette (the ⌘K palette was deleted on purpose). Enter/Escape inside a focused text input, committing or cancelling that field's own edit, is exempt — see the carve-out in `CLAUDE.md`.
 
 ## When you're handed a Claude-Design handoff
 
