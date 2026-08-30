@@ -129,7 +129,7 @@ export function InstrumentRow({
         const warns: string[] = [];
         if (res.clipped)
           warns.push(
-            "signal clipped — play softer, or turn the guitar volume down, then re-calibrate",
+            "signal clipped — play softer, or turn the instrument volume down, then re-calibrate",
           );
         if (res.stimulus_shortfall_lu != null)
           warns.push(
