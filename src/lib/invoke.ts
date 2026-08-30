@@ -104,18 +104,6 @@ export const levelPreset = (job: LevelJob): Promise<LevelResult> =>
 export const cancelPresetLeveling = (): Promise<void> =>
   invoke("cancel_preset_leveling");
 
-/** Restore a preset's `presetLevel` to its pre-leveling value (Summary "Restore
- * original"). DEVICE WRITE (set + save). `presetLevel` only — scene/footswitch
- * `outputLevel` writes are not reverted. `expectedName` is the display name the
- * run recorded for the slot — the backend re-reads the preset list and refuses
- * the write if the slot no longer holds that preset (slot-drift guard). */
-export const restorePresetLevel = (
-  slot: number,
-  level: number,
-  expectedName: string,
-): Promise<void> =>
-  invoke("restore_preset_level", { slot, level, expectedName });
-
 /** A candidate leveling knob for `levelScenesApply` — pass EVERY amp-level candidate;
  * the backend picks per scene the one whose block is ON in that scene (scenes can
  * swap which amp is live, and a bypassed amp's knob measures flat). */
@@ -206,69 +194,6 @@ export const listFootswitchSceneContexts = (
   slot: number,
 ): Promise<FsSceneContext[]> =>
   invoke("list_footswitch_scene_contexts", { slot });
-
-/** One knob's PRE-redistribution value — the Restore anchor. `sceneSlot` null = the base
- * amp (plain write); a number = that FS scene's overlay. Mirrors `commands::PreviousKnob`. */
-export interface PreviousKnob {
-  groupId: string;
-  nodeId: string;
-  sceneSlot: number | null;
-  value: number;
-}
-
-/** Result of a gain-budget redistribution (mirrors `commands::RedistributeResult`): the
- * per-sound outcomes + the values rewritten (recorded for one-click Restore). */
-export interface RedistributeResult {
-  results: LevelResult[];
-  previousPresetLevel: number;
-  previousKnobs: PreviousKnob[];
-  deltaDb: number;
-  newPresetLevel: number;
-}
-
-/** Give a preset's clamped scenes headroom: raise presetLevel by `delta` and re-level the
- * base amp + every scene back to target (loud-preset class, single-amp only). Streams a row
- * per sound over the channel; returns the outcomes + the recorded previous values. */
-export const redistributeHeadroom = (
-  args: {
-    slot: number;
-    jobs: { sceneSlot: number; targetLufs: number }[];
-    candidates: LevelBlockCandidate[];
-    worstClampedDeficitDb: number;
-    topologyId: string | null;
-    calibrationLufs: number | null;
-    profileId: string | null;
-  },
-  onResult: (item: SceneLevelProgressItem) => void,
-): Promise<RedistributeResult> => {
-  const channel = new Channel<SceneLevelProgressItem>();
-  channel.onmessage = onResult;
-  return invoke("redistribute_headroom", { ...args, onResult: channel });
-};
-
-/** Undo a redistribution: write the recorded presetLevel + every touched amp outputLevel
- * back and save (slot-drift guarded by `expectedName`). */
-export const restoreRedistribution = (
-  slot: number,
-  presetLevel: number,
-  knobs: PreviousKnob[],
-  expectedName: string,
-): Promise<void> =>
-  invoke("restore_redistribution", { slot, presetLevel, knobs, expectedName });
-
-/** One already-measured ceiling for `commonReachableTarget` (mirrors `commands::CeilingArg`):
- * the sound's raw ceiling LUFS + the topology deciding its playback offset. */
-export interface CeilingArg {
-  cLufs: number;
-  topologyId: string | null;
-}
-
-/** Derive the reachable common target for a finished run's ALREADY-measured ceilings —
- * `min(C − offset) − headroom`, the quiet-preset clamp fallback. Pure (no device I/O); the
- * frontend then re-levels every sound to this target via the existing runners. */
-export const commonReachableTarget = (
-  ceilings: CeilingArg[],
-): Promise<number> => invoke("common_reachable_target", { ceilings });
 
 /** One streamed footswitch-leveling row (`lib::FootswitchLevelProgressItem`). */
 export interface FootswitchLevelProgressItem {
@@ -578,10 +503,6 @@ export const cmd = {
   // Leveling
   listLevelBlocks,
   levelPreset,
-  restorePresetLevel,
-  redistributeHeadroom,
-  restoreRedistribution,
-  commonReachableTarget,
   listSceneLevelHandles,
   listFootswitchSceneContexts,
   // Profiles + store

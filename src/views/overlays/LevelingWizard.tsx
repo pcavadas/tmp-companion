@@ -1,27 +1,19 @@
-// src/views/overlays/LevelingWizard.tsx — routes props → the right body, and picks
-// the body's CHROME by stage. Purely presentational: useLevelingFlow owns the state
-// machine and the device run.
+// src/views/overlays/LevelingWizard.tsx — routes props → the right full-page stage
+// (design handoff 1a: full window for all three stages, replacing the old
+// setup-is-full-page/run+summary-are-a-centered-modal split — `WizardShell`/
+// `Dialog size="lg"` are no longer used by leveling; `WizardShell` itself stays for
+// Doctor). Purely presentational: useLevelingFlow owns the state machine and the
+// device run.
 //
-// Stage → step: setup 0 (Set up) · run 1 (Level) · summary 2.
-// CONFIGURE phase (setup) renders FULL-PAGE (LevelSetupPage, replaces the Level body);
-// WRITE phase (run/summary) stays a centered MODAL (WizardShell) — a device write is
-// correctly blocking. Neither Run nor Summary can be dismissed by a stray backdrop
-// click: Run because it must never abort an in-progress device operation, and Summary
-// because it can carry actionable follow-ups (Re-level clamped…, Give clamped scenes
-// headroom) that a stray click would otherwise silently discard with no confirmation —
-// SummaryBody's primary Accept/Done button is unconditional across every branch, so the
-// footer is always a reachable way out.
+// Stage → step: setup 0 (Set up) · run 1 (Level) · summary 2. Every stage is a
+// full-bleed page over the Level tab's body (`LevelPage`, `zIndex:40`) with no
+// backdrop at all — so Run can never be dismissed by a stray click mid-device-write,
+// and Summary's primary Accept/Done button is the unconditional way out.
 
-import { WizardShell } from "./WizardShell";
-import { LevelSetupPage } from "./LevelSetupPage";
-import { stageToStep, type Stage } from "./wizardContext";
-import { SetupBody } from "./SetupBody";
-import { RunBody } from "./RunBody";
-import {
-  SummaryBody,
-  type RedistributionActions,
-  type CommonTargetActions,
-} from "./SummaryBody";
+import type { Stage } from "./wizardContext";
+import { SetupPage } from "../level/SetupPage";
+import { RunPage } from "../level/RunPage";
+import { SummaryPage } from "../level/SummaryPage";
 import type { PickOption } from "./Pick";
 import type { SetupOption, SetupChoice, RunItem } from "../level/leveling";
 
@@ -29,7 +21,6 @@ export interface LevelingWizardProps {
   stage: Exclude<Stage, "closed">;
   // setup inputs
   chosen: SetupOption[];
-  flowPresetCount: number;
   isRelevel: boolean;
   instrumentOptions: PickOption[];
   targetOptions: PickOption[];
@@ -49,7 +40,7 @@ export interface LevelingWizardProps {
   liveLufs: number | null;
   /** Rolling per-hop momentary levels (dB) for the decorative live VU bars. */
   liveTrace: number[];
-  /** A batch-wide caption (issue 6b) — see `RunBody`'s own doc. */
+  /** A batch-wide caption (issue 6b) — see `RunPage`'s own doc. */
   runTailMessage?: string | null;
   // callbacks
   onCancel: () => void;
@@ -57,9 +48,7 @@ export interface LevelingWizardProps {
   onRunCancel: () => void;
   onRunComplete: () => void;
   onAccept: () => void;
-  onRelevel: (clamped: RunItem[]) => void;
-  redistribution?: RedistributionActions;
-  commonTarget?: CommonTargetActions;
+  onRelevel: (subset: RunItem[]) => void;
   onRebalanceChange?: (on: boolean) => void;
   /** Jump to Settings → Instruments (the Set-up step's "calibrate" cue). */
   onCalibrate?: () => void;
@@ -68,7 +57,6 @@ export interface LevelingWizardProps {
 export function LevelingWizard({
   stage,
   chosen,
-  flowPresetCount,
   isRelevel,
   instrumentOptions,
   targetOptions,
@@ -91,65 +79,53 @@ export function LevelingWizard({
   onRunComplete,
   onAccept,
   onRelevel,
-  redistribution,
-  commonTarget,
   onRebalanceChange,
   onCalibrate,
 }: LevelingWizardProps) {
-  // CONFIGURE phase → full-page page that replaces the Level body.
   if (stage === "setup") {
     return (
-      <LevelSetupPage stage={stage}>
-        <SetupBody
-          options={chosen}
-          presetCount={flowPresetCount}
-          isRelevel={isRelevel}
-          instrumentOptions={instrumentOptions}
-          targetOptions={targetOptions}
-          defaultInst={defaultInst}
-          defaultTarget={defaultTarget}
-          onCancel={onCancel}
-          onStart={onStart}
-          onRebalanceChange={onRebalanceChange}
-          onCalibrate={onCalibrate}
-        />
-      </LevelSetupPage>
+      <SetupPage
+        options={chosen}
+        isRelevel={isRelevel}
+        instrumentOptions={instrumentOptions}
+        targetOptions={targetOptions}
+        defaultInst={defaultInst}
+        defaultTarget={defaultTarget}
+        onCancel={onCancel}
+        onStart={onStart}
+        onRebalanceChange={onRebalanceChange}
+        onCalibrate={onCalibrate}
+      />
     );
   }
 
-  // WRITE phase → centered modal (a device write is correctly blocking). Run and
-  // Summary are both reached only here (setup returns early above) — neither takes
-  // an onBackdrop, so the scrim is inert on both; see the file header for why.
+  if (stage === "run") {
+    return (
+      <RunPage
+        items={runItems}
+        currentIndex={runCurrentIndex}
+        total={runTotal}
+        done={runDone}
+        stopped={runStopped}
+        stopping={runStopping}
+        liveLufs={liveLufs}
+        liveTrace={liveTrace}
+        tailMessage={runTailMessage}
+        instrumentName={instrumentName}
+        targetLufsByName={targetLufsByName}
+        onCancel={onRunCancel}
+        onComplete={onRunComplete}
+      />
+    );
+  }
+
   return (
-    <WizardShell current={stageToStep(stage)} size="lg">
-      {stage === "run" && (
-        <RunBody
-          items={runItems}
-          currentIndex={runCurrentIndex}
-          total={runTotal}
-          done={runDone}
-          stopped={runStopped}
-          stopping={runStopping}
-          liveLufs={liveLufs}
-          liveTrace={liveTrace}
-          tailMessage={runTailMessage}
-          instrumentName={instrumentName}
-          targetLufsByName={targetLufsByName}
-          onCancel={onRunCancel}
-          onComplete={onRunComplete}
-        />
-      )}
-      {stage === "summary" && (
-        <SummaryBody
-          items={runItems}
-          stopped={runStopped}
-          onAccept={onAccept}
-          onRelevel={onRelevel}
-          redistribution={redistribution}
-          commonTarget={commonTarget}
-        />
-      )}
-    </WizardShell>
+    <SummaryPage
+      items={runItems}
+      stopped={runStopped}
+      onAccept={onAccept}
+      onRelevel={onRelevel}
+    />
   );
 }
 

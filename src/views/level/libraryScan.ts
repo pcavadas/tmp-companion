@@ -35,12 +35,6 @@ export interface LibraryScan {
   /** Per-preset amp `outputLevel` candidates keyed by 0-based LIST INDEX — read
    *  from the same backup, so per-scene leveling skips live block discovery. */
   ampCandidates: Map<number, AmpCandidate[]>;
-  /** Per-preset count of `ampCandidates` nodes NOT bypassed in the base graph
-   *  (`BackupPresetRow.base_active_amp_count`), keyed by 0-based LIST INDEX — the
-   *  redistribute gate's single-amp signal (a global bypass filter on `ampCandidates`
-   *  itself would starve amp-flip presets, so this rides as a separate count). Every
-   *  scanned preset gets an entry. */
-  baseActiveAmpCountByIndex: Map<number, number>;
   /** Per-preset LEVELABLE block-acting footswitches (those with ≥1 level candidate)
    *  keyed by 0-based LIST INDEX — read from the SAME backup, so the list shows the
    *  footswitch count + the Level flow levels them with no extra device read.
@@ -107,7 +101,6 @@ const emptyScan = (): LibraryScan => ({
   ready: false,
   sceneInfo: new Map(),
   ampCandidates: new Map(),
-  baseActiveAmpCountByIndex: new Map(),
   footswitchesPerIndex: new Map(),
   allFootswitchesByIndex: new Map(),
   blocksByIndex: new Map(),
@@ -173,7 +166,6 @@ export async function ensureLibraryScan(): Promise<void> {
     if (gen !== generation) return; // reset mid-scan → drop the stale results
     const m = new Map<number, SceneInfo[]>();
     const amps = new Map<number, AmpCandidate[]>();
-    const baseActiveAmpCount = new Map<number, number>();
     const fsw = new Map<number, FootswitchInfo[]>();
     const allFsw = new Map<number, FootswitchInfo[]>();
     const blocks = new Map<number, string[]>();
@@ -186,7 +178,6 @@ export async function ensureLibraryScan(): Promise<void> {
     res.presets.forEach((p) => {
       m.set(p.slot - 1, p.scenes);
       amps.set(p.slot - 1, p.amp_candidates);
-      baseActiveAmpCount.set(p.slot - 1, p.base_active_amp_count);
       // Doctor's SELECT list is built off `footswitchesPerIndex` too (see its own
       // doc) — keep it levelable-only here; `allFootswitchesByIndex` carries the full
       // roster for Doctor's damage detector AND (via `usePresetData`'s
@@ -226,7 +217,6 @@ export async function ensureLibraryScan(): Promise<void> {
     set({
       sceneInfo: m,
       ampCandidates: amps,
-      baseActiveAmpCountByIndex: baseActiveAmpCount,
       footswitchesPerIndex: fsw,
       allFootswitchesByIndex: allFsw,
       blocksByIndex: blocks,

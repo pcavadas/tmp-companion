@@ -4,12 +4,16 @@
 
 import { describe, it, expect } from "vitest";
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { base, renderSummary } from "./summaryTestUtils";
 
 describe("Summary true-peak warn chip", () => {
-  it("flags a row predicted to clip", () => {
+  it("flags a row predicted to clip", async () => {
     renderSummary([base({ truePeakDbtp: -0.2 })]);
+    // A truePeak-only flag on an otherwise "done" row doesn't make the group a
+    // "problem" group, so it stays collapsed — expand it to reach the row's chip.
+    await userEvent.click(screen.getByText("Guitar"));
     // One chip on the row + one in the footnote's leading icon.
     expect(screen.getAllByText("may clip").length).toBe(2);
     expect(screen.getByText(/estimated to peak above −1 dBTP/i)).toBeTruthy();

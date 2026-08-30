@@ -309,7 +309,6 @@ export function usePresetData(
      *  detector needs the full roster, not the levelable-only `footswitchInfo` list. */
     allFootswitchInfo: lib.allFootswitchesByIndex,
     ampCandidates: lib.ampCandidates,
-    baseActiveAmpCountByIndex: lib.baseActiveAmpCountByIndex,
     blocksByIndex: lib.blocksByIndex,
     silenceHintByIndex: lib.silenceHintByIndex,
     /** Per-preset signal graph from the startup backup, keyed by 0-based list index —

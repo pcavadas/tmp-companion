@@ -27,12 +27,17 @@ import {
 //
 // PR #144 REWORK: the verify-only footswitch default + its "Make level-neutral" opt-in,
 // and the scene row's match/offset target-mode chip, are BOTH GONE — every row (Base/Scene/
-// Footswitch) now levels against ONE user-chosen `BlockLevelPick` handle (D2). Base rows
-// default to the "Preset level" pseudo-option, Scene rows to "Amp output level"; footswitch
-// rows always carry a real pre-seeded handle (no pseudo-option). The picker's own two
-// triggers (`title="Choose this sound's leveling block"` then `title="Choose this
-// sound's leveling parameter"` — a later split of what was originally one flat
-// block+param dropdown) replaced the old target-mode chip trigger.
+// Footswitch) now levels against ONE user-chosen leveling handle (D2). Base rows default to
+// the "Preset level" pseudo-option, Scene rows to "Amp output level"; footswitch rows always
+// carry a real pre-seeded handle (no pseudo-option).
+//
+// DESIGN-1A REWORK: `BlockLevelPick`'s two-dropdown split (a block trigger, then a control
+// trigger revealed only after a block was picked) is GONE — `FlatLevelPick` flattens both
+// into ONE trigger (`title="Choose this sound's leveling control"`) and ONE candidate list,
+// one row per candidate (`data-block-param-pick`, keyed `groupId:nodeId:parameterId`),
+// grouped under a mono block header only when the preset carries more than one
+// leveling-relevant block. Clicking a candidate row picks it and closes the menu directly —
+// there is no separate "pick a block, then pick its param" commit step any more.
 
 interface FootswitchLevelResult {
   switch: number;
@@ -41,7 +46,8 @@ interface FootswitchLevelResult {
   clamp_reason: string | null;
   wet_floor: boolean;
   /** The clamp's cause from the shared taxonomy (mirrors `headroom_trade::ClampKind`) —
-   *  see `src/lib/types.ts`'s `ClampKind`/`CLAMP_MESSAGES`. Null when not clamped. */
+   *  see `src/lib/types.ts`'s `ClampKind`. Wire-only; the UI no longer surfaces it (design
+   *  1a shows one generic clamp message regardless of cause). Null when not clamped. */
   clamp_kind: string | null;
   saved: boolean;
   final_value: number;
@@ -91,24 +97,38 @@ function isChangeParameter(e: unknown): e is ChangeParameterEvent {
  *  "<div></div> intercepts pointer events" for the full timeout instead of ever landing
  *  the click. Targeting the backdrop's own element sidesteps the check entirely. Needed
  *  between rows: a still-open menu's backdrop sits above every other row's own trigger and
- *  would otherwise swallow the next click. */
+ *  would otherwise swallow the next click. Clicks the backdrop's top-left corner, not its
+ *  center: on the full-window design-1a layout the center can fall under the open menu
+ *  itself (a large flat candidate list), which sits ABOVE the backdrop in the same
+ *  stacking context and swallows the click — `usePickAnchor` clamps the menu's `left`/`top`
+ *  to >= 8px, so a 4px corner point is never covered by it. */
 async function closeAnyOpenPicker(page: Page): Promise<void> {
-  await page.locator("[data-pick-backdrop]").click();
+  await page
+    .locator("[data-pick-backdrop]")
+    .click({ position: { x: 4, y: 4 } });
 }
 
-/** `BlockLevelPick`'s two triggers (D2/Part C's two-dropdown split), scoped by a setup
- *  row's `data-setup-row` hook (`setupRowHookKey`, leveling.ts). The BLOCK trigger opens
- *  first (`data-block-pick` rows, one per block); picking a block auto-selects its
- *  best-ranked ENABLED candidate and reveals the CONTROL trigger (`data-block-param-pick`
- *  rows, that one block's own params only) — hidden entirely until a block is picked. */
-function blockTrigger(page: Page, key: string) {
+/** `FlatLevelPick`'s ONE trigger (D2, design-1a's flattened picker), scoped by a setup
+ *  row's `data-setup-row` hook (`setupRowHookKey`, leveling.ts). Its label is always the
+ *  combined `"{block fullName} — {param label}"` (or the pseudo-default / stale-handle
+ *  text) — there is no separate "control" trigger to reveal. */
+function pickTrigger(page: Page, key: string) {
   return page.locator(
-    `[data-setup-row="${key}"] div[title="Choose this sound's leveling block"]`,
+    `[data-setup-row="${key}"] div[title="Choose this sound's leveling control"]`,
   );
 }
-function controlTrigger(page: Page, key: string) {
+/** One candidate row in the open flat list — `data-block-param-pick`, keyed
+ *  `groupId:nodeId:parameterId` (`FlatLevelPick.tsx`'s `candidateKey`). Clicking it picks
+ *  the handle and closes the menu; merely locating it (to read its own note/warning text)
+ *  does not. */
+function candidateRow(
+  page: Page,
+  groupId: string,
+  nodeId: string,
+  parameterId: string,
+) {
   return page.locator(
-    `[data-setup-row="${key}"] div[title="Choose this sound's leveling parameter"]`,
+    `[data-block-param-pick="${groupId}:${nodeId}:${parameterId}"]`,
   );
 }
 
@@ -233,53 +253,51 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     // "the row index IS the 0-based wire sceneSlot" — see e2e/fixtures/scenario-
     // presets.json's slot-400 `scenes` list) — a true identity, stable under a
     // fixture edit, so it needs no translation the way a footswitch hook does
-    // (`f<slot>:sw<n>`, below). `blockTrigger`/`controlTrigger` (this file's top) are
-    // `BlockLevelPick`'s two triggers (D2/Part C's two-dropdown split) — every
-    // unselected row's BLOCK trigger DEFAULTS to the "Amp output level" pseudo-option,
-    // so a text filter on that label would collide across rows too.
+    // (`f<slot>:sw<n>`, below). `pickTrigger` (this file's top) is `FlatLevelPick`'s
+    // single flattened trigger (D2, design-1a) — every unselected row's trigger DEFAULTS
+    // to the "Amp output level" pseudo-option, so a text filter on that label would
+    // collide across rows too.
 
     // Rhythm (s400:0): ACD_Boost's OWN overlay in this scene is FULL (isolated) — its
-    // BLOCK row must carry no shared_with_base warning and must be selectable. NOTE:
+    // candidate row must carry no shared_with_base warning and must be selectable. NOTE:
     // the picker's candidate list spans every level/wet-mix node in the graph, not
     // just Boost — TubeScreamer and TwinReverb are ALSO candidates (their own
     // "level"/"outputLevel" params), and Rhythm's overlay for both is bypass-only
     // ({bypass, bypassType} only — see scenario-presets.json's slot-400 scene 0), so
     // THEIR rows legitimately DO warn shared_with_base here. Scope the assertion to
-    // Boost's own BLOCK row (`data-block-pick="G1:ACD_Boost"`) rather than the whole
-    // menu — ACD_Boost carries exactly ONE numeric candidate (`gain`), so the block
-    // row's disabled state is the param's own, with no need to open the control
-    // dropdown (which would require picking a block first, mutating the untouched
-    // handle this row is asserting).
-    await blockTrigger(page, "s400:0").click();
-    const boostBlock = page.locator('[data-block-pick="G1:ACD_Boost"]');
+    // Boost's own candidate row (`data-block-param-pick="G1:ACD_Boost:gain"`) rather
+    // than the whole menu — ACD_Boost carries exactly ONE numeric candidate (`gain`), so
+    // merely opening the flat list and locating its row is enough; no click needed (a
+    // click would pick it, mutating the untouched handle this row is asserting).
+    await pickTrigger(page, "s400:0").click();
+    const boostCandidate = candidateRow(page, "G1", "ACD_Boost", "gain");
     // EXISTENCE FIRST. The warning assertion below is absence-only, and `toHaveCount(0)`
     // is equally satisfied by a Boost row that never rendered — a candidate-enumeration
-    // regression, or a `data-block-pick` rename, would turn this into a test that
+    // regression, or a `data-block-param-pick` rename, would turn this into a test that
     // asserts nothing while staying green. Pin the row's presence, then its cleanliness.
     await expect(
-      boostBlock,
-      "the Boost block row must be in the menu at all",
+      boostCandidate,
+      "the Boost candidate row must be in the menu at all",
     ).toHaveCount(1);
     await expect(
-      boostBlock.getByText(/shared with the base preset/),
+      boostCandidate.getByText(/shared with the base preset/),
     ).toHaveCount(0);
-    // Untouched (still the "Amp output level" pseudo-default — this row's own handle was
-    // never picked; the control trigger stays hidden until a block IS picked).
-    await expect(blockTrigger(page, "s400:0")).toContainText(
-      "Amp output level",
-    );
-    await expect(controlTrigger(page, "s400:0")).toHaveCount(0);
+    // Untouched — still the "Amp output level" pseudo-default, since merely opening and
+    // reading the list never picks anything.
+    await expect(pickTrigger(page, "s400:0")).toContainText("Amp output level");
     await closeAnyOpenPicker(page);
 
     // Shared (s400:3): ACD_Boost's overlay is bypass-only in this scene → its OWN
-    // BLOCK row warns and is disabled. Scoped the same way as Rhythm above —
+    // candidate row warns and is disabled. Scoped the same way as Rhythm above —
     // TubeScreamer's overlay is ALSO bypass-only here (scenario-presets.json's
     // slot-400 scene 3: both Boost and TubeScreamer carry only {bypass, bypassType}),
-    // so its block row legitimately warns too and a whole-menu text assertion would
+    // so its candidate row legitimately warns too and a whole-menu text assertion would
     // hit a strict-mode collision.
-    await blockTrigger(page, "s400:3").click();
+    await pickTrigger(page, "s400:3").click();
     await expect(
-      boostBlock.getByText(/shared with the base preset — changes every scene/),
+      candidateRow(page, "G1", "ACD_Boost", "gain").getByText(
+        /shared with the base preset — changes every scene/,
+      ),
     ).toBeVisible();
     await closeAnyOpenPicker(page);
 
@@ -288,10 +306,10 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     // ACD_TwinReverb65NoFx.outputLevel = 1.0 — TwinReverb is bypassed here but still
     // carries a full overlay, so its scope stays "isolated" too) — so BOTH their candidate
     // rows legitimately annotate lowers_only and a whole-menu text assertion hits a
-    // strict-mode collision. `recommended` (`BlockLevelPick.tsx`) is a SINGLE candidate
-    // shared across every block's dropdown, and it resolves to JC120's own `outputLevel`
-    // here (empirically: opening JC120's control dropdown shows "Recommended - loudness
-    // only", not the bare lowers_only text — `controlRow`'s note precedence puts the
+    // strict-mode collision. `recommended` (`FlatLevelPick.tsx`'s `recommendedBlock`) is a
+    // SINGLE candidate shared across the whole flat list, and it resolves to JC120's own
+    // `outputLevel` here (empirically: JC120's own row shows "Recommended - loudness
+    // only", not the bare lowers_only text — `candidateRow`'s note precedence puts the
     // Recommended branch before the `lowersOnly` one, so a recommended+lowers_only
     // candidate never renders the bare text at all). Asserting the bare "can only lower"
     // text against JC120 would therefore be VACUOUS — it would pass identically even if
@@ -300,28 +318,24 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     // lowers_only but never the globally-recommended candidate (a different node can
     // never be reference-equal to `recommended`), so this is the one row that can
     // actually FAIL if the lowers_only annotation regresses.
-    await blockTrigger(page, "s400:2").click();
-    await page.locator('[data-block-pick="G1:ACD_TwinReverb65NoFx"]').click();
-    await controlTrigger(page, "s400:2").click();
-    const twinCandidate = page.locator(
-      '[data-block-param-pick="ACD_TwinReverb65NoFx:outputLevel"]',
+    await pickTrigger(page, "s400:2").click();
+    const twinCandidate = candidateRow(
+      page,
+      "G1",
+      "ACD_TwinReverb65NoFx",
+      "outputLevel",
     );
+    // Locating the row and reading its note is view-only — the flat list needs no
+    // block-then-control commit click to reveal it, unlike the old two-dropdown picker.
     await expect(twinCandidate.getByText("can only lower")).toBeVisible();
-    // Selecting the TwinReverb block row DID commit its own best-ranked enabled candidate
-    // as this row's handle (the same auto-pick JC120 gets below) — this is not a "view
-    // only" click. The overall state stays correct only because the JC120 pick right
-    // after this overwrites it.
     await closeAnyOpenPicker(page);
 
-    // PICK the JC120 BLOCK — auto-picks its best-ranked enabled candidate (`outputLevel`,
-    // its only level-class candidate) and opens the control trigger. No need to re-open the
-    // control dropdown and click the candidate explicitly: the auto-pick already resolved
-    // it, so a re-click through the same trigger cannot change the outcome. Boost's `gain`
-    // = 2.5, nowhere near its [0,12] top, is not lowers_only here, so it's not a candidate
-    // for either assertion.
-    await blockTrigger(page, "s400:2").click();
-    await page.locator('[data-block-pick="G1:ACD_JC120"]').click();
-    await expect(controlTrigger(page, "s400:2")).toContainText("Output level");
+    // PICK JC120's outputLevel candidate directly — its only level-class candidate, so
+    // one click both picks and closes the menu. Boost's `gain` = 2.5, nowhere near its
+    // [0,12] top, is not lowers_only here, so it's not a candidate for either assertion.
+    await pickTrigger(page, "s400:2").click();
+    await candidateRow(page, "G1", "ACD_JC120", "outputLevel").click();
+    await expect(pickTrigger(page, "s400:2")).toContainText("Output level");
   });
 
   // BUG→GATE (user-reported "Friedman HBE" preset 28, 2026-08-22): the picker used to
@@ -358,22 +372,21 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // s402:3 = Solo (0-based scenes[] index == wire sceneSlot, same identity as 400's rows).
-    await blockTrigger(page, "s402:3").click();
-    const boostBlock = page.locator('[data-block-pick="G1:ACD_Boost"]');
+    await pickTrigger(page, "s402:3").click();
+    const boostCandidate = candidateRow(page, "G1", "ACD_Boost", "gain");
     // EXISTENCE FIRST — see the Rhythm/Shared test above for why.
     await expect(
-      boostBlock,
-      "the Boost block row must be in the menu at all",
+      boostCandidate,
+      "the Boost candidate row must be in the menu at all",
     ).toHaveCount(1);
     await expect(
-      boostBlock.getByText(/shared with the base preset/),
+      boostCandidate.getByText(/shared with the base preset/),
       "the Solo write is provably scene-local — no shared_with_base warning",
     ).toHaveCount(0);
     // ENABLED, not just unwarned: clicking it must actually pick it (never blocked — the
     // DANGER-rule Pick trap forbids a click that silently no-ops on a disabled row).
-    await boostBlock.click();
-    await expect(controlTrigger(page, "s402:3")).toBeVisible();
-    await expect(controlTrigger(page, "s402:3")).toContainText("Gain");
+    await boostCandidate.click();
+    await expect(pickTrigger(page, "s402:3")).toContainText("Gain");
   });
 
   // BUG→GATE (issue 5, "Boost preselect", 2026-08-29): every scene row used to default its
@@ -381,7 +394,7 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
   // exist is turning ON a base-bypassed block — Solo un-bypasses 402's `ACD_Boost` (bypassed
   // in base) via a bypass-only overlay, so leveling the amp barely moves the sound Solo
   // actually adds. `scene_handle_rows_scanned` now stamps `enables_block: true` on Boost's
-  // candidate for Solo (wire `enablesBlock`) and `SetupBody`'s render-phase preselect seeds
+  // candidate for Solo (wire `enablesBlock`) and `SetupPage`'s render-phase preselect seeds
   // THAT handle instead — never overriding a user's own choice (untouched here: the row's
   // trigger is asserted without opening its own picker first).
   test("402 Solo: the scene row preselects the Boost handle instead of Amp output level", async ({
@@ -408,19 +421,17 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
 
     // s402:3 = Solo (same row identity as the offer test above). UNTOUCHED — never opened
     // its own picker — so this trigger's text is exactly whatever the mount/resolution
-    // preselect seeded, not a value this test itself picked. The trigger's label is
-    // `blockArtTile(...).fullName` (`BlockLevelPick.tsx`'s `blockTriggerLabelFor`), the
+    // preselect seeded, not a value this test itself picked. The trigger's combined label
+    // is `"{blockArtTile(...).fullName} — {paramLabel}"` (`FlatLevelPick.tsx`), the
     // catalog's own model name verbatim — "BOOST" (uppercase; a DIFFERENT, title-cased
     // "Boost" is `footswitchName()`'s short label, used elsewhere in this file for the
-    // list-level footswitch row, not this picker trigger).
-    await expect(blockTrigger(page, "s402:3")).toContainText("BOOST");
-    await expect(blockTrigger(page, "s402:3")).not.toContainText(
+    // list-level footswitch row, not this picker trigger) — followed by its pre-picked
+    // best-ranked candidate, Boost's sole one, `gain` ("Gain").
+    await expect(pickTrigger(page, "s402:3")).toContainText("BOOST");
+    await expect(pickTrigger(page, "s402:3")).toContainText("Gain");
+    await expect(pickTrigger(page, "s402:3")).not.toContainText(
       "Amp output level",
     );
-    // D2: a picked block always reveals its own control dropdown, pre-picking its
-    // best-ranked candidate — Boost's sole one, `gain`.
-    await expect(controlTrigger(page, "s402:3")).toBeVisible();
-    await expect(controlTrigger(page, "s402:3")).toContainText("Gain");
   });
 });
 
@@ -437,7 +448,7 @@ test.describe("Level Setup — instant candidates from the backup scan (no devic
   // `useLevelBlocks`/`useSceneHandles` (src/views/level) are INSTANT-FIRST: a slot the
   // startup backup scan already covers resolves its Base/Scene candidates straight off
   // `getLibraryScan()` — no `list_level_blocks`/`list_scene_level_handles` device round
-  // trip — and `SetupBody`'s own eager warm effect fires that fetch the moment the
+  // trip — and `SetupPage`'s own eager warm effect fires that fetch the moment the
   // Set-up step renders (gated on `hasBackupData`, so it provably cannot reach the
   // device). By the time the user opens a row's BLOCK dropdown, the candidates must
   // already be `resolved`: no "Loading controls…" text, ever.
@@ -459,7 +470,7 @@ test.describe("Level Setup — instant candidates from the backup scan (no devic
     await ensureScenario(page);
     await openLevel(page);
 
-    // Baseline taken BEFORE Set-up even renders — SetupBody's own eager warm effect fires
+    // Baseline taken BEFORE Set-up even renders — SetupPage's own eager warm effect fires
     // the moment Set-up renders (gated on `hasBackupData`), so the window this baseline
     // opens must span that warm too, not just the later dropdown open: a regression back
     // to the device path would otherwise append its events INSIDE the baseline and the
@@ -474,18 +485,18 @@ test.describe("Level Setup — instant candidates from the backup scan (no devic
     // p400 = the base row (`baseKey`, leveling.ts).
     const key = "p400";
 
-    await blockTrigger(page, key).click();
+    await pickTrigger(page, key).click();
     // No wait, no retry loop — the instant path resolves synchronously off the scan, so
     // asserting immediately is the point: a fallback-to-device regression would still be
     // `"loading"` right after the click. `toHaveCount(0)` auto-retries and would still pass
     // even if the text flashed and then vanished, so read the count once, right after the
     // click, instead.
     expect(await page.getByText("Loading controls…").count()).toBe(0);
-    // Unscoped: the dropdown MENU (`data-block-pick` rows) renders through a portal
+    // Unscoped: the dropdown MENU (`data-block-param-pick` rows) renders through a portal
     // (`PickPortalMenu`/`usePickAnchor`) detached from the triggering row's own
     // `data-setup-row` subtree — only the trigger itself lives inside that container.
     // Only one picker can be open at a time, so an unscoped locator is unambiguous here.
-    await expect(page.locator("[data-block-pick]").first()).toBeVisible();
+    await expect(page.locator("[data-block-param-pick]").first()).toBeVisible();
 
     const eventsAfter = await simEvents(page);
     expect(
@@ -563,11 +574,11 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
 
     // Footswitch hooks are keyed by DEVICE SWITCH NUMBER (`setupRowHookKey`,
     // leveling.ts): `f400:sw2` = Boost (COVERAGE.md row 20). Footswitch rows always carry a
-    // real pre-seeded handle (D2: no pseudo-option) — the CONTROL trigger names the
-    // pre-picked PARAM ("Gain").
+    // real pre-seeded handle (D2: no pseudo-option) — the trigger names the pre-picked
+    // PARAM ("Gain").
     const boostRow = page.locator('[data-setup-row="f400:sw2"]');
     await expect(boostRow.getByText("Verify only")).toHaveCount(0);
-    await expect(controlTrigger(page, "f400:sw2")).toContainText("Gain");
+    await expect(pickTrigger(page, "f400:sw2")).toContainText("Gain");
     // SPRING (`f400:sw3`) never reached Setup — the click above never selected it, so there
     // is no row for it to render.
     await expect(page.locator('[data-setup-row="f400:sw3"]')).toHaveCount(0);
@@ -802,10 +813,10 @@ test.describe("Level — wet-mix footswitch outcome (SPRING, raw invoke)", () =>
       `the clamp's cause must be the wet floor: ${JSON.stringify(unreachable)}`,
     ).toBe(true);
     expect(unreachable.clamp_reason).toBe(null);
-    // The shared ClampKind taxonomy names the SAME cause (CLAMP_MESSAGES.wet_floor in
-    // src/lib/types.ts renders this verbatim wherever a row's clamp is UI-observable —
-    // this wire-level check is the twin the Channel seam allows offline; see this file's
-    // header).
+    // The shared ClampKind taxonomy (src/lib/types.ts) names the SAME cause on the wire,
+    // even though design 1a's UI no longer surfaces it (one generic clamp message for
+    // every cause) — this wire-level check is the twin the Channel seam allows offline;
+    // see this file's header.
     expect(
       unreachable.clamp_kind,
       `clamp_kind must name the wet floor too: ${JSON.stringify(unreachable)}`,

@@ -3,7 +3,7 @@
 // ACD_Boost, the plan's own example) should default its leveling handle to THAT
 // block's own control, not "Amp output level" — the amp barely moves the sound the
 // scene actually turns on. `SceneHandleCandidate.enablesBlock` is the backend's
-// signal; SetupBody must preselect the first such candidate once the row's
+// signal; SetupPage must preselect the first such candidate once the row's
 // candidates resolve (they arrive ASYNC — the warm effect's backup-sourced fetch
 // still takes a microtask — so the mount `useState` initializer alone can't see it),
 // never override an explicit user choice (including the pseudo-option, itself
@@ -15,9 +15,10 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SetupBody } from "../views/overlays/SetupBody";
+import { SetupPage } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import { blockArtTile } from "../models/blockArt";
+import { paramLabel } from "../views/level/leveling";
 import {
   ensureLibraryScan,
   resetLibraryScan,
@@ -48,6 +49,8 @@ const BOOST_LABEL = (() => {
   const art = blockArtTile("ACD_Boost");
   return art.fullName ?? art.name;
 })();
+// The flattened picker combines block + param into one row/trigger label.
+const BOOST_ROW = `${BOOST_LABEL} — ${paramLabel("gain")}`;
 
 function boostCandidate(enablesBlock: boolean): SceneHandleCandidate {
   return {
@@ -120,9 +123,8 @@ function renderSetup(options: SetupOption[]) {
   return render(
     <ThemeProvider>
       <WithCard>
-        <SetupBody
+        <SetupPage
           options={options}
-          presetCount={options.length}
           isRelevel={false}
           instrumentOptions={instrumentOptions}
           targetOptions={targetOptions}
@@ -136,7 +138,7 @@ function renderSetup(options: SetupOption[]) {
   );
 }
 
-describe("SetupBody — scene handle preselect (issue 5)", () => {
+describe("SetupPage — scene handle preselect (issue 5)", () => {
   beforeEach(() => {
     resetLibraryScan();
     vi.mocked(invoke).mockReset();
@@ -156,7 +158,7 @@ describe("SetupBody — scene handle preselect (issue 5)", () => {
     expect(screen.getByText("Amp output level")).toBeInTheDocument();
     // …then flips to the enabling block once it does.
     await waitFor(() => {
-      expect(screen.getByText(BOOST_LABEL)).toBeInTheDocument();
+      expect(screen.getByText(BOOST_ROW)).toBeInTheDocument();
     });
     expect(screen.queryByText("Amp output level")).toBeNull();
   });
@@ -180,7 +182,7 @@ describe("SetupBody — scene handle preselect (issue 5)", () => {
     await waitFor(() => {
       expect(screen.getByText("Amp output level")).toBeInTheDocument();
     });
-    expect(screen.queryByText(BOOST_LABEL)).toBeNull();
+    expect(screen.queryByText(BOOST_ROW)).toBeNull();
   });
 
   it("falls through to the amp pseudo-option when no candidate enables a block", async () => {
@@ -194,11 +196,11 @@ describe("SetupBody — scene handle preselect (issue 5)", () => {
     const user = userEvent.setup();
     renderSetup([sceneOpt]);
 
-    // Open the block menu and wait for the (non-enabling) Boost candidate to appear —
+    // Open the menu and wait for the (non-enabling) Boost candidate row to appear —
     // proof the async candidate fetch actually resolved, not just that nothing rendered
     // yet.
     await user.click(screen.getByText("Amp output level"));
-    await screen.findByText(BOOST_LABEL);
+    await screen.findByText(BOOST_ROW);
 
     // The trigger (outside the menu) never moved off the pseudo default.
     expect(screen.getAllByText("Amp output level").length).toBeGreaterThan(0);

@@ -177,7 +177,8 @@ export interface LevelResult {
   /** The clamp's CAUSE from the shared taxonomy (mirrors `headroom_trade::ClampKind`) —
    * null when the row is not clamped. Additive alongside `clamp_reason`, whose contract
    * ("the leveled signal isn't reaching USB 1/2") is unchanged: this is the
-   * machine-readable cause. Render its `CLAMP_MESSAGES[kind]` verbatim — never re-word it. */
+   * machine-readable cause. Wire-only: design 1a's UI no longer surfaces it — every
+   * clamped row shows one generic message regardless of cause. */
   clamp_kind: ClampKind | null;
   /** THE HEADROOM TRADE this run made (or, on a preview, WOULD make) — see `TradeSummary`.
    * Stamped on EVERY row of a batch that traded (the trade moved the whole preset's gain
@@ -205,24 +206,6 @@ export type ClampKind =
   | "trade_floor"
   | "partial_trade"
   | "no_authority";
-
-/** One user-facing sentence per `ClampKind` — the UI's OWN copy for the backend's clamp
- * taxonomy (keyed by `ClampKind`, mirrors `headroom_trade::ClampKind`). This is a SEPARATE
- * wording from `ClampKind::message()`, whose only caller builds an internal Rust error
- * string; nothing cross-checks the two, so a taxonomy change on the backend does not fail
- * loudly here — update this table by hand alongside it. */
-export const CLAMP_MESSAGES: Record<ClampKind, string> = {
-  scene_ceiling:
-    "this sound cannot reach the target — its level control is already at the limit",
-  wet_floor:
-    "this sound cannot reach the target without dropping the mix below the level that preserves the effect",
-  trade_floor:
-    "the base amp level ran out of room holding the base sound on target while headroom was traded for this one",
-  partial_trade:
-    "the traded headroom was backed out because a dependent write did not land — nothing was saved",
-  no_authority:
-    "the level control has no effect on the USB 1/2 output for this sound",
-};
 
 /** Why a headroom-trade raise was trimmed below what the worst benefiting deficit wanted
  * (mirrors `headroom_trade::TradeCap`, snake_case). */

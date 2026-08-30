@@ -34,10 +34,6 @@ import {
   connectDevice,
   listPresets,
   levelPreset,
-  restorePresetLevel,
-  redistributeHeadroom,
-  restoreRedistribution,
-  commonReachableTarget,
   listSceneLevelHandles,
   listFootswitchSceneContexts,
   levelScenesApplyBatched,
@@ -257,65 +253,6 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
     });
   });
 
-  it("redistribute_headroom passes jobs + deficit + a progress channel", async () => {
-    const onResult = vi.fn(() => {
-      /* no-op */
-    });
-    await redistributeHeadroom(
-      {
-        slot: 7,
-        jobs: [
-          { sceneSlot: 8, targetLufs: -24 },
-          { sceneSlot: 0, targetLufs: -24 },
-        ],
-        candidates: [
-          {
-            groupId: "G1",
-            nodeId: "amp",
-            parameterId: "outputLevel",
-            value: 1,
-          },
-        ],
-        worstClampedDeficitDb: 3,
-        topologyId: null,
-        calibrationLufs: null,
-        profileId: null,
-      },
-      onResult,
-    );
-    const [name, args] = invokeMock.mock.calls[0];
-    expect(name).toBe("redistribute_headroom");
-    expect(args).toMatchObject({ slot: 7, worstClampedDeficitDb: 3 });
-  });
-
-  it("restore_redistribution writes the recorded values back", async () => {
-    await restoreRedistribution(
-      7,
-      0.32,
-      [{ groupId: "G1", nodeId: "amp", sceneSlot: null, value: 0.5 }],
-      "My Preset",
-    );
-    expectCall("restore_redistribution", {
-      slot: 7,
-      presetLevel: 0.32,
-      knobs: [{ groupId: "G1", nodeId: "amp", sceneSlot: null, value: 0.5 }],
-      expectedName: "My Preset",
-    });
-  });
-
-  it("common_reachable_target passes the measured ceilings", async () => {
-    await commonReachableTarget([
-      { cLufs: -28, topologyId: null },
-      { cLufs: -23, topologyId: "bass-active" },
-    ]);
-    expectCall("common_reachable_target", {
-      ceilings: [
-        { cLufs: -28, topologyId: null },
-        { cLufs: -23, topologyId: "bass-active" },
-      ],
-    });
-  });
-
   it("cancel_preset_leveling invokes the cooperative cancel command", async () => {
     await cancelPresetLeveling();
     expectCall("cancel_preset_leveling", undefined);
@@ -505,14 +442,6 @@ describe("single-struct / nested-payload args (snake_case inside the payload)", 
     await levelPreset(job);
     expectCall("level_preset", { job });
   });
-  it("restore_preset_level uses slot/level/expectedName (the Summary revert write)", async () => {
-    await restorePresetLevel(3, 0.62, "Guitar");
-    expectCall("restore_preset_level", {
-      slot: 3,
-      level: 0.62,
-      expectedName: "Guitar",
-    });
-  });
 });
 
 describe("device-backed song/setlist CRUD (Songs page)", () => {
@@ -551,11 +480,13 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
 });
 
 describe("cmd namespace mirrors the named exports", () => {
-  it("cmd exposes exactly the 39 contract commands", () => {
+  it("cmd exposes exactly the 35 contract commands", () => {
     // Pins the wire-contract surface: bump this when a command is added or removed
     // (the count guards against an accidental export slip in the cmd registry).
-    // 39 = the prior 38 + `listFootswitchSceneContexts` (D3's scene-context picker).
-    expect(Object.keys(cmd).length).toBe(39);
+    // 35 = the prior 39 minus the removed revert/redistribution/common-target
+    // wrappers (restorePresetLevel, redistributeHeadroom, restoreRedistribution,
+    // commonReachableTarget — design 1a dropped all in-app revert capability).
+    expect(Object.keys(cmd).length).toBe(35);
   });
 });
 

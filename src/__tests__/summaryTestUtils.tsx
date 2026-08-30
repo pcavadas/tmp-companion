@@ -1,7 +1,7 @@
 import { render } from "@testing-library/react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SummaryBody } from "../views/overlays/SummaryBody";
+import { SummaryPage } from "../views/level/SummaryPage";
 import type { RunItem } from "../views/level/leveling";
 
 /** Shared saved-Base-row factory for the Summary* suites (one copy, two consumers). */
@@ -22,11 +22,11 @@ export const base = (over: Partial<RunItem>): RunItem => ({
   ...over,
 });
 
-/** Shared SummaryBody mount for the Summary* suites (one copy, three consumers). */
+/** Shared SummaryPage mount for the Summary* suites (one copy, three consumers). */
 export const renderSummary = (items: RunItem[]) =>
   render(
     <ThemeProvider>
-      <SummaryBody
+      <SummaryPage
         items={items}
         stopped={false}
         onAccept={() => undefined}

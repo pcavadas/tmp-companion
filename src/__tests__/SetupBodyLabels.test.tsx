@@ -1,14 +1,14 @@
-// src/__tests__/SetupBodyLabels.test.tsx — BUG→GATE (issue 2): SetupBody's Base row
+// src/__tests__/SetupBodyLabels.test.tsx — BUG→GATE (issue 2): SetupPage's Base row
 // hardcoded "Whole preset" for EVERY preset, silently relabeling a multi-scene
 // preset's base row (which `chosenFrom` already names "Base Preset"). The fix is
 // `nameLabel = o.sceneName` — `chosenFrom` is the one place that decides the string,
-// keyed off `hasScenes`; SetupBody must render it verbatim, never re-derive it.
+// keyed off `hasScenes`; SetupPage must render it verbatim, never re-derive it.
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SetupBody } from "../views/overlays/SetupBody";
+import { SetupPage } from "../views/level/SetupPage";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
 
@@ -18,9 +18,8 @@ const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 function renderSetup(option: SetupOption) {
   return render(
     <ThemeProvider>
-      <SetupBody
+      <SetupPage
         options={[option]}
-        presetCount={1}
         isRelevel={false}
         instrumentOptions={instrumentOptions}
         targetOptions={targetOptions}
@@ -33,7 +32,7 @@ function renderSetup(option: SetupOption) {
   );
 }
 
-describe("SetupBody — base row label (issue 2)", () => {
+describe("SetupPage — base row label (issue 2)", () => {
   it('a hasScenes base row renders "Base Preset"', () => {
     renderSetup({
       key: "p0",

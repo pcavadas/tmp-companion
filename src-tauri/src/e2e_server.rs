@@ -184,7 +184,6 @@ pub fn run_e2e_server() {
             list_level_blocks,
             level_scenes_apply_batched,
             list_scene_level_handles,
-            common_reachable_target,
             cancel_scene_leveling,
             level_footswitches_apply,
             list_footswitch_scene_contexts,

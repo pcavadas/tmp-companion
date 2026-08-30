@@ -1069,18 +1069,17 @@ pub(crate) enum RefusedScope {
 /// Where a scene-context knob write on one node would LAND, and what the writer must send to
 /// put it there. The ONE write-landing policy — every lane that writes a knob under a scene
 /// (`leveller::set_knobs`, the Doctor's prescription apply) reads it here, so the four
-/// [`SceneOverlay`] states can never be answered two ways. The landing is carried IN the
-/// verdict (`lands_on_base`) rather than left for the caller to re-derive from overlay state.
+/// [`SceneOverlay`] states can never be answered two ways.
 pub(crate) enum SceneWriteVerdict {
-    /// Safe to write with the Scene Edit enable DROPPED. `lands_on_base` says where:
-    /// * `false` — [`SceneOverlay::Full`], the node's Scene Edit flag is already ON. The flag
+    /// Safe to write with the Scene Edit enable DROPPED. Two cases reach here:
+    /// * [`SceneOverlay::Full`], the node's Scene Edit flag is already ON. The flag
     ///   state alone decides the landing, so the write lands on the overlay even for a param
     ///   the overlay does not yet carry, and re-enabling would RESEED the overlay from base
     ///   (HW 3-cell matrix, fw 1.8.45).
-    /// * `true` — a [`SceneOverlay::BypassOnly`] node whose [`shared_write_is_scene_local`]
+    /// * A [`SceneOverlay::BypassOnly`] node whose [`shared_write_is_scene_local`]
     ///   reads `true`: the write DELIBERATELY lands on the shared BASE value, not an overlay
     ///   (there is none to land in), because the leak is confirmed audible ONLY in this scene.
-    WriteDirect { lands_on_base: bool },
+    WriteDirect,
     /// No overlay for this node in this scene ([`SceneOverlay::Absent`]) — the enable is what
     /// MATERIALISES one, so `set_node_scene_edit(node, true)` is REQUIRED before the write;
     /// without it the write leaks to base. Nothing to reseed away here.
@@ -1129,8 +1128,8 @@ fn unknown_refuse_message(scene: u32, node: &str) -> String {
 /// being written). The one param-SENSITIVE arm is [`SceneOverlay::BypassOnly`]: instead of an
 /// outright refuse, it consults [`shared_write_is_scene_local`] and, when the leak-to-base
 /// write would be audible ONLY in `scene`, allows it through as [`SceneWriteVerdict::WriteDirect`]
-/// with `lands_on_base: true` (still with NO scene-edit enable — the write is meant to land on
-/// the shared base param, never reseed the overlay).
+/// (still with NO scene-edit enable — the write is meant to land on the shared base param,
+/// never reseed the overlay).
 ///
 /// REJECTED ALTERNATIVE (do not "simplify" into it): enable Scene Edit (reseeding the overlay
 /// from base), then rewrite `bypass` back to its scene value, then write the param — that would
@@ -1150,15 +1149,11 @@ pub(crate) fn scene_write_verdict_for_param(
     param: &str,
 ) -> SceneWriteVerdict {
     match scene_overlay(preset, scene, node) {
-        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect {
-            lands_on_base: false,
-        },
+        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect,
         SceneOverlay::Absent => SceneWriteVerdict::NeedsEnable,
         SceneOverlay::BypassOnly(_) => {
             if shared_write_is_scene_local(preset, scene, node, param) {
-                SceneWriteVerdict::WriteDirect {
-                    lands_on_base: true,
-                }
+                SceneWriteVerdict::WriteDirect
             } else {
                 SceneWriteVerdict::Refuse {
                     scope: RefusedScope::SharedWithBase,
@@ -1830,8 +1825,9 @@ pub(crate) fn scene_handle_rows_scanned(
                     let scope = overlay_kind_scope.unwrap_or_else(|| {
                         match scene_write_verdict_for_param(preset, scene, node_id, &c.parameter_id)
                         {
-                            SceneWriteVerdict::WriteDirect { .. }
-                            | SceneWriteVerdict::NeedsEnable => "isolated",
+                            SceneWriteVerdict::WriteDirect | SceneWriteVerdict::NeedsEnable => {
+                                "isolated"
+                            }
                             SceneWriteVerdict::Refuse {
                                 scope: RefusedScope::SharedWithBase,
                                 ..

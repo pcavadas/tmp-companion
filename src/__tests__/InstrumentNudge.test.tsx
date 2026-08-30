@@ -1,14 +1,14 @@
 // InstrumentNudge — the "good → better → best" instrument caption in the Set up step.
 // Covers the pure state derivation (instCalState) and the three rendered rungs:
 //   none  → full ladder line   ·  uncal → calibrate line  ·  cal → nothing.
-// Real timers (repo-wide RTL fake-timer hang gotcha); SetupBody renders synchronously.
+// Real timers (repo-wide RTL fake-timer hang gotcha); SetupPage renders synchronously.
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SetupBody } from "../views/overlays/SetupBody";
+import { SetupPage } from "../views/level/SetupPage";
 import { instCalState } from "../views/level/leveling";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
@@ -35,9 +35,8 @@ const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 function renderSetup(defaultInst: string, onCalibrate?: () => void) {
   return render(
     <ThemeProvider>
-      <SetupBody
+      <SetupPage
         options={[baseOpt]}
-        presetCount={1}
         isRelevel={false}
         instrumentOptions={instrumentOptions}
         targetOptions={targetOptions}

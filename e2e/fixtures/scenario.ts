@@ -131,6 +131,22 @@ export async function selectBaseOnly(page: Page, name: string): Promise<void> {
   await filter.fill("");
 }
 
+/** Design 1a auto-opens only the LOWEST-slot preset group in Set up (`useGroupOpen`,
+ *  `SetupPage.tsx`'s `groups[0]`) — every other selected preset's row starts collapsed,
+ *  so its sound rows (and their `data-pick="target:NAME"` triggers) aren't in the DOM
+ *  yet. Click the group header (`data-preset-group={slot}`, `PresetGroupRow.tsx`) to
+ *  expand it before targeting a row inside. A no-op if the group is already open. */
+export async function ensurePresetGroupOpen(
+  page: Page,
+  slot: number,
+  name: string,
+): Promise<void> {
+  const trigger = page.locator(`[data-pick="target:${name}"]`);
+  if (!(await trigger.isVisible().catch(() => false))) {
+    await page.locator(`[data-preset-group="${String(slot)}"]`).click();
+  }
+}
+
 /** Pick a per-preset target by its option id ("Rhythm"/"Crunch"/"Lead") on a Base-only
  *  selection. Uses `data-pick-option="target:<name>:<id>"` (Pick.tsx) rather than the
  *  option's TEXT — a text-based `getByText(label,{exact:true}).last()` proved unreliable
@@ -166,6 +182,7 @@ export async function runBaseLevel(
     .click();
   await page.getByText(/I.ve backed up with Pro Control/i).click();
   for (const { preset, label } of targets) {
+    await ensurePresetGroupOpen(page, preset.slot, preset.name);
     await pickBaseTarget(page, preset.name, label);
   }
   // The picks must actually BIND — assert each row's trigger now reads its target (guards
@@ -176,7 +193,7 @@ export async function runBaseLevel(
     ).toContainText(label);
   }
   await page
-    .getByRole("button", { name: new RegExp(`Level ${n} sound`) })
+    .getByRole("button", { name: new RegExp(`Start.*${n} sound`) })
     .click();
   await expect(
     page.getByRole("button", { name: /^(Done|Accept)$/ }),

@@ -1007,7 +1007,7 @@ fn bypass_only_conflict(
     ops.iter().find_map(|op| match op {
         doctor::DoctorOp::Param { node_id, param, .. } => {
             match scene_write_verdict_for_param(preset, scene, node_id, param) {
-                SceneWriteVerdict::WriteDirect { .. } => None,
+                SceneWriteVerdict::WriteDirect => None,
                 SceneWriteVerdict::Refuse { reason, .. } => Some(reason),
                 SceneWriteVerdict::NeedsEnable => Some(format!(
                     "{node_id} has no scene overlay yet in scene {scene} — Doctor can't safely \

@@ -9,7 +9,7 @@
 // `chosenFrom` picks that name when the LIST is built, and at that moment the only
 // candidate it knows about is the tone-safe DEFAULT (`defaultParamIndex`). A user who then
 // overrides the pick in Set up used to have the switch renamed after the default
-// candidate's block while the run leveled a different one. `SetupBody.start` now re-derives
+// candidate's block while the run leveled a different one. `SetupPage.start` now re-derives
 // the name from the candidate actually chosen — but only for an unlabeled switch: a
 // player's own label is theirs, and picking a different knob does not make it wrong.
 
@@ -18,7 +18,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SetupBody, type SetupChoice } from "../views/overlays/SetupBody";
+import { SetupPage, type SetupChoice } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import type { SetupOption } from "../views/level/leveling";
 import type { LevelParamCandidate } from "../lib/types";
@@ -78,12 +78,12 @@ async function pickTubeScreamerAndStart(option: SetupOption) {
   const onStart = vi.fn<(c: SetupChoice[]) => void>();
   render(
     <ThemeProvider>
-      {/* The param picker is card-portaled (`usePickAnchor`), and in production SetupBody
-          always lives inside the wizard's `<Dialog>` — supply the same card context. */}
+      {/* The picker is card-portaled (`usePickAnchor`), and in production SetupPage
+          always lives inside the wizard's full-page card — supply the same card
+          context. */}
       <WithCard>
-        <SetupBody
+        <SetupPage
           options={[option]}
-          presetCount={1}
           isRelevel={false}
           instrumentOptions={instrumentOptions}
           targetOptions={targetOptions}
@@ -97,19 +97,20 @@ async function pickTubeScreamerAndStart(option: SetupOption) {
   );
   const user = userEvent.setup();
   // Every row levels now (D2 — no "Make level-neutral" opt-in any more). Open the
-  // BLOCK dropdown, currently on the tone-safe DEFAULT block (Boost)…
-  await user.click(screen.getByTitle("Choose this sound's leveling block"));
-  // …and pick the OTHER block (its catalog full name, all-caps) — a DIFFERENT block
-  // auto-picks its best enabled param (its only one here, `level`), so this single
-  // click both overrides the block AND lands on the right control.
-  await user.click(await screen.findByText("GREENBOX 8"));
+  // flattened control picker, currently on the tone-safe DEFAULT candidate (Boost's
+  // gain)…
+  await user.click(screen.getByTitle("Choose this sound's leveling control"));
+  // …and pick the OTHER block's own (only, hence best-ranked) candidate — one row
+  // combines block + param, so a single click both overrides the block AND lands
+  // on the right control.
+  await user.click(await screen.findByText("GREENBOX 8 — Level"));
   // The backup acknowledgment gates the primary button on a fresh run.
   await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
-  await user.click(screen.getByRole("button", { name: /level 1 sound/i }));
+  await user.click(screen.getByRole("button", { name: /start.*1 sound/i }));
   return onStart;
 }
 
-describe("SetupBody — label provenance for an unlabeled footswitch", () => {
+describe("SetupPage — label provenance for an unlabeled footswitch", () => {
   it("renames the row after the PICKED block, so the customLabel write names what was leveled", async () => {
     const onStart = await pickTubeScreamerAndStart(fsOption());
     expect(onStart).toHaveBeenCalledTimes(1);

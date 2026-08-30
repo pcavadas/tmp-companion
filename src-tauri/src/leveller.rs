@@ -307,10 +307,12 @@ pub struct LevelResult {
     /// Best-effort rebalance "verify by ear" flag (lane-mute bleed may have skewed the
     /// equal-solo balance). Distinct from `dynamic_spread_lu`; the UI ORs both.
     pub verify_by_ear: bool,
-    /// The preset's saved `presetLevel` BEFORE this run wrote it — the revert
-    /// anchor for the Summary's "Restore original". Stamped by the `level_preset`
-    /// command (from its base-isolation preset read); `None` when the read failed
-    /// or the path doesn't write `presetLevel` (block-knob / scene paths).
+    /// The preset's saved `presetLevel` BEFORE this run wrote it — enables the
+    /// re-run idempotency skip (see `level_unchanged`): a re-run that solves the
+    /// SAME level as last time reloads the stored preset and returns without
+    /// writing. Stamped by the `level_preset` command (from its base-isolation
+    /// preset read); `None` when the read failed or the path doesn't write
+    /// `presetLevel` (block-knob / scene paths). Not surfaced in the UI.
     pub previous_level: Option<f32>,
     /// PREDICTED true peak (dBTP) at `final_level`, extrapolated from the reference
     /// capture's measured true peak (see `predicted_true_peak_dbtp`) — an ESTIMATE,
@@ -1610,18 +1612,6 @@ pub fn common_target(cs: &[f64], headroom_lu: f64) -> Option<f64> {
         .map(|min_c| min_c - headroom_lu)
 }
 
-/// The reachable common target for a run whose ceilings were ALREADY measured — the same
-/// `min(C − offset) − headroom` math as [`level_setlist`]'s pass-1→target step, but reusing
-/// the run's measured `C` values (zero re-capture). Each `ceilings` entry is
-/// `(c_lufs, offset_lu)`: the raw measured ceiling and that sound's per-instrument
-/// Fletcher–Munson playback offset. The returned target is in PRE-offset space (the runner
-/// adds `offset` back), so an entry leveled `offset` hotter still fits under its `C` — exactly
-/// [`common_target`] on the offset-adjusted ceilings. `None` when no ceiling is finite.
-pub fn common_reachable_target(ceilings: &[(f64, f64)], headroom_lu: f64) -> Option<f64> {
-    let cs: Vec<f64> = ceilings.iter().map(|(c, offset)| c - offset).collect();
-    common_target(&cs, headroom_lu)
-}
-
 /// Amp `outputLevel` a redistribution-compensated knob must stay above — never write a
 /// compensating value toward deep digital silence (`outputLevel = 0` reads as silence).
 pub const REDIST_MIN_KNOB: f32 = 0.05;
@@ -1818,155 +1808,6 @@ pub fn apply_levels(
     Ok((opts.save, verify_lufs))
 }
 
-/// Identity check for the Restore write: the preset-list row at `slot` must still
-/// carry the display name recorded when the run leveled it. A slot is a position,
-/// not an identity — if the list drifted (a move/clear/save-over between the run
-/// and the Restore click), writing by slot alone would save the old level onto a
-/// DIFFERENT preset. Pure (unit-tested); the caller supplies a fresh list read.
-fn verify_slot_name(
-    list: &[crate::session::PresetEntry],
-    slot: u32,
-    expected_name: &str,
-) -> Result<(), String> {
-    let now = list
-        .iter()
-        .find(|p| p.slot == slot)
-        .map(|p| p.name.as_str())
-        .ok_or_else(|| format!("slot {slot} is no longer in the preset list — not restoring"))?;
-    if now != expected_name {
-        return Err(format!(
-            "preset at slot {slot} is now \"{now}\" (expected \"{expected_name}\") — not restoring"
-        ));
-    }
-    Ok(())
-}
-
-/// Restore a preset's `presetLevel` to a pre-leveling snapshot value and SAVE —
-/// the Summary "Restore original" write. A pure write (no verify capture), so the
-/// stimulus is irrelevant; reuses the validated `apply_level` seam (reload → set →
-/// save) with an empty stimulus. Slot-keyed destructive write ⇒ the mapping is
-/// confirmed with a non-destructive read first ([`verify_slot_name`], the
-/// write-safety lesson) so a drifted preset list fails loudly instead of saving
-/// the old level onto a different preset.
-pub fn restore_preset_level(slot: u32, level: f32, expected_name: &str) -> Result<(), String> {
-    {
-        let mut s = Session::connect()?;
-        let list = s.list_my_presets()?;
-        verify_slot_name(&list, slot, expected_name)?;
-    }
-    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
-    let opts = LevelOptions {
-        save: true,
-        verify: false,
-        ..Default::default()
-    };
-    apply_level(slot, &[], &LevelKnob::PresetLevel, level, opts, true).map(|_| ())
-}
-
-/// One recorded pre-redistribution knob to write back on Restore. `scene_slot` `None` = the
-/// base amp (plain `changeParameter`); `Some(i)` = the i-th FS scene overlay (scene-edit).
-pub struct PrevKnobWrite {
-    pub group_id: String,
-    pub node_id: String,
-    pub scene_slot: Option<u32>,
-    pub value: f32,
-}
-
-/// Restore a redistribution: write `preset_level` + every recorded amp `outputLevel` back on
-/// ONE live-edit session (base scene recalled before the save — the empty-graph-corruption
-/// guard), name-guarded. The reverse of `redistribute_clamped_headroom`'s persisted write —
-/// pure writes, NO measurement. Slot-keyed destructive write ⇒ a non-destructive name read
-/// guards it first, so a drifted list fails loudly instead of restoring onto a different preset.
-///
-/// `knobs` is written GROUPED by `scene_slot` (one `set_knobs` call per distinct scene,
-/// base included), not one `set_knob` call per knob: a parallel-merged preset's base or a
-/// single scene can carry ≥2 restored knobs, and calling `set_knob` per knob would
-/// re-`load_scene` the SAME target between them, reverting the earlier knob's just-written
-/// value before this function ever saves (`set_knobs`'s own doc: "calling `set_knob` per
-/// knob re-`load_scene`s between writes, which reverts the prior knob's unsaved value").
-pub fn restore_redistribution(
-    slot: u32,
-    preset_level: f32,
-    knobs: &[PrevKnobWrite],
-    expected_name: &str,
-) -> Result<(), String> {
-    // The saved doc `set_knobs` needs for a per-scene restore write, read before the
-    // name-guard session (`read_saved_preset` sleeps after itself).
-    let saved = saved_for_scene_knobs(
-        slot,
-        &knobs
-            .iter()
-            .map(|k| LevelKnob::Block {
-                group_id: k.group_id.clone(),
-                node_id: k.node_id.clone(),
-                parameter_id: "outputLevel".to_string(),
-                scene_slot: k.scene_slot,
-            })
-            .collect::<Vec<_>>(),
-    );
-    {
-        let mut s = Session::connect()?;
-        let list = s.list_my_presets()?;
-        verify_slot_name(&list, slot, expected_name)?;
-    }
-    ensure_fresh_load(slot, &mut || crate::op_aborted())?;
-    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
-    let mut s = Session::connect()?;
-    s.begin_live_edit()?;
-    s.load_preset(slot)?;
-    for _ in 0..8 {
-        let _ = s.heartbeat();
-        let _ = s.pump_collect(150);
-    }
-    s.set_preset_level(preset_level)?;
-    crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
-    write_grouped_knobs(&mut s, knobs, saved.as_ref())?;
-    recall_base(&mut s)?;
-    s.save_current_preset(slot)?;
-    register_slot_save(slot, SaveWitness::PresetLevel(preset_level));
-    Ok(())
-}
-
-/// Write `knobs` GROUPED by `scene_slot` (one `set_knobs` call per distinct scene,
-/// base included) on an already-open session — split out of `restore_redistribution`
-/// so the grouping is unit-testable against `SimDevice` without a real HID
-/// connection (`restore_redistribution` itself needs `Session::connect()` +
-/// `list_my_presets`' "My Presets" echo, which the fake doesn't model). See
-/// `restore_redistribution`'s doc for why grouping (not one `set_knob` call per
-/// knob) matters.
-fn write_grouped_knobs(
-    s: &mut Session,
-    knobs: &[PrevKnobWrite],
-    saved: Option<&serde_json::Value>,
-) -> Result<(), String> {
-    let level_knobs: Vec<LevelKnob> = knobs
-        .iter()
-        .map(|k| LevelKnob::Block {
-            group_id: k.group_id.clone(),
-            node_id: k.node_id.clone(),
-            parameter_id: "outputLevel".to_string(),
-            scene_slot: k.scene_slot,
-        })
-        .collect();
-    let mut scenes_seen: Vec<Option<u32>> = Vec::new();
-    for k in knobs {
-        if !scenes_seen.contains(&k.scene_slot) {
-            scenes_seen.push(k.scene_slot);
-        }
-    }
-    for scene in scenes_seen {
-        let group: Vec<(&LevelKnob, f32)> = level_knobs
-            .iter()
-            .zip(knobs)
-            .filter(|(_, k)| k.scene_slot == scene)
-            .map(|(lk, k)| (lk, k.value))
-            .collect();
-        set_knobs(s, &group, saved)?;
-        let _ = s.heartbeat();
-    }
-    Ok(())
-}
-
 /// Is the solved `final_level` the same as the preset's already-saved `previous`
 /// level, within the LU-space `KNOB_TOL_LU` band? Deliberately matches
 /// `KNOB_TOL_LU` rather than a tighter ratio — a band under the ~0.12 LU measured
@@ -2047,10 +1888,7 @@ pub fn level_preset(
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
         // Idempotency skip: the solved level matches what's already saved — reload to
         // discard the measurement's ref-level edit (same recovery as the NO_SIGNAL
-        // branch above) and return without writing. `previous_level: None` on the
-        // result (not `previous_level`/`Some(p)`) is CRITICAL: the UI's Summary
-        // "Restore original" button gates on it, and there is nothing to restore when
-        // this run touched nothing.
+        // branch above) and return without writing.
         if let Some(p) = previous_level {
             if !clamped && level_unchanged(final_level, p) {
                 log::info!(
@@ -2343,9 +2181,9 @@ pub struct SceneLevelBenchmarkRow {
 }
 
 /// The field-8 saved doc `set_knobs` needs for its Scene Edit decision, for the ENTRY
-/// POINTS that can't be handed one: the probe/legacy/restore seams whose callers live
+/// POINTS that can't be handed one: the probe/legacy seams whose callers live
 /// outside the leveling run that already read it (`level_preset_block`,
-/// `mute_floor_report`, `restore_redistribution`, the bench runner). Reads ONLY when a
+/// `mute_floor_report`, the bench runner). Reads ONLY when a
 /// scene target is actually present, so every base/`presetLevel` path pays nothing, and
 /// ONCE per run — the batched scene runners take the command's single read instead
 /// (`read_saved_preset`'s read-once contract). `None` (read failed) makes `set_knobs`
@@ -2487,7 +2325,7 @@ fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<
 /// Write a SET of block knobs that all belong to the SAME scene (or all to base),
 /// doing the scene recall ONCE up front (NOT per knob — calling this per knob
 /// individually re-`load_scene`s between writes, which reverts the prior knob's
-/// unsaved value; `restore_redistribution` groups its knobs by scene for exactly
+/// unsaved value; a multi-knob caller must group its knobs by scene for exactly
 /// this reason). Ordering: load scene → (per-scene only) enable Scene Edit on
 /// every per-scene block → ONE settle → write every value.
 ///
@@ -2629,7 +2467,7 @@ fn set_knobs(
                     ));
                 };
                 match scene_write_verdict_for_param(sv, scene, node_id, parameter_id) {
-                    SceneWriteVerdict::WriteDirect { .. } => {}
+                    SceneWriteVerdict::WriteDirect => {}
                     SceneWriteVerdict::NeedsEnable => {
                         let node_key = (group_id.as_str(), node_id.as_str());
                         if !needs_enable.contains(&node_key) {
@@ -8649,22 +8487,6 @@ mod tests {
         );
     }
 
-    // Restore identity guard: passes on the recorded name, fails loudly on a
-    // renamed/moved slot or a slot that left the list (slot ≠ identity).
-    #[test]
-    fn restore_verify_slot_name_guards_drift() {
-        let entry = |slot: u32, name: &str| crate::session::PresetEntry {
-            slot,
-            name: name.to_string(),
-        };
-        let list = [entry(0, "Clean Twin"), entry(1, "Cello")];
-        assert!(verify_slot_name(&list, 1, "Cello").is_ok());
-        let e = verify_slot_name(&list, 1, "Synth").unwrap_err();
-        assert!(e.contains("not restoring") && e.contains("Cello"), "{e}");
-        let e = verify_slot_name(&list, 7, "Cello").unwrap_err();
-        assert!(e.contains("no longer in the preset list"), "{e}");
-    }
-
     // Footswitch generic param-space secant: hits a linear response, gives up on a flat one.
     #[test]
     fn fs_secant_converges_and_detects_flat() {
@@ -8868,49 +8690,6 @@ mod tests {
         assert_eq!(redistribute_delta_db(0.5, 0.0, 0.5), 0.0);
         // pl at ceiling (1.0) → no headroom → 0 (the quiet class PR6 owns).
         assert_eq!(redistribute_delta_db(1.0, 3.0, 0.5), 0.0);
-    }
-
-    #[test]
-    fn common_reachable_target_is_min_of_offset_adjusted_ceilings() {
-        use super::{common_reachable_target, common_target};
-        // Guitar-only (offset 0): pure min − headroom, identical to `common_target`.
-        let g = [(-28.0, 0.0), (-23.0, 0.0)];
-        assert_eq!(
-            common_reachable_target(&g, 1.0),
-            common_target(&[-28.0, -23.0], 1.0),
-        );
-        assert_eq!(common_reachable_target(&g, 1.0), Some(-29.0)); // min(-28,-23) − 1
-
-        // OFFSET ROUND-TRIP (the offset double-application guard — invisible on guitar):
-        // a bass ceiling C=-24 with a +1.5 LU playback offset constrains at C−offset=-25.5.
-        // A quieter guitar ceiling C=-28 (offset 0) still binds the min → target -29. The
-        // runner ADDS the offset back, so the bass's EFFECTIVE target is -29 + 1.5 = -27.5,
-        // which sits UNDER its raw ceiling -24 → reachable (offset applied EXACTLY once).
-        let mixed = [(-28.0, 0.0), (-24.0, 1.5)];
-        let t = common_reachable_target(&mixed, 1.0).expect("finite");
-        assert!((t - -29.0).abs() < 1e-9, "t={t}");
-        for &(c, offset) in &mixed {
-            assert!(
-                t + offset <= c + 1e-9,
-                "effective target {} must fit under ceiling {c} (offset {offset})",
-                t + offset,
-            );
-        }
-
-        // When the BASS's offset-adjusted ceiling is the lowest, IT binds: C=-24 offset 3.0
-        // → -27 constrains vs a guitar -26 offset 0 → min(-27,-26) − 1 = -28.
-        assert_eq!(
-            common_reachable_target(&[(-26.0, 0.0), (-24.0, 3.0)], 1.0),
-            Some(-28.0)
-        );
-
-        // Non-finite ceilings (a silent capture) are ignored; all-non-finite → None.
-        assert_eq!(
-            common_reachable_target(&[(f64::NAN, 0.0), (-22.0, 0.0)], 1.0),
-            Some(-23.0)
-        );
-        assert_eq!(common_reachable_target(&[(f64::NAN, 0.0)], 1.0), None);
-        assert_eq!(common_reachable_target(&[], 1.0), None);
     }
 
     // ── joint-k (parallel-merged) solve ──────────────────────────────────────
@@ -9734,50 +9513,6 @@ mod tests {
                 .any(|e| matches!(e, crate::sim_device::SimEvent::Saved(30))),
             "the save itself must still land: {ev:?}"
         );
-    }
-
-    // A multi-lane redistribution restore (≥2 base knobs, e.g. a parallel-merged
-    // preset's two amps) must recall base ONCE for the whole group, not once per
-    // knob — a per-knob `set_knob` loop would re-`load_scene(BASE)` between
-    // writes, reverting the earlier knob's just-written value before the batch
-    // ever saves.
-    #[test]
-    fn write_grouped_knobs_recalls_base_once_for_multiple_base_knobs() {
-        let sim = crate::sim_device::SimDevice::new();
-        let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
-        let knobs = vec![
-            PrevKnobWrite {
-                group_id: "G1".into(),
-                node_id: "amp1".into(),
-                scene_slot: None,
-                value: 0.6,
-            },
-            PrevKnobWrite {
-                group_id: "G1".into(),
-                node_id: "amp2".into(),
-                scene_slot: None,
-                value: 0.7,
-            },
-        ];
-        write_grouped_knobs(&mut s, &knobs, None).expect("write_grouped_knobs");
-        let ev = sim.events();
-        let base_recalls = ev
-            .iter()
-            .filter(|e| matches!(e, crate::sim_device::SimEvent::LoadScene(scene) if *scene == crate::session::BASE_SCENE_SLOT))
-            .count();
-        assert_eq!(
-            base_recalls, 1,
-            "two base knobs must share ONE base recall, not one each: {ev:?}"
-        );
-        // Both knobs' values must have actually landed (not reverted by a
-        // redundant recall).
-        assert!(ev.iter().any(
-            |e| matches!(e, crate::sim_device::SimEvent::ChangeParameter { node, .. } if node == "amp1")
-        ));
-        assert!(ev.iter().any(
-            |e| matches!(e, crate::sim_device::SimEvent::ChangeParameter { node, .. } if node == "amp2")
-        ));
     }
 
     /// Saved (field-8) preset for the Scene Edit tests: one amp node in G1, base

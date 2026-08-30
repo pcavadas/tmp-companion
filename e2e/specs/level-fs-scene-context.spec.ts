@@ -11,7 +11,7 @@ import {
   simEvents,
 } from "../fixtures/scenario";
 
-// PR #144 NEW COVERAGE — the D3 scene-context picker (`FsRowControls` in SetupBody.tsx)
+// PR #144 NEW COVERAGE — the D3 scene-context picker (`FsRowControls` in SetupPage.tsx)
 // drives `FootswitchLevelJob.sceneContext` on the wire, and a USER OVERRIDE of the
 // auto-suggested scene must actually ride the call — not just the suggestion happening to
 // be right. E2E Combined Level (406)'s BOOST switch (`ftsw[2]`, `ACD_KingOfTone`, G4) is
@@ -121,7 +121,7 @@ test.describe("Level Setup — footswitch scene-context override rides the wire 
     // the preset and can itself emit load-class events) — the slice below is the RUN's own.
     const from = (await simEvents(page)).length;
 
-    await page.getByRole("button", { name: /Level 1 sound/ }).click();
+    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     // Per this file's header, the per-row OUTCOME is not observable offline (the Channel
     // seam) — wait for the terminal state without asserting what it says.
     await expect(

@@ -15,7 +15,6 @@
 // commit) → run (steps the chosen scenes) → summary.
 
 import type {
-  ClampKind,
   FootswitchInfo,
   LevelJob,
   LevelParamCandidate,
@@ -23,10 +22,10 @@ import type {
   Profile,
   SceneInfo,
   SilenceHint,
-  TradeSummary,
 } from "../../lib/types";
 import type { PresetRow } from "../PresetList";
 import type { PickOption } from "../overlays/Pick";
+import type { PresetGroup } from "./PresetGroupRow";
 // `SceneHandlePick` is declared ONCE, as the `levelScenesApplyBatched` wire type in
 // invoke.ts (its `SceneLevelJobWire.handle` field) — re-exported below so
 // `SetupOption`/`RunItem` and the scene-handle-picker wiring can import it from
@@ -34,7 +33,6 @@ import type { PickOption } from "../overlays/Pick";
 import type { SceneHandlePick } from "../../lib/invoke";
 import { blockArtTile, shortFallback } from "../../models/blockArt";
 import { stripNameFor } from "../../models/catalog";
-import { slotLabel } from "../../lib/format";
 
 export type { SceneHandlePick };
 
@@ -513,18 +511,8 @@ export interface RunItem {
   /** Base rows only: this row's handle pick, carried from Set up into the dispatch
    *  (mirrors `SetupOption.baseHandle`). */
   baseHandle?: BaseHandlePick | null;
-  /** The clamp's CAUSE from the shared taxonomy, when clamped — render
-   *  `CLAMP_MESSAGES[clampKind]` verbatim. Null/undefined on a non-clamped row. */
-  clampKind?: ClampKind | null;
-  /** THE HEADROOM TRADE this row's batch made (or, on a preview, WOULD make) — see
-   *  `TradeSummary`. Stamped on every row of a batch that traded. Null/undefined
-   *  otherwise. */
-  trade?: TradeSummary | null;
   /** Dynamics spread of the measure capture (LU); drives the "dynamic" by-ear cause. */
   spreadLu?: number | null;
-  /** The preset's saved `presetLevel` before this run wrote it — enables the Summary
-   *  "Restore original" (Base rows only; scene/footswitch writes aren't revertable). */
-  previousLevel?: number | null;
   /** PREDICTED true peak (dBTP) at the leveled setting — an estimate, never a
    *  re-measurement. Only Base rows carry a value (undefined/null elsewhere); drives
    *  the Summary "may clip" chip when > −1 dBTP. */
@@ -573,18 +561,29 @@ export const ceilingOf = (it: RunItem): number | null => {
   return c != null && Number.isFinite(c) ? c : null;
 };
 
+/** Group run items by preset slot, ascending — the shape both Run and Summary render
+ *  (one `PresetGroupRow` per preset, its items nested inside). */
+export function groupItemsBySlot(items: RunItem[]): PresetGroup<RunItem>[] {
+  const by = new Map<number, PresetGroup<RunItem>>();
+  items.forEach((it) => {
+    let g = by.get(it.slot);
+    if (!g) {
+      g = { slot: it.slot, name: it.presetName, items: [] };
+      by.set(it.slot, g);
+    }
+    g.items.push(it);
+  });
+  return [...by.values()].sort((a, b) => a.slot - b.slot);
+}
+
 /** The offbranch ("silent capture") row status, refined by the preset's JSON-visible
- *  cause when the backup scan found one. Rendered verbatim in RunBody + SummaryBody. */
+ *  cause when the backup scan found one. Rendered verbatim in RunPage; used only to
+ *  branch copy in SummaryPage. */
 export function offbranchStatus(hint: SilenceHint | undefined): string {
   if (hint === "amp_zero") return "amp output at zero";
   if (hint === "exp_mute") return "exp pedal may mute";
   return "not on USB 1/2";
 }
-
-/** The sound's preset line — the mono sub-line under its name. Rendered verbatim in
- *  RunBody + SummaryBody, so it lives here rather than being retyped on both. */
-export const presetLine = (it: RunItem): string =>
-  `${slotLabel(it.slot)} · ${it.presetName}`;
 
 /** The LUFS a row is ACTUALLY aiming at. The reachable-common-target fallback stamps an
  *  explicit override that wins over the named target — the run loop's dispatch and the

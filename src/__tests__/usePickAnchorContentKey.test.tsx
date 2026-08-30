@@ -3,12 +3,11 @@
 //
 // BUG→GATE. `usePickAnchor`'s measure/place layout effect depended only on `[open, anchor]`,
 // both fixed at `openMenu` time, while what it measures is `menuRef.current.offsetHeight`.
-// `BlockLevelPick`'s BLOCK dropdown (Scene/Base rows' first-stage picker, D2/Part C) is the
-// one whose body lands LATE: opening fires the lazy per-preset candidate read, so the first
-// paint is a one-line "Loading controls…" and the real block list appears a moment later.
-// The placement therefore stayed the skeleton's — a tall block list rendered straight off
-// the bottom edge of the wizard card, never clamped and never flipped above the trigger,
-// with its rows unreachable.
+// `FlatLevelPick` (Scene/Base rows' leveling-handle picker, D2) is the one whose body lands
+// LATE: opening fires the lazy per-preset candidate read, so the first paint is a one-line
+// "Loading controls…" and the real candidate list appears a moment later. The placement
+// therefore stayed the skeleton's — a tall list rendered straight off the bottom edge of the
+// wizard card, never clamped and never flipped above the trigger, with its rows unreachable.
 //
 // The proxy this asserts is the menu's own `top`, which IS the effect's only output. The
 // trigger is placed low in the card on purpose: a short menu fits below it (no flip), a
@@ -21,12 +20,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { BlockLevelPick } from "../views/overlays/BlockLevelPick";
+import { FlatLevelPick } from "../views/level/FlatLevelPick";
 import { WithCard } from "./pickCardTestUtils";
 import type {
-  BlockLevelFetch,
+  FlatLevelFetch,
   BlockLevelCandidate,
-} from "../views/overlays/BlockLevelPick";
+} from "../views/level/FlatLevelPick";
 
 const CARD_H = 400;
 const CARD_W = 400;
@@ -84,10 +83,9 @@ function stubLayout() {
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
     configurable: true,
     get(this: HTMLElement) {
-      // Chrome (the pseudo-option row) plus one row per rendered BLOCK — the menu
-      // measured here is the BLOCK dropdown's, whose rows carry `data-block-pick`
-      // (one per block, not one per candidate).
-      const rows = this.querySelectorAll("[data-block-pick]").length;
+      // Chrome (the pseudo-option row) plus one row per rendered CANDIDATE — the
+      // flattened list's rows carry `data-block-param-pick` (one per candidate).
+      const rows = this.querySelectorAll("[data-block-param-pick]").length;
       return 120 + rows * 60;
     },
   });
@@ -132,10 +130,10 @@ describe("usePickAnchor — a menu whose content arrives after the open", () => 
     const restore = stubLayout();
     try {
       const user = userEvent.setup();
-      const props = (candidates: BlockLevelFetch) => (
+      const props = (candidates: FlatLevelFetch) => (
         <ThemeProvider>
           <WithCard>
-            <BlockLevelPick
+            <FlatLevelPick
               pseudoLabel="Amp output level"
               handle={null}
               onHandleChange={vi.fn()}
@@ -156,7 +154,7 @@ describe("usePickAnchor — a menu whose content arrives after the open", () => 
       expect(placedForSkeleton).toBe(176);
 
       // The fetch lands with four candidates ON FOUR DIFFERENT BLOCKS (distinct
-      // `nodeId`s) → the block dropdown renders four `BlockPickRow`s, a 360px-tall
+      // `nodeId`s) → the flattened list renders four candidate rows, a 360px-tall
       // menu, so the flip point moves to `max(8, 300 - 360 - 4)` = 8. Stale placement
       // would leave it at 176, where 176 + 360 = 536 puts 136px of the list past the
       // card's 400px bottom edge.
@@ -167,7 +165,9 @@ describe("usePickAnchor — a menu whose content arrives after the open", () => 
         }),
       );
       await waitFor(() => {
-        expect(document.querySelectorAll("[data-block-pick]")).toHaveLength(4);
+        expect(
+          document.querySelectorAll("[data-block-param-pick]"),
+        ).toHaveLength(4);
       });
       const placedForList = menuTop();
 

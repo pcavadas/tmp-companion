@@ -1,18 +1,13 @@
 // src/views/overlays/index.ts — barrel for the unified leveling WIZARD.
 //
-// One persistent frame (WizardShell) with a 3-step rail (Set up · Level · Summary)
-// whose body swaps per stage. LevelingWizard is the switch; the three bodies + the
-// Pick dropdown are the parts.
+// Every stage (Set up · Level · Summary) is a full-page component in `../level/`
+// (`SetupPage`/`RunPage`/`SummaryPage`, sharing `LevelPage`'s chrome) — LevelingWizard
+// is the switch that routes stage → page. `WizardShell`/`WizardFooter`/`WizTitle`/
+// `StepRail` stay exported here for Doctor and Bulk Block Edit, which still use the
+// centered-modal wizard chrome.
 export { LevelingWizard } from "./LevelingWizard";
 export type { LevelingWizardProps } from "./LevelingWizard";
-export { WizardShell, WizardFooter, WizTitle } from "./WizardShell";
+export { WizardShell, WizardFooter, WizTitle, StepRail } from "./WizardShell";
 export type { Stage, WizardShellProps, WizardFooterProps } from "./WizardShell";
-export { stageToStep } from "./wizardContext";
-export { SetupBody } from "./SetupBody";
-export type { SetupBodyProps, SetupChoice } from "./SetupBody";
-export { RunBody } from "./RunBody";
-export type { RunBodyProps } from "./RunBody";
-export { SummaryBody } from "./SummaryBody";
-export type { SummaryBodyProps } from "./SummaryBody";
 export { Pick } from "./Pick";
 export type { PickOption, PickProps } from "./Pick";

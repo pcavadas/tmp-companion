@@ -74,7 +74,7 @@ test.describe("Pedal fiasco — a silent capture writes nothing", () => {
 
     await page.getByRole("button", { name: /Level 2 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await page.getByRole("button", { name: /Level \d+ sound/ }).click();
+    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({

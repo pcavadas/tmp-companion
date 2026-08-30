@@ -72,7 +72,6 @@ export function LevelView({
     sceneInfo,
     footswitchInfo,
     ampCandidates,
-    baseActiveAmpCountByIndex,
     blocksByIndex,
     silenceHintByIndex,
     graphByIndex,
@@ -115,7 +114,6 @@ export function LevelView({
     sceneInfo,
     footswitchInfo,
     ampCandidates,
-    baseActiveAmpCountByIndex,
     blocksByIndex,
     silenceHintByIndex,
     targetLufsByName,
@@ -360,7 +358,6 @@ export function LevelView({
         <LevelingWizard
           stage={flow.stage}
           chosen={flow.chosen}
-          flowPresetCount={flow.flowPresetCount}
           isRelevel={flow.isRelevel}
           instrumentOptions={instOptions}
           targetOptions={targetOptions}
@@ -383,8 +380,6 @@ export function LevelView({
           onRunComplete={flow.onRunComplete}
           onAccept={flow.onAccept}
           onRelevel={flow.onRelevel}
-          redistribution={flow.redistribution}
-          commonTarget={flow.commonTarget}
           onRebalanceChange={flow.setRebalance}
           onCalibrate={onCalibrate}
         />

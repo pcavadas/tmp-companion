@@ -2,6 +2,7 @@ import { test, expect } from "../fixtures/test";
 import {
   SCENARIO,
   clearScenario,
+  ensurePresetGroupOpen,
   ensureScenario,
   expectReampBalanced,
   isOnline,
@@ -86,10 +87,11 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // Two DIFFERENT per-preset targets (each preset has exactly one selected row — its
     // Base — so its `target:NAME` trigger is unique, no collision).
     const targets = [
-      { name: SCENARIO[1].name, label: "Crunch" },
-      { name: SCENARIO[2].name, label: "Lead" },
+      { slot: SCENARIO[1].slot, name: SCENARIO[1].name, label: "Crunch" },
+      { slot: SCENARIO[2].slot, name: SCENARIO[2].name, label: "Lead" },
     ];
-    for (const { name, label } of targets) {
+    for (const { slot, name, label } of targets) {
+      await ensurePresetGroupOpen(page, slot, name);
       await pickBaseTarget(page, name, label);
     }
     // The picks must actually BIND — assert each row's trigger now reads its target
@@ -100,7 +102,7 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
       );
     }
 
-    await page.getByRole("button", { name: /Level 2 sound/ }).click();
+    await page.getByRole("button", { name: /Start.*2 sound/ }).click();
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
       timeout: 240_000,
     });
@@ -159,25 +161,18 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // The wizard opens directly at Set up; tick the inline footer ack that gates the commit.
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
-    // Set up must show all THREE row kinds — proven by their distinct sub-text copy.
-    await expect(
-      page.getByText(/levels this preset against the others/),
-    ).toBeVisible(); // Base
-    await expect(
-      page.getByText(/levels this scene against/).first(),
-    ).toBeVisible(); // a footswitch SCENE
-    // PR #144: the verify-only footswitch mode is gone — every block-acting FOOTSWITCH
-    // row now levels (the same "evens out" copy every such row carries, distinct from a
-    // scene row's "levels this scene against the preset's base").
-    await expect(
-      page.getByText(/evens this footswitch out to your target/).first(),
-    ).toBeVisible(); // a block-acting FOOTSWITCH
+    // Set up must show all THREE row kinds — the redesign dropped the old per-row-kind
+    // sub-text captions (design 1a's terser direction), so this proves them by their own
+    // row label instead: Base, a scene ("Rhythm"), a block-acting footswitch ("DRIVE").
+    await expect(page.getByText("Base").first()).toBeVisible();
+    await expect(page.getByText("Rhythm").first()).toBeVisible(); // a footswitch SCENE
+    await expect(page.getByText("DRIVE").first()).toBeVisible(); // a block-acting FOOTSWITCH
     // The bake/assign mechanism is never surfaced.
     await expect(page.getByText(/baked|assigned/i)).toHaveCount(0);
 
     // Run base + scenes + footswitches → a terminal Summary (Done OR Accept; offline
     // clamps on scenes/footswitches are fine).
-    await page.getByRole("button", { name: /Level \d+ sound/ }).click();
+    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({ timeout: 1_200_000 });

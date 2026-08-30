@@ -21,7 +21,7 @@ import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SetupBody } from "../views/overlays/SetupBody";
+import { SetupPage } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import {
   ensureLibraryScan,
@@ -113,9 +113,8 @@ function renderSetup(options: SetupOption[]) {
   return render(
     <ThemeProvider>
       <WithCard>
-        <SetupBody
+        <SetupPage
           options={options}
-          presetCount={options.length}
           isRelevel={false}
           instrumentOptions={instrumentOptions}
           targetOptions={targetOptions}
@@ -132,7 +131,7 @@ function renderSetup(options: SetupOption[]) {
 const deviceCallsAgainst = (cmd: string) =>
   vi.mocked(invoke).mock.calls.filter(([c]) => c === cmd);
 
-describe("SetupBody's eager warm effect stays provably device-free", () => {
+describe("SetupPage's eager warm effect stays provably device-free", () => {
   beforeEach(() => {
     resetLibraryScan();
     vi.mocked(invoke).mockReset();
@@ -190,12 +189,13 @@ describe("SetupBody's eager warm effect stays provably device-free", () => {
       expect(deviceCallsAgainst("list_level_blocks")).toHaveLength(1);
     });
     expect(invoke).toHaveBeenCalledWith("list_level_blocks", { slot: 0 });
-    // The block dropdown lands with the one fallback-fetched block (Tweed Deluxe,
-    // rendered by its catalog full name) — pick it (the row's only, hence best-
-    // ranked, candidate) to reach the CONTROL dropdown's trigger, which now shows
-    // the picked param.
-    const blockRow = await screen.findByText("FENDER '57 DELUXE");
-    await user.click(blockRow);
-    expect(screen.getByText("Output level")).toBeInTheDocument();
+    // The flattened list lands with the one fallback-fetched block's own candidate
+    // row (Tweed Deluxe, rendered by its catalog full name + param) — one click
+    // picks it directly (no separate block/control stage).
+    const row = await screen.findByText("FENDER '57 DELUXE — Output level");
+    await user.click(row);
+    expect(
+      screen.getByText("FENDER '57 DELUXE — Output level"),
+    ).toBeInTheDocument();
   });
 });

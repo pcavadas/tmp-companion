@@ -537,8 +537,8 @@ fn bypass_only_conflict_refuses_on_an_unknown_overlay() {
 
 /// BUG→GATE (widened policy's second consumer, "Friedman HBE" preset 28):
 /// `bypass_only_conflict` calls the SAME `scene_write_verdict_for_param` the scene-leveling
-/// lane does, so its own audibility-cleared allow arm (`WriteDirect{lands_on_base:true}`)
-/// must reach Doctor too, not just the leveller. `hbe_boost_preset()` (shared from
+/// lane does, so its own audibility-cleared allow arm (`WriteDirect`) must reach Doctor
+/// too, not just the leveller. `hbe_boost_preset()` (shared from
 /// `scene_jobs_tests`) is the exact anatomy: `boost`/`ACD_Boost` bypassed in base, a
 /// bypass-only un-bypass overlay in ONLY scene 2 "Solo", no footswitch/EXP assign targeting
 /// it, and every other scene either pins its own `gain` (Full) or stays bypassed

@@ -1,15 +1,18 @@
-// src/__tests__/RunBody.test.tsx — the run step's live-capture contract and its columned
-// table. The live readout lives in the step HEADER (once per run, never per row) and shows
-// the LATEST streamed value; a row states its own scene name and target rather than one
-// concatenated label. Mirrors the advisory semantics — no assertion that the live value ≈
-// the result value.
+// src/__tests__/RunPage.test.tsx — the run step's live-capture contract and its
+// per-preset grouped rows (design handoff 1a). The live readout lives in the step
+// HEADER (once per run, never per row) and shows the LATEST streamed value; a row
+// states its own scene name and target rather than one concatenated label — the
+// preset name and slot now live once on the GROUP header, not repeated per row.
+// Mirrors the advisory semantics — no assertion that the live value ≈ the result
+// value. Replaces `RunBody.test.tsx`.
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { RunBody } from "../views/overlays/RunBody";
+import { RunPage } from "../views/level/RunPage";
 import type { RunItem } from "../views/level/leveling";
 
 const activeItem: RunItem = {
@@ -25,14 +28,14 @@ const activeItem: RunItem = {
   status: "active",
 };
 
-function runBody(
+function runPage(
   liveLufs: number | null,
   items: RunItem[] = [activeItem],
   tailMessage: string | null = null,
 ): ReactElement {
   return (
     <ThemeProvider>
-      <RunBody
+      <RunPage
         items={items}
         currentIndex={0}
         total={items.length}
@@ -51,35 +54,33 @@ function runBody(
   );
 }
 
-describe("RunBody live measuring strip", () => {
+describe("RunPage live measuring strip", () => {
   it("shows the readout (latest value + measuring caption) during an active capture", () => {
-    render(runBody(-23.1));
+    render(runPage(-23.1));
     expect(screen.getByText("−23.1")).toBeInTheDocument();
     expect(screen.getByText("LUFS")).toBeInTheDocument();
     expect(screen.getByText("measuring FS7")).toBeInTheDocument();
-    // The row's Result cell keeps its own live number; "connecting…" is only the
-    // pre-capture state.
+    // The row's own status cell keeps its own live number; "connecting…" is only
+    // the pre-capture state.
     expect(screen.getByText("leveling · −23.1")).toBeInTheDocument();
     expect(screen.queryByText("connecting…")).not.toBeInTheDocument();
   });
 
   it("renders the latest value when it updates (no smoothing, just the newest)", () => {
-    const { rerender } = render(runBody(-30.0));
+    const { rerender } = render(runPage(-30.0));
     expect(screen.getByText("−30.0")).toBeInTheDocument();
-    rerender(runBody(-21.6));
+    rerender(runPage(-21.6));
     expect(screen.getByText("−21.6")).toBeInTheDocument();
     expect(screen.queryByText("−30.0")).not.toBeInTheDocument();
   });
 
-  it("shows connecting… and hides the readout when nothing is streaming", () => {
-    render(runBody(null));
+  it("shows a 0.0 readout and the measuring caption while nothing streams yet, with the row itself connecting", () => {
+    render(runPage(null));
+    expect(screen.getByText("0.0")).toBeInTheDocument();
+    expect(screen.getByText("measuring FS7")).toBeInTheDocument();
+    // The header readout has no live value to show yet, but the ROW's own status
+    // cell still states its pre-capture state plainly.
     expect(screen.getByText("connecting…")).toBeInTheDocument();
-    // Opacity-gated, not unmounted — the header must not change height between items.
-    const meter = screen
-      .getByText("LUFS")
-      .closest<HTMLElement>("div[aria-hidden]");
-    expect(meter?.getAttribute("aria-hidden")).toBe("true");
-    expect(meter?.style.opacity).toBe("0");
   });
 
   // GATE (user report, preset 30 "Plumes+BD2+OCD"): the ceiling prepass measures every
@@ -89,13 +90,13 @@ describe("RunBody live measuring strip", () => {
   // (`leveller::PREPASS_ACTIVE_MSG`); the caption must reach the row as its VERB, or the
   // phase is still indistinguishable from the solve.
   it("uses the backend caption as the verb while a capture streams", () => {
-    render(runBody(-18.9, [{ ...activeItem, activeMessage: "measuring" }]));
+    render(runPage(-18.9, [{ ...activeItem, activeMessage: "measuring" }]));
     expect(screen.getByText("measuring · −18.9")).toBeInTheDocument();
     expect(screen.queryByText("leveling · −18.9")).not.toBeInTheDocument();
   });
 
   it("keeps the default verb for a solve row, which carries no caption", () => {
-    render(runBody(-23.1));
+    render(runPage(-23.1));
     expect(screen.getByText("leveling · −23.1")).toBeInTheDocument();
   });
 
@@ -103,18 +104,18 @@ describe("RunBody live measuring strip", () => {
   // not a verb, and must never be composed with a number.
   it("renders a caption verbatim when nothing is streaming", () => {
     const note = "waiting for the device to commit the previous save…";
-    render(runBody(null, [{ ...activeItem, activeMessage: note }]));
+    render(runPage(null, [{ ...activeItem, activeMessage: note }]));
     expect(screen.getByText(note)).toBeInTheDocument();
     expect(screen.queryByText("connecting…")).not.toBeInTheDocument();
   });
 
   it("renders the live readout ONCE, in the header — never per row", () => {
     const second: RunItem = { ...activeItem, key: "k1", status: "queued" };
-    render(runBody(-23.1, [activeItem, second]));
+    render(runPage(-23.1, [activeItem, second]));
     expect(screen.getAllByText("LUFS")).toHaveLength(1);
   });
 
-  it("never shows a live number on a resolved row (the result row is the confirm)", () => {
+  it("never shows a live number on a resolved row (the result row is the confirm)", async () => {
     const resolved: RunItem = {
       ...activeItem,
       status: "result",
@@ -122,18 +123,25 @@ describe("RunBody live measuring strip", () => {
       value: -18.0,
     };
     // Even if a late event left liveLufs non-null, a non-active row shows its result.
-    render(runBody(-21.6, [resolved]));
+    render(runPage(-21.6, [resolved]));
+    // No item is "active", so the group doesn't auto-open — expand it to reach the row.
+    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
     expect(screen.queryByText("leveling · −21.6")).not.toBeInTheDocument();
-    expect(screen.getByText("done · −18.0")).toBeInTheDocument();
+    // A plain match's checkmark glyph already says "done" — the text is just the
+    // reading (unlike clamped/off-target/skipped, which each carry their own prefix).
+    expect(screen.getByText("−18.0 LUFS")).toBeInTheDocument();
   });
 });
 
-describe("RunBody columned rows", () => {
-  it("states the scene name and its own target, not a concatenated label", () => {
-    render(runBody(null));
-    // The sound's own name owns the column; its preset is the mono sub-line.
+describe("RunPage grouped rows", () => {
+  it("states the scene name on its own row, and the preset name + slot once on the group", () => {
+    render(runPage(null));
+    // The sound's own name owns its row.
     expect(screen.getByText("Rhythm Crunch")).toBeInTheDocument();
-    expect(screen.getByText("028 · E2E Hiwatt 3S")).toBeInTheDocument();
+    // The preset name and slot live once on the GROUP header, never repeated as a
+    // per-row concatenated label.
+    expect(screen.getByText("E2E Hiwatt 3S")).toBeInTheDocument();
+    expect(screen.getByText("028")).toBeInTheDocument();
     expect(
       screen.queryByText("E2E Hiwatt 3S · Rhythm Crunch"),
     ).not.toBeInTheDocument();
@@ -145,27 +153,22 @@ describe("RunBody columned rows", () => {
     // The reachable-common-target fallback overrides a row; the cell must state what the
     // row is ACTUALLY aiming at, not the store's value for the target's name.
     const overridden: RunItem = { ...activeItem, targetOverrideLufs: -29.4 };
-    render(runBody(null, [overridden]));
+    render(runPage(null, [overridden]));
     expect(screen.getByText("Stage · −29.4")).toBeInTheDocument();
-  });
-
-  it("labels the columns", () => {
-    render(runBody(null));
-    for (const head of ["Sound", "Instrument", "Target", "Result"]) {
-      expect(screen.getByText(head)).toBeInTheDocument();
-    }
   });
 
   // The Result cell is an if-chain whose fallthrough is "done", so a miss state with no
   // branch of its own reports as LEVELED — the reason unconverged needs one here too.
-  it("states an unconverged row as off target, not done and not clamped", () => {
+  it("states an unconverged row as off target, not done and not clamped", async () => {
     const missed: RunItem = {
       ...activeItem,
       status: "result",
       outcome: "unconverged",
       value: -24.3,
     };
-    render(runBody(null, [missed]));
+    render(runPage(null, [missed]));
+    // No item is "active", so the group doesn't auto-open — expand it to reach the row.
+    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
     expect(screen.getByText("off target · −24.3")).toBeInTheDocument();
     expect(screen.queryByText("done · −24.3")).not.toBeInTheDocument();
     expect(screen.queryByText(/clamped/)).not.toBeInTheDocument();
@@ -173,18 +176,18 @@ describe("RunBody columned rows", () => {
 });
 
 // Issue 6b: the batch-wide tail caption ("Saving…" / "Verifying…") has no row of its
-// own — the header subtitle is the only place it can surface.
-describe("RunBody tail caption (issue 6b)", () => {
-  const defaultSubtitle = /preset.*sound.*saves automatically/;
+// own — it surfaces once, under the progress bar.
+describe("RunPage tail caption (issue 6b)", () => {
+  const defaultCaption = /preset.*sound.*saves automatically/;
 
-  it("renders tailMessage in place of the default subtitle while set", () => {
-    render(runBody(null, [activeItem], "Saving…"));
+  it("renders tailMessage in place of the default caption while set", () => {
+    render(runPage(null, [activeItem], "Saving…"));
     expect(screen.getByText("Saving…")).toBeInTheDocument();
-    expect(screen.queryByText(defaultSubtitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(defaultCaption)).not.toBeInTheDocument();
   });
 
-  it("falls back to the default subtitle when no tail is set", () => {
-    render(runBody(null, [activeItem], null));
-    expect(screen.getByText(defaultSubtitle)).toBeInTheDocument();
+  it("falls back to the default caption when no tail is set", () => {
+    render(runPage(null, [activeItem], null));
+    expect(screen.getByText(defaultCaption)).toBeInTheDocument();
   });
 });

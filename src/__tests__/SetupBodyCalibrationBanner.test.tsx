@@ -1,14 +1,14 @@
-// SetupBody's onboarding nudge toward Tier-2 calibration — a small dismissable
+// SetupPage's onboarding nudge toward Tier-2 calibration — a small dismissable
 // banner shown only while the CHOSEN (apply-to-all) instrument is a real,
 // uncalibrated profile. Mirrors InstrumentNudge.test.tsx's render pattern: real
-// timers (repo-wide RTL fake-timer hang gotcha), SetupBody renders synchronously.
+// timers (repo-wide RTL fake-timer hang gotcha), SetupPage renders synchronously.
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { SetupBody } from "../views/overlays/SetupBody";
+import { SetupPage } from "../views/level/SetupPage";
 import type { SetupOption } from "../views/level/leveling";
 import type { PickOption } from "../views/overlays/Pick";
 
@@ -36,9 +36,8 @@ const targetOptions: PickOption[] = [{ id: "Rhythm", label: "Rhythm −18" }];
 function renderSetup(defaultInst: string) {
   return render(
     <ThemeProvider>
-      <SetupBody
+      <SetupPage
         options={[baseOpt]}
-        presetCount={1}
         isRelevel={false}
         instrumentOptions={instrumentOptions}
         targetOptions={targetOptions}
@@ -51,7 +50,7 @@ function renderSetup(defaultInst: string) {
   );
 }
 
-describe("SetupBody calibration onboarding banner", () => {
+describe("SetupPage calibration onboarding banner", () => {
   it("uncalibrated profile chosen → shows the banner", () => {
     renderSetup("tele");
     expect(screen.getByText(BANNER_TEXT)).toBeTruthy();

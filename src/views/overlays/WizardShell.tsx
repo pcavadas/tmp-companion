@@ -21,7 +21,7 @@ import { Icon } from "../../ui/Icon";
 import { WIZ_STEPS, type Stage, type RailStep } from "./wizardContext";
 
 // Re-export the wizard's shared TYPES so existing importers keep working; the
-// VALUE exports (DialogCardCtx, stageToStep, WIZ_STEPS) live in ./wizardContext.
+// VALUE exports (DialogCardCtx, WIZ_STEPS) live in ./wizardContext.
 export type { Stage, RailStep };
 
 // ---- step rail (header) ----------------------------------------------------
@@ -140,8 +140,9 @@ export interface WizardShellProps {
   children: ReactNode;
   /** Fixed frame height (px). Default 512. */
   height?: number;
-  /** Frame width step. Default "md" — the leveling wizard opts into "lg" for its
-   *  columned run table; the Doctor run keeps the default. */
+  /** Frame width step. Default "md", the only size any current caller passes (the
+   *  leveling wizard moved off `WizardShell` entirely, design 1a) — "lg" stays wired
+   *  for a future wider consumer. */
   size?: DialogSize;
   /** Rail nodes (defaults to the leveling rail). Bulk Block Edit passes its own
    *  4-node rail (Block · Choose · Check · Done). */

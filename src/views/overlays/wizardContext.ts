@@ -1,7 +1,7 @@
 // src/views/overlays/wizardContext.ts — non-component shared bits of the leveling
-// wizard: the dialog-card context, the stage union + rail-step type, and the
-// stage→step mapping. Split from ./WizardShell so that file exports only
-// components (React Fast Refresh's component-boundary rule) without disabling it.
+// wizard: the dialog-card context and the stage union + rail-step type. Split from
+// ./WizardShell so that file exports only components (React Fast Refresh's
+// component-boundary rule) without disabling it.
 
 export type Stage = "closed" | "setup" | "run" | "summary";
 
@@ -15,15 +15,9 @@ export interface RailStep {
   label: string;
 }
 
-/** The leveling wizard's 3-step rail, shared by the modal WizardShell (run/summary)
- *  and the full-page LevelSetupPage (set-up). */
+/** `StepRail`/`WizardShell`'s default `steps` value. */
 export const WIZ_STEPS: readonly RailStep[] = [
   { key: "setup", label: "Set up" },
   { key: "level", label: "Level" },
   { key: "summary", label: "Summary" },
 ];
-
-/** Stage → rail step index: setup 0 · run 1 · summary 2. */
-export function stageToStep(stage: Stage): number {
-  return stage === "setup" ? 0 : stage === "run" ? 1 : 2;
-}

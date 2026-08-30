@@ -81,7 +81,6 @@ describe("useLevelingFlow — at most one active row at a time (BUG 2)", () => {
             ],
           ],
         ]),
-        baseActiveAmpCountByIndex: new Map([[0, 1]]),
         blocksByIndex: new Map(),
         silenceHintByIndex: new Map(),
         targetLufsByName: () => -20,

@@ -895,13 +895,8 @@ fn shared_write_is_scene_local_false_on_an_ambiguous_base_node_match() {
 fn scene_write_verdict_for_param_allows_the_solo_write_direct_with_no_enable() {
     let verdict = scene_write_verdict_for_param(&hbe_boost_preset(), 2, HBE_NODE, HBE_PARAM);
     assert!(
-        matches!(
-            verdict,
-            SceneWriteVerdict::WriteDirect {
-                lands_on_base: true
-            }
-        ),
-        "the audibility-guarded shared write must land WriteDirect with lands_on_base=true"
+        matches!(verdict, SceneWriteVerdict::WriteDirect),
+        "the audibility-guarded shared write must be allowed through as WriteDirect"
     );
     assert!(
         !matches!(verdict, SceneWriteVerdict::NeedsEnable),
@@ -930,9 +925,7 @@ fn scene_write_verdict_for_param_full_overlay_arm_unchanged() {
     // guard, exactly like the paramless rule, and lands on the overlay (not base).
     assert!(matches!(
         scene_write_verdict_for_param(&hbe_boost_preset(), 0, HBE_NODE, HBE_PARAM),
-        SceneWriteVerdict::WriteDirect {
-            lands_on_base: false
-        }
+        SceneWriteVerdict::WriteDirect
     ));
 }
 
@@ -963,7 +956,7 @@ fn scene_write_verdict_for_param_unknown_overlay_arm_unchanged() {
             assert_eq!(scope, RefusedScope::Unknown);
             assert!(reason.contains("truncated"));
         }
-        SceneWriteVerdict::WriteDirect { .. } => {
+        SceneWriteVerdict::WriteDirect => {
             panic!("expected Refuse(Unknown), got WriteDirect")
         }
         SceneWriteVerdict::NeedsEnable => panic!("expected Refuse(Unknown), got NeedsEnable"),

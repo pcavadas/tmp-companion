@@ -100,7 +100,6 @@ const deps = {
       ],
     ],
   ]),
-  baseActiveAmpCountByIndex: new Map([[0, 1]]),
   blocksByIndex: new Map(),
   silenceHintByIndex: new Map(),
   // Distinguishes the base row's own target from the scene row's — proves the anchor

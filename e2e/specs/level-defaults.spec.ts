@@ -14,7 +14,7 @@ import {
 } from "../fixtures/scenario";
 
 // First-session DEFAULTS + the physics-outcome gates (the real user's complaint set), driven
-// through the REAL UI so the SummaryBody banner copy is asserted verbatim. Outcomes come from
+// through the REAL UI so the SummaryPage banner copy is asserted verbatim. Outcomes come from
 // the offline physics-faithful capture model (sim_device.rs) + e2e/fixtures/scenario-loudness.json
 // (the hand-authored C table), so these are OFFLINE-ONLY: online the real device's ceilings are
 // whatever the seeded presets actually give, not the authored sidecar values. Online still
@@ -69,25 +69,24 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click(); // the inline commit gate
     await pickBaseTarget(page, SCENARIO[1].name, "Lead"); // the loud default — this is what clamps
-    await page.getByRole("button", { name: /Level 1 sound/ }).click();
+    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
       timeout: 240_000,
     });
 
-    // The headroom clamp: its remediation banner + the exact clamped ceiling on the Base row.
+    // The headroom clamp: its remediation banner, the row's own clamped status, and the
+    // exact clamped ceiling on the Base row.
     await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
-    await expect(page.getByText(/1 clamped/)).toBeVisible();
-    await expect(page.getByText(/clamped · [−-]20\.\d/)).toBeVisible();
-    // NEW COVERAGE (PR #144's ClampKind taxonomy): a plain headroom clamp on a Base row
-    // (no off-branch clamp_reason, no wet floor) reports `ClampKind::SceneCeiling` — the
-    // ONE ClampKind whose message is UI-observable offline through a real run: Base
-    // levels via `level_preset`'s direct return, not the per-scene/per-footswitch Channel
-    // the offline bridge no-ops (`.claude/rules/e2e.md`). Copied VERBATIM from
-    // `headroom_trade::ClampKind::message()` / `CLAMP_MESSAGES.scene_ceiling` — never
-    // re-word it here if the backend's wording changes; update this string instead.
+    await expect(page.getByText("as loud as it goes")).toBeVisible();
+    await expect(page.getByText(/[−-]20\.\d/)).toBeVisible();
+    // design 1a: every clamped row shows ONE generic message regardless of clamp cause
+    // (the old per-`ClampKind` backend wording — trade/floor disclosures included — is
+    // gone from the wizard entirely). Copied VERBATIM from `SummaryPage.tsx`'s
+    // `PROBLEM.clamped.msg` — never re-word it here if the copy changes; update this
+    // string instead.
     await expect(
       page.getByText(
-        "this sound cannot reach the target — its level control is already at the limit",
+        "The knob is already all the way up. A quieter target would let this one match.",
       ),
     ).toBeVisible();
 
@@ -112,7 +111,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
     await pickBaseTarget(page, SCENARIO[1].name, "Lead"); // pick the LOUD target
-    await page.getByRole("button", { name: /Level 1 sound/ }).click();
+    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
       timeout: 240_000,
     });
@@ -120,7 +119,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await page.getByRole("button", { name: /Re-level clamped/ }).click();
     await pickBaseTarget(page, SCENARIO[1].name, "Crunch"); // QUIETER target
-    await page.getByRole("button", { name: /Level 1 sound/ }).click();
+    await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
       timeout: 240_000,
     });
@@ -156,78 +155,26 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await page.getByRole("button", { name: /Level 2 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await page.getByRole("button", { name: /Level \d+ sound/ }).click(); // defaults; 401 solves, 402 faults
+    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click(); // defaults; 401 solves, 402 faults
     await expect(
       page.getByRole("button", { name: /^(Done|Accept)$/ }),
     ).toBeVisible({
       timeout: 240_000,
     });
 
-    // 402 off-branch: the sub-tally, the row status, and the routing remediation banner.
-    await expect(page.getByText(/1 silent/)).toBeVisible();
-    await expect(page.getByText("not on USB 1/2")).toBeVisible();
+    // 402 off-branch: the row's own status, its specific no-signal diagnosis, and the
+    // routing remediation banner (design 1a dropped the old per-category sub-tally count —
+    // the row status + banner are the evidence now).
+    await expect(page.getByText("can’t hear it")).toBeVisible();
+    await expect(
+      page.getByText(
+        "Nothing came through USB 1/2, so we couldn’t hear this one.",
+      ),
+    ).toBeVisible();
     await expect(page.getByText("Needs routing on the unit")).toBeVisible();
-    // 401 still leveled — its displayed final LUFS near the default target (−23).
-    await expect(page.getByText(/[−-]2[234]\.\d LUFS/).first()).toBeVisible();
-
-    await expectReampBalanced(page, reampBase);
-  });
-
-  // (d) Reachable-common-target fallback (QUIET-preset clamp class): a 2-preset run where 403's
-  // Base clamps at Lead (-19, ceiling ~-20) while 400 (ceiling ~-15) reaches Lead fine — both
-  // targeted explicitly since the shipped default (Rhythm, -23) no longer clamps EITHER preset
-  // with the rebuilt fixtures (401 and 403 share the same base ceiling now, so a Rhythm-default
-  // pairing can no longer produce "one clamps, one doesn't"). The Summary names the measured
-  // ceiling and offers "Re-level to a reachable target", which derives
-  // min(measured ceilings) − headroom from the ALREADY-measured ceilings (zero re-capture) and
-  // re-levels every base to it. Base-only selection on both presets (scene outcomes stream via
-  // the Channel the offline bridge no-ops); the offset-space derivation is Rust-unit-gated
-  // (`common_reachable_target_returns_min_ceiling_minus_headroom`).
-  test("reachable-common-target fallback: clamped base re-levels to a reachable common target", async ({
-    page,
-  }) => {
-    test.skip(
-      await isOnline(page),
-      "offline-only: the ceilings are sidecar-authored",
-    );
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-    await openLevel(page);
-
-    await selectBaseOnly(page, SCENARIO[0].name); // E2E Rig, ceiling ~-15 (solves at Lead)
-    await selectBaseOnly(page, SCENARIO[3].name); // E2E Parallel, ceiling ~-20 (clamps at Lead)
-
-    await page.getByRole("button", { name: /Level 2 preset/ }).click();
-    await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await pickBaseTarget(page, SCENARIO[0].name, "Lead");
-    await pickBaseTarget(page, SCENARIO[3].name, "Lead");
-    await page.getByRole("button", { name: /Level \d+ sound/ }).click();
-    await expect(
-      page.getByRole("button", { name: /^(Done|Accept)$/ }),
-    ).toBeVisible({ timeout: 240_000 });
-
-    // 403's Base clamped at its ceiling — the banner NAMES the measured ceiling.
-    await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
-    await expect(page.getByText(/ceiling [−-]20\.\d LUFS/)).toBeVisible();
-
-    // The fallback re-levels every measured sound to the derived reachable common target
-    // (min of the two MEASURED ceilings minus 1 LU headroom — a loose band, not a literal
-    // number, since the exact figure is a run-to-run measured value, not sidecar-authored).
-    await page
-      .getByRole("button", { name: /Re-level to a reachable target/ })
-      .click();
-    // Wait for the re-run to actually START (the RunBody replaces the summary) so the
-    // asserts below don't race the stale pre-fallback summary, then for it to FINISH
-    // (auto-advance back to a summary with Done/Accept).
-    await expect(page.getByText(/Step \d+ of \d+/)).toBeVisible({
-      timeout: 30_000,
-    });
-    await expect(
-      page.getByRole("button", { name: /^(Done|Accept)$/ }),
-    ).toBeVisible({ timeout: 240_000 });
-    // No clamp remains, and both bases landed near the derived common target.
-    await expect(page.getByText(/Clamped .* already maxed/)).toHaveCount(0);
-    await expect(page.getByText(/[−-]2[01]\.\d LUFS/).first()).toBeVisible();
+    // 401 still leveled — its displayed final LUFS near the default target (−23). No "LUFS"
+    // suffix on Summary (that's a RunPage-only unit label) — just the bare reading.
+    await expect(page.getByText(/[−-]2[234]\.\d/).first()).toBeVisible();
 
     await expectReampBalanced(page, reampBase);
   });

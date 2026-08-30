@@ -96,10 +96,10 @@ pub(crate) use probe_api::scene_bench::knob_bounds;
 // same extraction, so the only remaining callers resolve them directly, module-internally —
 // re-exporting an unused name here is a dead `pub(crate) use`, caught by `-D warnings`.
 pub(crate) use probe_api::scene_jobs::{
-    base_handle_candidates_scanned, build_scene_jobs, build_scene_jobs_with_handles,
-    is_amp_model_id, is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via,
-    read_saved_preset, read_saved_preset_complete, scan_node_graph, scene_handle_rows,
-    scene_handle_rows_scanned, scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
+    base_handle_candidates_scanned, build_scene_jobs_with_handles, is_amp_model_id,
+    is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via, read_saved_preset,
+    read_saved_preset_complete, scan_node_graph, scene_handle_rows, scene_handle_rows_scanned,
+    scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
     warn_missing_restore_scene, SceneHandleSpec, SceneOverlay, SceneWriteVerdict,
 };
 // `pub`, not `pub(crate)`: `backup_read::BackupPresetRow.scene_handles`/`.base_handles` (both
@@ -793,9 +793,7 @@ mod fixture_gates {
                     "ACD_Boost",
                     "gain",
                 ),
-                crate::probe_api::scene_jobs::SceneWriteVerdict::WriteDirect {
-                    lands_on_base: true
-                }
+                crate::probe_api::scene_jobs::SceneWriteVerdict::WriteDirect
             ),
             "scene 3 'Solo': a scene-scoped write of ACD_Boost.gain must be allowed through \
              as a scene-local base write, not refused as shared_with_base"
