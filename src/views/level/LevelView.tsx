@@ -376,6 +376,7 @@ export function LevelView({
           runStopping={flow.run.stopping}
           liveLufs={flow.liveLufs}
           liveTrace={flow.liveTrace}
+          runTailMessage={flow.run.tailMessage}
           onCancel={flow.onCancel}
           onStart={flow.onSetupStart}
           onRunCancel={flow.onRunCancel}

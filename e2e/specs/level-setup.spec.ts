@@ -157,10 +157,15 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
       .first()
       .click();
 
-    // The collapsed breakdown counts the WHOLE roster — all 6 block-acting switches, not the
-    // 4 levelable ones (DRIVE, the unlabeled Boost, SPRING, VERB KILL). WAH and WAH SWEEP both
-    // act on the all-Other-class ACD_CryBabyQ535 and carry zero level candidates, and they are
-    // counted here precisely because the user must see that they exist.
+    // The collapsed breakdown counts the WHOLE roster — all 6 block-acting switches, not just
+    // the levelable ones. Only DRIVE and the unlabeled Boost stay levelable: WAH and WAH SWEEP
+    // both act on the all-Other-class ACD_CryBabyQ535 and carry zero level candidates, and
+    // SPRING and VERB KILL both act on ACD_TMSpring63, whose only classified param is `mix`
+    // (WetMix) — issue 3 ("hide Mix everywhere") drops WetMix from the candidate gate
+    // regardless of the acting switch's own `func` (SPRING is "on-off", VERB KILL is "param";
+    // both go through the SAME per-node `level_candidates_for_node` enumeration in
+    // `enumerate_block_footswitches`, so both lose their sole candidate together). All four
+    // non-levelable rows are counted here precisely because the user must see that they exist.
     await expect(page.getByText("4 scenes · 6 footswitches")).toBeVisible({
       timeout: 60_000,
     });
@@ -171,12 +176,13 @@ test.describe("Level Setup — Other-class filtering, unlabeled naming (list-lev
 
     // WAH IS present — the user-reported bug was that it was not.
     await expect(page.getByText("WAH", { exact: true })).toBeVisible();
-    // Both Other-class switches (WAH sw8, WAH SWEEP) say WHY they cannot be leveled rather
-    // than disappearing. Counted, so a regression that drops one row is caught too.
-    await expect(page.getByText("no level control")).toHaveCount(2);
-    // …and neither can be selected: no pick, so no `options[0]` fallback is reachable
-    // (danger.md's Pick trap, closed from the absence side as before).
-    await expect(page.getByRole("checkbox", { disabled: true })).toHaveCount(2);
+    // WAH/WAH SWEEP (Other-class) and SPRING/VERB KILL (WetMix-only, issue 3) all say WHY
+    // they cannot be leveled rather than disappearing. Counted, so a regression that drops
+    // one row is caught too.
+    await expect(page.getByText("no level control")).toHaveCount(4);
+    // …and none of the four can be selected: no pick, so no `options[0]` fallback is
+    // reachable (danger.md's Pick trap, closed from the absence side as before).
+    await expect(page.getByRole("checkbox", { disabled: true })).toHaveCount(4);
   });
 });
 
@@ -369,6 +375,53 @@ test.describe("Level Setup — scene handle picker (isolated / shared_with_base 
     await expect(controlTrigger(page, "s402:3")).toBeVisible();
     await expect(controlTrigger(page, "s402:3")).toContainText("Gain");
   });
+
+  // BUG→GATE (issue 5, "Boost preselect", 2026-08-29): every scene row used to default its
+  // handle to the "Amp output level" pseudo-option even when the scene's whole reason to
+  // exist is turning ON a base-bypassed block — Solo un-bypasses 402's `ACD_Boost` (bypassed
+  // in base) via a bypass-only overlay, so leveling the amp barely moves the sound Solo
+  // actually adds. `scene_handle_rows_scanned` now stamps `enables_block: true` on Boost's
+  // candidate for Solo (wire `enablesBlock`) and `SetupBody`'s render-phase preselect seeds
+  // THAT handle instead — never overriding a user's own choice (untouched here: the row's
+  // trigger is asserted without opening its own picker first).
+  test("402 Solo: the scene row preselects the Boost handle instead of Amp output level", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline: the scene overlays are fixture-authored",
+    );
+    await ensureScenario(page);
+    await openLevel(page);
+
+    const filter = page.getByPlaceholder(/Filter by name or slot/i);
+    await filter.fill(SCENARIO[2].name); // E2E Edge
+    await page
+      .getByTitle(/Show Base/)
+      .first()
+      .click();
+    await page.getByText("Solo", { exact: true }).click();
+    await filter.fill("");
+
+    await page.getByRole("button", { name: /Level 1 preset/ }).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+
+    // s402:3 = Solo (same row identity as the offer test above). UNTOUCHED — never opened
+    // its own picker — so this trigger's text is exactly whatever the mount/resolution
+    // preselect seeded, not a value this test itself picked. The trigger's label is
+    // `blockArtTile(...).fullName` (`BlockLevelPick.tsx`'s `blockTriggerLabelFor`), the
+    // catalog's own model name verbatim — "BOOST" (uppercase; a DIFFERENT, title-cased
+    // "Boost" is `footswitchName()`'s short label, used elsewhere in this file for the
+    // list-level footswitch row, not this picker trigger).
+    await expect(blockTrigger(page, "s402:3")).toContainText("BOOST");
+    await expect(blockTrigger(page, "s402:3")).not.toContainText(
+      "Amp output level",
+    );
+    // D2: a picked block always reveals its own control dropdown, pre-picking its
+    // best-ranked candidate — Boost's sole one, `gain`.
+    await expect(controlTrigger(page, "s402:3")).toBeVisible();
+    await expect(controlTrigger(page, "s402:3")).toContainText("Gain");
+  });
 });
 
 test.describe("Level Setup — instant candidates from the backup scan (no device read)", () => {
@@ -460,7 +513,15 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
   // `defaultParamIndex` candidate (leveling.ts's `chosenFrom`) at Setup-open time, shown
   // non-interactively when it's the row's only option (mirrors BlockLevelPick's own
   // doc: "a `wet_mix` candidate is flagged...", "the single best candidate...").
-  test("400: Boost pre-seeds Gain, SPRING pre-seeds Mix — no verify-only state exists", async ({
+  // REWRITTEN (was: "SPRING pre-seeds Mix") — issue 3 ("Mix is never a leveling control",
+  // 2026-08-29) removed WetMix from `is_levelable_param`, so SPRING's sole candidate
+  // (`ACD_TMSpring63.mix`) no longer exists as a level control at all. SPRING can no longer
+  // be pre-seeded with anything — it joins the BUG-1 "no level control" pattern instead
+  // (disabled row, click is a no-op, never reaches Setup). This rewrite IS the issue-3 gate
+  // for the footswitch pre-seed lane; Boost's own pre-seed (unaffected — `gain` is `level_db`,
+  // never WetMix) stays as the positive control proving the describe block's premise still
+  // holds for a switch that DOES carry a real level control.
+  test("400: Boost pre-seeds Gain; SPRING has no level control now that Mix is hidden everywhere", async ({
     page,
   }) => {
     test.skip(
@@ -476,29 +537,40 @@ test.describe("Level Setup — footswitch rows pre-seed a real handle (verify-on
       .getByTitle(/Show Base/)
       .first()
       .click();
+
+    // SPRING at the LIST level: labelled "no level control" and its checkbox is disabled
+    // (mirrors the WAH/WAH SWEEP pattern in "Level Setup — Other-class filtering..." above,
+    // but reached by a DIFFERENT predicate — WetMix-only, not Other-class). Scoped to
+    // SPRING's own row (two ancestors up from its exact-text name span) rather than the
+    // page-wide count that test already covers, so this failure names SPRING specifically.
+    const springRow = page
+      .getByText("SPRING", { exact: true })
+      .locator("xpath=../..");
+    await expect(springRow.getByText("no level control")).toBeVisible();
+    const springCheckbox = springRow.getByRole("checkbox");
+    await expect(springCheckbox).toBeDisabled();
+    // Clicking the row is a no-op (`SceneRow`'s `onClick={disabled ? undefined : onToggle}`)
+    // — the danger-rule Pick trap closed from the absence side: nothing to click through to
+    // an `options[0]` fallback because the row can never become selected.
+    await springRow.click();
+    await expect(springCheckbox).not.toBeChecked();
+
     await page.getByText("Boost", { exact: true }).click();
-    await page.getByText("SPRING", { exact: true }).click();
     await filter.fill("");
 
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
 
     // Footswitch hooks are keyed by DEVICE SWITCH NUMBER (`setupRowHookKey`,
-    // leveling.ts), not filtered-list position: `f400:sw2` = Boost, `f400:sw3` =
-    // SPRING (COVERAGE.md rows 20/18).
+    // leveling.ts): `f400:sw2` = Boost (COVERAGE.md row 20). Footswitch rows always carry a
+    // real pre-seeded handle (D2: no pseudo-option) — the CONTROL trigger names the
+    // pre-picked PARAM ("Gain").
     const boostRow = page.locator('[data-setup-row="f400:sw2"]');
-    const springRow = page.locator('[data-setup-row="f400:sw3"]');
-
     await expect(boostRow.getByText("Verify only")).toHaveCount(0);
-    await expect(springRow.getByText("Verify only")).toHaveCount(0);
-    // Footswitch rows always carry a real pre-seeded handle (D2: no pseudo-option), so
-    // BOTH triggers render immediately — the BLOCK trigger names the block itself
-    // (its catalog full name, e.g. "Boost"/"Spring Reverb"), and the CONTROL trigger
-    // names the pre-picked PARAM ("Gain"/"Mix").
-    // Boost's sole candidate is `gain` — pre-picked.
     await expect(controlTrigger(page, "f400:sw2")).toContainText("Gain");
-    // SPRING's sole candidate is `mix` — pre-picked.
-    await expect(controlTrigger(page, "f400:sw3")).toContainText("Mix");
+    // SPRING (`f400:sw3`) never reached Setup — the click above never selected it, so there
+    // is no row for it to render.
+    await expect(page.locator('[data-setup-row="f400:sw3"]')).toHaveCount(0);
   });
 });
 

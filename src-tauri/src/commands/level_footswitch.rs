@@ -28,11 +28,11 @@ pub(crate) struct FootswitchLevelJob {
     /// A footswitch does not sound the same in every scene — the scene's overlay decides which
     /// blocks the switch is layered on top of, and (for the headroom trade) whether the sound
     /// is pinned by its own `outputLevel` overlay or inherits base's. The UI picks this with
-    /// [`footswitch::scene_contexts_for_switches`]: exactly ONE scene enabling the switch
-    /// preselects that scene,
-    /// anything else falls back to base. A user override to a NON-enabling scene is allowed —
-    /// it is a real sound, just not one the pedalboard reaches by tapping that switch there —
-    /// and the picker flags it.
+    /// [`footswitch::scene_contexts_for_switches`]: any scene enabling the switch preselects the
+    /// FIRST such scene (issue 4 — a switch enabled by several scenes no longer falls back to
+    /// base), and only zero enabling scenes falls back to base. A user override to a
+    /// NON-enabling scene is allowed — it is a real sound, just not one the pedalboard reaches
+    /// by tapping that switch there — and the picker flags it.
     #[serde(default)]
     pub(crate) scene_context: Option<u32>,
 }
@@ -167,9 +167,9 @@ pub(crate) fn resolve_footswitch_job(
 /// picker (D3). PURE apart from ONE field-8 read: every answer comes out of the saved document,
 /// so no scene is recalled on the unit and nothing is measured.
 ///
-/// The frontend preselects [`footswitch::FsSceneContext::suggested`] — the single enabling
-/// scene when there is exactly one, else base — and sends the user's final choice back as
-/// [`FootswitchLevelJob::scene_context`].
+/// The frontend preselects [`footswitch::FsSceneContext::suggested`] — the FIRST scene that
+/// enables this switch when at least one does, else base — and sends the user's final choice
+/// back as [`FootswitchLevelJob::scene_context`].
 #[tauri::command]
 pub(crate) async fn list_footswitch_scene_contexts(
     state: State<'_, AppState>,

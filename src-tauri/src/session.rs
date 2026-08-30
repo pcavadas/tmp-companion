@@ -4692,10 +4692,10 @@ mod tests {
     }
 
     // BUG→GATE: the preset lane's PICKER used to run the name-substring rule, which
-    // disagreed with the run-time class gate in BOTH directions — it offered
-    // `ACD_TMRumbleV3.level` (an amp knob the solve then refuses) and hid the wet `mix` and
-    // raw-dB `ACD_Boost.gain` the footswitch and scene-handle pickers offer. One classifier
-    // for every picker.
+    // disagreed with the run-time class gate — it offered `ACD_TMRumbleV3.level` (an amp
+    // knob the solve then refuses) and hid the raw-dB `ACD_Boost.gain` the footswitch and
+    // scene-handle pickers offer. One classifier for every picker. (Issue 3, later: `mix`
+    // itself became excluded from every picker's safe-default list too — see the test body.)
     #[test]
     fn extract_level_candidates_uses_the_classifier_not_the_name_rule() {
         let json = serde_json::json!({
@@ -4721,10 +4721,18 @@ mod tests {
             got.contains(&("boost".to_string(), "gain".to_string())),
             "ACD_Boost.gain is raw dB with ~1:1 authority — the name rule hid it: {got:?}"
         );
+        // Issue 3 ("hide Mix everywhere"): a wet/mix control is EXCLUDED from this
+        // safe-default candidate list, even though the classifier still recognises it
+        // (floored, not gutted, when explicitly named elsewhere) — see
+        // `footswitch::is_levelable_param`'s doc.
         assert!(
-            got.contains(&("chorus".to_string(), "mix".to_string())),
-            "a wet/mix control IS levelable (floored, not gutted) — the name rule hid it: \
-             {got:?}"
+            !got.iter().any(|(n, p)| n == "chorus" && p == "mix"),
+            "issue 3: Mix is never a default/pickable candidate: {got:?}"
+        );
+        assert_eq!(
+            crate::param_class::classify("ACD_Chorus", "mix").class,
+            crate::param_class::ParamClass::WetMix,
+            "…the classifier's own verdict is untouched"
         );
         // The classifier still reads the block's FenderId, so the raw-dB value passes through
         // unscaled (the old `(0.0..=1.0)` value filter would have dropped 2.5).

@@ -188,6 +188,13 @@ export interface RunState {
   /** A stop was requested and the in-flight item is still winding down. Drives the
    *  "Stopping…" feedback so the user isn't left staring at a "leveling…" spinner. */
   stopping: boolean;
+  /** A batch-wide caption ("Saving…" / "Verifying…") from a `SceneLevelProgressItem.tail`
+   *  (issue 6b) — the deferred-save/persist-verify phase AFTER every scene in the group
+   *  already resolved, so no row's own status can show it. `RunBody`'s header subtitle
+   *  renders this in preference while set. Cleared on the run's completion and whenever
+   *  a NEW row goes active (both already `publish` every time), so it can't outlive the
+   *  window it describes. */
+  tailMessage: string | null;
 }
 
 const EMPTY_RUN: RunState = {
@@ -197,6 +204,7 @@ const EMPTY_RUN: RunState = {
   done: false,
   stopped: false,
   stopping: false,
+  tailMessage: null,
 };
 
 export interface UseLevelingFlowDeps {
@@ -343,13 +351,21 @@ export function useLevelingFlow({
       // `work` is mutated in place between publishes; pass a fresh ARRAY each time
       // (new ref so React renders) but skip the per-item spread — the bodies only read
       // items during render, never hold them across renders.
+      // `lastPublishedIndex` lets a tail-only progress item (no row of its own — see
+      // `batchResolve` below) re-publish the caption without inventing a step index.
+      let lastPublishedIndex = 0;
       const publish = (
         currentIndex: number,
         done: boolean,
         stopped: boolean,
+        tailMessage: string | null = null,
       ) => {
+        lastPublishedIndex = currentIndex;
         // Once cancel is requested, every publish carries `stopping` until the final
-        // done publish clears it (done ⇒ either "complete" or "stopped").
+        // done publish clears it (done ⇒ either "complete" or "stopped"). Every call
+        // site but the tail-caption one below omits `tailMessage`, so the default
+        // `null` clears it on the run's completion AND on every row activation —
+        // exactly the two points issue 6b's contract requires.
         setRun({
           items: [...work],
           currentIndex,
@@ -357,6 +373,7 @@ export function useLevelingFlow({
           done,
           stopped,
           stopping: isCancelled() && !done,
+          tailMessage,
         });
       };
 
@@ -420,7 +437,17 @@ export function useLevelingFlow({
           status: string,
           result: LevelOutcomeFields | null,
           message?: string | null,
+          tail?: string | null,
         ) => {
+          // Issue 6b: a `tail` caption ("Saving…" / "Verifying…") rides on a batch-wide
+          // progress item that carries NO VALID row key — handle it BEFORE the entry
+          // lookup below, independent of whatever key/status/result also arrived on the
+          // same item, or it would be silently swallowed by the "unknown key" guard
+          // exactly like the rows that guard already drops. Re-publish at the CURRENT
+          // step (never invents progress) so the header subtitle picks it up.
+          if (tail != null) {
+            publish(lastPublishedIndex, false, false, tail);
+          }
           const entry = entries.get(key);
           if (!entry) return;
           if (status === "active") {
@@ -699,6 +726,7 @@ export function useLevelingFlow({
                 item.status,
                 item.result,
                 item.message,
+                item.tail,
               );
             },
           );
@@ -827,7 +855,17 @@ export function useLevelingFlow({
       cancelRef.current = false;
       const isCancelled = () => cancelRef.current; // getter defeats the always-false narrowing
       setStage("run");
-      const publish = (idx: number, done: boolean, stopped = false) => {
+      // `lastPublishedIndex` lets a tail-only progress item (no row of its own — see
+      // the `onResult` callback below) re-publish the caption without inventing a step
+      // index — mirrors `runLeveling`'s own `publish`.
+      let lastPublishedIndex = 0;
+      const publish = (
+        idx: number,
+        done: boolean,
+        stopped = false,
+        tailMessage: string | null = null,
+      ) => {
+        lastPublishedIndex = idx;
         setRun({
           items: [...work],
           currentIndex: idx,
@@ -835,6 +873,7 @@ export function useLevelingFlow({
           done,
           stopped,
           stopping: isCancelled() && !done,
+          tailMessage,
         });
       };
       publish(0, false);
@@ -874,6 +913,15 @@ export function useLevelingFlow({
               profileId: profile?.id ?? null,
             },
             (item) => {
+              // Issue 6b: the redistribute lane shares the tail-caption seam
+              // (`SceneLevelProgressItem.tail`) with the scene lane's `batchResolve` —
+              // handle it BEFORE the row-map lookup below, mirroring that pattern: the
+              // tail rides on a synthetic item keyed off `u32::MAX` (never a real
+              // `sceneSlot`), which the lookup would otherwise silently drop as an
+              // "unknown key" row, exactly like a cancelled/unrecognised item.
+              if (item.tail != null) {
+                publish(lastPublishedIndex, false, false, item.tail);
+              }
               const target = bySound.get(item.sceneSlot);
               if (!target) return;
               if (item.status === "active") {

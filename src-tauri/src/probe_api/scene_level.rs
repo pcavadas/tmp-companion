@@ -652,6 +652,7 @@ pub fn probe_jointk_scenes(
             // No base isolation on this dev arm either — `build_scene_jobs` never sets it.
             &[],
             |_, _| {},
+            |_| {}, // B6: this probe has no progress channel to caption
             || false,
         ) {
             Ok(outcomes) => {
@@ -713,6 +714,7 @@ pub fn probe_redistribute(
         restore_scene,
         saved.as_ref(),
         |_, _| {},
+        |_| {}, // B6: this probe has no progress channel to caption
         || false,
     ) {
         Ok(outcomes) => {
