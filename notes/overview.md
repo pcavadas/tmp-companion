@@ -2,7 +2,7 @@
 
 A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) that controls a Fender Tone Master Pro over USB. It renders its own UI and talks to the device with an exclusive-seize (macOS) or `flock`-exclusive (Linux) HID session. macOS is the shipping platform; Linux is a supported development platform, including re-amp — see `CONTRIBUTING.md`'s "Developing on Linux".
 
-> **This file is the architecture map.** `CLAUDE.md` deliberately does not carry a module tree — the per-module docs are the authority (see [Where things live](#where-things-live)). The UI is **click-only**: no keyboard shortcuts, no command palette.
+> **This file is the architecture map.** `CLAUDE.md` deliberately does not carry a module tree — the per-module docs are the authority (see [Where things live](#where-things-live)). The UI is **click-only**: no keyboard shortcuts, no command palette (Enter/Escape inside a focused text input is exempt — see the carve-out in `CLAUDE.md`).
 
 ## Tabs
 

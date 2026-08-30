@@ -89,7 +89,7 @@ reviews:
         No escape hatches: no eslint-disable / @ts-nocheck / @ts-ignore / @ts-expect-error, no any / as any, no non-null `!`. Fix by changing code, not silencing.
         Every line-icon routes through <Icon name=...> and every block illustration through BlockIcon — flag inline glyph <svg> in a view.
         React hooks must precede any conditional early return. Dialogs/overlays go through the ONE DS Dialog (ui/Dialog.tsx) — flag a per-view position:absolute/fixed scrim.
-        The app is click-only — flag added keyboard-shortcut / onKeyDown-submit handlers. This rule also applies to code the diff MOVES or merely touches, not only to newly added handlers.
+        The app is click-only — flag keyboard-shortcut handlers and any key handling outside a focused text input (dialog Escape-to-close included). Exempt: Enter/Escape inside a text input committing/cancelling that field's own edit — standard text-field behavior, and where blur commits the edit, Escape is the only cancel path. This rule also applies to code the diff MOVES or merely touches, not only to newly added handlers.
         Prefer behavioral findings over style ones in this tree. A destructive or in-flight device action (a leveling/Doctor run, a Copy save) must not be abortable by a backdrop click or an unguarded close; a stop control must give immediate feedback rather than waiting on the in-flight capture. If the changed file is one stage or branch of a flow, compare it against its siblings and report a guard or run-state the siblings have and it lacks.
     - path: ".github/workflows/**"
       instructions: |
