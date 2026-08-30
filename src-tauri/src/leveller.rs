@@ -1878,6 +1878,14 @@ pub struct PrevKnobWrite {
 /// pure writes, NO measurement. Slot-keyed destructive write ⇒ a non-destructive name read
 /// guards it first, so a drifted list fails loudly instead of restoring onto a different preset.
 ///
+/// No `recall_reassert_save` here, on purpose: that seam's pre-save revert is a LEAN-session
+/// observation, and this is the other shape. This session `begin_live_edit`s and
+/// `load_preset`s the slot itself before the `set_preset_level`, and
+/// `probe_redistribute_persist_check` (`probe_api/slot_write.rs`) HW-validated exactly this
+/// write→recall→recall→save shape carrying an unsaved `presetLevel` through the save
+/// (read-back 0.42 against a saved 0.53) — it is the go/no-go gate the redistribution
+/// feature was built on. See `recall_reassert_save`'s doc for the two shapes side by side.
+///
 /// `knobs` is written GROUPED by `scene_slot` (one `set_knobs` call per distinct scene,
 /// base included), not one `set_knob` call per knob: a parallel-merged preset's base or a
 /// single scene can carry ≥2 restored knobs, and calling `set_knob` per knob would
@@ -2401,7 +2409,15 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
 /// `presetLevel` is silently reverted to the SAVED value right before the save
 /// persists it (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
 /// doc still read the prior 0.32; caught by the online `level.online.spec.ts` base
-/// idempotency test). Node/overlay writes are immune (the footswitch
+/// idempotency test). The revert is a LEAN-session behavior — every caller of this
+/// seam saves on a connection that did NOT `load_preset` in-session (the apply
+/// path's fresh connect, the post-verify fresh `s2`), and that is the shape both HW
+/// observations above come from. A live-edit session that loaded the preset ITSELF
+/// carries an unsaved `presetLevel` through scene recalls — base included — and the
+/// save (HW: `probe_redistribute_persist_check`'s `write_three_and_save`, fw
+/// 1.8.45-era: pl 0.42 read back against a saved 0.53 after `loadScene(1)` +
+/// `loadScene(BASE)` + save), which is why `restore_redistribution` does not route
+/// through this seam. Node/overlay writes are immune in either shape (the footswitch
 /// `switch_at_target` re-run spec proves `valueA` persists through the recall), so
 /// only `reassert_pl` — the unsaved level a caller solved (`apply_levels`) or
 /// raised (`redistribute_clamped_headroom`) — needs re-writing, and only when a
@@ -2434,8 +2450,10 @@ fn recall_reassert_save(
 /// Set the chosen knob to `value` on an open session (before re-amp engage). The
 /// single-knob case of `set_knobs` — see its doc for the recall/write ordering
 /// rules and what `saved` is for. Must be the FIRST write on the connection when
-/// `knob` is a `Block`: its own scene recall, base or otherwise, reverts any
-/// earlier unsaved write on this session AND re-asserts that scene's own bypass
+/// `knob` is a `Block`: its own scene recall, base or otherwise, reverts an
+/// earlier unsaved `presetLevel` on this session (the lean-session level-apply —
+/// callers here connect without an in-session `load_preset`; see
+/// `recall_reassert_save`'s shape split) AND re-asserts that scene's own bypass
 /// state (see `capture_on_session`'s doc), so a caller doing force-bypass
 /// isolation must write the bypasses AFTER this call, never before
 /// (`measure_knob_at`/`measure_fs_at` follow that order).
