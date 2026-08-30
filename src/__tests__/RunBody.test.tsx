@@ -28,6 +28,7 @@ const activeItem: RunItem = {
 function runBody(
   liveLufs: number | null,
   items: RunItem[] = [activeItem],
+  tailMessage: string | null = null,
 ): ReactElement {
   return (
     <ThemeProvider>
@@ -40,6 +41,7 @@ function runBody(
         stopping={false}
         liveLufs={liveLufs}
         liveTrace={[]}
+        tailMessage={tailMessage}
         instrumentName={() => "Telecaster"}
         targetLufsByName={() => -26}
         onCancel={vi.fn()}
@@ -167,5 +169,22 @@ describe("RunBody columned rows", () => {
     expect(screen.getByText("off target · −24.3")).toBeInTheDocument();
     expect(screen.queryByText("done · −24.3")).not.toBeInTheDocument();
     expect(screen.queryByText(/clamped/)).not.toBeInTheDocument();
+  });
+});
+
+// Issue 6b: the batch-wide tail caption ("Saving…" / "Verifying…") has no row of its
+// own — the header subtitle is the only place it can surface.
+describe("RunBody tail caption (issue 6b)", () => {
+  const defaultSubtitle = /preset.*sound.*saves automatically/;
+
+  it("renders tailMessage in place of the default subtitle while set", () => {
+    render(runBody(null, [activeItem], "Saving…"));
+    expect(screen.getByText("Saving…")).toBeInTheDocument();
+    expect(screen.queryByText(defaultSubtitle)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the default subtitle when no tail is set", () => {
+    render(runBody(null, [activeItem], null));
+    expect(screen.getByText(defaultSubtitle)).toBeInTheDocument();
   });
 });

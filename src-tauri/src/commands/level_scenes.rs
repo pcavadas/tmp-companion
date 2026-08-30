@@ -23,6 +23,12 @@ pub(crate) struct SceneLevelProgressItem {
     status: String,
     result: Option<leveller::LevelResult>,
     message: Option<String>,
+    /// B6 (issue 6b): a batch-wide caption ("Saving preset…" / "Verifying…") for the
+    /// deferred-save/persist-verify phases, which have no single scene to report progress
+    /// against. Rides on its OWN item — see [`tail_progress_item`] — never alongside a real
+    /// per-scene `result`/`message`, so `message` (the active row's own caption) never has to
+    /// double as this and start lying about which row it describes.
+    tail: Option<String>,
 }
 
 /// One scene-leveling request from the wizard: a wire scene slot + its OWN loudness
@@ -47,6 +53,206 @@ pub(crate) struct SceneHandleArg {
     group_id: String,
     node_id: String,
     parameter_id: String,
+}
+
+/// A1 — "the base anchor" (PR A design doc): keeps the batch's force-appended base job alive
+/// through PHASE 1 (prepass) and PHASE 2 (trade) with NO wire scene job of its own, so the
+/// headroom trade can be planned/executed even though the wizard levels base itself through
+/// the separate `level_preset` lane. Stripped before PHASE 3 — base's own `outputLevel` is
+/// never solved by this batch when it arrived only as an anchor.
+#[derive(serde::Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BaseAnchorArg {
+    target_lufs: f32,
+}
+
+/// A1, PURE: derive `(anchor_only_base, base_in_plan)` from the wire inputs — the whole anchor
+/// decision, exercised without any device/session in the loop.
+///
+/// `anchor_only_base` — the anchor is the ONLY reason base is in this batch (no wire job named
+/// it): its PHASE 1 progress items have no frontend row to route to, and it must be stripped
+/// before PHASE 3 (base's own `outputLevel` is never solved by this batch when it arrived only
+/// as an anchor — the wizard's separate `level_preset` lane owns that write).
+///
+/// `base_in_plan` — base survives the PHASE 1/2 strip at all, either because the caller
+/// explicitly requested it (`base_requested`) or because a VALID anchor delivered it.
+///
+/// A non-finite anchor target degrades to `(false, base_requested)` — exactly today's
+/// behavior — rather than a failed run: the anchor is advisory infrastructure for the trade,
+/// never a hard requirement of the batch it rides on.
+fn base_anchor_plan(base_requested: bool, base_anchor: Option<BaseAnchorArg>) -> (bool, bool) {
+    let anchor_valid = base_anchor.is_some_and(|a| a.target_lufs.is_finite());
+    let anchor_only_base = anchor_valid && !base_requested;
+    let base_in_plan = base_requested || anchor_valid;
+    (anchor_only_base, base_in_plan)
+}
+
+#[cfg(test)]
+mod base_anchor_plan_tests {
+    use super::*;
+
+    fn anchor(target: f32) -> BaseAnchorArg {
+        BaseAnchorArg {
+            target_lufs: target,
+        }
+    }
+
+    // The wizard-shaped run: base arrives ONLY via the anchor. It must survive into PHASE 1/2
+    // (`base_in_plan`) but is flagged `anchor_only_base` — stripped before PHASE 3, and its
+    // progress items have no frontend row to route to (suppressed at the two send sites).
+    #[test]
+    fn a_valid_anchor_with_no_wire_base_job_is_anchor_only_and_in_plan() {
+        assert_eq!(base_anchor_plan(false, Some(anchor(-23.0))), (true, true));
+    }
+
+    // A `base_requested` caller (the wire jobs literally name base) is never "anchor only" —
+    // base already has a wire target of its own, anchor or not.
+    #[test]
+    fn base_requested_is_never_anchor_only_even_with_a_valid_anchor() {
+        assert_eq!(base_anchor_plan(true, Some(anchor(-23.0))), (false, true));
+        assert_eq!(base_anchor_plan(true, None), (false, true));
+    }
+
+    // No anchor, no request: today's behavior, byte-identical.
+    #[test]
+    fn no_anchor_and_no_request_is_out_of_the_batch_entirely() {
+        assert_eq!(base_anchor_plan(false, None), (false, false));
+    }
+
+    // A9/F3: anchor validation failure (a non-finite target) degrades to NO trade — exactly
+    // `base_requested`'s own plan — never a failed run. `plan_trade_for_batch` then simply
+    // finds no base row in the batch (gate #2 in its own doc) and answers `TradeDecision::None`.
+    #[test]
+    fn a_non_finite_anchor_target_degrades_to_no_anchor_never_a_failure() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                base_anchor_plan(false, Some(anchor(bad))),
+                (false, false),
+                "non-finite anchor target {bad} must not put base in the plan"
+            );
+            // And it must not silently strip a GENUINELY requested base either.
+            assert_eq!(base_anchor_plan(true, Some(anchor(bad))), (false, true));
+        }
+    }
+}
+
+/// A5/F2 (TRADE-PATH GAP): the restore list for a BASE-REQUESTED job's own isolation — the base
+/// job survives PHASE 3 whenever it arrived as a real wire job (not stripped as anchor-only),
+/// and its own solve there routes through `apply_levels(defer: true)`, which re-asserts
+/// `force_bypass` on every capture and never undoes it (that seam exists to keep the isolation
+/// alive across a multi-capture secant, not to clean it up). This is a DIFFERENT seam from
+/// `apply_headroom_trade`'s own `undo_base_isolation`, which — if it ran at all — ran BEFORE
+/// this job solves again, so the two are independent: this fires whether or not a trade landed
+/// (a no-trade `base_requested` run isolates and solves base exactly the same way). The
+/// derivation itself (including the `saved == None` policy) is `leveller::isolation_restore_
+/// list`'s doc, shared by every restore-list owner in the leveling path.
+fn isolation_restore_for_batch(
+    scene_jobs: &[leveller::SceneJob],
+    saved: Option<&serde_json::Value>,
+) -> Vec<(String, String, bool)> {
+    scene_jobs
+        .iter()
+        .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT)
+        .map(|base| leveller::isolation_restore_list(&base.force_bypass, saved))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod isolation_restore_for_batch_tests {
+    use super::*;
+
+    fn base_job(force_bypass: Vec<(String, String, bool)>) -> leveller::SceneJob {
+        leveller::SceneJob {
+            scene_slot: session::BASE_SCENE_SLOT,
+            target_lufs: -23.0,
+            knobs: Vec::new(),
+            skip: None,
+            rebalanceable: false,
+            handle: None,
+            prepass: None,
+            force_bypass,
+        }
+    }
+
+    fn saved_with_bypass(node: &str, bypassed: bool) -> serde_json::Value {
+        serde_json::json!({
+            "audioGraph": { "guitarNodes": {
+                "G1": [ { "nodeId": node, "FenderId": node,
+                          "dspUnitParameters": { "bypass": bypassed } } ]
+            } }
+        })
+    }
+
+    // THE base_requested SHAPE: base is IN the PHASE-3 jobs (not stripped as anchor-only) and
+    // carries a non-empty `force_bypass` — the run must derive the exact inverse (the node's
+    // ORIGINAL saved bypass, not a blind `!forced`), independent of whether a trade landed.
+    #[test]
+    fn a_base_requested_job_with_isolation_derives_its_inverse_from_the_saved_doc() {
+        let jobs = vec![base_job(vec![(
+            "G1".to_string(),
+            "pedal".to_string(),
+            true,
+        )])];
+        let saved = saved_with_bypass("pedal", false);
+        let restore = isolation_restore_for_batch(&jobs, Some(&saved));
+        assert_eq!(
+            restore,
+            vec![("G1".to_string(), "pedal".to_string(), false)],
+            "must restore the SAVED (pre-isolation) value, not invert the forced flag"
+        );
+    }
+
+    // NO-TRADE CASE: this derivation reads only `scene_jobs`/`saved` — nothing about a trade
+    // having landed — so a base-requested run with no trade at all still gets its isolation
+    // cleaned up. (The trade's OWN `force_bypass_restore` is a separate, independent source —
+    // see `run_scene_jobs`'s union.)
+    #[test]
+    fn the_derivation_does_not_depend_on_a_trade_having_landed() {
+        let jobs = vec![base_job(vec![(
+            "G1".to_string(),
+            "pedal".to_string(),
+            true,
+        )])];
+        let saved = saved_with_bypass("pedal", true);
+        // No `TradeHold` anywhere in this call — the function doesn't even take one.
+        let restore = isolation_restore_for_batch(&jobs, Some(&saved));
+        assert_eq!(restore, vec![("G1".to_string(), "pedal".to_string(), true)]);
+    }
+
+    #[test]
+    fn no_base_job_in_the_batch_yields_no_restore_list() {
+        let jobs = vec![leveller::SceneJob {
+            scene_slot: 0,
+            target_lufs: -23.0,
+            knobs: Vec::new(),
+            skip: None,
+            rebalanceable: false,
+            handle: None,
+            prepass: None,
+            force_bypass: Vec::new(),
+        }];
+        assert!(isolation_restore_for_batch(&jobs, None).is_empty());
+    }
+
+    #[test]
+    fn a_base_job_with_no_isolation_yields_an_empty_list() {
+        let jobs = vec![base_job(Vec::new())];
+        assert!(isolation_restore_for_batch(&jobs, None).is_empty());
+    }
+
+    // UNIFIED None-POLICY (post-review dedup): a base job WITH isolation but no saved
+    // document to restore from yields EMPTY, never a guessed `false` for every forced node —
+    // see `leveller::isolation_restore_list`'s doc for why a blind `false` would risk actively
+    // un-bypassing a pedal the player had deliberately engaged.
+    #[test]
+    fn a_base_job_with_isolation_and_no_saved_doc_yields_no_restore_never_a_guessed_false() {
+        let jobs = vec![base_job(vec![(
+            "G1".to_string(),
+            "pedal".to_string(),
+            true,
+        )])];
+        assert!(isolation_restore_for_batch(&jobs, None).is_empty());
+    }
 }
 
 /// Wire payload for `tmp://leveling-lufs` — the advisory live measured loudness streamed
@@ -78,6 +284,112 @@ impl LiveLufsGuard {
 impl Drop for LiveLufsGuard {
     fn drop(&mut self) {
         audio::clear_live_lufs_sink();
+    }
+}
+
+/// Pre-run guard for every leveling lane that accumulates UNSAVED scene writes
+/// across scene recalls and saves once at batch end (gap 2 of
+/// `notes/device-manual-gaps.md`): refuse before ANY device write when the device's
+/// `Scene Change Behavior` snapshot reads `DISCARD CHANGES`. Under `DISCARD` every
+/// recall silently reverts the recalled scene's unsaved edits (HW-confirmed on the
+/// touchscreen) — the batch-end save would then persist the reverted state, and a
+/// save has no revert (danger.md). Call sites: `level_scenes_apply_batched`,
+/// `level_footswitches_apply`, `redistribute_headroom`, `restore_redistribution`
+/// (the deferred-write lanes; the legacy per-scene lane and `level_setlist` save
+/// immediately / re-assert through `recall_reassert_save`, so they are safe under
+/// `DISCARD` and deliberately unguarded).
+///
+/// `settings_path` is the settings snapshot the startup backup read persisted
+/// (`support/device-settings.json`). It can be STALE — the touchscreen may have been
+/// edited since connecting — and the asymmetry mirrors `calibrate_profile`'s #124
+/// fader handling: only a positively-read `Discard` refuses (the failure it causes is
+/// silent corruption of a destructive save, and the wrongly-refused stale case is
+/// recovered by the same replug the message names, since a detach fires
+/// `resetLibraryScan` and the next connection re-reads the settings). An absent or
+/// unreadable snapshot, or an unknown ordinal, PROCEEDS — the factory default is
+/// `MAINTAIN CHANGES`, and blocking every fresh install on a missing snapshot would
+/// punish the common case on no evidence.
+///
+/// Refuse, not warn: the app is click-only for non-technical users, and a warning
+/// that can be clicked through recreates the corruption it exists to prevent. The
+/// guard fires regardless of `save` — even a no-save run's solves read state that
+/// `DISCARD` reverts mid-run, so its numbers would be garbage.
+pub(crate) fn scene_discard_guard(settings_path: Option<&std::path::Path>) -> Result<(), String> {
+    let behavior = crate::backup_read::read_settings_snapshot(settings_path)
+        .and_then(|json| crate::backup_read::scene_change_behavior(&json));
+    if behavior == Some(crate::backup_read::SceneChangeBehavior::Discard) {
+        return Err(
+            "this device's Scene Change Behavior is set to DISCARD CHANGES, which silently \
+             reverts the unsaved scene changes a leveling run accumulates before its save. \
+             On the unit's touchscreen, set SETTINGS \u{2192} Scene Change Behavior to \
+             MAINTAIN CHANGES, then unplug and replug the USB cable so the app re-reads the \
+             setting, and run leveling again."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod scene_discard_guard_tests {
+    use super::*;
+
+    /// A settings snapshot on disk, exactly as `persist_device_settings` leaves one
+    /// (`support/device-settings.json` — the guard's real input). Removed on drop.
+    struct Snapshot(std::path::PathBuf);
+    impl Drop for Snapshot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn snapshot(tag: &str, contents: &str) -> Snapshot {
+        let path = std::env::temp_dir().join(format!(
+            "tmp-companion-scene-discard-{}-{tag}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, contents).expect("write snapshot");
+        Snapshot(path)
+    }
+
+    // THE gate for gap 2: a snapshot that positively reads DISCARD refuses, and the
+    // message carries the two things the user needs — the touchscreen setting to
+    // change (by its on-unit name) and the replug that refreshes the stale snapshot.
+    #[test]
+    fn a_discard_snapshot_refuses_with_the_touchscreen_setting_named() {
+        let f = snapshot("discard", r#"{"sceneChangeBehavior":1,"mixerSaveData":{}}"#);
+        let err = scene_discard_guard(Some(&f.0)).expect_err("DISCARD must refuse");
+        assert!(err.contains("Scene Change Behavior"), "{err}");
+        assert!(err.contains("MAINTAIN CHANGES"), "{err}");
+        assert!(err.contains("replug"), "{err}");
+    }
+
+    #[test]
+    fn the_retain_default_proceeds() {
+        let f = snapshot("retain", r#"{"sceneChangeBehavior":0}"#);
+        assert!(scene_discard_guard(Some(&f.0)).is_ok());
+    }
+
+    // The deliberate asymmetry: no snapshot, no key, garbage JSON, or an ordinal the
+    // enum does not carry all PROCEED — the factory default is MAINTAIN, and only a
+    // positively-read DISCARD is evidence of the silent-revert mechanism.
+    #[test]
+    fn an_absent_or_unreadable_snapshot_proceeds() {
+        assert!(scene_discard_guard(None).is_ok());
+        assert!(
+            scene_discard_guard(Some(std::path::Path::new("/nonexistent/settings.json"))).is_ok()
+        );
+        for (tag, contents) in [
+            ("no-key", r#"{"mixerSaveData":{}}"#),
+            ("garbage", "not json"),
+            ("unknown-ordinal", r#"{"sceneChangeBehavior":7}"#),
+        ] {
+            let f = snapshot(tag, contents);
+            assert!(
+                scene_discard_guard(Some(&f.0)).is_ok(),
+                "must proceed on {contents:?}"
+            );
+        }
     }
 }
 
@@ -268,11 +580,18 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     topology_id: Option<String>,
     calibration_lufs: Option<f32>,
     profile_id: Option<String>,
+    // A1: the wizard's Base row levels through the separate `level_preset` lane and hands its
+    // OWN target here so PHASE 1/2 can plan (and PHASE 2 execute) the headroom trade against
+    // it. `None` = today's behavior verbatim.
+    base_anchor: Option<BaseAnchorArg>,
     on_result: tauri::ipc::Channel<SceneLevelProgressItem>,
 ) -> Result<Vec<leveller::LevelResult>, String> {
     if jobs.is_empty() {
         return Err("no scenes selected".to_string());
     }
+    // Gap-2 pre-run guard: refuse under a DISCARD `Scene Change Behavior` snapshot
+    // before anything touches the device — see `scene_discard_guard`'s doc.
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     // A row that names its own control needs no amp candidate and no routing classification —
     // the user picked the knob. So this pre-device guard fires only for a batch where NOBODY
     // named one (every row is an amp-`outputLevel` joint-k row and the whole run is doomed);
@@ -311,6 +630,38 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
         if !base_requested {
             scene_slots.push(session::BASE_SCENE_SLOT);
         }
+        // A1: see `base_anchor_plan`'s doc — anchor validation degrades to no-trade, never a
+        // failed run.
+        if base_anchor.is_some_and(|a| !a.target_lufs.is_finite()) {
+            log::warn!(
+                "slot {slot}: base_anchor target is not finite — ignoring it (no headroom trade \
+                 this run)"
+            );
+        }
+        let (anchor_only_base, base_in_plan) = base_anchor_plan(base_requested, base_anchor);
+
+        // A2: the freshness barrier belongs BEFORE the saved read, unconditionally (not
+        // anchor-gated) — the wizard's OWN `level_preset` lane may have saved this exact slot
+        // seconds ago (lazy commit T+45-100s, danger.md), and a scenes-only batch run right
+        // after it pays the identical race. Tell the wizard why nothing moves for up to ~2 min
+        // before paying the wait (mirrors `level_footswitch.rs`'s barrier caption verbatim).
+        if leveller::slot_save_pending_commit(slot) {
+            let _ = on_result.send(SceneLevelProgressItem {
+                scene_slot: jobs[0].scene_slot,
+                status: "active".to_string(),
+                result: None,
+                message: Some(leveller::WAITING_FOR_COMMIT_MSG.to_string()),
+                tail: None,
+            });
+        }
+        leveller::ensure_fresh_load(slot, &mut || SCENE_LEVEL_CANCEL.load(SeqCst))?;
+        // The slot's registered `presetLevel` witness — set by the run's OWN preceding
+        // `level_preset` base save — in PREFERENCE to the doc's parsed value: field-8 is
+        // read-your-writes and the barrier above already gates the wait, but inside the lazy
+        // commit window the device's LOAD STORE (what a later recall serves) can still lag the
+        // registry for a beat longer than the harvest above can observe.
+        let intended_preset_level_seed = leveller::registered_preset_level(slot);
+
         // THE field-8 read for this preset (one per run, before any other session — nothing
         // has just closed one here, and it leaves the validated prepass→runner boundary
         // below untouched). Feeds the raw per-node scene overlays (`scene_jobs::
@@ -322,7 +673,18 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
         // planner blind to the scenes it cuts, and the run then levels the visible ones and
         // leaves the rest silently untouched (`read_saved_preset_complete`'s doc carries the
         // HW evidence). Refusing with a readable error beats half-leveling a preset.
-        let saved = Some(crate::read_saved_preset_complete(slot)?);
+        //
+        // A3: widened to `["scenes", "ftsw"]` when base is in this batch — `ftsw` feeds the
+        // base isolation derivation below, and a PARTIAL `ftsw` silently under-isolates (some
+        // footswitch-owned blocks never forced off), so it must be required, not optional.
+        let saved = Some(if base_in_plan {
+            crate::probe_api::scene_jobs::read_saved_preset_complete_sections(
+                slot,
+                &["scenes", "ftsw"],
+            )?
+        } else {
+            crate::read_saved_preset_complete(slot)?
+        });
         type BatchOutcome = (
             Vec<leveller::BatchedSceneOutcome>,
             Option<crate::headroom_trade::TradeSummary>,
@@ -375,13 +737,52 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 saved.as_ref(),
                 &handles,
             )?;
-            if !base_requested {
+            // A1: `base_in_plan` replaces `base_requested` in the strip — an anchor-only base
+            // survives past PHASE 1/2 exactly like a `base_requested` one, and is stripped
+            // separately, right before PHASE 3, below.
+            if !base_in_plan {
                 scene_jobs.retain(|sj| sj.scene_slot != session::BASE_SCENE_SLOT);
+            } else if let Some(base_job) = scene_jobs
+                .iter_mut()
+                .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT)
+            {
+                // A3: "base means base" — isolate every footswitch-owned on/off block exactly
+                // like `level_preset`'s own base lane (preset 28's TubeScreamer is saved ON; an
+                // un-isolated base capture would measure it and silently under-isolate).
+                // Derived ONCE from the (now ftsw-widened) saved doc via the shared seam; an
+                // absent/empty `ftsw` degrades to no isolation, never an error.
+                let empty_ftsw = serde_json::Value::Null;
+                let ftsw = saved
+                    .as_ref()
+                    .and_then(|s| s.get("ftsw"))
+                    .unwrap_or(&empty_ftsw);
+                base_job.force_bypass = saved
+                    .as_ref()
+                    .map(|s| crate::commands::doctor::doctor_force_bypass(ftsw, s, None))
+                    .unwrap_or_default();
+            }
+            // A1/F4: base's isolated prepass capture must run LAST in PHASE 1, or its forced
+            // bypasses would render every LATER scene's as-is capture through a mutated
+            // (pedals-off) working copy. The force-append happens to put it last already, but a
+            // `base_requested` caller can name base anywhere among the wire jobs — enforce it
+            // explicitly with a stable sort rather than inherit append order.
+            if base_in_plan {
+                scene_jobs.sort_by_key(|sj| sj.scene_slot == session::BASE_SCENE_SLOT);
             }
             // Error on ANY slot mismatch between the built jobs and the wire jobs — a silent
             // default (especially NaN, which `.min(k_cap)` would collapse to the cap and slam
             // the amp) must never reach a solve.
             for sj in scene_jobs.iter_mut() {
+                // A1: the anchored base job has NO wire job of its own by construction (that is
+                // the whole point of the anchor) — special-cased here so the "no wire target"
+                // hard-error below never fires on it. Offset-adjusted exactly like every other
+                // job's wire target (the `base_target` above), or the trade would solve against
+                // the wrong number.
+                if sj.scene_slot == session::BASE_SCENE_SLOT && anchor_only_base {
+                    let anchor = base_anchor.expect("anchor_only_base implies base_anchor");
+                    sj.target_lufs = anchor.target_lufs as f64 + offset;
+                    continue;
+                }
                 let arg = jobs
                     .iter()
                     .find(|j| j.scene_slot == sj.scene_slot)
@@ -415,13 +816,20 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             {
                 // The prepass tick names its OWN phase — see `leveller::PREPASS_ACTIVE_MSG`.
                 // A capture is streaming when it lands, so the wizard reads it as the verb.
+                // A1: suppressed for the anchor-only base row — the frontend has no row to
+                // route a slot-8 item to when base arrived with no wire job of its own.
                 let mut started = |scene| {
+                    if anchor_only_base && scene == session::BASE_SCENE_SLOT {
+                        return;
+                    }
                     let _ = on_result.send(scene_progress_item(
                         slot,
                         save_run,
                         scene,
                         None,
                         Some(leveller::PREPASS_ACTIVE_MSG),
+                        // PHASE 2 has not run yet — no trade to disclose on a prepass tick.
+                        None,
                     ));
                 };
                 // The preset's own SAVED `presetLevel` — NOT the trade's raise, which PHASE 2
@@ -436,14 +844,54 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 // load store does not hold it — hence asserting it rather than assuming it.
                 // Through the SAME seam the solve captures use, with no trade yet (`None`),
                 // so the two renderings cannot drift apart by editing one side.
-                let saved_pl = leveller::scene_capture_level(None, saved.as_ref());
-                leveller::prepass_scene_ceilings(
+                //
+                // A2: prefer the run's OWN registered `presetLevel` witness (the preceding
+                // `level_preset` base save) over the parsed doc — the barrier above already
+                // waited out the commit window, but the device's load store can still lag the
+                // registry for a beat longer than the harvest can observe.
+                let saved_pl = intended_preset_level_seed
+                    .or_else(|| leveller::scene_capture_level(None, saved.as_ref()));
+                let prepass_result = leveller::prepass_scene_ceilings(
                     &mut scene_jobs,
                     &stim,
                     saved_pl,
                     &mut started,
                     cancelled,
-                )?;
+                );
+                // A5/F1 (BLOCKER): the PHASE-1 restore must run on EVERY exit from this block —
+                // Ok, Err, AND CANCELLED — from the moment base's isolated capture (LAST in the
+                // loop above) may have landed its forced bypasses. Nothing has been written or
+                // deferred yet at this point (PHASE 1 is read-only measurement), so the cheapest
+                // correct cleanup is a full reload, unconditionally, mirroring the unbatched
+                // path's own dirt handling. A cancel must not skip it either (danger.md) — the
+                // never-cancel closure below guarantees the barrier/reload run to completion.
+                //
+                // A FAILED cleanup HARD-FAILS the whole command rather than warn-and-continue:
+                // on the anchor-only path base carries no wire job of its own, so nothing later
+                // in this run re-solves or re-verifies it, and PHASE 3's isolation-restore list
+                // for such a run is empty by construction — a leaked forced bypass here would
+                // ride straight into the batch's terminal save with no verify catching it. This
+                // is PHASE 1, before anything is written or deferred, so it is the cheapest of
+                // the run's three abort points to fail at (mirrors `apply_headroom_trade`'s own
+                // back-out and `run_scene_jobs`' pre-save guard — same failure policy, applied at
+                // the point where it is still free).
+                let base_isolated = base_in_plan
+                    && scene_jobs
+                        .iter()
+                        .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT)
+                        .is_some_and(|sj| !sj.force_bypass.is_empty());
+                if base_isolated {
+                    let cleanup = leveller::ensure_fresh_load(slot, &mut || false)
+                        .and_then(|_| leveller::restore_saved_preset(slot));
+                    if let Err(e) = cleanup {
+                        return Err(format!(
+                            "slot {slot}: could not clear the base isolation prepass write \
+                             ({e}) — aborting the run rather than risk a later save persisting \
+                             every pedal forced off with an empty verify list"
+                        ));
+                    }
+                }
+                prepass_result?;
             }
             // PHASE 2 — plan and (only on a SAVE run, and only if a BENEFITING sound clamps)
             // execute the trade. A no-save run plans it and reports it as ADVISORY.
@@ -455,10 +903,38 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 save_run,
                 cancelled,
             );
+            // A1: NOW strip the anchor-only base job — it had to survive PHASE 1 (prepass) and
+            // PHASE 2 (the trade, which needed its ceiling/target/fader) with no wire job of its
+            // own, but PHASE 3 solves the batch's WIRE jobs and base's own `outputLevel` is
+            // never one of this batch's writes when it arrived only as an anchor (the wizard's
+            // separate `level_preset` lane owns that write). Leaving it in would re-solve base
+            // here too, on top of `level_preset`'s own apply.
+            if anchor_only_base {
+                scene_jobs.retain(|sj| sj.scene_slot != session::BASE_SCENE_SLOT);
+            }
+            // A5/F2 (TRADE-PATH GAP): the base job SURVIVES the anchor strip above whenever it
+            // arrived `base_requested` (a real wire job, not just an anchor) — see
+            // `isolation_restore_for_batch`'s doc for why `run_scene_jobs` needs this
+            // independently of whatever the trade's own restore list carries.
+            let isolation_restore = isolation_restore_for_batch(&scene_jobs, saved.as_ref());
             // No message: the solve is the wizard's DEFAULT phase, and its bare `active` is
             // what flips the row's verb back from the prepass's `measuring`.
+            // F5: `trade.summary` is known now (PHASE 2 already ran) — stamped on every `done`
+            // item so the channel carries the same disclosure the return vec gets at :521-531.
             let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| {
-                let _ = on_result.send(scene_progress_item(slot, save_run, scene, done, None));
+                let _ = on_result.send(scene_progress_item(
+                    slot,
+                    save_run,
+                    scene,
+                    done,
+                    None,
+                    trade.summary.as_ref(),
+                ));
+            };
+            // B6: the deferred-save/persist-verify batch-wide captions — see
+            // `tail_progress_item`'s doc for why the row key is safe to ignore.
+            let on_tail = |tail: &str| {
+                let _ = on_result.send(tail_progress_item(tail));
             };
             // PHASE 3 — the writes, on the existing batch runner, unchanged.
             // `rebalance` (opt-in) equalizes a path-MERGE scene's two lanes before joint-k;
@@ -472,7 +948,9 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     restore_scene,
                     saved.as_ref(),
                     trade.hold.as_ref(),
+                    &isolation_restore,
                     on_scene,
+                    on_tail,
                     cancelled,
                 )
             } else {
@@ -484,7 +962,9 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     restore_scene,
                     saved.as_ref(),
                     trade.hold.as_ref(),
+                    &isolation_restore,
                     on_scene,
+                    on_tail,
                     cancelled,
                 )
             }?;
@@ -516,18 +996,15 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                         status: "cancelled".to_string(),
                         result: None,
                         message: Some(leveller::CANCELLED.to_string()),
+                        tail: None,
                     });
                 }
                 Ok(outcomes
                     .iter()
                     .filter(|o| o.failure.is_none())
-                    .map(|o| {
-                        let mut r = outcome_to_level_result(slot, save, o);
-                        // The trade moved the whole preset's gain structure, so EVERY row it
-                        // touched carries it (disclosure rationale: `TradeSummary`'s doc).
-                        r.trade = summary.clone();
-                        r
-                    })
+                    // The trade moved the whole preset's gain structure, so EVERY row it
+                    // touched carries it (disclosure rationale: `TradeSummary`'s doc).
+                    .map(|o| outcome_to_level_result(slot, save, o, summary.as_ref()))
                     .collect())
             }
             Err(e) if e == leveller::CANCELLED => {
@@ -536,6 +1013,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                     status: "cancelled".to_string(),
                     result: None,
                     message: Some(e),
+                    tail: None,
                 });
                 Ok(Vec::new())
             }
@@ -578,7 +1056,7 @@ impl BatchTrade {
 
     /// Re-stamp the clamp taxonomy on the rows a FAILED trade was supposed to rescue, so the
     /// UI says "the trade ran out of base fader" / "the trade was backed out" instead of the
-    /// generic "this sound cannot reach the target". Only CLAMPED benefiting rows are touched;
+    /// generic "this sound can’t reach the target". Only CLAMPED benefiting rows are touched;
     /// a row that reached its target is untouched whatever the trade did.
     ///
     /// An ADVISORY (no-save) run leaves every kind alone: those rows clamp for their own
@@ -617,6 +1095,12 @@ pub(crate) struct TradeIntent {
     pub(crate) base_fader: f32,
     /// The wire scene slots a base raise actually helps.
     pub(crate) benefiting: Vec<u32>,
+    /// A6: the STRICT SUBSET of `benefiting` whose ALREADY-TAKEN prepass reading can be
+    /// shifted `+raise_db` and reused rather than dropped for a re-measure — see
+    /// `headroom_trade::retains_prepass_after_raise`'s doc. Every `Full`-overlay beneficiary
+    /// qualifies; an `Absent` one benefits from the eventual raise but its prepass rendered
+    /// through base's PRE-raise fader and must be dropped instead.
+    pub(crate) retains_prepass: Vec<u32>,
 }
 
 /// PHASE 2, PURE HALF: decide the benefit-aware headroom trade from the prepass ceilings.
@@ -645,8 +1129,8 @@ pub(crate) fn plan_trade_for_batch(
     save: bool,
 ) -> TradeDecision {
     use crate::headroom_trade::{
-        benefits_from_base_raise, min_audible_above, plan_headroom_trade, SoundId, TradeSound,
-        BASE_FADER_FLOOR,
+        benefits_from_base_raise, min_audible_above, plan_headroom_trade,
+        retains_prepass_after_raise, SoundId, TradeSound, BASE_FADER_FLOOR,
     };
     let Some(saved_doc) = saved else {
         return TradeDecision::None;
@@ -674,6 +1158,7 @@ pub(crate) fn plan_trade_for_batch(
     .unwrap_or(0.0);
 
     let mut benefiting: Vec<u32> = Vec::new();
+    let mut retains_prepass: Vec<u32> = Vec::new();
     let mut sounds: Vec<TradeSound> = Vec::new();
     for (i, job) in scene_jobs.iter().enumerate() {
         let Some(ceiling) = leveller::scene_ceiling_lufs(job) else {
@@ -700,6 +1185,16 @@ pub(crate) fn plan_trade_for_batch(
             });
         if benefits {
             benefiting.push(job.scene_slot);
+            // A6: the NARROWER Full-only predicate — see `retains_prepass_after_raise`'s doc.
+            let retains = job.knobs.iter().all(|kt| match &kt.knob {
+                leveller::LevelKnob::Block { node_id, .. } => {
+                    retains_prepass_after_raise(&scene_overlay(saved_doc, job.scene_slot, node_id))
+                }
+                leveller::LevelKnob::PresetLevel => false,
+            });
+            if retains {
+                retains_prepass.push(job.scene_slot);
+            }
         }
         sounds.push(TradeSound {
             id: SoundId::Scene {
@@ -720,6 +1215,7 @@ pub(crate) fn plan_trade_for_batch(
         preset_level,
         base_fader,
         benefiting,
+        retains_prepass,
     };
     if save {
         TradeDecision::Apply(intent)
@@ -942,11 +1438,13 @@ fn trade_for_batch(
     }
     match outcome {
         Ok(applied) => {
-            // See `retarget_prepass_after_trade`'s doc: benefiting sounds shift exactly, the
-            // rest re-measure.
-            let bset = intent.benefiting.clone();
+            // A6: only the NARROWER `retains_prepass` set shifts its already-taken reading —
+            // an `Absent` beneficiary's prepass is dropped instead (`None` → its own PHASE-3
+            // solve re-measures, AFTER its overlay exists). See `retarget_prepass_after_trade`'s
+            // doc for why the split is the physics, not a refactor choice.
+            let rset = intent.retains_prepass.clone();
             leveller::retarget_prepass_after_trade(scene_jobs, applied.raise_db, move |sc| {
-                bset.contains(&sc)
+                rset.contains(&sc)
             });
             adopt_trade_levels(scene_jobs, intent.base_idx, saved_doc, &applied.base_levels);
             let summary = TradeSummary {
@@ -962,10 +1460,16 @@ fn trade_for_batch(
                     .map(|&scene_slot| crate::headroom_trade::SoundId::Scene { scene_slot })
                     .collect(),
             };
+            // A5/F2 DETECTION: what the base isolation should read back as, per forced node —
+            // the same shared derivation `apply_headroom_trade`'s own `undo_base_isolation`
+            // uses (`leveller::isolation_restore_list`'s doc).
+            let force_bypass_restore =
+                leveller::isolation_restore_list(&base_job.force_bypass, Some(saved_doc));
             BatchTrade {
                 hold: Some(leveller::TradeHold {
                     preset_level: applied.preset_level,
                     writes: trade_hold_writes(&base_job, &applied.base_levels),
+                    force_bypass_restore,
                 }),
                 summary: Some(summary),
                 failure: None,
@@ -999,12 +1503,20 @@ fn trade_for_batch(
 /// ceiling prepass passes [`leveller::PREPASS_ACTIVE_MSG`] so the wizard can tell that phase
 /// apart from the solve, which passes `None`; without it the two ticks are byte-identical and
 /// the run reads as though it were already solving.
+///
+/// F5: `trade` is the batch's own [`crate::headroom_trade::TradeSummary`], known (PHASE 2 runs
+/// before PHASE 3 ever emits a `done` item) and stamped on every `done` row alongside the
+/// same stamping `level_scenes_apply_batched` passes through `outcome_to_level_result`'s own
+/// `trade` parameter for its awaited return — the wizard consumes the CHANNEL's items, not the
+/// awaited return, so leaving this `None` would land a permanent un-revertable `presetLevel`
+/// raise with zero UI disclosure.
 fn scene_progress_item(
     slot: u32,
     save: bool,
     scene: u32,
     done: Option<&leveller::BatchedSceneOutcome>,
     active_message: Option<&str>,
+    trade: Option<&crate::headroom_trade::TradeSummary>,
 ) -> SceneLevelProgressItem {
     match done {
         None => SceneLevelProgressItem {
@@ -1012,21 +1524,59 @@ fn scene_progress_item(
             status: "active".to_string(),
             result: None,
             message: active_message.map(str::to_string),
+            tail: None,
         },
         Some(o) => match &o.failure {
             None => SceneLevelProgressItem {
                 scene_slot: scene,
                 status: "done".to_string(),
-                result: Some(outcome_to_level_result(slot, save, o)),
+                result: Some(outcome_to_level_result(slot, save, o, trade)),
                 message: None,
+                tail: None,
             },
             Some(e) => SceneLevelProgressItem {
                 scene_slot: scene,
                 status: "error".to_string(),
                 result: None,
                 message: Some(e.clone()),
+                tail: None,
             },
         },
+    }
+}
+
+/// B6 (issue 6b): a batch-wide caption for a phase with no single scene to attach to — the
+/// deferred-save start ("Saving preset…") and the post-save persist-verify start
+/// ("Verifying…"). Rides its OWN [`SceneLevelProgressItem`].
+///
+/// `scene_slot: u32::MAX` — a DEDICATED sentinel, deliberately NOT `session::BASE_SCENE_SLOT`
+/// (8). This item type is shared by TWO frontend consumers (`level_scenes_apply_batched`'s
+/// `on_result` and `redistribute_headroom`'s), and they key their per-batch row maps
+/// differently: the scene lane's `byScene` (`useLevelingFlow.ts`) is built only from the
+/// group's own scene rows, so `BASE_SCENE_SLOT` would in fact miss there — but the
+/// redistribute lane's `bySound` map is SEEDED with `[BASE_SCENE_SLOT, base]` (it tracks the
+/// base row's own progress on this same channel), so a tail item keyed on `BASE_SCENE_SLOT`
+/// would be silently mistaken for a base-row update in THAT lane — exactly the regression the
+/// plan warns "the redistribute runner shares the seam and must not regress" about. `u32::MAX`
+/// is outside every real scene slot (0..7), `BASE_SCENE_SLOT` (8) included, and outside any
+/// value either consumer's map could ever hold, so `batchResolve`'s (and the redistribute
+/// callback's own) entry lookup misses on it in BOTH lanes and silently drops the synthetic
+/// row — the same "unknown key is ignored" path that already protects a `cancelled`-status
+/// item today.
+///
+/// `status`/`result`/`message` are dummy values here: `batchResolve` reads `tail` BEFORE the
+/// entry lookup that would ever look at them (see the frontend's own doc on that ordering), so
+/// they never surface. The redistribute lane's own callback does not read `tail` at all yet
+/// (B-FRONT scope) — until it does, a tail item there is a harmless no-op: an unmatched key
+/// (`bySound.get(u32::MAX)`) returns `undefined` and the callback's own `if (!target) return;`
+/// drops it, same as any other unrecognised row.
+fn tail_progress_item(tail: &str) -> SceneLevelProgressItem {
+    SceneLevelProgressItem {
+        scene_slot: u32::MAX,
+        status: "active".to_string(),
+        result: None,
+        message: None,
+        tail: Some(tail.to_string()),
     }
 }
 
@@ -1037,6 +1587,7 @@ fn outcome_to_level_result(
     slot: u32,
     save: bool,
     o: &leveller::BatchedSceneOutcome,
+    trade: Option<&crate::headroom_trade::TradeSummary>,
 ) -> leveller::LevelResult {
     let lufs = o.final_lufs.unwrap_or(f64::NAN);
     leveller::LevelResult {
@@ -1075,9 +1626,10 @@ fn outcome_to_level_result(
         // path in `level_preset` estimates it).
         true_peak_dbtp: None,
         persist_mismatch: o.persist_mismatch,
-        // Stamped by the caller when the batch traded — the trade is a BATCH fact, not a
-        // per-outcome one, so the outcome cannot carry it.
-        trade: None,
+        // F5: the batch's own trade summary, known before PHASE 3 ever emits this — see
+        // `scene_progress_item`'s doc for why the channel items need it too, not just the
+        // awaited return vec.
+        trade: trade.cloned(),
     }
 }
 
@@ -1171,6 +1723,12 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
     if !worst_clamped_deficit_db.is_finite() || worst_clamped_deficit_db <= 0.0 {
         return Err("redistribution needs a positive clamped-scene deficit".to_string());
     }
+    // Gap-2 pre-run guard, same shape as the batch that offered this action: the
+    // redistribution accumulates its raise + per-scene writes UNSAVED across scene
+    // recalls and saves once at batch end. The offering batch passed the guard against
+    // the same snapshot, but nothing structurally pins this command to that run — a
+    // replug (which re-reads the settings) can sit between them.
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     SCENE_LEVEL_CANCEL.store(false, SeqCst);
     let offset = playback_offset_for(&app, topology_id.as_deref());
     let (stim_path, calibration_lufs) = resolve_stimulus_for_leveling(
@@ -1287,7 +1845,13 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
         let new_preset_level = (f64::from(preset_level) * 10f64.powf(delta_db / 20.0)).min(1.0) as f32;
 
         let on_scene = |scene, done: Option<&leveller::BatchedSceneOutcome>| {
-            let _ = on_result.send(scene_progress_item(slot, true, scene, done, None));
+            // Redistribution never runs the headroom trade — no summary to disclose.
+            let _ = on_result.send(scene_progress_item(slot, true, scene, done, None, None));
+        };
+        // B6: the redistribute runner shares the tail-caption seam — see
+        // `redistribute_clamped_headroom`'s own doc.
+        let on_tail = |tail: &str| {
+            let _ = on_result.send(tail_progress_item(tail));
         };
         let cancelled = || SCENE_LEVEL_CANCEL.load(SeqCst);
         let outcome = leveller::redistribute_clamped_headroom(
@@ -1298,6 +1862,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
             restore_scene,
             saved.as_ref(),
             on_scene,
+            on_tail,
             cancelled,
         );
         let result = match outcome {
@@ -1305,7 +1870,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
                 results: outcomes
                     .iter()
                     .filter(|o| o.failure.is_none())
-                    .map(|o| outcome_to_level_result(slot, true, o))
+                    .map(|o| outcome_to_level_result(slot, true, o, None))
                     .collect(),
                 previous_preset_level: preset_level,
                 previous_knobs,
@@ -1318,6 +1883,7 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
                     status: "cancelled".to_string(),
                     result: None,
                     message: Some(e.clone()),
+                    tail: None,
                 });
                 Err(e)
             }
@@ -1335,12 +1901,18 @@ pub(crate) async fn redistribute_headroom<R: tauri::Runtime>(
 /// display name); a drifted list fails loudly rather than restoring onto a different preset.
 #[tauri::command]
 pub(crate) async fn restore_redistribution(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     slot: u32,
     preset_level: f32,
     knobs: Vec<PreviousKnob>,
     expected_name: String,
 ) -> Result<(), String> {
+    // Gap-2 pre-run guard, even though this is the RECOVERY path: the restore writes
+    // its groups across scene recalls and recalls base before its one save, so under
+    // DISCARD it would silently persist a PARTIAL restore — worse than refusing with
+    // the fix in hand (set MAINTAIN, replug, then Restore works).
+    scene_discard_guard(crate::commands::presets::device_settings_path(&app).as_deref())?;
     with_released_seize(state.session.clone(), move || {
         let writes: Vec<leveller::PrevKnobWrite> = knobs
             .iter()
@@ -1545,6 +2117,7 @@ mod trade_planner_tests {
             skip: None,
             rebalanceable: false,
             handle: None,
+            force_bypass: Vec::new(),
             prepass: Some(leveller::ScenePrepass { asis, spread: 1.0 }),
         }
     }
@@ -1581,6 +2154,49 @@ mod trade_planner_tests {
             i.benefiting,
             vec![0],
             "scene 0's overlay pins its own fader"
+        );
+        assert_eq!(
+            i.retains_prepass,
+            vec![0],
+            "a Full overlay's ALREADY-TAKEN prepass reading is exactly the one to shift"
+        );
+    }
+
+    // A9/THE REGRESSION TEST (bug: preset 28 "Friedman HBE"). Before A6 `benefits_from_base_raise`
+    // required a PRE-EXISTING `Full` overlay — wrong, because PHASE 3's own Scene Edit write
+    // materializes the overlay the moment an Absent scene's own row is solved, so by the time
+    // the raise matters that scene is exactly as independent of base as a Full one always was.
+    // Shaped like the wizard's own anchor-delivered run: base is present with `skip: None` and
+    // NO wire job of its own (`level_scenes.rs`'s anchor keeps it alive through PHASE 1/2 with
+    // exactly this shape), and the SOLE beneficiary is Absent, not Full.
+    #[test]
+    fn plan_trade_for_batch_fires_for_an_absent_only_beneficiary_when_base_arrives_via_anchor() {
+        let p = preset(0.5);
+        let jobs = vec![
+            job(
+                session::BASE_SCENE_SLOT,
+                -23.0,
+                -23.0,
+                vec![knob("amp", 0.8, None)],
+            ),
+            // Scene 1 mentions no amp overlay at all (Absent) — 4 LU short.
+            job(1, -15.0, -19.0, vec![knob("amp", 1.0, Some(1))]),
+        ];
+        let d = plan_trade_for_batch(&jobs, Some(&p), true);
+        assert!(
+            matches!(d, TradeDecision::Apply(_)),
+            "an Absent-only beneficiary must now arm the trade: {d:?}"
+        );
+        let i = intent(&d);
+        assert_eq!(
+            i.benefiting,
+            vec![1],
+            "Absent now benefits — its Scene Edit write will materialize the overlay"
+        );
+        assert!(
+            i.retains_prepass.is_empty(),
+            "but its prepass reading rendered through base's PRE-raise fader and must be \
+             DROPPED, not shifted — retains_prepass is the narrower, Full-only set"
         );
     }
 
@@ -2130,6 +2746,79 @@ mod scene_handle_tests {
         assert_eq!(
             find_boost_gain(&rows[2]).expect("Solo gain").scope,
             "shared_with_base"
+        );
+    }
+
+    // ── Part C: `enables_block` (issue 5 — Boost preselect) ─────────────────────────────
+
+    // THE E2E-Edge shape: base-bypassed Boost, Solo (scene 2) is the ONLY scene whose own
+    // overlay positively un-bypasses it (`bypass: false`) — that is exactly the signal the
+    // frontend should preselect on.
+    #[test]
+    fn enables_block_is_true_only_on_the_scene_that_un_bypasses_a_base_bypassed_node() {
+        let rows = scene_handle_rows(&hbe_boost_preset());
+        assert_eq!(rows.len(), 4);
+        assert!(
+            !find_boost_gain(&rows[0]).expect("Dirt gain").enables_block,
+            "Dirt's overlay keeps bypass:true — it doesn't enable the block"
+        );
+        assert!(
+            !find_boost_gain(&rows[1]).expect("Clean gain").enables_block,
+            "Clean's overlay ALSO keeps bypass:true"
+        );
+        assert!(
+            find_boost_gain(&rows[2]).expect("Solo gain").enables_block,
+            "Solo's overlay is the one that flips bypass:false — THE preselect signal"
+        );
+        assert!(
+            !find_boost_gain(&rows[3])
+                .expect("Crunch gain")
+                .enables_block,
+            "Crunch's overlay keeps bypass:true"
+        );
+        // The wire name B-FRONT reads: camelCase `enablesBlock`, not the Rust field name.
+        let json =
+            serde_json::to_value(find_boost_gain(&rows[2]).expect("Solo gain")).expect("serialize");
+        assert_eq!(json["enablesBlock"], serde_json::json!(true));
+    }
+
+    // A node already ACTIVE in base has nothing for a scene to "enable" — even a scene whose
+    // overlay carries `bypass: false` (redundantly restating base) must not preselect it.
+    #[test]
+    fn enables_block_is_false_when_the_node_is_already_active_in_base() {
+        let mut preset = hbe_boost_preset();
+        preset["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"] =
+            serde_json::json!(false);
+        let rows = scene_handle_rows(&preset);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(
+                !find_boost_gain(row)
+                    .unwrap_or_else(|| panic!("scene {i} gain"))
+                    .enables_block,
+                "scene {i}: base is already active, so no scene can \"enable\" it"
+            );
+        }
+    }
+
+    // A `BypassOnly` overlay that keeps `bypass: true` (Clean, scene 1) never enables the
+    // block, matching the isolated assertion above but pinned as its own test per the plan.
+    #[test]
+    fn enables_block_is_false_for_a_bypass_only_overlay_that_stays_bypassed() {
+        let rows = scene_handle_rows(&hbe_boost_preset());
+        assert!(matches!(
+            scene_overlay(&hbe_boost_preset(), 1, "boost"),
+            SceneOverlay::BypassOnly(_)
+        ));
+        assert!(!find_boost_gain(&rows[1]).expect("Clean gain").enables_block);
+    }
+
+    // Base rows have no scene/overlay concept — `enables_block` is unconditionally false.
+    #[test]
+    fn enables_block_is_always_false_on_base_handle_candidates() {
+        let base = base_handle_candidates(&hbe_boost_preset());
+        assert!(
+            base.iter().all(|c| !c.enables_block),
+            "Base has nothing to enable relative to: {base:?}"
         );
     }
 }

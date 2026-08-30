@@ -105,7 +105,7 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
         <PaneEmpty
           icon="wave"
           title="No songs use this preset"
-          body="Which songs reach for a preset is set on the unit in Pro Control. This view stays in sync with the device."
+          body="Which songs use a preset is set on the unit in Pro Control. This view stays in sync with the device."
         />
       ) : (
         <>

@@ -739,7 +739,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     // (SOLO_FOOTSWITCH's one candidate, tone-safe-classified `level_linear`) with no
     // picker interaction required.
     expect(
-      screen.getByText("evens this footswitch out to your target"),
+      screen.getByText("matches this footswitch’s loudness to your target"),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /level 1 sound/i }));
     expect(

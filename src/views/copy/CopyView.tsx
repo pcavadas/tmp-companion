@@ -272,8 +272,8 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
         title="Copy lives on the Tone Master Pro"
         body={
           <>
-            Connect your unit over <UsbC /> to copy blocks between presets — it
-            will connect automatically.
+            Connect your unit over <UsbC /> to copy blocks between presets. It
+            connects on its own.
           </>
         }
         onScan={onScan}

@@ -161,16 +161,19 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
 
     // Set up must show all THREE row kinds — proven by their distinct sub-text copy.
     await expect(
-      page.getByText(/levels this preset against the others/),
+      page.getByText(/matches this preset’s loudness to your other presets/),
     ).toBeVisible(); // Base
     await expect(
-      page.getByText(/levels this scene against/).first(),
+      page.getByText(/matches this scene’s loudness/).first(),
     ).toBeVisible(); // a footswitch SCENE
     // PR #144: the verify-only footswitch mode is gone — every block-acting FOOTSWITCH
-    // row now levels (the same "evens out" copy every such row carries, distinct from a
-    // scene row's "levels this scene against the preset's base").
+    // row now levels (the same "matches this footswitch’s loudness" copy every such row
+    // carries, distinct from a scene row's "matches this scene’s loudness to the preset's
+    // base sound").
     await expect(
-      page.getByText(/evens this footswitch out to your target/).first(),
+      page
+        .getByText(/matches this footswitch’s loudness to your target/)
+        .first(),
     ).toBeVisible(); // a block-acting FOOTSWITCH
     // The bake/assign mechanism is never surfaced.
     await expect(page.getByText(/baked|assigned/i)).toHaveCount(0);

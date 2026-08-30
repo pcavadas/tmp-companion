@@ -498,6 +498,10 @@ pub(crate) fn build_scene_jobs_with_handles(
                         // Filled by `leveller::prepass_scene_ceilings` when the caller runs
                         // the reordered (measure-everything-first) run.
                         prepass: None,
+                        // Base isolation (A3/A4), when this job is the base row, is stamped
+                        // onto it AFTER this builder returns — see
+                        // `commands::level_scenes::level_scenes_apply_batched`.
+                        force_bypass: Vec::new(),
                     }
                 }
                 Err(reason) => skip_scene_job(*scene, target_lufs, reason),
@@ -518,6 +522,7 @@ fn skip_scene_job(scene: u32, target_lufs: f64, reason: String) -> leveller::Sce
         handle: None,
         // A skip job is never measured, so it never carries a prepass reading.
         prepass: None,
+        force_bypass: Vec::new(),
     }
 }
 
@@ -580,6 +585,7 @@ fn handle_scene_job(
         rebalanceable: false,
         handle: Some(target),
         prepass: None,
+        force_bypass: Vec::new(),
     }
 }
 
@@ -623,7 +629,19 @@ pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
 /// refuses rather than returning a partial one. Same GAP CONTRACT as its sibling: no sleep
 /// before the read, one `RECONNECT_GAP_MS` after it.
 pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::Value, String> {
-    let result = crate::read_slot_preset_complete(list_index, &["scenes"]).map(|(p, _, _)| p);
+    read_saved_preset_complete_sections(list_index, &["scenes"])
+}
+
+/// [`read_saved_preset_complete`] with an explicit required-sections list — A3's widened read
+/// for a batch that carries a BASE row: the base isolation derivation additionally needs
+/// `ftsw` (`doctor_force_bypass`'s own input), and a partial `ftsw` under-isolates silently
+/// rather than erroring, so it must be COMPLETE-OR-FAIL exactly like `scenes` already is. Same
+/// GAP CONTRACT as the sibling above (no sleep before the read, one `RECONNECT_GAP_MS` after).
+pub(crate) fn read_saved_preset_complete_sections(
+    list_index: u32,
+    sections: &[&str],
+) -> Result<serde_json::Value, String> {
+    let result = crate::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p);
     crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     result
 }
@@ -972,6 +990,21 @@ pub(crate) fn scene_overlay_for<'a>(
     }
 }
 
+/// The overlay's OWN bypass verdict: `Some(bool)` when the overlay's `dspUnitParameters`
+/// states one (`Full`/`BypassOnly` carrying a `bypass` key), `None` when it doesn't
+/// (`Absent`, `Unknown`, or a `Full`/`BypassOnly` overlay with no `bypass` key at all) —
+/// shared by [`shared_write_is_scene_local`]'s `effective_bypass` and
+/// [`scene_handle_rows_scanned`]'s `enables_block` derivation, which both used to hand-write
+/// this same match.
+fn overlay_bypass(overlay: &SceneOverlay) -> Option<bool> {
+    match overlay {
+        SceneOverlay::Full(p) | SceneOverlay::BypassOnly(p) => {
+            p.get("bypass").and_then(serde_json::Value::as_bool)
+        }
+        SceneOverlay::Absent | SceneOverlay::Unknown => None,
+    }
+}
+
 /// The MUTABLE counterpart to [`scene_overlay_for`] — the write-side key resolver, so a scene
 /// overlay write can never key a node differently than [`scene_overlay_for`] would read it back.
 /// Locates `scenes[scene].{guitarNodes,micNodes}.<group>` (group ids are disjoint across the two
@@ -1216,16 +1249,15 @@ fn shared_write_is_scene_local(
     // `overlay.bypass ?? base.bypass`, the same fallback for every overlay kind — see the
     // doc comment above for why the KIND must not gate this lookup.
     let effective_bypass = |s: u32| -> bool {
-        match scene_overlay_for(preset, s, triple) {
-            SceneOverlay::Full(p) | SceneOverlay::BypassOnly(p) => p
-                .get("bypass")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(base_bypass),
-            SceneOverlay::Absent => base_bypass,
-            // A cut read for one of the OTHER scenes can't be trusted to answer "bypassed" —
-            // fails both the bypass and the pin test below, so the whole predicate refuses.
-            SceneOverlay::Unknown => false,
+        let overlay = scene_overlay_for(preset, s, triple);
+        // A cut read for one of the OTHER scenes can't be trusted to answer "bypassed" —
+        // fails both the bypass and the pin test below, so the whole predicate refuses.
+        // `overlay_bypass` folds `Unknown` into `None` same as `Absent`, so it must be
+        // special-cased here rather than falling through to the `base_bypass` fallback.
+        if matches!(overlay, SceneOverlay::Unknown) {
+            return false;
         }
+        overlay_bypass(&overlay).unwrap_or(base_bypass)
     };
     if effective_bypass(scene) {
         return false; // not audible in `scene` itself
@@ -1506,6 +1538,16 @@ pub struct SceneHandleCandidate {
     /// can only make the scene QUIETER — the picker should say so before the user finds out
     /// from a clamped row.
     pub(crate) headroom: String,
+    /// Issue 5 (Boost preselect): does THIS scene turn the block on? `true` iff the BASE graph
+    /// has the node bypassed AND this scene's own overlay un-bypasses it (`Absent` — sharing
+    /// base's bypass state — never counts, only a positive `bypass: false` in the scene's own
+    /// `Full`/`BypassOnly` overlay does) AND the node has at least one leveling candidate
+    /// (mirrors [`footswitch::is_levelable_param`]'s gate, so this can never be true for a
+    /// node the safe-default picker wouldn't offer at all). A signal for the frontend's
+    /// preselect ONLY — it plays no part in `scope`/`headroom` or any solve decision. Always
+    /// `false` on [`base_handle_candidates_scanned`]'s output: Base has no overlay/scene
+    /// concept to enable anything relative to.
+    pub(crate) enables_block: bool,
 }
 
 /// The handle candidates for ONE scene.
@@ -1539,6 +1581,7 @@ fn finish_handle_candidate(
     c: footswitch::LevelParamCandidate,
     fender_id: &str,
     scope: &str,
+    enables_block: bool,
 ) -> SceneHandleCandidate {
     let current = c.current as f32;
     let target = leveller::FsParamTarget::new(fender_id, &c.parameter_id, current);
@@ -1558,6 +1601,7 @@ fn finish_handle_candidate(
         current,
         scope: scope.to_string(),
         headroom: headroom.to_string(),
+        enables_block,
     }
 }
 
@@ -1675,7 +1719,9 @@ pub(crate) fn base_handle_candidates_scanned(scan: &NodeGraphScan) -> Vec<SceneH
         out.extend(
             footswitch::level_candidates_for_node(group_id, node_id, fender_id, base_params)
                 .into_iter()
-                .map(|c| finish_handle_candidate(c, fender_id, "isolated")),
+                // `enables_block: false` — Base has no scene/overlay concept to enable
+                // anything relative to.
+                .map(|c| finish_handle_candidate(c, fender_id, "isolated", false)),
         );
     }
     out
@@ -1725,6 +1771,27 @@ pub(crate) fn scene_handle_rows_scanned(
                 // hand, so the string-keyed wrapper's whole-graph `roster_entry` walk would
                 // be re-paid once per (scene, node) pair for an answer we resolved once.
                 let overlay = scene_overlay_for(preset, scene, (group_id, node_id, fender_id));
+                // Issue 5 (Boost preselect): does THIS scene turn the (base-bypassed) block
+                // on? Reuses `overlay` — no second bypass reader. `Absent` (the scene shares
+                // base's bypass state) and `Unknown` both answer "no" here, same as a
+                // positive `bypass: true`/missing key in a `Full`/`BypassOnly` overlay — only
+                // an overlay that POSITIVELY un-bypasses counts.
+                let base_bypassed = base_params
+                    .get("bypass")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let scene_unbypasses = overlay_bypass(&overlay) == Some(false);
+                // The safe-default candidate list, computed ONCE and reused both for the
+                // `enables_block` gate ("has ≥1 `is_levelable_param` candidate") and for
+                // `candidates` below — avoids walking `base_params` twice per node.
+                let node_candidates = footswitch::level_candidates_for_node(
+                    group_id,
+                    node_id,
+                    fender_id,
+                    base_params,
+                );
+                let enables_block =
+                    base_bypassed && scene_unbypasses && !node_candidates.is_empty();
                 // Only the Full overlay's own params ever override a candidate's `current` —
                 // the scope annotation below is now derived per-candidate from the write-
                 // landing verdict itself, not re-derived here.
@@ -1775,18 +1842,9 @@ pub(crate) fn scene_handle_rows_scanned(
                             } => "unknown",
                         }
                     });
-                    finish_handle_candidate(c, fender_id, scope)
+                    finish_handle_candidate(c, fender_id, scope, enables_block)
                 };
-                candidates.extend(
-                    footswitch::level_candidates_for_node(
-                        group_id,
-                        node_id,
-                        fender_id,
-                        base_params,
-                    )
-                    .into_iter()
-                    .map(annotate),
-                );
+                candidates.extend(node_candidates.into_iter().map(annotate));
                 all_candidates.extend(
                     footswitch::all_numeric_candidates_for_node(
                         group_id,

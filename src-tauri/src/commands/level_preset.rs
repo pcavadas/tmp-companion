@@ -535,8 +535,7 @@ pub(crate) async fn calibrate_profile(
         //   take persists the capture as the leveling stimulus (injected verbatim at
         //   gain 1), so a fader-scaled one corrupts every later re-amp invisibly.
         //   `usb3_fader_fault` carries the full reasoning and the replug recovery.
-        let strip = settings_path
-            .and_then(|p| std::fs::read_to_string(p).ok())
+        let strip = crate::backup_read::read_settings_snapshot(settings_path.as_deref())
             .and_then(|json| crate::backup_read::usb3_strip(&json));
         let (mono, _peak) = crate::probe_api::stimulus::capture_dry_di(secs, strip.as_ref())?;
         if let Some(f) = strip

@@ -67,8 +67,8 @@ export function PlaybackLevelSection({
           lineHeight: 1.5,
         }}
       >
-        The volume you’ll play at — bass targets adjust to match how your ear
-        hears bass there.
+        The volume you play at. Bass targets adjust so bass still sounds right
+        at that volume.
       </div>
       <div
         style={{
@@ -83,8 +83,8 @@ export function PlaybackLevelSection({
         <span style={{ fontStyle: "normal", color: t.mutedInk }}>
           Fletcher–Munson
         </span>
-        : the quieter you play, the less bass your ear hears — so bass presets
-        get a small boost to stay even.
+        : the quieter you play, the less bass your ear hears. So bass presets
+        get a small boost to sound even.
       </div>
       <div
         style={{
@@ -95,8 +95,8 @@ export function PlaybackLevelSection({
           lineHeight: 1.45,
         }}
       >
-        Only really matters when you level bass and guitar presets together —
-        guitar is never adjusted.
+        This only matters when you level bass and guitar presets together.
+        Guitar is never adjusted.
       </div>
 
       <SegmentedControl

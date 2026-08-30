@@ -87,7 +87,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     // re-word it here if the backend's wording changes; update this string instead.
     await expect(
       page.getByText(
-        "this sound cannot reach the target — its level control is already at the limit",
+        "this sound can’t reach the target because its level control is already maxed out",
       ),
     ).toBeVisible();
 
@@ -208,7 +208,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     // 403's Base clamped at its ceiling — the banner NAMES the measured ceiling.
     await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
-    await expect(page.getByText(/ceiling [−-]20\.\d LUFS/)).toBeVisible();
+    await expect(page.getByText(/Ceiling: [−-]20\.\d LUFS/)).toBeVisible();
 
     // The fallback re-levels every measured sound to the derived reachable common target
     // (min of the two MEASURED ceilings minus 1 LU headroom — a loose band, not a literal

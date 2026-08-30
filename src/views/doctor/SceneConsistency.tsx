@@ -56,8 +56,8 @@ export function SceneConsistency({
       >
         Your <strong>{sc.worstName}</strong> scene jumps{" "}
         <strong>{signedDb(sc.worstDeltaDb)} dB</strong> against the rest — a big
-        volume leap when you stomp between sounds. Pros keep it to +1–3 dB and
-        lean on a mid boost to cut through.
+        volume leap when you switch sounds. Keep the difference within 3 dB, and
+        use a mid boost instead to cut through.
       </div>
       <div style={{ marginTop: t.space5 }}>
         {sc.rows.map((r, i) => {

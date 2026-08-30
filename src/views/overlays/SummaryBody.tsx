@@ -570,8 +570,8 @@ export function SummaryBody({
                 body: (
                   <>
                     The amp’s output level is saved at{" "}
-                    <strong style={{ color: t.ink }}>0</strong> — raise it on
-                    the unit, then re-level.
+                    <strong style={{ color: t.ink }}>0</strong>. Raise it on the
+                    unit, then re-level.
                   </>
                 ),
               },
@@ -580,8 +580,8 @@ export function SummaryBody({
                 rows: offbrExpMute,
                 body: (
                   <>
-                    A pedal controls the amp’s output with zero at one end —
-                    park it at the{" "}
+                    A pedal controls the amp’s output, with zero at one end.
+                    Park it at the{" "}
                     <strong style={{ color: t.ink }}>other end</strong>, then
                     re-level.
                   </>
@@ -623,33 +623,33 @@ export function SummaryBody({
               border="rgba(176,125,28,0.3)"
               title="Clamped — already maxed"
             >
-              Already as loud as the preset allows
+              Already as loud as the preset allows.
               {clampedCeiling != null
-                ? ` — ceiling ${fmtLufs(clampedCeiling)} LUFS`
-                : ""}
-              .{" "}
+                ? ` Ceiling: ${fmtLufs(clampedCeiling)} LUFS.`
+                : ""}{" "}
               {redistPlan ? (
                 <>
                   But the preset has headroom to spare.{" "}
                   <strong style={{ color: t.ink }}>
                     Give clamped scenes headroom
                   </strong>{" "}
-                  rewrites the preset level, the base amp, and{" "}
+                  adjusts the preset level, the base amp, and{" "}
                   {redistPlan.scenes} scene
                   {redistPlan.scenes === 1 ? "" : "s"}
                   {redistPlan.presets > 1
                     ? ` across ${String(redistPlan.presets)} presets`
                     : ""}{" "}
-                  so they reach target — non-clamped sounds stay put. Or lower
-                  the target and re-level.
+                  to reach target. Sounds that are not clamped stay the same. Or
+                  lower the target and re-level.
                 </>
               ) : commonTarget && commonPlan ? (
                 <>
                   <strong style={{ color: t.ink }}>
                     Re-level everything to a reachable common target
                   </strong>{" "}
-                  brings every sound to one loudness the quietest can reach — no
-                  on-stage jump. Or lower the target and re-level.
+                  brings every sound to one loudness the quietest preset can
+                  reach. That way, nothing jumps in volume on stage. Or lower
+                  the target and re-level.
                 </>
               ) : (
                 <>Lower the target and re-level, or keep as-is.</>
@@ -714,8 +714,8 @@ export function SummaryBody({
               padding: `${String(t.space5)}px ${String(t.space5)}px 0`,
             }}
           >
-            Restore rewrites a preset’s previous saved level — scene and
-            footswitch changes stay.
+            Restore rewrites a preset’s previous saved level. Scene and
+            footswitch changes stay as they are.
           </div>
         )}
         {byEarReasons.length > 0 && (
@@ -738,7 +738,7 @@ export function SummaryBody({
                 color: t.mutedInk,
               }}
             >
-              worth a quick listen — {byEarReasons.join("; ")}.
+              Worth a quick listen — {byEarReasons.join("; ")}.
             </span>
           </div>
         )}
@@ -762,8 +762,8 @@ export function SummaryBody({
                 color: t.mutedInk,
               }}
             >
-              flagged rows are estimated to peak above −1 dBTP at the leveled
-              setting — if your interface or FRFR clips, pick a lower target.
+              Flagged rows are estimated to peak above −1 dBTP at the leveled
+              setting. If your interface or FRFR clips, pick a lower target.
             </span>
           </div>
         )}

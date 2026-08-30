@@ -60,7 +60,10 @@ pub fn probe_level_scenes_oneshot(
             saved.as_ref(),
             // No headroom trade on this dev arm — it runs the jobs verbatim.
             None,
+            // No base isolation on this dev arm either — `build_scene_jobs` never sets it.
+            &[],
             |_, _| {},
+            |_| {}, // B6: this probe has no progress channel to caption
             || false,
         )
     } else {
@@ -73,7 +76,10 @@ pub fn probe_level_scenes_oneshot(
             saved.as_ref(),
             // No headroom trade on this dev arm — it runs the jobs verbatim.
             None,
+            // No base isolation on this dev arm either — `build_scene_jobs` never sets it.
+            &[],
             |_, _| {},
+            |_| {}, // B6: this probe has no progress channel to caption
             || false,
         )
     };

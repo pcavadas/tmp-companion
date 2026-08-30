@@ -133,12 +133,12 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
             textWrap: "pretty",
           }}
         >
-          Leveling and song editing write changes directly to your device&apos;s
-          presets. Please create a full backup using{" "}
+          Leveling and song editing write changes straight to your device. Make
+          a full backup in{" "}
           <span style={{ fontFamily: t.mono, fontSize: 12.5, color: t.ink2 }}>
             Fender Tone Master Pro Control
           </span>{" "}
-          before proceeding.
+          first.
         </div>
 
         <div
@@ -156,13 +156,13 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
           }}
         >
           <CalloutRow icon="warn-tri" iconColor={t.accentDeep}>
-            TMP Companion is not responsible for any data loss. Changes are
-            written to the unit in real time and may not be reversible without a
+            TMP Companion is not responsible for data loss. Changes save to your
+            device right away, and you may not be able to undo them without a
             backup.
           </CalloutRow>
           <CalloutRow icon="shield" iconColor={t.good}>
-            This is an independent, unaffiliated tool. It talks to your unit
-            over USB and acts only on your own device and presets.
+            This app isn&apos;t made by Fender. It talks to your unit over USB
+            and only touches your own device and presets.
           </CalloutRow>
         </div>
 
@@ -181,7 +181,7 @@ export function Disclaimer({ onAccept }: DisclaimerProps) {
               onAccept(dontShow);
             }}
           >
-            I&apos;ve backed up — continue
+            I&apos;ve backed up, continue
           </Button>
           <div
             onClick={() => {

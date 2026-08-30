@@ -45,6 +45,7 @@ import type {
   DoctorApplyResult,
   DoctorOp,
   SupportBundleResult,
+  BaseAnchor,
 } from "./types";
 
 // isTauri lives in ./log (the dependency-free end of the invoke→log edge — a
@@ -130,6 +131,11 @@ export interface SceneLevelProgressItem {
   status: "active" | "done" | "error" | "cancelled";
   result: LevelResult | null;
   message: string | null;
+  /** A batch-wide caption ("Saving…" / "Verifying…") emitted at the deferred-save and
+   *  persist-verify starts, AFTER every scene in the group already resolved — this item
+   *  carries no valid `sceneSlot`/row identity of its own (never key against it), only
+   *  the caption. Omitted/null outside those two windows. */
+  tail?: string | null;
 }
 
 /** A user-chosen scene leveling control (mirrors the backend's `SceneHandleArg`) — the
@@ -165,6 +171,10 @@ export const levelScenesApplyBatched = (
     topologyId: string | null;
     calibrationLufs: number | null;
     profileId: string | null;
+    /** Keeps the wizard's force-appended BASE job alive through the batch's prepass +
+     *  headroom-trade phases (see `BaseAnchor`). Omitted/undefined = today's behavior
+     *  (no base job in the batch; base still levels via the separate `levelPreset` lane). */
+    baseAnchor?: BaseAnchor | null;
   },
   onResult: (item: SceneLevelProgressItem) => void,
 ): Promise<LevelResult[]> => {

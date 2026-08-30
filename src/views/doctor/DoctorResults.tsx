@@ -425,8 +425,8 @@ export function DoctorResults({
               color: t.mutedInk,
             }}
           >
-            Applied fixes are saved per prescription — nothing here is written
-            until you save it.
+            Nothing here is written until you save it. Each fix has its own
+            Save.
           </span>
           <Button variant="primary" icon="refresh" onClick={handleCheckMore}>
             Check other sounds

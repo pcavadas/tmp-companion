@@ -110,6 +110,16 @@ export interface LevelJob {
   block_value: number | null;
 }
 
+/** Keeps the wizard's already-force-appended BASE job alive through the scene batch's
+ * prepass + headroom-trade phases (it is stripped again before the per-scene solve) —
+ * mirrors `commands::level_scenes::BaseAnchorArg`, camelCase wire form (this command's
+ * arg structs follow the `SceneLevelJobWire` camelCase convention, not `LevelJob`'s
+ * snake_case one). Omit the whole `baseAnchor` key when the run has no base row for
+ * this preset — there is nothing to anchor. */
+export interface BaseAnchor {
+  targetLufs: number;
+}
+
 /** One entry in a setlist common-target job (mirrors lib::SetlistJobEntry).
  * Keys snake_case (nested inside `{ entries: [...] }`). */
 export interface SetlistJobEntry {
@@ -203,15 +213,15 @@ export type ClampKind =
  * loudly here — update this table by hand alongside it. */
 export const CLAMP_MESSAGES: Record<ClampKind, string> = {
   scene_ceiling:
-    "this sound cannot reach the target — its level control is already at the limit",
+    "this sound can’t reach the target because its level control is already maxed out",
   wet_floor:
-    "this sound cannot reach the target without dropping the mix below the level that preserves the effect",
+    "this sound can’t reach the target without turning the effect’s mix down too far to still work",
   trade_floor:
-    "the base amp level ran out of room holding the base sound on target while headroom was traded for this one",
+    "giving this sound headroom used up the base amp’s spare room, so the base sound slipped off target",
   partial_trade:
-    "the traded headroom was backed out because a dependent write did not land — nothing was saved",
+    "a related write failed, so the headroom trade was undone and nothing was saved",
   no_authority:
-    "the level control has no effect on the USB 1/2 output for this sound",
+    "this level control has no effect on the sound coming out of USB 1/2",
 };
 
 /** Why a headroom-trade raise was trimmed below what the worst benefiting deficit wanted
@@ -328,6 +338,13 @@ export interface SceneHandleCandidate {
   /** "full" = room in both directions. "lowers_only" = already at (or within a whisker
    * of) the top of its range — this handle can only make the scene QUIETER. */
   headroom: "full" | "lowers_only";
+  /** True iff this scene's overlay UN-BYPASSES a node the base graph has bypassed (and
+   * the node carries at least one levelable param) — the scene's whole reason to exist
+   * is turning this block on, so its own control is the natural default handle, not the
+   * active amp's `outputLevel`. Optional: older data (a carried-forward re-level pick,
+   * or a backend that predates this field) omits it — treat missing as `false`, never
+   * as "unknown/preselect anyway". */
+  enablesBlock?: boolean;
 }
 
 /** The handle candidates for ONE scene (mirrors `commands::SceneHandleRow`). */
@@ -756,6 +773,13 @@ export interface BackupPresetRow {
   scene_count: number;
   scenes: SceneInfo[];
   amp_candidates: AmpCandidate[];
+  /** Count of `amp_candidates` nodes NOT bypassed in the base graph (`lib::backup_read`,
+   * derived alongside `amp_candidates`) — the redistribute gate's single-amp signal. A
+   * global bypass filter on `amp_candidates` itself is forbidden (amp-flip presets need
+   * bypassed-in-base amps as candidates too), so this rides as a separate count instead.
+   * `=== 1`, not `<= 1`: a genuinely blockless base (0) must not offer a doomed
+   * redistribute. */
+  base_active_amp_count: number;
   /** Every block in the preset's audioGraph (`lib::BackupBlock`). Drives the
    * per-preset CPU total + "blocks present in the selection" lists. */
   blocks: BackupBlock[];
