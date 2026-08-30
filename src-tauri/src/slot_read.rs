@@ -136,16 +136,18 @@ pub(crate) fn read_slot_preset_complete(
         let mut s = Session::connect()?;
         s.device_backup(60, |_| {})?.0
     };
-    let doc = backup_read::preset_json_from_backup(&blob, i64::from(slot) + 1, &tail.name)
-        .map_err(|e| {
-            format!(
+    let expect_id = crate::library::preset_id_of(&preset).filter(|s| !s.is_empty());
+    let doc =
+        backup_read::preset_json_from_backup(&blob, i64::from(slot) + 1, &tail.name, expect_id)
+            .map_err(|e| {
+                format!(
                 "slot {}: the preset is too large to read over USB — its {} section(s) were cut \
                  off the field-8 read, and the complete backup re-read failed ({e}). Refusing \
                  rather than acting on a partial preset",
                 slot + 1,
                 tail.truncated.join(", ")
             )
-        })?;
+            })?;
     let len = doc.to_string().len();
     // Same rule as `scene_names_from_slot_json` (which maps `scenes[].sceneName`, so its
     // emptiness IS the array's) — but read off a COMPLETE document, so an absent `scenes`

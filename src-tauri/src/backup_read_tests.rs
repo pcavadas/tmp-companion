@@ -18,7 +18,9 @@ fn backup_slot_read_returns_the_complete_body_and_refuses_a_slot_that_moved() {
     ));
 
     // Device slot 401 = list index 400. The whole document comes back, `ftsw` included.
-    let doc = preset_json_from_backup(&archive, 401, "Big Rig").expect("complete body");
+    // The fixture body carries no `info.preset_id`, so the caller has nothing to expect —
+    // `None` exercises the graceful-fallback (slot+name-only) path.
+    let doc = preset_json_from_backup(&archive, 401, "Big Rig", None).expect("complete body");
     assert_eq!(
         doc["ftsw"].as_array().map(Vec::len),
         Some(2),
@@ -27,12 +29,103 @@ fn backup_slot_read_returns_the_complete_body_and_refuses_a_slot_that_moved() {
     assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 
     // The occupant changed since the slot was named → refuse, never substitute.
-    let err = preset_json_from_backup(&archive, 401, "Some Other Preset")
+    let err = preset_json_from_backup(&archive, 401, "Some Other Preset", None)
         .expect_err("a renamed occupant must refuse");
     assert!(err.contains("Big Rig") && err.contains("refusing"), "{err}");
 
     // A slot with no row is a refusal too, not an empty preset.
-    assert!(preset_json_from_backup(&archive, 402, "Big Rig").is_err());
+    assert!(preset_json_from_backup(&archive, 402, "Big Rig", None).is_err());
+}
+
+/// Same slot + name, matching `expect_id` → accepted (the identity guard's own
+/// mainline: both sides agree, and the check does not merely default to a pass).
+#[test]
+fn backup_slot_read_accepts_on_matching_name_and_preset_id() {
+    let preset_json = r#"{"info":{"displayName":"Big Rig","preset_id":"aaaaaaaa-0000-0000-0000-000000000001"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    let doc = preset_json_from_backup(
+        &archive,
+        401,
+        "Big Rig",
+        Some("aaaaaaaa-0000-0000-0000-000000000001"),
+    )
+    .expect("matching id must be accepted");
+    assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
+}
+
+/// Same slot, SAME NAME, but a different `preset_id` in the body — only the identity
+/// guard can catch this (the name guard alone would pass it). Proves the fallback for
+/// issue #155: a slot+name match is not enough when the caller can name an id.
+#[test]
+fn backup_slot_read_refuses_a_same_name_row_whose_preset_id_differs() {
+    let preset_json = r#"{"info":{"displayName":"Big Rig","preset_id":"aaaaaaaa-0000-0000-0000-000000000001"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    let err = preset_json_from_backup(
+        &archive,
+        401,
+        "Big Rig",
+        Some("bbbbbbbb-0000-0000-0000-000000000002"),
+    )
+    .expect_err("a same-name row with a different preset_id must refuse");
+    assert!(
+        err.contains("aaaaaaaa-0000-0000-0000-000000000001")
+            && err.contains("bbbbbbbb-0000-0000-0000-000000000002")
+            && err.contains("401"),
+        "{err}"
+    );
+}
+
+/// A body with no `info.preset_id` at all, when the caller expected one — refused as
+/// unidentifiable rather than silently accepted on name alone.
+#[test]
+fn backup_slot_read_refuses_a_body_with_no_preset_id_when_one_was_expected() {
+    let preset_json =
+        r#"{"info":{"displayName":"Big Rig"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    let err = preset_json_from_backup(
+        &archive,
+        401,
+        "Big Rig",
+        Some("aaaaaaaa-0000-0000-0000-000000000001"),
+    )
+    .expect_err("a body with no preset_id, when one was expected, must refuse");
+    assert!(
+        err.contains("preset_id") && err.contains("aaaaaaaa-0000-0000-0000-000000000001"),
+        "{err}"
+    );
+}
+
+/// `expect_id: None` — the caller's own partial could not name an id (the common
+/// ftsw-cut shape) — falls back to the slot+name guards alone: a matching name with a
+/// body that DOES carry an id is still accepted. This is the graceful-fallback
+/// mainline for this call path.
+#[test]
+fn backup_slot_read_accepts_on_name_alone_when_the_partial_could_not_identify_itself() {
+    let preset_json = r#"{"info":{"displayName":"Big Rig","preset_id":"aaaaaaaa-0000-0000-0000-000000000001"},"scenes":[{"sceneName":"Rhythm","uuid":"a"}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (401, 'Big Rig', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    let doc = preset_json_from_backup(&archive, 401, "Big Rig", None)
+        .expect("no expected id → accepted on slot+name alone");
+    assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 }
 
 #[test]
