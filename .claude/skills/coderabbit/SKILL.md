@@ -26,19 +26,20 @@ nothing.
 Standing owner decisions — don't re-litigate them per-PR. They bind the agent, not the user: an
 explicit user instruction supersedes any row.
 
-| #   | Never                                                                                                            | Because                                                                                                                                                                                                                                                                                                                                                         |
-| --- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| N1  | `@coderabbitai full review`                                                                                      | Standing instruction. Not as escalation, not for a no-op, not in a quiet window.                                                                                                                                                                                                                                                                                |
-| N2  | `@coderabbitai resolve`                                                                                          | Resolves ALL threads at once; resolution is CodeRabbit's acknowledgment, so doing it by hand forges it. Changes NO formal review state — it cannot clear `CHANGES_REQUESTED`.                                                                                                                                                                                   |
-| N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2. CodeRabbit resolves its own threads once it accepts a fix or a rebuttal.                                                                                                                                                                                                                                                                            |
-| N4  | `@coderabbitai approve` **on the agent's own judgment**                                                          | Resolves all threads AND submits a REAL approval (`request_changes_workflow: true`, `.coderabbit.yaml:13`) — self-approving the merge this repo gates on. ONE exception, and it is the OWNER's, not yours: row SV names it as the remedy the user can authorize for a stale verdict; posted only on their explicit instruction (exercised on #160, 2026-08-30). |
-| N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).                                                                                                                                                                                                                                                          |
-| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state; the command spends a quota unit for nothing. See §3 row S1.                                                                                                                                                                                                                                                                  |
-| N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                                                                                                                                                                                                                                                                           |
+| #   | Never                                                                                                            | Because                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N1  | `@coderabbitai full review`                                                                                      | Standing instruction. Not as escalation, not for a no-op, not in a quiet window.                                                                                                                                                                                                                                                                                                                                        |
+| N2  | `@coderabbitai resolve` **on the agent's own judgment**                                                          | Resolves ALL threads at once; resolution is CodeRabbit's acknowledgment, so triggering it uninvited forges it. Like `approve`, it is user-authorizable: when CodeRabbit's own resolve fails platform-side, the §4.2 recovery ends with the USER choosing to post it (#161, 2026-08-30 — it resolved the confirmed-fixed threads and the verdict flipped to APPROVED seconds later).                                     |
+| N3  | Resolve a thread by hand — GitHub's "Resolve conversation", the `resolveReviewThread` mutation, `gh` equivalents | Same as N2, with NO user-authorizable variant and one extra teeth: the APPROVED flip reads CodeRabbit's OWN thread state, so a GitHub-side hand-resolve leaves CodeRabbit still seeing the thread open and the verdict stuck — even when CodeRabbit's reply says "resolve it manually" (that invitation is addressed to the human). Already done it? `unresolveReviewThread` immediately, then §4.2 (#161, 2026-08-30). |
+| N4  | `@coderabbitai approve` **on the agent's own judgment**                                                          | Resolves all threads AND submits a REAL approval (`request_changes_workflow: true`, `.coderabbit.yaml:13`) — self-approving the merge this repo gates on. ONE exception, and it is the OWNER's, not yours: row SV names it as the remedy the user can authorize for a stale verdict; posted only on their explicit instruction (exercised on #160, 2026-08-30).                                                         |
+| N5  | `@coderabbitai autofix`                                                                                          | Pushes bot-authored commits, bypassing the local gate stack (`scripts/gates.sh` stamp, /simplify, HW).                                                                                                                                                                                                                                                                                                                  |
+| N6  | Post any command on ambiguous silence                                                                            | Silence is not a documented state; the command spends a quota unit for nothing. See §3 row S1.                                                                                                                                                                                                                                                                                                                          |
+| N7  | Push a commit only to nudge a review                                                                             | Every push to a main-targeted PR spends a quota unit.                                                                                                                                                                                                                                                                                                                                                                   |
 
 Only TWO commands are ever postable on the agent's own judgment: **`@coderabbitai review`** (§3 row
-S3) and **`@coderabbitai resume`** (§3 row SP). A third — **`@coderabbitai approve`** — exists solely
-as the user-authorized remedy of row SV, posted only after the user explicitly says to.
+S3) and **`@coderabbitai resume`** (§3 row SP). Two more — **`@coderabbitai approve`** (row SV) and
+**`@coderabbitai resolve`** (§4.2) — exist solely as user-authorized remedies, posted only after the
+user explicitly says to.
 
 ## 2. Observe state
 
@@ -128,6 +129,26 @@ Per finding, in order:
 
 A thread it "left open to track deferred work" still blocks approval. It has to close it — you must
 not (N3). Recipe: `references/handling-findings.md`.
+
+### 4.2 When CodeRabbit's OWN resolve fails (observed #161, 2026-08-30)
+
+CodeRabbit can confirm a fix in-thread yet fail to resolve the thread on its side, replying
+"I couldn't resolve this review thread on the repository platform. Please retry or resolve it
+manually." That sentence changes nothing about N3 — hand-resolving still strands the verdict.
+The deterministic recovery:
+
+1. **Reply in-thread asking it to retry resolving itself.** Free, answered in seconds.
+2. It may answer that resolve works only as a **top-level command** ("Post `@coderabbitai resolve`
+   or `@coderabbitai approve` as a new top-level PR comment. Approve commands are disabled for
+   review-thread replies.").
+3. **Escalate to the user with both options named** — `resolve` (CodeRabbit resolves its own
+   confirmed-fixed threads; the verdict then flips on thread state) or `approve` (threads + a real
+   approval in one shot). Post whichever THEY pick, only on their explicit go (N2, N4).
+
+On #161 the user chose `resolve`: threads cleared as CodeRabbit's own acknowledgment and
+`CHANGES_REQUESTED` flipped to `APPROVED` within seconds — so N2's "cannot clear
+`CHANGES_REQUESTED`" caveat applies to a verdict already stuck on RESOLVED threads, not to this
+recovery.
 
 ## 5. Facts that change how you read a review
 
