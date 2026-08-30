@@ -119,7 +119,9 @@ Per finding, in order:
 5. **Close the loop on the finding's own lane.**
    - **5a — `ACTIONABLE_THREADS`:** reply ONCE on the thread, including `@coderabbitai` so it
      engages, citing `file:line`, and **stating the reason** when it isn't being fixed — a reply
-     without a reason gives it nothing to evaluate and the thread stays open. No second reply.
+     without a reason gives it nothing to evaluate and the thread stays open. No second reply —
+     with ONE narrow exception: the §4.2 retry reply, sent only after CodeRabbit has confirmed the
+     fix but reported failing to resolve the thread itself.
    - **5b — `ACTIONABLE_OUTSIDE_DIFF`:** do NOT try to reply — there is no thread id and
      `@coderabbitai` commands are top-level-only. Record the outcome in the COMMIT MESSAGE, which is
      what the next review reads; an unexplained refusal is indistinguishable from a missed finding.
@@ -137,7 +139,9 @@ CodeRabbit can confirm a fix in-thread yet fail to resolve the thread on its sid
 manually." That sentence changes nothing about N3 — hand-resolving still strands the verdict.
 The deterministic recovery:
 
-1. **Reply in-thread asking it to retry resolving itself.** Free, answered in seconds.
+1. **Reply in-thread asking it to retry resolving itself** — the one sanctioned second reply
+   (step 5a's exception). Keep the `@coderabbitai` mention and name the failed resolve it reported.
+   Free, answered in seconds.
 2. It may answer that resolve works only as a **top-level command** ("Post `@coderabbitai resolve`
    or `@coderabbitai approve` as a new top-level PR comment. Approve commands are disabled for
    review-thread replies.").
@@ -146,9 +150,11 @@ The deterministic recovery:
    approval in one shot). Post whichever THEY pick, only on their explicit go (N2, N4).
 
 On #161 the user chose `resolve`: threads cleared as CodeRabbit's own acknowledgment and
-`CHANGES_REQUESTED` flipped to `APPROVED` within seconds — so N2's "cannot clear
-`CHANGES_REQUESTED`" caveat applies to a verdict already stuck on RESOLVED threads, not to this
-recovery.
+`CHANGES_REQUESTED` flipped to `APPROVED` within seconds. The precise `resolve` state model:
+`resolve` changes no formal review state ITSELF — it unblocks only by clearing threads so the
+§5 thread-state flip fires. So it rescues a verdict blocked on OPEN confirmed-fixed threads
+(this recovery), and does nothing for a verdict already stuck with ZERO open threads — that is
+row SV's stale-verdict case, where `approve` is the lever.
 
 ## 5. Facts that change how you read a review
 
