@@ -40,7 +40,7 @@
       "leveledParams": [
         { "group": "G1", "node": "ACD_Plumes", "param": "level" },
         { "group": "G1", "node": "ACD_BluesDriver", "param": "level" },
-        { "group": "G1", "node": "ACD_ObsessiveDrive", "param": "level" },
+        { "group": "G1", "node": "ACD_ObsessiveDrive", "param": "volume" },
         { "group": "G1", "node": "ACD_Rat", "param": "volume" }
       ]
     },

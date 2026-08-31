@@ -485,11 +485,13 @@ fn the_fs_prepass_announces_every_row_before_any_row_finishes() {
         .build()
         .expect("wv");
 
-    // The four drive pedals, in switch order — Rat's handle is `volume`, the others' `level`.
+    // The four drive pedals, in switch order — ObsessiveDrive and Rat's handle is `volume`,
+    // the others' `level` (HW-confirmed from a field-8 read of the real device; ObsessiveDrive
+    // has no `level` parameter at all).
     let switches: [(u32, &str, &str); 4] = [
         (5, "ACD_Plumes", "level"),
         (6, "ACD_BluesDriver", "level"),
-        (7, "ACD_ObsessiveDrive", "level"),
+        (7, "ACD_ObsessiveDrive", "volume"),
         (8, "ACD_Rat", "volume"),
     ];
     let jobs: Vec<serde_json::Value> = switches
@@ -2738,7 +2740,7 @@ fn the_footswitch_rows_still_converge_after_a_base_boost() {
     let rows: [(u32, &str, &str, f64); 4] = [
         (5, "ACD_Plumes", "level", -23.0),
         (6, "ACD_BluesDriver", "level", -23.0),
-        (7, "ACD_ObsessiveDrive", "level", -21.0),
+        (7, "ACD_ObsessiveDrive", "volume", -21.0),
         (8, "ACD_Rat", "volume", -21.0),
     ];
     let jobs: Vec<serde_json::Value> = rows

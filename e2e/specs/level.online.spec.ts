@@ -652,7 +652,7 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
       switch: 7,
       levGroupId: "G1",
       levNodeId: "ACD_ObsessiveDrive",
-      levParameterId: "level",
+      levParameterId: "volume",
     },
     {
       switch: 8,

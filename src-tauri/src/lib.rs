@@ -428,7 +428,13 @@ mod fixture_gates {
     #[test]
     fn e2e_fixtures_stay_inside_the_field8_read_budget() {
         const BUDGET: usize = 16 * 1024;
-        const HIWATT_BYTES: usize = 20_012;
+        // +1 from the #r9 -> #r10 FIXTURE_SOURCE_STAMP bump (every committed fixture's
+        // `info.source_id` carries it, Hiwatt included — `committed_fixtures_carry_an_
+        // ownership_marker` requires all 11 to match the CURRENT stamp exactly). Prior
+        // single-digit bumps (#r8 -> #r9) left this byte count unchanged; #r9 -> #r10 is
+        // the first double-digit rev and costs one byte. This is the mechanical stamp
+        // growing, not an edit to Hiwatt's own preset substance.
+        const HIWATT_BYTES: usize = 20_013;
         for (idx, name, js, _) in fixtures() {
             if name == "E2E Hiwatt 3S" {
                 assert_eq!(
@@ -858,6 +864,49 @@ mod fixture_gates {
                 "ACD_CabSimTMS", // appended for the cab rule; nothing upstream moved
             ]
         );
+        // BUG→GATE: each of 405's four drive pedals must author the parameter NAME the
+        // real hardware actually exposes for that block. HW-confirmed from a field-8 read
+        // of the user's own real "Plumes+BD2+OCD" preset (2026-08-31): the block's
+        // parameters read `blend, bypass, bypassType, drive, filter, tone, volume` — there
+        // is NO `level`. `ACD_Plumes` and `ACD_BluesDriver` do carry `level` in that same
+        // read, and `ACD_Rat` carries `volume`, so `ACD_ObsessiveDrive` is the odd one out
+        // despite superficially matching its Plumes/BluesDriver siblings. A fixture that
+        // declares a parameter name the block does not have is INVISIBLE offline: the
+        // sim's saturated-pedal model (`sim_device.rs::saturated_pedal_lufs`) keys
+        // `leveledParams` purely by whatever name the fixture declares, so an offline run
+        // stays self-consistent regardless of whether that name exists on the device.
+        // Online, a write to a nonexistent parameter reaches the device, the capture never
+        // responds, and the solver's flat-response branch clamps the row at zero — this is
+        // exactly how the `ACD_ObsessiveDrive` "level" mistake was caught (footswitch 7's
+        // row clamped to 0.0 while its siblings converged normally).
+        for (node, param) in [
+            ("ACD_Plumes", "level"),
+            ("ACD_BluesDriver", "level"),
+            ("ACD_ObsessiveDrive", "volume"),
+            ("ACD_Rat", "volume"),
+        ] {
+            let node_json = p24["audioGraph"]["guitarNodes"]["G1"]
+                .as_array()
+                .expect("G1")
+                .iter()
+                .find(|n| n["FenderId"].as_str() == Some(node))
+                .unwrap_or_else(|| panic!("405 has no {node} node"));
+            assert!(
+                node_json["dspUnitParameters"].get(param).is_some(),
+                "405's {node} must author a {param:?} dspUnitParameter — HW-confirmed \
+                 from a field-8 read of the real device; a wrong name here is invisible \
+                 offline (see comment above)"
+            );
+            // And ONLY that one: a node carrying both names would satisfy the presence
+            // check above while still shipping a parameter the block does not have, which
+            // is the same invisible-offline defect in a form the presence check misses.
+            let wrong = if param == "level" { "volume" } else { "level" };
+            assert!(
+                node_json["dspUnitParameters"].get(wrong).is_none(),
+                "405's {node} must NOT author a {wrong:?} dspUnitParameter — the real \
+                 block has no such control"
+            );
+        }
         // Plumes-regression amendment: the amp's outputLevel and the preset's own
         // presetLevel both moved (0.28/0.27, from 1.0/1.0) and both are now baked into
         // scenario-loudness.json's "405" C — a drift here silently invalidates that C.
