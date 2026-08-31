@@ -496,14 +496,18 @@ pub fn probe_level_preset(
         )
     };
     // ONE session per HID exclusive-open lockout cycle (danger.md's "HID open-lockout
-    // model"): the isolation read above opens and closes its OWN session before the
-    // leveller's first connect, so this gap must run whenever that read happened —
+    // model"): the read above (either branch) opens and closes its OWN session before the
+    // leveller's first connect, so this gap must run whenever THAT read happened —
     // previously it slept only inside `if save`, which happened to be the only case that
     // paid the read; isolation now pays it whenever `as_saved` is false, so the gap must
-    // follow suit or a back-to-back re-open risks the lockout (`0xe00002c5`).
-    if !as_saved {
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    }
+    // follow suit or a back-to-back re-open risks the lockout (`0xe00002c5`). Unconditional
+    // now: the `as_saved` arm's own `read_saved_preset` already sleeps this same gap
+    // internally after its read, so gating this one on `!as_saved` merely avoided a harmless
+    // double sleep — but it made the gap here silently depend on that callee's internal
+    // implementation detail rather than on "a read session just happened", exactly the
+    // invariant this comment states. Sleeping unconditionally costs one extra
+    // `RECONNECT_GAP_MS` on the `as_saved` path and buys back that independence.
+    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     // probe stays skip-free: NO `previous_level` idempotency skip (production treats a
     // matching saved level as a no-op and reloads without writing) — don't cargo-cult that
     // skip in here. This is a raw benchmark: always measure+apply+save.

@@ -532,35 +532,48 @@ this run's BOOST regime exists to close",
     // disclosure (SummaryPage.tsx's `baseBoostSentence`) renders in the real app, not just on
     // the wire. `Rhythm` = -23 LUFS (profiles.rs::default_targets), matching BASE_TARGET_405.
     await runBaseLevel(page, [{ preset: PRESET24, label: "Rhythm" }]);
+    // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
+    // (SummaryPage.tsx) — an all-good run's preset group starts COLLAPSED on Summary, same as
+    // level-defaults.spec.ts's own boost-sentence test (a). Expand it before reading the row
+    // detail, or the sentence below is never in the DOM to match against.
+    await page
+      .locator(`[data-preset-group="${String(PRESET24.slot)}"]`)
+      .click();
     await expect(
       page.getByText(
         /Turned this preset up as far as it goes and raised the amp/,
       ),
     ).toBeVisible();
 
-    // Fetch the actual result the UI run just produced via the sanctioned raw-invoke path
-    // (the channel-streaming seam does not gate base leveling itself, but a same-target
-    // re-run is the established, idempotent way every other spec in this suite reads a
-    // result back — `save:true` + already-solved ⇒ skip, wire still reports base_boost in
-    // full). Deliberately NOT asserting `base_amps[0]`'s previous/solved VALUES — those are
-    // fixture-derived magnitudes already covered exactly by the offline gate
-    // (level-fs-preset24.spec.ts); this run asserts regime/ordering/tolerance only.
-    const base = (await invoke(
+    // Assert the PERSISTED pair directly rather than re-invoking `level_preset` a second
+    // time: a same-target re-run's OWN result is unreliable evidence of what the UI run above
+    // actually solved and saved, on every realistic branch — the idempotency skip hard-codes
+    // `base_boost: null` (the solve is skipped entirely), a hairline re-measure can flip
+    // `clamped: true`, and a within-tolerance re-plan that doesn't re-enter BOOST also reports
+    // `base_boost: null` (`leveller::level_preset_impl`'s routing). `list_level_blocks` reads
+    // the SAVED state instead — same seam and the SAME fixture (405) as
+    // level-fs-preset24.spec.ts's own lazy-commit-gap read, which pins the Twin's fader at its
+    // solved ≈0.498 after this exact boost; a looser tolerance here (vs that file's exact
+    // offline model) accounts for real-HW measurement noise in the closed-loop fader solve.
+    const blocks = (await invoke(
       page,
-      "level_preset",
-      { job: baseLevelJob(PRESET24.slot, BASE_TARGET_405) },
+      "list_level_blocks",
+      { slot: PRESET24.slot },
       T,
-    )) as LevelResult;
-    expect(base.clamped, "base must reach target, not clamp").toBe(false);
-    if (!base.base_boost) {
-      throw new Error("the Plumes shape (405) must enter the BOOST regime");
-    }
-    expect(base.base_boost.applied, "the boost must be applied").toBe(true);
-    expect(base.base_boost.regime, "regime must be boost").toBe("boost");
+    )) as LevelBlock[];
+    const twinFader = blocks.find(
+      (b) =>
+        b.node_id === "ACD_TwinReverb65NoFx" &&
+        b.parameter_id === "outputLevel",
+    );
     expect(
-      base.final_level,
-      "presetLevel pins at the ceiling in the BOOST regime",
-    ).toBeCloseTo(1.0, 5);
+      twinFader,
+      "the Twin's outputLevel candidate must be discoverable",
+    ).toBeDefined();
+    expect(
+      twinFader?.value ?? Number.NaN,
+      "the Twin's fader persisted at its boosted ≈0.498 value",
+    ).toBeCloseTo(0.498, 1);
 
     // 4 footswitch rows (base MUST run first — the pl-context trap 405's own fixture
     // ordering pins, e2e/fixtures/COVERAGE.md row 36) — raw invoke, the channel-streaming

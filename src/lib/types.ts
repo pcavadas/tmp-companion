@@ -228,8 +228,12 @@ export interface TradeAmpMove {
   parameter_id: string;
   /** The `outputLevel` the preset carried BEFORE the trade — the Restore anchor. */
   previous_value: number;
-  /** The SOLVED value the hold landed on. Null on an advisory: the fader response isn't
-   * algebraically predictable, so a run that didn't actually solve it invents nothing. */
+  /** The SOLVED value the hold landed on. Null on a TRADE advisory: the fader response
+   * isn't algebraically predictable, so a run that didn't actually solve it invents
+   * nothing. Exception: a BOOST advisory (`BaseBoostSummary.applied === false`) populates
+   * this with the planner's SEED (`fader_target`) instead — not a solved prediction, but
+   * the disclosure sentence needs a concrete number even before any closed-loop solve has
+   * run (see `BaseBoostSummary`'s own doc). */
   value: number | null;
 }
 
@@ -269,8 +273,10 @@ export type PairRegime = "none" | "trade" | "boost" | "infeasible";
  * - `false` — ADVISORY. The plan calls for a boost but this run's shape can't apply it this
  *   cycle (no `save`, or a scene preset — v1 scopes the full continuation to scene-less
  *   presets only), so the row still clamps honestly at `presetLevel`'s ceiling and this
- *   states what raising the fader by `fader_db` WOULD close; `base_amps[0].value` stays
- *   null. */
+ *   states what raising the fader by `fader_db` WOULD close; `base_amps[0].value` is
+ *   populated with the planner's SEED (`fader_target`), not a solved prediction — see
+ *   `TradeAmpMove.value`'s own doc for why a BOOST advisory is the one case that populates
+ *   this field instead of leaving it `null`. */
 export interface BaseBoostSummary {
   applied: boolean;
   regime: PairRegime;

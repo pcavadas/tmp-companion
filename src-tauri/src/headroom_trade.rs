@@ -646,9 +646,10 @@ pub struct TradeSummary {
 /// * `false` — ADVISORY. The plan calls for a boost but this run's shape can't apply it this
 ///   cycle (no `save`, or a scene preset — v1 scopes the full continuation to scene-less
 ///   presets only), so the row still clamps honestly at `presetLevel`'s ceiling and this
-///   states what raising the fader by `fader_db` WOULD close; `base_amps[0].value` stays
-///   `None` (the fader response isn't algebraically predictable without actually solving it —
-///   same rule as `TradeAmpMove::value`).
+///   states what raising the fader by `fader_db` WOULD close; `base_amps[0].value` is
+///   populated with the planner's SEED (`LevelPairPlan::fader_target`), not a solved
+///   prediction — see [`TradeAmpMove::value`]'s own doc for why a BOOST advisory is the one
+///   exception that populates this field instead of leaving it `None`.
 ///
 /// `danger.md`: a save cannot be undone from the app, so an APPLIED boost has to say so with
 /// enough detail for the UI to disclose it — same rationale as `TradeSummary`'s own doc.

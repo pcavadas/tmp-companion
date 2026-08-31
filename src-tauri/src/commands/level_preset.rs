@@ -422,9 +422,22 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // BEFORE the run-end `reamp_off_guaranteed` backstop, which is safe only
                 // because nothing has engaged re-amp yet on this path: every step above is a
                 // pure read. Same rule as the block arm's early refusal.
+                //
+                // Captured separately from the mapped `preset` below: `has_fs_scenes` is this
+                // SAME read's own fail-safe "scene presence" flag (`read_slot_preset_sections`'s
+                // doc) — `Some(empty)` only when the tail was read WHOLE and genuinely carries
+                // no `scenes`, conservative `true` on anything truncated/unknown. `required`
+                // only forces the backup fallback on a cut `ftsw`, so a preset whose `scenes`
+                // key alone falls past the field-8 cut (it sorts after `ftsw`, a documented
+                // large-preset truncation shape) still needs this flag rather than a bare
+                // `preset.get("scenes")` check on the (possibly `scenes`-less) parsed doc —
+                // see `leveller::scene_bearing_for_boost_gate`, which the v1 boost-routing gate
+                // below is threaded through.
+                let read = read_slot_preset_complete(slot, &["ftsw"]);
+                let has_fs_scenes = read.as_ref().is_ok_and(|(_, has_fs_scenes, _)| *has_fs_scenes);
                 let (preset, force, restore_scene) =
                     crate::commands::doctor::base_isolation_or_refuse(
-                        read_slot_preset_complete(slot, &["ftsw"]).map(|(preset, _, _)| preset),
+                        read.map(|(preset, _, _)| preset),
                         slot,
                     )?;
                 // The original `lastLoadedScene` must be re-stamped by the save: the
@@ -447,7 +460,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                         Some(job) => format!(
                             "{} (has_scenes={})",
                             job.knobs[0].knob.label(),
-                            leveller::preset_has_scenes(&preset)
+                            leveller::scene_bearing_for_boost_gate(has_fs_scenes, Some(&preset))
                         ),
                         None => "none".to_string(),
                     }
@@ -465,6 +478,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                     leveller::BoostContext {
                         base_amp,
                         saved: Some(&preset),
+                        has_fs_scenes,
                     },
                     cancelled,
                 )

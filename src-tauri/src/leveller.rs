@@ -1948,20 +1948,90 @@ pub(crate) struct BoostContext<'a> {
     pub base_amp: Option<SceneJob>,
     /// The same saved-preset doc the caller already read, threaded through to
     /// `jointk_one_scene`/`undo_base_isolation` exactly like every other scene-job seam takes
-    /// it. Also the ONE source `has_scenes` is derived from (see [`preset_has_scenes`]) —
-    /// v1 scopes the full continuation to scene-less presets, see `level_preset_impl`'s
+    /// it. v1 scopes the full continuation to scene-less presets, see `level_preset_impl`'s
     /// routing doc.
     pub saved: Option<&'a serde_json::Value>,
+    /// The SAME read's own fail-safe "does this preset carry `scenes[]`?" flag
+    /// (`read_slot_preset_sections`'s `has_fs_scenes` — conservative `true` on anything
+    /// truncated/unknown, accurate otherwise) — see [`scene_bearing_for_boost_gate`], which
+    /// `level_preset_impl`'s v1 boost-routing gate is threaded through. BUG→GATE: a bare
+    /// `preset.get("scenes")` check on `saved` alone missed a preset whose field-8 read cut
+    /// off before the (alphabetically-last) `scenes` key while `ftsw` still came back whole —
+    /// the doc then has no `scenes` key at all, reading as scene-LESS and letting a
+    /// scene-bearing preset take the APPLIED boost.
+    pub has_fs_scenes: bool,
 }
 
-/// Does the SAVED preset carry any `scenes[]` rows? The one source of truth `has_scenes`
-/// derives from — shared by `level_preset_impl`'s v1 boost-routing gate and
-/// `commands::level_preset`'s own log line, so the two can never compute the answer two ways.
+/// Does the SAVED preset carry any `scenes[]` rows, read DIRECTLY off the doc? A raw doc
+/// check, not fail-safe by itself — a preset whose field-8 read was cut before the `scenes`
+/// key parses with no `scenes` at all and reads `false` here. [`scene_bearing_for_boost_gate`]
+/// is the safe-by-construction signal `level_preset_impl`'s gate actually uses; this is kept
+/// as its OR'd-in fallback (defense in depth: a `saved` doc that genuinely carries `scenes`
+/// still gates even if a caller's `has_fs_scenes` were ever wrong) and for any other direct
+/// doc inspection that doesn't have a read's own truncation flag to consult.
 pub(crate) fn preset_has_scenes(saved: &serde_json::Value) -> bool {
     saved
         .get("scenes")
         .and_then(|s| s.as_array())
         .is_some_and(|s| !s.is_empty())
+}
+
+/// The v1 boost-routing gate's OWN "is this preset scene-bearing?" signal (BUG→GATE, the
+/// plumes/BD2/OCD-regression-class field-8-truncation hole): `has_fs_scenes` is the read's
+/// own fail-safe flag (`read_slot_preset_sections`'s doc — conservative `true` on a truncated
+/// or unknown `scenes` tail, accurate `false` only when the tail was read WHOLE and is
+/// genuinely empty), OR'd with a direct check of `saved` as defense in depth. Threading the
+/// read's OWN flag matters because `commands::level_preset`'s base arm only requires `ftsw`
+/// complete (`read_slot_preset_complete(slot, &["ftsw"])`) — a preset whose `scenes` key
+/// alone falls past the field-8 cut (it sorts after `ftsw`) still reads back a doc with no
+/// `scenes` key at all, so a bare `saved.is_some_and(preset_has_scenes)` check would read
+/// `false` (scene-less) and let a scene-bearing preset take the APPLIED boost instead of the
+/// advisory. A pure fn over the two inputs so it's testable without a device read at all.
+pub(crate) fn scene_bearing_for_boost_gate(
+    has_fs_scenes: bool,
+    saved: Option<&serde_json::Value>,
+) -> bool {
+    has_fs_scenes || saved.is_some_and(preset_has_scenes)
+}
+
+#[cfg(test)]
+mod scene_bearing_for_boost_gate_tests {
+    use super::*;
+
+    // The bug this gate exists to close: a field-8 read truncated before the (alphabetically
+    // last) `scenes` key leaves the doc with NO `scenes` field at all — indistinguishable from
+    // a genuinely scene-less preset by a bare doc check — but the read's own `has_fs_scenes`
+    // flag is fail-safe `true` for exactly this "unknown" case, so the gate must still treat
+    // it as scene-bearing.
+    #[test]
+    fn a_scenes_key_missing_from_a_truncated_read_still_gates_as_scene_bearing() {
+        let truncated_doc = serde_json::json!({ "audioGraph": {} });
+        assert!(scene_bearing_for_boost_gate(true, Some(&truncated_doc)));
+    }
+
+    // A COMPLETE read whose `scenes` array is genuinely empty is the one case that must NOT
+    // gate — this is what lets a truly scene-less preset take the applied boost at all.
+    #[test]
+    fn a_confirmed_empty_scenes_array_is_not_scene_bearing() {
+        let doc = serde_json::json!({ "scenes": [] });
+        assert!(!scene_bearing_for_boost_gate(false, Some(&doc)));
+    }
+
+    // Defense in depth: even if a caller's `has_fs_scenes` were wrong (or absent, `None`
+    // `saved`-less callers aside), a doc that actually carries `scenes[]` rows still gates.
+    #[test]
+    fn a_populated_scenes_array_gates_even_when_the_flag_says_otherwise() {
+        let doc = serde_json::json!({ "scenes": [{ "sceneName": "Clean" }] });
+        assert!(scene_bearing_for_boost_gate(false, Some(&doc)));
+    }
+
+    // No saved doc and no flag (the default `BoostContext`, every non-base caller) must not
+    // gate — those callers never reach the boost-plan branch anyway (`base_amp` is always
+    // `None` there), but the signal itself should still answer honestly.
+    #[test]
+    fn no_saved_doc_and_no_flag_is_not_scene_bearing() {
+        assert!(!scene_bearing_for_boost_gate(false, None));
+    }
 }
 
 /// Level one preset to `target_lufs`. Self-contained: opens its own fresh
@@ -2169,7 +2239,7 @@ pub(crate) fn level_preset_impl(
             // scene-bearing presets needs its own plan (a boosted base's `presetLevel` raise
             // also shifts every SCENE row's own captured loudness by `raise_db` —
             // `redistribute_clamped_headroom`'s territory, not this seam's).
-            let scene_preset = ctx.saved.is_some_and(preset_has_scenes);
+            let scene_preset = scene_bearing_for_boost_gate(ctx.has_fs_scenes, ctx.saved);
             if opts.save && !scene_preset {
                 return apply_base_boost(
                     slot,

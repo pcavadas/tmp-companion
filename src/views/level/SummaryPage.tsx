@@ -123,9 +123,14 @@ function problemFor(
  *  persisted) in both branches; it's only the base amp fader's move that stayed unsolved.
  *  Either way the amplitude comes from `base_amps[0]` to 2 decimals — on `applied: false`
  *  that's the planner's SEED (`LevelPairPlan.fader_target`), not a solved prediction, but the
- *  plan's own example sentence names concrete before/after numbers even in the unapplied case. */
-function baseBoostSentence(b: BaseBoostSummary): string {
-  const amp = b.base_amps[0];
+ *  plan's own example sentence names concrete before/after numbers even in the unapplied case.
+ *  `base_amps` is documented as "exactly one element" (`headroom_trade::BaseBoostSummary`'s own
+ *  doc) — never observed empty — but an array index is `T | undefined`, so `null` (render
+ *  nothing) is the honest answer for a `base_amps` that came back empty rather than assuming
+ *  the invariant and indexing into it unchecked. */
+function baseBoostSentence(b: BaseBoostSummary): string | null {
+  const amp = b.base_amps.length > 0 ? b.base_amps[0] : undefined;
+  if (!amp) return null;
   const from = amp.previous_value.toFixed(2);
   const to = amp.value != null ? amp.value.toFixed(2) : from;
   return b.applied
@@ -433,6 +438,9 @@ export function SummaryPage({
             >
               {g.items.map((it) => {
                 const q = problemFor(it, colorOf);
+                const boostSentence = it.baseBoost
+                  ? baseBoostSentence(it.baseBoost)
+                  : null;
                 return (
                   <div
                     key={it.key}
@@ -561,7 +569,7 @@ export function SummaryPage({
                           )}
                       </DisclosureRow>
                     )}
-                    {it.baseBoost && (
+                    {boostSentence && (
                       <DisclosureRow>
                         <span style={{ flexShrink: 0, paddingTop: 1 }}>
                           <Icon
@@ -582,7 +590,7 @@ export function SummaryPage({
                             textWrap: "pretty",
                           }}
                         >
-                          {baseBoostSentence(it.baseBoost)}
+                          {boostSentence}
                         </span>
                       </DisclosureRow>
                     )}
