@@ -8,90 +8,86 @@ import {
   invoke,
   isOnline,
   LEVEL_T,
-  openLevel,
   reampCounters,
   reampOff,
   runBaseLevel,
 } from "../fixtures/scenario";
 
-// ONLINE Level consolidation (8-file → 4-file suite shrink). One file, one Hiwatt (404)
-// arc plus three smaller tests, so the online lane pays ONE Playwright boot/rest for Level
-// instead of four (level.spec.ts's online half + the now-deleted level-strict.spec.ts +
-// the now-deleted level-rerun.spec.ts's online half — level.spec.ts's own offline-only
-// tests, level-rerun.spec.ts's merged into it, are unaffected — see that file's header).
+// ONLINE Level rework (P4, the Plumes/BD2/OCD leveling-regression fix). Budget rationale:
+// the online LEVELING suite is capped at ~25 min; exhaustive coverage lives offline in the
+// sim (which now models both real-preset shapes), and this file keeps only the minimal
+// device-truth journeys — one consolidated arc per shape, back-to-back in one session so a
+// 27↔28 see-saw regression surfaces in a single run. Retired T1 (the Hiwatt-3S (404) full arc,
+// ~14 min: base + 4 scenes + 4 footswitches + 9 strict ffmpeg re-measures) and T3 (the
+// backup-scan enumeration of Hiwatt's 9 child rows) and T4 (the two-preset Base UI flow on
+// Pedalboard/Edge). In their place:
 //
-// Test 1 is level-strict.spec.ts moved essentially verbatim (COVERAGE row 37's online half
-// — base + every scene + every footswitch, re-measured from the SAVED state with the
-// ffmpeg-validated `measure()` calls, including the 141103a skip-legitimacy guard for an
-// already-in-tolerance bake row). Test 2, run next in this `.serial` block ON THE SAME
-// SAVED STATE test 1 just wrote (no reseed, no reconnect in between), is the idempotency
-// addendum absorbed from level-rerun.spec.ts's retired online tests: (i) a second
-// `level_preset` run on the base lane must solve unclamped and skip the write
-// (`level_unchanged`); (ii) a second `level_footswitches_apply` batch, same targets, must
-// skip every write lane 3 actually made. Reusing the Hiwatt state test 1 already saved
-// (rather than leveling a second preset from scratch, as level-rerun.spec.ts's online
-// tests used to) is the whole point: one save, two independent proofs against it (does it
-// measure right, does re-running it write nothing) instead of two separate online leveling
-// runs. It is its own test, not inline in test 1, because its acceptance band is narrower
-// than test 1's own noise tolerance — see that test's own header comment.
+// T1′ (below, describe #1's first test) — a CONSOLIDATED Friedman-shape (410) arc: base + all
+// 3 scenes + 2 footswitches, re-measured strict for base+scenes only (4 ffmpeg rows, not 9).
+// 410's own base pair is a plain TRADE solve (`headroom_trade::plan_level_pair`'s
+// `G≈+1.0 <= P_up≈+6.0`), so it must NEVER enter BOOST — this is the "see-saw" CONTROL this
+// arc exists to run, back-to-back with T5's Plumes-shape (405) BOOST case below, so a
+// regression that widened BOOST's trigger condition and started moving 410's fader too would
+// be caught in the SAME online session. One of the 2 footswitches is 410's own TubeScreamer
+// row; the other is HIWATT (404) switch 12 (`ACD_UniVibe.volume`), CARRIED VERBATIM from the
+// retired arc's own `SWITCH_JOBS` so its modulated-response solve (an LFO'd knob, the one
+// class of assertion the retired arc uniquely exercised) keeps a named carrier per the plan's
+// own budget table — touching 404 costs nothing extra since it stays resident regardless.
 //
-// Tests 3 and 4 are level.spec.ts's online-only content, moved here: the backup-scan
-// enumeration of Hiwatt's 9 child rows (this file's own preset, so no extra fixture is
-// touched), and the two-preset per-target UI flow (E2E Pedalboard/Edge). level.spec.ts's
-// own whole-preset UI run (base + scenes + footswitches on E2E Rig) stays OFFLINE ONLY
-// there (trade T2 — see that file's own header comment).
+// T2 (below, describe #1's second test) — the idempotency addendum, KEPT and RETARGETED from
+// Hiwatt (404) to 410, on the SAME saved state T1′ just wrote (no reseed, `.serial` ordering).
+// It also now carries the retired arc's own SKIP-LEGITIMACY guard (its lane-3 loop's
+// `if (!r.saved) …` check on the FIRST run's own footswitch result — a `saved:false` first-run
+// result is legitimate ONLY when the stored value already measured within FS tolerance, never
+// a silent no-op): folded in here rather than left in T1′ because idempotency (a re-run
+// making zero writes) and this skip-legitimacy proof are the same "was a no-write outcome
+// actually correct" property, on 410's much smaller footswitch surface (1 row, not 4).
+//
+// T3 (enumeration) is GONE — moved offline as an `e2e_server_tests.rs` gate (E9); a pure list
+// read has negligible device truth to verify. T4 (two-preset Base UI flow) is GONE — its
+// "drives the real UI" claim is subsumed by T1′ (this file only levels 410 via raw invoke,
+// see below) plus T5 (drives the wizard UI on 405). Session-budget arithmetic: the plan's own
+// table lands this file at ~8 min (T1′) + ~2 min (T2) = ~10 min, replacing the retired
+// ~14+2+~2+~2 ≈ 20 min; T5 (below, describe #2) adds ~5 min. Total ≈ 15 min for this file
+// (down from the old suite's ≈ 20 min for the SAME two describes' worth of coverage), leaving
+// margin under the leveling suite's ratified ≤ 25 min online budget.
+//
+// COVERAGE row 37 (Hiwatt's own scene/footswitch enumeration) and row 45 (410's own
+// structural-readiness pin) — see e2e/fixtures/COVERAGE.md for the "where it went" notes on
+// every retired test.
 
-const HIWATT = SCENARIO[4]; // E2E Hiwatt 3S — the sanitized user-reported preset
-// PR2 re-baseline: +3 (2-ch BS.1770 over the processed pair) from the mono-era
-// HW-proven -20 — same physical operating point, pending hardware re-validation
-// (deferred; device offline as of this PR — see notes/leveling.md).
-const TARGET = -17; // HW-proven reachable for base + all 4 scenes + all 4 switches
-const DELTA = 0.5; // base/scenes: ~0.12 LU run-to-run noise + the one-shot/secant residual
-// Footswitch sounds get the product's own contract, not a tighter one: the FS lane
-// accepts a solve within KNOB_TOL_LU (0.3 LU, leveller.rs), and even the bracket-aware
-// secant can legitimately stop `unconverged` on a noisy/modulated response (a UniVibe's
-// LFO alone wobbles repeat measures ~0.1 LU) — that acceptance band + the re-measure's
-// own run-to-run noise compound, so the gate allows the solver's honest band plus
-// margin rather than re-deriving a tighter one it can't guarantee.
-const DELTA_FS = 1.0;
+const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture
+const HIWATT = SCENARIO[4]; // E2E Hiwatt 3S — carries only the one carried-over modulated row
+const PRESET24 = SCENARIO[5]; // E2E Preset24 — the Plumes-shape first-run journey (T5)
 
-// The 4 block-acting switches with the wizard's tone-safe default param each
-// (`defaultParamIndex`: first LOUDNESS_PARAMS hit) — fixture facts of the Hiwatt.
-const SWITCH_JOBS = [
-  {
-    switch: 2,
-    levGroupId: "G1",
-    levNodeId: "ACD_MythicDrive",
-    levParameterId: "output",
-  },
-  {
-    switch: 3,
-    levGroupId: "G1",
-    levNodeId: "ACD_Lightspeed",
-    levParameterId: "loudness",
-  },
-  {
-    switch: 11,
-    levGroupId: "G1",
-    levNodeId: "ACD_TremoloBias",
-    levParameterId: "level",
-  },
-  {
-    switch: 12,
-    levGroupId: "G4",
-    levNodeId: "ACD_UniVibe",
-    levParameterId: "volume",
-  },
-];
+// 410's base pair is a plain TRADE solve at -23 (G≈+1.0 <= P_up≈+6.0, plan physics section):
+// presetLevel alone closes the gap, so the fader must NEVER move — this is the see-saw
+// control target, deliberately the SAME numeric target as T5's Plumes-shape BOOST case below
+// so the two runs are directly comparable in one online session.
+const BASE_TARGET_410 = -23;
+// Below every scene's own ceiling (Rhythm -17 / Lead -16 / "Base Scene" -19,
+// scenario-loudness.json's "410" entry) so all three solve unclamped with headroom to spare.
+const SCENE_TARGET_410 = -20;
+// TubeScreamer's own isolated capture rides the same amp/cab chain as base.
+const FS_TARGET_410 = -23;
+// Carried verbatim from the retired Hiwatt arc's own SWITCH_JOBS entry for switch 12.
+const FS_TARGET_UNIVIBE = -17;
+
+const DELTA = 0.5; // base/scene: run-to-run noise + the one-shot/secant residual (unchanged)
+const DELTA_FS = 1.0; // footswitch re-measure: KNOB_TOL_LU (0.3, leveller.rs) + capture noise
+// The footswitch SOLVE's own acceptance band (not a re-measure) — matches leveller.rs's
+// KNOB_TOL_LU exactly, no extra margin needed since this checks the solver's own report.
+const KNOB_TOL_LU = 0.3;
 
 interface LevelResult {
   saved: boolean;
   clamped: boolean;
-  /** 0-based `scenes[]` wire index on a scene row; null elsewhere. Identity, not
-   * position: `level_scenes_apply_batched` filters failed scenes out of the array it
-   * returns, so index i is NOT scene i once anything fails. */
+  final_level: number;
   scene_slot: number | null;
   persist_mismatch: boolean | null;
+  /** Null unless the base pair entered the BOOST regime — see `src/lib/types.ts`'s
+   *  `BaseBoostSummary` doc. 410's base pair is TRADE, so this must stay null throughout. */
+  base_boost: { applied: boolean; regime: string } | null;
 }
 interface FootswitchLevelResult {
   switch: number;
@@ -99,15 +95,9 @@ interface FootswitchLevelResult {
   clamped: boolean;
   clamp_reason: string | null;
   predicted_lufs: number;
-  /** "baked" | "assigned" — which arm the switch resolved to (footswitch.rs's assign
-   * gate). Only read where the idempotency addendum pins a row's arm. */
-  method: string;
 }
-/** P5 external validation: what the run PROMISED for the sound about to be re-measured.
- * The spec owns this because the spec is what drove the leveling lane — the server keeps
- * no cross-command memory. Inert unless `TMP_E2E_VALIDATE_LOG` is set in the SERVER's
- * environment (`scripts/e2e.sh` does that when ffmpeg is present), in which case the
- * re-measure also dumps its WAV and appends one row for `scripts/level-validate.sh`. */
+/** P5 external validation: what the run PROMISED for the sound about to be re-measured —
+ *  see level-fs-preset24.spec.ts / .claude/rules/e2e.md's "External validation" section. */
 interface ValidateArg {
   targetLufs: number;
   clamped: boolean;
@@ -116,26 +106,19 @@ interface ValidateArg {
 interface LevelBlock {
   group_id: string;
   node_id: string;
-  model_id: string;
   parameter_id: string;
   value: number;
 }
 
 const T = LEVEL_T;
 
-// .serial: the idempotency test below genuinely depends on device state the strict-arc
-// test writes (Hiwatt's lane-1/lane-3 saves) — `fullyParallel:false` only gives ORDERING,
-// not failure-gating, so without `.serial` a lane-3 failure would still let the idempotency
-// test run against a half-leveled preset and report a second, confusing failure on top of
-// the real one. `.serial` also skips the two UI tests below on an earlier failure, which is
-// the right call on an attended online run where the device state is already suspect.
+// .serial: T2 genuinely depends on device state T1′ writes (410's base + footswitch saves).
 test.describe
-  .serial("Level online — strict output + idempotency (Hiwatt 3S, 404)", () => {
-  // Carried from the strict-arc test into the idempotency test below (same describe,
-  // same worker — `fullyParallel:false` + `.serial` guarantee the write-then-read order).
-  // The idempotency test guards its own read with an `expect`, not a `test.skip`, so a
-  // predecessor that never set this fails loudly instead of silently no-op-passing.
-  let laneFs: FootswitchLevelResult[] | undefined;
+  .serial("Level online — Friedman-shape consolidated arc + idempotency (410)", () => {
+  // Carried from T1′ into T2 below (same describe, same worker — `.serial` guarantees the
+  // write-then-read order). T2 guards its own read with a thrown error, not a silent
+  // `test.skip`, so a predecessor that never got here fails loudly instead of no-op-passing.
+  let laneFs410: FootswitchLevelResult[] | undefined;
 
   test.afterEach(async ({ page }) => {
     await reampOff(page);
@@ -146,64 +129,55 @@ test.describe
     await page.close();
   });
 
-  test("base + every scene + every footswitch re-measure at target after save; both lanes then prove idempotent on the same saved state", async ({
+  test("base + 3 scenes + 2 footswitches re-measure at target after save; base stays TRADE, never BOOST (see-saw guard)", async ({
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    // level-strict.spec.ts's own budget: 3 leveling lanes + 9 re-measures of ~6 s captures,
-    // checked against `ensure_fresh_load`'s worst case (danger.md): COMMIT_WINDOW_SECS =
-    // 150 s, at most 2 same-slot loads that could race a prior save = 300 s of pure barrier
-    // stall worst case. 1_800_000 ms covers that with headroom. (The idempotency addendum's
-    // own budget — a second `level_preset` solve + a second `level_footswitches_apply`
-    // batch — now lives in test 2's own `test.setTimeout`, not here.)
-    test.setTimeout(1_800_000);
+    // Base (3 conns/1 engage) + 3 scenes (one batch) + 2 footswitch batches + 4 strict
+    // ffmpeg re-measures, checked against `ensure_fresh_load`'s worst case (danger.md:
+    // COMMIT_WINDOW_SECS = 150 s) — generous headroom over the plan's own ~8 min estimate.
+    test.setTimeout(900_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    // For a footswitch sound the leveled-param triple rides along so the bridge
-    // command replays an ASSIGN switch's saved `valueA` on the SAME param the
-    // leveling lane wrote — the spec is the single owner of those coordinates
-    // (no second picker server-side to diverge from the wizard's choice).
-    const measure = (args: {
+    const measure410 = (args: {
       scene?: number;
-      footswitch?: (typeof SWITCH_JOBS)[number];
       validate?: ValidateArg;
     }): Promise<number> =>
       invoke(
         page,
         "e2e_measure_sound",
         {
-          slot: HIWATT.slot,
+          slot: FRIEDMAN.slot,
           scene: args.scene ?? null,
-          footswitch: args.footswitch?.switch ?? null,
+          footswitch: null,
           topologyId: "guitar-humbucker",
-          lev: args.footswitch
-            ? {
-                groupId: args.footswitch.levGroupId,
-                nodeId: args.footswitch.levNodeId,
-                parameterId: args.footswitch.levParameterId,
-              }
-            : null,
+          lev: null,
           validate: args.validate ?? null,
         },
         T,
       ) as Promise<number>;
 
-    // ── Lane 1: base (presetLevel one-shot, save) ─────────────────────────────
+    // ── Lane 1: base (presetLevel one-shot, save) — the see-saw control ───────
     const base = (await invoke(
       page,
       "level_preset",
-      { job: baseLevelJob(HIWATT.slot, TARGET) },
+      { job: baseLevelJob(FRIEDMAN.slot, BASE_TARGET_410) },
       T,
     )) as LevelResult;
     expect(base.clamped, "base must reach target, not clamp").toBe(false);
     expect(base.saved, "base must level and save").toBe(true);
+    expect(
+      base.base_boost,
+      "410's base pair is a plain TRADE solve (G <= P_up) — it must never enter BOOST, or a \
+regression has widened BOOST's trigger and would start moving a fader nothing asked it to move",
+    ).toBeNull();
 
-    // ── Lane 2: all 4 scenes (amp outputLevel, one batch, save) ───────────────
+    // ── Lane 2: all 3 scenes (amp outputLevel, one batch, save) ───────────────
     const blocks = (await invoke(
       page,
       "list_level_blocks",
-      { slot: HIWATT.slot },
+      { slot: FRIEDMAN.slot },
       T,
     )) as LevelBlock[];
     const candidates = blocks
@@ -216,16 +190,16 @@ test.describe
       }));
     expect(
       candidates.length,
-      "the Hiwatt amp candidate must be discoverable",
+      "the Friedman amp candidate must be discoverable",
     ).toBeGreaterThan(0);
     const scenes = (await invoke(
       page,
       "level_scenes_apply_batched",
       {
-        slot: HIWATT.slot,
-        jobs: [0, 1, 2, 3].map((sceneSlot) => ({
+        slot: FRIEDMAN.slot,
+        jobs: [0, 1, 2].map((sceneSlot) => ({
           sceneSlot,
-          targetLufs: TARGET,
+          targetLufs: SCENE_TARGET_410,
         })),
         candidates,
         save: true,
@@ -237,168 +211,177 @@ test.describe
       },
       T * 3,
     )) as LevelResult[];
-    // Row identity comes off `scene_slot`, not the array index — a mid-batch failure
-    // shortens this array, so index i is not scene i.
+    // Row identity comes off `scene_slot`, not array index (a mid-batch failure shortens
+    // this array).
     expect(
       scenes.map((r) => r.scene_slot).sort((a, b) => Number(a) - Number(b)),
       "every requested scene must come back (no silent mid-batch drop)",
-    ).toEqual([0, 1, 2, 3]);
+    ).toEqual([0, 1, 2]);
     for (const r of scenes) {
       const id = String(r.scene_slot);
       expect(r.clamped, `scene ${id} must reach target, not clamp`).toBe(false);
       expect(r.saved, `scene ${id} must level and save`).toBe(true);
     }
 
-    // ── Lane 3: all 4 footswitches (one batch, save) ──────────────────────────
-    const fs = (await invoke(
+    // ── Lane 3: two footswitches — 410's own TubeScreamer row, plus one MODULATED
+    // row (UniVibe, 404) carried verbatim from the retired Hiwatt arc so its own
+    // modulated-solve assertion keeps a named carrier (plan's online-budget table).
+    // Separate batches: the two rows live on different slots.
+    const fs410 = (await invoke(
       page,
       "level_footswitches_apply",
       {
-        slot: HIWATT.slot,
-        jobs: SWITCH_JOBS.map((j) => ({ ...j, targetLufs: TARGET })),
+        slot: FRIEDMAN.slot,
+        jobs: [
+          {
+            switch: 1,
+            levGroupId: "G1",
+            levNodeId: "ACD_TubeScreamer",
+            levParameterId: "level",
+            targetLufs: FS_TARGET_410,
+          },
+        ],
         save: true,
         topologyId: "guitar-humbucker",
         calibrationLufs: null,
         profileId: null,
         onResult: "__CHANNEL__:1",
       },
-      T * 3,
+      T * 2,
     )) as FootswitchLevelResult[];
-    for (const r of fs) {
+    for (const r of fs410) {
       expect(
         r.clamp_reason,
-        `switch ${String(r.switch)} must have signal (no off-branch clamp)`,
+        `switch ${String(r.switch)} must have signal`,
       ).toBeNull();
-      expect(r.clamped, `switch ${String(r.switch)} must reach target`).toBe(
-        false,
-      );
-      // `saved: false` is legitimate ONLY as the bake lane's in-tolerance skip
-      // (cb7cb60): lanes 1/2 just leveled the whole preset to TARGET, so a
-      // low-authority switch's engaged sound can already sit at TARGET — the
-      // idempotency probe then writes nothing, and on THIS preset that shape is
-      // deterministic (switch 11 skips every run). Accept it only with the
-      // probe's own proof: `predicted_lufs` IS the measurement that passed the
-      // FS_TOL_LU (0.1 LU) gate, so it must sit within it. A save that merely
-      // failed reports off-target or clamped and still dies here. The strict
-      // ffmpeg re-measure below remains the real arbiter for every switch,
-      // skipped or saved.
-      if (!r.saved) {
-        expect(
-          Math.abs(r.predicted_lufs - TARGET),
-          `switch ${String(r.switch)} skipped its save, which is only legitimate when its stored value measured within tolerance of target`,
-        ).toBeLessThanOrEqual(0.11);
-      }
-      // Fixture-drift alarm: every one of this file's SWITCH_JOBS carries a bare
-      // `func: "on-off"` row in the Hiwatt's own `ftsw` (fixtures/scenario-presets.json
-      // 404) with no existing `func: "param"` entry on its leveled (node, param) — so
-      // `footswitch.rs`'s assign gate (`existing_param_fn_index`) resolves every one of
-      // them to the Bake arm, deterministically, on every run. Pin that here
-      // unconditionally so a future fixture edit that adds a `param` function to any of
-      // these rows (which would flip it to Assign) fails loudly instead of silently
-      // testing the wrong arm.
       expect(
-        r.method,
-        `switch ${String(r.switch)} must resolve to the Bake arm — no SWITCH_JOBS row carries an existing param function`,
-      ).toBe("baked");
+        r.clamped,
+        `switch ${String(r.switch)} must reach target, not clamp`,
+      ).toBe(false);
+      expect(
+        Math.abs(r.predicted_lufs - FS_TARGET_410),
+        `switch ${String(r.switch)} solved-vs-target`,
+      ).toBeLessThanOrEqual(KNOB_TOL_LU);
     }
 
-    // ── The strict gate: re-measure EVERY sound from the SAVED state ──────────
-    // Each re-measure also carries the run's own promise for that sound (`validate`),
-    // which the server writes to the P5 expectation log alongside the WAV it just
-    // captured — so `scripts/level-validate.sh` can judge the SAME audio with ffmpeg's
-    // ebur128 afterwards. A scene's promise is looked up BY `scene_slot`, never by index:
-    // the batch filters failed scenes out of the array it returns.
+    const fsUniVibe = (await invoke(
+      page,
+      "level_footswitches_apply",
+      {
+        slot: HIWATT.slot,
+        jobs: [
+          {
+            switch: 12,
+            levGroupId: "G4",
+            levNodeId: "ACD_UniVibe",
+            levParameterId: "volume",
+            targetLufs: FS_TARGET_UNIVIBE,
+          },
+        ],
+        save: true,
+        topologyId: "guitar-humbucker",
+        calibrationLufs: null,
+        profileId: null,
+        onResult: "__CHANNEL__:1",
+      },
+      T * 2,
+    )) as FootswitchLevelResult[];
+    for (const r of fsUniVibe) {
+      expect(
+        r.clamp_reason,
+        `switch ${String(r.switch)} must have signal`,
+      ).toBeNull();
+      expect(
+        r.clamped,
+        `switch ${String(r.switch)} (modulated UniVibe response) must reach target, not clamp`,
+      ).toBe(false);
+      expect(
+        Math.abs(r.predicted_lufs - FS_TARGET_UNIVIBE),
+        `switch ${String(r.switch)} (modulated UniVibe response) solved-vs-target — a \
+LFO'd knob can legitimately need the full KNOB_TOL_LU band`,
+      ).toBeLessThanOrEqual(KNOB_TOL_LU);
+    }
+
+    // ── The strict gate: re-measure base + all 3 scenes from the SAVED state (4 rows).
+    // The 2 footswitch rows above are judged by their OWN solve result, not a second
+    // strict re-measure — the plan's online-budget table deliberately caps this
+    // consolidated arc's ffmpeg-validated rows at 4 (vs the retired arc's 9) to keep
+    // its cost down.
     const sceneRow = (slot: number): LevelResult | undefined =>
       scenes.find((r) => r.scene_slot === slot);
     const heard: Record<string, number> = {};
-    heard.base = await measure({
+    heard.base = await measure410({
       validate: {
-        targetLufs: TARGET,
+        targetLufs: BASE_TARGET_410,
         clamped: base.clamped,
         persistMismatch: base.persist_mismatch,
       },
     });
-    for (const scene of [0, 1, 2, 3]) {
+    for (const scene of [0, 1, 2]) {
       const row = sceneRow(scene);
       expect(
         row,
         `scene ${String(scene)} must be present in the batch results`,
       ).toBeDefined();
-      heard[`scene${String(scene)}`] = await measure({
+      heard[`scene${String(scene)}`] = await measure410({
         scene,
         validate: {
-          targetLufs: TARGET,
+          targetLufs: SCENE_TARGET_410,
           clamped: row?.clamped ?? false,
           persistMismatch: row?.persist_mismatch ?? null,
         },
       });
     }
-    for (const j of SWITCH_JOBS) {
-      const row = fs.find((r) => r.switch === j.switch);
-      heard[`fs${String(j.switch)}`] = await measure({
-        footswitch: j,
-        validate: {
-          targetLufs: TARGET,
-          clamped: row?.clamped ?? false,
-          persistMismatch: null,
-        },
-      });
-    }
     for (const [sound, lufs] of Object.entries(heard)) {
-      const delta = sound.startsWith("fs") ? DELTA_FS : DELTA;
+      const target = sound === "base" ? BASE_TARGET_410 : SCENE_TARGET_410;
       expect(
-        Math.abs(lufs - TARGET),
-        `${sound} re-measures at ${lufs.toFixed(2)} LUFS from the saved state — ` +
-          `must be within ${String(delta)} LU of the ${String(TARGET)} LUFS target`,
-      ).toBeLessThanOrEqual(delta);
+        Math.abs(lufs - target),
+        `${sound} re-measures at ${lufs.toFixed(2)} LUFS from the saved state`,
+      ).toBeLessThanOrEqual(DELTA);
     }
 
-    // Carry lane 3's results to the idempotency test below (same describe, runs next —
-    // see the describe-level comment on `laneFs` and the `.serial` note above it).
-    laneFs = fs;
+    // Carry lane 3's 410 result to the idempotency test below (same describe, same
+    // worker — `.serial` guarantees ordering).
+    laneFs410 = fs410;
 
     await expectReampBalanced(page, reampBase);
   });
 
-  // ── Idempotency addendum, ON THE SAME SAVED STATE the test above just wrote ──────────
-  // Split into its own test (was inline in the strict-arc test above) because its
-  // acceptance band is NARROWER than that test's own DELTA (0.5): a real skip requires the
-  // solver to land within `KNOB_TOL_LU` (0.3 LU, leveller.rs) of the prior save, tighter
-  // than the strict re-measure's accepted noise band — so a legitimate idempotency flake
-  // must not report as a failure of the (unrelated) strict output-accuracy property, and
-  // soak (`scripts/e2e.sh soak N`, which loops this file) needs per-property attribution
-  // rather than one monolithic pass/fail.
-  test("idempotency: base and footswitch skip-branch re-runs make zero new writes", async ({
+  // ── Idempotency addendum, ON THE SAME SAVED STATE T1′ just wrote ────────────────────
+  test("idempotency: base and footswitch skip-branch re-runs make zero new writes (410)", async ({
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    // 1 base solve (fast — no capture, just solve+skip) + 1 footswitch batch (up to 4
-    // measurable switches, each a capture) + its own possible `ensure_fresh_load` stall
-    // (COMMIT_WINDOW_SECS = 150 s, danger.md) = 300_000 (base + fs headroom) + 300_000
-    // (commit-window stall) = 600_000 ms.
     test.setTimeout(600_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    // Non-vacuous dependency check: the strict-arc test above must have run and set this
-    // (an `expect`, not a `test.skip`, so a predecessor that silently never got here fails
-    // loudly instead of this test no-op-passing — the exact G-class trap this file's own
-    // `scripts/e2e.sh` guard exists to catch at the spec-selection level). Narrows via a
-    // throw, not a non-null assertion, so the check is real at runtime too.
-    if (!laneFs) {
+    if (!laneFs410) {
       throw new Error(
-        "the strict-arc test above must run first and set laneFs (same describe.serial block)",
+        "the arc test above must run first and set laneFs410 (same describe.serial block)",
       );
     }
-    const fs = laneFs;
+    const fs = laneFs410;
 
-    // ── Base skip-branch (ports level-rerun.spec.ts's retired online "base: run 2 makes
-    // zero new writes" test — reusing Hiwatt's lane-1 save instead of leveling a second
-    // preset from scratch) ──
+    // The retired Hiwatt arc's own SKIP-LEGITIMACY guard, folded in here: a `saved:false`
+    // result on the FIRST run (above) is legitimate ONLY when the stored value already
+    // measured within FS tolerance of target — never a silent "did nothing" masquerading
+    // as success.
+    for (const r of fs) {
+      if (!r.saved) {
+        expect(
+          Math.abs(r.predicted_lufs - FS_TARGET_410),
+          `switch ${String(r.switch)} skipped its save on the first run, legitimate only \
+when the stored value already measured within tolerance of target`,
+        ).toBeLessThanOrEqual(0.11);
+      }
+    }
+
+    // ── Base skip-branch ──
     const baseRerun = (await invoke(
       page,
       "level_preset",
-      { job: baseLevelJob(HIWATT.slot, TARGET) },
+      { job: baseLevelJob(FRIEDMAN.slot, BASE_TARGET_410) },
       T,
     )) as LevelResult;
     expect(
@@ -407,18 +390,187 @@ test.describe
     ).toBe(false);
     expect(
       baseRerun.saved,
-      "base re-run solved the same value lane 1 already saved → must skip the write (level_unchanged)",
+      "base re-run solved the same value the arc test already saved → must skip the write (level_unchanged)",
     ).toBe(false);
+    expect(
+      baseRerun.base_boost,
+      "the see-saw guard holds on re-run too: still TRADE, never BOOST",
+    ).toBeNull();
 
-    // ── Footswitch skip-branch (ports level-rerun.spec.ts's retired online "footswitch:
-    // run 2 rewrites nothing in-tolerance" test — reusing Hiwatt's lane-3 save instead of a
-    // fresh switch on a different preset) ──
+    // ── Footswitch skip-branch (410's own TubeScreamer row only — the carried-over
+    // UniVibe row belongs to T1′'s modulated-solve coverage, not this idempotency proof) ──
+    const wroteInLane3 = fs.filter((r) => r.saved).map((r) => r.switch);
     const fs2 = (await invoke(
       page,
       "level_footswitches_apply",
       {
-        slot: HIWATT.slot,
-        jobs: SWITCH_JOBS.map((j) => ({ ...j, targetLufs: TARGET })),
+        slot: FRIEDMAN.slot,
+        jobs: [
+          {
+            switch: 1,
+            levGroupId: "G1",
+            levNodeId: "ACD_TubeScreamer",
+            levParameterId: "level",
+            targetLufs: FS_TARGET_410,
+          },
+        ],
+        save: true,
+        topologyId: "guitar-humbucker",
+        calibrationLufs: null,
+        profileId: null,
+        onResult: "__CHANNEL__:1",
+      },
+      T * 2,
+    )) as FootswitchLevelResult[];
+
+    for (const r2 of fs2) {
+      expect(
+        r2.clamp_reason,
+        `switch ${String(r2.switch)} re-run must be measurable (no clamp reason)`,
+      ).toBeNull();
+      expect(
+        r2.clamped,
+        `switch ${String(r2.switch)} re-run must reach target unclamped`,
+      ).toBe(false);
+      expect(
+        Math.abs(r2.predicted_lufs - FS_TARGET_410),
+        `switch ${String(r2.switch)} re-run must land on target`,
+      ).toBeLessThanOrEqual(0.11);
+      if (wroteInLane3.includes(r2.switch)) {
+        expect(
+          r2.saved,
+          `switch ${String(r2.switch)} wrote a real value at target in the arc test → this re-run at the same target must skip the write`,
+        ).toBe(false);
+      }
+    }
+
+    await expectReampBalanced(page, reampBase);
+  });
+});
+
+// ── T5: Plumes-shape (405) first-run journey — the BOOST case paired with T1′'s TRADE
+// control above, run back-to-back in the same online session (see-saw surfaces in one run) ──
+test.describe("Level online — Plumes-shape first-run journey (405)", () => {
+  test.afterEach(async ({ page }) => {
+    await reampOff(page);
+  });
+  test.afterAll(async ({ browser }) => {
+    const page = await browser.newPage();
+    await clearScenario(page);
+    await page.close();
+  });
+
+  // 4 drive pedals, retargeted with the offline gate (level-fs-preset24.spec.ts) to -23/-23/
+  // -21/-21 — kept local to this file rather than imported, since cross-spec imports of test
+  // fixtures aren't this codebase's convention (each spec owns its own job literals).
+  const SWITCH_JOBS_405 = [
+    {
+      switch: 5,
+      levGroupId: "G1",
+      levNodeId: "ACD_Plumes",
+      levParameterId: "level",
+      targetLufs: -23,
+    },
+    {
+      switch: 6,
+      levGroupId: "G1",
+      levNodeId: "ACD_BluesDriver",
+      levParameterId: "level",
+      targetLufs: -23,
+    },
+    {
+      switch: 7,
+      levGroupId: "G1",
+      levNodeId: "ACD_ObsessiveDrive",
+      levParameterId: "level",
+      targetLufs: -21,
+    },
+    {
+      switch: 8,
+      levGroupId: "G1",
+      levNodeId: "ACD_Rat",
+      levParameterId: "volume",
+      targetLufs: -21,
+    },
+  ];
+  const BASE_TARGET_405 = -23; // Rhythm (profiles.rs::default_targets)
+
+  test("first-run UI journey: base BOOST via the wizard, 4 footswitch rows, strict re-measure", async ({
+    page,
+  }) => {
+    test.skip(!(await isOnline(page)), "online-only: needs real audio");
+    // Base UI drive (3 conns/1 engage via the wizard) + a same-target confirm read + a
+    // 4-switch footswitch batch + 5 strict ffmpeg re-measures — the plan's own ~5 min
+    // estimate, generously padded.
+    test.setTimeout(600_000);
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+
+    // Cheap probe read BEFORE the run (a single quick capture, not a full leveling cycle):
+    // confirm the Plumes shape's pedals-off base is genuinely well short of target — the
+    // precondition the BOOST regime exists to close. Guards against silently asserting a
+    // BOOST outcome against a fixture a prior run already maxed out.
+    const asIs = (await invoke(
+      page,
+      "e2e_measure_sound",
+      {
+        slot: PRESET24.slot,
+        scene: null,
+        footswitch: null,
+        topologyId: "guitar-humbucker",
+        lev: null,
+      },
+      T,
+    )) as number;
+    expect(
+      asIs,
+      "the Plumes shape's pedals-off base must start well short of target — the precondition \
+this run's BOOST regime exists to close",
+    ).toBeLessThan(BASE_TARGET_405 - 3);
+
+    // The UI journey itself: the wizard end to end, proving the base_boost summary-row
+    // disclosure (SummaryPage.tsx's `baseBoostSentence`) renders in the real app, not just on
+    // the wire. `Rhythm` = -23 LUFS (profiles.rs::default_targets), matching BASE_TARGET_405.
+    await runBaseLevel(page, [{ preset: PRESET24, label: "Rhythm" }]);
+    await expect(
+      page.getByText(
+        /Turned this preset up as far as it goes and raised the amp/,
+      ),
+    ).toBeVisible();
+
+    // Fetch the actual result the UI run just produced via the sanctioned raw-invoke path
+    // (the channel-streaming seam does not gate base leveling itself, but a same-target
+    // re-run is the established, idempotent way every other spec in this suite reads a
+    // result back — `save:true` + already-solved ⇒ skip, wire still reports base_boost in
+    // full). Deliberately NOT asserting `base_amps[0]`'s previous/solved VALUES — those are
+    // fixture-derived magnitudes already covered exactly by the offline gate
+    // (level-fs-preset24.spec.ts); this run asserts regime/ordering/tolerance only.
+    const base = (await invoke(
+      page,
+      "level_preset",
+      { job: baseLevelJob(PRESET24.slot, BASE_TARGET_405) },
+      T,
+    )) as LevelResult;
+    expect(base.clamped, "base must reach target, not clamp").toBe(false);
+    if (!base.base_boost) {
+      throw new Error("the Plumes shape (405) must enter the BOOST regime");
+    }
+    expect(base.base_boost.applied, "the boost must be applied").toBe(true);
+    expect(base.base_boost.regime, "regime must be boost").toBe("boost");
+    expect(
+      base.final_level,
+      "presetLevel pins at the ceiling in the BOOST regime",
+    ).toBeCloseTo(1.0, 5);
+
+    // 4 footswitch rows (base MUST run first — the pl-context trap 405's own fixture
+    // ordering pins, e2e/fixtures/COVERAGE.md row 36) — raw invoke, the channel-streaming
+    // seam (.claude/rules/e2e.md).
+    const fs = (await invoke(
+      page,
+      "level_footswitches_apply",
+      {
+        slot: PRESET24.slot,
+        jobs: SWITCH_JOBS_405,
         save: true,
         topologyId: "guitar-humbucker",
         calibrationLufs: null,
@@ -427,102 +579,63 @@ test.describe
       },
       T * 3,
     )) as FootswitchLevelResult[];
-
-    // The non-vacuity witness for the skip proof below: at least one switch lane 3
-    // actually WROTE (mirrors the retired test's own `leveled.size > 0` guard) — without
-    // it, "every write skips on re-run" would be vacuously true of an empty set.
-    const wroteInLane3 = fs.filter((r) => r.saved).map((r) => r.switch);
-    expect(
-      wroteInLane3.length,
-      "lane 3 (the strict arc's fs pass) must have written at least one switch, or the skip proof below is vacuous",
-    ).toBeGreaterThan(0);
-
-    for (const j of SWITCH_JOBS) {
-      const r2 = fs2.find((r) => r.switch === j.switch);
+    for (const [i, r] of fs.entries()) {
+      const job = SWITCH_JOBS_405[i];
       expect(
-        r2,
-        `switch ${String(j.switch)} must return a result in the re-run`,
-      ).toBeTruthy();
-      expect(
-        r2?.clamp_reason,
-        `switch ${String(j.switch)} re-run must be measurable (no clamp reason)`,
+        r.clamp_reason,
+        `switch ${String(r.switch)} must have signal`,
       ).toBeNull();
       expect(
-        r2?.clamped,
-        `switch ${String(j.switch)} re-run must reach target unclamped`,
+        r.clamped,
+        `switch ${String(r.switch)} must reach target, not clamp`,
       ).toBe(false);
-      // Same fixture-drift alarm as the strict-arc test's lane 3 — unconditional, since
-      // every SWITCH_JOBS row is deterministically Bake in this fixture.
       expect(
-        r2?.method,
-        `switch ${String(j.switch)} re-run must still resolve to the Bake arm`,
-      ).toBe("baked");
-      expect(
-        Math.abs((r2?.predicted_lufs ?? NaN) - TARGET),
-        `switch ${String(j.switch)} re-run must land on target`,
-      ).toBeLessThanOrEqual(0.11);
-      // The idempotency-skip property itself: any switch lane 3 actually WROTE must make
-      // ZERO further writes on this immediate re-run at the same target. Switches lane 3
-      // did NOT write (already in-tolerance there, e.g. switch 11's documented
-      // low-authority skip) get no save-strictness assertion here — lane 3's own
-      // in-tolerance guard (the strict-arc test, above) already proves those.
-      if (wroteInLane3.includes(j.switch)) {
-        expect(
-          r2?.saved,
-          `switch ${String(j.switch)} lane 3 wrote a real value at TARGET → this re-run at the same target must skip the write (level_unchanged / switch_at_target)`,
-        ).toBe(false);
-      }
+        Math.abs(r.predicted_lufs - job.targetLufs),
+        `switch ${String(r.switch)} solved-vs-target`,
+      ).toBeLessThanOrEqual(KNOB_TOL_LU);
     }
 
-    await expectReampBalanced(page, reampBase);
-  });
+    // 5 strict ffmpeg re-measures: base + all 4 pedals, from the saved state.
+    const measure405 = (
+      job?: (typeof SWITCH_JOBS_405)[number],
+    ): Promise<number> =>
+      invoke(
+        page,
+        "e2e_measure_sound",
+        {
+          slot: PRESET24.slot,
+          scene: null,
+          footswitch: job?.switch ?? null,
+          topologyId: "guitar-humbucker",
+          lev: job
+            ? {
+                groupId: job.levGroupId,
+                nodeId: job.levNodeId,
+                parameterId: job.levParameterId,
+              }
+            : null,
+          validate: {
+            targetLufs: job ? job.targetLufs : BASE_TARGET_405,
+            clamped: false,
+            persistMismatch: null,
+          },
+        },
+        T,
+      ) as Promise<number>;
 
-  // COVERAGE row 37 — scene wipe / bake / conformance oracle (moved from level.spec.ts;
-  // this file already carries 404's slot, so no extra fixture is touched by adding it here).
-  test("enumerates the 3-scene + Base-Scene + 4-footswitch preset in the list", async ({
-    page,
-  }) => {
-    test.skip(!(await isOnline(page)), "online-only tier of this file's arc");
-    await ensureScenario(page);
-    await openLevel(page);
+    const heardBase = await measure405();
+    expect(
+      Math.abs(heardBase - BASE_TARGET_405),
+      `base re-measures at ${heardBase.toFixed(2)} LUFS from the saved state`,
+    ).toBeLessThanOrEqual(DELTA);
+    for (const job of SWITCH_JOBS_405) {
+      const heard = await measure405(job);
+      expect(
+        Math.abs(heard - job.targetLufs),
+        `switch ${String(job.switch)} re-measures at ${heard.toFixed(2)} LUFS from the saved state`,
+      ).toBeLessThanOrEqual(DELTA_FS);
+    }
 
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
-    await filter.fill(HIWATT.name);
-    // The collapsed breakdown — the scan's own count, before any expansion.
-    await expect(page.getByText("4 scenes · 4 footswitches")).toBeVisible({
-      timeout: 60_000,
-    });
-
-    await page.getByTitle(/Show Base/).click();
-    // Base + 4 footswitch scenes + 4 block-acting footswitches = 9 child rows.
-    await expect(page.getByText("main preset sound")).toHaveCount(1);
-    await expect(page.getByText("footswitch scene")).toHaveCount(4);
-    await expect(page.getByText("footswitch", { exact: true })).toHaveCount(4);
-    // The 4th scene is a real overlay named "Base Scene" — it must appear as its OWN row,
-    // distinct from the "Base Preset" row (the sentinel).
-    await expect(page.getByText("Base Scene", { exact: true })).toHaveCount(1);
-    await expect(page.getByText("Base Preset", { exact: true })).toHaveCount(1);
-  });
-
-  // Moved from level.spec.ts — E2E Pedalboard + E2E Edge, unrelated to the Hiwatt arc
-  // above; kept in this file so the online lane pays one Level Playwright boot, not two.
-  test("levels two presets' Base to different targets, end to end", async ({
-    page,
-  }) => {
-    test.skip(!(await isOnline(page)), "online-only tier of this file's arc");
-    await ensureScenario(page);
-    const reampBase = await reampCounters(page);
-
-    // Each of the two presets carries footswitches/scenes of its own, so a whole-preset
-    // tick would sweep those in too and shift the terminal summary's Done-vs-Accept text —
-    // `runBaseLevel` selects each preset's Base row alone.
-    await runBaseLevel(page, [
-      { preset: SCENARIO[1], label: "Crunch" },
-      { preset: SCENARIO[2], label: "Lead" },
-    ]);
-
-    // Standing safety gate: the app disengaged re-amp at least as often as it engaged,
-    // checked BEFORE the afterEach reampOff rescue (so a stranded engage fails here).
     await expectReampBalanced(page, reampBase);
   });
 });

@@ -23,20 +23,32 @@ import {
 //
 // P4-B fixture rebuild: EVERY scenario preset now carries footswitches and/or scenes (none is
 // "plain" Base-only any more — see e2e/fixtures/COVERAGE.md). Base C ceilings: 400 (E2E Rig)
-// -15, 401 (E2E Pedalboard) -20, 402 (E2E Edge) -13, 403 (E2E Parallel) -20. So 401/403's base
-// CLAMPS only at the LOUD shipped default (Lead, -19) — -23/-21 both solve — matching
+// -15, 401 (E2E Pedalboard) -20, 402 (E2E Edge) -13, 403 (E2E Parallel) -20. -23/-21 both solve
+// on every preset. The tests below select ONLY the Base row (never the whole preset) for the
+// clamp/boost cases: sweeping in a preset's footswitches too risks shifting the terminal
+// Done-vs-Accept summary text for reasons unrelated to the base outcome under test.
+//
+// P4 (the Plumes/BD2/OCD leveling-regression fix, `headroom_trade::plan_level_pair`) SPLIT
+// what "the loud shipped default" (Lead, -19) does at a preset's ~-20 ceiling, by whether a
+// SECOND control exists to close the gap: 401 has exactly one active, non-maxed amp candidate
+// (`ACD_MarshallPlexi`, `outputLevel` authored 0.6) with headroom above 0.6, so it now BOOSTS
+// past its old clamp and reaches Lead — see test (a) for the exact math. 403 has TWO active
+// amps (`gtrParallel1`, both already at `outputLevel` 1.0), which the boost candidate
+// derivation refuses outright (Phase 1's own refusal list: "≥2 amp knobs (parallel —
+// danger.md OPEN distrust)"; a maxed fader would also have zero room even if it were
+// considered) — so 403 still clamps at Lead exactly as before, matching
 // `e2e_server_tests.rs`'s `level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch`
-// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). The tests below therefore select
-// ONLY the Base row (never the whole preset) for the clamp cases: sweeping in a preset's
-// footswitches too risks shifting the terminal Done-vs-Accept summary text for reasons
-// unrelated to the base clamp under test.
+// ("Base at Lead (-19) on 403 -> CLAMP at its ceiling (-20)"). Test (b) (the re-level-clamped
+// loop) now runs on 403 for exactly this reason — 401 no longer has a LOUD-enough named
+// target to demonstrate a clamp with.
 //
 // HARNESS LIMIT: per-SCENE/per-FOOTSWITCH outcomes hit the Channel-streaming seam offline
 // (asserted at the command level instead — see e2e_server_tests.rs
 // `level_defaults_403_scenes_solve_and_offbranch` + `..._base_clamps_and_footswitch_is_offbranch`;
 // rationale in .claude/rules/e2e.md's "The Channel-streaming seam"). The UI here asserts only
-// the BASE-leveling outcomes (level_preset returns directly, no Channel): the mass-clamp (a),
-// the re-level-clamped loop (b), and a mid-run off-branch capture fault (c).
+// the BASE-leveling outcomes (level_preset returns directly, no Channel): the base-boost
+// reaching a loud default (a), the re-level-clamped loop (b), and a mid-run off-branch
+// capture fault (c).
 
 // openLevel / selectBaseOnly / pickBaseTarget now live in ../fixtures/scenario.ts (shared
 // with level-setup.spec.ts, pedal-fiasco.spec.ts and level.spec.ts).
@@ -51,14 +63,32 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await page.close();
   });
 
-  // COVERAGE row 2 — base solve that CLAMPS.
-  // (a) Mass-clamp: 401's Base at the LOUD shipped default (Lead, -19) clamps at its ~-20
-  // ceiling (PR2 re-baseline math lives in scenario-loudness.json's "401" entry). This is the
-  // first-session reality the user hit — a shipped default can sit above a preset's max.
-  test("base at the loud default clamps at its ceiling", async ({ page }) => {
+  // COVERAGE row 2 — base solve that USED to CLAMP, now BOOSTS.
+  // (a) 401's Base at the LOUD shipped default (Lead, -19) used to clamp at its ~-20 ceiling
+  // (PR2 re-baseline math lives in scenario-loudness.json's "401" entry) — pure `presetLevel`
+  // maxing out short of target, nothing else to give. Post-P4, `headroom_trade::
+  // plan_level_pair` finds a SECOND control: `ACD_MarshallPlexi`'s own `outputLevel`, stored
+  // 0.6 (COVERAGE.md's cab-rule table), well below its 1.0 ceiling. The math (`g = target -
+  // base_asis_lufs`, `p_up`/`f_up` = presetLevel/fader headroom in dB — see
+  // `headroom_trade.rs`'s own doc comments):
+  //   - presetLevel raises from its authored 0.32 to its ceiling 1.0: raise_db = p_up =
+  //     20·log10(1/0.32) ≈ 9.90 dB — this alone reaches exactly C = -20 (today's old ceiling).
+  //   - `g > p_up` (BOOST's own trigger) reduces algebraically to `target > C`: -19 > -20, so
+  //     BOOST fires. The remaining gap the fader must close is exactly `target - C` = -19 -
+  //     (-20) = +1.00 dB — well inside the amp's own `f_up` = 20·log10(1/0.6) ≈ 4.44 dB of
+  //     headroom, so this REACHES target rather than clamping the fader too (the "clamped:true
+  //     WITH base_boost.applied:true" shape only fires when the ask exceeds `f_up`).
+  //   - solved fader = 0.6 · 10^(1/20) ≈ 0.6732 → 0.67 to 2 decimals (`seed_fader_target`).
+  //     Zero secant corrections expected: 401 declares no `leveledParams`, so the sim's
+  //     `ol_term` is exactly log-linear (same zero-correction precedent as 405's Twin fader).
+  //   - the UI always saves (`useLevelingFlow.ts`: "Leveling always WRITES (save:true)"), so
+  //     `base_boost.applied` is `true`, not the `save:false` advisory shape.
+  test("base at the loud default now reaches it via the amp-fader boost", async ({
+    page,
+  }) => {
     test.skip(
       await isOnline(page),
-      "offline-only: the clamp ceiling is sidecar-authored",
+      "offline-only: the boost math is sidecar-authored",
     );
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
@@ -67,34 +97,46 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click(); // the inline commit gate
-    await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // the loud default — this is what clamps
+    await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // the loud default — now REACHED via boost
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
-    await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
+    // allGood (SummaryPage.tsx): no clamp/unconverged/offbranch/skip rows this run ⇒ "Done",
+    // not "Accept" — the row solved, it didn't need acknowledgement.
+    await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
       timeout: 240_000,
     });
+    // `useGroupOpen`'s `badSlots` auto-open list is built from non-"done" rows only
+    // (SummaryPage.tsx) — an all-good run's preset group starts COLLAPSED, unlike the
+    // off-branch case in test (c) below. Expand it before reading the row detail.
+    await page
+      .locator(`[data-preset-group="${String(SCENARIO[1].slot)}"]`)
+      .click();
 
-    // The headroom clamp: its remediation banner, the row's own clamped status, and the
-    // exact clamped ceiling on the Base row.
-    await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
-    await expect(page.getByText("as loud as it goes")).toBeVisible();
-    await expect(page.getByText(/[−-]20\.\d/)).toBeVisible();
-    // design 1a: every clamped row shows ONE generic message regardless of clamp cause
-    // (the old per-`ClampKind` backend wording — trade/floor disclosures included — is
-    // gone from the wizard entirely). Copied VERBATIM from `SummaryPage.tsx`'s
-    // `PROBLEM.clamped.msg` — never re-word it here if the copy changes; update this
+    // The base_boost disclosure (SummaryPage.tsx's `baseBoostSentence`). Copied VERBATIM from
+    // that function's template — never re-word it here if the copy changes; update this
     // string instead.
     await expect(
       page.getByText(
-        "The knob is already all the way up. A quieter target would let this one match.",
+        "Turned this preset up as far as it goes and raised the amp’s output from 0.60 to 0.67 to reach the target.",
       ),
     ).toBeVisible();
+    // No clamp banner remains — this row is done, not clamped.
+    await expect(page.getByText(/Clamped .* already maxed/)).toHaveCount(0);
+    // The row's own achieved reading, at Lead (-19).
+    await expect(page.getByText(/[−-]19\.\d/)).toBeVisible();
 
     await expectReampBalanced(page, reampBase);
   });
 
   // (b) Re-level-clamped loop: a sound clamped at a LOUDER target resolves when re-leveled at a
-  // quieter one. 401 (ceiling ~-20) clamps at Lead (-19) and resolves at Crunch (-21). Summary →
-  // "Re-level clamped…" → lower target → run 2 → the row is done (no clamp banner remains).
+  // quieter one. RETARGETED (405-era 401 → 403): 401's Base at Lead no longer clamps at all
+  // (test (a) above) since it now has a fader to boost with, so it can't demonstrate this loop
+  // any more with a NAMED target (Rhythm/Crunch/Lead are the only picker options). 403 (E2E
+  // Parallel, ceiling ~-20) is UNAFFECTED by the boost feature — its base pair carries TWO
+  // active amps (`gtrParallel1`, both already at `outputLevel` 1.0), which the boost candidate
+  // derivation refuses outright (Phase 1's "≥2 amp knobs" refusal; a maxed fader would have
+  // zero headroom regardless) — so it clamps at Lead (-19) and resolves at Crunch (-21) exactly
+  // as before. Summary → "Re-level clamped…" → lower target → run 2 → the row is done (no
+  // clamp banner remains).
   test("re-level-clamped: clamped at Lead resolves at Crunch", async ({
     page,
   }) => {
@@ -105,11 +147,11 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
     await openLevel(page);
-    await selectBaseOnly(page, SCENARIO[1].name); // E2E Pedalboard, Base only
+    await selectBaseOnly(page, SCENARIO[3].name); // E2E Parallel, Base only
 
     await page.getByRole("button", { name: /Level 1 preset/ }).click();
     await page.getByText(/I.ve backed up with Pro Control/i).click();
-    await pickBaseTarget(page, SCENARIO[1].slot, "Lead"); // pick the LOUD target
+    await pickBaseTarget(page, SCENARIO[3].slot, "Lead"); // pick the LOUD target
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Accept" })).toBeVisible({
       timeout: 240_000,
@@ -117,7 +159,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     await expect(page.getByText(/Clamped .* already maxed/)).toBeVisible();
 
     await page.getByRole("button", { name: /Re-level clamped/ }).click();
-    await pickBaseTarget(page, SCENARIO[1].slot, "Crunch"); // QUIETER target
+    await pickBaseTarget(page, SCENARIO[3].slot, "Crunch"); // QUIETER target
     await page.getByRole("button", { name: /Start.*1 sound/ }).click();
     await expect(page.getByRole("button", { name: "Done" })).toBeVisible({
       timeout: 240_000,

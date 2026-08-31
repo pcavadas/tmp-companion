@@ -14,36 +14,57 @@ import {
   reampOff,
 } from "../fixtures/scenario";
 
-// COVERAGE rows 36, 16 — the lazy-save (stale-load) incident, and the FS level opt-in
-// BAKE lane it runs on: 405's four drive switches each declare the pedal's own
-// `level`/`volume` in `scenario-loudness.json`'s `leveledParams`, so `saturated_pedal_lufs`
-// (not the flat C law) drives every solve this file asserts.
-// BUG→GATE (2026-08-02 HW incident): `saveCurrentPreset` commits LAZILY (T+45-100s on the
-// real unit) — a same-slot `loadPreset` inside that window materializes the PRE-save preset.
-// The incident: base saved presetLevel 0.4377, the footswitch batch's own load 2s later
-// materialized the pre-run ~0.798, so all 4 pedal sweeps ran +5.2 LU hot and the solved
-// values persisted ~5 dB low. `leveller::ensure_fresh_load` + the per-slot save registry
-// (danger.md) are the fix; this file is the offline, deterministic, sim-layer proof that the
-// WHOLE stack — base leveling, the footswitch batch, the freshness barrier, and the
-// FS_TOL_LU=0.1 tightened acceptance — lands each pedal within ±0.1 LU of its target, both
-// as REPORTED by the solve and as RE-MEASURED from the saved (persisted) state afterward.
+// COVERAGE rows 36, 16 — the lazy-save (stale-load) incident, the FS level opt-in BAKE
+// lane it runs on, AND (P4-B, the Plumes/BD2/OCD leveling-regression fix) the first proof
+// that a base-engaged SaturatedPedal paired with a sub-1.0 amp fader actually reaches
+// target on the FIRST run. 405 was amended in place (see e2e/fixtures/COVERAGE.md and
+// scenario-loudness.json's own "405" comment): `presetLevel` 1.0→0.27, the Twin's
+// `outputLevel` 1.0→0.28, and Rat flipped base-ON (bypass:false, volume:0.62). Pre-fix, base
+// leveling at -23 clamped ~5.2 dB short (`SceneCeiling`, `final_level` saved at 1.0) because
+// all the loudness lived in Rat's own base-engaged pedal while the Twin's fader sat at 0.28 —
+// the Friedman-era changes (#160–#166) removed every remedy for this shape. Post-fix,
+// `headroom_trade::plan_level_pair` finds base's gap (`G≈+16.4`) exceeds the pure-presetLevel
+// headroom (`P_up≈+11.1`), enters the BOOST regime, pins `presetLevel` at its ceiling (1.0)
+// and raises the Twin's fader from 0.28 to ≈0.498 to close the rest — closed-loop verified,
+// one save carrying both halves.
+// BUG→GATE (2026-08-02 HW incident, lazy-save half): `saveCurrentPreset` commits LAZILY
+// (T+45-100s on the real unit) — a same-slot `loadPreset` inside that window materializes the
+// PRE-save preset. The incident: base saved presetLevel 0.4377, the footswitch batch's own
+// load 2s later materialized the pre-run ~0.798, so all 4 pedal sweeps ran +5.2 LU hot and the
+// solved values persisted ~5 dB low. `leveller::ensure_fresh_load` + the per-slot save
+// registry (danger.md) are the fix.
+//
+// This file is the offline, deterministic, sim-layer proof that the WHOLE stack — the base
+// BOOST (presetLevel + fader, one save), the footswitch batch, the freshness barrier, and the
+// FS_TOL_LU=0.1 tightened acceptance — lands base AND all 4 pedals within tolerance of their
+// targets on the FIRST run, no clamp, both as REPORTED by the solve and as RE-MEASURED from
+// the saved (persisted) state afterward. The second test below additionally proves the
+// TWO-HALVES save barrier (danger.md's Phase 2 guard (b)): a same-slot load induced between
+// the base save and the footswitch batch's own load must not let ONE half of the boosted pair
+// (presetLevel OR the amp fader) revert while the other survives — a half-reverted pair reads
+// materially off target, which the base re-measure below would catch even though neither
+// half is independently zero.
 //
 // PRESET24 (E2E Preset24, slot 405): 4 drive pedals (Plumes/BluesDriver/ObsessiveDrive/Rat,
-// ftsw indices 5-8, matching the real "TR+BD2+BMP"-class preset) feeding a saturated amp, no
-// scenes. Each pedal's own knob follows notes/leveling.md's silent→cliff→plateau curve
-// (`sim_device::saturated_pedal_lufs`) — EXACT and deterministic offline, unlike the
-// stimulus-scaling slack the flat-C sidecar model carries elsewhere, so a tight ±0.1 LU
-// assertion is meaningful here (see e2e/fixtures/scenario-loudness.json's "405" entry for the
-// C/PT math). All 4 pedals stay on the BAKE path (off-in-base + sole owner + no scenes), so
-// the leveler writes straight onto the block and the sim's lazy-commit `SavedDoc` overlay
-// (sim_device.rs) round-trips the baked value through a save→load exactly like `presetLevel`.
+// ftsw indices 5-8, matching the real "TR+BD2+BMP"-class preset) feeding a saturated amp
+// (Twin) into a cab, no scenes. Each pedal's own knob follows notes/leveling.md's
+// silent→cliff→plateau curve (`sim_device::saturated_pedal_lufs`) — EXACT and deterministic
+// offline, unlike the stimulus-scaling slack the flat-C sidecar model carries elsewhere, so a
+// tight ±0.1 LU assertion is meaningful here (see e2e/fixtures/scenario-loudness.json's "405"
+// entry for the C/PT math, including the two measurement regimes P4-B introduced). All 4
+// pedals stay on the BAKE path (off-in-base + sole owner + no scenes), so the leveler writes
+// straight onto the block and the sim's lazy-commit `SavedDoc` overlay (sim_device.rs)
+// round-trips the baked value through a save→load exactly like `presetLevel`.
 //
 // OFFLINE-ONLY: ±0.1 LU assumes the sim's exact deterministic model; the online strict
-// harness (level.online.spec.ts, absorbed from level-strict.spec.ts) keeps a
-// HW-noise-sized DELTA_FS (1.0) for the same reason.
+// harness (level.online.spec.ts) keeps HW-noise-sized tolerances for the same reason, and
+// asserts the BOOST regime/ordering there (T5) without repeating these fixture-derived
+// magnitudes.
 
 const PRESET24 = SCENARIO[5]; // E2E Preset24
-const BASE_TARGET = -26;
+// P4-B: -23 is Rhythm (profiles.rs::default_targets) — the shipped default this fixture's
+// base-engaged Rat now falls ~5.2 dB short of pre-fix, and the BOOST regime closes post-fix.
+const BASE_TARGET = -23;
 
 const SWITCH_JOBS = [
   {
@@ -51,34 +72,46 @@ const SWITCH_JOBS = [
     levGroupId: "G1",
     levNodeId: "ACD_Plumes",
     levParameterId: "level",
-    targetLufs: -26,
+    targetLufs: -23,
   },
   {
     switch: 6,
     levGroupId: "G1",
     levNodeId: "ACD_BluesDriver",
     levParameterId: "level",
-    targetLufs: -26,
+    targetLufs: -23,
   },
   {
     switch: 7,
     levGroupId: "G1",
     levNodeId: "ACD_ObsessiveDrive",
     levParameterId: "level",
-    targetLufs: -24,
+    targetLufs: -21,
   },
   {
     switch: 8,
     levGroupId: "G1",
     levNodeId: "ACD_Rat",
     levParameterId: "volume",
-    targetLufs: -24,
+    targetLufs: -21,
   },
 ];
 
+/** The base row's `base_boost` disclosure (mirrors `headroom_trade::BaseBoostSummary` /
+ *  `src/lib/types.ts`'s `BaseBoostSummary`, snake_case) — only the fields this file asserts. */
+interface BaseBoostResult {
+  applied: boolean;
+  regime: string;
+  base_amps: { previous_value: number; value: number | null }[];
+}
 interface LevelResult {
   saved: boolean;
   clamped: boolean;
+  /** The solved `presetLevel` (0..1) — pins at `LEVEL_MAX` (1.0) in the BOOST regime. */
+  final_level: number;
+  /** Null unless the base pair entered the BOOST regime (headroom_trade::PairRegime) — see
+   *  `src/lib/types.ts`'s `BaseBoostSummary` doc. */
+  base_boost: BaseBoostResult | null;
 }
 interface FootswitchLevelResult {
   switch: number;
@@ -87,6 +120,14 @@ interface FootswitchLevelResult {
   unconverged: boolean;
   clamp_reason: string | null;
   predicted_lufs: number;
+}
+/** A leveling candidate block, as `list_level_blocks` reports it — used by the lazy-commit
+ *  test to read the Twin's `outputLevel` back directly (the fader half of the boosted pair). */
+interface LevelBlock {
+  group_id: string;
+  node_id: string;
+  parameter_id: string;
+  value: number;
 }
 
 const T = LEVEL_T;
@@ -142,7 +183,8 @@ test.describe("Level — footswitch stale-load fixture (offline deterministic mo
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
-    // Base: presetLevel one-shot to -26, save (PT ends up ~-2 LU — see the fixture's C math).
+    // Base: presetLevel BOOST (P4-B) — presetLevel pins at its ceiling and the Twin's fader
+    // is solved and saved alongside it, one save carrying both halves.
     const base = (await invoke(
       page,
       "level_preset",
@@ -151,6 +193,37 @@ test.describe("Level — footswitch stale-load fixture (offline deterministic mo
     )) as LevelResult;
     expect(base.clamped, "base must reach target, not clamp").toBe(false);
     expect(base.saved, "base must level and save").toBe(true);
+    expect(
+      base.final_level,
+      "presetLevel pins at LEVEL_MAX in the BOOST regime",
+    ).toBeCloseTo(1.0, 5);
+    const boost = base.base_boost;
+    if (!boost) {
+      throw new Error(
+        "the Plumes shape (405) must enter the BOOST regime: G≈+16.4 exceeds P_up≈+11.1",
+      );
+    }
+    expect(
+      boost.applied,
+      "the fader raise must be solved AND persisted (save:true)",
+    ).toBe(true);
+    expect(boost.regime, "regime must be boost").toBe("boost");
+    const amp = boost.base_amps[0];
+    expect(amp, "exactly one base amp candidate (the Twin)").toBeDefined();
+    expect(
+      amp.previous_value,
+      "the Twin's fader started at its authored 0.28",
+    ).toBeCloseTo(0.28, 2);
+    expect(
+      amp.value,
+      "the boost solved (not merely planned) the fader",
+    ).not.toBeNull();
+    if (amp.value !== null) {
+      expect(
+        amp.value,
+        "the Twin's fader solved to ≈0.498 to close the rest of the gap",
+      ).toBeCloseTo(0.498, 2);
+    }
 
     // Footswitch batch: all 4 pedals in one call, save. `ensure_fresh_load` gates this
     // batch's own load against the base save's commit window (default 0 ms latency here —
@@ -219,6 +292,10 @@ test.describe("Level — footswitch stale-load fixture (offline deterministic mo
   // several dB, not the ±0.1 this run demands. With `leveller::ensure_fresh_load` +
   // `register_slot_save` (danger.md), the batch WAITS for the base save to commit before
   // reading/leveling, so the run still lands within TOL despite the induced lazy-commit gap.
+  // P4-B ADDITION: since the base row now boosts a PAIR (presetLevel + the Twin's fader) in
+  // one save, this test also proves the TWO-HALVES save barrier (danger.md's Phase 2 guard
+  // (b)) — after the induced gap, BOTH the presetLevel half (via a base re-measure) AND the
+  // fader half (via a direct block read) must have survived, not just one of them.
   test("survives a lazy-commit gap between the base save and the footswitch batch", async ({
     page,
   }) => {
@@ -285,6 +362,41 @@ pre-fix (no barrier): the batch's load would materialize the pre-save presetLeve
 pedal would land several dB off target, exactly the reported incident`,
       ).toBeLessThanOrEqual(TOL);
     }
+
+    // The TWO-HALVES save barrier (danger.md's Phase 2 guard (b)): the base run above
+    // boosted BOTH presetLevel and the Twin's own fader in one save. A half-reverted pair
+    // (e.g. the fader write predating the pre-save base recall and getting silently
+    // reverted while presetLevel survives, or vice versa) would NOT read as a clean 0 —
+    // it reads several dB off target, exactly like the lazy-commit incident itself. Prove
+    // BOTH halves independently: the base re-measure catches the PAIR (either half wrong
+    // moves the sound off target), and a direct block read confirms the FADER half by its
+    // own persisted value.
+    const heardBaseAfterGap = await measureSound(page);
+    expect(
+      Math.abs(heardBaseAfterGap - BASE_TARGET),
+      "base re-measures at target after the induced gap — a half-reverted presetLevel/fader \
+pair would read materially off target here even though neither half alone is silence",
+    ).toBeLessThanOrEqual(TOL);
+
+    const blocksAfterGap = (await invoke(
+      page,
+      "list_level_blocks",
+      { slot: PRESET24.slot },
+      T,
+    )) as LevelBlock[];
+    const twinFader = blocksAfterGap.find(
+      (b) =>
+        b.node_id === "ACD_TwinReverb65NoFx" &&
+        b.parameter_id === "outputLevel",
+    );
+    expect(
+      twinFader,
+      "the Twin's outputLevel candidate must be discoverable",
+    ).toBeDefined();
+    expect(
+      twinFader?.value ?? Number.NaN,
+      "the Twin's fader half survived the gap at its boosted ≈0.498 value",
+    ).toBeCloseTo(0.498, 2);
 
     await expectReampBalanced(page, reampBase);
   });
