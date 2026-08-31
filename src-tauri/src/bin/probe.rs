@@ -110,9 +110,12 @@
 //!   probe --measure-converge-replay <wav> <eps_lu> <stable_k> <preroll_ms>
 //!                                  NO-DEVICE: replay a clip through reamp_measure's
 //!                                  convergence state machine → exit time + Δ vs full
-//!   probe --levelpreset <slot> <target_lufs> [save] [noverify]
+//!   probe --levelpreset <slot> <target_lufs> [save] [noverify] [as-saved]
 //!                                  full one-shot leveling on the real device
-//!                                  (stimulus via TMP_LEVELLER_STIMULUS)
+//!                                  (stimulus via TMP_LEVELLER_STIMULUS). Base isolation
+//!                                  defaults to production semantics (every footswitch-
+//!                                  owned block forced off); `as-saved` restores the old
+//!                                  raw as-saved measurement.
 //!   probe --measure-current <topology> [sceneSlot] [calibrationLUFS]
 //!                                  measure current live state without changing levels
 //!   probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…
@@ -3228,7 +3231,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--levelpreset") {
-        // --levelpreset <slot> <target_lufs> [save] [noverify]  (stimulus via env)
+        // --levelpreset <slot> <target_lufs> [save] [noverify] [as-saved]  (stimulus via env)
         let slot: u32 = args
             .get(i + 1)
             .and_then(|s| s.parse().ok())
@@ -3238,15 +3241,20 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(f64::NAN);
         if slot == u32::MAX || target.is_nan() {
-            eprintln!("usage: probe --levelpreset <slot> <target_lufs> [save] [noverify]  (TMP_LEVELLER_STIMULUS=<wav>)");
+            eprintln!("usage: probe --levelpreset <slot> <target_lufs> [save] [noverify] [as-saved]  (TMP_LEVELLER_STIMULUS=<wav>)");
             std::process::exit(2);
         }
         let save = args.iter().any(|a| a == "save");
         let verify = !args.iter().any(|a| a == "noverify");
+        // `as-saved` restores the pre-parity raw behavior (Phase 5, 2026-08-31 bisect): no
+        // isolation, whatever pedals the preset happens to be saved with engaged. Default
+        // (absent) now matches production's Base leveling arm — see `probe_level_preset`'s doc.
+        let as_saved = args.iter().any(|a| a == "as-saved");
         eprintln!(
-            "[probe] one-shot level slot {slot} → {target} LUFS (save={save}, verify={verify})…"
+            "[probe] one-shot level slot {slot} → {target} LUFS (save={save}, verify={verify}, \
+             as_saved={as_saved})…"
         );
-        match tmp_companion_lib::probe_level_preset(slot, target, save, verify) {
+        match tmp_companion_lib::probe_level_preset(slot, target, save, verify, as_saved) {
             Ok(r) => {
                 println!("{r}");
                 return;

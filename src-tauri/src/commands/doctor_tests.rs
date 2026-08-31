@@ -253,6 +253,60 @@ fn doctor_force_bypass_null_ftsw_degrades_to_empty() {
     assert!(doctor_force_bypass(&null, &p, Some(0)).is_empty());
 }
 
+// ── base_isolation_or_refuse: the shared probe/production "read → refuse-or-force" step ──
+//
+// Phase 5 isolation-parity fix (2026-08-31 bisect): `probe --levelpreset`'s Base leg used
+// to pass an empty `&[]` force list, measuring "base as saved" instead of production's
+// isolated base — a divergence that solved C=-11.95 as-saved vs production's C≈-28.2 on
+// "Plumes+BD2+OCD". Both paths now share ONE fn, `base_isolation_or_refuse`; these two
+// gates pin that sharing can't silently regress.
+
+#[test]
+fn base_isolation_or_refuse_force_list_matches_doctor_force_bypass_directly() {
+    // Gate (a): probe's force list and production's must be the literal SAME list off the
+    // SAME preset fixture — proven by `base_isolation_or_refuse` deriving it via
+    // `doctor_force_bypass` verbatim, not a hand-maintained copy that could drift.
+    let p = force_bypass_fixture();
+    let (_, force, _) =
+        base_isolation_or_refuse(Ok(p.clone()), 26).expect("a readable preset must never refuse");
+    let direct = doctor_force_bypass(&p["ftsw"], &p, None);
+    assert_eq!(
+        force, direct,
+        "base_isolation_or_refuse must derive the isolation list via doctor_force_bypass \
+         verbatim — the ONE shared definition of \"base\""
+    );
+}
+
+#[test]
+fn base_isolation_or_refuse_refuses_on_a_truncated_ftsw_read_exactly_like_production_always_has() {
+    // Gate (b): `SimDevice` always serves whole bodies (`read_slot_preset_complete`'s own
+    // doc), so the truncated-field-8 refusal can never be driven from an offline fixture
+    // via a real read — this hands the fn the read's `Err` directly, standing in for what
+    // `read_slot_preset_complete` returns on a preset too large to read over USB, the same
+    // way `an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound` stands in a
+    // synthetic cache entry for an unreadable body.
+    let err = base_isolation_or_refuse(
+        Err(
+            "slot 27: the preset is too large to read over USB — its ftsw section(s) were \
+             cut off the field-8 read, and the preset list did not answer with the slot's \
+             name, so a backup re-read cannot be addressed safely. Refusing rather than \
+             acting on a partial preset"
+                .to_string(),
+        ),
+        26,
+    )
+    .expect_err("an unreadable ftsw must refuse, never guess a force list");
+    assert!(
+        err.contains("could not read preset 27's footswitch assignments"),
+        "the wrapped refusal must name the 1-based slot and the footswitch read: {err}"
+    );
+    assert!(
+        err.contains("leveling without them would save a level solved for the wrong sound"),
+        "the refusal must explain WHY, matching production's long-standing base-arm message: \
+         {err}"
+    );
+}
+
 // ── derived_force_bypass: OFFLINE isolation, oracle-equivalent to doctor_force_bypass ──
 //
 // The isolation-delete's core proof: `derived_force_bypass` (walks the backup scan's

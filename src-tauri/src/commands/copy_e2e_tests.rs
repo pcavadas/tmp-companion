@@ -147,11 +147,21 @@ mod copy_level_e2e_tests {
     }
 
     /// Drive `copy_apply_one` over a configured fake device, returning the outcome item
-    /// plus the ordered device actions the fake recorded.
+    /// plus the ordered device actions the fake recorded. `Heartbeat` events (the
+    /// held-session `await_active_preset` poll and the post-save keep-alive send keep-alive
+    /// noise unrelated to this file's structural-op-ordering assertions — Phase 5's
+    /// `SimEvent::Heartbeat` gate, added 2026-08-31, is the first thing to surface them
+    /// here) are filtered out so every existing assertion keeps checking exactly what it
+    /// always checked.
     fn run_copy(sim: SimDevice, job: &CopyJob, save: bool) -> (CopyApplyItem, Vec<SimEvent>) {
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let item = copy_apply_one(&mut s, job, save).unwrap();
-        (item, sim.events())
+        let ev = sim
+            .events()
+            .into_iter()
+            .filter(|e| !matches!(e, SimEvent::Heartbeat))
+            .collect();
+        (item, ev)
     }
 
     #[test]

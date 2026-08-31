@@ -416,34 +416,23 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // section is truncated, so an unreadable `ftsw` REFUSES instead of guessing.
                 // The same read still supplies `previous_level` (the idempotency-skip anchor,
                 // not a user-facing revert) and the save's `restore_scene`.
-                let preset = match read_slot_preset_complete(slot, &["ftsw"]) {
-                    Ok((preset, _, _)) => preset,
-                    // Returns BEFORE the run-end `reamp_off_guaranteed` backstop, which is safe
-                    // only because nothing has engaged re-amp yet on this path: every step above
-                    // is a pure read. Same rule as the block arm's early refusal.
-                    Err(e) => {
-                        return Err(format!(
-                            "could not read preset {}'s footswitch assignments ({e}) — they \
-                             define which blocks are switched off for the Base measurement, and \
-                             leveling without them would save a level solved for the wrong sound",
-                            slot + 1
-                        ))
-                    }
-                };
+                // `base_isolation_or_refuse` is the ONE shared "read → refuse-or-force" step
+                // (production + `probe --levelpreset`'s Base leg, Phase 5 isolation-parity
+                // fix) — this call site's behavior is unchanged, just extracted. Returns
+                // BEFORE the run-end `reamp_off_guaranteed` backstop, which is safe only
+                // because nothing has engaged re-amp yet on this path: every step above is a
+                // pure read. Same rule as the block arm's early refusal.
+                let (preset, force, restore_scene) =
+                    crate::commands::doctor::base_isolation_or_refuse(
+                        read_slot_preset_complete(slot, &["ftsw"]).map(|(preset, _, _)| preset),
+                        slot,
+                    )?;
                 // The original `lastLoadedScene` must be re-stamped by the save: the
                 // base-context measurement leaves base active, and saving there would
                 // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
                 previous_level = audiograph::preset_level(&preset).map(|v| v as f32);
-                opts.restore_scene = crate::last_loaded_scene(&preset);
+                opts.restore_scene = restore_scene;
                 crate::warn_missing_restore_scene("level_preset", slot, &preset, opts.restore_scene);
-                // THE base isolation list — shared with the Doctor's own base sound
-                // (`doctor_force_bypass`'s `None` arm) so the two definitions of "base" cannot
-                // drift apart: every on-off block any footswitch owns, forced bypassed.
-                let force = crate::commands::doctor::doctor_force_bypass(
-                    &preset["ftsw"],
-                    &preset,
-                    None,
-                );
                 log::info!(
                     "level_preset slot={slot}: base isolation forces {} footswitch-owned \
                      block(s) off",

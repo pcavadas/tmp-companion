@@ -39,6 +39,11 @@ pub struct DoctorInput {
     pub footswitches: Vec<footswitch::FootswitchInfo>,
 }
 
+/// `(group_id, node_id, bypass_to_write)` — the force-bypass isolation list
+/// [`doctor_force_bypass`] and [`base_isolation_or_refuse`] share. Named purely to keep
+/// their signatures under clippy's `type_complexity` threshold.
+pub(crate) type ForceBypass = Vec<(String, String, bool)>;
+
 /// The force-bypass isolation list for capturing one sound cleanly (mirrors the
 /// leveller's base/footswitch isolation, `footswitch.rs`): Base forces EVERY
 /// footswitch on/off block OFF; a footswitch forces its OWN blocks into their
@@ -50,7 +55,7 @@ pub(crate) fn doctor_force_bypass(
     ftsw: &serde_json::Value,
     preset: &serde_json::Value,
     footswitch: Option<u32>,
-) -> Vec<(String, String, bool)> {
+) -> ForceBypass {
     match footswitch {
         Some(s) => {
             let mut out = footswitch::siblings_off_excluding(ftsw, s);
@@ -62,6 +67,39 @@ pub(crate) fn doctor_force_bypass(
             .map(|(g, n)| (g, n, true))
             .collect(),
     }
+}
+
+/// The shared "read → refuse-or-force" step for a BASE leveling run's isolation: given the
+/// OUTCOME of a `read_slot_preset_complete(slot, &["ftsw"])`-shaped read (`Ok(preset)` or the
+/// read's own `Err`), either derive the base force-bypass list (`doctor_force_bypass`'s
+/// `None` arm) plus the preset's `restore_scene`, or propagate the SAME refusal message
+/// production's base arm has always shown. Pure over the read's `Result` — it never touches
+/// the device itself — so `commands::level_preset`'s base arm and `probe_level_preset` /
+/// `probe_level_preset_scenes`'s Base leg can share ONE definition of "base isolation"
+/// (2026-08-31 bisect: probe's old `&[]` force list solved C=-11.95 as-saved where
+/// production's isolated base measured C≈-28.2 — a ~16 LU divergence from the two paths
+/// disagreeing about what "base" means). It also makes the refusal path unit-testable at
+/// all: `SimDevice` always serves whole bodies, so a truncated field-8 read can never be
+/// driven from an offline fixture (`read_slot_preset_complete`'s own doc) — a test instead
+/// hands this fn a synthetic `Err`, standing in for what that read would have returned on a
+/// preset too large to read over USB, the same way `doctor_tests.rs`'s
+/// `an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound` stands in a synthetic
+/// cache entry for an unreadable body.
+pub(crate) fn base_isolation_or_refuse(
+    read: Result<serde_json::Value, String>,
+    slot: u32,
+) -> Result<(serde_json::Value, ForceBypass, Option<u32>), String> {
+    let preset = read.map_err(|e| {
+        format!(
+            "could not read preset {}'s footswitch assignments ({e}) — they define which \
+             blocks are switched off for the Base measurement, and leveling without them \
+             would save a level solved for the wrong sound",
+            slot + 1
+        )
+    })?;
+    let force = doctor_force_bypass(&preset["ftsw"], &preset, None);
+    let restore_scene = crate::last_loaded_scene(&preset);
+    Ok((preset, force, restore_scene))
 }
 
 /// `DoctorNode`s → a `node_id → saved bypass` map, first-occurrence-wins

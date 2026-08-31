@@ -441,11 +441,24 @@ pub fn probe_held_reengage(
 /// a reference level, solve the linear model for the exact `presetLevel` that
 /// hits `target_lufs`, set it, and (if `save`) persist. Optionally re-measures
 /// on a second fresh connection to confirm. Re-amp is always restored OFF.
+///
+/// `as_saved` selects the BASE isolation semantics (Phase 5 parity fix, 2026-08-31
+/// bisect): `false` (the default — the CLI's `--levelpreset` has no bare-word token for
+/// it, so this is what every existing call gets) matches production's Base leveling arm,
+/// forcing every footswitch-owned on-off block OFF (`base_isolation_or_refuse`, shared
+/// with `commands::level_preset`'s base arm) — an unreadable/truncated `ftsw` REFUSES
+/// rather than measuring a guess. `true` restores the OLD raw behavior (an empty force
+/// list — whatever pedals the preset happens to be SAVED with engaged), for anyone who
+/// deliberately wants that sound. The divergence mattered: on "Plumes+BD2+OCD" the old
+/// default solved C=-11.95 as-saved where production's isolated base measured C≈-28.2, a
+/// ~16 LU gap that made this probe arm useless for cross-checking a base-clamp
+/// regression against production.
 pub fn probe_level_preset(
     slot: u32,
     target_lufs: f64,
     save: bool,
     verify: bool,
+    as_saved: bool,
 ) -> Result<String, String> {
     let stim_path = std::env::var("TMP_LEVELLER_STIMULUS")
         .map_err(|_| "set TMP_LEVELLER_STIMULUS to the stimulus WAV".to_string())?;
@@ -460,22 +473,49 @@ pub fn probe_level_preset(
         verify,
         ..Default::default()
     };
-    // A saving run must re-stamp the preset's original `lastLoadedScene` (the base-context
-    // measurement leaves base active at save time); a dry run never saves, so skip the read.
-    if save {
+    // `restore_scene` is now supplied from the isolation read UNCONDITIONALLY (previously
+    // gated behind `if save`, since a dry run never persists it) — a dry run's plan/
+    // disclose-only path doesn't need it, but the read is already paid once `as_saved` is
+    // false, so there is no extra cost to also carrying it.
+    let (force, semantics): (Vec<(String, String, bool)>, &str) = if as_saved {
         opts.restore_scene =
             crate::read_saved_preset(slot).and_then(|doc| crate::last_loaded_scene(&doc));
+        (
+            Vec::new(),
+            "AS-SAVED (raw — no isolation, pedals engaged exactly as saved)",
+        )
+    } else {
+        let (_, force, restore_scene) = crate::commands::doctor::base_isolation_or_refuse(
+            crate::read_slot_preset_complete(slot, &["ftsw"]).map(|(preset, _, _)| preset),
+            slot,
+        )?;
+        opts.restore_scene = restore_scene;
+        (
+            force,
+            "ISOLATED (production base semantics — every footswitch-owned block forced OFF)",
+        )
+    };
+    // ONE session per HID exclusive-open lockout cycle (danger.md's "HID open-lockout
+    // model"): the isolation read above opens and closes its OWN session before the
+    // leveller's first connect, so this gap must run whenever that read happened —
+    // previously it slept only inside `if save`, which happened to be the only case that
+    // paid the read; isolation now pays it whenever `as_saved` is false, so the gap must
+    // follow suit or a back-to-back re-open risks the lockout (`0xe00002c5`).
+    if !as_saved {
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     }
-    // probe = raw benchmark behavior: no idempotency skip, always measure+apply+save.
-    let result = leveller::level_preset(slot, &stim, target_lufs, opts, &[], None, || false);
+    // probe stays skip-free: NO `previous_level` idempotency skip (production treats a
+    // matching saved level as a no-op and reloads without writing) — don't cargo-cult that
+    // skip in here. This is a raw benchmark: always measure+apply+save.
+    let result = leveller::level_preset(slot, &stim, target_lufs, opts, &force, None, || false);
     // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
     // device drops an in-session OFF sent after ~1 s of idle — every capture).
     leveller::reamp_off_guaranteed("probe --levelpreset");
     let r = result?;
 
     let mut out = format!(
-        "slot {slot}: measured {:.2} LUFS @ ref {:.2}  (C={:.2})\n\
+        "[base semantics: {semantics}]\n\
+         slot {slot}: measured {:.2} LUFS @ ref {:.2}  (C={:.2})\n\
          → target {:.1} LUFS  ⇒  presetLevel={:.4}{}  (predicted {:.2} LUFS){}\n",
         r.measured_lufs,
         r.ref_level,
@@ -516,7 +556,9 @@ pub fn probe_live_lufs(
     audio::set_live_lufs_sink(Box::new(|lufs, mom| {
         println!("live {lufs:.2} LUFS  (mom {mom:.1} dB)")
     }));
-    let r = probe_level_preset(slot, target_lufs, save, verify);
+    // No CLI toggle for `as_saved` here — this arm inherits the isolation-parity fix for
+    // free by delegating to `probe_level_preset` with the default (isolated) semantics.
+    let r = probe_level_preset(slot, target_lufs, save, verify, false);
     audio::clear_live_lufs_sink();
     r
 }

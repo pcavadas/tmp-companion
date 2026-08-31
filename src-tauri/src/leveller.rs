@@ -1286,6 +1286,12 @@ pub(crate) fn capture_on_session(
     // Write-bearing paths (any `force_bypass` entry, or a `ref_level`) deliberately
     // skip this: their transact round-trips already break the idle and land the
     // engage ≥~850 ms post-recall — HW-validated green, do not perturb.
+    //
+    // `arm_pair_measurement`'s zero-write base arm hand-rolls this SAME breaker
+    // (2026-08-31 bisect) rather than sharing this fn's code — different pre-engage
+    // shape (no `force_bypass`/`ref_level` params to gate on). Adopt a shared seam here
+    // only if a refactor is transparently behavior-identical; until then treat this as
+    // the reference cadence the other copies must match.
     if force_bypass.is_empty() && ref_level.is_none() {
         s.heartbeat()?;
         settle_or_cancel(SETTLE_AFTER_SET_MS)?;
@@ -3205,6 +3211,10 @@ fn measure_scene_asis(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
+    // Same hb → settle → hb → settle cadence `arm_pair_measurement`'s zero-write base arm
+    // interleaves (2026-08-31 bisect) — hand-rolled here rather than shared because this
+    // fn's shape has no knob to hand a common seam. Reference cadence any future shared
+    // extraction must match exactly.
     s.heartbeat()?;
     settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     s.heartbeat()?;
@@ -3262,11 +3272,68 @@ fn arm_measurement(
     Ok(())
 }
 
+/// Everything `measure_pair_at` writes on its connection BEFORE the re-amp engage —
+/// extracted into its own `&mut Session` seam (the `arm_measurement` shape) so the
+/// zero-write naked-gap fix documented below is unit-testable against `SimDevice`; the
+/// engage/capture tail that follows it cannot be.
+///
+/// Base case: the shared arming seam verbatim (base recall → presetLevel → settle, the
+/// ONE tested write order — see `arm_measurement`'s doc). Scene case: the recall targets
+/// the scene instead of base; everything after mirrors the seam (recall FIRST — it
+/// reverts earlier unsaved writes).
+///
+/// **HW bisect, 2026-08-31.** A zero-write BASE reading (`scene: None`, `writes` empty)
+/// left `arm_measurement`'s own trailing `SETTLE_AFTER_SET_MS` immediately followed by
+/// this fn's own trailing settle, with NOTHING sent between them — a ~600 ms
+/// last-command→engage idle gap that latched the device's stationary output floor 2/2 in
+/// a `--measure-pair` bisect. A single write in the loop broke the SAME shape 1/1 (the
+/// write itself keeps the gap at ~300 ms). This FALSIFIES the older "any command between
+/// the recall and the engage rescues it" wording (danger.md / gotchas.md, corrected the
+/// same day): those failing runs DID have an intervening `presetLevel` write and still
+/// latched — the true discriminator is the GAP, not whether a command was sent at all.
+///
+/// **The fix, BASE ARM ONLY:** when `writes` is empty, interleave the same proven breaker
+/// `capture_on_session`'s naked shape already uses — `heartbeat → settle → heartbeat` —
+/// before the final settle, landing the engage on the identical ≤300 ms-per-gap cadence
+/// `measure_scene_asis` and `capture_on_session` rely on. A non-empty `writes` loop
+/// already breaks the idle itself (HW-validated green — left untouched); the SCENE arm's
+/// own gap is already ≤300 ms by construction (its `set_knob` sits between two settles —
+/// left untouched too).
+fn arm_pair_measurement(
+    s: &mut Session,
+    scene: Option<u32>,
+    preset_level: f32,
+    writes: &[(String, String, String, f32)],
+) -> Result<(), String> {
+    match scene {
+        None => arm_measurement(s, &LevelKnob::PresetLevel, preset_level, &[], None, None)?,
+        Some(sc) => {
+            s.load_scene(sc)?;
+            settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+            set_knob(s, &LevelKnob::PresetLevel, preset_level, None)?;
+        }
+    }
+    for (g, n, p, v) in writes {
+        s.change_parameter(g, n, p, *v)?;
+    }
+    // NAKED-GAP breaker — base arm, zero writes only. See this fn's doc for the bisect
+    // that pins the shape and why it must not spread to the scene arm or a write-bearing
+    // base run.
+    if scene.is_none() && writes.is_empty() {
+        s.heartbeat()?;
+        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+        s.heartbeat()?;
+    }
+    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    Ok(())
+}
+
 /// One fresh-connection measurement at an explicit (`presetLevel` × block-param) POINT:
 /// base recall + presetLevel via `arm_measurement`, then each block write live on the same
 /// armed connection, one engage, measure. P0 instrumentation seam for the headroom-trade
 /// physics (presetLevel↑ / outputLevel↓ product invariance) — writes stay on the throwaway
-/// working copy; the caller reloads to discard.
+/// working copy; the caller reloads to discard. See [`arm_pair_measurement`] for the
+/// pre-engage choreography (and its zero-write naked-gap fix).
 pub(crate) fn measure_pair_at(
     scene: Option<u32>,
     preset_level: f32,
@@ -3274,29 +3341,7 @@ pub(crate) fn measure_pair_at(
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
-    match scene {
-        // Base case: the shared arming seam verbatim (base recall → presetLevel →
-        // settle, the ONE tested write order — see `arm_measurement`'s doc).
-        None => arm_measurement(
-            &mut s,
-            &LevelKnob::PresetLevel,
-            preset_level,
-            &[],
-            None,
-            None,
-        )?,
-        // Scene case: the recall targets the scene instead of base; everything after
-        // mirrors the seam (recall FIRST — it reverts earlier unsaved writes).
-        Some(sc) => {
-            s.load_scene(sc)?;
-            settle_or_cancel(SETTLE_AFTER_SET_MS)?;
-            set_knob(&mut s, &LevelKnob::PresetLevel, preset_level, None)?;
-        }
-    }
-    for (g, n, p, v) in writes {
-        s.change_parameter(g, n, p, *v)?;
-    }
-    settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+    arm_pair_measurement(&mut s, scene, preset_level, writes)?;
     engage_measure_disengage(&mut s, stimulus)
 }
 
@@ -11601,6 +11646,99 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, crate::sim_device::SimEvent::PresetLevel(_))),
             "`None` must write no presetLevel at all"
+        );
+    }
+
+    // Phase 5 item 2 (2026-08-31 bisect): a zero-write BASE `--measure-pair` reading used to
+    // land on a naked ~600 ms last-command→engage idle gap (two back-to-back
+    // `SETTLE_AFTER_SET_MS` settles with nothing sent between them) and latch the device's
+    // stationary output floor 2/2, while a single write in the loop broke the SAME shape 1/1.
+    // `arm_pair_measurement`'s naked-gap breaker (heartbeat → settle → heartbeat) must land a
+    // heartbeat strictly between the last write and the engage for exactly this shape — and
+    // ONLY this shape (base arm, zero writes).
+    //
+    // INVARIANT THIS GATE PINS: every inter-command gap in the choreography is ONE
+    // `SETTLE_AFTER_SET_MS` by construction — `SimDevice` has no clock, so wall-time can't be
+    // asserted here, only the STRUCTURAL fact (a heartbeat lands in the gap at all). This gate
+    // goes BLIND if a future edit adds a second bare settle without an intervening command
+    // elsewhere in the choreography — it would re-widen a gap back past the proven-safe
+    // cadence while this assertion still passes.
+    #[test]
+    fn arm_pair_measurement_zero_write_base_arm_heartbeats_before_the_naked_engage() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        arm_pair_measurement(&mut s, None, 0.5, &[]).expect("arm");
+        // Stand in for the caller's engage (`measure_pair_at` calls `engage_measure_disengage`
+        // next, which opens with exactly this write) — a real audio capture isn't reachable
+        // offline, but the ordering fact under test is fully decided before that point.
+        s.set_reamp_mode(true).expect("engage");
+        let ev = sim.events();
+        let last_command = ev
+            .iter()
+            .rposition(|e| {
+                !matches!(
+                    e,
+                    crate::sim_device::SimEvent::Heartbeat | crate::sim_device::SimEvent::ReAmp(_)
+                )
+            })
+            .expect("at least one write happened (the presetLevel set)");
+        let engage = ev
+            .iter()
+            .position(|e| matches!(e, crate::sim_device::SimEvent::ReAmp(true)))
+            .expect("the engage was sent");
+        assert!(
+            ev[last_command + 1..engage]
+                .iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::Heartbeat)),
+            "a zero-write base measurement must heartbeat between its last write and the \
+             engage, or the naked ~600 ms idle gap latches the device's stationary floor: \
+             {ev:?}"
+        );
+    }
+
+    // Write-bearing base runs are untouched (HW-validated green): each write already breaks
+    // the idle itself, so the naked-gap breaker must stay off.
+    #[test]
+    fn arm_pair_measurement_does_not_heartbeat_when_writes_are_present() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        arm_pair_measurement(
+            &mut s,
+            None,
+            0.5,
+            &[(
+                "G1".to_string(),
+                "amp".to_string(),
+                "outputLevel".to_string(),
+                0.4,
+            )],
+        )
+        .expect("arm");
+        let ev = sim.events();
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::Heartbeat)),
+            "a write-bearing base measurement already breaks the idle on its own; the \
+             naked-shape breaker must stay off here: {ev:?}"
+        );
+    }
+
+    // Scene arm untouched: its `set_knob` already sits between two settles with no
+    // double-settle gap, so it must never gain the base-arm breaker either.
+    #[test]
+    fn arm_pair_measurement_scene_arm_never_heartbeats() {
+        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(30).expect("load_preset");
+        arm_pair_measurement(&mut s, Some(2), 0.5, &[]).expect("arm");
+        let ev = sim.events();
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::Heartbeat)),
+            "the scene arm's gap is already ≤300 ms; it must not gain the base-arm breaker: \
+             {ev:?}"
         );
     }
 
