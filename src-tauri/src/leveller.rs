@@ -1759,13 +1759,35 @@ pub fn redistribute_delta_db(
         .max(0.0)
 }
 
+/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`CLAUDE.md`,
+/// "How leveling works"). ONE definition so the solver, the boost planner, `apply_base_boost`
+/// and the idempotency band can never round it four different ways — the planner and its own
+/// executor in particular recompute the SAME base as-is loudness in caller and callee, and a
+/// drift between them would move a boost's split without any lane noticing. `level` is floored
+/// at `1e-6` exactly as `solve_level` always has.
+pub(crate) fn lufs_at_level(c: f64, level: f32) -> f64 {
+    20.0 * (level.max(1e-6) as f64).log10() + c
+}
+
 /// Solve the `presetLevel` that hits `target_lufs` given `C`. Returns
 /// `(final_level clamped 0..1, clamped, predicted_lufs)`.
+///
+/// The clamp test carries NO epsilon on purpose — it is the raw "did the ideal level land
+/// outside `[0, 1]`" question, and the lane that needs an acceptance band applies its own
+/// (`already_on_target`). Widening it here is a real option, not an impossible one: the
+/// non-test callers are exactly three — the base lane (`level_preset_impl`), the setlist
+/// lane's pass 2, and `probe_api::scene_level`. But the flag they carry is a DECISION input,
+/// not a label: `clamped` rows are the bucket the Summary's "Re-level clamped…" action
+/// re-runs, they gate each row's own fix affordance, and any one of them clears `allGood`
+/// (`src/views/level/SummaryPage.tsx`). It is NOT what the scene and footswitch lanes clamp on; those solve through
+/// `solve_joint_k_at` / `solve_param_secant` and never reach this function. What that change
+/// WOULD move is the Summary's clamped bucket for the sub-band class, which is product-visible
+/// and wants its own gate — see `already_on_target`'s note on the run-order asymmetry.
 pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
     let ideal = 10f64.powf((target_lufs - c) / 20.0);
     let clamped = ideal > LEVEL_MAX as f64 || ideal < LEVEL_MIN as f64;
     let final_level = (ideal as f32).clamp(LEVEL_MIN, LEVEL_MAX);
-    let predicted = 20.0 * (final_level.max(1e-6) as f64).log10() + c;
+    let predicted = lufs_at_level(c, final_level);
     (final_level, clamped, predicted)
 }
 
@@ -1932,6 +1954,75 @@ fn level_unchanged(final_level: f32, previous: f32) -> bool {
     previous > 0.0 && (20.0 * (final_level as f64 / previous as f64).log10()).abs() <= KNOB_TOL_LU
 }
 
+/// Is the preset's ALREADY-SAVED `p` already on `target_lufs`, given this run's measured `c`?
+/// The second half of the idempotency skip, and the reason that skip does NOT also require
+/// `!clamped` the way `scene_at_target` / `switch_at_target` do (see their docs, which no
+/// longer claim parity with this lane).
+///
+/// WHY THE BASE LANE DIVERGES. On a preset already leveled through the BOOST path,
+/// `presetLevel` sits at [`LEVEL_MAX`] and the fader was solved so `C ≈ target` — so a
+/// re-measure a few float units low makes `solve_level`'s ideal a hair over `1.0` and reports
+/// `clamped`, purely from f32/f64 round-trip. Requiring `!clamped` let that hairline flip
+/// bypass the skip, re-persist the identical `presetLevel` and surface a spurious `clamped`
+/// row. The scene and footswitch lanes have no such boundary-parked steady state and keep the
+/// stricter rule.
+///
+/// BANDED AT [`FS_TOL_LU`] (0.1), NOT [`KNOB_TOL_LU`] (0.3) — user-decided, and the SAME
+/// ±0.1-vs-target standard the footswitch lane has always held, against the same hardware.
+/// This is deliberately TIGHTER than the ~0.12 LU run-to-run capture noise `FS_TOL_LU`'s own
+/// doc records, and the consequence stated there applies here too: a re-measure landing in
+/// `(0.1, 0.3]` fails this band, falls through, re-writes `presetLevel` and re-SAVES — a real
+/// device write on a preset that was already correct. Accepted as the price of never
+/// reporting `done` on a shortfall that is, by the user's own standard, audible. It is also
+/// what keeps the lane self-consistent: outside the band the run BOTH reports honestly and
+/// acts, so every `clamped` row the Summary offers to re-level is one a re-run can actually
+/// move. A split band (report at 0.1, skip writes at 0.3) would strand rows in `clamped` that
+/// no re-level could ever clear. DO NOT widen this to `KNOB_TOL_LU` to buy quiet re-runs.
+///
+/// BANDED AT `p`, NOT AT `predicted`: `predicted` is computed at `final_level`, and
+/// [`level_unchanged`] tolerates [`KNOB_TOL_LU`] between the two — banding on `predicted`
+/// would compound the two tolerances. `p` is the level the skip KEEPS, so `p` is what must be
+/// on target.
+///
+/// LOAD-BEARING (this is what makes dropping `!clamped` safe): the quantity banded here is
+/// bit-for-bit the boost planner's own `G` — same `previous_level`, same `m.c`, same
+/// [`lufs_at_level`]. [`crate::headroom_trade::plan_level_pair`] enters `Boost` only at
+/// `g > p_up + TRADE_CLAMP_EPS_LU` with `p_up >= 0`, and `TRADE_CLAMP_EPS_LU` IS
+/// `KNOB_TOL_LU` (0.3) — so a 0.1 band is disjoint from Boost with room to spare, and any
+/// further tightening only widens that gap. The claim is precisely "this skip cannot preempt
+/// a boost", NOT "no regime fires in the band": `Infeasible` DOES fire inside it whenever
+/// both controls are already maxed (`dp_lo > dp_hi`), and base-lane `Trade` cannot (`sounds`
+/// is empty ⇒ `d_ben == 0`). Both are inert because the caller acts only on
+/// `regime == Boost && fader_target.is_some()`. Keep both readings of `previous_level` and
+/// `m.c` identical, or the G-identity breaks silently.
+///
+/// NOT REDUNDANT WITH [`level_unchanged`], though it very nearly is. Substituting
+/// `target = 20·log10(ideal) + c` turns this predicate into a tighter, 0.1-banded form of
+/// `level_unchanged(ideal, p)` — the same comparison against the UNCLAMPED ideal — so on
+/// in-range values it implies the first conjunct and that conjunct is arithmetically free.
+/// It earns its keep on the values that are NOT in range: `p` is read straight off the preset
+/// JSON (`audiograph::preset_level`, an unvalidated `as_f64`), and a doc carrying
+/// `presetLevel = 2.0` whose ideal is also `2.0` passes this band EXACTLY — residual zero, at
+/// any band — while `level_unchanged(1.0, 2.0)` correctly refuses at 6.02 dB. The run must
+/// WRITE the in-range clamped level, not skip. [`lufs_at_level`]'s own `1e-6` floor breaks the
+/// implication at the bottom of the range too (`p = 1e-9` against an ideal of `1e-6` bands to
+/// zero yet is 60 dB away), and `level_unchanged`'s `previous > 0.0` guard covers the rest.
+/// Keep both conjuncts.
+///
+/// RUN-ORDER ASYMMETRY, accepted: the band lives in the skip, not in `solve_level`'s flag, so
+/// a shortfall inside the band at `presetLevel`'s ceiling is reported `clamped` by the run
+/// that pins the level there and `done` by the next run over it. No prior run is needed for
+/// the `done` half — a preset AUTHORED at `presetLevel` in `[0.9886, 1.0]` and short of target
+/// by under the band reports `done` on its very FIRST run, and (`clamped` being what buckets
+/// the Summary's re-level action) offers no affordance to disagree. At 0.1 that hidden window
+/// is at or below both the capture noise floor and the audibility standard, which is what
+/// makes it acceptable; at 0.3 it was not. Consolidating the two halves would mean banding
+/// `solve_level`'s flag itself — see its doc for why that is a separate, product-visible
+/// change.
+fn already_on_target(c: f64, p: f32, target_lufs: f64) -> bool {
+    (target_lufs - lufs_at_level(c, p)).abs() <= FS_TOL_LU
+}
+
 /// Phase 2 continuation context — bundles the boost-capable extras a caller may supply,
 /// replacing the old `level_preset_with_base_amp` middle rung of a three-function ladder
 /// (`level_preset` → `level_preset_with_base_amp` → `level_preset_impl`). `Default` (both
@@ -2039,9 +2130,10 @@ mod scene_bearing_for_boost_gate_tests {
 /// device seize while this runs. Composes the `measure_c` → `solve_level` →
 /// `apply_level` seams. `previous_level` (the preset's currently-saved
 /// `presetLevel`, when the caller already read it) enables the idempotency skip:
-/// a re-run that solves the SAME level as last time reloads the stored preset and
-/// returns without writing (see the `level_unchanged` check below), so repeat runs
-/// don't re-randomize an already-on-target preset. `None` (the probe/benchmark
+/// a re-run that solves the SAME level as last time AND whose saved level is itself on
+/// target reloads the stored preset and returns without writing (see the
+/// `level_unchanged` + [`already_on_target`] guard below — both conjuncts are load-bearing,
+/// per the latter's doc), so repeat runs don't re-randomize an already-on-target preset. `None` (the probe/benchmark
 /// call sites, and the setlist common-target pass) keeps the always-write behavior.
 ///
 /// Thin compat wrapper over [`level_preset_impl`] for the legacy 6-arg (well, 7 with
@@ -2130,13 +2222,16 @@ pub(crate) fn level_preset_impl(
             return Err(CANCELLED.to_string());
         }
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
-        // Idempotency skip: the solved level matches what's already saved — reload to
-        // discard the measurement's ref-level edit (same recovery as the NO_SIGNAL
-        // branch above) and return without writing.
+        // Idempotency skip: the solved level matches what's already saved AND that saved level
+        // is itself on target — reload to discard the measurement's ref-level edit (same
+        // recovery as the NO_SIGNAL branch above) and return without writing. `clamped` is
+        // deliberately NOT part of this test; `already_on_target`'s doc carries the why (a
+        // boosted preset's re-measure flips it on float noise) and the mutual-exclusion
+        // argument that keeps this skip from ever preempting the ⟦BOOST⟧ block below.
         if let Some(p) = previous_level {
-            if !clamped && level_unchanged(final_level, p) {
+            if level_unchanged(final_level, p) && already_on_target(m.c, p, target_lufs) {
                 log::info!(
-                    "level_preset slot={slot}: solved level within tolerance of saved ({final_level:.4} vs {p:.4}) — skipping write"
+                    "level_preset slot={slot}: solved level within tolerance of saved ({final_level:.4} vs {p:.4}) and the saved level is already on target — skipping write"
                 );
                 restore_saved_preset(slot)?;
                 return Ok(LevelResult {
@@ -2147,7 +2242,13 @@ pub(crate) fn level_preset_impl(
                     constant_c: m.c,
                     final_level: p,
                     target_lufs,
-                    predicted_lufs: predicted,
+                    // Reported at `p` — the level this skip KEEPS — not at `final_level`,
+                    // which `solve_level` predicted for the value we are declining to write.
+                    // The two coincide on a boosted preset (`p == final_level == LEVEL_MAX`)
+                    // but diverge the moment the re-solve pins away from `p`, and the UI reads
+                    // this field verbatim whenever `verify_lufs` is null (`useLevelingFlow`'s
+                    // `valueOf`) — which is exactly this row.
+                    predicted_lufs: lufs_at_level(m.c, p),
                     clamped: false,
                     saved: false,
                     verify_lufs: None,
@@ -2158,11 +2259,7 @@ pub(crate) fn level_preset_impl(
                     clamp_reason: None,
                     verify_by_ear: false,
                     previous_level: None,
-                    true_peak_dbtp: Some(predicted_true_peak_dbtp(
-                        m.true_peak_dbtp,
-                        ref_level,
-                        final_level,
-                    )),
+                    true_peak_dbtp: Some(predicted_true_peak_dbtp(m.true_peak_dbtp, ref_level, p)),
                     persist_mismatch: None,
                     trade: None,
                     base_boost: None,
@@ -2202,7 +2299,7 @@ pub(crate) fn level_preset_impl(
                 // Exact (module header): base's as-is loudness AT its CURRENTLY AUTHORED
                 // `presetLevel` (p0) with the fader still at its authored value (f0) —
                 // `measure_c`'s capture above moved neither.
-                let a_base = m.c + 20.0 * (p0.max(1e-6) as f64).log10();
+                let a_base = lufs_at_level(m.c, p0);
                 let plan = crate::headroom_trade::plan_level_pair(&[], a_base, target_lufs, p0, f0);
                 (plan.regime == crate::headroom_trade::PairRegime::Boost
                     && plan.fader_target.is_some())
@@ -2422,7 +2519,7 @@ fn apply_base_boost(
     // taken before either control moved), SHIFTED by the raise: `presetLevel` is exact
     // (module header), so this costs no extra capture — the same seeding
     // `apply_headroom_trade` does for the downward trade.
-    let a_base = m.c + 20.0 * (previous_preset_level.max(1e-6) as f64).log10();
+    let a_base = lufs_at_level(m.c, previous_preset_level);
     let hold_job = SceneJob {
         prepass: Some(ScenePrepass {
             asis: a_base + plan.dp_db,
@@ -2684,15 +2781,17 @@ impl LevelKnob {
 
 /// Closed-loop convergence tolerance and iteration cap. Each iteration is one
 /// fresh connection (re-amp engages once per connection), so the cap bounds the
-/// device round-trips; ≈0.3 LU is well within audible-match for leveling. SCENE
-/// band only — the footswitch lane's acceptance is the tighter [`FS_TOL_LU`]; see
-/// its doc for which.
+/// device round-trips. NOT an acceptance band: every at-target check in this file bands on
+/// the tighter [`FS_TOL_LU`] (the footswitch lane, and the base lane's `already_on_target`).
+/// What still sits on this constant is the noise-floor/flatness class plus
+/// [`level_unchanged`]'s "is this the same level" range test and `scene_at_target`.
 pub(crate) const KNOB_TOL_LU: f64 = 0.3;
 /// Footswitch-lane acceptance band — user-decided TRUE ±0.1 vs target, tighter than the
-/// scene lane's `KNOB_TOL_LU` (0.3). Applies ONLY to solve_footswitch's at-target checks
-/// (the `err(...)` distance-to-target gates), `classify_fs_outcome`, and `switch_at_target`
-/// — the FLATNESS/no-authority checks in the same functions stay on `KNOB_TOL_LU` (a
-/// noise-floor threshold, not an acceptance band; HW measured ~0.12 LU run-to-run noise).
+/// scene lane's `KNOB_TOL_LU` (0.3). Applies to every AT-TARGET check: solve_footswitch's
+/// (the `err(...)` distance-to-target gates), `classify_fs_outcome`, `switch_at_target`, and
+/// the base lane's idempotency band [`already_on_target`] — the FLATNESS/no-authority checks
+/// in the same functions stay on `KNOB_TOL_LU` (a noise-floor threshold, not an acceptance
+/// band; HW measured ~0.12 LU run-to-run noise).
 /// `FS_CORRECT_MAX` was doubled alongside this to compensate — a tighter band needs more
 /// bracket-aware iterates to converge. HW noise caveat: 0.1 LU sits close to the measured
 /// capture noise floor, so a well-converged FS solve may occasionally read `unconverged` on
@@ -4194,11 +4293,17 @@ fn classify_fs_outcome(
 }
 
 /// Is the switch's engaged loudness already at target (within `FS_TOL_LU`, not clamped)? The
-/// footswitch mirror of `scene_at_target` / `level_unchanged`, but on the FS lane's tighter
-/// band (NOT delegated to `scene_at_target`, which is pinned to `KNOB_TOL_LU`) — a re-run
-/// leaves an in-tolerance switch untouched instead of re-solving and re-randomizing it (the
-/// idempotency gap PR #74 deferred). `clamped` is always `false` here (the probe measures a
-/// real value at `cur`), but the param matches `scene_at_target` for parity and testability.
+/// footswitch counterpart of `scene_at_target`, on the FS lane's tighter band (NOT delegated
+/// to `scene_at_target`, which is pinned to `KNOB_TOL_LU`) — a re-run leaves an in-tolerance
+/// switch untouched instead of re-solving and re-randomizing it (the idempotency gap PR #74
+/// deferred). `clamped` is always `false` here (the probe measures a real value at `cur`), but
+/// the param matches `scene_at_target` for parity and testability.
+///
+/// KEEPS the `!clamped` requirement, and the BASE lane's `already_on_target` deliberately does
+/// NOT — do not "restore parity" by copying that band here. The base lane can drop the flag
+/// only because its skip is provably complementary to `plan_level_pair`'s regimes (see
+/// `already_on_target`'s doc); this lane has no pair planner behind it, so dropping the flag
+/// would silently suppress an honest FS clamp the user must be told about.
 fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
     !clamped && (measured - target).abs() <= FS_TOL_LU
 }
@@ -4212,8 +4317,9 @@ fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
 /// `current_value` = the switch's currently-configured engaged value (a live-read prior
 /// `valueA` on the Assign re-run path). When `Some`, the leveler probes it FIRST: if the
 /// engaged loudness there is already at target it returns `final_value == current_value`
-/// verbatim so the caller writes nothing — the re-run idempotency skip (mirrors the base
-/// `level_unchanged` / scene `scene_at_target` skips). A Bake plan passes the block's own
+/// verbatim so the caller writes nothing — the re-run idempotency skip (the same INTENT as the
+/// base `level_unchanged` + `already_on_target` and scene `scene_at_target` skips; the TESTS
+/// differ per lane — see `switch_at_target`). A Bake plan passes the block's own
 /// stored param value here too (baking writes straight to the block, so that value IS the
 /// engaged value) — `None` remains for fresh assigns and probe seams, which have no prior
 /// value to anchor on.
@@ -7130,6 +7236,10 @@ fn fs_silent_geometry(min_real_lufs: f64) -> f64 {
 /// COMPRESSED scene (the UA1176 case below, see `jointk_one_scene`'s doc) — within
 /// tolerance is good enough, and a `clamped` solve must still fall through and
 /// report clamped even when the measured value happens to sit on target.
+///
+/// That `!clamped` requirement is this lane's OWN rule, not a shared one: the base lane's
+/// `already_on_target` drops it, and may, because its skip is provably complementary to
+/// `plan_level_pair`'s regimes. Nothing of the sort holds here — keep the flag.
 fn scene_at_target(measured: f64, target: f64, clamped: bool) -> bool {
     !clamped && (measured - target).abs() <= KNOB_TOL_LU
 }
@@ -9959,6 +10069,90 @@ mod tests {
     #[test]
     fn level_unchanged_false_on_negative_previous() {
         assert!(!super::level_unchanged(0.5, -1.0));
+    }
+
+    // BUG→GATE (the boosted-preset re-run coin flip). After a BOOST run, `presetLevel` sits at
+    // LEVEL_MAX and the fader was solved so C lands on target — so run 2's own C round-trips
+    // through f32 storage + f64 log10 a few float units PAST exact (observed offline:
+    // -23.000000488 against a -23.0 target). `solve_level` then reports `clamped` for a target
+    // that is, for every practical purpose, already reached. The idempotency skip used to
+    // require `!clamped` and so bypassed itself on that hairline flip, re-persisting the
+    // identical presetLevel and surfacing a spurious `clamped` row. `already_on_target` is the
+    // band that must absorb it.
+    #[test]
+    fn a_hairline_float_overshoot_still_counts_as_on_target() {
+        let c = -23.000_000_488_f64;
+        // The flip this gate exists for: the solve DOES clamp on this input.
+        let (lvl, clamped, _) = super::solve_level(c, -23.0);
+        assert!(clamped, "the hairline overshoot must still clamp the solve");
+        assert_eq!(lvl, super::LEVEL_MAX);
+        // ...and the band must call it on target anyway.
+        assert!(super::already_on_target(c, 1.0, -23.0));
+    }
+
+    // The honest clamp this band must NOT weaken: 3 LU short at presetLevel max is genuinely
+    // unreachable, so the skip must not fire and the run must go on to report today's clamp.
+    #[test]
+    fn a_genuinely_unreachable_target_is_not_on_target() {
+        assert!(!super::already_on_target(-26.0, 1.0, -23.0));
+    }
+
+    // Re-running the SAME preset at a DIFFERENT target must never skip — the saved level is on
+    // the old target, not this one.
+    #[test]
+    fn a_changed_target_is_not_on_target() {
+        let c = -23.0;
+        assert!(super::already_on_target(c, 1.0, -23.0));
+        assert!(!super::already_on_target(c, 1.0, -25.0));
+    }
+
+    // The band's edges, in the same LU space `FS_TOL_LU` is stated in.
+    #[test]
+    fn already_on_target_accepts_inside_and_rejects_outside_the_band() {
+        let c = -23.0;
+        let inside = super::FS_TOL_LU - 0.01;
+        let outside = super::FS_TOL_LU + 0.01;
+        assert!(super::already_on_target(c, 1.0, -23.0 + inside));
+        assert!(super::already_on_target(c, 1.0, -23.0 - inside));
+        assert!(!super::already_on_target(c, 1.0, -23.0 + outside));
+        assert!(!super::already_on_target(c, 1.0, -23.0 - outside));
+    }
+
+    // The band is PINNED at the user-decided 0.1, not at the scene lane's 0.3. This is the
+    // only offline check that can fail on a silent re-widening: the SimDevice's residual for
+    // the boosted fixture is float-round-trip small (~1e-7 LU), so E8 passes at either value
+    // and cannot tell them apart. A 0.2 LU shortfall at `presetLevel`'s ceiling is a real,
+    // audible-by-the-user's-standard miss — it must fall through, write and report `clamped`,
+    // never be absorbed as `done` with no re-level affordance (`SummaryPage`'s clamped bucket).
+    #[test]
+    fn a_shortfall_above_the_band_is_not_absorbed_even_though_knob_tol_would_have() {
+        let (_lvl, clamped, _predicted) = super::solve_level(-23.2, -23.0);
+        assert!(
+            clamped,
+            "0.2 LU short at the ceiling must still clamp the solve"
+        );
+        assert!(!super::already_on_target(-23.2, 1.0, -23.0));
+        // The residual straddles the two constants — that IS the pin. If the band were ever
+        // widened back to `KNOB_TOL_LU` this shortfall would be absorbed as `done` again.
+        let residual = (-23.0f64 - super::lufs_at_level(-23.2, 1.0)).abs();
+        assert!(
+            residual > super::FS_TOL_LU,
+            "{residual} must exceed the band"
+        );
+        assert!(
+            residual <= super::KNOB_TOL_LU,
+            "{residual} must sit INSIDE the scene band, or this test pins nothing"
+        );
+    }
+
+    // The extracted identity IS what `solve_level` predicts — one definition, four callers
+    // (the solver, the boost planner, `apply_base_boost`, and the band above).
+    #[test]
+    fn lufs_at_level_is_solve_levels_own_predicted() {
+        let c = c_from_real_data();
+        let (lvl, clamped, predicted) = super::solve_level(c, -30.0);
+        assert!(!clamped);
+        assert_eq!(super::lufs_at_level(c, lvl), predicted);
     }
 
     // (A3) A base block knob write must recall base explicitly — a preset loads

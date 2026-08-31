@@ -1124,10 +1124,7 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
         "run 1 must move the value off the authored 0.5, or run 2's skip proves nothing: {r1:?}"
     );
     let events1 = sim.events();
-    let saved_events_after_run1 = events1
-        .iter()
-        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
-        .count();
+    let saved_events_after_run1 = saved_event_count(&events1);
     assert_eq!(
         saved_events_after_run1,
         1,
@@ -1160,11 +1157,7 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
         "the skip must return the CURRENT value verbatim, not re-solve/re-randomize it: \
          run1={final_value_1} run2={final_value_2}"
     );
-    let saved_events_after_run2 = sim
-        .events()
-        .iter()
-        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
-        .count();
+    let saved_events_after_run2 = saved_event_count(&sim.events());
     assert_eq!(
         saved_events_after_run2,
         saved_events_after_run1,
@@ -2457,6 +2450,18 @@ fn output_level_write_count(events: &[crate::sim_device::SimEvent], node: &str) 
         .count()
 }
 
+/// How many `saveCurrentPreset` commits an event log carries. Snapshotted at a run BOUNDARY and
+/// compared as a delta, so a gate pins "this run added none" rather than a total that re-keys
+/// itself whenever an earlier run's save choreography changes. Takes a SLICE, like
+/// [`output_level_write_count`] — `SimDevice::events` clones the whole vector under a lock, so
+/// one snapshot must be able to feed every counter a gate runs against the same moment.
+fn saved_event_count(events: &[crate::sim_device::SimEvent]) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
+        .count()
+}
+
 /// `slot`'s SAVED `presetLevel` + `node`'s SAVED `outputLevel`, off a fresh field-8 read — the
 /// post-run pair every E1-E8 gate re-reads to confirm what actually persisted.
 fn saved_pl_and_output_level(slot: u32, node: &str) -> (f64, f64) {
@@ -2891,26 +2896,24 @@ fn an_infeasible_base_target_reports_todays_honest_clamp_with_no_partial_boost()
     );
 }
 
-/// E8 (RETARGETED — see the CODE-VS-PLAN CORRECTION below). BUG→GATE: a second base run on
-/// an already-boosted preset must never RE-BOOST — the fader, once solved and saved, must
-/// never be written again by a later run at the same target.
+/// E8. BUG→GATE: a second base run on an already-boosted preset must SKIP CLEANLY — no
+/// re-boost, no re-write of `presetLevel`, no new save, and no spurious `clamped` row.
 ///
-/// CODE-VS-PLAN CORRECTION (a floating-point wrinkle, not a functional bug): the plan
-/// expected `level_preset_impl`'s `previous_level`/`level_unchanged` idempotency check
-/// (`!clamped && level_unchanged(...)`) to skip run 2's write entirely. The sim's own
-/// `ever_saved` reseed (`sim_device.rs`) DOES carry run 1's persisted fader forward into run
-/// 2's own base measurement bit-for-bit, but the round trip through `f32` storage + `f64`
-/// log10 lands run 2's own `constant_c` a few units of float epsilon PAST exactly `-23.0`
-/// (observed: `-23.000000488`). `solve_level`'s own clamp check carries no epsilon band, so
-/// this hairline overshoot flips `clamped: true` for a target that is, for every practical
-/// purpose, already reached — which in turn SKIPS the `!clamped && level_unchanged(...)` fast
-/// path and lets run 2 fall through to the ordinary (non-boost) write, re-persisting the SAME
-/// `presetLevel` (1.0) it already held. The number never drifts and the fader — already
-/// written TWICE within run 1 by Phase 2's own guard (b): once by the solve, once more by the
-/// pre-save recall-reassert replaying the identical value (`recall_reassert_save`) — is never
-/// touched a THIRD time by run 2. This gate pins exactly those two facts (the properties that
-/// actually matter for correctness) rather than the "zero new `Saved` events" shape the plan
-/// assumed, which this exact target/fixture pairing cannot deliver deterministically.
+/// The float-epsilon mechanism this pins is written out once, in `leveller::already_on_target`'s
+/// doc — a boosted preset is parked at `presetLevel = LEVEL_MAX` with `C` on target, so run 2's
+/// re-measure lands a few float units either side of exact and the epsilon-free clamp check
+/// flips on the low side.
+///
+/// WHAT IS SPECIFIC TO THIS GATE: the assertions must hold on EITHER side of that epsilon — a
+/// hair high takes the plain `level_unchanged` path, a hair low takes the band — so the observed
+/// value is deliberately not restated here and nothing below may depend on its sign. That is
+/// what lets this gate assert the clean skip (`clamped: false`, `saved: false`, zero new `Saved`)
+/// rather than the weaker "the fader was not rewritten" shape it carried while the bug stood.
+///
+/// The fader assertions stay: run 1 writes it exactly TWICE (once by the solve, once by the
+/// pre-save recall-reassert replaying the identical value — Phase 2's guard (b), see
+/// `recall_reassert_save`), and run 2 must add none. `restore_saved_preset`, the skip's own
+/// recovery, is a bare `load_preset` and emits no `ChangeParameter` at all.
 #[test]
 fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
     let _serial = serial();
@@ -2925,12 +2928,21 @@ fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
     );
     assert_eq!(r1["saved"], true, "{r1}");
     let final_level_1 = r1["final_level"].as_f64().expect("final_level");
+    let saved_after_run1 = saved_event_count(&sim.events());
 
     let r2 = run_base_level(&webview, PLUMES, -23.0, true);
     assert!(
         r2["base_boost"].is_null(),
         "run 2 must never re-enter the Boost regime — presetLevel already has no room left: \
          {r2}"
+    );
+    assert_eq!(
+        r2["clamped"], false,
+        "run 2 must not report a spurious clamp — the preset IS on target: {r2}"
+    );
+    assert_eq!(
+        r2["saved"], false,
+        "run 2 must take the idempotency skip and write nothing: {r2}"
     );
     let final_level_2 = r2["final_level"].as_f64().expect("final_level");
     assert!(
@@ -2939,10 +2951,21 @@ fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
          run2={final_level_2}"
     );
 
-    // THE PROPERTY THAT ACTUALLY MATTERS: the fader is written exactly TWICE, both by run 1
-    // (once by the solve, once by the pre-save recall-reassert guard replaying the SAME value
-    // — Phase 2's guard (b), see `recall_reassert_save`) — never a THIRD time by run 2.
+    // ONE post-run-2 snapshot, shared by both counters below.
     let events = sim.events();
+
+    // Asserted as a DELTA against run 1's own count, not a total: what this gate pins is that
+    // run 2 adds nothing, and a total would silently re-key itself the day run 1's save
+    // choreography changes.
+    assert_eq!(
+        saved_event_count(&events),
+        saved_after_run1,
+        "run 2 must emit NO new Saved event — the skip returns before any write: {events:?}"
+    );
+
+    // The fader is written exactly TWICE, both by run 1 (once by the solve, once by the
+    // pre-save recall-reassert guard replaying the SAME value — Phase 2's guard (b), see
+    // `recall_reassert_save`) — never a THIRD time by run 2.
     assert_eq!(
         output_level_write_count(&events, PLUMES_TWIN),
         2,
