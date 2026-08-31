@@ -540,6 +540,7 @@ export function useLevelingFlow({
               it.spreadLu = res.dynamic_spread_lu;
               it.truePeakDbtp = res.true_peak_dbtp;
               it.verifyByEar = causeOf(res);
+              it.baseBoost = res.base_boost;
             } else {
               // A scene item with no wire slot — nothing to level.
               it.outcome = "skipped";

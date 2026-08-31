@@ -16,6 +16,7 @@
 // commit) → run (steps the chosen scenes) → summary.
 
 import type {
+  BaseBoostSummary,
   FootswitchInfo,
   LevelJob,
   LevelParamCandidate,
@@ -541,6 +542,11 @@ export interface RunItem {
    *  no ceiling): the run loop leaves the row's existing outcome untouched so it stays
    *  visible/counted in the Summary without wasting a re-capture on a signal-less sound. */
   skipRelevel?: boolean;
+  /** Base rows only: this row's base-pair BOOST disclosure, carried verbatim from the
+   *  result's `base_boost` — see `BaseBoostSummary`'s own doc. `null`/undefined on every
+   *  row whose base pair never entered the `Boost` regime (the common case) and on every
+   *  non-base row. */
+  baseBoost?: BaseBoostSummary | null;
 }
 
 /** A finished row's MEASURED raw ceiling for the reachable-common-target derivation, or null

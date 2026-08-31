@@ -333,6 +333,14 @@ pub struct LevelResult {
     /// structure, not one row's. `None` on every untraded run and on every lane that has no
     /// trade (base, block, footswitch). Mirrored in `src/lib/types.ts`.
     pub trade: Option<crate::headroom_trade::TradeSummary>,
+    /// THE BASE-PAIR BOOST this run made (or, when it couldn't apply one, WHAT IT WOULD
+    /// MAKE) — see [`crate::headroom_trade::BaseBoostSummary`]. Phase 2 of the
+    /// plumes/BD2/OCD-class regression fix: base's OWN `presetLevel`/amp-fader pair, planned
+    /// by `headroom_trade::plan_level_pair` and applied when the run's shape allows it (a
+    /// save on a scene-less preset — see `leveller::level_preset`'s routing doc). `None` on
+    /// every run whose base pair never entered the `Boost` regime, and on every lane that
+    /// isn't the base row (block, footswitch, scene). Mirrored in `src/lib/types.ts`.
+    pub base_boost: Option<crate::headroom_trade::BaseBoostSummary>,
 }
 
 #[derive(Clone, Copy)]
@@ -678,6 +686,16 @@ pub(crate) enum SaveWitness {
         /// 0-based `scenes[]` wire index the write landed in; `None` = base/footswitch.
         scene: Option<u32>,
     },
+    /// A BASE-BOOST save (Phase 2): `presetLevel` pinned at its ceiling AND the base amp's
+    /// `outputLevel` raised, in the SAME save. Both halves must read back before the barrier
+    /// releases a same-slot load — see `witness_value_in_doc`'s arm, which requires BOTH to
+    /// match (never just one) before accepting the doc as fresh.
+    PresetLevelWithParam {
+        pl: f32,
+        node: String,
+        param: String,
+        value: f32,
+    },
 }
 
 /// One slot's most recent leveling save: when it fired and what it should have changed.
@@ -720,6 +738,7 @@ pub(crate) fn registered_preset_level(slot: u32) -> Option<f32> {
         reg.get(&slot).and_then(|e| match e.witness {
             SaveWitness::PresetLevel(pl) => Some(pl),
             SaveWitness::Param { .. } => None,
+            SaveWitness::PresetLevelWithParam { pl, .. } => Some(pl),
         })
     })
 }
@@ -759,6 +778,11 @@ fn witness_expected(w: &SaveWitness) -> f64 {
     match w {
         SaveWitness::PresetLevel(v) => *v as f64,
         SaveWitness::Param { value, .. } => *value as f64,
+        // The barrier's own comparison is a single scalar; `pl` is that scalar here
+        // (`witness_value_in_doc`'s matching arm does the FULL dual check internally and
+        // returns `pl` back out only when BOTH halves match, so this single-value compare
+        // against `pl` still holds).
+        SaveWitness::PresetLevelWithParam { pl, .. } => *pl as f64,
     }
 }
 
@@ -829,6 +853,23 @@ fn witness_value_in_doc(doc: &serde_json::Value, w: &SaveWitness) -> Option<f64>
                 .copied()
                 .find(|got| (got - expected).abs() <= WITNESS_EPS)
                 .or_else(|| candidates.iter().flatten().copied().next())
+        }
+        // BOTH halves must match — a same-slot load racing a still-committing base-boost save
+        // must not release on a doc that only carries one half (e.g. the ceiling `presetLevel`
+        // landed but the fader write is still in flight, or vice versa). `node_param_f64` is
+        // the base/footswitch `Param` arm's own base-graph read (never `ftsw`'s `valueA`: a
+        // boost's fader is always a Bake-shape base write, never an Assign).
+        SaveWitness::PresetLevelWithParam {
+            pl,
+            node,
+            param,
+            value,
+        } => {
+            let pl_doc = crate::audiograph::preset_level(doc)?;
+            let param_doc = crate::commands::level_footswitch::node_param_f64(doc, node, param)?;
+            let pl_ok = (pl_doc - *pl as f64).abs() <= WITNESS_EPS;
+            let param_ok = (param_doc - *value as f64).abs() <= WITNESS_EPS;
+            (pl_ok && param_ok).then_some(pl_doc)
         }
     }
 }
@@ -1794,9 +1835,9 @@ pub fn apply_levels(
             drop(s);
             crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             let mut s2 = Session::connect()?;
-            recall_reassert_save(&mut s2, slot, opts.restore_scene, reassert_pl)?;
+            recall_reassert_save(&mut s2, slot, opts.restore_scene, reassert_pl, None, None)?;
         } else {
-            recall_reassert_save(&mut s, slot, opts.restore_scene, reassert_pl)?;
+            recall_reassert_save(&mut s, slot, opts.restore_scene, reassert_pl, None, None)?;
         }
     } else if opts.defer {
         // Deferred mode: leave the write UNSAVED in the working copy — the scene
@@ -1835,6 +1876,74 @@ pub fn level_preset(
     opts: LevelOptions,
     force_bypass: &[(String, String, bool)],
     previous_level: Option<f32>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<LevelResult, String> {
+    level_preset_impl(
+        slot,
+        stimulus,
+        target_lufs,
+        opts,
+        force_bypass,
+        previous_level,
+        None,
+        false,
+        None,
+        cancelled,
+    )
+}
+
+/// [`level_preset`]'s BOOST-capable variant (Phase 2) — called ONLY from
+/// `commands::level_preset`'s base ("None"/presetLevel) arm, the one caller that has already
+/// read the saved preset and can derive a validated single-knob base amp candidate via
+/// `probe_api::scene_jobs::build_scene_jobs`. Every other caller (this crate's own tests, the
+/// `probe` bin's benches, `e2e_server_tests`) keeps calling [`level_preset`] above, which
+/// forwards `base_amp: None` and takes the byte-for-byte-unchanged path — see
+/// `level_preset_impl`'s routing doc.
+///
+/// `base_amp` — the candidate amp's job (its knob + bounds; `scene_slot: None`, isolation on
+/// `force_bypass` already resolved by the caller); `has_scenes` — whether the SAVED preset has
+/// any `scenes[]` rows (v1 scopes the full continuation to scene-less presets — see the
+/// routing doc); `saved` — the same saved-preset doc the caller already read, threaded through
+/// to `jointk_one_scene`/`undo_base_isolation` exactly like every other scene-job seam takes
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn level_preset_with_base_amp(
+    slot: u32,
+    stimulus: &[f32],
+    target_lufs: f64,
+    opts: LevelOptions,
+    force_bypass: &[(String, String, bool)],
+    previous_level: Option<f32>,
+    base_amp: Option<SceneJob>,
+    has_scenes: bool,
+    saved: Option<&serde_json::Value>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<LevelResult, String> {
+    level_preset_impl(
+        slot,
+        stimulus,
+        target_lufs,
+        opts,
+        force_bypass,
+        previous_level,
+        base_amp,
+        has_scenes,
+        saved,
+        cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn level_preset_impl(
+    slot: u32,
+    stimulus: &[f32],
+    target_lufs: f64,
+    opts: LevelOptions,
+    force_bypass: &[(String, String, bool)],
+    previous_level: Option<f32>,
+    base_amp: Option<SceneJob>,
+    has_scenes: bool,
+    saved: Option<&serde_json::Value>,
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<LevelResult, String> {
     // Pre-measure cancel: nothing has touched the device yet, so return WITHOUT the
@@ -1878,6 +1987,7 @@ pub fn level_preset(
                     true_peak_dbtp: None,
                     persist_mismatch: None,
                     trade: None,
+                    base_boost: None,
                 });
             }
             Err(e) => return Err(e),
@@ -1923,6 +2033,7 @@ pub fn level_preset(
                     )),
                     persist_mismatch: None,
                     trade: None,
+                    base_boost: None,
                 });
             }
         }
@@ -1936,6 +2047,131 @@ pub fn level_preset(
         if !force_bypass.is_empty() {
             apply_opts.verify = false;
         }
+
+        // ⟦BOOST⟧ Plan the base pair off the SAME measurement, before any write (Phase 2 —
+        // the plumes/BD2/OCD-class regression fix; physics + regimes in
+        // `notes/leveling.md`'s BOOST section, `crate::headroom_trade::plan_level_pair`'s
+        // own doc). `sounds` is empty: base has no OTHER sound's clamp to redistribute
+        // against here (that is `redistribute_clamped_headroom`'s job, a different lane) —
+        // this planner only ever asks "can base's OWN gap be closed by moving BOTH its own
+        // controls together?". `base_amp` is `Some` only from `commands::level_preset`'s
+        // base arm, which has already validated a single-knob candidate; every other caller
+        // passes `None` and the `and_then` below short-circuits, taking the identical
+        // byte-for-byte path this function always has.
+        let boost_plan = base_amp.as_ref().zip(previous_level).and_then(|(job, p0)| {
+            if job.skip.is_some() || job.knobs.len() != 1 {
+                return None;
+            }
+            let f0 = job.knobs[0].current;
+            // Exact (module header): base's as-is loudness AT its CURRENTLY AUTHORED
+            // `presetLevel` (p0) with the fader still at its authored value (f0) —
+            // `measure_c`'s capture above moved neither.
+            let a_base = m.c + 20.0 * (p0.max(1e-6) as f64).log10();
+            let plan = crate::headroom_trade::plan_level_pair(&[], a_base, target_lufs, p0, f0);
+            (plan.regime == crate::headroom_trade::PairRegime::Boost && plan.fader_target.is_some())
+                .then_some((job, p0, f0, plan))
+        });
+
+        if let Some((job, p0, f0, plan)) = boost_plan {
+            let LevelKnob::Block {
+                group_id,
+                node_id,
+                parameter_id,
+                ..
+            } = &job.knobs[0].knob
+            else {
+                // `build_scene_jobs` never emits a base amp candidate any other knob shape —
+                // belt-and-suspenders, not an observed failure.
+                return Err(
+                    "base boost candidate's own knob was not a Block knob (unreachable in \
+                     practice — build_scene_jobs never emits this shape for an amp candidate)"
+                        .to_string(),
+                );
+            };
+            let ids = (group_id.clone(), node_id.clone(), parameter_id.clone());
+
+            // v1 SCOPE (Risks section, the plan): the full continuation only fires for a
+            // `save` run on a SCENE-LESS preset — a base-only run on a scene preset gets the
+            // advisory below and today's honest clamp, same as a preview. Widening to
+            // scene-bearing presets needs its own plan (a boosted base's `presetLevel` raise
+            // also shifts every SCENE row's own captured loudness by `raise_db` —
+            // `redistribute_clamped_headroom`'s territory, not this seam's).
+            if opts.save && !has_scenes {
+                return apply_base_boost(
+                    slot,
+                    stimulus,
+                    target_lufs,
+                    opts,
+                    job,
+                    p0,
+                    &plan,
+                    ids,
+                    saved,
+                    &m,
+                    ref_level,
+                    &mut cancelled,
+                );
+            }
+
+            // ADVISORY: today's honest path (presetLevel alone, clamped at its ceiling),
+            // with what a boost WOULD close disclosed alongside it.
+            let (saved_flag, verify_lufs) = apply_level(
+                slot,
+                stimulus,
+                &LevelKnob::PresetLevel,
+                final_level,
+                apply_opts,
+                !force_bypass.is_empty(),
+            )?;
+            return Ok(LevelResult {
+                slot,
+                scene_slot: None,
+                ref_level,
+                measured_lufs: m.measured_lufs,
+                constant_c: m.c,
+                final_level,
+                target_lufs,
+                predicted_lufs: predicted,
+                clamped,
+                saved: saved_flag,
+                verify_lufs,
+                iterations: 1,
+                dynamic_spread_lu: Some(m.dynamic_spread_lu),
+                clamp_kind: crate::headroom_trade::ClampKind::from_flags(clamped, false, None),
+                clamp_reason: None,
+                verify_by_ear: false,
+                previous_level: None,
+                true_peak_dbtp: Some(predicted_true_peak_dbtp(
+                    m.true_peak_dbtp,
+                    ref_level,
+                    final_level,
+                )),
+                persist_mismatch: None,
+                trade: None,
+                base_boost: Some(crate::headroom_trade::BaseBoostSummary {
+                    applied: false,
+                    regime: plan.regime,
+                    raise_db: plan.dp_db,
+                    fader_db: plan.df_db,
+                    previous_preset_level: p0,
+                    preset_level: plan.preset_level,
+                    base_amps: vec![crate::headroom_trade::TradeAmpMove {
+                        group_id: ids.0,
+                        node_id: ids.1,
+                        parameter_id: ids.2,
+                        previous_value: f0,
+                        // The planner's SEED, never a prediction of what a closed-loop solve
+                        // would actually land on (`LevelPairPlan::fader_target`'s own doc) —
+                        // but it's exactly what the advisory disclosure needs: the plan
+                        // gated `boost_plan` on `fader_target.is_some()`, so this is always
+                        // populated whenever `applied:false` reaches the summary.
+                        value: plan.fader_target,
+                    }],
+                    cap: plan.capped,
+                }),
+            });
+        }
+
         let (saved, verify_lufs) = apply_level(
             slot,
             stimulus,
@@ -1972,9 +2208,187 @@ pub fn level_preset(
             )),
             persist_mismatch: None,
             trade: None,
+            base_boost: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
+}
+
+/// The BOOST-regime full continuation (Phase 2): `presetLevel` to its ceiling, the base amp's
+/// fader closed-loop solved for the remainder, both re-asserted and saved TOGETHER on the save
+/// connection, and a hard-failing post-save read-back of both halves. Called only from
+/// `level_preset_impl`'s routing, only when `opts.save` is true and the preset is scene-less
+/// (v1 scope — see that call site's doc). Mirrors [`apply_headroom_trade`]'s shape (raise
+/// first & unsaved, solve the fader via `jointk_one_scene`, undo isolation, ONE save) with two
+/// differences that follow directly from BOOST being a single-preset, non-batch move: this
+/// function does its OWN save (a trade defers to a batch's terminal one) and a CLAMPED solve
+/// here still PERSISTS — BOOST is the last-resort move, so even a partial close beats the
+/// honest clamp this run would otherwise report; a trade's clamped hold backs out instead
+/// because a failed trade should never have been attempted at all.
+#[allow(clippy::too_many_arguments)]
+fn apply_base_boost(
+    slot: u32,
+    stimulus: &[f32],
+    target_lufs: f64,
+    opts: LevelOptions,
+    job: &SceneJob,
+    previous_preset_level: f32,
+    plan: &crate::headroom_trade::LevelPairPlan,
+    (group_id, node_id, parameter_id): (String, String, String),
+    saved: Option<&serde_json::Value>,
+    m: &MeasuredC,
+    ref_level: f32,
+    cancelled: &mut impl FnMut() -> bool,
+) -> Result<LevelResult, String> {
+    let bail = |e: String| -> String {
+        if let Err(re) = restore_saved_preset(slot) {
+            log::warn!("restore_saved_preset failed backing out a base boost (slot {slot}): {re}");
+        }
+        reamp_off_guaranteed("base_boost_backout");
+        e
+    };
+    if cancelled() {
+        return Err(bail(CANCELLED.to_string()));
+    }
+    // RAISE FIRST, UNSAVED — mirrors `apply_headroom_trade`'s own raise step. Every capture
+    // below connects lean-equivalent (no `load_preset`), so the working-copy value survives
+    // each fresh re-amp connection (HW: unsaved writes persist across reconnects).
+    {
+        crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+        let mut s = Session::connect().map_err(bail)?;
+        s.set_preset_level(plan.preset_level).map_err(bail)?;
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
+    // SEED THE HOLD FROM base's OWN as-is reading (already have it — `measure_c`'s capture,
+    // taken before either control moved), SHIFTED by the raise: `presetLevel` is exact
+    // (module header), so this costs no extra capture — the same seeding
+    // `apply_headroom_trade` does for the downward trade.
+    let a_base = m.c + 20.0 * (previous_preset_level.max(1e-6) as f64).log10();
+    let hold_job = SceneJob {
+        prepass: Some(ScenePrepass {
+            asis: a_base + plan.dp_db,
+            spread: m.dynamic_spread_lu,
+        }),
+        ..job.clone()
+    };
+    let solved = match jointk_one_scene(
+        slot,
+        &hold_job,
+        stimulus,
+        target_lufs,
+        true, // defer — this function's own save persists both halves together
+        true, // verify + bounded-secant correction — the fader response isn't predictable
+        saved,
+        LEVEL_MIN, // an amp outputLevel lane has no wet floor; this is an UPWARD move
+        Some(plan.preset_level),
+    ) {
+        Ok(s) => s,
+        Err(e) => return Err(bail(e)),
+    };
+    // Undo base's isolation (if any) BEFORE the save — a preset load is forbidden from here
+    // on (the raise and solved fader are unsaved deferred writes), so the isolation is undone
+    // with inverse writes on their own fresh connection instead (mirrors
+    // `apply_headroom_trade`'s A5/F2 cleanup).
+    if !job.force_bypass.is_empty() {
+        if let Err(e) = undo_base_isolation(&job.force_bypass, saved) {
+            return Err(bail(format!(
+                "the base isolation could not be undone after the boost landed ({e}) — backing \
+                 the whole boost out rather than risk saving every isolated pedal forced off"
+            )));
+        }
+    }
+    let fader_value = solved
+        .levels
+        .first()
+        .copied()
+        .unwrap_or(job.knobs[0].current);
+    let override_witness = SaveWitness::PresetLevelWithParam {
+        pl: plan.preset_level,
+        node: node_id.clone(),
+        param: parameter_id.clone(),
+        value: fader_value,
+    };
+    // Unlike a plain single-knob run (whose outer `restore_after_unsaved_error` wrapper
+    // skips the restore for a non-cancel `save: true` failure — `apply_level`'s own error
+    // modes are simple enough not to need it), this save's own failure is wrapped in `bail`
+    // too: it is genuinely ambiguous whether `save_current_preset` reached the device before
+    // failing, and a dirty unsaved-raise working copy left behind either way is exactly the
+    // liability `apply_headroom_trade`'s own bail exists to close.
+    save_deferred_scene_writes(
+        slot,
+        opts.restore_scene,
+        Some(plan.preset_level),
+        None,
+        Some((
+            group_id.clone(),
+            node_id.clone(),
+            parameter_id.clone(),
+            fader_value,
+        )),
+        Some(override_witness),
+    )
+    .map_err(bail)?;
+    // POST-SAVE HARD READ-BACK: unlike `verify_persisted_writes` (advisory — a batch save
+    // already landed there, so a miss only WARNS), a boost's two-control save is new and
+    // untested on real hardware, so a mismatch here fails loudly instead of reporting a
+    // persisted value that may not actually be on the device.
+    crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
+    let doc = crate::probe_api::scene_jobs::read_saved_preset_complete(slot)?;
+    let pl_doc = crate::audiograph::preset_level(&doc);
+    let fader_doc =
+        crate::commands::level_footswitch::node_param_f64(&doc, &node_id, &parameter_id);
+    let pl_ok = pl_doc.is_some_and(|v| (v - plan.preset_level as f64).abs() <= PERSIST_TOL);
+    let fader_ok = fader_doc.is_some_and(|v| (v - fader_value as f64).abs() <= PERSIST_TOL);
+    if !(pl_ok && fader_ok) {
+        return Err(format!(
+            "base boost save for slot {slot} did not persist as written (presetLevel wrote \
+             {:.4} read {pl_doc:?}; {node_id}.{parameter_id} wrote {fader_value:.4} read \
+             {fader_doc:?})",
+            plan.preset_level
+        ));
+    }
+    Ok(LevelResult {
+        slot,
+        scene_slot: None,
+        ref_level,
+        measured_lufs: m.measured_lufs,
+        constant_c: m.c,
+        final_level: plan.preset_level,
+        target_lufs,
+        predicted_lufs: solved.lufs,
+        clamped: solved.clamped,
+        saved: true,
+        verify_lufs: Some(solved.lufs),
+        iterations: solved.writes,
+        dynamic_spread_lu: Some(m.dynamic_spread_lu),
+        clamp_kind: solved.clamp_kind,
+        clamp_reason: None,
+        verify_by_ear: solved.verify_by_ear,
+        previous_level: None,
+        true_peak_dbtp: Some(predicted_true_peak_dbtp(
+            m.true_peak_dbtp,
+            ref_level,
+            plan.preset_level,
+        )),
+        persist_mismatch: Some(false),
+        trade: None,
+        base_boost: Some(crate::headroom_trade::BaseBoostSummary {
+            applied: true,
+            regime: plan.regime,
+            raise_db: plan.dp_db,
+            fader_db: plan.df_db,
+            previous_preset_level,
+            preset_level: plan.preset_level,
+            base_amps: vec![crate::headroom_trade::TradeAmpMove {
+                group_id,
+                node_id,
+                parameter_id,
+                previous_value: job.knobs[0].current,
+                value: Some(fader_value),
+            }],
+            cap: plan.capped,
+        }),
+    })
 }
 
 /// One entry in a setlist leveling pass: the preset slot + its already-loaded
@@ -2073,6 +2487,7 @@ pub fn level_setlist(
             true_peak_dbtp: None,
             persist_mismatch: None,
             trade: None,
+            base_boost: None,
         });
     }
 
@@ -2263,18 +2678,43 @@ fn recall_reassert_save(
     slot: u32,
     restore_scene: Option<u32>,
     reassert_pl: Option<f32>,
+    // Phase 2 (base boost): the base amp fader write the recall's `loadScene` is EQUALLY
+    // exposed to reverting, by the identical mechanism as `presetLevel` (the scene-context
+    // rule: ANY `loadScene` re-asserts the device's SAVED base state). `None` for every
+    // caller but the boost continuation.
+    extra_reassert: Option<(&str, &str, &str, f32)>,
+    // Override what gets registered as this save's witness — the boost continuation's dual
+    // `PresetLevelWithParam` instead of the default single-value `PresetLevel`. `None` keeps
+    // today's registration.
+    override_witness: Option<SaveWitness>,
 ) -> Result<(), String> {
     recall_original_scene(s, restore_scene)?;
-    if let (Some(pl), Some(_)) = (reassert_pl, restore_scene) {
+    // UNCONDITIONAL now (Phase 2 hardening) — re-assert whenever the caller HAS an owned
+    // value, not only when a recall ran. When no recall fired this is a harmless re-write of
+    // a value already sitting in the device's working copy (belt-and-suspenders); when a
+    // recall DID fire (this function's whole reason to exist) it is the fix for the revert
+    // the recall's own `loadScene` just performed. Also what makes `extra_reassert` below
+    // unconditionally safe to layer on top: the fader needs the exact same treatment.
+    if let Some(pl) = reassert_pl {
         s.set_preset_level(pl)?;
         crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
+    if let Some((group, node, param, value)) = extra_reassert {
+        s.change_parameter(group, node, param, value)?;
+        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
+    }
     s.save_current_preset(slot)?;
-    // Whenever this save is carrying a presetLevel (the base/restore/redistribution path —
-    // `reassert_pl` is `Some` regardless of whether a recall made the re-set necessary), it IS
-    // the witness: register it so a same-slot load inside the lazy-commit window waits for it.
-    if let Some(pl) = reassert_pl {
-        register_slot_save(slot, SaveWitness::PresetLevel(pl));
+    match override_witness {
+        Some(w) => register_slot_save(slot, w),
+        None => {
+            // Whenever this save is carrying a presetLevel (the base/restore/redistribution
+            // path — `reassert_pl` is `Some` regardless of whether a recall made the re-set
+            // necessary), it IS the witness: register it so a same-slot load inside the
+            // lazy-commit window waits for it.
+            if let Some(pl) = reassert_pl {
+                register_slot_save(slot, SaveWitness::PresetLevel(pl));
+            }
+        }
     }
     Ok(())
 }
@@ -5585,7 +6025,14 @@ pub fn redistribute_clamped_headroom(
     // `save_deferred_scene_writes`) already registers the raised `new_preset_level` as this
     // save's `PresetLevel` witness — that single value identifies the whole save.
     on_tail("Saving preset…");
-    save_deferred_scene_writes(slot, restore_scene, Some(new_preset_level), None)?;
+    save_deferred_scene_writes(
+        slot,
+        restore_scene,
+        Some(new_preset_level),
+        None,
+        None,
+        None,
+    )?;
 
     // Post-save AUDIO spot-verify at the PERSISTED pl (the wrong-pl-solve guard). Pick a
     // compensated sound that actually moved (writes > 0); re-measure it as-is. Advisory —
@@ -5875,9 +6322,14 @@ fn run_scene_jobs(
             // catches the case where its retry ALSO failed (cancelled path only —
             // the non-cancelled `?` below still surfaces a hard error to the caller).
             on_tail("Saving preset…");
-            if let Err(e) =
-                save_deferred_scene_writes(slot, restore_scene, reassert_pl, scene_witness)
-            {
+            if let Err(e) = save_deferred_scene_writes(
+                slot,
+                restore_scene,
+                reassert_pl,
+                scene_witness,
+                None,
+                None,
+            ) {
                 log::warn!("save_deferred_scene_writes failed on cancel (slot {slot}): {e}");
             }
             // A cancelled run that LANDED A TRADE returns its outcomes (see below), so they
@@ -5888,7 +6340,14 @@ fn run_scene_jobs(
             }
         } else {
             on_tail("Saving preset…");
-            save_deferred_scene_writes(slot, restore_scene, reassert_pl, scene_witness)?;
+            save_deferred_scene_writes(
+                slot,
+                restore_scene,
+                reassert_pl,
+                scene_witness,
+                None,
+                None,
+            )?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
             // after every audio step. A stopped run with no trade returns CANCELLED below and
             // its outcomes are discarded, so it is not worth a read.
@@ -5948,13 +6407,28 @@ fn save_deferred_scene_writes(
     restore_scene: Option<u32>,
     reassert_pl: Option<f32>,
     scene_witness: Option<SaveWitness>,
+    // Phase 2 (base boost): the base amp fader `(group, node, param, value)` to re-assert
+    // alongside `reassert_pl` — see `recall_reassert_save`'s doc. `None` for every other
+    // caller.
+    extra_reassert: Option<(String, String, String, f32)>,
+    // Phase 2: register THIS witness instead of the default `SaveWitness::PresetLevel`.
+    override_witness: Option<SaveWitness>,
 ) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this is ALSO fired on cancel, to persist the scene overlays
     // already written. Bailing here would throw away the run's completed work.
     let attempt = || -> Result<(), String> {
         crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
-        recall_reassert_save(&mut s, slot, restore_scene, reassert_pl)
+        recall_reassert_save(
+            &mut s,
+            slot,
+            restore_scene,
+            reassert_pl,
+            extra_reassert
+                .as_ref()
+                .map(|(g, n, p, v)| (g.as_str(), n.as_str(), p.as_str(), *v)),
+            override_witness.clone(),
+        )
     };
     attempt().or_else(|e| {
         log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
@@ -7796,6 +8270,7 @@ pub fn level_preset_block(
             true_peak_dbtp: None,
             persist_mismatch: None,
             trade: None,
+            base_boost: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -9488,7 +9963,7 @@ mod tests {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(30).expect("load_preset");
-        recall_reassert_save(&mut s, 30, Some(3), Some(0.42)).expect("save");
+        recall_reassert_save(&mut s, 30, Some(3), Some(0.42), None, None).expect("save");
         let tail: Vec<String> = sim
             .events()
             .iter()
@@ -9506,19 +9981,28 @@ mod tests {
         );
     }
 
-    // Without a recall there is nothing to revert — the re-assert must NOT fire
-    // (an unconditional extra write would be a behavior change for plain saves).
+    // PHASE 2 HARDENING (deviation from the old contract, deliberately): the re-assert now
+    // fires whenever the caller HAS an owned value, even with no recall to revert. The OLD
+    // test this replaces (`recall_reassert_save_skips_the_reassert_without_a_recall`) pinned
+    // the opposite — "no recall → no re-assert" — reasoning that an unconditional write would
+    // be an unmotivated behavior change for a plain save. That stopped holding the moment a
+    // second caller (the base-boost continuation's `extra_reassert`) needed a fader write
+    // reasserted on the SAME connection whenever a recall fires; making `presetLevel`'s own
+    // reassert unconditional too keeps both writes on one rule instead of two, and the write
+    // is provably harmless without a recall (the value is already the one sitting in the
+    // device's working copy from `set_knobs` on this same session).
     #[test]
-    fn recall_reassert_save_skips_the_reassert_without_a_recall() {
+    fn recall_reassert_save_reasserts_even_without_a_recall() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(30).expect("load_preset");
-        recall_reassert_save(&mut s, 30, None, Some(0.42)).expect("save");
+        recall_reassert_save(&mut s, 30, None, Some(0.42), None, None).expect("save");
         let ev = sim.events();
         assert!(
-            !ev.iter()
-                .any(|e| matches!(e, crate::sim_device::SimEvent::PresetLevel(_))),
-            "no recall → no re-assert: {ev:?}"
+            ev.iter().any(
+                |e| matches!(e, crate::sim_device::SimEvent::PresetLevel(v) if (*v - 0.42).abs() < 1e-6)
+            ),
+            "no recall still re-asserts the caller's owned value: {ev:?}"
         );
         assert!(
             ev.iter()

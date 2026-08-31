@@ -345,16 +345,79 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                      block(s) off",
                     force.len()
                 );
+                // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing
+                // (Phase 2, the plumes/BD2/OCD-class regression fix): the same amp-
+                // `outputLevel` classifier a scene batch run uses
+                // (`build_scene_jobs_with_handles`), scoped to base
+                // (`session::BASE_SCENE_SLOT`). `None` on ANY refusal — an unusual routing
+                // (parallel/split/mic), no amp-`outputLevel` candidate, a classifier error,
+                // or an amp the isolation list above already force-bypasses (boosting an amp
+                // that's forced OFF for this isolated capture is nonsensical) — degrades to
+                // today's plain path, never a hard error: boost is an OPPORTUNISTIC extra,
+                // not a leveling prerequisite.
+                let candidates =
+                    filter_amp_candidates(session::extract_level_blocks(&preset));
+                let base_amp: Option<leveller::SceneJob> = (!candidates.is_empty())
+                    .then(|| {
+                        build_scene_jobs_with_handles(
+                            &[session::BASE_SCENE_SLOT],
+                            &candidates,
+                            &[(session::BASE_SCENE_SLOT, Some(preset.clone()))],
+                            target_lufs,
+                            Some(&preset),
+                            &[],
+                        )
+                        .ok()
+                    })
+                    .flatten()
+                    .and_then(|jobs| jobs.into_iter().next())
+                    .filter(|job| job.skip.is_none() && job.knobs.len() == 1)
+                    .filter(|job| {
+                        !job.knobs.iter().any(|kt| match &kt.knob {
+                            leveller::LevelKnob::Block { group_id, node_id, .. } => force
+                                .iter()
+                                .any(|(g, n, _)| g == group_id && n == node_id),
+                            leveller::LevelKnob::PresetLevel => false,
+                        })
+                    })
+                    // `build_scene_jobs_with_handles` always emits `force_bypass: Vec::new()`
+                    // — isolation is stamped onto the job by its caller after the builder
+                    // returns (see `level_scenes_apply_batched`). Without this, `jointk_one_scene`
+                    // → `apply_levels` → `set_knobs`'s base recall (`load_scene`) would revert
+                    // the forced-bypass footswitches to their SAVED state mid-solve, so every
+                    // capture in the boost's measure/verify/secant loop would read base-with-
+                    // pedals-on instead of the isolated base the plan was computed against —
+                    // silently wrong by whatever those pedals add, with `verify_lufs` still
+                    // reading on-target. Stamp the SAME isolation list this call already forces
+                    // for its own plain-path capture.
+                    .map(|mut job| {
+                        job.force_bypass = force.clone();
+                        job
+                    });
+                let has_scenes = preset
+                    .get("scenes")
+                    .and_then(|s| s.as_array())
+                    .is_some_and(|s| !s.is_empty());
+                log::info!(
+                    "level_preset slot={slot}: base boost candidate {}",
+                    match &base_amp {
+                        Some(job) => format!("{} (has_scenes={has_scenes})", job.knobs[0].knob.label()),
+                        None => "none".to_string(),
+                    }
+                );
                 // That read opened its own session — gap before level_preset reconnects, else
                 // the quick reopen risks the HID open-lockout (0xe00002c5).
                 crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                leveller::level_preset(
+                leveller::level_preset_with_base_amp(
                     slot,
                     &stim,
                     target_lufs,
                     opts,
                     &force,
                     previous_level,
+                    base_amp,
+                    has_scenes,
+                    Some(&preset),
                     cancelled,
                 )
             }

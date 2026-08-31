@@ -1617,6 +1617,9 @@ fn outcome_to_level_result(
         // `scene_progress_item`'s doc for why the channel items need it too, not just the
         // awaited return vec.
         trade: trade.cloned(),
+        // Base-pair BOOST (Phase 2) is a `level_preset` base-row-only disclosure; a batched
+        // scene outcome never carries one.
+        base_boost: None,
     }
 }
 

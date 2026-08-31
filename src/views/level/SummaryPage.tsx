@@ -18,6 +18,12 @@
 // Control backup. The gain-budget redistribution / common-target / headroom-trade
 // disclosure features are gone from the wizard entirely; a clamped row's message is
 // always the one generic sentence below, regardless of clamp cause.
+//
+// ONE exception: a base row's `baseBoost` (Phase 2, the plumes/BD2/OCD-class regression
+// fix). Unlike the removed trade disclosure, this reports a PERMANENT change to the saved
+// preset (danger.md: a save cannot be undone from the app) — the amp's own output level,
+// not just presetLevel — so it earns its own sentence regardless of the row's outcome
+// (`applied: true` most often lands on a `done` row, not a clamped one).
 
 import { useMemo, type ReactNode } from "react";
 
@@ -31,6 +37,7 @@ import { useGroupOpen } from "./useGroupOpen";
 import { ByEarChip } from "../overlays/ByEarChip";
 import { fmtLufs } from "../../lib/format";
 import { groupItemsBySlot, offbranchStatus, type RunItem } from "./leveling";
+import type { BaseBoostSummary } from "../../lib/types";
 
 const TRUE_PEAK_WARN_DBTP = -1;
 
@@ -106,6 +113,24 @@ function problemFor(
   const key = problemKeyOf(it);
   if (!key) return null;
   return { ...PROBLEM[key](it), color: colorOf(key) };
+}
+
+/** The one-sentence base-boost disclosure (see the module header's exception note), per the
+ *  plan's own wording (`delegated-cuddling-lark.md`, Phase 2 "Frontend": "'Turned this preset
+ *  up as far as it goes and raised the amp's output from 0.28 to 0.51 to reach the target.'
+ *  (`applied:false` => 'would raise…')"). Only the SECOND verb flips on `applied: false` —
+ *  `presetLevel`'s own raise to its ceiling already ran (and, when `opts.save` is set,
+ *  persisted) in both branches; it's only the base amp fader's move that stayed unsolved.
+ *  Either way the amplitude comes from `base_amps[0]` to 2 decimals — on `applied: false`
+ *  that's the planner's SEED (`LevelPairPlan.fader_target`), not a solved prediction, but the
+ *  plan's own example sentence names concrete before/after numbers even in the unapplied case. */
+function baseBoostSentence(b: BaseBoostSummary): string {
+  const amp = b.base_amps[0];
+  const from = amp.previous_value.toFixed(2);
+  const to = amp.value != null ? amp.value.toFixed(2) : from;
+  return b.applied
+    ? `Turned this preset up as far as it goes and raised the amp’s output from ${from} to ${to} to reach the target.`
+    : `Turned this preset up as far as it goes and would raise the amp’s output from ${from} to ${to} to reach the target.`;
 }
 
 export interface SummaryPageProps {
@@ -522,6 +547,38 @@ export function SummaryPage({
                               {q.fix}
                             </span>
                           )}
+                      </div>
+                    )}
+                    {it.baseBoost && (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: t.space6,
+                          padding: "0 0 4px 26px",
+                        }}
+                      >
+                        <span style={{ flexShrink: 0, paddingTop: 1 }}>
+                          <Icon
+                            name="info"
+                            size={12}
+                            stroke={t.accentDeep}
+                            strokeWidth={1.7}
+                          />
+                        </span>
+                        <span
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            fontFamily: t.sans,
+                            fontSize: 12.5,
+                            lineHeight: 1.5,
+                            color: t.mutedInk,
+                            textWrap: "pretty",
+                          }}
+                        >
+                          {baseBoostSentence(it.baseBoost)}
+                        </span>
                       </div>
                     )}
                   </div>

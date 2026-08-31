@@ -173,6 +173,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
           persist_mismatch: null,
           clamp_kind: null,
           trade: null,
+          base_boost: null,
         },
         message: null,
       });

@@ -39,6 +39,14 @@ pub const BASE_FADER_FLOOR: f32 = 0.01;
 /// `presetLevel`'s own ceiling — THE same amplitude ceiling the preset/scene lanes clamp to.
 const PRESET_LEVEL_MAX: f32 = crate::leveller::LEVEL_MAX;
 
+/// The base amp fader's own ceiling — the SAME physical ceiling as [`PRESET_LEVEL_MAX`]
+/// (`outputLevel` and `presetLevel` share one linear `[0, 1]` range on this device), named
+/// separately because [`plan_level_pair`] treats the two controls as distinct lanes with
+/// distinct excursion costs (see that function's doc). A shared constant would read as if the
+/// two ceilings could ever diverge — they cannot, but the BOOST regime still needs to reason
+/// about "the fader's own top" as its own quantity, not `presetLevel`'s borrowed one.
+pub const BASE_FADER_CEILING: f32 = crate::leveller::LEVEL_MAX;
+
 /// The QUIETEST value in `currents` that is still ABOVE `floor` — the lane that binds a joint
 /// scale-DOWN, since every lane moves by ONE factor and the nearest to the floor runs out
 /// first. `None` = no audible lane at all (every value is at or below the floor).
@@ -249,6 +257,19 @@ fn base_fader_room_db(base_fader: f32) -> f64 {
     (20.0 * (base_fader as f64 / BASE_FADER_FLOOR as f64).log10()).max(0.0)
 }
 
+/// dB of `outputLevel` headroom left ABOVE `base_fader`, up to [`BASE_FADER_CEILING`] — the
+/// BOOST-regime mirror of [`preset_level_room_db`] (which asks the same question of
+/// `presetLevel`). [`plan_level_pair`]'s module doc explains why BOOST needs this direction at
+/// all: a base short even at `presetLevel`'s own ceiling has nowhere left to buy headroom but
+/// the fader, and only UPWARD — the ordinary trade's DOWNWARD room ([`base_fader_room_db`])
+/// cannot supply a raise.
+fn base_fader_room_up_db(base_fader: f32) -> f64 {
+    if base_fader <= 0.0 {
+        return 0.0;
+    }
+    (20.0 * (BASE_FADER_CEILING as f64 / base_fader as f64).log10()).max(0.0)
+}
+
 /// Does raising base `presetLevel` and re-leveling this scene's OWN row actually put the row
 /// somewhere the compensating base-fader drop can't take back? Answered off `SceneOverlay`'s
 /// "scene-writable" shape, not off ceiling-inheritance physics: `Full` already carries its own
@@ -287,28 +308,195 @@ pub fn retains_prepass_after_raise(
     matches!(overlay, crate::probe_api::scene_jobs::SceneOverlay::Full(_))
 }
 
-/// Plan the trade. Pure: `sounds` are the prepass ceilings, `preset_level` the preset's
-/// current base `presetLevel`, `base_fader` the QUIETEST audible BASE amp `outputLevel` (see
-/// [`min_audible_above`]).
-///
-/// The raise is EXACTLY the missing dB of the worst *benefiting* clamp (physics: the rise is
-/// 1:1 in dB for those sounds), trimmed by the two caps. Non-benefiting clamps do not enter
-/// the maximum — they cannot be helped and must not drag the whole preset's gain structure
-/// around.
-pub fn plan_headroom_trade(sounds: &[TradeSound], preset_level: f32, base_fader: f32) -> TradePlan {
-    // TRIGGER: only a benefiting sound's clamp justifies churning the base pair.
-    let want = sounds
+/// The worst *benefiting* clamp's missing dB — the TRIGGER for a base-pair move on the
+/// non-BOOST regimes. Only a benefiting sound's deficit may drive one (physics: the rise is
+/// 1:1 in dB for those sounds — see the module header); a non-benefiting clamp cannot be
+/// helped and must not drag the whole preset's gain structure around. Shared by
+/// [`plan_level_pair`]'s TRADE regime and (through it) by [`plan_headroom_trade`], so the two
+/// can never compute "how much does the worst sound want" two different ways.
+fn benefiting_deficit_db(sounds: &[TradeSound]) -> f64 {
+    sounds
         .iter()
         .filter(|s| s.benefits && s.deficit_lu() > TRADE_CLAMP_EPS_LU)
         .map(TradeSound::deficit_lu)
-        .fold(0.0f64, f64::max);
+        .fold(0.0f64, f64::max)
+}
 
-    let pl_room = preset_level_room_db(preset_level);
-    let fader_room = base_fader_room_db(base_fader);
-    let raise_db = want.min(pl_room).min(fader_room).max(0.0);
-    let capped = if want > raise_db {
-        // Report the BINDING cap — the smaller room is what actually stopped the raise.
-        Some(if pl_room <= fader_room {
+/// The fader SEED for the closed-loop solve that follows a plan — never the answer itself
+/// (module header: `outputLevel` response through a real chain is not algebraically
+/// predictable). `None` when `df_db` is exactly zero: the fader must not be touched at all in
+/// that case, not seeded to its own current value and then "solved" back to where it started
+/// — a spurious write this module exists in part to avoid (every write is a chance to drop
+/// one).
+fn seed_fader_target(base_fader: f32, df_db: f64) -> Option<f32> {
+    if df_db == 0.0 {
+        return None;
+    }
+    let seeded = base_fader as f64 * 10f64.powf(df_db / 20.0);
+    Some((seeded as f32).clamp(BASE_FADER_FLOOR, BASE_FADER_CEILING))
+}
+
+/// Which of the two base-pair regimes (or neither) [`plan_level_pair`] chose. Serializable so
+/// the run's disclosure (`BaseBoostSummary` downstream) can say WHICH kind of move happened,
+/// not just that one did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairRegime {
+    /// Base is already on target (within [`TRADE_CLAMP_EPS_LU`]) and no benefiting sound is
+    /// clamped either — the base pair is untouched.
+    None,
+    /// [`plan_headroom_trade`]'s original semantics: `presetLevel` rises just far enough to
+    /// cover the worst benefiting clamp (or the base's own shortfall, whichever is larger),
+    /// and the base fader absorbs the SAME amount in the opposite direction so the base sound
+    /// itself lands exactly on target.
+    Trade,
+    /// `presetLevel` alone cannot cover the base's own shortfall even at its own ceiling —
+    /// `presetLevel` is pushed to [`PRESET_LEVEL_MAX`] and the base fader makes up the rest,
+    /// UPWARD, past its normal role of merely absorbing a `presetLevel` raise.
+    Boost,
+    /// Neither control, even both pushed to their limits, can close the base's own gap. No
+    /// move is made; the caller reports today's honest clamp.
+    Infeasible,
+}
+
+/// The joint plan: how much to move `presetLevel` and the base fader, and why. See
+/// [`plan_level_pair`]'s doc for the physics and the split policy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelPairPlan {
+    /// dB to ADD to base `presetLevel`. Never negative — this planner never lowers
+    /// `presetLevel` below its authored value (module header: the existing trade only ever
+    /// raises it, and BOOST inherits that convention).
+    pub dp_db: f64,
+    /// dB to ADD to the base fader's `outputLevel` (SIGNED — negative is the ordinary trade's
+    /// compensating drop, positive is BOOST's raise). `0.0` iff [`Self::fader_target`] is
+    /// `None`.
+    pub df_db: f64,
+    /// The base `presetLevel` this plan lands on — exact (module header), via
+    /// [`raised_preset_level`].
+    pub preset_level: f32,
+    /// The base fader's SEED value for the closed-loop solve that must follow — never a
+    /// prediction of the solved answer (module header). `None` means "do not touch the
+    /// fader": either nothing needs to move, or `presetLevel` alone already covers it.
+    pub fader_target: Option<f32>,
+    /// Which regime produced this plan.
+    pub regime: PairRegime,
+    /// Which bound trimmed the ask below what it wanted, if one did. Only set in
+    /// [`PairRegime::Boost`] (always `PresetLevelMax` — that regime exists precisely because
+    /// `presetLevel` pinned) and in [`PairRegime::Trade`] when the worse of the two asks
+    /// (benefiting deficit vs. the base's own `G`) exceeded what the bounds could supply.
+    pub capped: Option<TradeCap>,
+}
+
+/// THE JOINT PLANNER. Base and its compensating fader must land the base sound EXACTLY on
+/// `base_target_lufs`, starting from a single as-is measurement `base_asis_lufs` — the
+/// physics is `Δp + Δf = G = base_target_lufs − base_asis_lufs`, fixed by that one
+/// measurement; the only freedom is HOW `G` splits between the two controls. `sounds` carries
+/// every OTHER sound's prepass ceiling, exactly as [`plan_headroom_trade`] always took it —
+/// see the module header for who benefits from a `presetLevel` raise and why.
+///
+/// SPLIT POLICY (ratified, not derived): put as much of `G` on `presetLevel` as the situation
+/// allows, and let the fader carry only what's left. `presetLevel` is EXACT and LINEAR
+/// (`captured_LUFS = 20·log10(presetLevel) + C`, module header) — moving it is a prediction
+/// with zero error. The fader's response through a real DSP chain is NOT algebraically
+/// predictable (the module header's own soft-knee-compressor example, off by over 1 dB from
+/// the naive taper) and must be found by a bounded closed-loop solve, at the cost of extra
+/// re-amp captures. So the split policy MINIMIZES THE UNPREDICTABLE CONTROL'S EXCURSION: TRADE
+/// asks the fader for nothing beyond what `presetLevel` cannot supply, and even BOOST — which
+/// exists only because `presetLevel` ran out of room — hands the fader the smallest residual
+/// that closes `G`, never more.
+///
+/// Four outcomes ([`PairRegime`]):
+/// * `None` — base is already on target and nothing else is clamped; no move.
+/// * `Trade` — [`plan_headroom_trade`]'s original shape: `presetLevel` rises by
+///   `max(benefiting deficit, G)`, the fader absorbs the difference so the base lands exactly
+///   on target. Provably identical to the pre-Phase-1 formula when `G == 0` (the U1 gate) —
+///   that is the exact shape [`plan_headroom_trade`] wraps this function to reproduce.
+/// * `Boost` — `G` alone exceeds what `presetLevel`'s own ceiling can supply: `presetLevel`
+///   goes to [`PRESET_LEVEL_MAX`] and the fader makes up the remainder, UPWARD.
+/// * `Infeasible` — even both controls at their limits cannot close `G`; no move, the honest
+///   clamp is the caller's to report (module header: this module reports readiness, never a
+///   second measured verdict).
+///
+/// PURE. This function never touches the device, never blocks, never fails — it is arithmetic
+/// over numbers the caller already measured. The device-facing half (the actual closed-loop
+/// fader solve, the writes, the save) lives entirely in `leveller.rs`.
+pub fn plan_level_pair(
+    sounds: &[TradeSound],
+    base_asis_lufs: f64,
+    base_target_lufs: f64,
+    preset_level: f32,
+    base_fader: f32,
+) -> LevelPairPlan {
+    let g = base_target_lufs - base_asis_lufs;
+    let p_up = preset_level_room_db(preset_level);
+    let f_up = base_fader_room_up_db(base_fader);
+    let f_dn = -base_fader_room_db(base_fader);
+
+    // Feasible Δp window: Δf = G − Δp must land in [F_dn, F_up], and Δp itself must land in
+    // [0, P_up] (this planner never lowers presetLevel below its authored value).
+    let dp_lo = (g - f_up).max(0.0);
+    let dp_hi = (g - f_dn).min(p_up);
+
+    let no_move = |regime| LevelPairPlan {
+        dp_db: 0.0,
+        df_db: 0.0,
+        preset_level,
+        fader_target: None,
+        regime,
+        capped: None,
+    };
+
+    // ORDER IS LOAD-BEARING (same load-bearing-order discipline as `ClampKind::from_flags`).
+    // Infeasibility must be checked BEFORE Boost: a base short enough to trigger Boost's own
+    // trigger condition can ALSO fail feasibility (both controls already maxed and still
+    // short of G), and Boost-first would report a fader raise the bounds just proved cannot
+    // happen.
+    if dp_lo > dp_hi {
+        return no_move(PairRegime::Infeasible);
+    }
+
+    if g > p_up + TRADE_CLAMP_EPS_LU {
+        // BOOST. Feasibility (just checked) guarantees dp_hi == p_up here: F_dn <= 0 always
+        // (base_fader_room_db never returns a negative room), so G - F_dn >= G > P_up, hence
+        // dp_hi = min(P_up, G - F_dn) = P_up. Written as `p_up.min(dp_hi)` anyway so the
+        // "presetLevel to its ceiling" intent reads directly off the arithmetic.
+        let dp = p_up.min(dp_hi);
+        let df = g - dp;
+        return LevelPairPlan {
+            dp_db: dp,
+            df_db: df,
+            preset_level: raised_preset_level(preset_level, dp),
+            fader_target: seed_fader_target(base_fader, df),
+            regime: PairRegime::Boost,
+            // presetLevel is pinned at its own ceiling BY DEFINITION of this branch.
+            capped: Some(TradeCap::PresetLevelMax),
+        };
+    }
+
+    let d_ben = benefiting_deficit_db(sounds);
+
+    // NONE. Both halves of this test matter: `plan_headroom_trade`'s wrapper always calls
+    // with `base_asis_lufs == base_target_lufs`, so G is EXACTLY zero on every legacy call —
+    // gating on G alone would silence every legacy trade the moment a benefiting sound
+    // clamped, which the U1 equivalence gate forbids. A real "nothing to do" only exists when
+    // NEITHER half asks for anything.
+    if g.abs() <= TRADE_CLAMP_EPS_LU && d_ben <= TRADE_CLAMP_EPS_LU {
+        return no_move(PairRegime::None);
+    }
+
+    // TRADE. The ask is the LARGER of what a benefiting sound wants and what the base's own G
+    // demands — G must never be shorted here, because Phase 2 routes this regime to "today's
+    // path", whose executor moves presetLevel by exactly G when nothing else asks for more.
+    // Taking only the benefiting deficit (dropping G in a `max(d_ben, dp_lo)` shape) would let
+    // the fader — the UNPREDICTABLE control — absorb G whenever d_ben fell short of it,
+    // exactly the excursion the split policy above exists to avoid.
+    let ask = d_ben.max(g);
+    let dp = ask.clamp(dp_lo, dp_hi);
+    let df = g - dp;
+    let capped = if ask > dp_hi {
+        // Same tie-break as the legacy formula: the SMALLER room is what actually bound the
+        // raise. At G == 0 this is bit-for-bit the old `pl_room <= fader_room` comparison.
+        Some(if p_up <= g - f_dn {
             TradeCap::PresetLevelMax
         } else {
             TradeCap::BaseFaderFloor
@@ -317,7 +505,35 @@ pub fn plan_headroom_trade(sounds: &[TradeSound], preset_level: f32, base_fader:
         None
     };
 
-    TradePlan { raise_db, capped }
+    LevelPairPlan {
+        dp_db: dp,
+        df_db: df,
+        preset_level: raised_preset_level(preset_level, dp),
+        fader_target: seed_fader_target(base_fader, df),
+        regime: PairRegime::Trade,
+        capped,
+    }
+}
+
+/// Plan the trade. Pure: `sounds` are the prepass ceilings, `preset_level` the preset's
+/// current base `presetLevel`, `base_fader` the QUIETEST audible BASE amp `outputLevel` (see
+/// [`min_audible_above`]).
+///
+/// THIN WRAPPER over [`plan_level_pair`] (Phase 1): this function's base was always implicitly
+/// "already on target" — it only ever moved the base pair to buy headroom for OTHER
+/// (benefiting) sounds, holding the base itself exactly where it started (`Δp + Δf == 0`).
+/// Passing equal `base_asis_lufs`/`base_target_lufs` (`G == 0` exactly) reproduces that shape
+/// bit-for-bit — the U1 gate proves it over a `p₀ × f₀ × D_ben` grid against this function's
+/// pre-Phase-1 formula. `plan_level_pair`'s `Infeasible` and `Boost` regimes never trigger on
+/// a `G == 0` call (both require `G` to actually demand something), so every call here lands
+/// in `None` or `Trade` — exactly the two outcomes this function's `TradePlan` shape already
+/// modeled.
+pub fn plan_headroom_trade(sounds: &[TradeSound], preset_level: f32, base_fader: f32) -> TradePlan {
+    let plan = plan_level_pair(sounds, 0.0, 0.0, preset_level, base_fader);
+    TradePlan {
+        raise_db: plan.dp_db,
+        capped: plan.capped,
+    }
 }
 
 /// RE-PLAN after a first attempt's base hold pinned at [`BASE_FADER_FLOOR`], at the raise the
@@ -361,8 +577,13 @@ pub struct TradeAmpMove {
     pub parameter_id: String,
     /// The `outputLevel` the preset carried BEFORE the trade — the Restore anchor.
     pub previous_value: f32,
-    /// The SOLVED value the hold landed on. `None` on an advisory: the fader response is not
-    /// algebraically predictable, so a run that did not actually solve it must not invent one.
+    /// The SOLVED value the hold landed on. `None` on a TRADE advisory: the fader response is
+    /// not algebraically predictable, so a run that did not actually solve it must not invent
+    /// one. Exception: a BOOST advisory (`BaseBoostSummary.applied == false`) populates this
+    /// with `LevelPairPlan::fader_target` — that field is documented as a SEED, not a solved
+    /// prediction, but the plan's own disclosure wording names it explicitly ("...raised the
+    /// amp's output from 0.28 to 0.51..." / "would raise..." for the unapplied case), so the
+    /// UI needs a number here even before any closed-loop solve has run.
     pub value: Option<f32>,
 }
 
@@ -395,6 +616,49 @@ pub struct TradeSummary {
     /// that to `u32` would make the FS lane's rows indistinguishable from their context scene's
     /// the moment it reports a trade of its own.
     pub benefiting: Vec<SoundId>,
+}
+
+/// A BASE-pair BOOST disclosure (Phase 2 — the plumes/BD2/OCD-class regression fix): the base
+/// row's OWN `presetLevel`/base-amp-`outputLevel` pair, planned by [`plan_level_pair`] and
+/// (when the regime/save/scene shape allows it — see `leveller::level_preset`'s routing)
+/// APPLIED as a joint move, the mirror image of [`TradeSummary`]'s downward trade. `presetLevel`
+/// is pinned at its ceiling and the base amp's fader is RAISED to close the remaining gap,
+/// because base has no benefiting-row deficit to redistribute against — it IS the row that's
+/// short.
+///
+/// Same `applied` discriminator as [`TradeSummary`]:
+/// * `true` — the pair was solved and (on a save run) persisted; `base_amps[0].value` is the
+///   solved fader.
+/// * `false` — ADVISORY. The plan calls for a boost but this run's shape can't apply it this
+///   cycle (no `save`, or a scene preset — v1 scopes the full continuation to scene-less
+///   presets only), so the row still clamps honestly at `presetLevel`'s ceiling and this
+///   states what raising the fader by `fader_db` WOULD close; `base_amps[0].value` stays
+///   `None` (the fader response isn't algebraically predictable without actually solving it —
+///   same rule as `TradeAmpMove::value`).
+///
+/// `danger.md`: a save cannot be undone from the app, so an APPLIED boost has to say so with
+/// enough detail for the UI to disclose it — same rationale as `TradeSummary`'s own doc.
+/// Snake_case on the wire — see [`TradeAmpMove`] for the layer rule.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct BaseBoostSummary {
+    pub applied: bool,
+    /// The pair regime `plan_level_pair` reported for base — always [`PairRegime::Boost`] when
+    /// this summary exists at all (the routing in `leveller::level_preset` only ever
+    /// constructs one for a `Boost` plan), carried anyway so a consumer never has to assume it.
+    pub regime: PairRegime,
+    /// dB `presetLevel` was raised to reach its ceiling (== the plan's `dp_db`).
+    pub raise_db: f64,
+    /// dB the base amp's fader was (or would be) raised (== the plan's `df_db`).
+    pub fader_db: f64,
+    pub previous_preset_level: f32,
+    /// The raised `presetLevel` — exact either way (module header), so an advisory can state
+    /// it without measuring.
+    pub preset_level: f32,
+    /// The base amp candidate the boost moves. Exactly one element: v1 boost refuses when more
+    /// than one amp candidate is eligible (see `commands::level_preset`'s single-job guard).
+    pub base_amps: Vec<TradeAmpMove>,
+    /// Why the plan's own raise was trimmed, if it was (mirrors [`TradeSummary::cap`]).
+    pub cap: Option<TradeCap>,
 }
 
 #[cfg(test)]
@@ -683,5 +947,195 @@ mod tests {
         assert_eq!(json(ClampKind::TradeFloor), "\"trade_floor\"");
         assert_eq!(json(ClampKind::PartialTrade), "\"partial_trade\"");
         assert_eq!(json(ClampKind::NoAuthority), "\"no_authority\"");
+    }
+
+    // ============================================================================
+    // Phase 1 unit gates U1-U9 for `plan_level_pair`, the joint (presetLevel, base fader)
+    // planner behind the leveling regression fix. See `notes/leveling.md` and the module doc
+    // on `plan_level_pair` for the physics; each gate below is named for the fact it pins.
+    // ============================================================================
+
+    // U1. THE EQUIVALENCE GATE. `plan_headroom_trade`'s wrapper always calls
+    // `plan_level_pair` with G == 0 exactly (base "already on target"), which must reproduce
+    // the pre-Phase-1 formula bit-compatibly: `want.min(pl_room).min(fader_room).max(0.0)`,
+    // with the SAME cap tie-break. Swept over a p0 x f0 x D_ben grid, including the boundary
+    // D_ben == 0 (no benefiting clamp at all -> None regime, raise 0).
+    #[test]
+    fn the_pair_planner_reproduces_plan_headroom_trade_when_base_is_already_on_target() {
+        let p0_values = [0.05_f32, 0.27, 0.5, 0.8, 1.0];
+        let f0_values = [0.02_f32, 0.28, 0.5, 0.9, 1.0];
+        let d_ben_values = [0.0_f64, 2.0, 6.0, 12.0, 20.0];
+
+        for &p0 in &p0_values {
+            for &f0 in &f0_values {
+                for &d_ben in &d_ben_values {
+                    let sounds: Vec<TradeSound> = if d_ben > 0.0 {
+                        vec![scene(0, -15.0 - d_ben, -15.0, true)]
+                    } else {
+                        vec![]
+                    };
+
+                    let legacy = plan_headroom_trade(&sounds, p0, f0);
+                    let pair = plan_level_pair(&sounds, 0.0, 0.0, p0, f0);
+
+                    let pl_room = preset_level_room_db(p0);
+                    let fader_room = base_fader_room_db(f0);
+                    let expected_raise = d_ben.min(pl_room).min(fader_room).max(0.0);
+
+                    assert!(
+                        (legacy.raise_db - expected_raise).abs() < 1e-6,
+                        "legacy oracle drifted at p0={p0} f0={f0} d_ben={d_ben}: {:?}",
+                        legacy
+                    );
+                    assert!(
+                        (pair.dp_db - expected_raise).abs() < 1e-6,
+                        "pair planner disagrees with the legacy oracle at p0={p0} f0={f0} \
+                         d_ben={d_ben}: {:?}",
+                        pair
+                    );
+                    assert_eq!(
+                        legacy.raise_db, pair.dp_db,
+                        "wrapper must forward the planner's own raise unchanged"
+                    );
+                    assert_eq!(legacy.capped, pair.capped, "and the same cap verdict");
+                }
+            }
+        }
+    }
+
+    // U2. Plumes+BD2+OCD numbers (2026-08-31 investigation): presetLevel alone (P_up ~11.1
+    // dB) cannot cover the ~16.4 LU deficit, so it pins at its ceiling and the base fader
+    // absorbs the remaining ~5 dB, UPWARD.
+    #[test]
+    fn base_unreachable_at_preset_level_max_pins_the_level_and_raises_the_fader() {
+        let plan = plan_level_pair(&[], -39.37, -23.0, 0.27, 0.28);
+        assert_eq!(plan.regime, PairRegime::Boost);
+        assert_eq!(plan.capped, Some(TradeCap::PresetLevelMax));
+        assert!((plan.dp_db - 11.37).abs() < 1e-2, "{:?}", plan);
+        assert!((plan.df_db - 5.00).abs() < 1e-2, "{:?}", plan);
+        assert!((plan.preset_level - 1.0).abs() < 1e-4, "{:?}", plan);
+        let fader_target = plan.fader_target.expect("Boost always seeds a fader move");
+        assert!((fader_target - 0.498).abs() < 2e-3, "{:?}", plan);
+    }
+
+    // U3. Friedman HBE numbers: the base's own deficit (~1.02 LU) fits comfortably inside
+    // presetLevel's own room (~6.0 dB), so the fader must NEVER move — `df_db` is bit-exactly
+    // zero (see `plan_level_pair`'s TRADE-regime comment on why the ask is `max(d_ben, G)`,
+    // not a smaller quantity that would leave the fader to cover the remainder).
+    #[test]
+    fn a_base_preset_level_alone_can_reach_never_moves_the_fader() {
+        let plan = plan_level_pair(&[], -24.02, -23.0, 0.5, 1.0);
+        assert_eq!(plan.regime, PairRegime::Trade);
+        assert!((plan.dp_db - 1.02).abs() < 1e-6, "{:?}", plan);
+        assert_eq!(
+            plan.df_db, 0.0,
+            "presetLevel alone reaches target -- the fader must not move"
+        );
+        assert_eq!(plan.fader_target, None);
+        assert!((plan.preset_level - 0.5623).abs() < 1e-3, "{:?}", plan);
+    }
+
+    // U4. Both controls already at their ceilings (`presetLevel == 1.0`, base fader == 1.0)
+    // and the base is still short: neither control has room left in EITHER direction, so the
+    // window is empty (`dp_lo > dp_hi`) and the plan is Infeasible -- no move, honest clamp
+    // upstream.
+    #[test]
+    fn a_base_short_with_both_controls_at_their_ceilings_is_infeasible() {
+        let plan = plan_level_pair(&[], -30.0, -20.0, 1.0, 1.0);
+        assert_eq!(plan.regime, PairRegime::Infeasible);
+        assert_eq!(plan.dp_db, 0.0);
+        assert_eq!(plan.df_db, 0.0);
+        assert_eq!(plan.fader_target, None);
+        assert_eq!(
+            plan.preset_level, 1.0,
+            "an infeasible plan never touches presetLevel"
+        );
+        assert_eq!(plan.capped, None);
+    }
+
+    // U5. Whatever regime fires, a SEEDED fader value (`Some`) must land inside
+    // `[BASE_FADER_FLOOR, BASE_FADER_CEILING]` -- it is, after all, a value the closed-loop
+    // solve is about to WRITE to the device. Swept over a broad p0 x f0 x G grid.
+    #[test]
+    fn the_pair_plan_never_seeds_a_fader_below_the_base_fader_floor_or_above_level_max() {
+        let p0_values = [0.05_f32, 0.27, 0.5, 0.9, 1.0];
+        let f0_values = [0.02_f32, 0.28, 0.5, 0.9, 1.0];
+        let g_values = [-30.0_f64, -10.0, -1.0, 0.0, 1.0, 5.0, 16.4, 30.0, 60.0];
+
+        for &p0 in &p0_values {
+            for &f0 in &f0_values {
+                for &g in &g_values {
+                    let plan = plan_level_pair(&[], 0.0, g, p0, f0);
+                    if let Some(ft) = plan.fader_target {
+                        assert!(
+                            (BASE_FADER_FLOOR..=BASE_FADER_CEILING).contains(&ft),
+                            "fader_target {ft} outside [{BASE_FADER_FLOOR}, \
+                             {BASE_FADER_CEILING}] at p0={p0} f0={f0} g={g}: {:?}",
+                            plan
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // U6. A base deficit inside the acceptance band, with NO benefiting sound clamped either,
+    // plans no move at all -- the planner and the runner must agree about "done" (module
+    // header on `TRADE_CLAMP_EPS_LU`). NB a benefiting clamp at the same |G| still trades
+    // (that is legacy behaviour, proven by U1) -- this gate deliberately uses a non-benefiting
+    // sound so both halves of the None gate are exercised.
+    #[test]
+    fn a_deficit_inside_the_acceptance_band_plans_no_move() {
+        let inside = TRADE_CLAMP_EPS_LU - 0.01;
+        let sounds = [scene(0, -30.0, -15.0, false)]; // clamped, but does not benefit
+        let plan = plan_level_pair(&sounds, -23.0, -23.0 + inside, 0.5, 0.8);
+        assert_eq!(plan.regime, PairRegime::None);
+        assert_eq!(plan.dp_db, 0.0);
+        assert_eq!(plan.df_db, 0.0);
+        assert_eq!(plan.fader_target, None);
+        assert_eq!(plan.preset_level, 0.5);
+        assert_eq!(plan.capped, None);
+    }
+
+    // U7. THE ARITHMETIC CONTRACT the write phase depends on: a Full-overlay scene rides
+    // `Δp` alone (module header, `benefits_from_base_raise`), while the base sound itself
+    // rides `Δp + Δf` and that total must land it EXACTLY on its own target (the physics this
+    // whole planner exists to satisfy) -- so a scene's shift can never exceed the base's own
+    // total move.
+    #[test]
+    fn benefiting_ceilings_shift_by_delta_p_and_fader_riding_ceilings_by_the_total() {
+        let asis = -39.37;
+        let target = -23.0;
+        let plan = plan_level_pair(&[], asis, target, 0.27, 0.28);
+
+        let full_overlay_scene_shift = plan.dp_db;
+        let base_and_fs_shift = plan.dp_db + plan.df_db;
+
+        assert!(
+            (base_and_fs_shift - (target - asis)).abs() < 1e-9,
+            "the base's own move must land it exactly on target: {:?}",
+            plan
+        );
+        assert!(
+            full_overlay_scene_shift <= base_and_fs_shift + 1e-9,
+            "a Full-overlay scene rides dp alone, which can never exceed the base's total \
+             move: {:?}",
+            plan
+        );
+    }
+
+    // U8 -- SKIPPED BY DESIGN. The >=2-amp refusal (danger.md's OPEN distrust of parallel-amp
+    // scene-0 leveling) is enforced at the Phase-2 call site that decides WHICH amp
+    // candidates ever reach this planner -- `plan_level_pair` is pure arithmetic over whatever
+    // `sounds`/levels it is handed and has no way to see "how many amps" produced them. See
+    // leveller.rs's Base-arm derivation for that guard.
+
+    // U9. `LevelPairPlan::preset_level` must be EXACTLY what `raised_preset_level` computes
+    // from the SAME `dp_db` -- two call sites (the plan and the eventual write) must never be
+    // able to disagree about what "the new presetLevel" is.
+    #[test]
+    fn raised_preset_level_and_the_plan_agree_on_the_exact_level() {
+        let plan = plan_level_pair(&[], -39.37, -23.0, 0.27, 0.28);
+        assert_eq!(plan.preset_level, raised_preset_level(0.27, plan.dp_db));
     }
 }

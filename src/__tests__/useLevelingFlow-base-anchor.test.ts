@@ -80,6 +80,7 @@ const BASE_RESULT = {
   persist_mismatch: null,
   clamp_kind: null,
   trade: null,
+  base_boost: null,
 };
 
 const deps = {
