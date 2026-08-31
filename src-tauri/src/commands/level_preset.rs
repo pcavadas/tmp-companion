@@ -159,6 +159,110 @@ pub(crate) fn stimulus_instrument(topology_id: Option<&str>) -> &'static str {
         .unwrap_or("guitar")
 }
 
+/// The Phase-2 boost candidate: the base amp's `outputLevel` knob job, classified by the SAME
+/// amp classifier a scene batch run uses (`build_scene_jobs_with_handles`), scoped to base
+/// (`session::BASE_SCENE_SLOT`). `None` on ANY refusal — an unusual routing (parallel/split/
+/// mic), no amp-`outputLevel` candidate, a classifier error, or an amp `force` already
+/// force-bypasses (boosting an amp that's forced OFF for this isolated capture is nonsensical)
+/// — degrades to today's plain path, never a hard error: boost is an OPPORTUNISTIC extra, not
+/// a leveling prerequisite.
+///
+/// Stamps `force_bypass = force` onto the returned job itself (`build_scene_jobs_with_handles`
+/// always emits `force_bypass: Vec::new()` — isolation is the CALLER's to stamp, see
+/// `level_scenes_apply_batched`). Owning the stamp HERE, in one named helper, is the fix:
+/// without it `jointk_one_scene` → `apply_levels` → `set_knobs`'s base recall (`load_scene`)
+/// would revert the forced-bypass footswitches to their SAVED state mid-solve, so every capture
+/// in the boost's measure/verify/secant loop would read base-with-pedals-on instead of the
+/// isolated base the plan was computed against — silently wrong by whatever those pedals add,
+/// with `verify_lufs` still reading on-target.
+fn base_boost_candidate(
+    preset: &serde_json::Value,
+    target_lufs: f64,
+    force: &[(String, String, bool)],
+) -> Option<leveller::SceneJob> {
+    let candidates = filter_amp_candidates(session::extract_level_blocks(preset));
+    if candidates.is_empty() {
+        return None;
+    }
+    build_scene_jobs_with_handles(
+        &[session::BASE_SCENE_SLOT],
+        &candidates,
+        &[(session::BASE_SCENE_SLOT, Some(preset))],
+        target_lufs,
+        Some(preset),
+        &[],
+    )
+    .ok()
+    .and_then(|jobs| jobs.into_iter().next())
+    .filter(|job| job.skip.is_none() && job.knobs.len() == 1)
+    .filter(|job| {
+        !job.knobs.iter().any(|kt| match &kt.knob {
+            leveller::LevelKnob::Block {
+                group_id, node_id, ..
+            } => force.iter().any(|(g, n, _)| g == group_id && n == node_id),
+            leveller::LevelKnob::PresetLevel => false,
+        })
+    })
+    .map(|mut job| {
+        job.force_bypass = force.to_vec();
+        job
+    })
+}
+
+#[cfg(test)]
+mod base_boost_candidate_tests {
+    use super::*;
+
+    fn series_amp_preset() -> serde_json::Value {
+        serde_json::json!({
+            "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+                {
+                    "nodeId": "amp",
+                    "FenderId": "ACD_TwinReverb65NoFx",
+                    "dspUnitParameters": { "bypass": false, "outputLevel": 0.42 }
+                }
+            ] } }
+        })
+    }
+
+    // A classifiable single amp with no isolation in the way: the candidate carries the amp's
+    // knob and the isolation list is stamped onto it whole, even when empty.
+    #[test]
+    fn a_single_amp_candidate_is_returned_with_force_bypass_stamped() {
+        let preset = series_amp_preset();
+        let job = base_boost_candidate(&preset, -23.0, &[]).expect("one amp candidate");
+        assert_eq!(job.knobs.len(), 1);
+        assert!(job.force_bypass.is_empty());
+        let leveller::LevelKnob::Block {
+            group_id, node_id, ..
+        } = &job.knobs[0].knob
+        else {
+            panic!("expected a Block knob");
+        };
+        assert_eq!((group_id.as_str(), node_id.as_str()), ("G1", "amp"));
+
+        let force = [("G1".to_string(), "other".to_string(), true)];
+        let job = base_boost_candidate(&preset, -23.0, &force).expect("still classifiable");
+        assert_eq!(job.force_bypass, force, "the isolation list rides whole");
+    }
+
+    // An amp the isolation list itself force-bypasses can't be boosted (it's forced OFF for
+    // this isolated capture) — the candidate must refuse rather than boost a silenced amp.
+    #[test]
+    fn an_amp_already_force_bypassed_yields_no_candidate() {
+        let preset = series_amp_preset();
+        let force = [("G1".to_string(), "amp".to_string(), true)];
+        assert!(base_boost_candidate(&preset, -23.0, &force).is_none());
+    }
+
+    // No outputLevel candidate at all (e.g. an empty graph) degrades to `None`, never an error.
+    #[test]
+    fn no_amp_candidates_yields_no_error_just_none() {
+        let preset = serde_json::json!({ "audioGraph": { "guitarNodes": {} } });
+        assert!(base_boost_candidate(&preset, -23.0, &[]).is_none());
+    }
+}
+
 /// Level one preset to its target (the real, one-shot open-loop path). The
 /// leveller opens its own fresh connections (load → measure → set), so the work
 /// runs with the app's seize released (see `with_released_seize`).
@@ -346,78 +450,33 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                     force.len()
                 );
                 // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing
-                // (Phase 2, the plumes/BD2/OCD-class regression fix): the same amp-
-                // `outputLevel` classifier a scene batch run uses
-                // (`build_scene_jobs_with_handles`), scoped to base
-                // (`session::BASE_SCENE_SLOT`). `None` on ANY refusal — an unusual routing
-                // (parallel/split/mic), no amp-`outputLevel` candidate, a classifier error,
-                // or an amp the isolation list above already force-bypasses (boosting an amp
-                // that's forced OFF for this isolated capture is nonsensical) — degrades to
-                // today's plain path, never a hard error: boost is an OPPORTUNISTIC extra,
-                // not a leveling prerequisite.
-                let candidates =
-                    filter_amp_candidates(session::extract_level_blocks(&preset));
-                let base_amp: Option<leveller::SceneJob> = (!candidates.is_empty())
-                    .then(|| {
-                        build_scene_jobs_with_handles(
-                            &[session::BASE_SCENE_SLOT],
-                            &candidates,
-                            &[(session::BASE_SCENE_SLOT, Some(preset.clone()))],
-                            target_lufs,
-                            Some(&preset),
-                            &[],
-                        )
-                        .ok()
-                    })
-                    .flatten()
-                    .and_then(|jobs| jobs.into_iter().next())
-                    .filter(|job| job.skip.is_none() && job.knobs.len() == 1)
-                    .filter(|job| {
-                        !job.knobs.iter().any(|kt| match &kt.knob {
-                            leveller::LevelKnob::Block { group_id, node_id, .. } => force
-                                .iter()
-                                .any(|(g, n, _)| g == group_id && n == node_id),
-                            leveller::LevelKnob::PresetLevel => false,
-                        })
-                    })
-                    // `build_scene_jobs_with_handles` always emits `force_bypass: Vec::new()`
-                    // — isolation is stamped onto the job by its caller after the builder
-                    // returns (see `level_scenes_apply_batched`). Without this, `jointk_one_scene`
-                    // → `apply_levels` → `set_knobs`'s base recall (`load_scene`) would revert
-                    // the forced-bypass footswitches to their SAVED state mid-solve, so every
-                    // capture in the boost's measure/verify/secant loop would read base-with-
-                    // pedals-on instead of the isolated base the plan was computed against —
-                    // silently wrong by whatever those pedals add, with `verify_lufs` still
-                    // reading on-target. Stamp the SAME isolation list this call already forces
-                    // for its own plain-path capture.
-                    .map(|mut job| {
-                        job.force_bypass = force.clone();
-                        job
-                    });
-                let has_scenes = preset
-                    .get("scenes")
-                    .and_then(|s| s.as_array())
-                    .is_some_and(|s| !s.is_empty());
+                // (Phase 2, the plumes/BD2/OCD-class regression fix).
+                let base_amp = base_boost_candidate(&preset, target_lufs, &force);
                 log::info!(
                     "level_preset slot={slot}: base boost candidate {}",
                     match &base_amp {
-                        Some(job) => format!("{} (has_scenes={has_scenes})", job.knobs[0].knob.label()),
+                        Some(job) => format!(
+                            "{} (has_scenes={})",
+                            job.knobs[0].knob.label(),
+                            leveller::preset_has_scenes(&preset)
+                        ),
                         None => "none".to_string(),
                     }
                 );
                 // That read opened its own session — gap before level_preset reconnects, else
                 // the quick reopen risks the HID open-lockout (0xe00002c5).
                 crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-                leveller::level_preset_with_base_amp(
+                leveller::level_preset_impl(
                     slot,
                     &stim,
                     target_lufs,
                     opts,
                     &force,
                     previous_level,
-                    base_amp,
-                    has_scenes,
-                    Some(&preset),
+                    leveller::BoostContext {
+                        base_amp,
+                        saved: Some(&preset),
+                    },
                     cancelled,
                 )
             }

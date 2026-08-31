@@ -227,19 +227,36 @@ impl TradePlan {
     }
 }
 
+/// The linear ratio a `db` shift multiplies an amplitude by — the shared `10^(db/20)` core
+/// behind every exact linear-control move this module makes ([`raised_preset_level`]'s
+/// `presetLevel` raise, [`seed_fader_target`]'s fader seed).
+fn db_ratio(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
 /// The base `presetLevel` a `raise_db` trade lands on — exact (module header). Clamped to
 /// `PRESET_LEVEL_MAX` as a belt — the planner's own cap already keeps it in range.
 pub fn raised_preset_level(preset_level: f32, raise_db: f64) -> f32 {
-    let raised = preset_level as f64 * 10f64.powf(raise_db / 20.0);
+    let raised = preset_level as f64 * db_ratio(raise_db);
     (raised as f32).clamp(0.0, PRESET_LEVEL_MAX)
+}
+
+/// dB of headroom left ABOVE `current`, up to `ceiling` (0 at or above it) — the shared
+/// direction both [`preset_level_room_db`] (asked of `presetLevel`, ceiling
+/// [`PRESET_LEVEL_MAX`]) and [`base_fader_room_up_db`] (asked of the base fader, ceiling
+/// [`BASE_FADER_CEILING`]) need. The two controls share one physical `[0, 1]` ceiling
+/// (`BASE_FADER_CEILING`'s own doc), so this is one formula parameterized by which control is
+/// asking, not two independent ones that happen to agree.
+fn room_up_db(current: f32, ceiling: f32) -> f64 {
+    if current <= 0.0 {
+        return 0.0;
+    }
+    (20.0 * (ceiling as f64 / current as f64).log10()).max(0.0)
 }
 
 /// dB of `presetLevel` headroom left above `preset_level` (0 at or above the ceiling).
 fn preset_level_room_db(preset_level: f32) -> f64 {
-    if preset_level <= 0.0 {
-        return 0.0;
-    }
-    (20.0 * (PRESET_LEVEL_MAX as f64 / preset_level as f64).log10()).max(0.0)
+    room_up_db(preset_level, PRESET_LEVEL_MAX)
 }
 
 /// dB of attenuation the base fader could plausibly absorb before hitting
@@ -264,10 +281,7 @@ fn base_fader_room_db(base_fader: f32) -> f64 {
 /// the fader, and only UPWARD — the ordinary trade's DOWNWARD room ([`base_fader_room_db`])
 /// cannot supply a raise.
 fn base_fader_room_up_db(base_fader: f32) -> f64 {
-    if base_fader <= 0.0 {
-        return 0.0;
-    }
-    (20.0 * (BASE_FADER_CEILING as f64 / base_fader as f64).log10()).max(0.0)
+    room_up_db(base_fader, BASE_FADER_CEILING)
 }
 
 /// Does raising base `presetLevel` and re-leveling this scene's OWN row actually put the row
@@ -332,7 +346,7 @@ fn seed_fader_target(base_fader: f32, df_db: f64) -> Option<f32> {
     if df_db == 0.0 {
         return None;
     }
-    let seeded = base_fader as f64 * 10f64.powf(df_db / 20.0);
+    let seeded = base_fader as f64 * db_ratio(df_db);
     Some((seeded as f32).clamp(BASE_FADER_FLOOR, BASE_FADER_CEILING))
 }
 
@@ -659,6 +673,54 @@ pub struct BaseBoostSummary {
     pub base_amps: Vec<TradeAmpMove>,
     /// Why the plan's own raise was trimmed, if it was (mirrors [`TradeSummary::cap`]).
     pub cap: Option<TradeCap>,
+    /// ADDITIVE (Fix J): which of the two `applied: false` causes this is, when it is one.
+    /// `None` on an APPLIED summary. The UI's sentence logic still keys on `applied` alone —
+    /// this rides alongside for a consumer that wants to distinguish "no `save` this cycle"
+    /// from "the preset carries scenes" (v1 scopes the full continuation to scene-less
+    /// presets — see `leveller::level_preset_impl`'s routing doc) without re-deriving it.
+    pub not_applied: Option<BoostRefusal>,
+}
+
+/// The two causes a Phase-2 boost can be planned but not applied THIS cycle — see
+/// [`BaseBoostSummary::not_applied`]. `NoSave` wins when both hold (a no-save run on a
+/// scene-bearing preset is still refused for lack of a save, not for its scenes — a save-run
+/// gate check would otherwise misreport the reason on such a preset).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoostRefusal {
+    /// This run has no `save: true` — an advisory preview, never a device write.
+    NoSave,
+    /// The preset carries `scenes[]` rows — v1 scopes the full continuation to scene-less
+    /// presets only (a boosted base's `presetLevel` raise would also shift every scene's own
+    /// captured loudness by `raise_db`, `redistribute_clamped_headroom`'s territory).
+    ScenePreset,
+}
+
+impl BaseBoostSummary {
+    /// Build from the plan + the base amp's before/after values — the ONE construction both
+    /// the applied path (`leveller::apply_base_boost`'s own terminal result) and the advisory
+    /// path (`leveller::level_preset_impl`'s boost-couldn't-apply-this-cycle branch) use, so
+    /// the two can never state the plan-derived fields (regime/raise_db/fader_db/preset_level/
+    /// cap) two different ways.
+    pub(crate) fn from_plan(
+        applied: bool,
+        plan: &LevelPairPlan,
+        previous_preset_level: f32,
+        amp: TradeAmpMove,
+        not_applied: Option<BoostRefusal>,
+    ) -> Self {
+        BaseBoostSummary {
+            applied,
+            regime: plan.regime,
+            raise_db: plan.dp_db,
+            fader_db: plan.df_db,
+            previous_preset_level,
+            preset_level: plan.preset_level,
+            base_amps: vec![amp],
+            cap: plan.capped,
+            not_applied,
+        }
+    }
 }
 
 #[cfg(test)]

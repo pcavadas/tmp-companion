@@ -30,6 +30,7 @@ const boost = (over: Partial<BaseBoostSummary>): BaseBoostSummary => ({
     },
   ],
   cap: "preset_level_max",
+  not_applied: "scene_preset",
   ...over,
 });
 

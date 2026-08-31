@@ -133,6 +133,25 @@ function baseBoostSentence(b: BaseBoostSummary): string {
     : `Turned this preset up as far as it goes and would raise the amp’s output from ${from} to ${to} to reach the target.`;
 }
 
+/** The shared wrapper for a row-level disclosure line under a preset row — the problem
+ *  footnote (`q`) and the base-boost sentence both render one of these; only their CHILDREN
+ *  (an optional leading icon, the sentence, an optional "fix" link) differ. */
+function DisclosureRow({ children }: { children: ReactNode }) {
+  const { t } = useTheme();
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: t.space6,
+        padding: "0 0 4px 26px",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 export interface SummaryPageProps {
   items: RunItem[];
   stopped: boolean;
@@ -506,14 +525,7 @@ export function SummaryPage({
                       </span>
                     </div>
                     {q && (
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "flex-start",
-                          gap: t.space6,
-                          padding: "0 0 4px 26px",
-                        }}
-                      >
+                      <DisclosureRow>
                         <span
                           style={{
                             flex: 1,
@@ -547,17 +559,10 @@ export function SummaryPage({
                               {q.fix}
                             </span>
                           )}
-                      </div>
+                      </DisclosureRow>
                     )}
                     {it.baseBoost && (
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "flex-start",
-                          gap: t.space6,
-                          padding: "0 0 4px 26px",
-                        }}
-                      >
+                      <DisclosureRow>
                         <span style={{ flexShrink: 0, paddingTop: 1 }}>
                           <Icon
                             name="info"
@@ -579,7 +584,7 @@ export function SummaryPage({
                         >
                           {baseBoostSentence(it.baseBoost)}
                         </span>
-                      </div>
+                      </DisclosureRow>
                     )}
                   </div>
                 );

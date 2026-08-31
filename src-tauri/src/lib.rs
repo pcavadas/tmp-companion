@@ -96,7 +96,7 @@ pub(crate) use probe_api::scene_bench::knob_bounds;
 // same extraction, so the only remaining callers resolve them directly, module-internally —
 // re-exporting an unused name here is a dead `pub(crate) use`, caught by `-D warnings`.
 pub(crate) use probe_api::scene_jobs::{
-    base_handle_candidates_scanned, build_scene_jobs_with_handles, is_amp_model_id,
+    base_handle_candidates_scanned, build_scene_jobs_with_handles, docs_as_refs, is_amp_model_id,
     is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via, read_saved_preset,
     read_saved_preset_complete, scan_node_graph, scene_handle_rows, scene_handle_rows_scanned,
     scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
@@ -827,8 +827,13 @@ mod fixture_gates {
     /// pinned by the size gate above); 405's amendment must not have disturbed the
     /// lazy-save incident's own shape: the four drive pedals, their block-acting
     /// switches and the amp node are all untouched, and only a cab was appended.
+    ///
+    /// Named for what it actually pins — the MEASUREMENT shapes a leveling spec depends on
+    /// (405's amp/pedal knobs, the C table, `leveledParams`) — not "immutability": 405's own
+    /// values here were legitimately AMENDED once already (the Plumes-regression pass), and
+    /// this test's job is to pin the CURRENT shape, not to forbid a future amendment.
     #[test]
-    fn incident_fixtures_keep_their_shapes() {
+    fn incident_fixtures_pin_their_measurement_shapes() {
         let (name, _, hiwatt) = fixture(404);
         assert_eq!(name, "E2E Hiwatt 3S");
         assert_eq!(hiwatt["lastLoadedScene"], 3, "the saved non-base context");
@@ -1330,7 +1335,7 @@ mod fixture_gates {
         assert_eq!(
             p408["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["outputLevel"], 1.0,
             "the saturated amp's own knob stays untouched — 408 is its own minimal fixture, \
-             unaffected by 405's Plumes-regression amendment (see `incident_fixtures_keep_their_shapes`)"
+             unaffected by 405's Plumes-regression amendment (see `incident_fixtures_pin_their_measurement_shapes`)"
         );
 
         // 409 "E2E Hiwatt Min" — the scene/overlay-conformance class needs only a

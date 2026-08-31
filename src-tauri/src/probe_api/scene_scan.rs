@@ -3,7 +3,7 @@
 use super::level::load_and_filter_amp_candidates;
 use super::scene_jobs::prepass_scene_docs;
 use super::scene_jobs::structure_graph;
-use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
+use super::scene_jobs::{build_scene_jobs, docs_as_refs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::slot_write::probe_connect_and_list;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
@@ -45,7 +45,7 @@ pub fn probe_level_scenes_oneshot(
     let jobs = build_scene_jobs(
         &scene_slots,
         &candidates,
-        &docs,
+        &docs_as_refs(&docs),
         target_lufs,
         saved.as_ref(),
     )?;
@@ -361,7 +361,8 @@ pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<S
     };
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
-    let template = structure_graph(&docs)
+    let docs_ref = docs_as_refs(&docs);
+    let template = structure_graph(&docs_ref)
         .and_then(|g| g.template)
         .unwrap_or_else(|| "<unknown>".to_string());
     let mut out = format!(
@@ -380,7 +381,7 @@ pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<S
     let jobs = build_scene_jobs(
         &scene_slots,
         &candidates,
-        &docs,
+        &docs_ref,
         KNOB_ONLY_PROBE_TARGET_LUFS,
         None,
     )?;

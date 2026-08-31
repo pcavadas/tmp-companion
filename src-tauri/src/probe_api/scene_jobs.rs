@@ -108,6 +108,19 @@ pub(crate) fn is_amp_output_level_param(parameter_id: &str) -> bool {
     parameter_id == "outputLevel"
 }
 
+/// View an owned per-scene docs vec as the borrowed slice `structure_graph`/`build_scene_jobs`/
+/// `build_scene_jobs_with_handles` take. Most prepass call sites already own their docs
+/// (`prepass_scene_docs`) and use them again after this one classification call, so this is a
+/// cheap pointer-sized re-view, never a JSON clone — the clone this borrowed shape exists to
+/// avoid is at the ONE call site that used to own no such vec at all
+/// (`commands::level_preset`'s base arm, which cloned a whole ~10 KB preset doc just to hand it
+/// to the builder as its single-entry "docs" list).
+pub(crate) fn docs_as_refs(
+    docs: &[(u32, Option<serde_json::Value>)],
+) -> Vec<(u32, Option<&serde_json::Value>)> {
+    docs.iter().map(|(s, d)| (*s, d.as_ref())).collect()
+}
+
 /// Pick the route STRUCTURE graph from the pre-pass docs: the first doc that decodes
 /// to a KNOWN routing template (`session::is_known_routing_template`). Routing is
 /// scene-invariant, so one complete-enough doc defines lane membership for every
@@ -115,10 +128,10 @@ pub(crate) fn is_amp_output_level_param(parameter_id: &str) -> bool {
 /// partial truncates before the `template` tail, and silently defaulting to "series"
 /// would re-introduce the parallel mislevel, so the caller must skip instead.
 pub(crate) fn structure_graph(
-    docs: &[(u32, Option<serde_json::Value>)],
+    docs: &[(u32, Option<&serde_json::Value>)],
 ) -> Option<session::ActiveGraph> {
     docs.iter()
-        .filter_map(|(_, d)| d.as_ref())
+        .filter_map(|(_, d)| *d)
         .map(|d| session::extract_active_graph(d, None))
         .find(|g| session::is_known_routing_template(g.template.as_deref()))
 }
@@ -371,7 +384,7 @@ pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 pub(crate) fn build_scene_jobs(
     scene_slots: &[u32],
     candidates: &[LevelBlockArg],
-    docs: &[(u32, Option<serde_json::Value>)],
+    docs: &[(u32, Option<&serde_json::Value>)],
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
 ) -> Result<Vec<leveller::SceneJob>, String> {
@@ -410,7 +423,7 @@ pub(crate) struct SceneHandleSpec<'a> {
 pub(crate) fn build_scene_jobs_with_handles(
     scene_slots: &[u32],
     candidates: &[LevelBlockArg],
-    docs: &[(u32, Option<serde_json::Value>)],
+    docs: &[(u32, Option<&serde_json::Value>)],
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
     handles: &[(u32, SceneHandleSpec)],
@@ -452,7 +465,8 @@ pub(crate) fn build_scene_jobs_with_handles(
             let doc = docs
                 .iter()
                 .find(|(s2, _)| s2 == scene)
-                .and_then(|(_, d)| d.clone())
+                .and_then(|(_, d)| *d)
+                .cloned()
                 .unwrap_or(serde_json::Value::Null);
             let scene_slot = if *scene >= session::BASE_SCENE_SLOT {
                 None

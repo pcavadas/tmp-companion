@@ -286,6 +286,11 @@ export interface BaseBoostSummary {
   base_amps: TradeAmpMove[];
   /** Why the plan's own raise was trimmed, if it was (mirrors `TradeSummary.cap`). */
   cap: TradeCap | null;
+  /** ADDITIVE (Fix J): which of the two `applied: false` causes this is, when it is one —
+   * `null` on an APPLIED summary. Carried alongside `applied`; the UI's sentence logic still
+   * keys on `applied` alone (see `SummaryPage.tsx`'s `baseBoostSentence`), this field is not
+   * consulted there. */
+  not_applied: "no_save" | "scene_preset" | null;
 }
 
 /** Result of leveling one block-acting footswitch's engaged state
