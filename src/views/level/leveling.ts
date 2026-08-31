@@ -385,6 +385,27 @@ export interface SetupChoice {
   targetName: string;
 }
 
+/** A row's position in its preset's DEPENDENCY order — each rank writes a control the
+ *  ranks below it render through, so running them in any other order shifts rows that
+ *  are already on target:
+ *
+ *  - `0` Base: `presetLevel`, a global multiplier over every other row.
+ *  - `1` Footswitch: the switch's own handle, frequently a block left ON in the preset's
+ *    base state. A scene renders its whole base chain, so this write moves every scene.
+ *  - `2` Scene: a per-scene amp `outputLevel` overlay. Base is measured with
+ *    footswitch-owned blocks forced off and a footswitch is measured in BASE context, so
+ *    no scene overlay reaches either — scenes-last is interference-free, not just fixed.
+ *
+ *  `chosenFrom` emits this order; `useLevelingFlow` sorts by it so the run holds
+ *  regardless of how its items were assembled. */
+export function runRank(it: {
+  isBase: boolean;
+  footswitch?: unknown;
+}): 0 | 1 | 2 {
+  if (it.isBase) return 0;
+  return it.footswitch != null ? 1 : 2;
+}
+
 /** Resolve the scene keys SELECTED in the list into the setup rows to configure.
  *  Walks every non-empty preset (sorted, Base-first) and emits a SetupOption for
  *  each of its keys present in `sel`. Everything returned WILL be leveled — the
@@ -417,20 +438,13 @@ export function chosenFrom(
           hasScenes: hasChildren,
         });
       }
-      scenes.forEach((sc, i) => {
-        if (sel.has(sceneKeyOf(r.slot, i))) {
-          items.push({
-            key: sceneKeyOf(r.slot, i),
-            slot: r.slot,
-            presetName: r.name,
-            isBase: false,
-            sceneSlot: i, // the row index IS the 0-based wire sceneSlot
-            sceneName: sc.name,
-            tag: sc.fs != null ? `FS${String(sc.fs)}` : "—",
-            hasScenes: true,
-          });
-        }
-      });
+      // Footswitches BEFORE scenes — dependency order, the same rule that puts Base ahead
+      // of both (see `useLevelingFlow`'s `runRank`, which pins this independently of how
+      // these items were assembled). A footswitch's handle is often a block left ON in the
+      // preset's base state, and a scene renders its whole base chain, so leveling a switch
+      // moves every scene; nothing renders through a scene's own amp overlay in return.
+      // HW-measured: a 2.0 dB cut to a base-ON TubeScreamer moved all three of a 3-scene
+      // preset's already-leveled scenes 2.0 dB off target.
       footswitches.forEach((f, i) => {
         const target = footswitchTarget(f);
         if (target && sel.has(fswKey(r.slot, i))) {
@@ -447,6 +461,20 @@ export function chosenFrom(
             levelParams: f.level_params,
             fsUnlabeled: f.label.trim() === "",
             fsSceneNames: scenes.map((sc) => sc.name),
+          });
+        }
+      });
+      scenes.forEach((sc, i) => {
+        if (sel.has(sceneKeyOf(r.slot, i))) {
+          items.push({
+            key: sceneKeyOf(r.slot, i),
+            slot: r.slot,
+            presetName: r.name,
+            isBase: false,
+            sceneSlot: i, // the row index IS the 0-based wire sceneSlot
+            sceneName: sc.name,
+            tag: sc.fs != null ? `FS${String(sc.fs)}` : "—",
+            hasScenes: true,
           });
         }
       });

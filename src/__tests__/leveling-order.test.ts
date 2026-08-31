@@ -12,6 +12,7 @@ import {
   defaultParamIndex,
   footswitchName,
   fswKey,
+  runRank,
   sceneKeyOf,
   targetFromCandidate,
 } from "../views/level/leveling";
@@ -108,9 +109,16 @@ describe("chosenFrom run-order", () => {
     });
   });
 
-  it("emits footswitches AFTER scenes, defaulting to its tone-safe candidate (D2)", () => {
+  // BUG→GATE (2026-08-31 HW, online 410 arc): the run used to level a preset's scenes
+  // before its footswitches, and the footswitch pass then moved every scene it had just
+  // finished. 410's ACD_TubeScreamer is left ON in the preset's base state and each of its
+  // three scenes overlays only the amp, so all three render the screamer — cutting that
+  // switch's own handle 2.0 dB put all three already-leveled scenes 2.0 dB under target,
+  // reported as a level miss with no failing lane. Footswitches must run FIRST: a switch is
+  // measured in base context, so a scene's amp overlay can never move it back.
+  it("emits footswitches BEFORE scenes, defaulting to its tone-safe candidate (D2)", () => {
     // Alpha (slot 0): 2 scenes + 1 footswitch (switch index 4 → tag FS5). Order must be
-    // Base → scenes → footswitch. Every row levels now (D2 — the backend removed the
+    // Base → footswitch → scenes. Every row levels now (D2 — the backend removed the
     // verify-only footswitch mode entirely): the default target is the switch's
     // (only, here) candidate, measured against the preset's BASE sound (D3's
     // `sceneContext: null`) until the Set up step's picker resolves a `suggested` scene.
@@ -124,11 +132,11 @@ describe("chosenFrom run-order", () => {
     const out = chosenFrom(sel, rows, sceneInfo, fswInfo);
     expect(out.map((o) => o.key)).toEqual([
       baseKey(0),
+      fswKey(0, 0),
       sceneKeyOf(0, 0),
       sceneKeyOf(0, 1),
-      fswKey(0, 0),
     ]);
-    expect(out[3]).toMatchObject({
+    expect(out[1]).toMatchObject({
       isBase: false,
       sceneName: "Solo",
       tag: "FS5", // switch index 4 → human FS number 5
@@ -355,6 +363,30 @@ describe("chosenFrom run-order", () => {
     expect(out.map((o) => o.key)).toEqual([baseKey(1), fswKey(1, 0)]);
     expect(out[0]).toMatchObject({ isBase: true, sceneName: "Base Preset" });
     expect(out[1]).toMatchObject({ tag: "FS1", sceneName: "Drive" });
+  });
+});
+
+// `chosenFrom` emitting the right order is not enough on its own: `useLevelingFlow` sorts
+// its work list by `runRank` so the run holds however the items were assembled (a resumed
+// run, a re-ordered selection, a future caller that builds items itself). These pin the
+// rank the sort reads — the same BUG→GATE as the emission test above.
+describe("runRank — the run's dependency order", () => {
+  const base = { isBase: true };
+  const footswitch = { isBase: false, footswitch: { switchIndex: 4 } };
+  const scene = { isBase: false };
+
+  it("ranks base before footswitches before scenes", () => {
+    expect(runRank(base)).toBe(0);
+    expect(runRank(footswitch)).toBe(1);
+    expect(runRank(scene)).toBe(2);
+  });
+
+  it("sorts a scenes-first selection back into dependency order", () => {
+    // The shape that produced the HW miss: scenes ahead of the footswitch whose base-ON
+    // handle every one of them renders through.
+    const work = [scene, footswitch, base];
+    const sorted = [...work].sort((a, b) => runRank(a) - runRank(b));
+    expect(sorted).toEqual([base, footswitch, scene]);
   });
 });
 

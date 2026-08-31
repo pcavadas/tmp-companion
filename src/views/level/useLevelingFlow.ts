@@ -43,6 +43,7 @@ import {
   optionToRunItem,
   resolvedTargetLufs,
   runItemToOption,
+  runRank,
   type RunItem,
   type SetupOption,
   type SetupChoice,
@@ -323,13 +324,14 @@ export function useLevelingFlow({
       const isCancelled = () => cancelRef.current;
       const candCache = new Map<number, Candidate[]>();
       const work = items.map((it) => ({ ...it }));
-      // Base-first within each preset: a preset's Base levels `presetLevel` — a global
-      // multiplier over its scenes — so it MUST run before its FS scenes, else the base
-      // write shifts every already-leveled scene off-target. `chosenFrom` already emits
-      // this order; this stable sort (0 for differing slots ⇒ input order preserved)
-      // guarantees it regardless of how `items` was assembled.
-      const baseRank = (it: RunItem) => (it.isBase ? 0 : 1);
-      work.sort((a, b) => (a.slot === b.slot ? baseRank(a) - baseRank(b) : 0));
+      // Base → footswitches → scenes within each preset, the dependency order `runRank`
+      // documents: every rank writes a control the ranks below it render through, so any
+      // other order shifts rows that are already on target. HW-measured: cutting one
+      // base-ON TubeScreamer 2.0 dB moved all three of a 3-scene preset's already-leveled
+      // scenes 2.0 dB off target (online 410 arc). `chosenFrom` already emits this order;
+      // this stable sort (0 for differing slots ⇒ input order preserved) guarantees it
+      // regardless of how `items` was assembled, and keeps a multi-preset run's grouping.
+      work.sort((a, b) => (a.slot === b.slot ? runRank(a) - runRank(b) : 0));
       const total = work.length;
 
       // `work` is mutated in place between publishes; pass a fresh ARRAY each time
