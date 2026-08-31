@@ -143,8 +143,13 @@ jobs:
     # names with no compiler/linker to catch a mismatch. fedora:43 is the oldest
     # still-supported Fedora release as of this writing (Fedora 42 reached EOL in
     # May 2026) — bump this alongside Fedora's own release cadence.
+    #
+    # Pinned by DIGEST, not by the `fedora:43` tag: this job's output is a
+    # PUBLISHED release artifact, and a mutable tag lets the image under it change
+    # with no commit in this repo. Same digest in ci.yml's bundle-linux job, so the
+    # PR gate and the release build the rpm against the identical base.
     container:
-      image: fedora:43
+      image: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42 # fedora:43
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}

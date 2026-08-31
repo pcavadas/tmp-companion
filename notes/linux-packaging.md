@@ -1,7 +1,9 @@
 # Linux packaging
 
-TMP Companion ships a `.deb` and a `.rpm`, published alongside the macOS DMG from the
-same release run — see `release.yml`. Both carry the "alpha" qualifier in their filename
+TMP Companion builds a `.deb` and a `.rpm` in the same release run as the macOS DMG, and
+publishes them on that release **when their build succeeds** — the Linux jobs are
+non-blocking, so a release whose Linux build failed still ships its DMG, just without the
+Linux assets (see "Release pipeline shape" below). Both carry the "alpha" qualifier in their filename
 (`TMP-Companion-linux-alpha-*`): Linux is a HW-validated _development_ platform (Level and
 Doctor re-amp end to end over ALSA/hidraw — see `CONTRIBUTING.md`'s "Developing on Linux"
 and `gotchas.md`'s Linux sections), but the packaging itself has far less field exposure
@@ -70,7 +72,7 @@ updater channel for an alpha; revisit once Linux has left alpha.
 
 ## Release pipeline shape
 
-```
+```text
 resolve-version (ubuntu)              semantic-release --dry-run → next version, or none
    │
    ├─► build-deb (ubuntu)             continue-on-error: true

@@ -177,8 +177,10 @@ jobs:
           - target: rpm
             os: ubuntu-latest
             # See release.yml's build-rpm for why the rpm builds in a Fedora
-            # container rather than on Ubuntu.
-            container: fedora:43
+            # container rather than on Ubuntu, and why it is pinned by digest
+            # rather than by the mutable `fedora:43` tag. Keep this digest in
+            # sync with release.yml's, so the gate and the release agree.
+            container: fedora@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42 # fedora:43
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     timeout-minutes: 30
