@@ -52,9 +52,9 @@ import {
 // (down from the old suite's ≈ 20 min for the SAME two describes' worth of coverage), leaving
 // margin under the leveling suite's ratified ≤ 25 min online budget.
 //
-// COVERAGE row 37 (Hiwatt's own scene/footswitch enumeration) and row 45 (410's own
-// structural-readiness pin) — see e2e/fixtures/COVERAGE.md for the "where it went" notes on
-// every retired test.
+// COVERAGE rows 37, 45 — row 37 is Hiwatt's own scene/footswitch enumeration, row 45 is
+// 410's structural-readiness pin; see e2e/fixtures/COVERAGE.md for the "where it went"
+// notes on every retired test.
 
 const FRIEDMAN = SCENARIO[10]; // E2E Friedman 3S — the P4 leveling-regression fixture
 const HIWATT = SCENARIO[4]; // E2E Hiwatt 3S — carries only the one carried-over modulated row
