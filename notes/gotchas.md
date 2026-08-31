@@ -229,6 +229,22 @@ Read the entry in full before changing the behaviour it governs.
   - **Why the correct value looks like a no-op.** Slot 26's base sound IS switch 5's engaged sound (Plumes on, every sibling bypassed in base), so once base is leveled the right answer for that row is the authored value it already had — 0.3634 against an authored 0.36. A row solving back to roughly where it started is the expected outcome for a base-on block whose target matches base's, not evidence that nothing happened.
   - **`run_e2e_server` had no logger installed at all**, so `log::*` from every shared module was dropped and an ONLINE run's server log carried only its two startup lines. Installing `probe`'s minimal stderr logger is what made the `fs prepass switch=N ceiling=…` lines visible, and those lines are what separated "the prepass is wrong" from "the solve is wrong".
 
+## A scene renders the base chain's ON blocks — an all-false `ftswStates` does NOT bypass them
+
+- **Levelling a footswitch's handle moves every SCENE of the same preset, by the same dB**, whenever that switch's block is one the preset leaves ON in its base state. HW, fw 1.8.45, 2026-08-31, online arc on `E2E Friedman 3S` (410) — `ACD_TubeScreamer` `bypass:false` in base, three FULL-overlay scenes whose overlays carry only `ACD_MarshallPlexi`:
+
+  | moment                                             | scene 0 | scene 1 | scene 2 |
+  | -------------------------------------------------- | ------- | ------- | ------- |
+  | target                                             | −29.33  | −29.33  | −29.33  |
+  | re-measured right after the scene batch's own save | −29.33  | —       | —       |
+  | re-measured after the footswitch lane ran          | −31.34  | −31.34  | −31.34  |
+
+  The footswitch lane had cut `ACD_TubeScreamer.level` by exactly 2.0 dB (as-is −21.31 → target −23.31). Every solved scene overlay was correct and persisted (`0.3972` = a clean 2 dB cut from the authored `0.5`), and every lane reported `clamped:false`, `saved:true`, `persist_mismatch:false` — so nothing in the run's own reporting was wrong. The scenes simply render a chain the later lane then changed underneath them.
+  - **`ftswStates: [false, …]` in a scene overlay is not a bypass instruction.** All three scenes carry an all-false `ftswStates`, and all three still heard the base-ON screamer — the 2.0 dB shift is the proof. Reading that array as "these pedals are off in this scene" is what makes this failure invisible on inspection; a scene renders the base chain's own state for anything its overlay does not itself carry.
+  - **BASE is immune, and that is what hides it.** A base capture forces every footswitch-owned block off (`doctor_force_bypass`), so base re-measured exactly on target through the whole run while all three scenes drifted.
+  - **The bracket is the diagnostic.** One extra re-measure of a single scene IMMEDIATELY after its own batch save, before any later lane writes, is what separates "this row was mis-solved by its own batch" from "this row was moved by a later lane". Without it the two are indistinguishable at the end of a run, and two full online runs were spent on the wrong half.
+  - **The fix is ORDER, not a re-solve.** The dependency is one-way: a footswitch row is measured in BASE context, so a scene's own amp overlay can never move it back. Base → footswitches → scenes is interference-free (`views/level/leveling.ts`'s `runRank`).
+
 ## A capture must re-assert the run's own `presetLevel` — the freshness barrier is not enough
 
 - **Every capture's `recall_base` re-runs the device's OWN level-apply, which serves the COMMITTED `presetLevel`** — and that store commits lazily (T+45–100 s, `danger.md`). The footswitch lane used to pass no intended level, relying on `ensure_fresh_load` to have made committed and saved equal by the time captures ran. On a preset with NO scenes the base save and the footswitch batch are seconds apart, squarely inside that window, and the whole batch measured a chain **5.53 dB** quieter than the one the user had just leveled. HW, fw 1.8.45, 2026-08-19, slot 26 "Plumes+BD2+OCD" — the arithmetic closes exactly:
