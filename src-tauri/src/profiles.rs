@@ -320,7 +320,10 @@ pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
     // The rename above is durable on disk only once the DIRECTORY ENTRY itself
     // is synced — without this, a power loss right after a successful rename
     // can still lose it. `File::open` on a directory succeeds read-only, so
-    // this doesn't need write access to the parent.
+    // this doesn't need write access to the parent. Unix only: Windows refuses to
+    // open a directory as a plain file (`ERROR_ACCESS_DENIED`), and NTFS journals the
+    // rename itself, so there is nothing equivalent to do there.
+    #[cfg(unix)]
     if let Some(parent) = path.parent() {
         std::fs::File::open(parent)
             .and_then(|dir| dir.sync_all())

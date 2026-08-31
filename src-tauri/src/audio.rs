@@ -397,9 +397,9 @@ const TMP_NATIVE_CHANNELS: u16 = 4;
 /// absolute indices (the dry-DI tap `DRY_INSTRUMENT_IN_CH` above all) then
 /// land on the wrong lane, silently measuring a microphone instead of the
 /// guitar. A TMP-only aggregate keeps the native count and layout, so the
-/// count test admits it. macOS-only: Linux resolves by `/proc/asound` PCM id
-/// (see the `imp` modules), so the native-count tiebreak isn't needed there.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// count test admits it. macOS and Windows: Linux resolves by `/proc/asound` PCM
+/// id (see the `imp` modules), so the native-count tiebreak isn't needed there.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn pick_match_index(channel_counts: &[u16]) -> Option<usize> {
     channel_counts
         .iter()
@@ -535,7 +535,30 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+mod imp {
+    use super::{pick_match_index, Device};
+
+    /// WASAPI names an endpoint "<jack> (<USB product string>)" — e.g. "Line (Tone
+    /// Master Pro)" — so the same "tone master" substring match as macOS applies, and
+    /// the native-4 tiebreak keeps a hypothetical virtual/aggregate endpoint from
+    /// shadowing the physical one. With Fender's own (Thesycon) driver installed the
+    /// unit's audio side enumerates under its 0x0047 product id as "Fender Tone Master
+    /// Pro" — still a substring hit, so both driver stacks resolve here.
+    pub(super) fn find_device<I, F>(devs: I, channels_of: F) -> Option<Device>
+    where
+        I: Iterator<Item = Device>,
+        F: Fn(&Device) -> u16,
+    {
+        let mut matches: Vec<Device> = devs
+            .filter(|d| d.to_string().to_lowercase().contains("tone master"))
+            .collect();
+        let counts: Vec<u16> = matches.iter().map(channels_of).collect();
+        pick_match_index(&counts).map(|i| matches.swap_remove(i))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use super::Device;
 
@@ -659,6 +682,20 @@ struct ReampStreams {
     in_cfg: SupportedStreamConfig,
 }
 
+/// What to append to a "no config" error on hosts where the missing config is a
+/// user-side setting rather than a hardware limit. WASAPI shared mode only ever
+/// offers an endpoint's Windows "default format" (rate + channel layout, set in the
+/// Sound control panel): HW-measured, the Thesycon-driven unit enumerated as a
+/// stereo "Speakers" output and a 44.1 kHz "Line" input until those were changed,
+/// so the fix is the user's, and the error must say so.
+fn host_config_hint() -> &'static str {
+    if cfg!(windows) {
+        " — in Windows Sound settings set the Tone Master Pro output to 4 channels (Speakers → Configure → Quadraphonic) and both its Speakers and Line endpoints to a 48000 Hz default format (Properties → Advanced), then retry"
+    } else {
+        ""
+    }
+}
+
 /// Find the TMP and pick a 48 kHz output config (≥3 ch for USB-In 3) + input
 /// config. Errors describe exactly which half is missing.
 fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
@@ -679,7 +716,12 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
         sample_rate,
         (REAMP_INSTRUMENT_OUT_CH + 1) as u16,
     )
-    .ok_or_else(|| format!("no F32/I32 output config at {sample_rate} Hz with ≥3 channels"))?;
+    .ok_or_else(|| {
+        format!(
+            "no F32/I32 output config at {sample_rate} Hz with ≥3 channels{}",
+            host_config_hint()
+        )
+    })?;
     let in_cfg = pick_config(
         in_dev
             .supported_input_configs()
@@ -687,7 +729,12 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
         sample_rate,
         1,
     )
-    .ok_or_else(|| format!("no F32/I32 input config at {sample_rate} Hz"))?;
+    .ok_or_else(|| {
+        format!(
+            "no F32/I32 input config at {sample_rate} Hz{}",
+            host_config_hint()
+        )
+    })?;
 
     Ok(ReampStreams {
         out_dev,

@@ -1,4 +1,7 @@
-//! IOKit HID transport for the Tone Master Pro.
+//! HID transport for the Tone Master Pro: IOKit on macOS, hidraw on Linux, Win32
+//! HID on Windows — one `imp` module per platform behind the same [`Hid`] worker
+//! thread and [`HidTransport`] seam. The header below describes the macOS original;
+//! each other `imp` carries its own note on where it differs.
 //!
 //! Why raw IOKit (not the `hidapi` crate): the TMP's HID is exclusive-access,
 //! and we *want* exclusive access to drive it. `hidapi` on macOS opens with
@@ -912,11 +915,529 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows HID transport (Win32 `hid.dll` + SetupAPI, no C dependency beyond the
+/// system DLLs `windows-sys` already binds).
+///
+/// Why raw Win32 and not the `hidapi` crate: exclusive access. `CreateFileW` with a
+/// zero share mode is the Windows equivalent of IOKit's seize — the HID class driver
+/// refuses every later open with `ERROR_SHARING_VIOLATION`, which is exactly the
+/// "close Pro Control" contract the macOS side has. `hidapi` opens shared and exposes
+/// no way to ask for anything else.
+///
+/// Framing differs from the other two backends in ONE place: Windows always carries
+/// the report ID as a leading byte on BOTH directions, and the buffer handed to
+/// `WriteFile`/`ReadFile` must be exactly `OutputReportByteLength` /
+/// `InputReportByteLength` as declared by the descriptor. For the TMP's unnumbered
+/// reports that is `0x00` + the 63-byte outbound frame (= 64) and `0x00` + the
+/// device's 64-byte inbound report (= 65). Outbound gets the byte prepended (same as
+/// hidraw); inbound gets it STRIPPED so the reports reach the parsers byte-identical
+/// to the macOS/Linux shape (`[0x00, magic, …]` — that leading zero is the device's
+/// own, see the Linux `imp` note). Stripping is keyed on the descriptor length, not
+/// on the value, so an unexpected descriptor is an error rather than a silent
+/// misparse.
+///
+/// Threading mirrors the other backends: one worker thread owns the handle, a single
+/// overlapped read is kept PENDING across pumps (so nothing that lands between two
+/// pumps is lost — the class driver queues behind it; `HidD_SetNumInputBuffers`
+/// raises that queue well above a preset-list burst), and each pump waits on the
+/// read's event with the remaining budget.
+#[cfg(windows)]
+mod imp {
+    use super::*;
+    use crossbeam_channel::unbounded;
+    use std::io::Error as IoError;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+        SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
+        SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
+        SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+    };
+    use windows_sys::Win32::Devices::HumanInterfaceDevice::{
+        HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetHidGuid, HidD_GetPreparsedData,
+        HidD_SetNumInputBuffers, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS,
+    };
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_IO_PENDING, ERROR_SHARING_VIOLATION,
+        GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+
+    /// Inbound: report id + the device's 64 (HW-measured, fw 1.8.45: the descriptor
+    /// declares 65 in AND 65 out — the outbound 63-byte frame is zero-padded up to
+    /// whatever the descriptor says, so only the inbound length is pinned).
+    const INPUT_REPORT_LEN: u16 = 65;
+    /// Smallest outbound report that fits report id + one 63-byte frame.
+    const MIN_OUTPUT_REPORT_LEN: u16 = 64;
+    /// Class-driver input queue depth (default 32; the driver rejects anything above
+    /// 512 with `ERROR_INVALID_PARAMETER`, HW-measured). A preset-list harvest arrives
+    /// as hundreds of back-to-back reports, so make the queue comfortably deeper than
+    /// one burst — the pump only drains as fast as one overlapped read per report.
+    const INPUT_QUEUE_DEPTH: u32 = 512;
+    const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
+
+    fn last_err() -> IoError {
+        IoError::from_raw_os_error(unsafe { GetLastError() } as i32)
+    }
+
+    /// Every present HID device-interface path, as UTF-16 with its NUL terminator
+    /// (ready for `CreateFileW`) plus a lossy string for matching/logging.
+    fn hid_interface_paths() -> Result<Vec<(Vec<u16>, String)>, String> {
+        let mut guid = unsafe { std::mem::zeroed() };
+        unsafe { HidD_GetHidGuid(&mut guid) };
+        let set = unsafe {
+            SetupDiGetClassDevsW(
+                &guid,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+            )
+        };
+        // HDEVINFO is an `isize` in windows-sys while INVALID_HANDLE_VALUE is a pointer.
+        if set == INVALID_HANDLE_VALUE as isize {
+            return Err(format!("SetupDiGetClassDevsW: {}", last_err()));
+        }
+        let mut out = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut iface: SP_DEVICE_INTERFACE_DATA = unsafe { std::mem::zeroed() };
+            iface.cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32;
+            let ok = unsafe {
+                SetupDiEnumDeviceInterfaces(set, std::ptr::null(), &guid, index, &mut iface)
+            };
+            if ok == 0 {
+                break; // ERROR_NO_MORE_ITEMS, or a genuine error — either ends the walk
+            }
+            index += 1;
+            // First call sizes the detail buffer, second fills it.
+            let mut needed = 0u32;
+            unsafe {
+                SetupDiGetDeviceInterfaceDetailW(
+                    set,
+                    &iface,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut needed,
+                    std::ptr::null_mut(),
+                )
+            };
+            if needed == 0 {
+                continue;
+            }
+            let mut buf = vec![0u8; needed as usize];
+            let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+            // cbSize is the FIXED header size (u32 + one u16, padded on 64-bit), not
+            // the buffer length — the classic SetupAPI trap.
+            unsafe {
+                (*detail).cbSize = if cfg!(target_pointer_width = "64") {
+                    8
+                } else {
+                    6
+                };
+            }
+            let ok = unsafe {
+                SetupDiGetDeviceInterfaceDetailW(
+                    set,
+                    &iface,
+                    detail,
+                    needed,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                continue;
+            }
+            let path_ptr = unsafe { std::ptr::addr_of!((*detail).DevicePath) as *const u16 };
+            let max = (needed as usize).saturating_sub(4) / 2;
+            let mut wide = Vec::with_capacity(max + 1);
+            for i in 0..max {
+                let c = unsafe { *path_ptr.add(i) };
+                wide.push(c);
+                if c == 0 {
+                    break;
+                }
+            }
+            if wide.last() != Some(&0) {
+                wide.push(0);
+            }
+            let text = String::from_utf16_lossy(&wide[..wide.len() - 1]);
+            out.push((wide, text));
+        }
+        unsafe { SetupDiDestroyDeviceInfoList(set) };
+        Ok(out)
+    }
+
+    /// The path fragment PnP puts in every device-interface path for our unit.
+    fn path_matches_tmp(path: &str) -> bool {
+        path.to_ascii_lowercase()
+            .contains(&format!("vid_{VID:04x}&pid_{PID:04x}"))
+    }
+
+    struct Dev {
+        handle: HANDLE,
+        event: HANDLE,
+        overlapped: Box<OVERLAPPED>,
+        /// `OutputReportByteLength` — every write must be exactly this long.
+        output_len: usize,
+        /// Scratch for the one always-pending read; sized to the descriptor.
+        read_buf: Vec<u8>,
+        read_pending: bool,
+    }
+
+    fn open_device() -> Result<Dev, String> {
+        let paths = hid_interface_paths()?;
+        let seen = paths.len();
+        let Some((wide, text)) = paths.into_iter().find(|(_, t)| path_matches_tmp(t)) else {
+            return Err(format!(
+                "no TMP found (VID 0x{VID:04X} / PID 0x{PID:02X}) among {seen} HID device(s) — is it plugged in?"
+            ));
+        };
+        // Share mode 0 = exclusive: the Windows counterpart of IOKit's seize.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let err = last_err();
+            let code = err.raw_os_error().unwrap_or(0) as u32;
+            let hint = if code == ERROR_SHARING_VIOLATION || code == ERROR_ACCESS_DENIED {
+                " — close Fender Pro Control (or another TMP Companion) — it holds the device — and retry"
+            } else {
+                ""
+            };
+            return Err(format!("open {text}: {err}{hint}"));
+        }
+        let dev = (|| -> Result<Dev, String> {
+            let mut attrs: HIDD_ATTRIBUTES = unsafe { std::mem::zeroed() };
+            attrs.Size = std::mem::size_of::<HIDD_ATTRIBUTES>() as u32;
+            if !unsafe { HidD_GetAttributes(handle, &mut attrs) } {
+                return Err(format!("HidD_GetAttributes: {}", last_err()));
+            }
+            if (attrs.VendorID as i32, attrs.ProductID as i32) != (VID, PID) {
+                return Err(format!(
+                    "opened {text} but it reports VID 0x{:04X} / PID 0x{:04X}",
+                    attrs.VendorID, attrs.ProductID
+                ));
+            }
+            let mut preparsed = 0isize;
+            if !unsafe { HidD_GetPreparsedData(handle, &mut preparsed) } {
+                return Err(format!("HidD_GetPreparsedData: {}", last_err()));
+            }
+            let mut caps: HIDP_CAPS = unsafe { std::mem::zeroed() };
+            let st = unsafe { HidP_GetCaps(preparsed, &mut caps) };
+            unsafe { HidD_FreePreparsedData(preparsed) };
+            if st != HIDP_STATUS_SUCCESS {
+                return Err(format!("HidP_GetCaps: NTSTATUS 0x{:08x}", st as u32));
+            }
+            // The report-id strip below is only valid for exactly this inbound shape,
+            // and a frame must fit the outbound one; anything else means the wire model
+            // changed and must be re-measured.
+            if caps.OutputReportByteLength < MIN_OUTPUT_REPORT_LEN
+                || caps.InputReportByteLength != INPUT_REPORT_LEN
+            {
+                return Err(format!(
+                    "unexpected TMP report lengths: out {} / in {} (expected ≥{MIN_OUTPUT_REPORT_LEN} / {INPUT_REPORT_LEN})",
+                    caps.OutputReportByteLength, caps.InputReportByteLength
+                ));
+            }
+            let output_len = caps.OutputReportByteLength as usize;
+            if !unsafe { HidD_SetNumInputBuffers(handle, INPUT_QUEUE_DEPTH) } {
+                log::warn!("HidD_SetNumInputBuffers failed: {}", last_err());
+            }
+            let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+            if event.is_null() {
+                return Err(format!("CreateEventW: {}", last_err()));
+            }
+            let mut overlapped: Box<OVERLAPPED> = Box::new(unsafe { std::mem::zeroed() });
+            overlapped.hEvent = event;
+            Ok(Dev {
+                handle,
+                event,
+                overlapped,
+                output_len,
+                read_buf: vec![0u8; INPUT_REPORT_LEN as usize],
+                read_pending: false,
+            })
+        })();
+        if dev.is_err() {
+            unsafe { CloseHandle(handle) };
+        }
+        dev
+    }
+
+    impl Dev {
+        /// Synchronous write of one output report: report id `0x00` + the 63-byte
+        /// frame, zero-padded to the descriptor length.
+        fn write_frame(&self, frame: &[u8]) -> Result<(), String> {
+            let mut pkt = vec![0u8; self.output_len];
+            pkt[1..1 + frame.len()].copy_from_slice(frame);
+            // Writes use their own overlapped + event so they never race the pending read.
+            let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+            if ev.is_null() {
+                return Err(format!("CreateEventW: {}", last_err()));
+            }
+            let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+            ov.hEvent = ev;
+            let mut written = 0u32;
+            let ok = unsafe {
+                WriteFile(
+                    self.handle,
+                    pkt.as_ptr(),
+                    pkt.len() as u32,
+                    &mut written,
+                    &mut ov,
+                )
+            };
+            let result = if ok != 0 {
+                Ok(written)
+            } else if unsafe { GetLastError() } == ERROR_IO_PENDING {
+                if unsafe { GetOverlappedResult(self.handle, &ov, &mut written, 1) } != 0 {
+                    Ok(written)
+                } else {
+                    Err(format!("HID write: {}", last_err()))
+                }
+            } else {
+                Err(format!("HID write: {}", last_err()))
+            };
+            unsafe { CloseHandle(ev) };
+            let n = result?;
+            if n as usize != pkt.len() {
+                return Err(format!("HID short write: {n} of {}", pkt.len()));
+            }
+            Ok(())
+        }
+
+        fn send_body(&self, body: &[u8]) -> Result<(), String> {
+            for pkt in proto::make_chunked_envelopes(body) {
+                self.write_frame(&pkt)?;
+            }
+            Ok(())
+        }
+
+        /// Arm the single pending read if none is outstanding. Returns `Ok(true)` if the
+        /// read completed synchronously (data already in `read_buf`).
+        fn arm_read(&mut self) -> Result<bool, String> {
+            if self.read_pending {
+                return Ok(false);
+            }
+            let mut n = 0u32;
+            let ok = unsafe {
+                ReadFile(
+                    self.handle,
+                    self.read_buf.as_mut_ptr(),
+                    self.read_buf.len() as u32,
+                    &mut n,
+                    &mut *self.overlapped,
+                )
+            };
+            if ok != 0 {
+                return Ok(true);
+            }
+            if unsafe { GetLastError() } == ERROR_IO_PENDING {
+                self.read_pending = true;
+                return Ok(false);
+            }
+            Err(format!("HID read: {}", last_err()))
+        }
+
+        /// Take the completed read out of `read_buf`, stripping the report-id byte.
+        fn take_report(&mut self, n: u32) -> Option<Vec<u8>> {
+            let n = (n as usize).min(self.read_buf.len());
+            (n > 1).then(|| self.read_buf[1..n].to_vec())
+        }
+
+        /// Collect reports for up to `ms` — the same "burn the budget" shape as
+        /// `CFRunLoopRunInMode`, so callers reassemble cumulatively across pumps.
+        fn pump_into(&mut self, ms: u64, out: &mut Vec<Vec<u8>>) {
+            let deadline = Instant::now() + Duration::from_millis(ms);
+            loop {
+                match self.arm_read() {
+                    Ok(true) => {
+                        let mut n = 0u32;
+                        // Synchronous completion still reports its length via the
+                        // overlapped result.
+                        unsafe { GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 0) };
+                        if let Some(r) = self.take_report(n) {
+                            out.push(r);
+                        }
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        log::warn!("{e}");
+                        return;
+                    }
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                let wait = unsafe { WaitForSingleObject(self.event, left.as_millis() as u32) };
+                if wait == WAIT_TIMEOUT {
+                    return; // budget expired; the read stays pending for the next pump
+                }
+                if wait != WAIT_OBJECT_0 {
+                    log::warn!("HID wait: {}", last_err());
+                    return;
+                }
+                let mut n = 0u32;
+                let ok = unsafe { GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 0) };
+                self.read_pending = false;
+                if ok == 0 {
+                    log::warn!("HID read completion: {}", last_err());
+                    return; // the device is gone
+                }
+                if let Some(r) = self.take_report(n) {
+                    out.push(r);
+                }
+            }
+        }
+
+        fn pump(&mut self, ms: u64) -> Vec<Vec<u8>> {
+            let mut out = Vec::new();
+            self.pump_into(ms, &mut out);
+            out
+        }
+
+        /// [`Cmd::TransactEager`]: same policy as the other backends, reusing the pure
+        /// [`fold_frame_open`] with `max_ms` as the hard cap.
+        fn pump_eager(&mut self, max_ms: u64) -> Vec<Vec<u8>> {
+            let mut out = Vec::new();
+            let mut elapsed = 0u64;
+            let mut open = false;
+            let mut scanned = 0usize;
+            let mut quiet = 0u64;
+            while elapsed < max_ms {
+                let slice = EAGER_SLICE_MS.min(max_ms - elapsed);
+                self.pump_into(slice, &mut out);
+                elapsed += slice;
+                if out.len() > scanned {
+                    open = fold_frame_open(&out[scanned..], open);
+                    scanned = out.len();
+                    quiet = 0;
+                } else {
+                    quiet += slice;
+                }
+                if scanned > 0 && !open && quiet >= EAGER_QUIET_MS {
+                    break;
+                }
+            }
+            out
+        }
+
+        fn close(self) {
+            unsafe {
+                if self.read_pending {
+                    CancelIoEx(self.handle, &*self.overlapped);
+                    let mut n = 0u32;
+                    // Wait for the cancel to land so the buffer outlives the I/O.
+                    GetOverlappedResult(self.handle, &*self.overlapped, &mut n, 1);
+                }
+                CloseHandle(self.event);
+                if CloseHandle(self.handle) == 0 {
+                    log::warn!("HID close failed: {}", last_err());
+                }
+            }
+        }
+    }
+
+    pub fn open() -> Result<Hid, String> {
+        let (ready_tx, ready_rx) = bounded::<Result<(), String>>(1);
+        let (cmd_tx, cmd_rx) = unbounded::<Cmd>();
+
+        let join = std::thread::Builder::new()
+            .name("tmp-hid".into())
+            .spawn(move || {
+                let mut dev = match open_device() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                let _ = ready_tx.send(Ok(()));
+
+                for cmd in cmd_rx.iter() {
+                    match cmd {
+                        Cmd::Send(body, reply) => {
+                            let _ = reply.send(dev.send_body(&body));
+                        }
+                        Cmd::Transact(body, ms, reply) | Cmd::TransactChunked(body, ms, reply) => {
+                            match dev.send_body(&body) {
+                                Ok(()) => {
+                                    let _ = reply.send(Ok(dev.pump(ms)));
+                                }
+                                Err(e) => {
+                                    let _ = reply.send(Err(e));
+                                }
+                            }
+                        }
+                        Cmd::Pump(ms, reply) => {
+                            let _ = reply.send(Ok(dev.pump(ms)));
+                        }
+                        Cmd::TransactEager(body, max_ms, reply) => match dev.send_body(&body) {
+                            Ok(()) => {
+                                let _ = reply.send(Ok(dev.pump_eager(max_ms)));
+                            }
+                            Err(e) => {
+                                let _ = reply.send(Err(e));
+                            }
+                        },
+                        Cmd::Close => break,
+                    }
+                }
+                dev.close();
+            })
+            .map_err(|e| format!("spawn HID thread: {e}"))?;
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Hid {
+                cmd_tx,
+                join: Some(join),
+            }),
+            Ok(Err(e)) => {
+                let _ = join.join();
+                Err(e)
+            }
+            Err(_) => Err("HID thread exited before reporting status".into()),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn path_match_is_case_insensitive_and_pid_zero_padded() {
+            assert!(path_matches_tmp(
+                r"\\?\hid#vid_1ed8&pid_0044&mi_02#9&2640e151&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}"
+            ));
+            assert!(path_matches_tmp(r"\\?\HID#VID_1ED8&PID_0044&MI_02#x"));
+            // The audio-side interface of the same unit is a different PID.
+            assert!(!path_matches_tmp(r"\\?\hid#vid_1ed8&pid_0047&mi_04#x"));
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use super::*;
     pub fn open() -> Result<Hid, String> {
-        Err("TMP Companion supports macOS (IOKit HID) and Linux (hidraw)".into())
+        Err(
+            "TMP Companion supports macOS (IOKit HID), Linux (hidraw) and Windows (Win32 HID)"
+                .into(),
+        )
     }
 }
 

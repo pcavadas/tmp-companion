@@ -37,7 +37,7 @@ cd "$REPO"
 # other's server (a nondeterministic false-fail class). Derive a stable per-worktree offset
 # from the worktree path so each tree gets its own port pair; override with TMP_E2E_PORT /
 # TMP_E2E_VITE_PORT. Exported so the Playwright configs, vite, and the Rust e2e_server all read
-# the same values (they default to 7600/1421 when unset, preserving a bare `bunx playwright`).
+# the same values (they default to 7600/1421 when unset, preserving a bare `bun x playwright`).
 # ponytail: cksum%200 — a collision between two of the handful of real worktrees merely shares
 # ports (today's status quo); widen the modulus only if that ever bites.
 #
@@ -314,7 +314,7 @@ if [ "$MODE" = offline ]; then
   # unlike an empty array — avoids a two-arm exec).
   set --
   for s in "${SPECS[@]:-}"; do [ -n "$s" ] && [ "$s" != all ] && set -- "$@" "specs/$s.spec.ts"; done
-  exec bunx playwright test --config "$OFFLINE_CFG" "$@"
+  exec bun x playwright test --config "$OFFLINE_CFG" "$@"
 fi
 
 # ── ONLINE: managed — seed-first, handshake-verified start, per-spec runs, recovery ──
@@ -546,7 +546,7 @@ if [ "$MODE" = soak ]; then
     fi
     start=$(date +%s)
     run_log="$LOG_DIR/soak-run-$run.log"
-    if bunx playwright test --config "$ONLINE_CFG" "specs/level.online.spec.ts" >"$run_log" 2>&1; then
+    if bun x playwright test --config "$ONLINE_CFG" "specs/level.online.spec.ts" >"$run_log" 2>&1; then
       elapsed=$(( $(date +%s) - start ))
       printf 'soak run %d/%s: PASS  wall=%ss\n' "$run" "$N" "$elapsed"
       pass=$((pass + 1))
@@ -668,7 +668,7 @@ for s in "${SPECS[@]}"; do
   # runtime condition) exits 0 having exercised nothing; that used to log PASSED and
   # could certify a stamp for a run that proved nothing about the spec it named.
   spec_log="$LOG_DIR/online-spec-$s.log"
-  if bunx playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts" | tee "$spec_log"; then
+  if bun x playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts" | tee "$spec_log"; then
     if grep -Eq '[1-9][0-9]* passed' "$spec_log"; then
       log "specs/$s.spec.ts PASSED"
     else

@@ -1,4 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
+import path from "node:path";
+
+// webServer commands run with this config's dir (`e2e/`) as CWD. Vite must run from the
+// repo root, and on Windows a relative `../…` command reaches cmd.exe, which cannot run
+// it ("'..' is not recognized") — so the root is resolved and the server binary is given
+// as an absolute path with its platform suffix.
+const ROOT = path.resolve(import.meta.dirname, "..");
+const E2E_SERVER = path.join(
+  ROOT,
+  "src-tauri",
+  "target",
+  "debug",
+  process.platform === "win32" ? "e2e_server.exe" : "e2e_server",
+);
 
 // Ports default to 7600/1421 but scripts/e2e.sh derives a per-worktree pair (exported as
 // TMP_E2E_PORT / TMP_E2E_VITE_PORT) so parallel runs in sibling worktrees don't collide.
@@ -54,6 +68,7 @@ export default defineConfig({
   webServer: [
     {
       command: "bun run dev",
+      cwd: ROOT,
       url: `http://localhost:${VITE}`,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
@@ -65,7 +80,7 @@ export default defineConfig({
     // build — run `scripts/e2e.sh` (or `cargo build --features e2e --bin e2e_server`) to
     // pick up backend changes.
     ...Array.from({ length: WORKERS }, (_, i) => ({
-      command: "../src-tauri/target/debug/e2e_server",
+      command: E2E_SERVER,
       env: { TMP_E2E_PORT: String(PORT + i) },
       url: `http://127.0.0.1:${String(PORT + i)}/health`,
       reuseExistingServer: !process.env.CI,

@@ -479,9 +479,10 @@ fn main() {
         // currentPresetDataChanged on a dense-heartbeat session, dump the full
         // decompressed JSON, and report whether scenes[] + ftsw are complete.
         // Optional `slot` (0-based list index) loads that preset first to trigger a
-        // fresh push (non-destructive). Default output: /tmp/tmp_currentpresetdata.json.
+        // fresh push (non-destructive). Output: <temp dir>/tmp_currentpresetdata.json.
         let slot: Option<u32> = args.get(i + 1).and_then(|s| s.parse().ok());
-        let out = "/tmp/tmp_currentpresetdata.json";
+        let out = std::env::temp_dir().join("tmp_currentpresetdata.json");
+        let out = out.to_str().expect("temp dir path is UTF-8");
         eprintln!("[probe] capturing currentPresetDataChanged (slot={slot:?})…");
         match tmp_companion_lib::probe_dump_preset_data(slot, out) {
             Ok(report) => {

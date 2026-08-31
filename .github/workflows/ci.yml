@@ -10,15 +10,15 @@ permissions:
 
 jobs:
   build-test:
-    # macOS is the shipping platform (IOKit HID + CoreAudio re-amp). Linux runs the
-    # same gates to hold the platform boundary: everything above the `HidTransport`
-    # seam must stay portable, and a stray `target_os` assumption elsewhere in the
-    # crate should fail HERE rather than during a port. `fail-fast: false` so one
-    # platform's failure never hides the other's result.
+    # macOS is the shipping platform (IOKit HID + CoreAudio re-amp). Linux and
+    # Windows run the same gates to hold the platform boundary: everything above the
+    # `HidTransport` seam must stay portable, and a stray `target_os` assumption
+    # elsewhere in the crate should fail HERE rather than during a port. `fail-fast:
+    # false` so one platform's failure never hides another's result.
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-latest]
+        os: [macos-14, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

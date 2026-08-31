@@ -73,6 +73,32 @@ Then follow the build steps above. **Order matters** — `bun run build` must pr
 
 **`bun run tauri dev` shows only a taskbar entry, no window?** On some KDE/GNOME Wayland + GPU driver combinations, WebKitGTK's window is believed to map but never paint. `bun run tauri dev` already works around this automatically (`scripts/tauri-dev-env.sh` forces `GDK_BACKEND=x11` when it detects a Linux Wayland session and you haven't already set `GDK_BACKEND` yourself — an explicit value, e.g. `GDK_BACKEND=wayland`, is left alone); if it recurs anyway, see [→ evidence](notes/gotchas.md#bun-run-tauri-dev-shows-only-a-taskbar-entry-no-window-on-kdegnome-wayland).
 
+### Developing on Windows
+
+Windows is a supported _development_ platform on the same terms as Linux: the crate builds and passes every gate, talks to a real Tone Master Pro over the Win32 HID stack, and re-amps over WASAPI. It does not ship (no signed installer, no updater feed) — `release.yml` stays macOS-only.
+
+Prerequisites, all via `winget`:
+
+```powershell
+winget install Rustlang.Rustup Oven-sh.Bun OpenJS.NodeJS.LTS Git.Git
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Rust's default host toolchain is `stable-x86_64-pc-windows-msvc`, which needs the C++ Build Tools (the MSVC linker; `rusqlite`'s bundled SQLite also compiles through it). WebView2 ships with Windows 11. Git for Windows supplies the `bash` that `bun run tauri` / `bun run e2e` / the git hooks wrap — run those from Git Bash or from a shell that has it on `PATH`.
+
+**Device access needs no driver or rule.** The unit's control interface (`HID\VID_1ED8&PID_0044&MI_02`) is a vendor-defined HID device, which Windows exposes to user mode as-is. The app opens it with a zero share mode — the Windows counterpart of the macOS seize — so it fails with a "close Fender Pro Control" error while Pro Control (or a second TMP Companion) holds the handle, exactly as on macOS.
+
+**Audio needs a one-time Windows Sound setting.** Re-amp goes through cpal's WASAPI host in _shared_ mode, and shared mode only ever offers an endpoint's Windows **default format** — the rate and channel layout chosen in the Sound control panel, not what the hardware can do. HW-measured with Fender's own driver installed (`probe --audio-devices`): the unit enumerates as `Speakers (Fender Tone Master Pro)` with **2** output channels and `Line (Fender Tone Master Pro)` with 4 input channels at **44100 Hz** only. Re-amp injects on output channel 3 (USB-In 3) at 48 kHz, so out of the box it fails with a "no … config at 48000 Hz" error that names the fix. In Windows Sound settings (`mmsys.cpl`):
+
+- **Playback → Speakers (Fender Tone Master Pro) → Configure** → _Quadraphonic_ (4 channels), and **Properties → Advanced** → default format at **48000 Hz**.
+- **Recording → Line (Fender Tone Master Pro) → Properties → Advanced** → a **4 channel, 48000 Hz** default format.
+
+The device name match is the same "tone master" substring as macOS, with the native-4-channel tiebreak; `cargo run --bin probe -- --audio-devices` prints what your box actually enumerates and is the way to confirm the setting took. The HID control interface is unaffected by any of this — connect, preset list and the backup scan work with no setup at all. Line endings, `.gitattributes` and the editor settings are pinned to LF so the bash scripts run unmodified.
+
+Then follow the build steps above (`bun run build` **before** any `cargo` command, as on Linux) and sanity-check with `cargo run --bin probe`, which should print your preset list.
+
+**Building an installer:** `bun run tauri build` produces `src-tauri\target\release\bundle\nsis\TMP Companion_<version>_x64-setup.exe` (plus the bare `target\release\tmp-companion.exe`). `src-tauri/tauri.windows.conf.json` is merged on top of `tauri.conf.json` on Windows only: it bundles NSIS (the MSI packager rejects the dev version `0.0.0-development`) and turns off updater artifacts (Windows has no updater feed, and signing them needs the release-only `TAURI_SIGNING_PRIVATE_KEY`). Tauri downloads NSIS itself on the first build. The installer is unsigned, so SmartScreen warns on first launch. Pass extra flags directly — `bun run tauri build --bundles nsis` — never `-- --bundles`, because the wrapper script forwards every argument verbatim and the `--` would reach cargo.
+
 ## Pull requests
 
 - **Conventional commits are enforced** (commitlint, in the pre-commit hook + CI) and drive releases (semantic-release): `feat:` / `fix:` / `docs:` / `chore:` / `refactor:` … A non-conforming message fails CI.

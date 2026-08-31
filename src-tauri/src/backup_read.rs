@@ -343,24 +343,43 @@ fn create_private_temp_db(bytes: &[u8]) -> Result<std::path::PathBuf, String> {
     ))
 }
 
-/// One `sqlite3 -json` query against an extracted backup DB. An empty result set is
-/// `[]`, not an error.
+/// One query against an extracted backup DB, rows as an array of `{column: value}`
+/// objects (the `sqlite3 -json` shape the consumers were written against). An empty
+/// result set is `[]`, not an error.
 fn run_sql(db: &TempDb, sql: &str) -> Result<serde_json::Value, String> {
-    let out = std::process::Command::new("sqlite3")
-        .arg("-json")
-        .arg(&db.0)
-        .arg(sql)
-        .output()
-        .map_err(|e| format!("sqlite3 spawn ({e}); is the CLI on PATH?"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    let conn = rusqlite::Connection::open_with_flags(
+        &db.0,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("open backup db: {e}"))?;
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let rows = stmt
+        .query_map([], |row| {
+            let mut obj = serde_json::Map::with_capacity(names.len());
+            for (i, name) in names.iter().enumerate() {
+                obj.insert(name.clone(), sql_value_json(row.get_ref(i)?));
+            }
+            Ok(serde_json::Value::Object(obj))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::Value::Array(rows))
+}
+
+/// `sqlite3 -json`'s value mapping: NULL → null, INTEGER/REAL → number, TEXT →
+/// string, BLOB → the bytes as a lossy string (the CLI emits them as text too; no
+/// consumer reads a blob column).
+fn sql_value_json(v: rusqlite::types::ValueRef<'_>) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match v {
+        ValueRef::Null => serde_json::Value::Null,
+        ValueRef::Integer(i) => serde_json::Value::from(i),
+        ValueRef::Real(f) => serde_json::Value::from(f),
+        ValueRef::Text(t) => serde_json::Value::from(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Blob(b) => serde_json::Value::from(String::from_utf8_lossy(b).into_owned()),
     }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let s = s.trim();
-    if s.is_empty() {
-        return Ok(serde_json::Value::Array(vec![]));
-    }
-    serde_json::from_str(s).map_err(|e| format!("parse sqlite json: {e}"))
 }
 
 /// The archive's member list plus its two extracted entries.
@@ -562,7 +581,7 @@ fn backup_row_preset_json(
 
 /// Decode a streamed device backup archive (GNU-tar + LZ4-frame) IN MEMORY and read
 /// every preset + scene count out of its `databaseBackup` (= `/data/normalDb.db3`)
-/// SQLite entry via the system `sqlite3`. The DB is written to a temp file (sqlite
+/// SQLite entry in-process (`rusqlite`). The DB is written to a temp file (sqlite
 /// needs a path) that is DELETED on every exit; the archive itself is never written
 /// to disk — nothing persists (no stacking backups).
 pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {

@@ -11,6 +11,9 @@ export default defineConfig({
   server: {
     port,
     strictPort: true,
+    // Keep the watcher out of the Rust build tree: on Windows, watching a binary the
+    // linker still holds fails with EBUSY and takes the whole dev server down.
+    watch: { ignored: ["**/src-tauri/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

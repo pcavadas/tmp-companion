@@ -77,6 +77,19 @@ const STRUCTURAL_SAVE_CMDS: [&str; 2] = ["copy_apply", "doctor_save"];
 /// spec inside the HID open-lockout danger window (`.claude/rules/danger.md`), and
 /// within-run value drift is already handled by ordering doctor.online before level.online.
 #[cfg(feature = "e2e")]
+/// The origin Tauri treats as the app's OWN webview for ACL purposes. It is
+/// platform-specific: `tauri://localhost` on macOS/Linux, `http://tauri.localhost`
+/// on Windows (and Android). A bridged invoke carrying the wrong one is judged a
+/// REMOTE origin, and every command fails with "not allowed. Plugin not found".
+pub(crate) fn local_app_url() -> tauri::Url {
+    let origin = if cfg!(any(windows, target_os = "android")) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    };
+    origin.parse().expect("static origin parses")
+}
+
 fn note_structural_save(cmd: &str) {
     if STRUCTURAL_SAVE_CMDS.contains(&cmd) {
         SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -924,7 +937,7 @@ fn e2e_route(
                 cmd,
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
-                url: "tauri://localhost".parse().unwrap(),
+                url: local_app_url(),
                 body: tauri::ipc::InvokeBody::Json(args),
                 headers: Default::default(),
                 invoke_key: tauri::test::INVOKE_KEY.to_string(),

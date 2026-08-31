@@ -1,0 +1,24 @@
+# Normalise every text file to LF in the repo AND in the working tree,
+# regardless of the contributor's core.autocrlf. The bash scripts under
+# scripts/ (pre-push gates, e2e runner, Claude hooks) break under CRLF,
+# and the gates' content-hash stamp would churn on line-ending flips.
+* text=auto eol=lf
+
+# Windows-native scripts are the one place CRLF is correct.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.wav binary
+*.bin binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

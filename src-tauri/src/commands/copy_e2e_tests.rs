@@ -413,11 +413,18 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn migration_refuses_to_snapshot_into_an_unwritable_dir() {
-        // A path whose parent is not a directory ⇒ the snapshot fails; migration_apply
-        // then skips the write and keeps the preset revertible.
-        let bad = std::path::Path::new("/dev/null/tmp-companion-cannot-mkdir");
+        // A path whose parent is a regular FILE, not a directory ⇒ the snapshot fails;
+        // migration_apply then skips the write and keeps the preset revertible. A real
+        // file (not `/dev/null`) so the shape holds on every platform.
+        let file = std::env::temp_dir().join(format!(
+            "tmp-companion-not-a-dir-{}-{}",
+            std::process::id(),
+            crate::bulkrun::now_stamp()
+        ));
+        std::fs::write(&file, b"x").unwrap();
+        let bad = file.join("tmp-companion-cannot-mkdir");
         let r = crate::commands::migration::snapshot_before_migrate(
-            bad,
+            &bad,
             3,
             "Cliff",
             r#"{"info":{"preset_id":"x"}}"#,

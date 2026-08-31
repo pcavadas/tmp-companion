@@ -514,8 +514,10 @@ mod tests {
         assert!(body.contains("\"engaged\":\"engaged\""), "{body}");
         let wav = wavs.join("footswitch_slot404_switch11.wav");
         assert!(wav.is_file(), "the dumped WAV exists at {wav:?}");
+        // JSON-encoded, so a Windows path's backslashes compare escaped as written.
+        let wav_json = serde_json::to_string(wav.to_str().expect("utf8")).expect("json");
         assert!(
-            body.contains(&format!("\"wav\":\"{}\"", wav.to_str().expect("utf8"))),
+            body.contains(&format!("\"wav\":{wav_json}")),
             "the row carries the dumper's OWN path verbatim: {body}"
         );
         // One row per emit, newline-terminated: the consumer reads this line by line.

@@ -104,7 +104,9 @@ fn manifest_path() -> std::path::PathBuf {
     std::env::var("TMP_E2E_SEED_MANIFEST")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()))
+            std::env::var("TMPDIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::env::temp_dir())
                 .join("tmp-companion-e2e")
                 .join("seeded-slots.json")
         })

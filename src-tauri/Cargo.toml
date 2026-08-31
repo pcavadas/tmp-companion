@@ -38,9 +38,12 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # Device-backup fast DB read (`probe --device-backup`): the unit streams a
 # GNU-tar + LZ4-frame archive of /data (built by `tm-stomp-server`'s libarchive).
-# Both pure-Rust, no C dependency. SQLite itself is read via the system `sqlite3`.
+# Both pure-Rust, no C dependency.
 lz4_flex = "0.14"
 tar = "0.4"
+# The backup's `normalDb.db3` is queried in-process. `bundled` compiles SQLite from the
+# vendored amalgamation so no platform needs a `sqlite3` CLI on PATH (Windows ships none).
+rusqlite = { version = "0.37", features = ["bundled"] }
 realfft = "3.5.0"
 
 # macOS-only: IOKit HID (exclusive device seize) is
@@ -58,6 +61,20 @@ libc = "0.2"
 # dependency rather than introducing one.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+# Windows-only: the TMP is reached through the Win32 HID stack (SetupAPI enumeration
+# + `CreateFileW` with exclusive share mode — the seize — + overlapped `ReadFile`/
+# `WriteFile`). `windows-sys` is the thin extern binding tauri/cpal already pull; only
+# the feature set widens.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Devices_HumanInterfaceDevice",
+  "Win32_Devices_DeviceAndDriverInstallation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Threading",
+] }
 
 [features]
 default = ["custom-protocol", "dev-bins"]

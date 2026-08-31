@@ -1474,25 +1474,23 @@ mod fixture_gates {
         ));
         std::fs::write(&db_path, &db_bytes).expect("write temp db");
         let _guard = TempDb(db_path.clone());
-        let out = std::process::Command::new("sqlite3")
-            .arg("-json")
-            .arg(&db_path)
-            .arg("SELECT displayName, presetJson FROM UserPresets")
-            .output()
-            .expect("run sqlite3");
-        assert!(out.status.success(), "sqlite3 query failed: {out:?}");
-        let rows: serde_json::Value =
-            serde_json::from_slice(&out.stdout).expect("sqlite3 -json output parses");
-        let rows = rows.as_array().expect("UserPresets rows");
+        let conn = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open fixture db");
+        let rows: Vec<(Option<String>, String)> = conn
+            .prepare("SELECT displayName, presetJson FROM UserPresets")
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
         assert!(!rows.is_empty(), "no UserPresets rows found to check");
 
         let mut ids = Vec::new();
-        for row in rows {
-            let name = row["displayName"]
-                .as_str()
-                .unwrap_or("<unnamed>")
-                .to_string();
-            let js = row["presetJson"].as_str().expect("presetJson is text");
+        for (name, js) in &rows {
+            let name = name.clone().unwrap_or_else(|| "<unnamed>".to_string());
             let p: serde_json::Value = serde_json::from_str(js).expect("presetJson parses");
             let info = &p["info"];
 

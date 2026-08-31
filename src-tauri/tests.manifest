@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded into Rust TEST executables on Windows (see build.rs). tauri-build
+     embeds a manifest for the app binaries only; a `cargo test` harness exe has
+     none, so `tauri/test`'s MockRuntime — which imports comctl32 v6 entry points
+     such as TaskDialogIndirect — fails to LOAD with STATUS_ENTRYPOINT_NOT_FOUND
+     before a single test runs. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

@@ -134,9 +134,11 @@ fn append_bundle_members<R: tauri::Runtime, W: std::io::Write>(
 ) -> Result<(), String> {
     use tauri::Manager;
 
-    // Everything text-y gets this stripped → `~`. Empty when HOME is unset (scrub
-    // then no-ops, tested).
-    let home = std::env::var("HOME").unwrap_or_default();
+    // Everything text-y gets this stripped → `~`. Empty when neither HOME nor
+    // Windows' USERPROFILE is set (scrub then no-ops, tested).
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
 
     // logs/<name> — every *.log in the app log dir, tail-capped + scrubbed.
     if let Ok(log_dir) = app.path().app_log_dir() {
