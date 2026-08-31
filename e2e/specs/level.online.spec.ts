@@ -321,7 +321,33 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
       const id = String(r.scene_slot);
       expect(r.clamped, `scene ${id} must reach target, not clamp`).toBe(false);
       expect(r.saved, `scene ${id} must level and save`).toBe(true);
+      // danger.md's batched-save revert class ("a batched scene-leveling save can revert the
+      // ONE scene it just leveled, if that scene is also `restore_scene`") is DETECTED, not
+      // silent — 410's `lastLoadedScene` is 1, so scene 1 is exactly the row that class fires
+      // on. The run publishes its own verdict here; a spec that re-measures without reading it
+      // ignores the run's own warning and reports the revert as an unexplained level miss.
+      expect(
+        r.persist_mismatch ?? false,
+        `scene ${id} must persist what it solved (danger.md's batched-save revert class)`,
+      ).toBe(false);
     }
+
+    // ── The FS-lane isolation check: one scene re-measured RIGHT NOW, before lane 3 writes
+    // anything. 410's TubeScreamer is base-ON and footswitch-owned, so lane 3's solve moves a
+    // block every scene's capture renders through unless the scenes' own overlays shadow it.
+    // Re-measuring here and again at the end brackets lane 3: a row that is on target now and
+    // off target later was moved BY lane 3 (a real see-saw regression — one lane undoing
+    // another's work), while a row that is already off target here was mis-solved by its own
+    // batch. Without this bracket the two are indistinguishable at the end of the arc.
+    const scene0Immediate = await measure410({ scene: 0 });
+    expect(
+      Math.abs(scene0Immediate - sceneTarget410),
+      `scene 0 re-measures at ${scene0Immediate.toFixed(2)} LUFS immediately after its own \
+batch save (target ${sceneTarget410.toFixed(2)}, solved overlay \
+${String(scenes.find((r) => r.scene_slot === 0)?.final_level)}, as-is readings \
+${asIsScenes.map((v) => v.toFixed(2)).join("/")}) — before lane 3 touches the shared \
+base-ON TubeScreamer`,
+    ).toBeLessThanOrEqual(DELTA);
 
     // ── Lane 3: two footswitches — 410's own TubeScreamer row, plus one MODULATED
     // row (UniVibe, 404) carried verbatim from the retired Hiwatt arc so its own
@@ -432,11 +458,26 @@ LFO'd knob can legitimately need the full KNOB_TOL_LU band`,
         },
       });
     }
+    // Every solved value the arc wrote, quoted into any failure below: a level miss is only
+    // diagnosable against what the lane BELIEVED it wrote (a mis-solve moves `final_level`; a
+    // later lane clobbering a correct solve does not), and the online server log that would
+    // otherwise carry these numbers is overwritten by whichever spec runs next.
+    const solvedTrace = [
+      `base final_level=${base.final_level.toFixed(4)} C=${base.constant_c.toFixed(2)}`,
+      ...scenes.map(
+        (r) =>
+          `scene${String(r.scene_slot)} final_level=${r.final_level.toFixed(4)}`,
+      ),
+      `scene0 immediately after its batch=${scene0Immediate.toFixed(2)}`,
+      `scene as-is=${asIsScenes.map((v) => v.toFixed(2)).join("/")}`,
+      `fs410 as-is=${asIsFs410.toFixed(2)} target=${fsTargetUsed410.toFixed(2)}`,
+    ].join(", ");
     for (const [sound, lufs] of Object.entries(heard)) {
       const target = sound === "base" ? baseTargetUsed : sceneTarget410;
       expect(
         Math.abs(lufs - target),
-        `${sound} re-measures at ${lufs.toFixed(2)} LUFS from the saved state`,
+        `${sound} re-measures at ${lufs.toFixed(2)} LUFS from the saved state \
+(target ${target.toFixed(2)}) — ${solvedTrace}`,
       ).toBeLessThanOrEqual(DELTA);
     }
 
@@ -629,20 +670,44 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     // `list_level_blocks`/`baseLevelJob`'s `block_*` fields already expose), a closed-loop
     // TARGET solve, not a literal value write. So the desired fader change is expressed as a
     // RAW LUFS target for that closed loop rather than a value to set directly.
-    const blocksPre = (await invoke(
+    // `list_level_blocks` is a LIVE load-then-discover read (commands/level_preset.rs's
+    // `load_then_discover_blocks`): it loads the slot and then reads back the ACTIVE graph. A
+    // cross-slot load issued while ANOTHER slot's save is still committing can be ignored by
+    // the device, and discovery then reads the previous preset's graph and answers confidently
+    // with the wrong preset's blocks — this test runs straight after the 410 arc above, so it
+    // is the first device op after that arc's saves. Verify the answer by IDENTITY (the Twin
+    // this fixture is built around) and re-read once after a settle rather than trusting the
+    // first reply; a green predecessor's own minutes of re-measures usually clear the window,
+    // which is exactly why this must not be left to depend on the predecessor's timing.
+    let blocksPre = (await invoke(
       page,
       "list_level_blocks",
       { slot: PRESET24.slot },
       T,
     )) as LevelBlock[];
-    const twinCandidatePre = blocksPre.find(
-      (b) =>
-        b.node_id === "ACD_TwinReverb65NoFx" &&
-        b.parameter_id === "outputLevel",
-    );
+    const findTwin = (bs: LevelBlock[]): LevelBlock | undefined =>
+      bs.find(
+        (b) =>
+          b.node_id === "ACD_TwinReverb65NoFx" &&
+          b.parameter_id === "outputLevel",
+      );
+    let twinCandidatePre = findTwin(blocksPre);
+    if (!twinCandidatePre) {
+      await page.waitForTimeout(150_000); // danger.md's COMMIT_WINDOW_SECS
+      blocksPre = (await invoke(
+        page,
+        "list_level_blocks",
+        { slot: PRESET24.slot },
+        T,
+      )) as LevelBlock[];
+      twinCandidatePre = findTwin(blocksPre);
+    }
     expect(
       twinCandidatePre,
-      "the Twin's outputLevel candidate must be discoverable before calibration",
+      `the Twin's outputLevel candidate must be discoverable before calibration — \
+list_level_blocks(${String(PRESET24.slot)}) answered with \
+[${blocksPre.map((b) => `${b.node_id}.${b.parameter_id}`).join(", ")}], which is another \
+preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     ).toBeDefined();
     if (!twinCandidatePre) {
       throw new Error(
