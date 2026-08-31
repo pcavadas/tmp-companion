@@ -1,7 +1,7 @@
 import { expect, type Page } from "@playwright/test";
 
 // Shared scenario setup for the dual-mode specs. The working presets live at slots
-// 400-409 (the high scratch zone, clear of the user's real presets) and are the SAME
+// 400-410 (the high scratch zone, clear of the user's real presets) and are the SAME
 // fixed presets in both modes (deterministic — same blocks every run, validated against).
 // OFFLINE they are baked into the backup fixture + the startup snapshot, so `ensureScenario`
 // finds them and skips. ONLINE they start empty, so `ensureScenario` imports the identical
@@ -16,7 +16,7 @@ export interface Preset {
 }
 
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
-// (401/402/.../410), so a slot-numbered name would read off-by-one in the backup view.
+// (401/402/.../411), so a slot-numbered name would read off-by-one in the backup view.
 // WHICH USE CASE EACH FIXTURE CARRIES: e2e/fixtures/COVERAGE.md (the matrix), pinned by
 // `fixture_gates` in src-tauri/src/lib.rs. In brief — Rig: scene overlays, footswitch classes
 // and the two Doctor damage signatures; Pedalboard: scene-free, the Copy source, EXP + link
@@ -24,12 +24,18 @@ export interface Preset {
 // oracle and the off-USB lane, plus (P4-C) a `shared_write_is_scene_local` Boost/Solo
 // anatomy — bypassed in base, un-bypassed ONLY by scene 3 "Solo"; Parallel: both lane amps live (joint-k / rebalance);
 // Hiwatt 3S: a VERBATIM device export (the scene-conformance oracle — do not edit);
-// Preset24: the stale-load / saturated-pedal footswitch fixture (level-fs-preset24.spec.ts).
-// P3 additions (ADDITIONS, not replacements — 404/405 stay untouched): Combined Level: the
-// new-flow leveling fixture (FS-alone, scene-alone "BASE SCENE", scene-that-enables-an-FS,
-// parallel Deluxe Reverb + Marshall Plexi, a post-cab compressor). Doctor Oracle: 14
-// mixed-shape footswitches, one per Doctor spectral check, all bypassed in base. Preset24
-// Min / Hiwatt Min: the smallest presets still reproducing each incident's own bug class.
+// Preset24: the stale-load / saturated-pedal footswitch fixture (level-fs-preset24.spec.ts),
+// amended for the Plumes leveling regression (presetLevel 0.27, Twin outputLevel 0.28, Rat
+// base-ON at 0.62 — see COVERAGE.md and scenario-loudness.json's own "405" comment).
+// P3 additions (ADDITIONS, not replacements — 404/405 stay untouched structurally by P3):
+// Combined Level: the new-flow leveling fixture (FS-alone, scene-alone "BASE SCENE",
+// scene-that-enables-an-FS, parallel Deluxe Reverb + Marshall Plexi, a post-cab compressor).
+// Doctor Oracle: 14 mixed-shape footswitches, one per Doctor spectral check, all bypassed in
+// base. Preset24 Min / Hiwatt Min: the smallest presets still reproducing each incident's own
+// bug class. Friedman 3S (P4, slot 410): a 3-FULL-overlay-scene (Rhythm/Lead/Base Scene)
+// TubeScreamer->MarshallPlexi->CabSimTMS chain — the catalog-verified stand-in for a Friedman
+// HBE-class 3-scene preset (no such amp is cataloged; MarshallPlexi is the closest high-gain
+// British-voiced substitute).
 export const SCENARIO: Preset[] = [
   { slot: 400, name: "E2E Rig" },
   { slot: 401, name: "E2E Pedalboard" },
@@ -41,6 +47,7 @@ export const SCENARIO: Preset[] = [
   { slot: 407, name: "E2E Doctor Oracle" },
   { slot: 408, name: "E2E Preset24 Min" },
   { slot: 409, name: "E2E Hiwatt Min" },
+  { slot: 410, name: "E2E Friedman 3S" },
 ];
 
 export async function invoke(

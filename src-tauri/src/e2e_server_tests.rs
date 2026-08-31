@@ -13,7 +13,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 
 /// How many presets `e2e/fixtures/scenario-presets.json` ships (= the offline snapshot list
 /// + the backup-fixture row count). One constant so adding a scenario preset is one edit.
-const SCENARIO_PRESETS: usize = 10;
+const SCENARIO_PRESETS: usize = 11;
 
 /// Invoke a command through the SAME IPC path the HTTP bridge uses: a JSON body in,
 /// the command's JSON response out (or its error value).
@@ -78,7 +78,7 @@ fn offline_copy_journey_through_real_backend() {
         ),
     );
     // Pre-fill the startup snapshot so connect/list serve it with no monitor thread —
-    // the 10 scenario presets at slots 400-409 (matching the backup fixture).
+    // the 11 scenario presets at slots 400-410 (matching the backup fixture).
     let presets = vec![
         crate::session::PresetEntry {
             slot: 400,
@@ -119,6 +119,10 @@ fn offline_copy_journey_through_real_backend() {
         crate::session::PresetEntry {
             slot: 409,
             name: "E2E Hiwatt Min".into(),
+        },
+        crate::session::PresetEntry {
+            slot: 410,
+            name: "E2E Friedman 3S".into(),
         },
     ];
     MONITOR_ENABLED.store(true, SeqCst);
@@ -659,7 +663,9 @@ fn the_scene_prepass_captions_its_own_phase_and_the_solve_does_not() {
 /// Slot 405's Plumes switch (5) is the fixture: its block is OFF in base, so engaging it puts
 /// the saturated-amp curve in charge, and the ceiling must equal that curve AT THE HANDLE'S
 /// TOP BOUND (`saturated_pedal_lufs(1.0)`), not at its authored 0.5. A prepass that forgot to
-/// pin the handle, or that measured the disengaged sound, both fail here.
+/// pin the handle, or that measured the disengaged sound, both fail here. (Not perturbed by
+/// 405's Plumes-regression `presetLevel` amendment — see the `expected` computation below for
+/// why.)
 ///
 /// It must also WRITE NOTHING PERSISTENT: every write lands on the throwaway capture
 /// connection's working copy, which is what makes a ceiling read safe to take before the run
@@ -708,6 +714,15 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
     // the_ceiling_probe_pins_the_handle_at_its_top_bound_and_writes_it_last`.)
     let (_, hi) = handle.bounds();
     let ceiling = crate::leveller::measure_fs_ceiling(&probe, &stim, None).expect("ceiling read");
+    // NOT `saturated_pedal_lufs(hi) + 20*log10(presetLevel)`, even though the curve DOES fold
+    // in `preset_term` in general (`sim_device::model_lufs`'s `Contribution::Absolute` arm).
+    // `SimState::load_preset` only overwrites the ambient `preset_level` from the fixture's own
+    // committed value once this run has SAVED that slot at least once (`ever_saved` — the
+    // lazy-commit corruption model, `sim_device.rs`'s own doc). This test's plain load never
+    // saves 405 first, so the sim's ambient `preset_level` stays at its process-default 1.0
+    // regardless of 405's authored 0.27 — confirmed empirically (measured -14.00, exactly
+    // `saturated_pedal_lufs(1.0)` with a ZERO preset term) after the Plumes-regression
+    // amendment, so the fixture change does NOT perturb this particular gate.
     let expected = crate::sim_device::saturated_pedal_lufs(hi).unwrap();
     assert!(
         (ceiling.integrated_lufs - expected).abs() < 0.3,
@@ -960,7 +975,12 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
 /// `bake_path_footswitch_writes_the_block_directly_and_persists_its_value`, a different
 /// fixture/switch). Its `level` knob rides the sim's `saturated_pedal_lufs` curve, so a target
 /// off the AUTHORED 0.5 (→ -16.14 LUFS at that curve) forces run 1 to actually solve and write —
-/// a fixture that already sat on target would make run 2's skip prove nothing.
+/// a fixture that already sat on target would make run 2's skip prove nothing. (405's own
+/// `presetLevel` does NOT fold into this reading: `SimState::load_preset` only re-syncs the
+/// sim's ambient `preset_level` from a slot's committed doc once that slot has been SAVED at
+/// least once this run — see the `ever_saved` gate in `sim_device.rs`'s own doc — and this
+/// test's first load of 405 predates any save, so the ambient value stays at the process
+/// default of 1.0 throughout, exactly as before the Plumes-regression amendment.)
 ///
 /// `Saved` (not `ChangeParameter`) is the discriminator because the ceiling prepass engages once
 /// per row on EVERY run regardless of the fix (a known, accepted cost — see `CLAUDE.md`'s
@@ -1002,9 +1022,15 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
     const SWITCH: u32 = 5;
     const NODE: &str = "ACD_Plumes";
     const PARAM: &str = "level";
-    // Reachable (the handle's top-bound ceiling reads ~ -14 LUFS on this curve) and >1 LU off
-    // the authored 0.5's -16.14, so run 1 truly solves rather than trivially matching already.
-    const TARGET: f64 = -15.0;
+    // Reachable (the handle's top-bound ceiling reads ~ -14 LUFS on this curve — see the doc
+    // comment above on why 405's own presetLevel does not shift it here) and well off the
+    // authored 0.5's -16.14, so run 1 truly solves rather than trivially matching already.
+    // -26.0 (moved from this gate's original -15.0 during the Plumes-regression fixture
+    // amendment, out of an abundance of caution before the `ever_saved` mechanics above were
+    // understood) sits on the curve's steep cliff segment and remains a valid, comfortably
+    // reachable, off-authored target — kept as-is rather than reverted, since it is verified
+    // passing and a numeric target choice here carries no assertion-strength cost either way.
+    const TARGET: f64 = -26.0;
 
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let p24 = spec_json

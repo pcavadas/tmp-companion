@@ -263,9 +263,10 @@ mod fixture_gates {
             .collect();
         assert_eq!(
             out.len(),
-            10,
-            "the scenario set is ten presets at 400-409 (400-405 the original set, \
-             406-409 the P3 leveling-doctor-fixtures additions)"
+            11,
+            "the scenario set is eleven presets at 400-410 (400-405 the original set, \
+             406-409 the P3 leveling-doctor-fixtures additions, 410 the P4 Friedman-HBE-class \
+             3-scene addition)"
         );
         out
     }
@@ -852,14 +853,47 @@ mod fixture_gates {
                 "ACD_CabSimTMS", // appended for the cab rule; nothing upstream moved
             ]
         );
+        // Plumes-regression amendment: the amp's outputLevel and the preset's own
+        // presetLevel both moved (0.28/0.27, from 1.0/1.0) and both are now baked into
+        // scenario-loudness.json's "405" C — a drift here silently invalidates that C.
         assert_eq!(
-            p24["audioGraph"]["guitarNodes"]["G1"][4]["dspUnitParameters"]["outputLevel"], 1.0,
-            "the saturated amp's own knob is untouched — the offline C table and the \
-             `leveledParams` pedal curve both key off it"
+            p24["audioGraph"]["guitarNodes"]["G1"][4]["dspUnitParameters"]["outputLevel"], 0.28,
+            "the saturated amp's own knob — the offline C table and the `leveledParams` \
+             pedal curve both key off it"
+        );
+        assert_eq!(
+            p24["audioGraph"]["presetLevel"], 0.27,
+            "the preset's own presetLevel — every capture's PT term keys off it"
+        );
+        assert_eq!(
+            p24["audioGraph"]["guitarNodes"]["G1"][3]["dspUnitParameters"]["bypass"], false,
+            "Rat is now base-ON (was true) — the fixture's second measurement regime, \
+             isolated to Rat's own footswitch capture"
         );
         assert!(p24["scenes"].as_array().expect("scenes").is_empty());
         let fs = crate::footswitch::enumerate_block_footswitches(&p24["ftsw"], &p24);
         assert_eq!(fs.len(), 4, "the four drive-pedal switches (ftsw 5-8)");
+
+        let (name, _, friedman) = fixture(410);
+        assert_eq!(name, "E2E Friedman 3S");
+        assert_eq!(
+            friedman["scenes"].as_array().expect("scenes").len(),
+            3,
+            "3 FULL-overlay scenes: Rhythm/Lead/Base Scene"
+        );
+        assert_eq!(
+            friedman["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["outputLevel"], 1.0,
+            "the base amp's outputLevel stays at 1.0 — load-bearing so a base capture is \
+             never boosted and the fader is never written outside a scene job"
+        );
+        assert_eq!(
+            friedman["lastLoadedScene"], 1,
+            "loads into Lead, not base — the ≠-base premise this fixture exists for"
+        );
+        assert_eq!(
+            friedman["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"], false,
+            "TubeScreamer is base-ON"
+        );
     }
 
     /// A node's `dspUnitParameters.bypass`, by nodeId, walked from `p`'s base graph via
@@ -1295,7 +1329,8 @@ mod fixture_gates {
         );
         assert_eq!(
             p408["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["outputLevel"], 1.0,
-            "the saturated amp's own knob stays untouched, same as 405"
+            "the saturated amp's own knob stays untouched — 408 is its own minimal fixture, \
+             unaffected by 405's Plumes-regression amendment (see `incident_fixtures_keep_their_shapes`)"
         );
 
         // 409 "E2E Hiwatt Min" — the scene/overlay-conformance class needs only a
@@ -1707,7 +1742,9 @@ mod fixture_gates {
         // different amp state than the physical footswitch tap; see `danger.md`'s
         // OPEN scene-0 item); 407 "E2E Doctor Oracle" carries 2 (SCRATCH filler + the
         // scene-consistency oracle's own big-outputLevel-jump scene); 409
-        // "E2E Hiwatt Min" carries 2 (the minimal scene/overlay-conformance repro).
+        // "E2E Hiwatt Min" carries 2 (the minimal scene/overlay-conformance repro). 410
+        // "E2E Friedman 3S" (P4) carries 3, all judged FULL-overlay rows: Rhythm/Lead/
+        // Base Scene, each carrying only its own amp outputLevel overlay.
         let expected_scenes: std::collections::HashMap<u32, usize> = [
             (400u32, 4usize),
             (402, 8),
@@ -1716,6 +1753,7 @@ mod fixture_gates {
             (406, 3),
             (407, 2),
             (409, 2),
+            (410, 3),
         ]
         .into_iter()
         .collect();

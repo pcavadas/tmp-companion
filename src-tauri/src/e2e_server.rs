@@ -266,7 +266,7 @@ fn e2e_install_offline_fake() {
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim); // expose its event log to /sim/events
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim.clone())));
-    // The 10 scenario presets at slots 400-409 — same slots the online tier seeds by
+    // The 11 scenario presets at slots 400-410 — same slots the online tier seeds by
     // cloning, and the same presets baked into the backup fixture, so one set of specs
     // runs in both modes. `ensureScenario` finds them present offline and skips seeding.
     // Keep this list in sync with `e2e/fixtures/scenario.ts`'s `SCENARIO` array (and the
@@ -313,10 +313,14 @@ fn e2e_install_offline_fake() {
             slot: 409,
             name: "E2E Hiwatt Min".into(),
         },
+        session::PresetEntry {
+            slot: 410,
+            name: "E2E Friedman 3S".into(),
+        },
     ];
     // Hero graph, decoded from the SAME backup fixture `read_library_via_backup` already
     // serves — the showcase installer below does the identical thing for its curated `.bin`.
-    // The fixture holds all 10 scenario presets (device slots 401-410, list 400-409), so
+    // The fixture holds all 11 scenario presets (device slots 401-411, list 400-410), so
     // the hero is simply its first entry; there is no preset 001 offline to prefer.
     //
     // Not cosmetic: with the snapshot's graph `None`, the frontend's `startScanAfterGraph`

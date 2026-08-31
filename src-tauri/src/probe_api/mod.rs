@@ -9,7 +9,8 @@
 /// that gates a probe write — a single declaration so widening or shifting the
 /// scratch zone is one edit, not four. 406-409 are the P3 leveling-doctor-fixtures
 /// additions (combined leveling / doctor oracle / two minimal-incident-repro slots).
-pub(crate) const SCRATCH_SLOTS: [u32; 10] = [400, 401, 402, 403, 404, 405, 406, 407, 408, 409];
+/// 410 is the P4 Friedman-HBE-class 3-scene addition (leveling regression coverage).
+pub(crate) const SCRATCH_SLOTS: [u32; 11] = [400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410];
 
 pub(crate) mod analyze;
 pub(crate) mod audio_devices;

@@ -106,7 +106,7 @@ err()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
 # ── SCRATCH_SLOTS mirror (`src-tauri/src/probe_api/mod.rs`) — the ONE declaration every
 # destructive/working-copy-writing probe guard checks; this script must never touch a slot
 # outside it. If that Rust constant ever widens, update this line in the SAME commit. ──
-SCRATCH_SLOTS="400 401 402 403 404 405 406 407 408 409"
+SCRATCH_SLOTS="400 401 402 403 404 405 406 407 408 409 410"
 BASE_SCENE_SLOT=8   # session::BASE_SCENE_SLOT — the wire scene-slot sentinel for "base"
 
 # The lazy-save commit window, in seconds. Mirrors `leveller::COMMIT_WINDOW_SECS` (150),
