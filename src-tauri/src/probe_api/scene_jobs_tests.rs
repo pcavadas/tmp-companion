@@ -963,3 +963,85 @@ fn scene_write_verdict_for_param_unknown_overlay_arm_unchanged() {
         SceneWriteVerdict::NeedsEnable => panic!("expected Refuse(Unknown), got NeedsEnable"),
     }
 }
+
+// ─────────────── G-D1a: an unusable scene doc must REFUSE, never fall back to base ───────────
+// HW motivation (Friedman HBE, device slot 28): the preset carries two guitar amps — `ACD_BE100`
+// active in base and `ACD_TwinReverb65NoFx` bypassed there. When a scene's doc does not arrive,
+// `classify_scene_knobs`' `None => !nd.bypassed` arm resolves bypass from the BASE graph, so the
+// scene is leveled on whichever amp base leaves on. On a scene that swaps amps that knob is not in
+// the scene's signal path at all: the solve sweeps it, nothing moves, and the row reports a
+// `no_authority` clamp that reads exactly like a genuine ceiling.
+//
+// A missing amp knob is NOT a levelable outcome, so the honest answer is this row's own `skip`
+// (the lane's per-scene-skip rule — never a batch abort). Deciding from base is the bug.
+fn two_amp_base_saved() -> serde_json::Value {
+    serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_BE100", "FenderId": "ACD_BE100",
+              "dspUnitParameters": { "bypass": false, "outputLevel": 1.0 } },
+            { "nodeId": "ACD_TwinReverb65NoFx", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "bypass": true, "outputLevel": 0.28 } }
+        ] } }
+    })
+}
+
+fn two_amp_candidates() -> Vec<LevelBlockArg> {
+    vec![
+        LevelBlockArg {
+            group_id: "G1".to_string(),
+            node_id: "ACD_BE100".to_string(),
+            parameter_id: "outputLevel".to_string(),
+            value: 1.0,
+        },
+        LevelBlockArg {
+            group_id: "G1".to_string(),
+            node_id: "ACD_TwinReverb65NoFx".to_string(),
+            parameter_id: "outputLevel".to_string(),
+            value: 0.28,
+        },
+    ]
+}
+
+#[test]
+fn a_scene_whose_doc_never_arrived_skips_instead_of_classifying_against_base() {
+    let saved = two_amp_base_saved();
+    // The live prepass pushes `(scene, None)` when no field-3 doc materialises for the recall.
+    let jobs = build_scene_jobs(
+        &[3],
+        &two_amp_candidates(),
+        &[(3, None)],
+        -23.0,
+        Some(&saved),
+    )
+    .unwrap();
+
+    assert!(
+        jobs[0].skip.is_some(),
+        "a scene with no doc must skip; instead it was classified with knobs {:?}",
+        jobs[0].knobs
+    );
+}
+
+#[test]
+fn a_scene_whose_doc_is_partial_skips_instead_of_classifying_against_base() {
+    // The REALISTIC shape: the doc EXISTS but was cut before the amp nodes, so every
+    // `block_bypass_in_live_graph` lookup past the cut returns `None` — the identical fallback,
+    // with no `Value::Null` anywhere. A gate keyed only on the null case would miss this.
+    let saved = two_amp_base_saved();
+    let partial = serde_json::json!({ "audioGraph": { "guitarNodes": { "G1": [] } } });
+    let jobs = build_scene_jobs(
+        &[3],
+        &two_amp_candidates(),
+        &[(3, Some(&partial))],
+        -23.0,
+        Some(&saved),
+    )
+    .unwrap();
+
+    assert!(
+        jobs[0].skip.is_some(),
+        "a scene whose doc is missing its amp nodes must skip; instead it was classified with \
+         knobs {:?}",
+        jobs[0].knobs
+    );
+}

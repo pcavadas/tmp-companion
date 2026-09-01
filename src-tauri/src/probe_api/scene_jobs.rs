@@ -205,10 +205,37 @@ pub(crate) fn classify_scene_knobs(
     // captured at USB-Out (the leveling target); mic-input amps aren't reachable and have
     // no outputLevel candidate anyway. Bypass comes from the scene overlay, falling back
     // to the structure node when the scene doc doesn't carry it.
-    let active: Vec<&session::GraphNode> = structure
+    let amps: Vec<&session::GraphNode> = structure
         .nodes
         .iter()
         .filter(|nd| nd.group_id.starts_with('G') && is_amp_model_id(&nd.model))
+        .collect();
+    // REFUSE rather than decide from the base graph when the scene doc can answer for NO amp.
+    // `structure` is the BASE graph (`saved_fallback`), so the `None` arm below resolves bypass
+    // from base — correct for a doc that merely omits one node's `bypass` key, catastrophic for a
+    // doc that never arrived or was cut before the amps: a scene that SWAPS amps then gets leveled
+    // on whichever amp BASE leaves on, a knob outside that scene's signal path. The solve sweeps
+    // it, nothing moves, and the row reports a `no_authority` clamp indistinguishable from a
+    // genuine ceiling (HW: Friedman HBE slot 28 — every scene drove `ACD_BE100` while the Twin the
+    // swap scene needs was never written).
+    //
+    // A well-formed doc always answers: the live prepass materialises the whole graph, and
+    // `scene_docs_from_saved` merges the sparse overlay ONTO the base graph. So "no amp is
+    // answerable" means the doc is unusable, not that the scene is unusual — and this row's own
+    // `skip` is the honest outcome (per-scene skip, never a batch abort).
+    if !amps.is_empty()
+        && !amps.iter().any(|nd| {
+            scenes::block_bypass_in_live_graph(scene_doc, &nd.group_id, &nd.node_id).is_some()
+        })
+    {
+        return Err(
+            "scene doc answered no amp's bypass state (absent or truncated before the amp \
+             nodes) — refusing to classify against the base graph"
+                .to_string(),
+        );
+    }
+    let active: Vec<&session::GraphNode> = amps
+        .into_iter()
         .filter(|nd| {
             match scenes::block_bypass_in_live_graph(scene_doc, &nd.group_id, &nd.node_id) {
                 Some(b) => !b,
