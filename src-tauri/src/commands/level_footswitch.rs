@@ -163,6 +163,18 @@ pub(crate) fn resolve_footswitch_job(
     Ok((value_b, spec))
 }
 
+/// Every section [`footswitch::scene_contexts_for_switches`] dereferences — the completeness
+/// requirement must name ALL of them, not just the one the picker's ROWS come from.
+///
+/// `ftsw` sizes the row list; `scenes` (via each scene's `ftswStates`) is where the ANSWER
+/// comes from. Requiring `ftsw` alone was a silent wrong answer on any preset whose field-8
+/// read is cut between the two — `scenes` is the first section the tail cut takes, and the
+/// truncation is per-slot deterministic, so the picker reported "no scene enables any switch"
+/// every time and every footswitch fell back to base context. That fallback is correct only
+/// when the document genuinely cannot be read; here the complete body is one backup read away,
+/// which is exactly what `read_slot_preset_complete` does once the section is named.
+const SCENE_CONTEXT_SECTIONS: &[&str] = &["ftsw", "scenes"];
+
 /// Which scenes enable each footswitch of `slot`, for the leveling wizard's SCENE-CONTEXT
 /// picker (D3). PURE apart from ONE field-8 read: every answer comes out of the saved document,
 /// so no scene is recalled on the unit and nothing is measured.
@@ -176,9 +188,7 @@ pub(crate) async fn list_footswitch_scene_contexts(
     slot: u32,
 ) -> Result<Vec<footswitch::FsSceneContext>, String> {
     with_released_seize(state.session.clone(), move || {
-        // Every row of the picker comes out of `ftsw`, so a body that lost it would show
-        // the player a switch-less preset rather than an error.
-        let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"])?;
+        let (preset, _, _) = read_slot_preset_complete(slot, SCENE_CONTEXT_SECTIONS)?;
         Ok(footswitch::scene_contexts_for_switches(&preset))
     })
     .await
@@ -723,6 +733,53 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // BUG→GATE (2026-09-01, HW preset 28 "Friedman HBE"): the scene-context read required
+    // only `ftsw`, and `scenes` — the section the ANSWER comes from — was left unnamed. That
+    // preset's field-8 read is cut mid-`scenes`, which `ftsw` survives, so the completeness
+    // check passed on a body with no scene overlays at all and every switch silently
+    // reported "no scene enables me" → base context for the whole preset, on a preset whose
+    // complete body was one backup read away. Reverting the const to `["ftsw"]` fails here.
+    //
+    // The assertion walks the DOCUMENT, not the const: for every section whose removal
+    // changes the answer, the const must name it. Iterating the const instead would be the
+    // blind spot that let this ship — a reverted `["ftsw"]` would loop over `ftsw` alone,
+    // find it load-bearing, and pass while `scenes` went unrequired.
+    #[test]
+    fn the_scene_context_read_requires_every_section_its_answer_is_derived_from() {
+        let complete = serde_json::json!({
+            "ftsw": [[], []],
+            "scenes": [
+                { "ftswStates": [false, true] },
+                { "ftswStates": [true, false] }
+            ]
+        });
+        let full = footswitch::scene_contexts_for_switches(&complete);
+        assert_eq!(full.len(), 2, "one row per switch");
+        assert!(
+            full.iter().any(|r| r.suggested.is_some()),
+            "fixture must have a scene-enabled switch, or blanking proves nothing"
+        );
+
+        let sections: Vec<String> = complete
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect();
+        for section in sections {
+            let mut cut = complete.clone();
+            cut.as_object_mut().expect("object").remove(&section);
+            if footswitch::scene_contexts_for_switches(&cut) != full {
+                assert!(
+                    SCENE_CONTEXT_SECTIONS.contains(&section.as_str()),
+                    "dropping `{section}` changed the answer, so the completeness check \
+                     must require it — a section the reader dereferences may not be left \
+                     unnamed (this is the `scenes` regression)"
+                );
+            }
+        }
+    }
 
     fn preset_with_lev_param(value: f64) -> serde_json::Value {
         serde_json::json!({

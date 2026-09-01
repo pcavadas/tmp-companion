@@ -109,16 +109,23 @@ describe("chosenFrom run-order", () => {
     });
   });
 
-  // BUG→GATE (2026-08-31 HW, online 410 arc): the run used to level a preset's scenes
-  // before its footswitches, and the footswitch pass then moved every scene it had just
-  // finished. 410's ACD_TubeScreamer is left ON in the preset's base state and each of its
-  // three scenes overlays only the amp, so all three render the screamer — cutting that
+  // BUG→GATE (2026-08-31 HW, online 410 arc): a footswitch pass moved every scene it had
+  // just finished. 410's ACD_TubeScreamer is left ON in the preset's base state and each of
+  // its three scenes overlays only the amp, so all three render the screamer — cutting that
   // switch's own handle 2.0 dB put all three already-leveled scenes 2.0 dB under target,
-  // reported as a level miss with no failing lane. Footswitches must run FIRST: a switch is
-  // measured in base context, so a scene's amp overlay can never move it back.
-  it("emits footswitches BEFORE scenes, defaulting to its tone-safe candidate (D2)", () => {
+  // reported as a level miss with no failing lane.
+  //
+  // The order that fixes it is Base → scenes → footswitches, and the protection is that
+  // the switch has NOTHING LEFT TO WRITE by the time it runs: a switch a scene enables is
+  // measured in that scene's context (D3), which the scene pass has just put on target, and
+  // a switch no scene enables is bypassed in every scene, so its base-space write cannot
+  // reach one. The 2.0 dB cut happened because the switch was solved against an un-levelled
+  // base. What this gate pins is the ORDER; the residual it can no longer pin is a switch
+  // that still has to write after its context scene clamped — that row moves scenes again,
+  // and is disclosed rather than silent.
+  it("emits scenes BEFORE footswitches, defaulting to its tone-safe candidate (D2)", () => {
     // Alpha (slot 0): 2 scenes + 1 footswitch (switch index 4 → tag FS5). Order must be
-    // Base → footswitch → scenes. Every row levels now (D2 — the backend removed the
+    // Base → scenes → footswitch. Every row levels now (D2 — the backend removed the
     // verify-only footswitch mode entirely): the default target is the switch's
     // (only, here) candidate, measured against the preset's BASE sound (D3's
     // `sceneContext: null`) until the Set up step's picker resolves a `suggested` scene.
@@ -132,11 +139,11 @@ describe("chosenFrom run-order", () => {
     const out = chosenFrom(sel, rows, sceneInfo, fswInfo);
     expect(out.map((o) => o.key)).toEqual([
       baseKey(0),
-      fswKey(0, 0),
       sceneKeyOf(0, 0),
       sceneKeyOf(0, 1),
+      fswKey(0, 0),
     ]);
-    expect(out[1]).toMatchObject({
+    expect(out[3]).toMatchObject({
       isBase: false,
       sceneName: "Solo",
       tag: "FS5", // switch index 4 → human FS number 5
@@ -375,18 +382,22 @@ describe("runRank — the run's dependency order", () => {
   const footswitch = { isBase: false, footswitch: { switchIndex: 4 } };
   const scene = { isBase: false };
 
-  it("ranks base before footswitches before scenes", () => {
+  // BUG→GATE. A footswitch is solved against the sound it is stomped into, so it runs
+  // LAST: a switch some scene enables (D3 scene context) can only be solved once that
+  // scene is on target, and a switch no scene enables is bypassed in every scene, so its
+  // base-space write cannot move one. Levelling switches against an un-levelled base is
+  // what produced the HW miss — one base-ON TubeScreamer cut 2.0 dB moved all three of a
+  // 3-scene preset's leveled scenes off target.
+  it("ranks base before scenes before footswitches", () => {
     expect(runRank(base)).toBe(0);
-    expect(runRank(footswitch)).toBe(1);
-    expect(runRank(scene)).toBe(2);
+    expect(runRank(scene)).toBe(1);
+    expect(runRank(footswitch)).toBe(2);
   });
 
-  it("sorts a scenes-first selection back into dependency order", () => {
-    // The shape that produced the HW miss: scenes ahead of the footswitch whose base-ON
-    // handle every one of them renders through.
-    const work = [scene, footswitch, base];
+  it("sorts a footswitch-first selection back into dependency order", () => {
+    const work = [footswitch, scene, base];
     const sorted = [...work].sort((a, b) => runRank(a) - runRank(b));
-    expect(sorted).toEqual([base, footswitch, scene]);
+    expect(sorted).toEqual([base, scene, footswitch]);
   });
 });
 
