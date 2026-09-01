@@ -85,18 +85,27 @@ import {
 // see below) plus T5 (drives the wizard UI on 405).
 //
 // SESSION BUDGET — MEASURED, not estimated (real-device runs, 2026-08-31/09-01). The ratified
-// cap for the online LEVELING suite is ~25 min. Measured: T1′ 8.3 min, T2 0.9 min, T5 18.5 min
-// with four footswitch rows = 27.7 min, over the cap AND over T5's own 900 s `test.setTimeout`
-// (it died on its own clock mid-re-measure). A device capture costs ~22 s and T5 spent ~45 of
-// them, so the budget is set by CAPTURE COUNT and nothing else. T5 therefore levels TWO
-// footswitch rows, not four — one row per distinct class, see `SWITCH_SPECS_405`'s own comment
-// for which two and where the other two stay covered — landing the file ≈ 21 min. T5's own
-// irreducible costs are a pedals-off preview, a conditional fader calibration, and (only when
-// that calibration writes) the 150 s lazy-commit wait its save isn't witnessed for (danger.md:
-// the block-knob save carries no `PresetLevel` reassert, so `ensure_fresh_load` has nothing to
-// wait on automatically — see T5's own comment). `test.setTimeout` stays 900 s on both tests,
-// which is now real margin over the per-test measurement rather than a number padded past an
-// estimate.
+// cap for the online LEVELING suite is ~25 min. Measured: T1′ 8.5 min, T2 0.9 min, T5 15.1 min
+// AND STILL UNFINISHED — it died on its own 900 s clock during the second of its three strict
+// re-measures. Cutting T5 from four footswitch rows to two (one row per distinct class, see
+// `SWITCH_SPECS_405`'s own comment for which two and where the other two stay covered) bought
+// back roughly 3 min of captures, which was real but not enough, because the file's cost is
+// NOT capture count alone: T5 also pays two fixed 150 s stalls, both of them legitimate.
+//   • The 150 s lazy-commit wait after the conditional fader calibration writes. That save is
+//     the block-knob arm's, which carries no `PresetLevel` reassert, so `ensure_fresh_load`
+//     has no witness to wait on automatically (danger.md) — see T5's own comment.
+//   • The identity-verified `list_level_blocks` retry. T5 opens seconds after T1′ saved 410,
+//     so its first cross-slot load of 405 lands inside 410's commit window and is IGNORED —
+//     the read answers with 410's graph (`ACD_TubeScreamer`/`ACD_MarshallPlexi`) and the spec
+//     correctly waits and re-reads. Observed on hardware 2026-09-01; this is the third field
+//     sighting of that hazard and the reason the PR carries it as a product follow-up.
+// So the honest per-test budget is ~17 min of work plus retry headroom, and T5's own
+// `test.setTimeout` is 1800 s — not padding, but room for one such stall to recur without
+// killing a run that is behaving correctly. T1′ and T2 keep 900 s / 600 s, which remain real
+// margin over their measurements. The FILE lands ≈ 26-27 min, ~1-2 min over the ratified cap;
+// buying that back means dropping device coverage, which is a scope decision, not a cleanup.
+// The two config `timeout:` caps stay equal at 300 s (`.claude/rules/e2e.md`) — every number
+// here is a per-test override, which is this file's existing pattern.
 //
 // COVERAGE rows 37, 45 — row 37 is Hiwatt's own scene/footswitch enumeration, row 45 is
 // 410's structural-readiness pin; see e2e/fixtures/COVERAGE.md for the "where it went"
@@ -675,11 +684,13 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    // Preview read + conditional fader calibration (up to ~4 engages) + the 150 s lazy-commit
-    // wait (only paid when calibration actually wrote something) + base UI drive (3 conns/1
-    // engage via the wizard) + a same-target confirm read + a 4-switch footswitch batch + 5
-    // strict ffmpeg re-measures. See the file header's revised budget note.
-    test.setTimeout(900_000);
+    // Identity-verified preview read (which pays a 150 s retry whenever T1′'s 410 save is
+    // still in its commit window) + conditional fader calibration (up to ~4 engages) + the
+    // 150 s lazy-commit wait that calibration's own save has no witness for + base UI drive
+    // (3 conns/1 engage via the wizard) + a same-target confirm read + a 2-switch footswitch
+    // batch + 3 strict ffmpeg re-measures. Measured at ~17 min of work; the 1800 s cap is
+    // headroom for one of those stalls to recur, not padding. File header carries the sums.
+    test.setTimeout(1_800_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
 
