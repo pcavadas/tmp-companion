@@ -6504,6 +6504,12 @@ fn run_scene_jobs(
         // A skip job (unclassifiable scene: mic/split lane/no active amp/…) is reported
         // as a failed outcome and the run continues — never aborts the whole pass.
         if let Some(reason) = &job.skip {
+            // The reason reaches the wizard over the progress Channel, and the batch FILTERS
+            // skipped rows out of the array it returns — so without this line a skipped scene
+            // leaves no trace a later reader can find, and a preset that levels 2 of its 4
+            // scenes looks like a clean run in the log. HW (2026-09-01, real "Friedman HBE"):
+            // two of four scenes skipped and the log recorded only the two that ran.
+            log::warn!("scene {} SKIPPED (not leveled): {reason}", job.scene_slot);
             let outcome = failed_scene_outcome(
                 job.scene_slot,
                 job.target_lufs,

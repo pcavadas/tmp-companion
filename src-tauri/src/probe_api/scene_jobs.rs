@@ -1560,7 +1560,119 @@ pub(crate) fn prepass_scene_docs_via(
     // could otherwise materialize the PRE-save doc here (`leveller::ensure_fresh_load`'s own
     // doc has the HW evidence). No-op when the slot has no pending save in the registry.
     crate::leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
-    prepass_scene_docs(slot, scene_slots)
+    let (mut docs, restore) = prepass_scene_docs(slot, scene_slots)?;
+    backfill_scene_docs_from_saved(slot, &mut docs);
+    Ok((docs, restore))
+}
+
+/// The scenes whose doc cannot answer ANY amp's bypass — byte-for-byte the predicate
+/// [`classify_scene_knobs`] refuses on, so the two can never disagree about which scene is
+/// unusable. Keyed on the AMP question, not on "the doc is `Null`": a doc cut *after* some
+/// nodes but *before* the amps is a live partial that reads as present and would slip past a
+/// null check while producing the identical wrong-amp fallback.
+///
+/// The amp roster comes from the docs' own routing graph — the same [`structure_graph`] the
+/// classifier's prerequisite uses — so a batch where NO doc carries a known template yields
+/// an empty list and the classifier's own preset-wide error stands.
+pub(crate) fn scenes_missing_amp_bypass(docs: &[(u32, Option<&serde_json::Value>)]) -> Vec<u32> {
+    let Some(structure) = structure_graph(docs) else {
+        return Vec::new();
+    };
+    let amps: Vec<&session::GraphNode> = structure
+        .nodes
+        .iter()
+        .filter(|nd| nd.group_id.starts_with('G') && is_amp_model_id(&nd.model))
+        .collect();
+    if amps.is_empty() {
+        return Vec::new();
+    }
+    docs.iter()
+        .filter(|(_, d)| {
+            d.is_none_or(|doc| {
+                !amps.iter().any(|nd| {
+                    scenes::block_bypass_in_live_graph(doc, &nd.group_id, &nd.node_id).is_some()
+                })
+            })
+        })
+        .map(|(s, _)| *s)
+        .collect()
+}
+
+/// Splice the SAVED preset's answer into every scene doc that cannot answer the amp question,
+/// in place. Returns the scenes it repaired (empty = nothing needed it, or the preset could not
+/// answer either). Pure — [`backfill_scene_docs_from_saved`] owns the device read.
+///
+/// Repairs an unanswerable doc; never overrides an answerable one, and never substitutes base.
+pub(crate) fn repair_scene_docs_from(
+    docs: &mut [(u32, Option<serde_json::Value>)],
+    preset: &serde_json::Value,
+) -> Vec<u32> {
+    let borrowed: Vec<(u32, Option<&serde_json::Value>)> =
+        docs.iter().map(|(s, d)| (*s, d.as_ref())).collect();
+    let needy = scenes_missing_amp_bypass(&borrowed);
+    if needy.is_empty() {
+        return Vec::new();
+    }
+    // Ask for ONLY the scenes that need repair: `scene_docs_from_saved` is all-or-nothing, so
+    // passing the full roster would let one unreadable scene discard the answer for the rest.
+    let Some((repaired, _)) = scene_docs_from_saved(preset, &needy) else {
+        return Vec::new();
+    };
+    for (scene, doc) in repaired {
+        if let Some(slotted) = docs.iter_mut().find(|(s, _)| *s == scene) {
+            slotted.1 = doc;
+        }
+    }
+    needy
+}
+
+/// Repair the live prepass's per-scene misses from the SAVED preset.
+///
+/// The live harvest is not reliably complete: the device pushes field-3 only on a CHANGE, so a
+/// recall that lands on an already-active scene yields no push at all (this module's
+/// ACTIVE-SCENE GAP note), and a pushed doc can arrive cut before the amp nodes. Either way the
+/// scene reaches [`classify_scene_knobs`] unable to answer, and the honest refusal there turns
+/// into a scene that never gets leveled. HW (2026-09-01, the real "Friedman HBE"): two of four
+/// scenes were skipped this way on a first pass, and one of them — "Clean" — is exactly the
+/// scene that must NOT fall back to base, because it bypasses the base-active `ACD_BE100` and
+/// activates `ACD_TwinReverb65NoFx` at its own `outputLevel` of 0.45.
+///
+/// The saved document answers all of them: `read_saved_preset_complete_sections` falls back to a
+/// name-guarded device backup, the only transport that carries this preset's `scenes` whole (its
+/// field-8 read is tail-truncated mid-`scenes`, per-slot deterministic — re-reading never
+/// lengthens it). `audioGraph` is required alongside `scenes` because
+/// [`scene_docs_from_saved`] merges each sparse overlay ONTO the base graph.
+///
+/// BEST-EFFORT by construction: every failure leaves `docs` untouched, so the classifier still
+/// refuses rather than guessing.
+fn backfill_scene_docs_from_saved(slot: u32, docs: &mut [(u32, Option<serde_json::Value>)]) {
+    let borrowed: Vec<(u32, Option<&serde_json::Value>)> =
+        docs.iter().map(|(s, d)| (*s, d.as_ref())).collect();
+    let needy = scenes_missing_amp_bypass(&borrowed);
+    if needy.is_empty() {
+        return;
+    }
+    let preset = match read_saved_preset_complete_sections(slot, &["audioGraph", "scenes"]) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!(
+                "scene-doc repair: slot {slot} scenes {needy:?} had no readable amp state and the \
+                 saved read failed ({e}) — they will be skipped, not guessed"
+            );
+            return;
+        }
+    };
+    if repair_scene_docs_from(docs, &preset).is_empty() {
+        log::warn!(
+            "scene-doc repair: slot {slot} saved preset could not answer scenes {needy:?} — \
+             they will be skipped, not guessed"
+        );
+    } else {
+        log::info!(
+            "scene-doc repair: slot {slot} filled scenes {needy:?} from the saved preset (the live \
+             prepass pushed no usable amp state for them)"
+        );
+    }
 }
 
 // ───────────────────── Scene handle picker (enumeration) ─────────────────────

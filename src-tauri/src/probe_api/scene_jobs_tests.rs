@@ -1089,3 +1089,123 @@ fn a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_hea
         jobs[0].knobs
     );
 }
+
+// --- Live-prepass misses are repaired from the saved preset, never from base ---
+
+// G-D1a's two-amp base, plus the SCENES the real "Friedman HBE" carries. Scene 1 ("Clean") is
+// the swap scene: its overlay inverts the base pair — `ACD_BE100` off, `ACD_TwinReverb65NoFx`
+// on at its own outputLevel of 0.45. That is the scene base fallback gets wrong, and the one
+// the live prepass skipped on HW (2026-09-01) by pushing no usable doc for it.
+fn two_amp_swap_preset() -> serde_json::Value {
+    let mut p = two_amp_base_saved();
+    p["lastLoadedScene"] = serde_json::json!(8);
+    p["scenes"] = serde_json::json!([
+        { "guitarNodes": { "G1": {
+            "ACD_BE100": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.97 } },
+            "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "bypass": true } }
+          } } },
+        { "guitarNodes": { "G1": {
+            "ACD_BE100": { "dspUnitParameters": { "bypass": true } },
+            "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.45 } }
+          } } }
+    ]);
+    p
+}
+
+// The repair predicate keys on the AMP question, so it catches BOTH live-prepass failure
+// shapes — the scene that pushed nothing at all, and the scene whose doc arrived cut before
+// the amp nodes. The partial is the one a `Null` check would miss while it produces the
+// identical wrong-amp fallback.
+#[test]
+fn scenes_missing_amp_bypass_flags_absent_and_partial_docs() {
+    let (docs, _) = scene_docs_from_saved(&two_amp_swap_preset(), &[0]).unwrap();
+    let answerable = docs[0].1.clone().unwrap();
+    let partial = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_TubeScreamer", "dspUnitParameters": { "bypass": false } }
+        ] } }
+    });
+    let borrowed = vec![
+        (0u32, Some(&answerable)),
+        (1u32, None),
+        (2u32, Some(&partial)),
+    ];
+    assert_eq!(
+        scenes_missing_amp_bypass(&borrowed),
+        vec![1, 2],
+        "the absent doc AND the amp-less partial both need repair; the answerable one does not"
+    );
+}
+
+// The point of the repair: the swap scene classifies onto the amp IT activates. Asserted by
+// NODE ID — a loudness assertion would pass just as well on the wrong amp.
+#[test]
+fn repaired_swap_scene_classifies_onto_its_own_amp_not_the_base_one() {
+    let saved = two_amp_swap_preset();
+    let structure = session::extract_active_graph(&two_amp_base_saved(), None);
+    let candidates = two_amp_candidates();
+
+    let (docs, _) = scene_docs_from_saved(&saved, &[1]).unwrap();
+    let doc = docs[0].1.clone().unwrap();
+    let (knobs, _) = classify_scene_knobs(&structure, &doc, &candidates)
+        .expect("the repaired doc answers, so the scene must classify");
+    assert_eq!(knobs.len(), 1);
+    assert_eq!(
+        knobs[0].1, "ACD_TwinReverb65NoFx",
+        "the swap scene must level the amp it activates, not the base-active BE100"
+    );
+    assert!((knobs[0].2 - 0.45).abs() < 1e-6, "scene's own outputLevel");
+
+    // Scene 0 keeps the base-active amp — the repair does not blanket-swap.
+    let (docs0, _) = scene_docs_from_saved(&saved, &[0]).unwrap();
+    let doc0 = docs0[0].1.clone().unwrap();
+    let (knobs0, _) = classify_scene_knobs(&structure, &doc0, &candidates).unwrap();
+    assert_eq!(knobs0[0].1, "ACD_BE100");
+
+    // And with NO usable doc the classifier still REFUSES rather than answering from base.
+    let err = classify_scene_knobs(&structure, &serde_json::Value::Null, &candidates)
+        .expect_err("an unanswerable doc must refuse, not fall back to base");
+    assert!(
+        err.contains("refusing to classify against the base graph"),
+        "{err}"
+    );
+}
+
+// The repair itself, end to end on the HW shape: two scenes the live prepass could not answer
+// (one pushed nothing, one arrived cut before the amps) are filled from the saved preset, the
+// scene that DID answer is left alone, and the swap scene ends up on its own amp.
+#[test]
+fn repair_scene_docs_fills_only_the_unanswerable_scenes() {
+    let saved = two_amp_swap_preset();
+    let (answerable, _) = scene_docs_from_saved(&saved, &[0]).unwrap();
+    let mut docs = vec![
+        (0u32, answerable[0].1.clone()),
+        // Scene 1 pushed nothing at all.
+        (1u32, None),
+    ];
+    // Mark scene 0's doc so we can prove the repair did not touch it.
+    docs[0].1.as_mut().unwrap()["__probe"] = serde_json::json!("untouched");
+
+    assert_eq!(repair_scene_docs_from(&mut docs, &saved), vec![1]);
+    assert_eq!(docs[0].1.as_ref().unwrap()["__probe"], "untouched");
+
+    let structure = session::extract_active_graph(&two_amp_base_saved(), None);
+    let (knobs, _) = classify_scene_knobs(
+        &structure,
+        docs[1].1.as_ref().unwrap(),
+        &two_amp_candidates(),
+    )
+    .expect("the repaired scene must classify");
+    assert_eq!(knobs[0].1, "ACD_TwinReverb65NoFx");
+}
+
+// A saved preset that cannot answer either (truncated `scenes`) repairs NOTHING and leaves the
+// docs as they were — the classifier's refusal is still what the row reports.
+#[test]
+fn repair_scene_docs_leaves_docs_untouched_when_the_saved_preset_cannot_answer() {
+    let mut truncated = two_amp_swap_preset();
+    truncated["scenes"] = serde_json::json!([]);
+    let mut docs = vec![(1u32, None)];
+    assert!(repair_scene_docs_from(&mut docs, &truncated).is_empty());
+    assert!(docs[0].1.is_none(), "no doc was invented");
+}
