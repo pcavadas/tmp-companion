@@ -526,6 +526,55 @@ pub(crate) fn build_scene_jobs_with_handles(
                             }
                         })
                         .collect::<Vec<_>>();
+                    // PLAN-TIME twin of `scene_write_verdict`'s `Unknown => Refuse`. A row whose
+                    // SAVED overlay can't be classified is one the write path would refuse
+                    // anyway — but leaving it in the batch until then is not merely late, it is
+                    // SILENT: `plan_trade_for_batch` scores it `benefits: false` (via
+                    // `benefits_from_base_raise`), so its deficit never reaches the trade, no
+                    // headroom is bought for it, and it clamps with nothing red. Refusing here
+                    // is what puts the reason on the user's row — and spares the scene an engage.
+                    //
+                    // Scoped to a saved doc that CLAIMS overlay authority (it carries a `scenes`
+                    // array) and still can't answer. A doc with no `scenes` at all is not a
+                    // failed overlay read — it is the routing-TEMPLATE fallback the oversized-
+                    // audioGraph class depends on (`scene_jobs_saved_fallback_supplies_missing_
+                    // template`), and `scenes` is the first section a field-8 cut takes (HW:
+                    // 22/25 presets read "scenes unknown"), so refusing on its mere absence
+                    // would skip almost every row for the probe/bench callers, whose saved doc
+                    // is never required to be complete. The batched command path — the only one
+                    // that runs the trade — reads complete-or-fail, so there a present-but-
+                    // unanswerable `scenes` is genuine malformation, not truncation.
+                    if let (Some(scene_idx), Some(saved)) = (scene_slot, saved_fallback) {
+                        let claims_authority = saved
+                            .get("scenes")
+                            .and_then(|s| s.as_array())
+                            .is_some_and(|a| !a.is_empty());
+                        if let Some(node) =
+                            knobs.iter().filter(|_| claims_authority).find_map(|kt| {
+                                match &kt.knob {
+                                    leveller::LevelKnob::Block { node_id, .. }
+                                        if matches!(
+                                            scene_overlay(saved, scene_idx, node_id),
+                                            SceneOverlay::Unknown
+                                        ) =>
+                                    {
+                                        Some(node_id.clone())
+                                    }
+                                    _ => None,
+                                }
+                            })
+                        {
+                            return skip_scene_job(
+                                *scene,
+                                target_lufs,
+                                format!(
+                                    "the saved preset can't answer this scene's overlay for \
+                                     {node} (truncated or malformed `scenes`) — refusing rather \
+                                     than leveling a row the headroom trade cannot model"
+                                ),
+                            );
+                        }
+                    }
                     let rebalanceable = kind == ParallelKind::Merged && knobs.len() >= 2;
                     leveller::SceneJob {
                         scene_slot: *scene,

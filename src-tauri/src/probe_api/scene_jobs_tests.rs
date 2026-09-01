@@ -1045,3 +1045,47 @@ fn a_scene_whose_doc_is_partial_skips_instead_of_classifying_against_base() {
         jobs[0].knobs
     );
 }
+
+#[test]
+fn a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_headroom_silently() {
+    // The live doc classifies CLEANLY — one un-bypassed amp, so knobs build and the row looks
+    // perfectly levelable. The defect is on the OTHER input: the SAVED doc cannot answer this
+    // scene's overlay (`scene_body` → `None` ⇒ `SceneOverlay::Unknown`), so the headroom trade
+    // scores the row `benefits: false` via `benefits_from_base_raise` and buys it no headroom —
+    // and it clamps with nothing red. The write path already refuses `Unknown`
+    // (`scene_write_verdict`), so this row was never going to be written: refusing it HERE, at
+    // build time, is what makes the loss visible instead of silent (and saves it an engage).
+    // The saved doc CLAIMS overlay authority — it carries a `scenes` array — but that array
+    // stops at index 1 while the batch levels scene 3, so `scene_body` can't answer and the
+    // overlay reads `Unknown`. On the batched command path the doc is complete-or-fail, so this
+    // is genuine malformation rather than a truncated tail, and it must not pass as levelable.
+    let mut saved = two_amp_base_saved();
+    saved["scenes"] = serde_json::json!([
+        { "guitarNodes": { "G1": {} } },
+        { "guitarNodes": { "G1": {} } }
+    ]);
+    let live = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_BE100", "FenderId": "ACD_BE100",
+              "dspUnitParameters": { "bypass": false, "outputLevel": 1.0 } },
+            { "nodeId": "ACD_TwinReverb65NoFx", "FenderId": "ACD_TwinReverb65NoFx",
+              "dspUnitParameters": { "bypass": true, "outputLevel": 0.28 } }
+        ] } }
+    });
+    let jobs = build_scene_jobs(
+        &[3],
+        &two_amp_candidates(),
+        &[(3, Some(&live))],
+        -23.0,
+        Some(&saved),
+    )
+    .unwrap();
+
+    assert!(
+        jobs[0].skip.is_some(),
+        "a scene whose saved overlay cannot be classified must skip and say so; instead it was \
+         built as a levelable row with knobs {:?}, which the trade then silently scores as a \
+         non-beneficiary",
+        jobs[0].knobs
+    );
+}
