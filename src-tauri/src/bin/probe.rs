@@ -116,6 +116,14 @@
 //!                                  defaults to production semantics (every footswitch-
 //!                                  owned block forced off); `as-saved` restores the old
 //!                                  raw as-saved measurement.
+//!                                  NEVER BOOSTS: this calls the public
+//!                                  `leveller::level_preset`, which passes
+//!                                  `BoostContext::default()`, so `ctx.base_amp` is always
+//!                                  None and the amp-fader raise cannot fire. Only
+//!                                  `commands::level_preset` builds a real context. A
+//!                                  preset whose pedals-off ceiling sits below target
+//!                                  therefore CLAMPS here and levels cleanly in the app —
+//!                                  that difference is this arm's scope, not a regression.
 //!   probe --measure-current <topology> [sceneSlot] [calibrationLUFS]
 //!                                  measure current live state without changing levels
 //!   probe --measure-pair <listIdx> <topology> <presetLevel> [--scene N] <g:n:p=v>…
