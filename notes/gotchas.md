@@ -259,6 +259,28 @@ Read the entry in full before changing the behaviour it governs.
 - **`no_authority`'s 6 dB floor is about the STEP, and the step is sized by the solve — so the verdict needed a probe of its own.** The check is "a move of at least `NO_AUTHORITY_MIN_DB` produced less than `KNOB_TOL_LU` of response", but the first applied move is whatever the open-loop solve asked for. A scene sitting 4 dB from its target gets a 4 dB move, so a knob with LITERALLY ZERO authority fell through to the secant, stalled on a flat slope, and reported a reason-less headroom clamp — the user told "couldn't get there" instead of "this amp doesn't reach USB 1/2", which is the one thing they could act on. `correct_iter` now takes ONE confirmation capture when the first move produced a flat response: step DOWN a full `NO_AUTHORITY_MIN_DB` and look again. Downward only — a raise can clip, and a saturating limiter makes an upward non-response ambiguous. If the probe moves the capture after all, it is a better secant seed than the flat base point, so it is used as one. A healthy knob moves ~1 LU per dB, so this never fires on a working solve. Surfaced by `level-trade.spec.ts`'s zero-authority taxonomy spec at target −21, which had been passing only because the prepass under-rendered and inflated the step to 14 dB.
 - **A pure-logic gate exists for the scene lane's choice** (`a_scene_batch_captures_at_the_saved_level_when_no_trade_holds_one`) because that half is NOT observable offline: SimDevice only reverts a recall's level for a slot the run has already saved, and the scene specs level slots they never saved first. Reverting that arm alone leaves the entire offline suite green.
 
+## A scene that SWAPS amps can be leveled through the base-active one, which has no authority
+
+- **HW, fw 1.8.45, 2026-09-01, the real "Friedman HBE" (user slot 28), scene 3 "Clean".** That
+  scene is the one whose overlay un-bypasses `ACD_TwinReverb65NoFx` (`enables_block` is true
+  only on the scene that un-bypasses a base-bypassed node). The batched scene lane nevertheless
+  drove the BASE-active amp, `ACD_BE100`: `outputLevel@scene3` 1.0000 → 0.5012 — a full 6 dB
+  step — moved the capture not at all, so the run took the honest `no_authority` off-branch and
+  restored 0.9700. The Twin was never written in any of the four scenes.
+- **Read the verdict as the symptom, not the bug.** `no_authority` is doing its job here: it is
+  the reason the wrong knob surfaced at all instead of a reason-less headroom clamp. But the
+  user is told "this amp doesn't reach USB 1/2" about an amp their scene does not use.
+- **It cost no loudness on THIS preset, and that is luck, not design.** Scene 3's swapped-in
+  Twin already sits at `outputLevel` 1.0 (`headroom: "lowers_only"`), so the scene's ceiling is
+  −25.0 either way — measured twice, independently: −25.03 through the probe arm and −25.00
+  through the command layer. On a preset whose swapped-in amp still has room, picking the
+  base-active amp loses real, recoverable loudness.
+- **Not introduced by the boost/run-order work** — the same pick appears on the probe arm, which
+  shares `build_scene_jobs`, and that work's `scene_jobs.rs` diff is a borrow-vs-clone refactor
+  with no selection change. `classify_scene_knobs` DOES filter by
+  `scenes::block_bypass_in_live_graph` per scene, so the defect is upstream of that filter —
+  which amp the live graph reports active in the scene — and needs its own investigation.
+
 ## A post-save re-read that cannot answer must say UNCONFIRMED, never "did not persist"
 
 - **`scenes` sits at the document tail, so a truncated field-8 read loses it first** — and both post-save verifiers used to grade a missing SECTION as a missing VALUE. HW, 2026-08-19: "Friedman HBE" truncates at 21044 B before its scenes, and the run warned that scene 3's `ACD_TwinReverb65NoFx/outputLevel` "solved 0.7814 but the saved preset holds no such value" — while that scene's own re-measure of the SAVED device state read **−22.99 LUFS against its −23 target**, i.e. the write had persisted perfectly. The external judge duly SKIPped a row that should have passed.
