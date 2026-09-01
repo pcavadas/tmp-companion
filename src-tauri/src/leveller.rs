@@ -5549,7 +5549,21 @@ pub fn prepass_scene_ceilings(
                 job.prepass = Some(ScenePrepass {
                     asis: l.integrated_lufs,
                     spread: l.spread_lu(),
-                })
+                });
+                // Mirror the `fs prepass` line so a clamped SCENE row leaves the same
+                // explainable trail its footswitch sibling already does. The absence of this
+                // line is not evidence the prepass measured nothing — it was twice read that
+                // way during this investigation.
+                if let Some(ceiling) = scene_ceiling_lufs(job) {
+                    log::info!(
+                        "scene prepass scene={} ceiling={ceiling:.2} LUFS target={:.2} \
+                         asis={:.2} spread={:.2} LU",
+                        job.scene_slot,
+                        job.target_lufs,
+                        l.integrated_lufs,
+                        l.spread_lu()
+                    );
+                }
             }
             Err(e) if e == CANCELLED => {
                 stopped = true;
