@@ -164,19 +164,13 @@ pub fn probe_level_preset_scenes(
     // of production's isolated base (every footswitch-owned on-off block forced OFF).
     // `base_isolation_or_refuse` is the ONE shared read → refuse-or-force step; an
     // unreadable/truncated `ftsw` refuses rather than leveling a guess.
-    let (_, force, restore_scene) = crate::commands::doctor::base_isolation_or_refuse(
-        crate::read_slot_preset_complete(list_index, &["ftsw"]).map(|(preset, _, _)| preset),
-        list_index,
-    )?;
+    let (force, restore_scene) = crate::commands::doctor::read_base_isolation(list_index)?;
     let opts = leveller::LevelOptions {
         save,
         verify: true,
         restore_scene,
         ..Default::default()
     };
-    // ONE session per HID exclusive-open lockout cycle (danger.md): the isolation read
-    // above opens/closes its own session before the leveller's first connect.
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     // probe = raw benchmark behavior; the setlist/scene-bench base pass stays skip-free
     // this PR (its common target moves with min(C), so "unchanged" is rarer anyway).
     let br = leveller::level_preset(list_index, &stim, base_target, opts, &force, None, || false)?;

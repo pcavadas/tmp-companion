@@ -115,6 +115,10 @@ pub(crate) fn is_amp_output_level_param(parameter_id: &str) -> bool {
 /// avoid is at the ONE call site that used to own no such vec at all
 /// (`commands::level_preset`'s base arm, which cloned a whole ~10 KB preset doc just to hand it
 /// to the builder as its single-entry "docs" list).
+/// The stand-in for a scene whose doc never arrived — a borrowable `Null`, so the job builder
+/// can hand out `&Value` without cloning a real doc to get one.
+static NULL_DOC: serde_json::Value = serde_json::Value::Null;
+
 pub(crate) fn docs_as_refs(
     docs: &[(u32, Option<serde_json::Value>)],
 ) -> Vec<(u32, Option<&serde_json::Value>)> {
@@ -489,22 +493,24 @@ pub(crate) fn build_scene_jobs_with_handles(
     let jobs = scene_slots
         .iter()
         .map(|scene| {
-            let doc = docs
+            // Borrowed, not cloned: `docs` already holds references (that is what
+            // `docs_as_refs` exists for), and both consumers below take `&Value`. Cloning here
+            // undid the borrow for every scene in the batch — a ~10-20 KB JSON copy each.
+            let doc: &serde_json::Value = docs
                 .iter()
                 .find(|(s2, _)| s2 == scene)
                 .and_then(|(_, d)| *d)
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
+                .unwrap_or(&NULL_DOC);
             let scene_slot = if *scene >= session::BASE_SCENE_SLOT {
                 None
             } else {
                 Some(*scene)
             };
             if let Some((_, h)) = handles.iter().find(|(s2, _)| s2 == scene) {
-                return handle_scene_job(*scene, scene_slot, target_lufs, h, &doc, saved_fallback);
+                return handle_scene_job(*scene, scene_slot, target_lufs, h, doc, saved_fallback);
             }
             let classified = match &amp_prereq {
-                Ok(structure) => classify_scene_knobs(structure, &doc, candidates),
+                Ok(structure) => classify_scene_knobs(structure, doc, candidates),
                 Err(reason) => Err(reason.clone()),
             };
             match classified {
@@ -1603,19 +1609,20 @@ pub(crate) fn scenes_missing_amp_bypass(docs: &[(u32, Option<&serde_json::Value>
 /// answer either). Pure — [`backfill_scene_docs_from_saved`] owns the device read.
 ///
 /// Repairs an unanswerable doc; never overrides an answerable one, and never substitutes base.
+/// Takes the unanswerable scenes as an argument rather than rescanning: the device caller
+/// scans first to decide whether the saved read is worth paying for at all, and a second scan
+/// here could only ever produce the same list.
 pub(crate) fn repair_scene_docs_from(
     docs: &mut [(u32, Option<serde_json::Value>)],
     preset: &serde_json::Value,
+    needy: &[u32],
 ) -> Vec<u32> {
-    let borrowed: Vec<(u32, Option<&serde_json::Value>)> =
-        docs.iter().map(|(s, d)| (*s, d.as_ref())).collect();
-    let needy = scenes_missing_amp_bypass(&borrowed);
     if needy.is_empty() {
         return Vec::new();
     }
     // Ask for ONLY the scenes that need repair: `scene_docs_from_saved` is all-or-nothing, so
     // passing the full roster would let one unreadable scene discard the answer for the rest.
-    let Some((repaired, _)) = scene_docs_from_saved(preset, &needy) else {
+    let Some((repaired, _)) = scene_docs_from_saved(preset, needy) else {
         return Vec::new();
     };
     for (scene, doc) in repaired {
@@ -1623,7 +1630,7 @@ pub(crate) fn repair_scene_docs_from(
             slotted.1 = doc;
         }
     }
-    needy
+    needy.to_vec()
 }
 
 /// Repair the live prepass's per-scene misses from the SAVED preset.
@@ -1646,9 +1653,7 @@ pub(crate) fn repair_scene_docs_from(
 /// BEST-EFFORT by construction: every failure leaves `docs` untouched, so the classifier still
 /// refuses rather than guessing.
 fn backfill_scene_docs_from_saved(slot: u32, docs: &mut [(u32, Option<serde_json::Value>)]) {
-    let borrowed: Vec<(u32, Option<&serde_json::Value>)> =
-        docs.iter().map(|(s, d)| (*s, d.as_ref())).collect();
-    let needy = scenes_missing_amp_bypass(&borrowed);
+    let needy = scenes_missing_amp_bypass(&docs_as_refs(docs));
     if needy.is_empty() {
         return;
     }
@@ -1662,7 +1667,7 @@ fn backfill_scene_docs_from_saved(slot: u32, docs: &mut [(u32, Option<serde_json
             return;
         }
     };
-    if repair_scene_docs_from(docs, &preset).is_empty() {
+    if repair_scene_docs_from(docs, &preset, &needy).is_empty() {
         log::warn!(
             "scene-doc repair: slot {slot} saved preset could not answer scenes {needy:?} — \
              they will be skipped, not guessed"

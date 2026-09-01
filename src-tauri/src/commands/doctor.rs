@@ -102,6 +102,25 @@ pub(crate) fn base_isolation_or_refuse(
     Ok((preset, force, restore_scene))
 }
 
+/// [`base_isolation_or_refuse`] with the read it needs and the HID gap that read owes — the
+/// whole "isolate base before levelling" step, for the probe arms that have nothing else to do
+/// with the preset body.
+///
+/// The gap is part of the seam, not the caller's bookkeeping: the read opens and closes its OWN
+/// session before the leveller's first connect, so a back-to-back re-open risks the exclusive-open
+/// lockout (`0xe00002c5` — `danger.md`'s "HID open-lockout model"). Two probe call sites used to
+/// spell this out separately, which is one place too many for a device-timing rule.
+pub(crate) fn read_base_isolation(slot: u32) -> Result<(ForceBypass, Option<u32>), String> {
+    let (_, force, restore_scene) = base_isolation_or_refuse(
+        crate::read_slot_preset_complete(slot, &["ftsw"]).map(|(preset, _, _)| preset),
+        slot,
+    )?;
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::leveller::RECONNECT_GAP_MS,
+    ));
+    Ok((force, restore_scene))
+}
+
 /// `DoctorNode`s → a `node_id → saved bypass` map, first-occurrence-wins
 /// (mirrors the pre-extraction `nodes.iter().find(...)` semantics) — the shape
 /// [`footswitch::derived_force_bypass`] needs, decoupled from the Doctor's own

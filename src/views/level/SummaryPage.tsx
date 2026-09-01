@@ -116,14 +116,14 @@ function problemFor(
 }
 
 /** The one-sentence base-boost disclosure (see the module header's exception note), per the
- *  plan's own wording (`delegated-cuddling-lark.md`, Phase 2 "Frontend": "'Turned this preset
- *  up as far as it goes and raised the amp's output from 0.28 to 0.51 to reach the target.'
- *  (`applied:false` => 'would raise…')"). Only the SECOND verb flips on `applied: false` —
+ *  agreed wording: "Turned this preset up as far as it goes and raised the amp's output from
+ *  0.28 to 0.51 to reach the target." (`applied: false` => "would raise…").
+ *  Only the SECOND verb flips on `applied: false` —
  *  `presetLevel`'s own raise to its ceiling already ran (and, when `opts.save` is set,
  *  persisted) in both branches; it's only the base amp fader's move that stayed unsolved.
  *  Either way the amplitude comes from `base_amps[0]` to 2 decimals — on `applied: false`
- *  that's the planner's SEED (`LevelPairPlan.fader_target`), not a solved prediction, but the
- *  plan's own example sentence names concrete before/after numbers even in the unapplied case.
+ *  that's the planner's SEED (`LevelPairPlan.fader_target`), not a solved prediction; the agreed
+ *  sentence names concrete before/after numbers even in the unapplied case.
  *  `base_amps` is documented as "exactly one element" (`headroom_trade::BaseBoostSummary`'s own
  *  doc) — never observed empty — but an array index is `T | undefined`, so `null` (render
  *  nothing) is the honest answer for a `base_amps` that came back empty rather than assuming

@@ -1186,7 +1186,13 @@ fn repair_scene_docs_fills_only_the_unanswerable_scenes() {
     // Mark scene 0's doc so we can prove the repair did not touch it.
     docs[0].1.as_mut().unwrap()["__probe"] = serde_json::json!("untouched");
 
-    assert_eq!(repair_scene_docs_from(&mut docs, &saved), vec![1]);
+    let needy = scenes_missing_amp_bypass(&docs_as_refs(&docs));
+    assert_eq!(
+        needy,
+        vec![1],
+        "only the scene that pushed nothing needs repair"
+    );
+    assert_eq!(repair_scene_docs_from(&mut docs, &saved, &needy), vec![1]);
     assert_eq!(docs[0].1.as_ref().unwrap()["__probe"], "untouched");
 
     let structure = session::extract_active_graph(&two_amp_base_saved(), None);
@@ -1206,6 +1212,7 @@ fn repair_scene_docs_leaves_docs_untouched_when_the_saved_preset_cannot_answer()
     let mut truncated = two_amp_swap_preset();
     truncated["scenes"] = serde_json::json!([]);
     let mut docs = vec![(1u32, None)];
-    assert!(repair_scene_docs_from(&mut docs, &truncated).is_empty());
+    let needy = scenes_missing_amp_bypass(&docs_as_refs(&docs));
+    assert!(repair_scene_docs_from(&mut docs, &truncated, &needy).is_empty());
     assert!(docs[0].1.is_none(), "no doc was invented");
 }

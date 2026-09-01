@@ -421,6 +421,9 @@ export function runRank(it: {
   if (fs == null) return 2;
   // Only a NUMERIC context ranks late: absent, `null` and an unresolved `undefined` all
   // mean base context, the conservative side (a truthiness test would mis-read scene 0).
+  // `unknown` + probe rather than a typed field: the two callers pass genuinely different
+  // shapes (a full `FootswitchTarget`, and a bare object with no `sceneContext` at all —
+  // which the gate below exists to pin), and no single object type accepts both.
   const ctx =
     typeof fs === "object" && "sceneContext" in fs ? fs.sceneContext : null;
   return typeof ctx === "number" ? 3 : 1;
@@ -459,19 +462,15 @@ export function chosenFrom(
         });
       }
       // Emitted in `runRank` order — Base, BASE-CONTEXT footswitches, scenes, then
-      // SCENE-CONTEXT footswitches (see `runRank`, which pins this independently of how
-      // these items were assembled, and carries the HW evidence for both halves of the
-      // split). The rows are emitted in two passes over the same footswitch array so each
-      // switch keeps its ORIGINAL index in `fswKey` regardless of which pass emits it.
-      // Pass 1: switches measured in BASE context — before the scenes they move.
+      // SCENE-CONTEXT footswitches. Rather than restate that order as separate passes, the
+      // preset's rows are built once and sorted through `runRank` itself, which owns the rule
+      // and carries the HW evidence for both halves of the split. The sort is stable, so each
+      // switch keeps its ORIGINAL index in `fswKey` and scenes keep their wire order.
+      const children: SetupOption[] = [];
       footswitches.forEach((f, i) => {
         const target = footswitchTarget(f);
-        if (
-          target &&
-          sel.has(fswKey(r.slot, i)) &&
-          target.sceneContext == null
-        ) {
-          items.push({
+        if (target && sel.has(fswKey(r.slot, i))) {
+          children.push({
             key: fswKey(r.slot, i),
             slot: r.slot,
             presetName: r.name,
@@ -489,7 +488,7 @@ export function chosenFrom(
       });
       scenes.forEach((sc, i) => {
         if (sel.has(sceneKeyOf(r.slot, i))) {
-          items.push({
+          children.push({
             key: sceneKeyOf(r.slot, i),
             slot: r.slot,
             presetName: r.name,
@@ -501,30 +500,8 @@ export function chosenFrom(
           });
         }
       });
-      // Pass 2: switches measured in a SCENE context — after that scene is on target.
-      footswitches.forEach((f, i) => {
-        const target = footswitchTarget(f);
-        if (
-          target &&
-          sel.has(fswKey(r.slot, i)) &&
-          target.sceneContext != null
-        ) {
-          items.push({
-            key: fswKey(r.slot, i),
-            slot: r.slot,
-            presetName: r.name,
-            isBase: false,
-            sceneSlot: null,
-            sceneName: footswitchName(f),
-            tag: fsTagOf(f.switch),
-            hasScenes: true,
-            footswitch: target,
-            levelParams: f.level_params,
-            fsUnlabeled: f.label.trim() === "",
-            fsSceneNames: scenes.map((sc) => sc.name),
-          });
-        }
-      });
+      children.sort((a, b) => runRank(a) - runRank(b));
+      items.push(...children);
     });
   return items;
 }

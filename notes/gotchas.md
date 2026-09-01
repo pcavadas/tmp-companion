@@ -243,7 +243,10 @@ Read the entry in full before changing the behaviour it governs.
   - **`ftswStates: [false, …]` in a scene overlay is not a bypass instruction.** All three scenes carry an all-false `ftswStates`, and all three still heard the base-ON screamer — the 2.0 dB shift is the proof. Reading that array as "these pedals are off in this scene" is what makes this failure invisible on inspection; a scene renders the base chain's own state for anything its overlay does not itself carry.
   - **BASE is immune, and that is what hides it.** A base capture forces every footswitch-owned block off (`doctor_force_bypass`), so base re-measured exactly on target through the whole run while all three scenes drifted.
   - **The bracket is the diagnostic.** One extra re-measure of a single scene IMMEDIATELY after its own batch save, before any later lane writes, is what separates "this row was mis-solved by its own batch" from "this row was moved by a later lane". Without it the two are indistinguishable at the end of a run, and two full online runs were spent on the wrong half.
-  - **The fix is ORDER, not a re-solve.** The dependency is one-way: a footswitch row is measured in BASE context, so a scene's own amp overlay can never move it back. Base → footswitches → scenes is interference-free (`views/level/leveling.ts`'s `runRank`).
+  - **The fix is ORDER, not a re-solve.** The dependency is one-way: a footswitch row is measured in BASE context, so a scene's own amp overlay can never move it back. The order is PER-ROW (`views/level/leveling.ts`'s `runRank`): base, then BASE-CONTEXT
+    footswitches, then scenes, then SCENE-CONTEXT footswitches. A blanket "footswitches before
+    scenes" held only while every row was measured in base context; a scene-context row must run
+    AFTER its scene is on target. Both halves are HW-measured — see `runRank`'s own doc.
 
 ## A capture must re-assert the run's own `presetLevel` — the freshness barrier is not enough
 

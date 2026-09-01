@@ -272,31 +272,18 @@ export type PairRegime = "none" | "trade" | "boost" | "infeasible";
  *   solved fader.
  * - `false` — ADVISORY. The plan calls for a boost but this run's shape can't apply it this
  *   cycle (no `save`, or a scene preset — v1 scopes the full continuation to scene-less
- *   presets only), so the row still clamps honestly at `presetLevel`'s ceiling and this
- *   states what raising the fader by `fader_db` WOULD close; `base_amps[0].value` is
- *   populated with the planner's SEED (`fader_target`), not a solved prediction — see
+ *   presets only), so the row still clamps honestly at `presetLevel`'s ceiling and
+ *   `base_amps[0].value` is the planner's SEED (`fader_target`), not a solved prediction — see
  *   `TradeAmpMove.value`'s own doc for why a BOOST advisory is the one case that populates
  *   this field instead of leaving it `null`. */
 export interface BaseBoostSummary {
   applied: boolean;
   regime: PairRegime;
-  /** dB `presetLevel` was raised to reach its ceiling. */
-  raise_db: number;
-  /** dB the base amp's fader was (or would be) raised. */
-  fader_db: number;
-  previous_preset_level: number;
   /** The raised `presetLevel` — exact either way, so an advisory can state it without
    * measuring. */
   preset_level: number;
   /** The base amp candidate the boost moves. Exactly one element. */
   base_amps: TradeAmpMove[];
-  /** Why the plan's own raise was trimmed, if it was (mirrors `TradeSummary.cap`). */
-  cap: TradeCap | null;
-  /** ADDITIVE (Fix J): which of the two `applied: false` causes this is, when it is one —
-   * `null` on an APPLIED summary. Carried alongside `applied`; the UI's sentence logic still
-   * keys on `applied` alone (see `SummaryPage.tsx`'s `baseBoostSentence`), this field is not
-   * consulted there. */
-  not_applied: "no_save" | "scene_preset" | null;
 }
 
 /** Result of leveling one block-acting footswitch's engaged state

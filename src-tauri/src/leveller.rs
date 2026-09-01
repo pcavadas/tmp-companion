@@ -255,7 +255,7 @@ pub(crate) const LEVEL_MAX: f32 = 1.0;
 /// so producer and consumers can't drift.
 const NO_SIGNAL_CAPTURED: &str = "no signal captured";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct LevelResult {
     pub slot: u32,
     /// WHICH sound this row describes, when the row is a SCENE row: the 0-based
@@ -1772,17 +1772,12 @@ pub(crate) fn lufs_at_level(c: f64, level: f32) -> f64 {
 /// Solve the `presetLevel` that hits `target_lufs` given `C`. Returns
 /// `(final_level clamped 0..1, clamped, predicted_lufs)`.
 ///
-/// The clamp test carries NO epsilon on purpose — it is the raw "did the ideal level land
-/// outside `[0, 1]`" question, and the lane that needs an acceptance band applies its own
-/// (`already_on_target`). Widening it here is a real option, not an impossible one: the
-/// non-test callers are exactly three — the base lane (`level_preset_impl`), the setlist
-/// lane's pass 2, and `probe_api::scene_level`. But the flag they carry is a DECISION input,
-/// not a label: `clamped` rows are the bucket the Summary's "Re-level clamped…" action
-/// re-runs, they gate each row's own fix affordance, and any one of them clears `allGood`
-/// (`src/views/level/SummaryPage.tsx`). It is NOT what the scene and footswitch lanes clamp on; those solve through
-/// `solve_joint_k_at` / `solve_param_secant` and never reach this function. What that change
-/// WOULD move is the Summary's clamped bucket for the sub-band class, which is product-visible
-/// and wants its own gate — see `already_on_target`'s note on the run-order asymmetry.
+/// The clamp test carries NO epsilon on purpose — the raw "did the ideal level land outside
+/// `[0, 1]`" question; the lane that needs an acceptance band applies its own (see
+/// [`already_on_target`], which owns that argument). `clamped` is a DECISION input, not a
+/// label: it buckets the Summary's "Re-level clamped…" action and clears `allGood`, so
+/// banding it here is product-visible and wants its own gate. The scene and footswitch lanes
+/// never reach this function (they solve through `solve_joint_k_at` / `solve_param_secant`).
 pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
     let ideal = 10f64.powf((target_lufs - c) / 20.0);
     let clamped = ideal > LEVEL_MAX as f64 || ideal < LEVEL_MIN as f64;
@@ -1955,70 +1950,47 @@ fn level_unchanged(final_level: f32, previous: f32) -> bool {
 }
 
 /// Is the preset's ALREADY-SAVED `p` already on `target_lufs`, given this run's measured `c`?
-/// The second half of the idempotency skip, and the reason that skip does NOT also require
-/// `!clamped` the way `scene_at_target` / `switch_at_target` do (see their docs, which no
-/// longer claim parity with this lane).
+/// The second half of the idempotency skip, and the ONE place the base lane's divergence from
+/// `scene_at_target` / `switch_at_target` is argued — those point here rather than restate it.
 ///
-/// WHY THE BASE LANE DIVERGES. On a preset already leveled through the BOOST path,
-/// `presetLevel` sits at [`LEVEL_MAX`] and the fader was solved so `C ≈ target` — so a
-/// re-measure a few float units low makes `solve_level`'s ideal a hair over `1.0` and reports
-/// `clamped`, purely from f32/f64 round-trip. Requiring `!clamped` let that hairline flip
-/// bypass the skip, re-persist the identical `presetLevel` and surface a spurious `clamped`
-/// row. The scene and footswitch lanes have no such boundary-parked steady state and keep the
-/// stricter rule.
+/// WHY THE BASE LANE DROPS `!clamped`. On a preset already leveled through BOOST, `presetLevel`
+/// sits at [`LEVEL_MAX`] and the fader was solved so `C ≈ target`, so a re-measure a few float
+/// units low makes `solve_level`'s ideal a hair over `1.0` and reports `clamped` purely from
+/// f32/f64 round-trip. Requiring `!clamped` let that hairline flip bypass the skip and
+/// re-persist an identical `presetLevel`. The other lanes have no boundary-parked steady state
+/// and keep the stricter rule.
 ///
-/// BANDED AT [`FS_TOL_LU`] (0.1), NOT [`KNOB_TOL_LU`] (0.3) — user-decided, and the SAME
-/// ±0.1-vs-target standard the footswitch lane has always held, against the same hardware.
-/// This is deliberately TIGHTER than the ~0.12 LU run-to-run capture noise `FS_TOL_LU`'s own
-/// doc records, and the consequence stated there applies here too: a re-measure landing in
-/// `(0.1, 0.3]` fails this band, falls through, re-writes `presetLevel` and re-SAVES — a real
-/// device write on a preset that was already correct. Accepted as the price of never
-/// reporting `done` on a shortfall that is, by the user's own standard, audible. It is also
-/// what keeps the lane self-consistent: outside the band the run BOTH reports honestly and
-/// acts, so every `clamped` row the Summary offers to re-level is one a re-run can actually
-/// move. A split band (report at 0.1, skip writes at 0.3) would strand rows in `clamped` that
-/// no re-level could ever clear. DO NOT widen this to `KNOB_TOL_LU` to buy quiet re-runs.
+/// BANDED AT [`FS_TOL_LU`] (0.1), NOT [`KNOB_TOL_LU`] (0.3) — user-decided, the same standard
+/// the footswitch lane has always held. Tighter than the ~0.12 LU capture noise `FS_TOL_LU`
+/// documents, so a re-measure landing in `(0.1, 0.3]` falls through and re-saves a preset that
+/// was already correct. That is the accepted price of never reporting `done` on an audible
+/// shortfall, and it keeps the lane self-consistent: every `clamped` row the Summary offers to
+/// re-level is one a re-run can actually move. DO NOT widen this to `KNOB_TOL_LU`.
 ///
-/// BANDED AT `p`, NOT AT `predicted`: `predicted` is computed at `final_level`, and
-/// [`level_unchanged`] tolerates [`KNOB_TOL_LU`] between the two — banding on `predicted`
-/// would compound the two tolerances. `p` is the level the skip KEEPS, so `p` is what must be
-/// on target.
+/// BANDED AT `p`, NOT `predicted` — `predicted` is computed at `final_level` and
+/// [`level_unchanged`] already tolerates [`KNOB_TOL_LU`] between the two; banding on it would
+/// compound both tolerances. `p` is the level the skip KEEPS.
 ///
-/// LOAD-BEARING (this is what makes dropping `!clamped` safe): the quantity banded here is
-/// bit-for-bit the boost planner's own `G` — same `previous_level`, same `m.c`, same
-/// [`lufs_at_level`]. [`crate::headroom_trade::plan_level_pair`] enters `Boost` only at
-/// `g > p_up + TRADE_CLAMP_EPS_LU` with `p_up >= 0`, and `TRADE_CLAMP_EPS_LU` IS
-/// `KNOB_TOL_LU` (0.3) — so a 0.1 band is disjoint from Boost with room to spare, and any
-/// further tightening only widens that gap. The claim is precisely "this skip cannot preempt
-/// a boost", NOT "no regime fires in the band": `Infeasible` DOES fire inside it whenever
-/// both controls are already maxed (`dp_lo > dp_hi`), and base-lane `Trade` cannot (`sounds`
-/// is empty ⇒ `d_ben == 0`). Both are inert because the caller acts only on
+/// THE SKIP CANNOT PREEMPT A BOOST — this is what makes dropping `!clamped` safe. The banded
+/// quantity is bit-for-bit the boost planner's own `G` (same `previous_level`, same `m.c`, same
+/// [`lufs_at_level`]), and [`crate::headroom_trade::plan_level_pair`] enters `Boost` only at
+/// `g > p_up + TRADE_CLAMP_EPS_LU` with `p_up >= 0`, where `TRADE_CLAMP_EPS_LU` IS
+/// `KNOB_TOL_LU` — disjoint from a 0.1 band with room to spare. Other regimes DO fire inside
+/// the band (`Infeasible` when both controls are maxed) but are inert: the caller acts only on
 /// `regime == Boost && fader_target.is_some()`. Keep both readings of `previous_level` and
-/// `m.c` identical, or the G-identity breaks silently.
+/// `m.c` identical or the identity breaks silently.
 ///
-/// NOT REDUNDANT WITH [`level_unchanged`], though it very nearly is. Substituting
-/// `target = 20·log10(ideal) + c` turns this predicate into a tighter, 0.1-banded form of
-/// `level_unchanged(ideal, p)` — the same comparison against the UNCLAMPED ideal — so on
-/// in-range values it implies the first conjunct and that conjunct is arithmetically free.
-/// It earns its keep on the values that are NOT in range: `p` is read straight off the preset
-/// JSON (`audiograph::preset_level`, an unvalidated `as_f64`), and a doc carrying
-/// `presetLevel = 2.0` whose ideal is also `2.0` passes this band EXACTLY — residual zero, at
-/// any band — while `level_unchanged(1.0, 2.0)` correctly refuses at 6.02 dB. The run must
-/// WRITE the in-range clamped level, not skip. [`lufs_at_level`]'s own `1e-6` floor breaks the
-/// implication at the bottom of the range too (`p = 1e-9` against an ideal of `1e-6` bands to
-/// zero yet is 60 dB away), and `level_unchanged`'s `previous > 0.0` guard covers the rest.
-/// Keep both conjuncts.
+/// KEEP BOTH CONJUNCTS. This nearly implies [`level_unchanged`], but not on out-of-range
+/// values: `p` is read straight off the preset JSON as an unvalidated `as_f64`, and a doc
+/// carrying `presetLevel = 2.0` whose ideal is also `2.0` bands to exactly zero while
+/// `level_unchanged(1.0, 2.0)` correctly refuses at 6.02 dB. The run must WRITE the clamped
+/// in-range level, not skip.
 ///
-/// RUN-ORDER ASYMMETRY, accepted: the band lives in the skip, not in `solve_level`'s flag, so
-/// a shortfall inside the band at `presetLevel`'s ceiling is reported `clamped` by the run
-/// that pins the level there and `done` by the next run over it. No prior run is needed for
-/// the `done` half — a preset AUTHORED at `presetLevel` in `[0.9886, 1.0]` and short of target
-/// by under the band reports `done` on its very FIRST run, and (`clamped` being what buckets
-/// the Summary's re-level action) offers no affordance to disagree. At 0.1 that hidden window
-/// is at or below both the capture noise floor and the audibility standard, which is what
-/// makes it acceptable; at 0.3 it was not. Consolidating the two halves would mean banding
-/// `solve_level`'s flag itself — see its doc for why that is a separate, product-visible
-/// change.
+/// RUN-ORDER ASYMMETRY, accepted: the band lives in the skip, not in `solve_level`'s flag, so a
+/// sub-band shortfall at the ceiling reports `clamped` from the run that pins it and `done`
+/// from the next. A preset AUTHORED in `[0.9886, 1.0]` and short by under the band reports
+/// `done` on its FIRST run with no affordance to disagree. At 0.1 that window sits at or below
+/// both the noise floor and the audibility standard; at 0.3 it did not.
 fn already_on_target(c: f64, p: f32, target_lufs: f64) -> bool {
     (target_lufs - lufs_at_level(c, p)).abs() <= FS_TOL_LU
 }
@@ -2206,12 +2178,7 @@ pub(crate) fn level_preset_impl(
                     dynamic_spread_lu: None,
                     clamp_kind: Some(crate::headroom_trade::ClampKind::NoAuthority),
                     clamp_reason: Some("no signal on USB 1/2".into()),
-                    verify_by_ear: false,
-                    previous_level: None,
-                    true_peak_dbtp: None,
-                    persist_mismatch: None,
-                    trade: None,
-                    base_boost: None,
+                    ..Default::default()
                 });
             }
             Err(e) => return Err(e),
@@ -2260,9 +2227,7 @@ pub(crate) fn level_preset_impl(
                     verify_by_ear: false,
                     previous_level: None,
                     true_peak_dbtp: Some(predicted_true_peak_dbtp(m.true_peak_dbtp, ref_level, p)),
-                    persist_mismatch: None,
-                    trade: None,
-                    base_boost: None,
+                    ..Default::default()
                 });
             }
         }
@@ -2306,7 +2271,7 @@ pub(crate) fn level_preset_impl(
                 .then_some((job, p0, f0, plan))
             });
 
-        // `base_boost` is computed BEFORE the one shared tail below (Fix B): the advisory arm
+        // `base_boost` is computed BEFORE the one shared tail below: the advisory arm
         // used to duplicate that whole tail (its own `apply_level` call + ~45-line `LevelResult`
         // literal) just to set this one field. Only the advisory outcome ever reaches the tail —
         // a run whose shape allows the full continuation returns early from `apply_base_boost`
@@ -2354,18 +2319,12 @@ pub(crate) fn level_preset_impl(
                 );
             }
 
-            // ADVISORY: this run's shape can't apply the boost this cycle (Fix J: `NoSave`
-            // wins when both causes hold — a no-save run on a scene-bearing preset is refused
-            // for lack of a save, not for its scenes).
-            let not_applied = if !opts.save {
-                crate::headroom_trade::BoostRefusal::NoSave
-            } else {
-                crate::headroom_trade::BoostRefusal::ScenePreset
-            };
+            // ADVISORY: this run's shape can't apply the boost this cycle — either it has no
+            // `save`, or the preset carries scenes (v1 scopes the full continuation to
+            // scene-less presets). Either way the disclosure keys on `applied` alone.
             base_boost = Some(crate::headroom_trade::BaseBoostSummary::from_plan(
                 false,
                 &plan,
-                p0,
                 crate::headroom_trade::TradeAmpMove {
                     group_id: ids.0,
                     node_id: ids.1,
@@ -2378,7 +2337,6 @@ pub(crate) fn level_preset_impl(
                     // whenever `applied:false` reaches the summary.
                     value: plan.fader_target,
                 },
-                Some(not_applied),
             ));
         }
 
@@ -2424,7 +2382,7 @@ pub(crate) fn level_preset_impl(
     restore_after_unsaved_error(slot, opts.save, result)
 }
 
-/// Fix A helper 1: the shared bail-body every raise-and-hold executor (`apply_base_boost`,
+/// The shared bail-body every raise-and-hold executor (`apply_base_boost`,
 /// `apply_headroom_trade`) runs when backing a half-landed pair out — reload the stored preset
 /// (discards the unsaved raise + whatever the hold wrote, together) and guarantee re-amp OFF on
 /// a fresh connection. `tag` is the caller's own `reamp_off_guaranteed` log tag (distinct per
@@ -2436,7 +2394,7 @@ fn backout_pair(slot: u32, tag: &str) {
     reamp_off_guaranteed(tag);
 }
 
-/// Fix A helper 2: undo a landed hold/boost's base isolation, backing the WHOLE pair out via
+/// Undo a landed hold/boost's base isolation, backing the WHOLE pair out via
 /// `on_fail` if the inverse writes themselves fail — shared by `apply_base_boost` and
 /// `apply_headroom_trade`, which otherwise duplicate this exact "half an undo is worse than
 /// none" policy differing only in wording (`what`) and error type. A no-op on an empty
@@ -2458,7 +2416,7 @@ fn undo_isolation_or_bail<E>(
     })
 }
 
-/// Fix A helper 3: the shared RAISE-FIRST, UNSAVED prologue — settle → connect →
+/// The shared RAISE-FIRST, UNSAVED prologue — settle → connect →
 /// `set_preset_level(value)` → settle. Both `apply_base_boost` and `apply_headroom_trade` run
 /// this before their (genuinely different) hold solves; every capture that follows connects
 /// lean-equivalent (no `load_preset`), so the working-copy value survives each fresh re-amp
@@ -2551,7 +2509,7 @@ fn apply_base_boost(
         .first()
         .copied()
         .unwrap_or(job.knobs[0].current);
-    // Fix C: states the boost's two facts ONCE — `derive_save_witness` reads the
+    // States the boost's two facts ONCE — `derive_save_witness` reads the
     // `SaveWitness::PresetLevelWithParam` straight off this same list, where the old shape
     // wrote the identical `(pl, node, param, value)` facts a second time as an explicit
     // `override_witness`.
@@ -2618,7 +2576,6 @@ fn apply_base_boost(
         base_boost: Some(crate::headroom_trade::BaseBoostSummary::from_plan(
             true,
             plan,
-            previous_preset_level,
             crate::headroom_trade::TradeAmpMove {
                 group_id,
                 node_id,
@@ -2626,7 +2583,6 @@ fn apply_base_boost(
                 previous_value: job.knobs[0].current,
                 value: Some(fader_value),
             },
-            None,
         )),
     })
 }
@@ -2721,13 +2677,7 @@ pub fn level_setlist(
             iterations: 1,
             dynamic_spread_lu: Some(m.dynamic_spread_lu),
             clamp_kind: crate::headroom_trade::ClampKind::from_flags(clamped, false, None),
-            clamp_reason: None,
-            verify_by_ear: false,
-            previous_level: None,
-            true_peak_dbtp: None,
-            persist_mismatch: None,
-            trade: None,
-            base_boost: None,
+            ..Default::default()
         });
     }
 
@@ -2917,7 +2867,7 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
 /// `recall_reassert_save_replays_the_unsaved_level_after_the_recall`).
 ///
 /// `reasserts` replaces the old `reassert_pl` + `extra_reassert` + `override_witness` trio
-/// (Fix C) — see [`Reassert`]'s doc. Written in the ORDER GIVEN (every caller lists
+/// See [`Reassert`]'s doc. Written in the ORDER GIVEN (every caller lists
 /// `PresetLevel` before a `Param`, matching the base-boost continuation's own write order —
 /// the fader's Phase 2 addition to `presetLevel`'s pre-existing re-assert), and the save's
 /// witness is [`derive_save_witness`]'s answer over the SAME list, so a caller states its
@@ -5261,7 +5211,7 @@ const BATCH_MAX_TRIMS: u32 = 4;
 const BATCH_TRUST_DB: f32 = 6.0;
 
 /// Per-scene outcome of [`level_scenes_live_batched`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct BatchedSceneOutcome {
     pub scene_slot: u32,
     /// The effective (offset-adjusted) loudness target this scene was leveled to.
@@ -5554,11 +5504,7 @@ pub fn level_scenes_live_batched(
                     writes,
                     elapsed_ms: t0.elapsed().as_millis(),
                     failure: Some(e),
-                    dynamic_spread_lu: None,
-                    clamp_kind: None,
-                    clamp_reason: None,
-                    verify_by_ear: false,
-                    persist_mismatch: None,
+                    ..Default::default()
                 },
             };
             on_scene(job.scene_slot, Some(&outcome));
@@ -5933,7 +5879,7 @@ pub fn apply_headroom_trade(
     use crate::headroom_trade::ClampKind;
     // Back out the WHOLE pair on failure: the reload discards the unsaved raise and every
     // unsaved fader write together, so no half-trade can ever be persisted (shared bail body,
-    // `backout_pair` — Fix A helper 1).
+    // `backout_pair`).
     let bail = |kind: ClampKind, why: String| -> TradeFailure {
         backout_pair(slot, "headroom_trade_backout");
         TradeFailure {
@@ -5950,7 +5896,7 @@ pub fn apply_headroom_trade(
         });
     }
     let raised = crate::headroom_trade::raised_preset_level(preset_level, plan.raise_db);
-    // Raise FIRST and UNSAVED (shared prologue, `raise_preset_level_unsaved` — Fix A helper 3).
+    // Raise FIRST and UNSAVED (shared prologue, `raise_preset_level_unsaved`).
     // Every measure below connects LEAN (no `load_preset`), so the working-copy value survives
     // each fresh re-amp connection (HW: unsaved writes persist across reconnects). A CONNECT
     // failure here does NOT bail: nothing has been written yet, so there is nothing to back
@@ -6685,7 +6631,7 @@ fn run_scene_jobs(
 fn save_deferred_scene_writes(
     slot: u32,
     restore_scene: Option<u32>,
-    // Fix C: replaces the old `reassert_pl` + `extra_reassert` + `override_witness` trio — see
+    // Replaces the old `reassert_pl` + `extra_reassert` + `override_witness` trio — see
     // `Reassert`'s and `recall_reassert_save`'s docs. A scene batch's own `[Reassert::PresetLevel]`
     // singleton, a base-boost save's `[PresetLevel, Param]` pair, or an untraded scene batch's
     // empty slice all flow through the one list.
@@ -8369,10 +8315,7 @@ fn failed_scene_outcome(
         failure: Some(failure),
         dynamic_spread_lu: None,
         // A FAILED row is not a clamped row: it never produced a verdict to name.
-        clamp_kind: None,
-        clamp_reason: None,
-        verify_by_ear: false,
-        persist_mismatch: None,
+        ..Default::default()
     }
 }
 
@@ -8540,13 +8483,7 @@ pub fn level_preset_block(
             iterations,
             dynamic_spread_lu: Some(dynamic_spread_lu),
             clamp_kind: crate::headroom_trade::ClampKind::from_flags(clamped, false, None),
-            clamp_reason: None,
-            verify_by_ear: false,
-            previous_level: None,
-            true_peak_dbtp: None,
-            persist_mismatch: None,
-            trade: None,
-            base_boost: None,
+            ..Default::default()
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -11933,7 +11870,7 @@ mod tests {
         );
     }
 
-    // Phase 5 item 2 (2026-08-31 bisect): a zero-write BASE `--measure-pair` reading used to
+    // 2026-08-31 bisect: a zero-write BASE `--measure-pair` reading used to
     // land on a naked ~600 ms last-command→engage idle gap (two back-to-back
     // `SETTLE_AFTER_SET_MS` settles with nothing sent between them) and latch the device's
     // stationary output floor 2/2, while a single write in the loop broke the SAME shape 1/1.

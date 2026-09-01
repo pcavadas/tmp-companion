@@ -14,9 +14,6 @@ import type { BaseBoostSummary } from "../lib/types";
 const boost = (over: Partial<BaseBoostSummary>): BaseBoostSummary => ({
   applied: false,
   regime: "boost",
-  raise_db: 11.1,
-  fader_db: 5.3,
-  previous_preset_level: 0.28,
   preset_level: 1.0,
   base_amps: [
     {
@@ -29,8 +26,6 @@ const boost = (over: Partial<BaseBoostSummary>): BaseBoostSummary => ({
       value: 0.51,
     },
   ],
-  cap: "preset_level_max",
-  not_applied: "scene_preset",
   ...over,
 });
 

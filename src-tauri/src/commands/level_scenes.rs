@@ -55,7 +55,7 @@ pub(crate) struct SceneHandleArg {
     parameter_id: String,
 }
 
-/// A1 — "the base anchor" (PR A design doc): keeps the batch's force-appended base job alive
+/// "The base anchor": keeps the batch's force-appended base job alive
 /// through PHASE 1 (prepass) and PHASE 2 (trade) with NO wire scene job of its own, so the
 /// headroom trade can be planned/executed even though the wizard levels base itself through
 /// the separate `level_preset` lane. Stripped before PHASE 3 — base's own `outputLevel` is
