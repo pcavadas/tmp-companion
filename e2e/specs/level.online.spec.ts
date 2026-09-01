@@ -82,16 +82,21 @@ import {
 // T3 (enumeration) is GONE — moved offline as an `e2e_server_tests.rs` gate (E9); a pure list
 // read has negligible device truth to verify. T4 (two-preset Base UI flow) is GONE — its
 // "drives the real UI" claim is subsumed by T1′ (this file only levels 410 via raw invoke,
-// see below) plus T5 (drives the wizard UI on 405). Session-budget arithmetic (revised for
-// self-calibration's extra reads): T1′ adds 5 as-is probes (~2 min) to its prior ~8 min ≈
-// 10 min; T2 stays ~2 min. T5 adds a pedals-off preview + a conditional fader-calibration
-// write + (when calibration ran) the 150 s lazy-commit wait its OWN save isn't witnessed for
-// (danger.md: the block-knob save carries no `PresetLevel` reassert, so `ensure_fresh_load`
-// has nothing to wait on automatically — see T5's own comment) on top of its prior ~5 min ≈
-// 10-12 min. Total ≈ 22-24 min for this file, against the leveling suite's ratified ≤ 25 min
-// online budget — tight enough that `test.setTimeout` on both T1′ and T5 is bumped to 900 s
-// (from T5's prior 600 s) to keep margin over the per-test estimate, matching this file's
-// existing convention of padding generously past the plan's own numbers.
+// see below) plus T5 (drives the wizard UI on 405).
+//
+// SESSION BUDGET — MEASURED, not estimated (real-device runs, 2026-08-31/09-01). The ratified
+// cap for the online LEVELING suite is ~25 min. Measured: T1′ 8.3 min, T2 0.9 min, T5 18.5 min
+// with four footswitch rows = 27.7 min, over the cap AND over T5's own 900 s `test.setTimeout`
+// (it died on its own clock mid-re-measure). A device capture costs ~22 s and T5 spent ~45 of
+// them, so the budget is set by CAPTURE COUNT and nothing else. T5 therefore levels TWO
+// footswitch rows, not four — one row per distinct class, see `SWITCH_SPECS_405`'s own comment
+// for which two and where the other two stay covered — landing the file ≈ 21 min. T5's own
+// irreducible costs are a pedals-off preview, a conditional fader calibration, and (only when
+// that calibration writes) the 150 s lazy-commit wait its save isn't witnessed for (danger.md:
+// the block-knob save carries no `PresetLevel` reassert, so `ensure_fresh_load` has nothing to
+// wait on automatically — see T5's own comment). `test.setTimeout` stays 900 s on both tests,
+// which is now real margin over the per-test measurement rather than a number padded past an
+// estimate.
 //
 // COVERAGE rows 37, 45 — row 37 is Hiwatt's own scene/footswitch enumeration, row 45 is
 // 410's structural-readiness pin; see e2e/fixtures/COVERAGE.md for the "where it went"
@@ -630,29 +635,32 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     await page.close();
   });
 
-  // 4 drive pedals — kept local to this file rather than imported, since cross-spec imports of
-  // test fixtures aren't this codebase's convention (each spec owns its own job literals).
-  // Identity only: NOT a fixture-derived magnitude (file header's ROOT LESSON bans that class
-  // of online target). Each row's `targetLufs` is self-calibrated at runtime inside the test,
-  // the same way T1′ derives its own footswitch target — see the probe loop below.
+  // TWO of 405's four drive pedals — kept local to this file rather than imported, since
+  // cross-spec imports of test fixtures aren't this codebase's convention (each spec owns its
+  // own job literals). Identity only: NOT a fixture-derived magnitude (file header's ROOT
+  // LESSON bans that class of online target). Each row's `targetLufs` is self-calibrated at
+  // runtime inside the test, the same way T1′ derives its own footswitch target — see the
+  // probe loop below.
+  //
+  // WHY TWO AND NOT FOUR (the ratified ≤25 min online leveling budget). Every device capture
+  // costs ~22 s and a four-row journey spent ~45 of them, putting this file at 27.7 min. The
+  // two rows kept are the two that carry DISTINCT classes:
+  //   • switch 5 `ACD_Plumes.level`  — a `level`-named handle, bypassed in base.
+  //   • switch 8 `ACD_Rat.volume`    — a `volume`-named handle, and the one pedal this fixture
+  //     leaves ON in base (`bypass:false` + `isActive:true`), so it is also the row that
+  //     exercises the base-ON interaction the run-order fix exists for.
+  // Switches 6 (`ACD_BluesDriver.level`) and 7 (`ACD_ObsessiveDrive.volume`) are the same two
+  // classes over again and are dropped from the ONLINE journey only. They stay covered where
+  // the coverage is free: `level-fs-preset24.spec.ts` drives all four offline, gate E5
+  // (`e2e_server_tests.rs`) proves all four converge after a base boost, and — the reason
+  // switch 7 mattered — `fixture_gates` now pins all four pedals' parameter NAMES against the
+  // names the hardware exposes, which is a stronger guard than one online row was.
   const SWITCH_SPECS_405 = [
     {
       switch: 5,
       levGroupId: "G1",
       levNodeId: "ACD_Plumes",
       levParameterId: "level",
-    },
-    {
-      switch: 6,
-      levGroupId: "G1",
-      levNodeId: "ACD_BluesDriver",
-      levParameterId: "level",
-    },
-    {
-      switch: 7,
-      levGroupId: "G1",
-      levNodeId: "ACD_ObsessiveDrive",
-      levParameterId: "volume",
     },
     {
       switch: 8,
@@ -663,7 +671,7 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
   ];
   const BASE_TARGET_405 = -23; // Rhythm (profiles.rs::default_targets)
 
-  test("first-run UI journey: base BOOST via the wizard, 4 footswitch rows, strict re-measure", async ({
+  test("first-run UI journey: base BOOST via the wizard, 2 footswitch rows, strict re-measure", async ({
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
@@ -934,7 +942,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       SWITCH_JOBS_405.push({ ...spec, targetLufs: asIsSwitch - 2.0 });
     }
 
-    // 4 footswitch rows (base MUST run first — the pl-context trap 405's own fixture
+    // 2 footswitch rows (base MUST run first — the pl-context trap 405's own fixture
     // ordering pins, e2e/fixtures/COVERAGE.md row 36) — raw invoke, the channel-streaming
     // seam (.claude/rules/e2e.md).
     const fs = (await invoke(
@@ -967,7 +975,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       ).toBeLessThanOrEqual(KNOB_TOL_LU);
     }
 
-    // 5 strict ffmpeg re-measures: base + all 4 pedals, from the saved state.
+    // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state.
     const measure405 = (
       job?: (typeof SWITCH_JOBS_405)[number],
     ): Promise<number> =>
