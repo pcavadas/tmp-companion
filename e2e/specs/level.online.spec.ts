@@ -43,20 +43,22 @@ import {
 // regression that widened BOOST's trigger condition and started moving 410's fader too would
 // be caught in the SAME online session. Scene and footswitch targets are DERIVED (as-is minus
 // 2 dB — always reachable, since the per-scene/per-switch handle only needs to go QUIETER, and
-// the floor is ~0.01 ≈ -34 dB of room). LANE ORDER IS BASE → FOOTSWITCHES → SCENES, matching
-// production's own `runRank` (`src/views/level/leveling.ts`: base=0, footswitch=1, scene=2,
-// enforced by `useLevelingFlow`'s sort) — NOT the base→scenes→footswitches order this test used
-// to run. That old order was PROVEN WRONG on real hardware (P4-B, 2026-08-31): 410's base-ON
-// `ACD_TubeScreamer` is footswitch-owned and every one of 410's 3 scene overlays renders through
-// it (their overlays carry only `ACD_MarshallPlexi`), so footswitch leveling's 2.0 dB cut to
-// TubeScreamer (as-is -21.31 → target -23.31) silently RE-MOVED all 3 scenes that had already
-// measured on target — scene 0 read exactly on target (-29.33) right after its own batch save,
-// then drifted to -31.34 by the end of the arc once footswitches ran after it. Base itself was
-// immune (it measures with footswitch-owned blocks force-bypassed), which is why only the see-saw
-// GUARD on base needed no reordering. Running footswitches BEFORE the scene as-is probes means
-// every scene's derived target already reflects the FINAL TubeScreamer value, so nothing
-// downstream can move a scene that already measured on target — that is the whole point of the
-// reorder. The AS-IS probes for both lanes run AFTER the base lane's own save, not before — base
+// the floor is ~0.01 ≈ -34 dB of room). LANE ORDER IS BASE → SCENES → FOOTSWITCHES, matching
+// production's own `runRank` (`src/views/level/leveling.ts`: base=0, scene=1, footswitch=2,
+// enforced by `useLevelingFlow`'s sort). A footswitch is solved against the sound it is stomped
+// into, so it runs last; in the product it then has nothing left to write, because a switch a
+// scene enables was measured in that scene's context (which the scene lane just put on target)
+// and a switch no scene enables is bypassed in every scene.
+//
+// THIS ARC IS THE EXCEPTION, DELIBERATELY: its footswitch targets are DERIVED (as-is minus 2 dB),
+// so lane 3 always writes 2.0 dB — the one shape where a late footswitch still moves scenes.
+// 410's base-ON `ACD_TubeScreamer` is footswitch-owned and all 3 scene overlays render through it
+// (their overlays carry only `ACD_MarshallPlexi`), so that write shifts every scene by the same
+// 2.0 dB. HW-measured (P4-B, 2026-08-31): scene 0 read exactly on target (-29.33) right after its
+// own batch save, then -31.34 once footswitches ran. The final re-measure below PINS that shift
+// as an equality rather than asserting it away — it is the disclosed residual of a base-space
+// footswitch write, and it is what would go red if the write path or scene isolation ever
+// changed. Base itself is immune (it measures with footswitch-owned blocks force-bypassed). The AS-IS probes for both lanes run AFTER the base lane's own save, not before — base
 // leveling moves the preset's `presetLevel`, which scales every scene/FS capture on the SAME
 // slot, so a probe taken before base would derive a target that no longer matches the post-base
 // ceiling. The base target itself defaults to -23 and only falls back (to the run's own solved
@@ -255,8 +257,101 @@ regression has widened BOOST's trigger and would start moving a fader nothing as
     ).toBeNull();
     baseTarget410 = baseTargetUsed;
 
-    // ── Lane 2: two footswitches, run BEFORE scenes (production order: `runRank` in
-    // src/views/level/leveling.ts ranks footswitch=1 ahead of scene=2, both after base=0) —
+    // ── Lane 2: all 3 scenes (amp outputLevel, one batch, save) — run BEFORE footswitches,
+    // per production `runRank` (base=0, scene=1, footswitch=2). A scene's amp overlay is
+    // scene-local, so this lane moves nothing any later lane renders through; the reverse is
+    // not true, which is why footswitches go last. The scene as-is probes are taken after the
+    // BASE save only — base leveling moves `presetLevel`, which scales every capture on this
+    // slot.
+    const blocks = (await invoke(
+      page,
+      "list_level_blocks",
+      { slot: FRIEDMAN.slot },
+      T,
+    )) as LevelBlock[];
+    const candidates = blocks
+      .filter((b) => b.parameter_id === "outputLevel")
+      .map((b) => ({
+        groupId: b.group_id,
+        nodeId: b.node_id,
+        parameterId: b.parameter_id,
+        value: b.value,
+      }));
+    expect(
+      candidates.length,
+      "the Friedman amp candidate must be discoverable",
+    ).toBeGreaterThan(0);
+
+    // Self-calibration (file header's ROOT LESSON): probe each scene's CURRENT as-is loudness
+    // — taken after BOTH base and the footswitch lane above, so it reflects the FINAL
+    // TubeScreamer value nothing downstream will move again — and derive the target as
+    // (as-is - 2 dB). A target quieter than what's already achieved is ALWAYS reachable (the
+    // per-scene overlay only needs to go DOWN, and the floor is ~0.01 ≈ -34 dB of room), so
+    // this can never clamp the way a fixed sim-model ceiling did on real hardware.
+    const asIsScenes: number[] = [];
+    for (const sceneSlot of [0, 1, 2]) {
+      asIsScenes.push(await measure410({ scene: sceneSlot }));
+    }
+    const sceneTarget410 = Math.min(...asIsScenes) - 2.0;
+
+    const scenes = (await invoke(
+      page,
+      "level_scenes_apply_batched",
+      {
+        slot: FRIEDMAN.slot,
+        jobs: [0, 1, 2].map((sceneSlot) => ({
+          sceneSlot,
+          targetLufs: sceneTarget410,
+        })),
+        candidates,
+        save: true,
+        rebalance: false,
+        topologyId: "guitar-humbucker",
+        calibrationLufs: null,
+        profileId: null,
+        onResult: "__CHANNEL__:1",
+      },
+      T * 3,
+    )) as LevelResult[];
+    // Row identity comes off `scene_slot`, not array index (a mid-batch failure shortens
+    // this array).
+    expect(
+      scenes.map((r) => r.scene_slot).sort((a, b) => Number(a) - Number(b)),
+      "every requested scene must come back (no silent mid-batch drop)",
+    ).toEqual([0, 1, 2]);
+    for (const r of scenes) {
+      const id = String(r.scene_slot);
+      expect(r.clamped, `scene ${id} must reach target, not clamp`).toBe(false);
+      expect(r.saved, `scene ${id} must level and save`).toBe(true);
+      // danger.md's batched-save revert class ("a batched scene-leveling save can revert the
+      // ONE scene it just leveled, if that scene is also `restore_scene`") is DETECTED, not
+      // silent — 410's `lastLoadedScene` is 1, so scene 1 is exactly the row that class fires
+      // on. The run publishes its own verdict here; a spec that re-measures without reading it
+      // ignores the run's own warning and reports the revert as an unexplained level miss.
+      expect(
+        r.persist_mismatch ?? false,
+        `scene ${id} must persist what it solved (danger.md's batched-save revert class)`,
+      ).toBe(false);
+    }
+
+    // ── The see-saw bracket: scene 0 re-measured RIGHT NOW, immediately after its own batch
+    // save, with nothing left in the arc that touches the shared base-ON TubeScreamer (lane 2
+    // already ran). This assertion is the permanent gate for the whole bug class: with lanes in
+    // the correct order it must hold all the way to the final strict re-measure below too — a
+    // future regression that reintroduces a footswitch/scene ordering inversion would show up
+    // here first, reading on target now and drifting by the final measure.
+    const scene0Immediate = await measure410({ scene: 0 });
+    expect(
+      Math.abs(scene0Immediate - sceneTarget410),
+      `scene 0 re-measures at ${scene0Immediate.toFixed(2)} LUFS immediately after its own \
+batch save (target ${sceneTarget410.toFixed(2)}, solved overlay \
+${String(scenes.find((r) => r.scene_slot === 0)?.final_level)}, as-is readings \
+${asIsScenes.map((v) => v.toFixed(2)).join("/")}) — this is the scene lane's OWN result, \
+before lane 3's derived-target write moves the shared base-ON TubeScreamer beneath it`,
+    ).toBeLessThanOrEqual(DELTA);
+
+    // ── Lane 3: two footswitches, run AFTER scenes (production order: `runRank` in
+    // src/views/level/leveling.ts ranks footswitch=2 behind scene=1, both after base=0) —
     // 410's own TubeScreamer row, plus one MODULATED row (UniVibe, 404) carried verbatim from
     // the retired Hiwatt arc so its own modulated-solve assertion keeps a named carrier (plan's
     // online-budget table). Separate batches: the two rows live on different slots. As-is
@@ -369,103 +464,6 @@ LFO'd knob can legitimately need the full KNOB_TOL_LU band`,
       ).toBeLessThanOrEqual(KNOB_TOL_LU);
     }
 
-    // ── Lane 3: all 3 scenes (amp outputLevel, one batch, save) — run AFTER footswitches,
-    // per the same production `runRank`. This is the fix: 410's TubeScreamer is base-ON and
-    // footswitch-owned, and all 3 scene overlays render through it (their overlays carry only
-    // `ACD_MarshallPlexi`), so the scene as-is probes below MUST be taken after lane 2's
-    // footswitch save — otherwise the derived scene target reflects a TubeScreamer value lane 2
-    // is about to change out from under it. HW proof this was the bug: with footswitches
-    // running AFTER scenes (the old order), lane 2's 2.0 dB cut to TubeScreamer (as-is -21.31 →
-    // target -23.31) silently re-moved all 3 already-on-target scenes — scene 0 read exactly on
-    // target (-29.33) right after its own batch save, then drifted to -31.34 by the end of the
-    // arc.
-    const blocks = (await invoke(
-      page,
-      "list_level_blocks",
-      { slot: FRIEDMAN.slot },
-      T,
-    )) as LevelBlock[];
-    const candidates = blocks
-      .filter((b) => b.parameter_id === "outputLevel")
-      .map((b) => ({
-        groupId: b.group_id,
-        nodeId: b.node_id,
-        parameterId: b.parameter_id,
-        value: b.value,
-      }));
-    expect(
-      candidates.length,
-      "the Friedman amp candidate must be discoverable",
-    ).toBeGreaterThan(0);
-
-    // Self-calibration (file header's ROOT LESSON): probe each scene's CURRENT as-is loudness
-    // — taken after BOTH base and the footswitch lane above, so it reflects the FINAL
-    // TubeScreamer value nothing downstream will move again — and derive the target as
-    // (as-is - 2 dB). A target quieter than what's already achieved is ALWAYS reachable (the
-    // per-scene overlay only needs to go DOWN, and the floor is ~0.01 ≈ -34 dB of room), so
-    // this can never clamp the way a fixed sim-model ceiling did on real hardware.
-    const asIsScenes: number[] = [];
-    for (const sceneSlot of [0, 1, 2]) {
-      asIsScenes.push(await measure410({ scene: sceneSlot }));
-    }
-    const sceneTarget410 = Math.min(...asIsScenes) - 2.0;
-
-    const scenes = (await invoke(
-      page,
-      "level_scenes_apply_batched",
-      {
-        slot: FRIEDMAN.slot,
-        jobs: [0, 1, 2].map((sceneSlot) => ({
-          sceneSlot,
-          targetLufs: sceneTarget410,
-        })),
-        candidates,
-        save: true,
-        rebalance: false,
-        topologyId: "guitar-humbucker",
-        calibrationLufs: null,
-        profileId: null,
-        onResult: "__CHANNEL__:1",
-      },
-      T * 3,
-    )) as LevelResult[];
-    // Row identity comes off `scene_slot`, not array index (a mid-batch failure shortens
-    // this array).
-    expect(
-      scenes.map((r) => r.scene_slot).sort((a, b) => Number(a) - Number(b)),
-      "every requested scene must come back (no silent mid-batch drop)",
-    ).toEqual([0, 1, 2]);
-    for (const r of scenes) {
-      const id = String(r.scene_slot);
-      expect(r.clamped, `scene ${id} must reach target, not clamp`).toBe(false);
-      expect(r.saved, `scene ${id} must level and save`).toBe(true);
-      // danger.md's batched-save revert class ("a batched scene-leveling save can revert the
-      // ONE scene it just leveled, if that scene is also `restore_scene`") is DETECTED, not
-      // silent — 410's `lastLoadedScene` is 1, so scene 1 is exactly the row that class fires
-      // on. The run publishes its own verdict here; a spec that re-measures without reading it
-      // ignores the run's own warning and reports the revert as an unexplained level miss.
-      expect(
-        r.persist_mismatch ?? false,
-        `scene ${id} must persist what it solved (danger.md's batched-save revert class)`,
-      ).toBe(false);
-    }
-
-    // ── The see-saw bracket: scene 0 re-measured RIGHT NOW, immediately after its own batch
-    // save, with nothing left in the arc that touches the shared base-ON TubeScreamer (lane 2
-    // already ran). This assertion is the permanent gate for the whole bug class: with lanes in
-    // the correct order it must hold all the way to the final strict re-measure below too — a
-    // future regression that reintroduces a footswitch/scene ordering inversion would show up
-    // here first, reading on target now and drifting by the final measure.
-    const scene0Immediate = await measure410({ scene: 0 });
-    expect(
-      Math.abs(scene0Immediate - sceneTarget410),
-      `scene 0 re-measures at ${scene0Immediate.toFixed(2)} LUFS immediately after its own \
-batch save (target ${sceneTarget410.toFixed(2)}, solved overlay \
-${String(scenes.find((r) => r.scene_slot === 0)?.final_level)}, as-is readings \
-${asIsScenes.map((v) => v.toFixed(2)).join("/")}) — nothing downstream touches the shared \
-base-ON TubeScreamer, so this must still hold at the final re-measure below`,
-    ).toBeLessThanOrEqual(DELTA);
-
     // ── The strict gate: re-measure base + all 3 scenes from the SAVED state (4 rows).
     // The 2 footswitch rows above are judged by their OWN solve result, not a second
     // strict re-measure — the plan's online-budget table deliberately caps this
@@ -510,12 +508,28 @@ base-ON TubeScreamer, so this must still hold at the final re-measure below`,
       `scene as-is=${asIsScenes.map((v) => v.toFixed(2)).join("/")}`,
       `fs410 as-is=${asIsFs410.toFixed(2)} target=${fsTargetUsed410.toFixed(2)}`,
     ].join(", ");
+    // Base is immune (footswitch-owned blocks are force-bypassed in a base capture), so it
+    // re-measures at its own target. Every SCENE renders the base-ON TubeScreamer that lane 3
+    // just cut by `fsShift410`, so each one re-measures that far below its target — the
+    // disclosed residual of a base-space footswitch write, pinned here as an EQUALITY rather
+    // than asserted away. In the product this term is ~0: a real footswitch row measures
+    // in-tolerance once base and scenes are on target and skips its write. It is non-zero here
+    // only because the arc DERIVES its footswitch target as as-is minus 2 dB to exercise the
+    // solve. If scene-side isolation or the write path ever changes, this goes red and forces a
+    // deliberate retarget instead of a silent drift.
+    const fsShift410 = fsTargetUsed410 - asIsFs410;
     for (const [sound, lufs] of Object.entries(heard)) {
-      const target = sound === "base" ? baseTargetUsed : sceneTarget410;
+      const target =
+        sound === "base" ? baseTargetUsed : sceneTarget410 + fsShift410;
       expect(
         Math.abs(lufs - target),
         `${sound} re-measures at ${lufs.toFixed(2)} LUFS from the saved state \
-(target ${target.toFixed(2)}) — ${solvedTrace}`,
+(expected ${target.toFixed(2)}${
+          sound === "base"
+            ? ""
+            : ` = scene target ${sceneTarget410.toFixed(2)} ${fsShift410.toFixed(2)} \
+from lane 3's TubeScreamer cut`
+        }) — ${solvedTrace}`,
       ).toBeLessThanOrEqual(DELTA);
     }
 
