@@ -324,12 +324,13 @@ export function useLevelingFlow({
       const isCancelled = () => cancelRef.current;
       const candCache = new Map<number, Candidate[]>();
       const work = items.map((it) => ({ ...it }));
-      // Base → scenes → footswitches within each preset, the dependency order `runRank`
-      // documents: a switch is solved against the sound it is stomped into, so it runs once
-      // base and scenes are on target and has nothing left to write. HW-measured on the old
-      // order, which solved switches against an un-levelled base: cutting one base-ON
-      // TubeScreamer 2.0 dB moved all three of a 3-scene preset's already-leveled scenes
-      // 2.0 dB off target (online 410 arc). `chosenFrom` already emits this order;
+      // Base → base-context footswitches → scenes → scene-context footswitches, the
+      // dependency order `runRank` documents (it carries the HW evidence for both halves of
+      // the split): a base-context switch writes base-space and moves every scene rendering
+      // its block, so it lands first; a scene-context switch cannot be solved until its
+      // context scene is on target, so it lands last. HW-measured both ways — cutting one
+      // base-ON TubeScreamer 2.0 dB moved all three of a 3-scene preset's already-leveled
+      // scenes (online 410 arc). `chosenFrom` already emits this order;
       // this stable sort (0 for differing slots ⇒ input order preserved) guarantees it
       // regardless of how `items` was assembled, and keeps a multi-preset run's grouping.
       work.sort((a, b) => (a.slot === b.slot ? runRank(a) - runRank(b) : 0));

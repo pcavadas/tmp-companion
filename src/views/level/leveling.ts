@@ -390,27 +390,40 @@ export interface SetupChoice {
  *  are already on target:
  *
  *  - `0` Base: `presetLevel`, a global multiplier over every other row.
- *  - `1` Scene: a per-scene amp `outputLevel` overlay, scene-local — it moves nothing but
- *    its own scene, so nothing downstream renders through it.
- *  - `2` Footswitch: measured LAST, because a switch is solved against the sound it is
- *    actually stomped into. A switch some scene enables (`ftswStates`, the D3 scene
- *    context) can only be solved once that scene is on target; a switch no scene enables
- *    is bypassed in every scene, so its base-space write cannot move one and running it
- *    late costs nothing. Either way the row is expected to measure in-tolerance and skip
- *    its write once base and scenes are on target — which is what keeps the base-space
- *    `Bake` from moving leveled scenes. HW-measured, on the run order that levelled
- *    footswitches against an UN-levelled base: cutting one base-ON TubeScreamer 2.0 dB
- *    moved all three of a 3-scene preset's leveled scenes off target. That protection is
- *    now "the row has nothing left to write", not the ordering.
+ *  - `1` Footswitch in BASE context (`sceneContext == null`): its handle is often a block
+ *    the preset leaves ON in base, and a scene renders its whole base chain, so this
+ *    base-space write moves every scene. It must land before the scenes it moves.
+ *  - `2` Scene: a per-scene amp `outputLevel` overlay, scene-local — it moves nothing that
+ *    any other row renders through.
+ *  - `3` Footswitch in SCENE context (`sceneContext != null`): measured with its context
+ *    scene recalled, so it cannot be solved until that scene is on target. `ftswStates`
+ *    naming that scene means the switch is ON in the scene's recorded state, so the scene
+ *    pass has already put this exact sound on target and the row measures in-tolerance and
+ *    skips its write.
+ *
+ *  THE SPLIT IS PER-ROW, AND BOTH HALVES ARE HW-MEASURED. Ranking every footswitch late
+ *  was tried and is WRONG: on the online 410 arc, a base-context switch (its scenes enable
+ *  NOTHING — every `ftswStates` is all-false) still moved all three leveled scenes by
+ *  2.011 LU under an independent ffmpeg read, because `ftswStates` records whether a switch
+ *  is ENGAGED in a scene, not whether its block is ACTIVE: 410's TubeScreamer is base-ON, so
+ *  every scene renders it either way. Ranking every footswitch early is equally wrong: a
+ *  scene-context row solved before its scene is measured against a sound that is not yet on
+ *  target, which is what made a real preset's overdrive report an unreachable ceiling.
  *
  *  `chosenFrom` emits this order; `useLevelingFlow` sorts by it so the run holds
  *  regardless of how its items were assembled. */
 export function runRank(it: {
   isBase: boolean;
   footswitch?: unknown;
-}): 0 | 1 | 2 {
+}): 0 | 1 | 2 | 3 {
   if (it.isBase) return 0;
-  return it.footswitch != null ? 2 : 1;
+  const fs = it.footswitch;
+  if (fs == null) return 2;
+  // Only a NUMERIC context ranks late: absent, `null` and an unresolved `undefined` all
+  // mean base context, the conservative side (a truthiness test would mis-read scene 0).
+  const ctx =
+    typeof fs === "object" && "sceneContext" in fs ? fs.sceneContext : null;
+  return typeof ctx === "number" ? 3 : 1;
 }
 
 /** Resolve the scene keys SELECTED in the list into the setup rows to configure.
@@ -445,12 +458,35 @@ export function chosenFrom(
           hasScenes: hasChildren,
         });
       }
-      // Scenes BEFORE footswitches — dependency order, the same rule that puts Base ahead
-      // of both (see `useLevelingFlow`'s `runRank`, which pins this independently of how
-      // these items were assembled). A switch is solved against the sound it is stomped
-      // into, so it goes last: one a scene enables needs that scene on target first, and
-      // one no scene enables is bypassed in every scene and cannot move them. A scene's
-      // own amp overlay is scene-local, so nothing renders through it in return.
+      // Emitted in `runRank` order — Base, BASE-CONTEXT footswitches, scenes, then
+      // SCENE-CONTEXT footswitches (see `runRank`, which pins this independently of how
+      // these items were assembled, and carries the HW evidence for both halves of the
+      // split). The rows are emitted in two passes over the same footswitch array so each
+      // switch keeps its ORIGINAL index in `fswKey` regardless of which pass emits it.
+      // Pass 1: switches measured in BASE context — before the scenes they move.
+      footswitches.forEach((f, i) => {
+        const target = footswitchTarget(f);
+        if (
+          target &&
+          sel.has(fswKey(r.slot, i)) &&
+          target.sceneContext == null
+        ) {
+          items.push({
+            key: fswKey(r.slot, i),
+            slot: r.slot,
+            presetName: r.name,
+            isBase: false,
+            sceneSlot: null,
+            sceneName: footswitchName(f),
+            tag: fsTagOf(f.switch),
+            hasScenes: true,
+            footswitch: target,
+            levelParams: f.level_params,
+            fsUnlabeled: f.label.trim() === "",
+            fsSceneNames: scenes.map((sc) => sc.name),
+          });
+        }
+      });
       scenes.forEach((sc, i) => {
         if (sel.has(sceneKeyOf(r.slot, i))) {
           items.push({
@@ -465,9 +501,14 @@ export function chosenFrom(
           });
         }
       });
+      // Pass 2: switches measured in a SCENE context — after that scene is on target.
       footswitches.forEach((f, i) => {
         const target = footswitchTarget(f);
-        if (target && sel.has(fswKey(r.slot, i))) {
+        if (
+          target &&
+          sel.has(fswKey(r.slot, i)) &&
+          target.sceneContext != null
+        ) {
           items.push({
             key: fswKey(r.slot, i),
             slot: r.slot,
