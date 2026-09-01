@@ -274,11 +274,29 @@ Read the entry in full before changing the behaviour it governs.
 - **Read the verdict as the symptom, not the bug.** `no_authority` did its job: it is the reason
   the wrong knob surfaced at all instead of a reason-less headroom clamp. But the user was told
   "this amp doesn't reach USB 1/2" about an amp their scene may not even use.
-- **UNVERIFIED, and left that way deliberately: which amp scene 3 actually needs.** Scene 3's
-  overlay sits inside this preset's field-8 cut (`scenes` truncates at 21044 B — see the entry
-  below), so no read available here can say whether it un-bypasses the Twin. What the
-  measurement DOES establish is narrower and sufficient: the pick came from the base graph
-  rather than from the scene.
+- **NOW VERIFIED — scene 3 does need the Twin.** Decoding the user's own `.preset` export
+  (XOR key `JLD`, so the whole document is readable off-device, no field-8 cut) settles what no
+  on-device read here could: every scene carries a FULL `guitarNodes` overlay, and scene 3
+  ("Clean") inverts the base pair — `ACD_BE100` `bypass: true`, `ACD_TwinReverb65NoFx`
+  `bypass: false` at its own `outputLevel` 0.45 (0.28 in base and in scenes 0-2, where the
+  BE100 is the active amp). So the base fallback was driving a knob genuinely outside that
+  scene's signal path, and the refusal above is correct rather than merely cautious.
+  Per-scene `ampControl` is uniform across all four scenes and equal to base — it is NOT where
+  per-scene amp state lives, and diffing it alone would wrongly suggest the scenes are identical.
+- **The refusal alone was not enough: it turned a wrong answer into NO answer.** On a first pass
+  (2026-09-01) two of the four scenes — 1 and 3 — hit the refusal and were skipped, so they were
+  never leveled at all. The live prepass is not reliably complete: the device pushes field-3 only
+  on a CHANGE, so a recall landing on an already-active scene harvests nothing, and a pushed doc
+  can arrive cut before the amp nodes. The fix REPAIRS rather than relaxes — an unanswerable
+  scene doc is refilled from the saved preset through `read_slot_preset_complete`'s
+  backup-backed read (`audioGraph` + `scenes`, since the overlay is merged onto the base graph),
+  and the refusal still stands when that cannot answer either. After the repair the same preset
+  levels all four scenes plus base and its scene-context footswitch in ONE pass with zero clamps,
+  every row confirmed by ffmpeg `ebur128` within 0.52 LU of the −23 target.
+- **The skip was INVISIBLE before this.** The batch filters skipped rows out of the array it
+  returns and the reason only reaches the wizard over the progress Channel, so a skipped scene
+  left no trace in the log — which is why two missing scenes went unnoticed. The skip-job site
+  now logs the reason.
 - **Two instruments through one picker are one instrument.** The −25.0 ceiling once recorded
   here as "measured twice, independently — the probe arm and the command layer" was neither
   independent nor a ceiling: both arms share `build_scene_jobs`, so both inherited the SAME
