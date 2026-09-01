@@ -259,33 +259,40 @@ Read the entry in full before changing the behaviour it governs.
 - **`no_authority`'s 6 dB floor is about the STEP, and the step is sized by the solve — so the verdict needed a probe of its own.** The check is "a move of at least `NO_AUTHORITY_MIN_DB` produced less than `KNOB_TOL_LU` of response", but the first applied move is whatever the open-loop solve asked for. A scene sitting 4 dB from its target gets a 4 dB move, so a knob with LITERALLY ZERO authority fell through to the secant, stalled on a flat slope, and reported a reason-less headroom clamp — the user told "couldn't get there" instead of "this amp doesn't reach USB 1/2", which is the one thing they could act on. `correct_iter` now takes ONE confirmation capture when the first move produced a flat response: step DOWN a full `NO_AUTHORITY_MIN_DB` and look again. Downward only — a raise can clip, and a saturating limiter makes an upward non-response ambiguous. If the probe moves the capture after all, it is a better secant seed than the flat base point, so it is used as one. A healthy knob moves ~1 LU per dB, so this never fires on a working solve. Surfaced by `level-trade.spec.ts`'s zero-authority taxonomy spec at target −21, which had been passing only because the prepass under-rendered and inflated the step to 14 dB.
 - **A pure-logic gate exists for the scene lane's choice** (`a_scene_batch_captures_at_the_saved_level_when_no_trade_holds_one`) because that half is NOT observable offline: SimDevice only reverts a recall's level for a slot the run has already saved, and the scene specs level slots they never saved first. Reverting that arm alone leaves the entire offline suite green.
 
-## A scene that SWAPS amps can be leveled through the base-active one, which has no authority
+## A scene doc that cannot answer falls back to the BASE graph, so the run levels the wrong amp
 
-- **HW, fw 1.8.45, 2026-09-01, the real "Friedman HBE" (user slot 28), scene 3 "Clean".** That
-  scene is the one whose overlay un-bypasses `ACD_TwinReverb65NoFx` (`enables_block` is true
-  only on the scene that un-bypasses a base-bypassed node). The batched scene lane nevertheless
-  drove the BASE-active amp, `ACD_BE100`: `outputLevel@scene3` 1.0000 → 0.5012 — a full 6 dB
-  step — moved the capture not at all, so the run took the honest `no_authority` off-branch and
-  restored 0.9700. The Twin was never written in any of the four scenes.
-- **Read the verdict as the symptom, not the bug.** `no_authority` is doing its job here: it is
-  the reason the wrong knob surfaced at all instead of a reason-less headroom clamp. But the
-  user is told "this amp doesn't reach USB 1/2" about an amp their scene does not use.
-- **It cost no loudness on THIS preset, and that is luck, not design.** Scene 3's swapped-in
-  Twin already sits at `outputLevel` 1.0 (`headroom: "lowers_only"`), so the scene's ceiling is
-  −25.0 either way — measured twice, independently: −25.03 through the probe arm and −25.00
-  through the command layer. On a preset whose swapped-in amp still has room, picking the
-  base-active amp loses real, recoverable loudness.
-- **Not introduced by the boost/run-order work** — the same pick appears on the probe arm, which
-  shares `build_scene_jobs`, and that work's `scene_jobs.rs` diff is a borrow-vs-clone refactor
-  with no selection change. `classify_scene_knobs` DOES filter by
-  `scenes::block_bypass_in_live_graph` per scene, so the defect is upstream of that filter —
-  which amp the live graph reports active in the scene — and needs its own investigation.
+- **HW, fw 1.8.45, 2026-09-01, the real "Friedman HBE" (user slot 28).** The batched scene lane
+  drove the BASE-active amp, `ACD_BE100`, in every scene: `outputLevel@scene3` 1.0000 → 0.5012 —
+  a full 6 dB step — moved the capture not at all, so the run took the honest `no_authority`
+  off-branch and restored 0.9700. `ACD_TwinReverb65NoFx` was never written in any scene.
+- **Root cause, found and fixed.** `classify_scene_knobs` resolved each amp's bypass from the
+  scene doc and fell back to the base graph's own flag whenever the doc could not answer
+  (`None => !nd.bypassed`). That fallback is right for a doc that merely omits one node's
+  `bypass` key, and wrong when the doc never arrived or was cut before the amp nodes: the scene
+  is then classified against BASE and the lane picks whichever amp base leaves on. It now
+  REFUSES when the doc answers for no amp at all, and that scene takes its own skip.
+- **Read the verdict as the symptom, not the bug.** `no_authority` did its job: it is the reason
+  the wrong knob surfaced at all instead of a reason-less headroom clamp. But the user was told
+  "this amp doesn't reach USB 1/2" about an amp their scene may not even use.
+- **UNVERIFIED, and left that way deliberately: which amp scene 3 actually needs.** Scene 3's
+  overlay sits inside this preset's field-8 cut (`scenes` truncates at 21044 B — see the entry
+  below), so no read available here can say whether it un-bypasses the Twin. What the
+  measurement DOES establish is narrower and sufficient: the pick came from the base graph
+  rather than from the scene.
+- **Two instruments through one picker are one instrument.** The −25.0 ceiling once recorded
+  here as "measured twice, independently — the probe arm and the command layer" was neither
+  independent nor a ceiling: both arms share `build_scene_jobs`, so both inherited the SAME
+  wrong amp. Agreement between them was evidence of a shared picker, not of a preset limit.
+  When citing two instruments as corroboration, check they do not share the code under suspicion.
+- **Not introduced by the boost/run-order work** — the same pick appears on the probe arm, and
+  that work's `scene_jobs.rs` diff is a borrow-vs-clone refactor with no selection change.
 
 ## A post-save re-read that cannot answer must say UNCONFIRMED, never "did not persist"
 
 - **`scenes` sits at the document tail, so a truncated field-8 read loses it first** — and both post-save verifiers used to grade a missing SECTION as a missing VALUE. HW, 2026-08-19: "Friedman HBE" truncates at 21044 B before its scenes, and the run warned that scene 3's `ACD_TwinReverb65NoFx/outputLevel` "solved 0.7814 but the saved preset holds no such value" — while that scene's own re-measure of the SAVED device state read **−22.99 LUFS against its −23 target**, i.e. the write had persisted perfectly. The external judge duly SKIPped a row that should have passed.
 - **A false "did not persist" is worse than no check**: it teaches the user to distrust correct results. Both verifiers now read through the complete-or-fail reader, AND the grading keeps `Unverifiable` distinct from `Absent` (`SceneOverlay::Unknown` already carried that distinction — it was `persisted_value` that collapsed it). The second line matters because a document can arrive whole and still carry no `scenes`.
 - **Not an amnesty.** When the section IS present and covers the slot, a genuinely-absent overlay stays a MISS — the gate exists so a report can never show numbers the save wiped. Pinned by `a_truncated_reread_is_unconfirmed_not_a_lost_write` and its FS twin, which assert both directions.
+- **`ftsw` can survive the same cut that takes `scenes`, so it works as a scene-COUNT oracle when `scenes` is gone.** HW, 2026-09-01, same preset and same cut (20984 B): the read lost `scenes` mid-section while `ftsw` came back whole, and its scene rows named four scenes — which is how the 4-scene fact was recovered from a read that could not show the scenes themselves. **EMPIRICAL, one preset**: it rests on `ftsw` having actually arrived intact in this capture, NOT on any guaranteed section ordering. Do not generalise it into a rule about where `ftsw` sits. A companion caution: `--slot-json` pretty-prints a PARSED value, and `serde_json` here is built without `preserve_order`, so its `Map` is a `BTreeMap` and every dump comes out alphabetised. Key order in that output says nothing about wire order — an argument built on it is an artifact of the printer.
 
 ## The Doctor's envelope correlator has a PEAKLESS curve on a wash/reverb chain — a floor-relative energy step is the deterministic primary
 
