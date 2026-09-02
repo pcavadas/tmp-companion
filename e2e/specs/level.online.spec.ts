@@ -820,7 +820,15 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       },
       T * 3,
     )) as FootswitchLevelResult[];
-    assertFsSolved(fs, (_r, i) => SWITCH_JOBS_405[i].targetLufs);
+    expect(
+      fs.map((r) => r.switch).sort((a, b) => a - b),
+      "every requested switch must come back (no silent mid-batch drop)",
+    ).toEqual(SWITCH_JOBS_405.map((j) => j.switch).sort((a, b) => a - b));
+    assertFsSolved(fs, (r) => {
+      const job = SWITCH_JOBS_405.find((j) => j.switch === r.switch);
+      if (!job) throw new Error(`unexpected switch ${String(r.switch)}`);
+      return job.targetLufs;
+    });
 
     // 3 strict ffmpeg re-measures: base + both leveled pedals, from the saved state.
     const measure405 = (

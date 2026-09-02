@@ -28,6 +28,7 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
   test("delete/insert/replace across two presets, re-edit shows the saved path, no refetch", async ({
     page,
   }) => {
+    test.setTimeout(600_000); // two SCAN_MS waits plus a possible in-test re-seed hold
     await ensureScenario(page);
 
     let backupCalls = 0;

@@ -1136,6 +1136,24 @@ fn scenes_missing_amp_bypass_flags_absent_and_partial_docs() {
     );
 }
 
+// A doc cut BETWEEN the two amps answers the first (BE100) and not the second (the Twin the
+// swap scene needs): it must be flagged for repair and refused by the classifier, never
+// classified with the Twin's bypass resolved from base.
+#[test]
+fn a_doc_cut_between_two_amps_is_flagged_and_refused() {
+    let cut = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_BE100", "dspUnitParameters": { "bypass": true } }
+        ] } }
+    });
+    let (answerable, _) = scene_docs_from_saved(&two_amp_swap_preset(), &[0]).unwrap();
+    let docs = vec![(0u32, answerable[0].1.clone()), (1u32, Some(cut.clone()))];
+    assert_eq!(scenes_missing_amp_bypass(&docs), vec![1]);
+    let structure = session::extract_active_graph(&two_amp_base_saved(), None);
+    let err = classify_scene_knobs(&structure, &cut, &two_amp_candidates()).unwrap_err();
+    assert!(err.contains("every amp"), "{err}");
+}
+
 // The repair itself, end to end on the HW shape: two scenes the live prepass could not answer
 // (one pushed nothing, one arrived cut before the amps) are filled from the saved preset, the
 // scene that DID answer is left alone, and the swap scene ends up on its own amp.

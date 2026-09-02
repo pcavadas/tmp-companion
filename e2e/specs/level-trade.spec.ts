@@ -1,5 +1,6 @@
 import { test, expect } from "../fixtures/test";
 import {
+  type LevelBlock,
   SCENARIO,
   clearScenario,
   ensureScenario,
@@ -81,12 +82,6 @@ test.describe("Level — headroom trade (batched scene run, raw invoke)", () => 
     saved: boolean;
     persist_mismatch: boolean | null;
     trade: TradeSummary | null;
-  }
-  interface LevelBlock {
-    group_id: string;
-    node_id: string;
-    parameter_id: string;
-    value: number;
   }
 
   interface SavedEvent {

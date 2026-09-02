@@ -138,12 +138,14 @@ fn amp_nodes(structure: &session::ActiveGraph) -> Vec<&session::GraphNode> {
         .collect()
 }
 
-/// Whether `doc` states the bypass of at least ONE of `amps` — the single definition of
+/// Whether `doc` states the bypass of EVERY one of `amps` — the single definition of
 /// "usable scene doc" that [`classify_scene_knobs`] refuses on and
-/// [`scenes_missing_amp_bypass`] scans for, so the two can never disagree.
-fn answers_any_amp_bypass(amps: &[&session::GraphNode], doc: &serde_json::Value) -> bool {
+/// [`scenes_missing_amp_bypass`] scans for, so the two can never disagree. All, not any: a
+/// doc cut BETWEEN two amps answers the first and lets the second fall back to base, which
+/// levels a two-amp scene as the wrong pair.
+fn answers_all_amp_bypasses(amps: &[&session::GraphNode], doc: &serde_json::Value) -> bool {
     amps.iter()
-        .any(|nd| scenes::block_bypass_in_live_graph(doc, &nd.group_id, &nd.node_id).is_some())
+        .all(|nd| scenes::block_bypass_in_live_graph(doc, &nd.group_id, &nd.node_id).is_some())
 }
 
 /// Preset-wide gate: the routing template must be KNOWN (the live field-3 partial
@@ -214,10 +216,10 @@ pub(crate) fn classify_scene_knobs(
     // from the scene overlay, falling back to the structure node when the scene doc doesn't
     // carry it.
     let amps = amp_nodes(structure);
-    // REFUSE rather than decide from the base graph when the scene doc can answer for NO amp.
-    // `structure` is the BASE graph (`saved_fallback`), so the `None` arm below resolves bypass
-    // from base — correct for a doc that merely omits one node's `bypass` key, catastrophic for a
-    // doc that never arrived or was cut before the amps: a scene that SWAPS amps then gets leveled
+    // REFUSE rather than decide from the base graph when the scene doc can't answer for EVERY
+    // amp. `structure` is the BASE graph (`saved_fallback`), so the `None` arm below resolves
+    // bypass from base — catastrophic for a doc that never arrived or was cut before or between
+    // the amps: a scene that SWAPS amps then gets leveled
     // on whichever amp BASE leaves on, a knob outside that scene's signal path. The solve sweeps
     // it, nothing moves, and the row reports a `no_authority` clamp indistinguishable from a
     // genuine ceiling (HW: Friedman HBE slot 28 — every scene drove `ACD_BE100` while the Twin the
@@ -227,10 +229,10 @@ pub(crate) fn classify_scene_knobs(
     // `scene_docs_from_saved` merges the sparse overlay ONTO the base graph. So "no amp is
     // answerable" means the doc is unusable, not that the scene is unusual — and this row's own
     // `skip` is the honest outcome (per-scene skip, never a batch abort).
-    if !amps.is_empty() && !answers_any_amp_bypass(&amps, scene_doc) {
+    if !answers_all_amp_bypasses(&amps, scene_doc) {
         return Err(
-            "scene doc answered no amp's bypass state (absent or truncated before the amp \
-             nodes) — refusing to classify against the base graph"
+            "scene doc does not answer every amp's bypass state (absent or truncated before or \
+             between the amp nodes) — refusing to classify against the base graph"
                 .to_string(),
         );
     }
@@ -1564,7 +1566,7 @@ pub(crate) fn prepass_scene_docs_via(
     Ok((docs, restore))
 }
 
-/// The scenes whose doc cannot answer ANY amp's bypass — the same [`answers_any_amp_bypass`]
+/// The scenes whose doc cannot answer EVERY amp's bypass — the same [`answers_all_amp_bypasses`]
 /// [`classify_scene_knobs`] refuses on. Keyed on the AMP question, not on "the doc is `Null`":
 /// a doc cut *after* some nodes but *before* the amps is a live partial that reads as present
 /// and would slip past a null check while producing the identical wrong-amp fallback.
@@ -1583,7 +1585,7 @@ pub(crate) fn scenes_missing_amp_bypass(docs: &[(u32, Option<serde_json::Value>)
     docs.iter()
         .filter(|(_, d)| {
             d.as_ref()
-                .is_none_or(|doc| !answers_any_amp_bypass(&amps, doc))
+                .is_none_or(|doc| !answers_all_amp_bypasses(&amps, doc))
         })
         .map(|(s, _)| *s)
         .collect()

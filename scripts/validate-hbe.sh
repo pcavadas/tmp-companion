@@ -535,12 +535,13 @@ if [ "$MISSING" -ne 0 ]; then
   err "                     went unvalidated. Named above; per-measure logs in $OUT_DIR"
   exit 1
 fi
-# A clamped row sits at its knob's end stop, not on a solved value: in tolerance or not, the
-# operator must see it.
+# A clamped row sits at its knob's end stop, not on a solved value: first-pass leveling means
+# no clamps, so it fails the run even when its re-measure lands in tolerance.
 CLAMPED="$(grep -h 'CLAMPED' "$OUT_DIR"/level-*.log || true)"
 if [ -n "$CLAMPED" ]; then
   err "clamped row(s) — leveled at a knob end stop, not a solved value:"
   printf '%s\n' "$CLAMPED" >&2
+  FAILED=1
 fi
 # Branch every known code explicitly — a SKIP or a VACUOUS pass must not read as a miss,
 # and (the point of naming 4 here) a VACUOUS pass must not silently fall into the `*)`
