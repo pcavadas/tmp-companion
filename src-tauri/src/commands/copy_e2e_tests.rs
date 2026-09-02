@@ -368,6 +368,119 @@ mod copy_level_e2e_tests {
             "an over-cap insert must never reach the device, let alone save: {ev:?}"
         );
     }
+    // ── Post-save read-back: adopted only when it shows the acked edit ──
+
+    /// The fake's default two-node graph, padded past the session reader's documented tail
+    /// loss: `best_json_payload` reassembles with `reassemble_streams`, which drops the LAST
+    /// ≤60 B of a multi-frame push (see the `ftsw` render tests' note), and in the unpadded
+    /// default document that tail cuts the second node out of BOTH the load-time roster and
+    /// the post-save push. `with_ftsw` re-serializes with sorted keys, so a key sorting after
+    /// `audioGraph` lands in the dropped tail instead.
+    fn padded_two_node_doc() -> String {
+        format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
+                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
+                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
+            ]}}}},"zzTail":"{}"}}"#,
+            "x".repeat(200)
+        )
+    }
+
+    #[test]
+    fn copy_ignores_a_post_save_read_back_that_still_shows_the_pre_edit_blocks() {
+        // HW 2026-09-02 (fw 1.8.45): after "Saved to the unit." the graph copy_apply handed
+        // back was the LOAD-TIME document scraped off the held session, and the Copy view
+        // patched its cache back to the original blocks. This fake's post-save push IS that
+        // document (it never mutates its served graph on a structural edit): after a remove
+        // the item must carry NO graph — the frontend then patches from the edit it staged.
+        let sim = SimDevice::new()
+            .with_preset_json(&padded_two_node_doc())
+            .with_stale_push_after_save();
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![CopyOp::Remove {
+                group: "G1".into(),
+                node_id: "n1".into(),
+            }],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated");
+        assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
+        assert!(
+            item.graph.is_none(),
+            "a read-back still listing the removed block must be ignored: {:?}",
+            item.graph
+        );
+    }
+
+    #[test]
+    fn copy_adopts_a_post_save_read_back_that_shows_the_acked_edit() {
+        // A same-model re-stamp leaves the roster as it was, so the fake's (unmutated)
+        // post-save push DOES show the acked op — adopted, device node ids and all.
+        let sim = SimDevice::new()
+            .with_preset_json(&padded_two_node_doc())
+            .with_stale_push_after_save();
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
+        };
+        let (item, _) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated");
+        let graph = item
+            .graph
+            .expect("a read-back matching the acked edit is adopted");
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| n.model.as_str())
+                .collect::<Vec<_>>(),
+            ["ACD_Twin57", "ACD_ChorusCE2"]
+        );
+    }
+
+    #[test]
+    fn expected_roster_applies_remove_replace_and_anchored_inserts_in_order() {
+        let pre = crate::blockcaps::roster_from_preset(&serde_json::json!({
+            "audioGraph": { "guitarNodes": {
+                "G1": [ { "FenderId": "ACD_Twin57", "nodeId": "n1" },
+                        { "FenderId": "ACD_ChorusCE2", "nodeId": "n2" } ],
+                "G4": [ { "FenderId": "ACD_TapeEcho", "nodeId": "n3" } ]
+            } }
+        }));
+        let model = |id: &str| CopyRepl::Model {
+            fender_id: id.into(),
+        };
+        let ops = vec![
+            CopyOp::Remove {
+                group: "G1".into(),
+                node_id: "n1".into(),
+            },
+            model_replace("G1", "n2", "ACD_Klon"),
+            CopyOp::Insert {
+                group: "G1".into(),
+                before_fender_id: Some("ACD_Klon".into()),
+                repl: model("ACD_Comp"),
+            },
+            CopyOp::Insert {
+                group: "G4".into(),
+                before_fender_id: None,
+                repl: model("ACD_SmallHall"),
+            },
+        ];
+        let got = expected_roster(&pre, &ops).expect("every target and anchor resolves");
+        assert_eq!(got["G1"], ["ACD_Comp", "ACD_Klon"]);
+        assert_eq!(got["G4"], ["ACD_TapeEcho", "ACD_SmallHall"]);
+        // An op on a node the pre-edit roster never had → unknown: the read-back is refused.
+        let ghost = [CopyOp::Remove {
+            group: "G1".into(),
+            node_id: "ghost".into(),
+        }];
+        assert!(expected_roster(&pre, &ghost).is_none());
+    }
+
     // ── PR2: confirm-before-save write safety (Session::confirm_active) ──
 
     #[test]

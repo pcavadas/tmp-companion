@@ -282,9 +282,17 @@ describe("CopyView — hero optimistic patch after active-slot save (BUG-2)", ()
     localStorage.clear();
   });
 
-  // The authoritative post-save read-back the device returns (distinct name so the hero
-  // assertion is unambiguous). copy_apply returns it on the `graph` field of the item.
-  const SAVED = seriesGraph("HERO-AFTER-SAVE", 1);
+  // The post-save read-back the device returns on the item's `graph` field: the EDITED
+  // roster (Twin → DynaComp) under a distinct name so the hero assertion is unambiguous.
+  // It must show the acked edit — CopyView adopts a read-back only when its blocks match
+  // the edit (a pre-edit document is a stale held-session buffer and is ignored).
+  const SAVED: ActiveGraph = (() => {
+    const g = seriesGraph("HERO-AFTER-SAVE", 1);
+    const nodes = g.nodes.map((n) =>
+      n.node_id === "n2" ? { ...n, model: "ACD_DynaComp" } : n,
+    );
+    return { ...g, nodes, stages: [{ kind: "series", blocks: nodes }] };
+  })();
 
   function HeroProbe() {
     const live = useLiveDevice(true);

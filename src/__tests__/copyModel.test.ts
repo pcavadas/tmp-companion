@@ -15,7 +15,9 @@ import {
   editGraphFromActive,
   initEdit,
   isEdited,
+  reconcileReadBack,
   removeEditBlock,
+  sameRoster,
 } from "../views/copy/copyModel";
 
 const node = (id: string, model: string, group = "G1"): GraphNode => ({
@@ -276,5 +278,82 @@ describe("diffToOps — bracket-and-delete + net-no-op", () => {
 
     expect(diffToOps(edit)).toHaveLength(0); // nothing to write → Save is a no-op
     expect(isEdited(edit)).toBe(false);
+  });
+});
+
+// ── post-save read-back reconciliation ────────────────────────────────────────
+// The read-back `copy_apply` returns is whatever preset document the held session still had
+// buffered after the save, NOT a fresh read. On the unit (2026-09-02, fw 1.8.45) that was the
+// LOAD-TIME graph, and preferring it patched the cache back to the pre-edit blocks. The edit
+// the device acked is the truth; the read-back is adopted only when it shows those blocks.
+describe("copyModel — post-save read-back reconciliation", () => {
+  const chain = (
+    blocks: [string, string, string][],
+    name = "x",
+  ): ActiveGraph => {
+    const nodes = blocks.map(([group, id, model]) => node(id, model, group));
+    return {
+      name,
+      slot: null,
+      template: "gtrSeries",
+      split_mix: null,
+      nodes,
+      stages: [{ kind: "series", blocks: nodes }],
+    };
+  };
+
+  it("adopts a read-back that shows the acked blocks (its device node ids win)", () => {
+    const optimistic = chain([
+      ["G1", "n1", "ACD_Comp"],
+      ["G1", "uid-7", "ACD_TapeEcho"], // an inserted tile: no device id yet
+    ]);
+    const readBack = chain(
+      [
+        ["G1", "n1", "ACD_Comp"],
+        ["G1", "n9", "ACD_TapeEcho"], // the id the device minted
+      ],
+      "device",
+    );
+    expect(sameRoster(optimistic, readBack)).toBe(true);
+    expect(reconcileReadBack(optimistic, readBack)).toBe(readBack);
+  });
+
+  it("ignores a read-back that still shows the pre-edit blocks (stale held-session document)", () => {
+    const optimistic = chain([
+      ["G1", "n1", "ACD_Comp"],
+      ["G1", "n3", "ACD_SmallHall"],
+    ]);
+    const stale = chain([
+      ["G1", "n1", "ACD_Comp"],
+      ["G1", "n2", "ACD_UniVibe"], // the block the acked remove deleted
+      ["G1", "n3", "ACD_SmallHall"],
+    ]);
+    expect(sameRoster(optimistic, stale)).toBe(false);
+    expect(reconcileReadBack(optimistic, stale)).toBe(optimistic);
+  });
+
+  it("compares per group, not by flat signal order", () => {
+    // Optimistic `nodes` are in signal order (G4 before G1 here); a device graph lists
+    // sorted groups. Same blocks per group → the same roster.
+    const optimistic = chain([
+      ["G4", "n4", "ACD_Klon"],
+      ["G1", "n1", "ACD_Twin"],
+    ]);
+    const readBack = chain([
+      ["G1", "n1", "ACD_Twin"],
+      ["G4", "n4", "ACD_Klon"],
+    ]);
+    expect(reconcileReadBack(optimistic, readBack)).toBe(readBack);
+    // …but a block moved to another group is a different roster.
+    const moved = chain([
+      ["G1", "n1", "ACD_Twin"],
+      ["G1", "n4", "ACD_Klon"],
+    ]);
+    expect(reconcileReadBack(optimistic, moved)).toBe(optimistic);
+  });
+
+  it("falls back to the optimistic graph when there is no read-back", () => {
+    const optimistic = chain([["G1", "n1", "ACD_Comp"]]);
+    expect(reconcileReadBack(optimistic, undefined)).toBe(optimistic);
   });
 });

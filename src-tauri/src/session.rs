@@ -1384,6 +1384,20 @@ impl Session {
         best_json_payload_from_reports(&self.raw)
     }
 
+    /// Diagnostic: every `presetJson` carrier in the accumulated reports as
+    /// `(PresetMessage field, payload bytes)` — `3` = the `currentPresetDataChanged` live
+    /// push, `79` = `currentPresetDataJsonResponse`, `9` = `presetDataChanged` (the field-8
+    /// slot read's reply, the stored document). Names WHICH document a buffer-scraped
+    /// "read-back" ([`Self::current_preset_value`]) actually came from — the Copy post-save
+    /// verdict line logs it so an online run can tell a late field-3 push from a stored-slot
+    /// field-9 reply.
+    pub(crate) fn json_payload_carriers(&self) -> Vec<(u32, usize)> {
+        json_payloads_from_reports(&self.raw)
+            .into_iter()
+            .map(|(field, payload)| (field, payload.len()))
+            .collect()
+    }
+
     /// HW / Tier-4 diagnostic: capture the FULL `currentPresetDataChanged` (field
     /// 3) preset JSON, decompressed byte-exact (not the lossy-UTF-8 prefix). Holds
     /// a dense ~250 ms ConnectionHeartbeat while pumping so the device treats us as
@@ -2659,6 +2673,16 @@ fn best_factory_list_from_reports(reports: &[Vec<u8>]) -> Option<Vec<String>> {
 /// exactly this reason; `best_json_payload_from_reports_can_prefer_a_stale_field9_reply`
 /// below proves the hazard exists at this layer.
 fn best_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
+    json_payloads_from_reports(reports)
+        .into_iter()
+        .map(|(_, payload)| payload)
+        .max_by_key(Vec::len)
+        .unwrap_or_default()
+}
+
+/// Every `presetJson` payload in `reports`, tagged with the PresetMessage carrier field it
+/// rode in on (3 / 79 / 9 — see [`best_json_payload_from_reports`]), in stream order.
+fn json_payloads_from_reports(reports: &[Vec<u8>]) -> Vec<(u32, Vec<u8>)> {
     const CARRIERS: [(u32, u32); 3] = [(3, 1), (79, 1), (9, 3)];
     proto::reassemble_streams(reports)
         .iter()
@@ -2669,11 +2693,10 @@ fn best_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
                     .iter()
                     .find(|(f, _)| *f == json_field)
                     .and_then(|(_, v)| v.as_bytes())
-                    .map(|b| b.to_vec())
+                    .map(|b| (pm_field, b.to_vec()))
             })
         })
-        .max_by_key(|b| b.len())
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Extract the firmware version from a `currentFwResponse` frame:

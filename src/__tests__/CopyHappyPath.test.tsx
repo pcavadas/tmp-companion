@@ -8,11 +8,12 @@
 // `diffToOps` produces (cross-checked against CopyView.test.tsx's copyModel expectations).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
+import type { ActiveGraph } from "../lib/types";
 
 // 1) event bridge + listeners Map (backup-progress listen resolves to a noop unlisten).
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
@@ -41,13 +42,15 @@ import {
   resetLibraryScan,
 } from "../views/level/libraryScan";
 // The 3-block series preset + backup row are shared with hardeningFixes.test.tsx's BUG-2 lock.
-import { backupRow } from "./copyFixtures";
+import { backupRow, seriesGraph } from "./copyFixtures";
 
 // Two presets: list index 0 ("Stadium Lead") + 1 ("Clean Verse"), via the shared backupRow.
 
 let copyApplyArgs: { jobs: unknown[]; save: boolean } | null = null;
 
-function installInvoke(rejectSave = false) {
+// `readBack` = the graph copy_apply returns on each item (the device's post-save read-back);
+// omitted = no read-back (the offline shape).
+function installInvoke(rejectSave = false, readBack?: ActiveGraph) {
   copyApplyArgs = null;
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     switch (command) {
@@ -89,6 +92,7 @@ function installInvoke(rejectSave = false) {
           name: j.name,
           outcome: "updated",
           detail: "",
+          ...(readBack ? { graph: readBack } : {}),
         }));
         items.forEach((i) => a.onResult?.onmessage?.(i));
         return Promise.resolve(items);
@@ -97,6 +101,15 @@ function installInvoke(rejectSave = false) {
         return Promise.resolve(null);
     }
   });
+}
+
+/** The model ids of the block tiles on one target's edit card, in strip order. */
+function tileModels(target: string): string[] {
+  return Array.from(
+    document.querySelectorAll(
+      `[data-target-card="${target}"] [data-block-tile]`,
+    ),
+  ).map((el) => el.getAttribute("data-block-tile") ?? "");
 }
 
 function renderView() {
@@ -208,6 +221,45 @@ describe("CopyView — full happy path (Step 1 → Step 2 → save → done)", (
     await screen.findByText("Copy blocks between presets", undefined, {
       timeout: 3000,
     });
+  });
+
+  it("keeps the saved edit when the post-save read-back is the pre-edit graph (stale, no refetch)", async () => {
+    // HW 2026-09-02 (fw 1.8.45): after "Saved to the unit." the graph copy_apply handed
+    // back was the LOAD-TIME document (the held session's buffer, not a fresh read), and
+    // preferring it patched the cache back to the original blocks — the re-opened editor
+    // listed a deleted block again. The read-back here is exactly that: the pre-edit
+    // roster (Twin still in place) while the acked edit replaced Twin with DynaComp.
+    installInvoke(false, seriesGraph("Clean Verse", 1));
+    const user = userEvent.setup();
+    renderView();
+    await driveToSave(user);
+    await screen.findByText("Saved to the unit.", undefined, { timeout: 3000 });
+    await user.click(
+      await screen.findByRole("button", { name: /done/i }, { timeout: 3000 }),
+    );
+
+    // Re-open the same targets (the selection survives Done): the cached graph must show
+    // the edit the device acked, not the stale read-back.
+    await user.click(
+      await screen.findByRole(
+        "button",
+        { name: /place the blocks/i },
+        { timeout: 3000 },
+      ),
+    );
+    await waitFor(() => {
+      expect(tileModels("Clean Verse")).toEqual([
+        "ACD_DynaComp",
+        "ACD_DynaComp",
+        "ACD_TMSmallHall",
+      ]);
+    });
+    // …and the heavy backup read ran exactly once: the patch never triggered a refetch.
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter((c) => c[0] === "read_library_via_backup"),
+    ).toHaveLength(1);
   });
 
   it("surfaces a copy_apply rejection as a failure, not a false 'saved'", async () => {

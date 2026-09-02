@@ -236,6 +236,14 @@ struct SimState {
     drop_first: bool,
     /// When `Some(n)`, the Nth structural edit (1-based) is REJECTED with `presetError`.
     reject_at: Option<u32>,
+    /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push of the
+    /// slot's served document for the next `pump` — and this fake never mutates that
+    /// document on a structural edit, so it is exactly the LOAD-TIME (pre-edit) graph the
+    /// real unit handed the Copy post-save read-back (HW 2026-09-02, fw 1.8.45).
+    stale_push_after_save: bool,
+    /// Device-initiated pushes waiting for the next `pump` (replies to a send are delivered
+    /// synchronously from the send instead).
+    pending_pushes: Vec<Vec<u8>>,
     /// Song / Setlist names (slot = index + 1), mutated by the CRUD setters so a
     /// read-back-after-write reflects the change — the Songs tab's contract.
     songs: Vec<String>,
@@ -424,6 +432,8 @@ impl Default for SimState {
             structural_seen: 0,
             drop_first: false,
             reject_at: None,
+            stale_push_after_save: false,
+            pending_pushes: Vec::new(),
             songs: vec!["Opening Set".into(), "Encore".into()],
             setlists: vec!["Saturday Night".into()],
             // A recognized amp (with an `outputLevel` control) + one effect, under a known
@@ -1018,6 +1028,14 @@ impl SimDevice {
         self
     }
 
+    /// After every `saveCurrentPreset`, push the slot's served (pre-edit) document on the
+    /// next `pump` — the stale post-save read-back the Copy cache patch must not trust.
+    #[cfg(test)]
+    pub fn with_stale_push_after_save(self) -> SimDevice {
+        self.state.lock().expect("sim lock").stale_push_after_save = true;
+        self
+    }
+
     /// Seed slot `slot0`'s (0-based) saved `lastLoadedScene` — what a subsequent
     /// `loadPreset` for that slot restores `current_scene` to. Lets a test drive the
     /// "loading a preset activates its saved scene, not base" behavior without first
@@ -1312,6 +1330,13 @@ impl SimDevice {
             let scene = st.current_scene;
             st.saved_scene.insert(slot0, scene);
             st.events.push(SimEvent::Saved(slot0));
+            if st.stale_push_after_save {
+                // The document a held session scrapes off its buffer on the next pump:
+                // unmutated by the structural edits, i.e. the load-time graph.
+                let json = load_echo_json(&mut st, slot0);
+                let push = frame_multi(&current_preset_data_changed(&json));
+                st.pending_pushes.extend(push);
+            }
             // Lazy-commit: this becomes slot0's PENDING doc (presetLevel + baked params),
             // landing after `commit_latency()` (module header) — a same-slot load before
             // that deadline must still see the OLD committed doc.
@@ -2319,7 +2344,11 @@ impl HidTransport for SimDevice {
         Ok(self.handle(body))
     }
     fn pump(&self, _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-        Ok(Vec::new()) // replies are delivered synchronously from the send
+        // Replies are delivered synchronously from the send; only a queued device push
+        // (`with_stale_push_after_save`) arrives here.
+        Ok(std::mem::take(
+            &mut self.state.lock().expect("sim lock").pending_pushes,
+        ))
     }
     fn transact_eager(&self, body: &[u8], _max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
         Ok(self.handle(body))

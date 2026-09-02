@@ -87,7 +87,8 @@ pub struct CopyJob {
 /// [`BulkReplaceItem`] (`slot`/`name`/`outcome`/`detail`) plus the post-save signal
 /// `graph` read back off the held session, so the Copy view can patch its cached library
 /// in place (no ~22 s re-scan) after a write. `graph` is `None` when the preset wasn't
-/// saved or its graph couldn't be read back.
+/// saved, its graph couldn't be read back, or the read-back did not show the blocks the
+/// acked ops produced (a stale buffered document — see [`read_back_graph`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct CopyApplyItem {
     pub slot: u32,
@@ -286,14 +287,13 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // Keep the live-controller status warm before the next preset.
     s.heartbeat()?;
     s.pump_collect(120)?;
-    // Read back the post-save graph so the Copy view can patch its cached library in
-    // place (no ~22 s re-scan). The held session's dense heartbeat carries the full
-    // `guitarNodes`; `None` when the field-3 isn't readable, and the frontend then falls
-    // back to a re-scan. Only on save — an unsaved edit must not poison the cache.
+    // The post-save graph for the Copy view's in-place cache patch (no ~22 s re-scan) —
+    // only on save (an unsaved edit must not poison the cache), and only when the buffered
+    // document actually shows the acked edit (`read_back_graph`).
     let graph = if save {
-        s.current_preset_value()
-            .ok()
-            .map(|v| session::extract_active_graph(&v, None))
+        // What the acked ops leave behind — the oracle the read-back is checked against.
+        let expected = expected_roster(&roster, &job.ops);
+        read_back_graph(s, expected.as_ref(), list_index)
     } else {
         None
     };
@@ -304,6 +304,142 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         detail: format!("{total} op(s)"),
         graph,
     })
+}
+
+/// Per-group ordered FenderId lists — the shape a post-save read-back is compared in. Node
+/// ids are deliberately NOT part of it (a device replace re-assigns them, an insert mints
+/// one); groups are keyed because the device lists nodes in sorted-group order while the
+/// frontend's optimistic graph lists them in signal order.
+type Roster = std::collections::BTreeMap<String, Vec<String>>;
+
+fn group_roster<'a>(nodes: impl Iterator<Item = (&'a str, &'a str)>) -> Roster {
+    let mut out = Roster::new();
+    for (group, fender_id) in nodes {
+        out.entry(group.to_string())
+            .or_default()
+            .push(fender_id.to_string());
+    }
+    out
+}
+
+/// The roster the acked `ops` leave behind, applied in order to the PRE-edit roster the
+/// blockcaps guard read off the load-time document. Mirrors `diffToOps`' contract: a
+/// replace keeps its position, a remove drops the block, an insert lands BEFORE the first
+/// same-group block carrying the anchor FenderId (or appends to its group). `None` when an
+/// op's target or anchor isn't in the roster — the model then can't say what the device
+/// holds, and the read-back is refused rather than trusted.
+fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Roster> {
+    struct Work {
+        group: String,
+        /// `None` once the device re-assigned it (a replace) or minted it (an insert).
+        node_id: Option<String>,
+        fender_id: String,
+    }
+    let mut work: Vec<Work> = pre
+        .iter()
+        .map(|e| Work {
+            group: e.group.clone(),
+            node_id: Some(e.node_id.clone()),
+            fender_id: e.fender_id.clone(),
+        })
+        .collect();
+    let find = |work: &[Work], group: &str, node_id: &str| {
+        work.iter()
+            .position(|w| w.group == group && w.node_id.as_deref() == Some(node_id))
+    };
+    for op in ops {
+        match op {
+            CopyOp::Replace {
+                group,
+                node_id,
+                repl,
+            } => {
+                let i = find(&work, group, node_id)?;
+                work[i].node_id = None;
+                work[i].fender_id = repl.insert_fender_id().to_string();
+            }
+            CopyOp::Remove { group, node_id } => {
+                let i = find(&work, group, node_id)?;
+                work.remove(i);
+            }
+            CopyOp::Insert {
+                group,
+                before_fender_id,
+                repl,
+            } => {
+                let at = match before_fender_id {
+                    Some(anchor) => work
+                        .iter()
+                        .position(|w| &w.group == group && &w.fender_id == anchor)?,
+                    None => work
+                        .iter()
+                        .rposition(|w| &w.group == group)
+                        .map_or(work.len(), |i| i + 1),
+                };
+                work.insert(
+                    at,
+                    Work {
+                        group: group.clone(),
+                        node_id: None,
+                        fender_id: repl.insert_fender_id().to_string(),
+                    },
+                );
+            }
+        }
+    }
+    Some(group_roster(
+        work.iter()
+            .map(|w| (w.group.as_str(), w.fender_id.as_str())),
+    ))
+}
+
+/// The post-save graph for the Copy view's cache patch — ONLY when the document the held
+/// session has buffered shows the blocks the acked ops produced. `current_preset_value` is
+/// not a read: it is the longest `presetJson` carrier that landed in the session buffer
+/// since the last op's `clear_raw()` (that op's confirm pumps plus the 120 ms post-save
+/// pump), and nothing requests a fresh field-3 after the save. HW 2026-09-02 (fw 1.8.45):
+/// that document was the PRE-edit graph, so the Copy view patched its cache back to the
+/// original blocks and the re-opened editor listed a deleted block again. Which carrier
+/// delivers the stale document is unproven (a late field-3 push, or the stored slot's
+/// field-9 reply inside the lazy-commit window, are the candidates), so the verdict line
+/// names every carrier present for the next online run to read. `None` = the frontend
+/// patches from the edit it staged; an edit never triggers a refetch either way.
+fn read_back_graph(
+    s: &Session,
+    expected: Option<&Roster>,
+    list_index: u32,
+) -> Option<session::ActiveGraph> {
+    let carriers = s.json_payload_carriers();
+    let Some(graph) = s
+        .current_preset_value()
+        .ok()
+        .map(|v| session::extract_active_graph(&v, None))
+    else {
+        log::info!(
+            "[copy_apply] slot {list_index}: no post-save read-back (carriers {carriers:?}) — \
+             the cache is patched from the acked edit"
+        );
+        return None;
+    };
+    let read = group_roster(
+        graph
+            .nodes
+            .iter()
+            .map(|n| (n.group_id.as_str(), n.model.as_str())),
+    );
+    if expected == Some(&read) {
+        log::info!(
+            "[copy_apply] slot {list_index}: post-save read-back shows the acked edit \
+             (carriers {carriers:?}) — adopted"
+        );
+        Some(graph)
+    } else {
+        log::warn!(
+            "[copy_apply] slot {list_index}: post-save read-back does NOT show the acked edit — \
+             ignored (carriers {carriers:?}; read {read:?}; expected {expected:?})"
+        );
+        None
+    }
 }
 
 /// Apply ONE [`CopyOp`] on the held session, returning whether the device CONFIRMED it

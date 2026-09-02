@@ -558,3 +558,46 @@ export function diffToOps(edit: PresetEdit): CopyOp[] {
 
   return [...removes, ...replaces, ...inserts];
 }
+
+// ── post-save read-back reconciliation ───────────────────────────────────────
+
+/** Per-group ordered model roster. Node ids are deliberately NOT part of it — a device
+ *  replace re-assigns them and an insert mints one — and it is keyed per group because the
+ *  optimistic graph lists `nodes` in signal order while a device graph lists them in sorted
+ *  group order, so a flat compare would mismatch any chain that spans groups. */
+export function groupRoster(graph: ActiveGraph): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const n of graph.nodes) {
+    const models = out.get(n.group_id);
+    if (models) models.push(n.model);
+    else out.set(n.group_id, [n.model]);
+  }
+  return out;
+}
+
+/** True when both graphs carry the same blocks, per group, in the same order. */
+export function sameRoster(a: ActiveGraph, b: ActiveGraph): boolean {
+  const ra = groupRoster(a);
+  const rb = groupRoster(b);
+  if (ra.size !== rb.size) return false;
+  for (const [group, models] of ra) {
+    const other = rb.get(group);
+    if (other?.length !== models.length) return false;
+    if (models.some((m, i) => m !== other[i])) return false;
+  }
+  return true;
+}
+
+/** The graph the Copy save patches the library cache with. `optimistic` is rebuilt from the
+ *  edit the device acked (`activeFromEditGraph`) and is the default; `readBack` — the
+ *  document `copy_apply` scraped off the held session after the save — is adopted ONLY when
+ *  it shows exactly those blocks (it then contributes the device's real node ids and params,
+ *  which a later edit of an inserted block needs). A read-back that disagrees is a stale
+ *  document, never the truth: on the unit (2026-09-02, fw 1.8.45) it was the LOAD-TIME graph,
+ *  and preferring it patched the cache back to the pre-edit blocks. */
+export function reconcileReadBack(
+  optimistic: ActiveGraph,
+  readBack: ActiveGraph | undefined,
+): ActiveGraph {
+  return readBack && sameRoster(optimistic, readBack) ? readBack : optimistic;
+}

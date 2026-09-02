@@ -922,7 +922,8 @@ export interface CopyJob {
 /** One preset's outcome from a `copy_apply` run (`lib::CopyApplyItem`). Like
  * `BulkReplaceItem` plus the post-save signal graph, so the Copy view can patch its
  * cached library in place (no re-scan) after a write — `graph` is omitted when the
- * preset wasn't saved or its graph couldn't be read back. */
+ * preset wasn't saved, its graph couldn't be read back, or the read-back didn't show the
+ * blocks the acked ops produced (a stale held-session document, ignored). */
 export interface CopyApplyItem {
   slot: number;
   name: string;
