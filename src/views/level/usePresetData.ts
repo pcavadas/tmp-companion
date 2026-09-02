@@ -34,7 +34,8 @@ function slotOfKey(key: string): number {
 }
 
 /** Two-phase load: the preset list paints instantly, then the WHOLE library's scene
- * details stream in via ONE device backup (~22 s) — `read_library_via_backup`, whose
+ * details stream in via ONE device backup (~27 KiB/s; ~85 s for a 2.2 MiB archive) —
+ * `read_library_via_backup`, whose
  * `tmp://backup-progress` events drive the scan strip. `scanning` is true for that
  * window; `percent` is the determinate transfer %. */
 export interface ScanState {

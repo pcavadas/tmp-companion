@@ -88,6 +88,10 @@ Read the entry in full before changing the behaviour it governs.
   - **The name must NOT come from a live list read here.** It now comes from `monitor::startup_preset_name` — the startup snapshot, the same list the UI shows, no device I/O and no device lock — with the live read kept only as a fallback. A name is identity, not freshness: the snapshot is refreshed on connect and a slot whose name changed under the app has bigger problems than this guard.
   - **Diagnostic tell:** the error names the SECTION that was cut (`its scenes section(s) were cut off`) AND blames the list read in the same sentence. Two different failures wearing one message — check whether the backup itself was reachable before concluding the preset is too large.
 
+## A device backup is bounded by a STALL budget, not a whole-transfer cap
+
+- **The backup stream runs at ~27 KiB/s (~2.7 chunks/s) whatever the library holds, and the archive is mostly `acdDefaultsBackup` plus the user's IR files, not presets** (HW 2026-09-02, fw 1.8.45: 25 presets, 230 chunks / 2.2 MiB, 84 s; earlier reads on the same unit were 57–59 chunks). A whole-transfer cap of 60 s cut that stream at 163/230 on every caller — the startup library read and the truncated-scene repair preset 28 depends on included. `Session::device_backup`'s `max_secs` bounds the time between progress events (chunk, state change, build tick), so leave the callers' 60 and do not reintroduce a wall-clock cap.
+
 ## Address spaces: `read_library_via_backup` reports the 1-BASED device slot, the leveling commands take the 0-BASED list index
 
 - **A guard that compares the two raw checks the NEIGHBOUR preset.** `read_library_via_backup`'s rows carry `.slot` as the **device** slot (what the UI shows, what `preset_json_from_backup` addresses by), while `level_preset` / `level_scenes_apply_batched` / `level_footswitches_apply` all take the **0-based list index** — the same index the app logs as `slot=26`. They differ by one, in the same direction as every other pair in this codebase (see the slot-addressing entry above).

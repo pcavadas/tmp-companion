@@ -444,6 +444,12 @@ impl Session {
     /// `on_progress` is called as the transfer advances (a `BackupProgress` per
     /// device state-change and per chunk) so a caller can drive a progress bar; the
     /// chunk percentage is exact because `numChunks` is known from the first chunk.
+    ///
+    /// `max_secs` bounds the time WITHOUT a progress event (new chunk, state change,
+    /// build tick), not the whole transfer: the stream runs at ~2.7 chunks/s, so a
+    /// 230-chunk (2.2 MiB) library needs ~85 s and a whole-transfer cap of 60 s cut it
+    /// at 163/230 (HW, 2026-09-02). Every refresh source is finite, so the stall timer
+    /// alone bounds the loop.
     pub fn device_backup<F: FnMut(BackupProgress)>(
         &mut self,
         max_secs: u64,
@@ -490,9 +496,9 @@ impl Session {
         let mut pending: Vec<Vec<u8>> = std::mem::take(&mut self.raw);
 
         loop {
-            if start.elapsed().as_secs() >= max_secs {
+            if last_progress.elapsed().as_secs() >= max_secs {
                 return Err(format!(
-                    "device backup timed out after {max_secs}s: {}/{} chunks, last_state={last_state}",
+                    "device backup stalled for {max_secs}s: {}/{} chunks, last_state={last_state}",
                     chunks.len(),
                     num_chunks
                 ));
@@ -570,13 +576,17 @@ impl Session {
                         build_size = build_size.max(sz as u32);
                     }
                     if let Some(tk) = proto::first_varint(&stp, 3) {
-                        build_ticks = build_ticks.max(tk as u32);
+                        if tk as u32 > build_ticks {
+                            build_ticks = tk as u32;
+                            last_progress = Instant::now();
+                        }
                     }
                     if let Some(s) = proto::first_varint(&stp, 1) {
                         let s = s as i64;
                         if s != last_state {
                             state_log.push((start.elapsed().as_secs_f64(), s));
                             last_state = s;
+                            last_progress = Instant::now();
                             // Pre-stream "building" progress (determinate iff the
                             // device populates build_size).
                             if chunks.is_empty() && matches!(s, 1 | 2) {
@@ -3670,6 +3680,100 @@ mod tests {
         fn transact_eager(&self, body: &[u8], max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
             self.transact(body, max_ms)
         }
+    }
+
+    /// Streams `chunks` backup chunks, one per pump, `gap` apart, then BACKUP_COMPLETE.
+    /// `chunks == 0` never answers at all.
+    struct PacedBackupTransport {
+        chunks: u32,
+        gap: std::time::Duration,
+        sent: std::sync::Mutex<u32>,
+    }
+    impl PacedBackupTransport {
+        fn report(body: &[u8]) -> Vec<u8> {
+            let mut r = vec![0x00, 0x35, 0x00, body.len() as u8];
+            r.extend_from_slice(body);
+            r
+        }
+        fn chunk(&self, n: u32) -> Vec<u8> {
+            let mut data = Vec::new();
+            proto::field_varint(&mut data, 3, u64::from(self.chunks) * 4);
+            proto::field_varint(&mut data, 4, u64::from(self.chunks));
+            proto::field_varint(&mut data, 5, u64::from(n));
+            data.extend(proto::len_delimited(6, &[n as u8; 4]));
+            let mut state = Vec::new();
+            proto::field_varint(&mut state, 1, 2);
+            let mut bm = proto::len_delimited(2, &data);
+            bm.extend(proto::len_delimited(3, &state));
+            Self::report(&proto::len_delimited(8, &bm))
+        }
+        fn complete() -> Vec<u8> {
+            let mut state = Vec::new();
+            proto::field_varint(&mut state, 1, 4);
+            Self::report(&proto::len_delimited(8, &proto::len_delimited(3, &state)))
+        }
+    }
+    impl crate::hid::HidTransport for PacedBackupTransport {
+        fn send(&self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn transact(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn transact_chunked(&self, b: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.transact(b, ms)
+        }
+        fn transact_eager(&self, b: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.transact(b, ms)
+        }
+        fn pump(&self, _: u64) -> Result<Vec<Vec<u8>>, String> {
+            let mut sent = self.sent.lock().unwrap();
+            if self.chunks == 0 || *sent > self.chunks {
+                return Ok(Vec::new());
+            }
+            std::thread::sleep(self.gap);
+            *sent += 1;
+            Ok(vec![if *sent > self.chunks {
+                Self::complete()
+            } else {
+                self.chunk(*sent - 1)
+            }])
+        }
+    }
+    fn backup_session(t: PacedBackupTransport) -> Session {
+        Session {
+            hid: Box::new(t),
+            batch: 0,
+            raw: Vec::new(),
+            fw_version: None,
+        }
+    }
+
+    /// `max_secs` is a stall budget, not a transfer cap: a stream slower than the budget
+    /// in total still completes while each chunk lands inside it (HW: a 230-chunk library
+    /// needs ~85 s against the callers' 60).
+    #[test]
+    fn device_backup_completes_a_transfer_longer_than_the_stall_budget() {
+        let t = PacedBackupTransport {
+            chunks: 5,
+            gap: std::time::Duration::from_millis(300),
+            sent: std::sync::Mutex::new(0),
+        };
+        let (blob, stats) = backup_session(t).device_backup(1, |_| {}).unwrap();
+        assert_eq!(stats.chunks_received, 5);
+        assert_eq!(blob.len(), 20);
+        assert!(stats.elapsed_secs > 1.0, "{}", stats.elapsed_secs);
+    }
+
+    #[test]
+    fn device_backup_errors_when_the_stream_never_starts() {
+        let t = PacedBackupTransport {
+            chunks: 0,
+            gap: std::time::Duration::ZERO,
+            sent: std::sync::Mutex::new(0),
+        };
+        let err = backup_session(t).device_backup(1, |_| {}).unwrap_err();
+        assert!(err.contains("stalled for 1s"), "{err}");
     }
 
     fn handshake_sends(lean: bool) -> Vec<Vec<u8>> {
