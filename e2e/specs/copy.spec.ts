@@ -21,6 +21,10 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     await clearScenario(page);
   });
 
+  // The startup backup read streams at ~27 KiB/s whatever the library holds, so its length is
+  // the archive's, not the preset count's: 2.2 MiB took 85 s (HW 2026-09-02, fw 1.8.45).
+  const SCAN_MS = 180_000;
+
   test("delete/insert/replace across two presets, re-edit shows the saved path, no refetch", async ({
     page,
   }) => {
@@ -45,7 +49,7 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     await page.getByText(T1.name, { exact: true }).last().click();
     await page.getByText(T2.name, { exact: true }).last().click();
     const place = page.getByRole("button", { name: /Place the blocks/i });
-    await expect(place).toBeEnabled({ timeout: 60_000 }); // real backup scan settles
+    await expect(place).toBeEnabled({ timeout: SCAN_MS }); // real backup scan settles
     await place.click();
 
     const card1 = `[data-target-card="${T1.name}"]`;
@@ -103,7 +107,7 @@ test.describe("Copy — every edit op, multi-preset save, optimistic cache", () 
     await page.getByRole("button", { name: "Done" }).click();
 
     // ── Round 2: re-open; P401 reflects round 1 (cache patched, never refetched) ──
-    await expect(place).toBeEnabled({ timeout: 60_000 });
+    await expect(place).toBeEnabled({ timeout: SCAN_MS });
     await place.click();
     const after = await tileLabels(page, T1.name);
     expect(after).not.toContain(deleted); // the deleted block stayed gone
