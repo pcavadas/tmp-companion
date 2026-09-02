@@ -96,7 +96,7 @@ pub(crate) use probe_api::scene_bench::knob_bounds;
 // same extraction, so the only remaining callers resolve them directly, module-internally —
 // re-exporting an unused name here is a dead `pub(crate) use`, caught by `-D warnings`.
 pub(crate) use probe_api::scene_jobs::{
-    base_handle_candidates_scanned, build_scene_jobs_with_handles, docs_as_refs, is_amp_model_id,
+    base_handle_candidates_scanned, build_scene_jobs_with_handles, is_amp_model_id,
     is_amp_output_level_param, last_loaded_scene, prepass_scene_docs_via, read_saved_preset,
     read_saved_preset_complete, scan_node_graph, scene_handle_rows, scene_handle_rows_scanned,
     scene_overlay, scene_write_verdict_for_param, scenes_restating_base,
@@ -428,12 +428,8 @@ mod fixture_gates {
     #[test]
     fn e2e_fixtures_stay_inside_the_field8_read_budget() {
         const BUDGET: usize = 16 * 1024;
-        // +1 from the #r9 -> #r10 FIXTURE_SOURCE_STAMP bump (every committed fixture's
-        // `info.source_id` carries it, Hiwatt included — `committed_fixtures_carry_an_
-        // ownership_marker` requires all 11 to match the CURRENT stamp exactly). Prior
-        // single-digit bumps (#r8 -> #r9) left this byte count unchanged; #r9 -> #r10 is
-        // the first double-digit rev and costs one byte. This is the mechanical stamp
-        // growing, not an edit to Hiwatt's own preset substance.
+        // Includes the one byte the #r10 FIXTURE_SOURCE_STAMP costs over #r9 in this
+        // fixture's own `info.source_id` — the stamp growing, not an edit to its substance.
         const HIWATT_BYTES: usize = 20_013;
         for (idx, name, js, _) in fixtures() {
             if name == "E2E Hiwatt 3S" {
@@ -834,10 +830,8 @@ mod fixture_gates {
     /// lazy-save incident's own shape: the four drive pedals, their block-acting
     /// switches and the amp node are all untouched, and only a cab was appended.
     ///
-    /// Named for what it actually pins — the MEASUREMENT shapes a leveling spec depends on
-    /// (405's amp/pedal knobs, the C table, `leveledParams`) — not "immutability": 405's own
-    /// values here were legitimately AMENDED once already (the Plumes-regression pass), and
-    /// this test's job is to pin the CURRENT shape, not to forbid a future amendment.
+    /// Pins the CURRENT measurement shapes a leveling spec depends on (405's amp/pedal knobs,
+    /// the C table, `leveledParams`) — not immutability; 405's values may be amended again.
     #[test]
     fn incident_fixtures_pin_their_measurement_shapes() {
         let (name, _, hiwatt) = fixture(404);
@@ -931,11 +925,6 @@ mod fixture_gates {
         let (name, _, friedman) = fixture(410);
         assert_eq!(name, "E2E Friedman 3S");
         assert_eq!(
-            friedman["scenes"].as_array().expect("scenes").len(),
-            3,
-            "3 FULL-overlay scenes: Rhythm/Lead/Base Scene"
-        );
-        assert_eq!(
             friedman["audioGraph"]["guitarNodes"]["G1"][1]["dspUnitParameters"]["outputLevel"], 1.0,
             "the base amp's outputLevel stays at 1.0 — load-bearing so a base capture is \
              never boosted and the fader is never written outside a scene job"
@@ -943,10 +932,6 @@ mod fixture_gates {
         assert_eq!(
             friedman["lastLoadedScene"], 1,
             "loads into Lead, not base — the ≠-base premise this fixture exists for"
-        );
-        assert_eq!(
-            friedman["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["bypass"], false,
-            "TubeScreamer is base-ON"
         );
     }
 

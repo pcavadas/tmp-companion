@@ -219,12 +219,10 @@ pub enum SimEvent {
     ReAmp(bool),
     /// `Session::heartbeat` — a pure fire-and-forget keep-alive send with no reply, the ONLY
     /// caller of `HidTransport::send` (as opposed to `transact`/`transact_chunked`). Recorded
-    /// (Phase 5, 2026-08-31 bisect) so a naked-gap-breaker choreography — `capture_on_session`,
-    /// `measure_scene_asis`, `arm_pair_measurement`'s zero-write base arm — is provable rather
-    /// than merely trusted: before this, `HidTransport::send` dropped every heartbeat silently,
-    /// so a gate could only assert "the run succeeded", never "a heartbeat actually landed
-    /// between the last write and the engage" — the exact structural fact the naked-gap fix
-    /// depends on.
+    /// so a naked-gap-breaker choreography (`capture_on_session`, `measure_scene_asis`,
+    /// `arm_pair_measurement`'s zero-write base arm) can assert that a heartbeat actually
+    /// landed between the last write and the engage — the structural fact `danger.md`'s
+    /// naked-gap rule rests on.
     Heartbeat,
 }
 
@@ -2307,10 +2305,6 @@ fn structural_reply(st: &mut SimState, confirm_field: u32) -> Vec<Vec<u8>> {
 
 impl HidTransport for SimDevice {
     fn send(&self, _body: &[u8]) -> Result<(), String> {
-        // The ONLY caller of `send` (as opposed to `transact`) is `Session::heartbeat` —
-        // record it (`SimEvent::Heartbeat`'s doc) so a naked-gap-breaker cadence is
-        // provable in a test, not just trusted. Previously this dropped every call
-        // silently, matching the real device's own no-reply behavior for a heartbeat.
         self.state
             .lock()
             .expect("sim lock")

@@ -10,6 +10,7 @@ import {
   invoke,
   isOnline,
   LEVEL_T,
+  type LevelBlock,
   reampCounters,
   reampOff,
 } from "../fixtures/scenario";
@@ -101,7 +102,6 @@ const SWITCH_JOBS = [
  *  `src/lib/types.ts`'s `BaseBoostSummary`, snake_case) — only the fields this file asserts. */
 interface BaseBoostResult {
   applied: boolean;
-  regime: string;
   base_amps: { previous_value: number; value: number | null }[];
 }
 interface LevelResult {
@@ -109,7 +109,7 @@ interface LevelResult {
   clamped: boolean;
   /** The solved `presetLevel` (0..1) — pins at `LEVEL_MAX` (1.0) in the BOOST regime. */
   final_level: number;
-  /** Null unless the base pair entered the BOOST regime (headroom_trade::PairRegime) — see
+  /** Null unless the base pair entered the BOOST regime — see
    *  `src/lib/types.ts`'s `BaseBoostSummary` doc. */
   base_boost: BaseBoostResult | null;
 }
@@ -120,14 +120,6 @@ interface FootswitchLevelResult {
   unconverged: boolean;
   clamp_reason: string | null;
   predicted_lufs: number;
-}
-/** A leveling candidate block, as `list_level_blocks` reports it — used by the lazy-commit
- *  test to read the Twin's `outputLevel` back directly (the fader half of the boosted pair). */
-interface LevelBlock {
-  group_id: string;
-  node_id: string;
-  parameter_id: string;
-  value: number;
 }
 
 const T = LEVEL_T;
@@ -207,7 +199,6 @@ test.describe("Level — footswitch stale-load fixture (offline deterministic mo
       boost.applied,
       "the fader raise must be solved AND persisted (save:true)",
     ).toBe(true);
-    expect(boost.regime, "regime must be boost").toBe("boost");
     const amp = boost.base_amps[0];
     expect(amp, "exactly one base amp candidate (the Twin)").toBeDefined();
     expect(

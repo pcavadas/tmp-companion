@@ -732,7 +732,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             let mut scene_jobs = build_scene_jobs_with_handles(
                 &scene_slots,
                 &candidates,
-                &docs_as_refs(&docs),
+                &docs,
                 base_target,
                 saved.as_ref(),
                 &handles,
@@ -1617,12 +1617,7 @@ fn outcome_to_level_result(
         // `scene_progress_item`'s doc for why the channel items need it too, not just the
         // awaited return vec.
         trade: trade.cloned(),
-        // Base-pair BOOST (Phase 2): v1 scope, not a permanent invariant. `level_preset`'s base
-        // arm is the only run that can ever plan one today (its v1 routing gate — see
-        // `level_preset_impl`'s doc — refuses a scene-bearing preset outright), so a batched
-        // scene run's own outcome has nothing to carry here yet. Widening this would need a
-        // run that ALSO levels scenes to plan and disclose a base boost alongside them — that
-        // disjunct is not implemented.
+        // Only `level_preset`'s base arm plans a boost (`level_preset_impl`'s v1 routing gate).
         base_boost: None,
     }
 }
@@ -2118,14 +2113,7 @@ mod scene_handle_tests {
                 )
             })
             .collect();
-        build_scene_jobs_with_handles(
-            slots,
-            &amp_candidates(),
-            &docs_as_refs(docs),
-            -23.0,
-            saved,
-            &specs,
-        )
+        build_scene_jobs_with_handles(slots, &amp_candidates(), docs, -23.0, saved, &specs)
     }
 
     // A handle points the row at the user's control, and its starting value / wet-floor

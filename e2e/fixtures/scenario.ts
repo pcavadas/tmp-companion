@@ -15,6 +15,16 @@ export interface Preset {
   slot: number;
 }
 
+/** A leveling candidate block, as `list_level_blocks` reports it — shared by every leveling
+ *  spec that reads a block back directly (the online Friedman/Plumes arcs, the Preset24
+ *  lazy-commit gap test). */
+export interface LevelBlock {
+  group_id: string;
+  node_id: string;
+  parameter_id: string;
+  value: number;
+}
+
 // Role-based names (not slot numbers): the device stores these at userSlot = listIndex + 1
 // (401/402/.../411), so a slot-numbered name would read off-by-one in the backup view.
 // WHICH USE CASE EACH FIXTURE CARRIES: e2e/fixtures/COVERAGE.md (the matrix), pinned by

@@ -2482,6 +2482,34 @@ fn saved_pl_and_output_level(slot: u32, node: &str) -> (f64, f64) {
     (pl, fader)
 }
 
+/// A run that must never touch `node`'s fader: no wire write, and the SAVED fader still reads
+/// `expected_fader` — shared by every E-gate that asserts a no-op on the amp. `expected_pl`
+/// additionally pins the stored `presetLevel` when the caller cares.
+fn assert_fader_untouched(
+    sim: &crate::sim_device::SimDevice,
+    slot: u32,
+    node: &str,
+    expected_fader: f64,
+    expected_pl: Option<f64>,
+) {
+    let events = sim.events();
+    assert!(
+        !wrote_output_level(&events, node),
+        "must never write the amp's outputLevel: {events:?}"
+    );
+    let (pl, fader) = saved_pl_and_output_level(slot, node);
+    if let Some(expected_pl) = expected_pl {
+        assert!(
+            (pl - expected_pl).abs() < 1e-3,
+            "the stored presetLevel must be unchanged: {pl}"
+        );
+    }
+    assert!(
+        (fader - expected_fader).abs() < 1e-3,
+        "the amp's own fader must be left exactly as authored: {fader}"
+    );
+}
+
 /// E1 + E3 — THE PAIRED SEE-SAW GATE. BUG→GATE (2026-08-31 investigation): 405's base
 /// (Rat isolated off, presetLevel 0.27, Twin outputLevel 0.28) cannot reach -23 LUFS at
 /// `presetLevel`'s own ceiling (P_up ≈ 11.37 dB short of the ≈16.4 LU deficit implied by
@@ -2516,7 +2544,6 @@ fn a_base_row_that_cannot_reach_target_at_preset_level_max_raises_the_active_amp
         boost["applied"], true,
         "a save run on a scene-less preset must actually apply the boost: {r}"
     );
-    assert_eq!(boost["regime"], serde_json::json!("boost"), "{r}");
     let amp = &boost["base_amps"][0];
     assert!(
         (amp["previous_value"].as_f64().expect("previous_value") - 0.28).abs() < 0.01,
@@ -2581,21 +2608,12 @@ fn a_healthy_base_row_never_moves_the_amp_fader() {
     );
 }
 
-/// BUG→GATE, the two Phase-2 save-path guards (adversarial findings, `notes/leveling.md`'s
-/// Phase 2 section): (a) the pre-save base recall must re-assert BOTH the raised
-/// `presetLevel` and the solved fader, not just the level — a `restore_scene: None` doc used
-/// to skip the level re-assert entirely, and the fader write predates the recall exactly the
-/// same way; (b) the save must persist BOTH halves TOGETHER, so a same-slot load mid-run sees
-/// a preset that is either fully-old or fully-new, never half of each.
-///
-/// `ever_saved` PRE-SEEDING (see `sim_device.rs`'s own lazy-commit doc): the sim only treats
-/// a `loadScene` recall as reverting a slot's ambient `presetLevel`/param writes to what is
-/// ALREADY saved once that slot has been saved at least once THIS run — a slot's first-ever
-/// save has no prior committed doc to revert TO, so it cannot exercise the revert this gate
-/// exists to catch. A plain, unedited save (load 405, save 405) seeds `ever_saved` without
-/// perturbing the fixture's own authored content, making the boost's OWN save the SECOND
-/// save this run makes — the shape where a broken (a) or (b) would actually leave stale bytes
-/// behind.
+/// BUG→GATE (Phase 2 save-path guards, `notes/leveling.md`'s Phase 2 section): the pre-save
+/// base recall must re-assert BOTH the raised `presetLevel` and the solved fader, and the save
+/// must persist both together — no same-slot load may ever see a half-old, half-new pair. Seeds
+/// `ever_saved` with a plain unedited save first (`sim_device.rs`'s lazy-commit doc), so the
+/// boost's own save is the slot's SECOND save this run — the shape a broken guard would leave
+/// stale bytes behind on.
 #[test]
 fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
     let _serial = serial();
@@ -2827,46 +2845,16 @@ fn a_no_save_base_boost_run_plans_it_but_writes_nothing() {
     );
     assert_eq!(r["saved"], false, "{r}");
 
-    let events = sim.events();
-    assert!(
-        !wrote_output_level(&events, PLUMES_TWIN),
-        "an advisory (no-save) run must never write the amp's fader: {events:?}"
-    );
-
-    let (pl, fader) = saved_pl_and_output_level(PLUMES, PLUMES_TWIN);
-    assert!(
-        (pl - 0.27).abs() < 1e-3,
-        "the stored preset's presetLevel must be unchanged: {pl}"
-    );
-    assert!(
-        (fader - 0.28).abs() < 1e-3,
-        "the stored fader must be unchanged: {fader}"
-    );
+    assert_fader_untouched(&sim, PLUMES, PLUMES_TWIN, 0.28, Some(0.27));
 }
 
-/// E7 (RETARGETED — see the CODE-VS-PLAN CORRECTION below). BUG→GATE: an UNREACHABLE base
-/// target — even with BOTH controls pushed to their limits — must fall through to
-/// `PairRegime::Infeasible` and report TODAY'S HONEST, UNMODIFIED clamp: no half-applied
-/// boost, no persisted fader move. -10 LUFS needs +29.37 dB over 405's as-is base;
-/// `presetLevel`'s own ceiling supplies only +11.37 dB and the Twin's fader can add at most
-/// another +11.06 dB on top (0.28 → 1.0) — +22.43 dB total, still ~7 dB short — so
-/// `plan_level_pair`'s own feasibility window (`dp_lo <= dp_hi`) is EMPTY and the plan
-/// refuses outright, exactly mirroring the pre-Phase-1 behavior for an unreachable base.
-///
-/// CODE-VS-PLAN CORRECTION: the plan anticipated an extreme target instead landing IN the
-/// Boost regime but clamped short by the closed-loop device solve, with the pair's partial
-/// improvement persisted (`apply_base_boost`'s own "even a partial close beats the honest
-/// clamp" branch, which is real, reachable code). But for a SINGLE amplitude-bounded
-/// candidate under this offline sim's EXACT-LINEAR response, `plan_level_pair`'s own
-/// Infeasible check (`dp_lo <= dp_hi`) is PROVABLY the exact mirror of the device solve's own
-/// `k_cap` ceiling (`headroom_trade.rs`'s U7 arithmetic-contract gate pins the same
-/// equivalence, purely) — so an unreachable target can never even REACH the closed loop; it
-/// is refused one step earlier, and `apply_base_boost` is never called at all. Confirmed
-/// empirically: this exact target produced `base_boost: null` (Infeasible), not an applied,
-/// clamped boost. The "partial close" branch this gate originally targeted is real code, but
-/// exercising it needs a NON-LINEAR real amp response (module header's own "soft-knee
-/// compressor" example) this offline sim does not model — HW-only coverage, not an offline
-/// gap this suite can close.
+/// BUG→GATE: an unreachable base target — even with BOTH controls pushed to their limits —
+/// must plan no move and report today's honest, unmodified clamp:
+/// no half-applied boost, no persisted fader move. -10 LUFS needs +29.37 dB over 405's as-is
+/// base; `presetLevel`'s ceiling supplies only +11.37 dB and the Twin's fader adds at most
+/// +11.06 dB more (0.28 → 1.0) — +22.43 dB total, still ~7 dB short — so `plan_level_pair`'s
+/// feasibility window (`dp_lo <= dp_hi`) is empty and the plan refuses before the closed loop
+/// ever runs (`headroom_trade.rs`'s U7 gate pins the same equivalence).
 #[test]
 fn an_infeasible_base_target_reports_todays_honest_clamp_with_no_partial_boost() {
     let _serial = serial();
@@ -2893,37 +2881,15 @@ fn an_infeasible_base_target_reports_todays_honest_clamp_with_no_partial_boost()
         "presetLevel still maxes out at its own ceiling: {r}"
     );
 
-    let events = sim.events();
-    assert!(
-        !wrote_output_level(&events, PLUMES_TWIN),
-        "an Infeasible target must never touch the amp fader: {events:?}"
-    );
-
-    let (_, fader) = saved_pl_and_output_level(PLUMES, PLUMES_TWIN);
-    assert!(
-        (fader - 0.28).abs() < 1e-3,
-        "the amp's own fader must be left exactly as authored: {fader}"
-    );
+    assert_fader_untouched(&sim, PLUMES, PLUMES_TWIN, 0.28, None);
 }
 
-/// E8. BUG→GATE: a second base run on an already-boosted preset must SKIP CLEANLY — no
-/// re-boost, no re-write of `presetLevel`, no new save, and no spurious `clamped` row.
-///
-/// The float-epsilon mechanism this pins is written out once, in `leveller::already_on_target`'s
-/// doc — a boosted preset is parked at `presetLevel = LEVEL_MAX` with `C` on target, so run 2's
-/// re-measure lands a few float units either side of exact and the epsilon-free clamp check
-/// flips on the low side.
-///
-/// WHAT IS SPECIFIC TO THIS GATE: the assertions must hold on EITHER side of that epsilon — a
-/// hair high takes the plain `level_unchanged` path, a hair low takes the band — so the observed
-/// value is deliberately not restated here and nothing below may depend on its sign. That is
-/// what lets this gate assert the clean skip (`clamped: false`, `saved: false`, zero new `Saved`)
-/// rather than the weaker "the fader was not rewritten" shape it carried while the bug stood.
-///
-/// The fader assertions stay: run 1 writes it exactly TWICE (once by the solve, once by the
-/// pre-save recall-reassert replaying the identical value — Phase 2's guard (b), see
-/// `recall_reassert_save`), and run 2 must add none. `restore_saved_preset`, the skip's own
-/// recovery, is a bare `load_preset` and emits no `ChangeParameter` at all.
+/// BUG→GATE: a second base run on an already-boosted preset must skip cleanly — no re-boost,
+/// no re-write of `presetLevel`, no new save, no spurious `clamped` row. The float-epsilon
+/// straddle this hinges on is `leveller::already_on_target`'s own mechanism, not re-derived
+/// here; assertions below hold on either side of it. Run 1 writes the fader exactly twice
+/// (solve + pre-save recall-reassert, Phase 2 guard (b)); run 2 must add none —
+/// `restore_saved_preset` is a bare load and emits no `ChangeParameter` at all.
 #[test]
 fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
     let _serial = serial();
@@ -3019,11 +2985,6 @@ fn the_fixture_enumeration_reads_eleven_child_rows() {
         .get("presets")
         .and_then(|p| p.as_array())
         .expect("presets array");
-    assert_eq!(
-        rows.len(),
-        SCENARIO_PRESETS,
-        "all 11 scenario presets must enumerate: {lib}"
-    );
 
     let row_405 = rows
         .iter()

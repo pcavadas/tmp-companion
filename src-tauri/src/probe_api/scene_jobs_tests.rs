@@ -63,7 +63,7 @@ fn scene_jobs_prefer_active_amp_output_level_over_preamp_volume() {
         },
     ];
 
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     let leveller::LevelKnob::Block { parameter_id, .. } = &jobs[0].knobs[0].knob else {
         panic!("expected block knob");
     };
@@ -94,7 +94,7 @@ fn scene_jobs_reject_preamp_volume_as_level_control() {
 
     // The Hiwatt is an active amp but its only candidate is a preamp volume, not
     // outputLevel → the scene is skipped with a reason, not leveled on the wrong knob.
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap_err();
     assert!(err.contains("outputLevel"), "got: {err}");
 }
 
@@ -129,7 +129,7 @@ fn scene_jobs_parallel_merged_picks_both_lane_amps() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -168,7 +168,7 @@ fn scene_jobs_post_merge_amp_is_single_master() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert_eq!(jobs[0].knobs.len(), 1);
 }
 
@@ -188,7 +188,7 @@ fn scene_jobs_skip_when_template_unknown() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap_err();
+    let err = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap_err();
     assert!(err.contains("routing"), "got: {err}");
 }
 
@@ -209,7 +209,7 @@ fn scene_jobs_skip_mic_only_no_guitar_amp() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert!(
         jobs[0].skip.as_deref().unwrap_or("").contains("guitar amp"),
         "got: {:?}",
@@ -249,7 +249,7 @@ fn scene_jobs_split_output_joint_ks_both_output_lanes() {
             value: 0.5,
         },
     ];
-    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, None).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, None).unwrap();
     assert_eq!(
         jobs[0].knobs.len(),
         2,
@@ -282,7 +282,7 @@ fn scene_jobs_per_scene_skip_does_not_abort() {
     let jobs = build_scene_jobs(
         &[0, 1],
         &candidates,
-        &[(0, Some(&bypassed)), (1, Some(&active))],
+        &[(0, Some(bypassed)), (1, Some(active))],
         -23.0,
         None,
     )
@@ -446,8 +446,7 @@ fn scene_jobs_saved_fallback_supplies_missing_template() {
         parameter_id: "outputLevel".into(),
         value: 0.5,
     }];
-    let jobs =
-        build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, Some(&saved)).unwrap();
+    let jobs = build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, Some(&saved)).unwrap();
     assert_eq!(jobs.len(), 1);
     assert!(jobs[0].skip.is_none(), "skip reason: {:?}", jobs[0].skip);
     assert_eq!(jobs[0].knobs.len(), 1);
@@ -473,7 +472,7 @@ fn scene_jobs_saved_fallback_without_template_still_errors() {
         value: 0.5,
     }];
     let err =
-        build_scene_jobs(&[7], &candidates, &[(7, Some(&doc))], -23.0, Some(&saved)).unwrap_err();
+        build_scene_jobs(&[7], &candidates, &[(7, Some(doc))], -23.0, Some(&saved)).unwrap_err();
     assert!(err.contains("routing"), "got: {err}");
 }
 
@@ -1032,7 +1031,7 @@ fn a_scene_whose_doc_is_partial_skips_instead_of_classifying_against_base() {
     let jobs = build_scene_jobs(
         &[3],
         &two_amp_candidates(),
-        &[(3, Some(&partial))],
+        &[(3, Some(partial))],
         -23.0,
         Some(&saved),
     )
@@ -1075,7 +1074,7 @@ fn a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_hea
     let jobs = build_scene_jobs(
         &[3],
         &two_amp_candidates(),
-        &[(3, Some(&live))],
+        &[(3, Some(live))],
         -23.0,
         Some(&saved),
     )
@@ -1125,13 +1124,13 @@ fn scenes_missing_amp_bypass_flags_absent_and_partial_docs() {
             { "nodeId": "ACD_TubeScreamer", "dspUnitParameters": { "bypass": false } }
         ] } }
     });
-    let borrowed = vec![
-        (0u32, Some(&answerable)),
+    let docs = vec![
+        (0u32, Some(answerable)),
         (1u32, None),
-        (2u32, Some(&partial)),
+        (2u32, Some(partial)),
     ];
     assert_eq!(
-        scenes_missing_amp_bypass(&borrowed),
+        scenes_missing_amp_bypass(&docs),
         vec![1, 2],
         "the absent doc AND the amp-less partial both need repair; the answerable one does not"
     );
@@ -1152,13 +1151,13 @@ fn repair_scene_docs_fills_only_the_unanswerable_scenes() {
     // Mark scene 0's doc so we can prove the repair did not touch it.
     docs[0].1.as_mut().unwrap()["__probe"] = serde_json::json!("untouched");
 
-    let needy = scenes_missing_amp_bypass(&docs_as_refs(&docs));
+    let needy = scenes_missing_amp_bypass(&docs);
     assert_eq!(
         needy,
         vec![1],
         "only the scene that pushed nothing needs repair"
     );
-    assert_eq!(repair_scene_docs_from(&mut docs, &saved, &needy), vec![1]);
+    assert!(repair_scene_docs_from(&mut docs, &saved, &needy));
     assert_eq!(docs[0].1.as_ref().unwrap()["__probe"], "untouched");
 
     let structure = session::extract_active_graph(&two_amp_base_saved(), None);
@@ -1178,7 +1177,7 @@ fn repair_scene_docs_leaves_docs_untouched_when_the_saved_preset_cannot_answer()
     let mut truncated = two_amp_swap_preset();
     truncated["scenes"] = serde_json::json!([]);
     let mut docs = vec![(1u32, None)];
-    let needy = scenes_missing_amp_bypass(&docs_as_refs(&docs));
-    assert!(repair_scene_docs_from(&mut docs, &truncated, &needy).is_empty());
+    let needy = scenes_missing_amp_bypass(&docs);
+    assert!(!repair_scene_docs_from(&mut docs, &truncated, &needy));
     assert!(docs[0].1.is_none(), "no doc was invented");
 }

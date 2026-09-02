@@ -108,22 +108,9 @@ pub(crate) fn is_amp_output_level_param(parameter_id: &str) -> bool {
     parameter_id == "outputLevel"
 }
 
-/// View an owned per-scene docs vec as the borrowed slice `structure_graph`/`build_scene_jobs`/
-/// `build_scene_jobs_with_handles` take. Most prepass call sites already own their docs
-/// (`prepass_scene_docs`) and use them again after this one classification call, so this is a
-/// cheap pointer-sized re-view, never a JSON clone — the clone this borrowed shape exists to
-/// avoid is at the ONE call site that used to own no such vec at all
-/// (`commands::level_preset`'s base arm, which cloned a whole ~10 KB preset doc just to hand it
-/// to the builder as its single-entry "docs" list).
 /// The stand-in for a scene whose doc never arrived — a borrowable `Null`, so the job builder
 /// can hand out `&Value` without cloning a real doc to get one.
 static NULL_DOC: serde_json::Value = serde_json::Value::Null;
-
-pub(crate) fn docs_as_refs(
-    docs: &[(u32, Option<serde_json::Value>)],
-) -> Vec<(u32, Option<&serde_json::Value>)> {
-    docs.iter().map(|(s, d)| (*s, d.as_ref())).collect()
-}
 
 /// Pick the route STRUCTURE graph from the pre-pass docs: the first doc that decodes
 /// to a KNOWN routing template (`session::is_known_routing_template`). Routing is
@@ -132,12 +119,31 @@ pub(crate) fn docs_as_refs(
 /// partial truncates before the `template` tail, and silently defaulting to "series"
 /// would re-introduce the parallel mislevel, so the caller must skip instead.
 pub(crate) fn structure_graph(
-    docs: &[(u32, Option<&serde_json::Value>)],
+    docs: &[(u32, Option<serde_json::Value>)],
 ) -> Option<session::ActiveGraph> {
     docs.iter()
-        .filter_map(|(_, d)| *d)
+        .filter_map(|(_, d)| d.as_ref())
         .map(|d| session::extract_active_graph(d, None))
         .find(|g| session::is_known_routing_template(g.template.as_deref()))
+}
+
+/// The graph's guitar-amp nodes, in route-graph flow order. Restricted to GUITAR groups:
+/// re-amp drives the instrument input, so only the guitar chain is captured at USB-Out (the
+/// leveling target); mic-input amps aren't reachable and have no `outputLevel` candidate.
+fn amp_nodes(structure: &session::ActiveGraph) -> Vec<&session::GraphNode> {
+    structure
+        .nodes
+        .iter()
+        .filter(|nd| nd.group_id.starts_with('G') && is_amp_model_id(&nd.model))
+        .collect()
+}
+
+/// Whether `doc` states the bypass of at least ONE of `amps` — the single definition of
+/// "usable scene doc" that [`classify_scene_knobs`] refuses on and
+/// [`scenes_missing_amp_bypass`] scans for, so the two can never disagree.
+fn answers_any_amp_bypass(amps: &[&session::GraphNode], doc: &serde_json::Value) -> bool {
+    amps.iter()
+        .any(|nd| scenes::block_bypass_in_live_graph(doc, &nd.group_id, &nd.node_id).is_some())
 }
 
 /// Preset-wide gate: the routing template must be KNOWN (the live field-3 partial
@@ -204,16 +210,10 @@ pub(crate) fn classify_scene_knobs(
             .map(|b| b.value)
             .unwrap_or(fallback)
     };
-    // Active (non-bypassed in this scene) amp nodes, in route-graph flow order. Restricted
-    // to GUITAR groups: re-amp drives the instrument input, so only the guitar chain is
-    // captured at USB-Out (the leveling target); mic-input amps aren't reachable and have
-    // no outputLevel candidate anyway. Bypass comes from the scene overlay, falling back
-    // to the structure node when the scene doc doesn't carry it.
-    let amps: Vec<&session::GraphNode> = structure
-        .nodes
-        .iter()
-        .filter(|nd| nd.group_id.starts_with('G') && is_amp_model_id(&nd.model))
-        .collect();
+    // Active (non-bypassed in this scene) amp nodes, in route-graph flow order. Bypass comes
+    // from the scene overlay, falling back to the structure node when the scene doc doesn't
+    // carry it.
+    let amps = amp_nodes(structure);
     // REFUSE rather than decide from the base graph when the scene doc can answer for NO amp.
     // `structure` is the BASE graph (`saved_fallback`), so the `None` arm below resolves bypass
     // from base — correct for a doc that merely omits one node's `bypass` key, catastrophic for a
@@ -227,11 +227,7 @@ pub(crate) fn classify_scene_knobs(
     // `scene_docs_from_saved` merges the sparse overlay ONTO the base graph. So "no amp is
     // answerable" means the doc is unusable, not that the scene is unusual — and this row's own
     // `skip` is the honest outcome (per-scene skip, never a batch abort).
-    if !amps.is_empty()
-        && !amps.iter().any(|nd| {
-            scenes::block_bypass_in_live_graph(scene_doc, &nd.group_id, &nd.node_id).is_some()
-        })
-    {
+    if !amps.is_empty() && !answers_any_amp_bypass(&amps, scene_doc) {
         return Err(
             "scene doc answered no amp's bypass state (absent or truncated before the amp \
              nodes) — refusing to classify against the base graph"
@@ -415,7 +411,7 @@ pub(crate) const KNOB_ONLY_PROBE_TARGET_LUFS: f64 = -23.0;
 pub(crate) fn build_scene_jobs(
     scene_slots: &[u32],
     candidates: &[LevelBlockArg],
-    docs: &[(u32, Option<&serde_json::Value>)],
+    docs: &[(u32, Option<serde_json::Value>)],
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
 ) -> Result<Vec<leveller::SceneJob>, String> {
@@ -454,7 +450,7 @@ pub(crate) struct SceneHandleSpec<'a> {
 pub(crate) fn build_scene_jobs_with_handles(
     scene_slots: &[u32],
     candidates: &[LevelBlockArg],
-    docs: &[(u32, Option<&serde_json::Value>)],
+    docs: &[(u32, Option<serde_json::Value>)],
     target_lufs: f64,
     saved_fallback: Option<&serde_json::Value>,
     handles: &[(u32, SceneHandleSpec)],
@@ -493,13 +489,10 @@ pub(crate) fn build_scene_jobs_with_handles(
     let jobs = scene_slots
         .iter()
         .map(|scene| {
-            // Borrowed, not cloned: `docs` already holds references (that is what
-            // `docs_as_refs` exists for), and both consumers below take `&Value`. Cloning here
-            // undid the borrow for every scene in the batch — a ~10-20 KB JSON copy each.
             let doc: &serde_json::Value = docs
                 .iter()
                 .find(|(s2, _)| s2 == scene)
-                .and_then(|(_, d)| *d)
+                .and_then(|(_, d)| d.as_ref())
                 .unwrap_or(&NULL_DOC);
             let scene_slot = if *scene >= session::BASE_SCENE_SLOT {
                 None
@@ -1571,42 +1564,34 @@ pub(crate) fn prepass_scene_docs_via(
     Ok((docs, restore))
 }
 
-/// The scenes whose doc cannot answer ANY amp's bypass — byte-for-byte the predicate
-/// [`classify_scene_knobs`] refuses on, so the two can never disagree about which scene is
-/// unusable. Keyed on the AMP question, not on "the doc is `Null`": a doc cut *after* some
-/// nodes but *before* the amps is a live partial that reads as present and would slip past a
-/// null check while producing the identical wrong-amp fallback.
+/// The scenes whose doc cannot answer ANY amp's bypass — the same [`answers_any_amp_bypass`]
+/// [`classify_scene_knobs`] refuses on. Keyed on the AMP question, not on "the doc is `Null`":
+/// a doc cut *after* some nodes but *before* the amps is a live partial that reads as present
+/// and would slip past a null check while producing the identical wrong-amp fallback.
 ///
 /// The amp roster comes from the docs' own routing graph — the same [`structure_graph`] the
 /// classifier's prerequisite uses — so a batch where NO doc carries a known template yields
 /// an empty list and the classifier's own preset-wide error stands.
-pub(crate) fn scenes_missing_amp_bypass(docs: &[(u32, Option<&serde_json::Value>)]) -> Vec<u32> {
+pub(crate) fn scenes_missing_amp_bypass(docs: &[(u32, Option<serde_json::Value>)]) -> Vec<u32> {
     let Some(structure) = structure_graph(docs) else {
         return Vec::new();
     };
-    let amps: Vec<&session::GraphNode> = structure
-        .nodes
-        .iter()
-        .filter(|nd| nd.group_id.starts_with('G') && is_amp_model_id(&nd.model))
-        .collect();
+    let amps = amp_nodes(&structure);
     if amps.is_empty() {
         return Vec::new();
     }
     docs.iter()
         .filter(|(_, d)| {
-            d.is_none_or(|doc| {
-                !amps.iter().any(|nd| {
-                    scenes::block_bypass_in_live_graph(doc, &nd.group_id, &nd.node_id).is_some()
-                })
-            })
+            d.as_ref()
+                .is_none_or(|doc| !answers_any_amp_bypass(&amps, doc))
         })
         .map(|(s, _)| *s)
         .collect()
 }
 
 /// Splice the SAVED preset's answer into every scene doc that cannot answer the amp question,
-/// in place. Returns the scenes it repaired (empty = nothing needed it, or the preset could not
-/// answer either). Pure — [`backfill_scene_docs_from_saved`] owns the device read.
+/// in place. `false` = nothing needed it, or the preset could not answer either. Pure —
+/// [`backfill_scene_docs_from_saved`] owns the device read.
 ///
 /// Repairs an unanswerable doc; never overrides an answerable one, and never substitutes base.
 /// Takes the unanswerable scenes as an argument rather than rescanning: the device caller
@@ -1616,21 +1601,23 @@ pub(crate) fn repair_scene_docs_from(
     docs: &mut [(u32, Option<serde_json::Value>)],
     preset: &serde_json::Value,
     needy: &[u32],
-) -> Vec<u32> {
+) -> bool {
     if needy.is_empty() {
-        return Vec::new();
+        return false;
     }
     // Ask for ONLY the scenes that need repair: `scene_docs_from_saved` is all-or-nothing, so
     // passing the full roster would let one unreadable scene discard the answer for the rest.
     let Some((repaired, _)) = scene_docs_from_saved(preset, needy) else {
-        return Vec::new();
+        return false;
     };
+    let mut filled = false;
     for (scene, doc) in repaired {
         if let Some(slotted) = docs.iter_mut().find(|(s, _)| *s == scene) {
+            filled |= doc.is_some();
             slotted.1 = doc;
         }
     }
-    needy.to_vec()
+    filled
 }
 
 /// Repair the live prepass's per-scene misses from the SAVED preset.
@@ -1653,7 +1640,7 @@ pub(crate) fn repair_scene_docs_from(
 /// BEST-EFFORT by construction: every failure leaves `docs` untouched, so the classifier still
 /// refuses rather than guessing.
 fn backfill_scene_docs_from_saved(slot: u32, docs: &mut [(u32, Option<serde_json::Value>)]) {
-    let needy = scenes_missing_amp_bypass(&docs_as_refs(docs));
+    let needy = scenes_missing_amp_bypass(docs);
     if needy.is_empty() {
         return;
     }
@@ -1667,7 +1654,7 @@ fn backfill_scene_docs_from_saved(slot: u32, docs: &mut [(u32, Option<serde_json
             return;
         }
     };
-    if repair_scene_docs_from(docs, &preset, &needy).is_empty() {
+    if !repair_scene_docs_from(docs, &preset, &needy) {
         log::warn!(
             "scene-doc repair: slot {slot} saved preset could not answer scenes {needy:?} — \
              they will be skipped, not guessed"

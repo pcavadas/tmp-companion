@@ -73,18 +73,14 @@ pub(crate) fn doctor_force_bypass(
 /// OUTCOME of a `read_slot_preset_complete(slot, &["ftsw"])`-shaped read (`Ok(preset)` or the
 /// read's own `Err`), either derive the base force-bypass list (`doctor_force_bypass`'s
 /// `None` arm) plus the preset's `restore_scene`, or propagate the SAME refusal message
-/// production's base arm has always shown. Pure over the read's `Result` — it never touches
-/// the device itself — so `commands::level_preset`'s base arm and `probe_level_preset` /
-/// `probe_level_preset_scenes`'s Base leg can share ONE definition of "base isolation"
-/// (2026-08-31 bisect: probe's old `&[]` force list solved C=-11.95 as-saved where
-/// production's isolated base measured C≈-28.2 — a ~16 LU divergence from the two paths
-/// disagreeing about what "base" means). It also makes the refusal path unit-testable at
-/// all: `SimDevice` always serves whole bodies, so a truncated field-8 read can never be
-/// driven from an offline fixture (`read_slot_preset_complete`'s own doc) — a test instead
-/// hands this fn a synthetic `Err`, standing in for what that read would have returned on a
-/// preset too large to read over USB, the same way `doctor_tests.rs`'s
-/// `an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound` stands in a synthetic
-/// cache entry for an unreadable body.
+/// production's base arm has always shown. ONE definition of "base isolation" for every arm
+/// that levels base — the paths disagreeing about what "base" means cost a ~16 LU divergence
+/// (2026-08-31 bisect: an empty `&[]` force list solved C=-11.95 where production's isolated
+/// base measured C≈-28.2).
+///
+/// Pure over the read's `Result` rather than doing the read itself, so the refusal is
+/// testable at all: `SimDevice` always serves whole bodies, so a truncated field-8 read can
+/// never be driven from an offline fixture — a test hands this fn a synthetic `Err` instead.
 pub(crate) fn base_isolation_or_refuse(
     read: Result<serde_json::Value, String>,
     slot: u32,
@@ -103,22 +99,27 @@ pub(crate) fn base_isolation_or_refuse(
 }
 
 /// [`base_isolation_or_refuse`] with the read it needs and the HID gap that read owes — the
-/// whole "isolate base before levelling" step, for the probe arms that have nothing else to do
-/// with the preset body.
+/// whole "isolate base before levelling" step, for every base leveling arm (production's
+/// `commands::level_preset` and both probe arms). Returns the preset body, the read's own
+/// fail-safe `has_fs_scenes` flag (`read_slot_preset_sections`' doc), the force-bypass list and
+/// `restore_scene`.
 ///
 /// The gap is part of the seam, not the caller's bookkeeping: the read opens and closes its OWN
 /// session before the leveller's first connect, so a back-to-back re-open risks the exclusive-open
-/// lockout (`0xe00002c5` — `danger.md`'s "HID open-lockout model"). Two probe call sites used to
-/// spell this out separately, which is one place too many for a device-timing rule.
-pub(crate) fn read_base_isolation(slot: u32) -> Result<(ForceBypass, Option<u32>), String> {
-    let (_, force, restore_scene) = base_isolation_or_refuse(
-        crate::read_slot_preset_complete(slot, &["ftsw"]).map(|(preset, _, _)| preset),
-        slot,
-    )?;
-    std::thread::sleep(std::time::Duration::from_millis(
+/// lockout (`0xe00002c5` — `danger.md`'s "HID open-lockout model").
+pub(crate) fn read_base_isolation(
+    slot: u32,
+) -> Result<(serde_json::Value, bool, ForceBypass, Option<u32>), String> {
+    let read = crate::read_slot_preset_complete(slot, &["ftsw"]);
+    let has_fs_scenes = read
+        .as_ref()
+        .is_ok_and(|(_, has_fs_scenes, _)| *has_fs_scenes);
+    let (preset, force, restore_scene) =
+        base_isolation_or_refuse(read.map(|(preset, _, _)| preset), slot)?;
+    crate::settle(std::time::Duration::from_millis(
         crate::leveller::RECONNECT_GAP_MS,
     ));
-    Ok((force, restore_scene))
+    Ok((preset, has_fs_scenes, force, restore_scene))
 }
 
 /// `DoctorNode`s → a `node_id → saved bypass` map, first-occurrence-wins

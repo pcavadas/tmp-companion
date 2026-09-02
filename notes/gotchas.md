@@ -264,49 +264,18 @@ Read the entry in full before changing the behaviour it governs.
 
 ## A scene doc that cannot answer falls back to the BASE graph, so the run levels the wrong amp
 
-- **HW, fw 1.8.45, 2026-09-01, the real "Friedman HBE" (user slot 28).** The batched scene lane
-  drove the BASE-active amp, `ACD_BE100`, in every scene: `outputLevel@scene3` 1.0000 → 0.5012 —
-  a full 6 dB step — moved the capture not at all, so the run took the honest `no_authority`
-  off-branch and restored 0.9700. `ACD_TwinReverb65NoFx` was never written in any scene.
-- **Root cause, found and fixed.** `classify_scene_knobs` resolved each amp's bypass from the
-  scene doc and fell back to the base graph's own flag whenever the doc could not answer
-  (`None => !nd.bypassed`). That fallback is right for a doc that merely omits one node's
-  `bypass` key, and wrong when the doc never arrived or was cut before the amp nodes: the scene
-  is then classified against BASE and the lane picks whichever amp base leaves on. It now
-  REFUSES when the doc answers for no amp at all, and that scene takes its own skip.
-- **Read the verdict as the symptom, not the bug.** `no_authority` did its job: it is the reason
-  the wrong knob surfaced at all instead of a reason-less headroom clamp. But the user was told
-  "this amp doesn't reach USB 1/2" about an amp their scene may not even use.
-- **NOW VERIFIED — scene 3 does need the Twin.** Decoding the user's own `.preset` export
-  (XOR key `JLD`, so the whole document is readable off-device, no field-8 cut) settles what no
-  on-device read here could: every scene carries a FULL `guitarNodes` overlay, and scene 3
-  ("Clean") inverts the base pair — `ACD_BE100` `bypass: true`, `ACD_TwinReverb65NoFx`
-  `bypass: false` at its own `outputLevel` 0.45 (0.28 in base and in scenes 0-2, where the
-  BE100 is the active amp). So the base fallback was driving a knob genuinely outside that
-  scene's signal path, and the refusal above is correct rather than merely cautious.
-  Per-scene `ampControl` is uniform across all four scenes and equal to base — it is NOT where
-  per-scene amp state lives, and diffing it alone would wrongly suggest the scenes are identical.
-- **The refusal alone was not enough: it turned a wrong answer into NO answer.** On a first pass
-  (2026-09-01) two of the four scenes — 1 and 3 — hit the refusal and were skipped, so they were
-  never leveled at all. The live prepass is not reliably complete: the device pushes field-3 only
-  on a CHANGE, so a recall landing on an already-active scene harvests nothing, and a pushed doc
-  can arrive cut before the amp nodes. The fix REPAIRS rather than relaxes — an unanswerable
-  scene doc is refilled from the saved preset through `read_slot_preset_complete`'s
-  backup-backed read (`audioGraph` + `scenes`, since the overlay is merged onto the base graph),
-  and the refusal still stands when that cannot answer either. After the repair the same preset
-  levels all four scenes plus base and its scene-context footswitch in ONE pass with zero clamps,
-  every row confirmed by ffmpeg `ebur128` within 0.52 LU of the −23 target.
-- **The skip was INVISIBLE before this.** The batch filters skipped rows out of the array it
-  returns and the reason only reaches the wizard over the progress Channel, so a skipped scene
-  left no trace in the log — which is why two missing scenes went unnoticed. The skip-job site
-  now logs the reason.
-- **Two instruments through one picker are one instrument.** The −25.0 ceiling once recorded
-  here as "measured twice, independently — the probe arm and the command layer" was neither
-  independent nor a ceiling: both arms share `build_scene_jobs`, so both inherited the SAME
-  wrong amp. Agreement between them was evidence of a shared picker, not of a preset limit.
-  When citing two instruments as corroboration, check they do not share the code under suspicion.
-- **Not introduced by the boost/run-order work** — the same pick appears on the probe arm, and
-  that work's `scene_jobs.rs` diff is a borrow-vs-clone refactor with no selection change.
+- **HW, fw 1.8.45, 2026-09-01, "Friedman HBE" (user slot 28).** The batched scene lane classified
+  a scene's amp state against the BASE graph whenever its live field-3 doc arrived cut before the
+  amp nodes, driving `ACD_BE100` in scene 3 ("Clean") whose own overlay swaps to
+  `ACD_TwinReverb65NoFx` — confirmed by decoding the user's `.preset` export off-device.
+- **Current rule.** `classify_scene_knobs` refuses a scene whose live doc answers for no amp at
+  all, rather than falling back to base. The refusal is then repaired from the saved preset via
+  `read_slot_preset_complete`'s backup-backed read (`audioGraph` + `scenes`); a scene the saved
+  preset cannot answer either is skipped and reported, never leveled against base.
+- **Gated by** `a_truncated_swap_scene_levels_its_own_amp_not_the_base_one` (the HW incident,
+  own-amp identity), `a_scene_whose_doc_never_arrived_skips_instead_of_classifying_against_base`,
+  `a_scene_whose_doc_is_partial_skips_instead_of_classifying_against_base`, and
+  `a_scene_whose_saved_overlay_is_unclassifiable_skips_instead_of_losing_its_headroom_silently`.
 
 ## A post-save re-read that cannot answer must say UNCONFIRMED, never "did not persist"
 

@@ -13,7 +13,6 @@ import type { BaseBoostSummary } from "../lib/types";
 
 const boost = (over: Partial<BaseBoostSummary>): BaseBoostSummary => ({
   applied: false,
-  regime: "boost",
   preset_level: 1.0,
   base_amps: [
     {

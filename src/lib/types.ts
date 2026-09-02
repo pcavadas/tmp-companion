@@ -256,11 +256,6 @@ export interface TradeSummary {
   benefiting: SoundId[];
 }
 
-/** Which control pair split closed a base row's gap (mirrors `headroom_trade::PairRegime`,
- * snake_case tokens). `"boost"` is the only regime `BaseBoostSummary` is ever stamped for —
- * carried anyway so a consumer never has to assume it. */
-export type PairRegime = "none" | "trade" | "boost" | "infeasible";
-
 /** A BASE-PAIR BOOST disclosure (mirrors `headroom_trade::BaseBoostSummary`, snake_case —
  * see `TradeSummary`'s doc for the layer rule). Phase 2 of the plumes/BD2/OCD-class
  * regression fix: base's OWN `presetLevel`/amp-fader pair — `presetLevel` pinned at its
@@ -278,7 +273,6 @@ export type PairRegime = "none" | "trade" | "boost" | "infeasible";
  *   this field instead of leaving it `null`. */
 export interface BaseBoostSummary {
   applied: boolean;
-  regime: PairRegime;
   /** The raised `presetLevel` — exact either way, so an advisory can state it without
    * measuring. */
   preset_level: number;

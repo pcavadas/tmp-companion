@@ -2,7 +2,7 @@
 
 use super::level::load_and_filter_amp_candidates;
 use super::scene_jobs::prepass_scene_docs;
-use super::scene_jobs::{build_scene_jobs, docs_as_refs, KNOB_ONLY_PROBE_TARGET_LUFS};
+use super::scene_jobs::{build_scene_jobs, KNOB_ONLY_PROBE_TARGET_LUFS};
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
@@ -159,12 +159,10 @@ pub fn probe_level_preset_scenes(
         .find(|(n, _)| n.eq_ignore_ascii_case("base"))
         .map(|(_, t)| *t)
         .unwrap_or(default_target);
-    // Isolation-parity fix (Phase 5, 2026-08-31 bisect, same as `probe_level_preset`): the
-    // Base leg used to measure with an empty `&[]` force list — "base as saved" — instead
-    // of production's isolated base (every footswitch-owned on-off block forced OFF).
-    // `base_isolation_or_refuse` is the ONE shared read → refuse-or-force step; an
-    // unreadable/truncated `ftsw` refuses rather than leveling a guess.
-    let (force, restore_scene) = crate::commands::doctor::read_base_isolation(list_index)?;
+    // Production's isolated base (every footswitch-owned on-off block forced OFF), via the
+    // ONE shared read → refuse-or-force step; an unreadable/truncated `ftsw` refuses rather
+    // than leveling a guess.
+    let (_, _, force, restore_scene) = crate::commands::doctor::read_base_isolation(list_index)?;
     let opts = leveller::LevelOptions {
         save,
         verify: true,
@@ -222,13 +220,7 @@ pub fn probe_level_preset_scenes(
         // REASON (e.g. "no complete routing read", "no active guitar amp in scene") —
         // print them rather than folding every failure into one generic skip, or a
         // prepass harvest problem is indistinguishable from a genuinely knobless scene.
-        let jobs = match build_scene_jobs(
-            &[slot],
-            &candidates,
-            &docs_as_refs(&docs),
-            target,
-            saved.as_ref(),
-        ) {
+        let jobs = match build_scene_jobs(&[slot], &candidates, &docs, target, saved.as_ref()) {
             Err(reason) => {
                 out += &format!("FS[{slot}] {name:<18} [SKIP: {reason}]\n");
                 continue;
@@ -381,7 +373,7 @@ pub fn probe_scene_knob_authority(
     let job = build_scene_jobs(
         &[scene_slot],
         &candidates,
-        &docs_as_refs(&docs),
+        &docs,
         KNOB_ONLY_PROBE_TARGET_LUFS,
         None,
     )?;
@@ -450,7 +442,7 @@ pub fn probe_mute_floor(
     let job = build_scene_jobs(
         &[scene_slot],
         &candidates,
-        &docs_as_refs(&docs),
+        &docs,
         KNOB_ONLY_PROBE_TARGET_LUFS,
         None,
     )?
@@ -630,13 +622,7 @@ pub fn probe_jointk_scenes(
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
         std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let saved = super::scene_jobs::read_saved_preset(list_index);
-        let jobs = match build_scene_jobs(
-            &slots,
-            &candidates,
-            &docs_as_refs(&docs),
-            target,
-            saved.as_ref(),
-        ) {
+        let jobs = match build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref()) {
             Ok(j) => j,
             Err(e) => {
                 out += &format!("group target {target:.1} slots {slots:?} [BUILD FAIL: {e}]\n");
@@ -710,13 +696,7 @@ pub fn probe_redistribute(
     let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
     std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let saved = super::scene_jobs::read_saved_preset(list_index);
-    let jobs = build_scene_jobs(
-        &slots,
-        &candidates,
-        &docs_as_refs(&docs),
-        target,
-        saved.as_ref(),
-    )?;
+    let jobs = build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref())?;
     let pl = docs
         .iter()
         .find_map(|(_, d)| d.as_ref().and_then(crate::audiograph::preset_level))

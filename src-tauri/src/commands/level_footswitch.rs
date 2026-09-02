@@ -163,16 +163,9 @@ pub(crate) fn resolve_footswitch_job(
     Ok((value_b, spec))
 }
 
-/// Every section [`footswitch::scene_contexts_for_switches`] dereferences — the completeness
-/// requirement must name ALL of them, not just the one the picker's ROWS come from.
-///
-/// `ftsw` sizes the row list; `scenes` (via each scene's `ftswStates`) is where the ANSWER
-/// comes from. Requiring `ftsw` alone was a silent wrong answer on any preset whose field-8
-/// read is cut between the two — `scenes` is the first section the tail cut takes, and the
-/// truncation is per-slot deterministic, so the picker reported "no scene enables any switch"
-/// every time and every footswitch fell back to base context. That fallback is correct only
-/// when the document genuinely cannot be read; here the complete body is one backup read away,
-/// which is exactly what `read_slot_preset_complete` does once the section is named.
+/// Every section [`footswitch::scene_contexts_for_switches`] dereferences — `ftsw` sizes the
+/// row list, `scenes` carries the answer (see `the_scene_context_read_requires_every_section_
+/// its_answer_is_derived_from` for the truncation this shape exists to survive).
 const SCENE_CONTEXT_SECTIONS: &[&str] = &["ftsw", "scenes"];
 
 /// Which scenes enable each footswitch of `slot`, for the leveling wizard's SCENE-CONTEXT
@@ -774,8 +767,7 @@ mod tests {
                 assert!(
                     SCENE_CONTEXT_SECTIONS.contains(&section.as_str()),
                     "dropping `{section}` changed the answer, so the completeness check \
-                     must require it — a section the reader dereferences may not be left \
-                     unnamed (this is the `scenes` regression)"
+                     must require it"
                 );
             }
         }

@@ -333,13 +333,10 @@ pub struct LevelResult {
     /// structure, not one row's. `None` on every untraded run and on every lane that has no
     /// trade (base, block, footswitch). Mirrored in `src/lib/types.ts`.
     pub trade: Option<crate::headroom_trade::TradeSummary>,
-    /// THE BASE-PAIR BOOST this run made (or, when it couldn't apply one, WHAT IT WOULD
-    /// MAKE) — see [`crate::headroom_trade::BaseBoostSummary`]. Phase 2 of the
-    /// plumes/BD2/OCD-class regression fix: base's OWN `presetLevel`/amp-fader pair, planned
-    /// by `headroom_trade::plan_level_pair` and applied when the run's shape allows it (a
-    /// save on a scene-less preset — see `leveller::level_preset`'s routing doc). `None` on
-    /// every run whose base pair never entered the `Boost` regime, and on every lane that
-    /// isn't the base row (block, footswitch, scene). Mirrored in `src/lib/types.ts`.
+    /// The base-pair BOOST this run made, or — when its shape couldn't apply one — what it
+    /// WOULD make. See [`crate::headroom_trade::BaseBoostSummary`]. `None` whenever the
+    /// planner chose no boost, and on every lane that isn't the base row (block, footswitch,
+    /// scene). Mirrored in `src/lib/types.ts`.
     pub base_boost: Option<crate::headroom_trade::BaseBoostSummary>,
 }
 
@@ -686,7 +683,7 @@ pub(crate) enum SaveWitness {
         /// 0-based `scenes[]` wire index the write landed in; `None` = base/footswitch.
         scene: Option<u32>,
     },
-    /// A BASE-BOOST save (Phase 2): `presetLevel` pinned at its ceiling AND the base amp's
+    /// A BASE-BOOST save: `presetLevel` pinned at its ceiling AND the base amp's
     /// `outputLevel` raised, in the SAME save. Both halves must read back before the barrier
     /// releases a same-slot load — see `witness_value_in_doc`'s arm, which requires BOTH to
     /// match (never just one) before accepting the doc as fresh.
@@ -699,13 +696,7 @@ pub(crate) enum SaveWitness {
 }
 
 /// One value `recall_reassert_save` re-writes between the pre-save scene recall and the save
-/// itself (see that function's doc for WHY: `setPresetLevel` runs the device's own level-apply
-/// on a `loadScene`, silently reverting an unsaved write the recall just performed). Replaces
-/// the old `reassert_pl: Option<f32>` + `extra_reassert: Option<(&str, &str, &str, f32)>` +
-/// `override_witness: Option<SaveWitness>` trio every call site used to thread separately —
-/// [`derive_save_witness`] reads the witness straight off this list instead, so a caller states
-/// its facts ONCE (the base-boost site used to write the same `(pl, node, param, value)` facts
-/// twice: once as `extra_reassert`, again as an explicit `SaveWitness::PresetLevelWithParam`).
+/// itself — see that function's doc for why.
 #[derive(Debug, Clone)]
 pub(crate) enum Reassert {
     PresetLevel(f32),
@@ -718,39 +709,13 @@ pub(crate) enum Reassert {
 }
 
 impl Reassert {
-    /// The common single-value shape: a caller with only an owned `presetLevel` re-assert (no
-    /// base-boost fader alongside it) builds its whole reassert list from this.
-    fn preset_level_only(pl: Option<f32>) -> Vec<Reassert> {
-        pl.map(Reassert::PresetLevel).into_iter().collect()
-    }
-}
-
-/// Derive the save's [`SaveWitness`] from what it actually reasserted — PresetLevel-only →
-/// `SaveWitness::PresetLevel`, PresetLevel + a Param → `SaveWitness::PresetLevelWithParam`,
-/// neither → `None` (the caller falls back to its own `scene_witness`, e.g. a scene batch's
-/// own `Param` witness for an untraded save — see `save_deferred_scene_writes`'s doc). No
-/// caller today reasserts a bare `Param` with no `PresetLevel` alongside it, so that
-/// combination is unreached rather than modeled.
-fn derive_save_witness(reasserts: &[Reassert]) -> Option<SaveWitness> {
-    let pl = reasserts.iter().find_map(|r| match r {
-        Reassert::PresetLevel(v) => Some(*v),
-        Reassert::Param { .. } => None,
-    });
-    let param = reasserts.iter().find_map(|r| match r {
-        Reassert::Param {
-            node, param, value, ..
-        } => Some((node.clone(), param.clone(), *value)),
-        Reassert::PresetLevel(_) => None,
-    });
-    match (pl, param) {
-        (Some(pl), Some((node, param, value))) => Some(SaveWitness::PresetLevelWithParam {
-            pl,
-            node,
-            param,
-            value,
-        }),
-        (Some(pl), None) => Some(SaveWitness::PresetLevel(pl)),
-        (None, _) => None,
+    /// The common single-value shape — an owned `presetLevel` re-assert and the save witness
+    /// that same value IS, stated once so the two can never disagree.
+    fn preset_level_only(pl: Option<f32>) -> (Vec<Reassert>, Option<SaveWitness>) {
+        (
+            pl.map(Reassert::PresetLevel).into_iter().collect(),
+            pl.map(SaveWitness::PresetLevel),
+        )
     }
 }
 
@@ -1287,11 +1252,6 @@ pub(crate) fn capture_on_session(
     // skip this: their transact round-trips already break the idle and land the
     // engage ≥~850 ms post-recall — HW-validated green, do not perturb.
     //
-    // `arm_pair_measurement`'s zero-write base arm hand-rolls this SAME breaker
-    // (2026-08-31 bisect) rather than sharing this fn's code — different pre-engage
-    // shape (no `force_bypass`/`ref_level` params to gate on). Adopt a shared seam here
-    // only if a refactor is transparently behavior-identical; until then treat this as
-    // the reference cadence the other copies must match.
     if force_bypass.is_empty() && ref_level.is_none() {
         s.heartbeat()?;
         settle_or_cancel(SETTLE_AFTER_SET_MS)?;
@@ -1759,12 +1719,11 @@ pub fn redistribute_delta_db(
         .max(0.0)
 }
 
-/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`CLAUDE.md`,
-/// "How leveling works"). ONE definition so the solver, the boost planner, `apply_base_boost`
-/// and the idempotency band can never round it four different ways — the planner and its own
-/// executor in particular recompute the SAME base as-is loudness in caller and callee, and a
-/// drift between them would move a boost's split without any lane noticing. `level` is floored
-/// at `1e-6` exactly as `solve_level` always has.
+/// `captured_LUFS = 20·log10(level) + C` — THE leveling physics identity (`CLAUDE.md`, "How
+/// leveling works"). ONE definition so the solver, the boost planner, its executor and the
+/// idempotency band cannot round it four different ways: the planner and executor recompute
+/// the SAME base as-is loudness, and a drift between them would move a boost's split with no
+/// lane noticing. `level` is floored at `1e-6`.
 pub(crate) fn lufs_at_level(c: f64, level: f32) -> f64 {
     20.0 * (level.max(1e-6) as f64).log10() + c
 }
@@ -1773,11 +1732,10 @@ pub(crate) fn lufs_at_level(c: f64, level: f32) -> f64 {
 /// `(final_level clamped 0..1, clamped, predicted_lufs)`.
 ///
 /// The clamp test carries NO epsilon on purpose — the raw "did the ideal level land outside
-/// `[0, 1]`" question; the lane that needs an acceptance band applies its own (see
-/// [`already_on_target`], which owns that argument). `clamped` is a DECISION input, not a
-/// label: it buckets the Summary's "Re-level clamped…" action and clears `allGood`, so
-/// banding it here is product-visible and wants its own gate. The scene and footswitch lanes
-/// never reach this function (they solve through `solve_joint_k_at` / `solve_param_secant`).
+/// `[0, 1]`" question; a lane that needs an acceptance band applies its own (see
+/// [`already_on_target`]). `clamped` is a DECISION input, not a label: it buckets the
+/// Summary's "Re-level clamped…" action and clears `allGood`, so banding it here would be
+/// product-visible.
 pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
     let ideal = 10f64.powf((target_lufs - c) / 20.0);
     let clamped = ideal > LEVEL_MAX as f64 || ideal < LEVEL_MIN as f64;
@@ -1904,6 +1862,7 @@ pub fn apply_levels(
         .iter()
         .find(|(k, _)| matches!(k, LevelKnob::PresetLevel))
         .map(|(_, v)| *v);
+    let (reasserts, witness) = Reassert::preset_level_only(reassert_pl);
     if opts.save {
         if opts.verify {
             // A session that has toggled re-amp silently DROPS the save (HW: after the
@@ -1914,19 +1873,9 @@ pub fn apply_levels(
             drop(s);
             crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
             let mut s2 = Session::connect()?;
-            recall_reassert_save(
-                &mut s2,
-                slot,
-                opts.restore_scene,
-                &Reassert::preset_level_only(reassert_pl),
-            )?;
+            recall_reassert_save(&mut s2, slot, opts.restore_scene, &reasserts, witness)?;
         } else {
-            recall_reassert_save(
-                &mut s,
-                slot,
-                opts.restore_scene,
-                &Reassert::preset_level_only(reassert_pl),
-            )?;
+            recall_reassert_save(&mut s, slot, opts.restore_scene, &reasserts, witness)?;
         }
     } else if opts.defer {
         // Deferred mode: leave the write UNSAVED in the working copy — the scene
@@ -1950,60 +1899,20 @@ fn level_unchanged(final_level: f32, previous: f32) -> bool {
 }
 
 /// Is the preset's ALREADY-SAVED `p` already on `target_lufs`, given this run's measured `c`?
-/// The second half of the idempotency skip, and the ONE place the base lane's divergence from
-/// `scene_at_target` / `switch_at_target` is argued — those point here rather than restate it.
-///
-/// WHY THE BASE LANE DROPS `!clamped`. On a preset already leveled through BOOST, `presetLevel`
-/// sits at [`LEVEL_MAX`] and the fader was solved so `C ≈ target`, so a re-measure a few float
-/// units low makes `solve_level`'s ideal a hair over `1.0` and reports `clamped` purely from
-/// f32/f64 round-trip. Requiring `!clamped` let that hairline flip bypass the skip and
-/// re-persist an identical `presetLevel`. The other lanes have no boundary-parked steady state
-/// and keep the stricter rule.
-///
-/// BANDED AT [`FS_TOL_LU`] (0.1), NOT [`KNOB_TOL_LU`] (0.3) — user-decided, the same standard
-/// the footswitch lane has always held. Tighter than the ~0.12 LU capture noise `FS_TOL_LU`
-/// documents, so a re-measure landing in `(0.1, 0.3]` falls through and re-saves a preset that
-/// was already correct. That is the accepted price of never reporting `done` on an audible
-/// shortfall, and it keeps the lane self-consistent: every `clamped` row the Summary offers to
-/// re-level is one a re-run can actually move. DO NOT widen this to `KNOB_TOL_LU`.
-///
-/// BANDED AT `p`, NOT `predicted` — `predicted` is computed at `final_level` and
-/// [`level_unchanged`] already tolerates [`KNOB_TOL_LU`] between the two; banding on it would
-/// compound both tolerances. `p` is the level the skip KEEPS.
-///
-/// THE SKIP CANNOT PREEMPT A BOOST — this is what makes dropping `!clamped` safe. The banded
-/// quantity is bit-for-bit the boost planner's own `G` (same `previous_level`, same `m.c`, same
-/// [`lufs_at_level`]), and [`crate::headroom_trade::plan_level_pair`] enters `Boost` only at
-/// `g > p_up + TRADE_CLAMP_EPS_LU` with `p_up >= 0`, where `TRADE_CLAMP_EPS_LU` IS
-/// `KNOB_TOL_LU` — disjoint from a 0.1 band with room to spare. Other regimes DO fire inside
-/// the band (`Infeasible` when both controls are maxed) but are inert: the caller acts only on
-/// `regime == Boost && fader_target.is_some()`. Keep both readings of `previous_level` and
-/// `m.c` identical or the identity breaks silently.
-///
-/// KEEP BOTH CONJUNCTS. This nearly implies [`level_unchanged`], but not on out-of-range
-/// values: `p` is read straight off the preset JSON as an unvalidated `as_f64`, and a doc
-/// carrying `presetLevel = 2.0` whose ideal is also `2.0` bands to exactly zero while
-/// `level_unchanged(1.0, 2.0)` correctly refuses at 6.02 dB. The run must WRITE the clamped
-/// in-range level, not skip.
-///
-/// RUN-ORDER ASYMMETRY, accepted: the band lives in the skip, not in `solve_level`'s flag, so a
-/// sub-band shortfall at the ceiling reports `clamped` from the run that pins it and `done`
-/// from the next. A preset AUTHORED in `[0.9886, 1.0]` and short by under the band reports
-/// `done` on its FIRST run with no affordance to disagree. At 0.1 that window sits at or below
-/// both the noise floor and the audibility standard; at 0.3 it did not.
+/// Banded at [`FS_TOL_LU`] (0.1), tighter than the ~0.12 LU capture noise on purpose so a
+/// re-measure in `(0.1, 0.3]` re-saves rather than report `done` on an audible shortfall — DO
+/// NOT widen it. Evaluated at the REFERENCE level `p` it is bit-for-bit the boost planner's own
+/// `G`, which fires only above `p_up + KNOB_TOL_LU`, so this band can never pre-empt a boost —
+/// keep `previous_level`/`m.c` read identically to the planner's or that breaks silently.
 fn already_on_target(c: f64, p: f32, target_lufs: f64) -> bool {
     (target_lufs - lufs_at_level(c, p)).abs() <= FS_TOL_LU
 }
 
-/// Phase 2 continuation context — bundles the boost-capable extras a caller may supply,
-/// replacing the old `level_preset_with_base_amp` middle rung of a three-function ladder
-/// (`level_preset` → `level_preset_with_base_amp` → `level_preset_impl`). `Default` (both
-/// fields `None`) is the exact byte-for-byte path every caller but `commands::level_preset`'s
-/// base ("None"/presetLevel) arm takes — that is the one caller that has already read the
-/// saved preset and can derive a validated single-knob base amp candidate via
-/// `probe_api::scene_jobs::build_scene_jobs`. Every other caller (this crate's own tests, the
-/// `probe` bin's benches, `e2e_server_tests`) keeps calling [`level_preset`] below, which
-/// forwards a default context and takes the identical path.
+/// The boost-capable extras a caller may supply. `commands::level_preset`'s base
+/// ("None"/presetLevel) arm is the only caller that fills it in — the only one that has
+/// already read the saved preset and can derive a validated single-knob base amp candidate.
+/// Everyone else calls [`level_preset`], which forwards a `Default` and takes the identical
+/// path.
 #[derive(Default)]
 pub(crate) struct BoostContext<'a> {
     /// The candidate amp's job (its knob + bounds; `scene_slot: None`, isolation on
@@ -2014,47 +1923,28 @@ pub(crate) struct BoostContext<'a> {
     /// it. v1 scopes the full continuation to scene-less presets, see `level_preset_impl`'s
     /// routing doc.
     pub saved: Option<&'a serde_json::Value>,
-    /// The SAME read's own fail-safe "does this preset carry `scenes[]`?" flag
-    /// (`read_slot_preset_sections`'s `has_fs_scenes` — conservative `true` on anything
-    /// truncated/unknown, accurate otherwise) — see [`scene_bearing_for_boost_gate`], which
-    /// `level_preset_impl`'s v1 boost-routing gate is threaded through. BUG→GATE: a bare
-    /// `preset.get("scenes")` check on `saved` alone missed a preset whose field-8 read cut
-    /// off before the (alphabetically-last) `scenes` key while `ftsw` still came back whole —
-    /// the doc then has no `scenes` key at all, reading as scene-LESS and letting a
-    /// scene-bearing preset take the APPLIED boost.
+    /// The SAME read's own fail-safe "does this preset carry `scenes[]`?" flag — see
+    /// [`scene_bearing_for_boost_gate`], which consumes it and states the hole it closes.
     pub has_fs_scenes: bool,
 }
 
-/// Does the SAVED preset carry any `scenes[]` rows, read DIRECTLY off the doc? A raw doc
-/// check, not fail-safe by itself — a preset whose field-8 read was cut before the `scenes`
-/// key parses with no `scenes` at all and reads `false` here. [`scene_bearing_for_boost_gate`]
-/// is the safe-by-construction signal `level_preset_impl`'s gate actually uses; this is kept
-/// as its OR'd-in fallback (defense in depth: a `saved` doc that genuinely carries `scenes`
-/// still gates even if a caller's `has_fs_scenes` were ever wrong) and for any other direct
-/// doc inspection that doesn't have a read's own truncation flag to consult.
-pub(crate) fn preset_has_scenes(saved: &serde_json::Value) -> bool {
-    saved
-        .get("scenes")
-        .and_then(|s| s.as_array())
-        .is_some_and(|s| !s.is_empty())
-}
-
-/// The v1 boost-routing gate's OWN "is this preset scene-bearing?" signal (BUG→GATE, the
-/// plumes/BD2/OCD-regression-class field-8-truncation hole): `has_fs_scenes` is the read's
-/// own fail-safe flag (`read_slot_preset_sections`'s doc — conservative `true` on a truncated
-/// or unknown `scenes` tail, accurate `false` only when the tail was read WHOLE and is
-/// genuinely empty), OR'd with a direct check of `saved` as defense in depth. Threading the
-/// read's OWN flag matters because `commands::level_preset`'s base arm only requires `ftsw`
-/// complete (`read_slot_preset_complete(slot, &["ftsw"])`) — a preset whose `scenes` key
-/// alone falls past the field-8 cut (it sorts after `ftsw`) still reads back a doc with no
-/// `scenes` key at all, so a bare `saved.is_some_and(preset_has_scenes)` check would read
-/// `false` (scene-less) and let a scene-bearing preset take the APPLIED boost instead of the
-/// advisory. A pure fn over the two inputs so it's testable without a device read at all.
+/// The v1 boost-routing gate's "is this preset scene-bearing?" signal (BUG→GATE). THE HOLE: a
+/// field-8 read cut before the alphabetically-last `scenes` key yields a doc with no `scenes`
+/// at all — indistinguishable, by a bare doc check, from a genuinely scene-less preset — and
+/// the base arm only requires `ftsw` complete, so a scene-bearing preset would take the
+/// APPLIED boost instead of the advisory. `has_fs_scenes` is the READ's own fail-safe flag
+/// (`read_slot_preset_sections`: `true` on a truncated or unknown tail); the doc check is
+/// OR'd in as defense in depth.
 pub(crate) fn scene_bearing_for_boost_gate(
     has_fs_scenes: bool,
     saved: Option<&serde_json::Value>,
 ) -> bool {
-    has_fs_scenes || saved.is_some_and(preset_has_scenes)
+    has_fs_scenes
+        || saved.is_some_and(|s| {
+            s.get("scenes")
+                .and_then(|v| v.as_array())
+                .is_some_and(|v| !v.is_empty())
+        })
 }
 
 #[cfg(test)]
@@ -2189,12 +2079,11 @@ pub(crate) fn level_preset_impl(
             return Err(CANCELLED.to_string());
         }
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
-        // Idempotency skip: the solved level matches what's already saved AND that saved level
-        // is itself on target — reload to discard the measurement's ref-level edit (same
-        // recovery as the NO_SIGNAL branch above) and return without writing. `clamped` is
-        // deliberately NOT part of this test; `already_on_target`'s doc carries the why (a
-        // boosted preset's re-measure flips it on float noise) and the mutual-exclusion
-        // argument that keeps this skip from ever preempting the ⟦BOOST⟧ block below.
+        // Idempotency skip: the solved level matches what's already saved AND that saved level is
+        // itself on target — reload to discard the measurement's ref-level edit and return without
+        // writing. Both conjuncts are load-bearing: an unvalidated saved `p` above 1.0 bands to
+        // zero and passes `already_on_target` alone, where `level_unchanged` correctly refuses.
+        // `clamped` is deliberately NOT in the test — a re-measure flips it on float noise.
         if let Some(p) = previous_level {
             if level_unchanged(final_level, p) && already_on_target(m.c, p, target_lufs) {
                 log::info!(
@@ -2242,16 +2131,12 @@ pub(crate) fn level_preset_impl(
             apply_opts.verify = false;
         }
 
-        // ⟦BOOST⟧ Plan the base pair off the SAME measurement, before any write (Phase 2 —
-        // the plumes/BD2/OCD-class regression fix; physics + regimes in
-        // `notes/leveling.md`'s BOOST section, `crate::headroom_trade::plan_level_pair`'s
-        // own doc). `sounds` is empty: base has no OTHER sound's clamp to redistribute
-        // against here (that is `redistribute_clamped_headroom`'s job, a different lane) —
-        // this planner only ever asks "can base's OWN gap be closed by moving BOTH its own
-        // controls together?". `base_amp` is `Some` only from `commands::level_preset`'s
-        // base arm, which has already validated a single-knob candidate; every other caller
-        // passes `None` and the `and_then` below short-circuits, taking the identical
-        // byte-for-byte path this function always has.
+        // ⟦BOOST⟧ Plan the base pair off the SAME measurement, before any write (physics in
+        // `notes/leveling.md`'s BOOST section). `sounds` is empty: base has no OTHER sound's
+        // clamp to redistribute against here (that is `redistribute_clamped_headroom`'s lane)
+        // — this planner only asks "can base's OWN gap be closed by moving both its own
+        // controls together?". `base_amp` is `Some` only from `commands::level_preset`'s base
+        // arm; every other caller passes `None` and the `and_then` short-circuits.
         let boost_plan = ctx
             .base_amp
             .as_ref()
@@ -2266,16 +2151,11 @@ pub(crate) fn level_preset_impl(
                 // `measure_c`'s capture above moved neither.
                 let a_base = lufs_at_level(m.c, p0);
                 let plan = crate::headroom_trade::plan_level_pair(&[], a_base, target_lufs, p0, f0);
-                (plan.regime == crate::headroom_trade::PairRegime::Boost
-                    && plan.fader_target.is_some())
-                .then_some((job, p0, f0, plan))
+                (plan.boost && plan.fader_target.is_some()).then_some((job, p0, f0, plan))
             });
 
-        // `base_boost` is computed BEFORE the one shared tail below: the advisory arm
-        // used to duplicate that whole tail (its own `apply_level` call + ~45-line `LevelResult`
-        // literal) just to set this one field. Only the advisory outcome ever reaches the tail —
-        // a run whose shape allows the full continuation returns early from `apply_base_boost`
-        // itself, below.
+        // Only the ADVISORY outcome ever reaches the shared tail below — a run whose shape
+        // allows the full continuation returns early from `apply_base_boost`.
         let mut base_boost: Option<crate::headroom_trade::BaseBoostSummary> = None;
         if let Some((job, p0, f0, plan)) = boost_plan {
             let LevelKnob::Block {
@@ -2285,8 +2165,7 @@ pub(crate) fn level_preset_impl(
                 ..
             } = &job.knobs[0].knob
             else {
-                // `build_scene_jobs` never emits a base amp candidate any other knob shape —
-                // belt-and-suspenders, not an observed failure.
+                // Belt-and-suspenders, not an observed failure.
                 return Err(
                     "base boost candidate's own knob was not a Block knob (unreachable in \
                      practice — build_scene_jobs never emits this shape for an amp candidate)"
@@ -2295,12 +2174,11 @@ pub(crate) fn level_preset_impl(
             };
             let ids = (group_id.clone(), node_id.clone(), parameter_id.clone());
 
-            // v1 SCOPE (Risks section, the plan): the full continuation only fires for a
-            // `save` run on a SCENE-LESS preset — a base-only run on a scene preset gets the
-            // advisory below and today's honest clamp, same as a preview. Widening to
-            // scene-bearing presets needs its own plan (a boosted base's `presetLevel` raise
-            // also shifts every SCENE row's own captured loudness by `raise_db` —
-            // `redistribute_clamped_headroom`'s territory, not this seam's).
+            // v1 SCOPE: the full continuation only fires for a `save` run on a SCENE-LESS
+            // preset; a scene preset gets the advisory below and today's honest clamp.
+            // Widening needs its own plan — a boosted base's `presetLevel` raise also shifts
+            // every SCENE row's captured loudness by `raise_db`, which is
+            // `redistribute_clamped_headroom`'s territory, not this seam's.
             let scene_preset = scene_bearing_for_boost_gate(ctx.has_fs_scenes, ctx.saved);
             if opts.save && !scene_preset {
                 return apply_base_boost(
@@ -2382,11 +2260,9 @@ pub(crate) fn level_preset_impl(
     restore_after_unsaved_error(slot, opts.save, result)
 }
 
-/// The shared bail-body every raise-and-hold executor (`apply_base_boost`,
-/// `apply_headroom_trade`) runs when backing a half-landed pair out — reload the stored preset
-/// (discards the unsaved raise + whatever the hold wrote, together) and guarantee re-amp OFF on
-/// a fresh connection. `tag` is the caller's own `reamp_off_guaranteed` log tag (distinct per
-/// caller so a stranded-OFF log line still says which executor hit it).
+/// Back a half-landed raise-and-hold pair out: reload the stored preset (discarding the
+/// unsaved raise and whatever the hold wrote, together) and guarantee re-amp OFF on a fresh
+/// connection. `tag` names the executor in the log line.
 fn backout_pair(slot: u32, tag: &str) {
     if let Err(e) = restore_saved_preset(slot) {
         log::warn!("restore_saved_preset failed backing out a {tag} (slot {slot}): {e}");
@@ -2394,11 +2270,9 @@ fn backout_pair(slot: u32, tag: &str) {
     reamp_off_guaranteed(tag);
 }
 
-/// Undo a landed hold/boost's base isolation, backing the WHOLE pair out via
-/// `on_fail` if the inverse writes themselves fail — shared by `apply_base_boost` and
-/// `apply_headroom_trade`, which otherwise duplicate this exact "half an undo is worse than
-/// none" policy differing only in wording (`what`) and error type. A no-op on an empty
-/// `force_bypass` (neither caller isolated anything).
+/// Undo a landed hold/boost's base isolation, backing the WHOLE pair out via `on_fail` if the
+/// inverse writes themselves fail — half an undo is worse than none. No-op on an empty
+/// `force_bypass`.
 fn undo_isolation_or_bail<E>(
     force_bypass: &[(String, String, bool)],
     saved: Option<&serde_json::Value>,
@@ -2416,14 +2290,10 @@ fn undo_isolation_or_bail<E>(
     })
 }
 
-/// The shared RAISE-FIRST, UNSAVED prologue — settle → connect →
-/// `set_preset_level(value)` → settle. Both `apply_base_boost` and `apply_headroom_trade` run
-/// this before their (genuinely different) hold solves; every capture that follows connects
-/// lean-equivalent (no `load_preset`), so the working-copy value survives each fresh re-amp
-/// connection (HW: unsaved writes persist across reconnects). The two callers map a CONNECT
-/// failure differently (a boost backs out on ANY failure here; a trade's own connect failure
-/// skips the backout, since nothing has been written yet) — that policy stays at the call
-/// sites via `on_connect_err`/`on_set_err`, not folded in here.
+/// The shared RAISE-FIRST, UNSAVED prologue — settle → connect → `set_preset_level(value)` →
+/// settle. Every capture that follows connects lean-equivalent, so the working-copy value
+/// survives each fresh re-amp connection (HW: unsaved writes persist across reconnects).
+/// Callers map a CONNECT vs a SET failure differently, hence the two error closures.
 fn raise_preset_level_unsaved<E>(
     value: f32,
     on_connect_err: impl FnOnce(String) -> E,
@@ -2436,18 +2306,13 @@ fn raise_preset_level_unsaved<E>(
     Ok(())
 }
 
-/// The BOOST-regime full continuation (Phase 2): `presetLevel` to its ceiling, the base amp's
-/// fader closed-loop solved for the remainder, both re-asserted and saved TOGETHER on the save
-/// connection, and a hard-failing post-save read-back of both halves. Called only from
-/// `level_preset_impl`'s routing, only when `opts.save` is true and the preset is scene-less
-/// (v1 scope — see that call site's doc). Mirrors [`apply_headroom_trade`]'s shape (raise
-/// first & unsaved via the shared [`raise_preset_level_unsaved`], solve the fader via
-/// `jointk_one_scene`, undo isolation via the shared [`undo_isolation_or_bail`], ONE save) with
-/// two differences that follow directly from BOOST being a single-preset, non-batch move: this
-/// function does its OWN save (a trade defers to a batch's terminal one) and a CLAMPED solve
-/// here still PERSISTS — BOOST is the last-resort move, so even a partial close beats the
-/// honest clamp this run would otherwise report; a trade's clamped hold backs out instead
-/// because a failed trade should never have been attempted at all.
+/// The BOOST full continuation: `presetLevel` to its ceiling, the base amp's fader
+/// closed-loop solved for the remainder, both saved TOGETHER, then a hard-failing post-save
+/// read-back of both halves. Called only from `level_preset_impl`'s routing, on a `save` run
+/// over a scene-less preset. Mirrors [`apply_headroom_trade`]'s shape, differing where BOOST
+/// is a single-preset move: it does its OWN save (a trade defers to a batch's terminal one),
+/// and a CLAMPED solve here still PERSISTS — BOOST is the last resort, so a partial close
+/// beats the honest clamp, where a trade's clamped hold backs out instead.
 #[allow(clippy::too_many_arguments)]
 fn apply_base_boost(
     slot: u32,
@@ -2509,10 +2374,8 @@ fn apply_base_boost(
         .first()
         .copied()
         .unwrap_or(job.knobs[0].current);
-    // States the boost's two facts ONCE — `derive_save_witness` reads the
-    // `SaveWitness::PresetLevelWithParam` straight off this same list, where the old shape
-    // wrote the identical `(pl, node, param, value)` facts a second time as an explicit
-    // `override_witness`.
+    // The ONLY two-control save: both halves must read back before the freshness barrier
+    // releases a same-slot load, hence the `PresetLevelWithParam` witness.
     let reasserts = [
         Reassert::PresetLevel(plan.preset_level),
         Reassert::Param {
@@ -2522,13 +2385,19 @@ fn apply_base_boost(
             value: fader_value,
         },
     ];
+    let witness = SaveWitness::PresetLevelWithParam {
+        pl: plan.preset_level,
+        node: node_id.clone(),
+        param: parameter_id.clone(),
+        value: fader_value,
+    };
     // Unlike a plain single-knob run (whose outer `restore_after_unsaved_error` wrapper
-    // skips the restore for a non-cancel `save: true` failure — `apply_level`'s own error
-    // modes are simple enough not to need it), this save's own failure is wrapped in `bail`
-    // too: it is genuinely ambiguous whether `save_current_preset` reached the device before
-    // failing, and a dirty unsaved-raise working copy left behind either way is exactly the
-    // liability `apply_headroom_trade`'s own bail exists to close.
-    save_deferred_scene_writes(slot, opts.restore_scene, &reasserts, None).map_err(bail)?;
+    // skips the restore for a non-cancel `save: true` failure), this save's own failure is
+    // wrapped in `bail` too: it is genuinely ambiguous whether `save_current_preset` reached
+    // the device before failing, and a dirty unsaved-raise working copy left behind either
+    // way is exactly the liability `apply_headroom_trade`'s own bail exists to close.
+    save_deferred_scene_writes(slot, opts.restore_scene, &reasserts, Some(witness))
+        .map_err(bail)?;
     // POST-SAVE HARD READ-BACK: unlike `verify_persisted_writes` (advisory — a batch save
     // already landed there, so a miss only WARNS), a boost's two-control save is new and
     // untested on real hardware, so a mismatch here fails loudly instead of reporting a
@@ -2840,72 +2709,59 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
     Ok(())
 }
 
-/// The ONE pre-save sequence every batch/deferred save shares: recall the preset's
-/// original scene, re-assert any unsaved `presetLevel` the recall just reverted,
-/// then save. The recall's `loadScene` — base included — runs the device's own
-/// level-apply (the same mechanism as the "`load_preset` + `set_preset_level` in
-/// one connection → the set is overridden" gotcha), so an unsaved working-copy
-/// `presetLevel` is silently reverted to the SAVED value right before the save
-/// persists it (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
-/// doc still read the prior 0.32; caught by the online `level.online.spec.ts` base
-/// idempotency test). The revert is a LEAN-session behavior — every caller of this
-/// seam saves on a connection that did NOT `load_preset` in-session (the apply
-/// path's fresh connect, the post-verify fresh `s2`), and that is the shape both HW
-/// observations above come from. A live-edit session that loaded the preset ITSELF
-/// carries an unsaved `presetLevel` through scene recalls — base included — and the
-/// save (HW: `probe_redistribute_persist_check`'s `write_three_and_save`, fw
-/// 1.8.45-era: pl 0.42 read back against a saved 0.53 after `loadScene(1)` +
-/// `loadScene(BASE)` + save), which is why `restore_redistribution` does not route
-/// through this seam. Node/overlay writes are immune in either shape (the footswitch
-/// `switch_at_target` re-run spec proves `valueA` persists through the recall), so
-/// only the `Reassert::PresetLevel` value — the unsaved level a caller solved
-/// (`apply_levels`) or raised (`redistribute_clamped_headroom`) — needs re-writing, and only
-/// when a recall actually ran. Timing stays under the idle-gap cliff: recall +
-/// `SETTLE_AFTER_SET_MS` → set + `SETTLE_AFTER_SET_MS` → save. The re-assert
-/// deliberately does NOT defeat the restore: `setPresetLevel` emits no
-/// `loadScene`, so the scene the save stamps is still the recalled one (pinned by
-/// `recall_reassert_save_replays_the_unsaved_level_after_the_recall`).
+/// The ONE pre-save sequence every batch/deferred save shares: recall the preset's original
+/// scene, re-assert any unsaved `presetLevel` the recall just reverted, then save. The
+/// recall's `loadScene` — base included — runs the device's own level-apply (danger.md's
+/// "`load_preset` + `set_preset_level` in the same connection → the set is overridden"), so
+/// an unsaved working-copy `presetLevel` reverts to the SAVED value right before the save
+/// persists it. HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved doc still
+/// read the prior 0.32.
 ///
-/// `reasserts` replaces the old `reassert_pl` + `extra_reassert` + `override_witness` trio
-/// See [`Reassert`]'s doc. Written in the ORDER GIVEN (every caller lists
-/// `PresetLevel` before a `Param`, matching the base-boost continuation's own write order —
-/// the fader's Phase 2 addition to `presetLevel`'s pre-existing re-assert), and the save's
-/// witness is [`derive_save_witness`]'s answer over the SAME list, so a caller states its
-/// facts once instead of writing them and then separately declaring what it wrote.
+/// THE SHAPE SPLIT. That revert is LEAN-session behaviour — every caller of this seam saves
+/// on a connection that did NOT `load_preset` in-session. A LIVE-edit session that loaded the
+/// preset itself carries its unsaved `presetLevel` through scene recalls and into the save
+/// (HW, fw 1.8.45-era `probe_redistribute_persist_check`: pl 0.42 read back against a saved
+/// 0.53 after `loadScene(1)` + `loadScene(BASE)` + save), which is why
+/// `restore_redistribution` does not route through here. Node/overlay writes are immune in
+/// either shape, so only `Reassert::PresetLevel` needs re-writing.
+///
+/// The re-assert does NOT defeat the restore: `setPresetLevel` emits no `loadScene`, so the
+/// scene the save stamps is still the recalled one. `reasserts` are written in the ORDER
+/// GIVEN (every caller lists `PresetLevel` before a `Param`), each followed by
+/// `SETTLE_AFTER_SET_MS` so the idle gap stays under the cliff. `witness` is what this save
+/// should have changed — registered whether or not a recall ran, since the value persists
+/// either way.
 fn recall_reassert_save(
     s: &mut Session,
     slot: u32,
     restore_scene: Option<u32>,
     reasserts: &[Reassert],
+    witness: Option<SaveWitness>,
 ) -> Result<(), String> {
     recall_original_scene(s, restore_scene)?;
-    // UNCONDITIONAL now (Phase 2 hardening) — re-assert whenever the caller HAS an owned
-    // value, not only when a recall ran. When no recall fired this is a harmless re-write of
-    // a value already sitting in the device's working copy (belt-and-suspenders); when a
-    // recall DID fire (this function's whole reason to exist) it is the fix for the revert
-    // the recall's own `loadScene` just performed.
-    for r in reasserts {
-        match r {
-            Reassert::PresetLevel(pl) => {
-                s.set_preset_level(*pl)?;
+    // Only a recall reverts the working copy, so only a recall needs undoing. Without one the
+    // values are already in the device's working copy from this same session.
+    if restore_scene.is_some() {
+        for r in reasserts {
+            match r {
+                Reassert::PresetLevel(pl) => {
+                    s.set_preset_level(*pl)?;
+                }
+                Reassert::Param {
+                    group,
+                    node,
+                    param,
+                    value,
+                } => {
+                    s.change_parameter(group, node, param, *value)?;
+                }
             }
-            Reassert::Param {
-                group,
-                node,
-                param,
-                value,
-            } => {
-                s.change_parameter(group, node, param, *value)?;
-            }
+            crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
         }
-        crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
     }
     s.save_current_preset(slot)?;
-    // Whenever this save carries a re-asserted `presetLevel` (the base/restore/redistribution/
-    // boost path), `derive_save_witness` IS the witness: register it so a same-slot load
-    // inside the lazy-commit window waits for it. `None` (no `PresetLevel` in `reasserts`) is
-    // left to the caller's own fallback witness — see `save_deferred_scene_writes`'s doc.
-    if let Some(w) = derive_save_witness(reasserts) {
+    // Register the witness so a same-slot load inside the lazy-commit window waits for it.
+    if let Some(w) = witness {
         register_slot_save(slot, w);
     }
     Ok(())
@@ -3330,10 +3186,6 @@ fn measure_scene_asis(
     for (g, n, byp) in force_bypass {
         s.change_parameter_bool(g, n, "bypass", *byp)?;
     }
-    // Same hb → settle → hb → settle cadence `arm_pair_measurement`'s zero-write base arm
-    // interleaves (2026-08-31 bisect) — hand-rolled here rather than shared because this
-    // fn's shape has no knob to hand a common seam. Reference cadence any future shared
-    // extraction must match exactly.
     s.heartbeat()?;
     settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     s.heartbeat()?;
@@ -3391,33 +3243,12 @@ fn arm_measurement(
     Ok(())
 }
 
-/// Everything `measure_pair_at` writes on its connection BEFORE the re-amp engage —
-/// extracted into its own `&mut Session` seam (the `arm_measurement` shape) so the
-/// zero-write naked-gap fix documented below is unit-testable against `SimDevice`; the
-/// engage/capture tail that follows it cannot be.
+/// Everything `measure_pair_at` writes BEFORE the re-amp engage — the shared arming seam
+/// verbatim (`arm_measurement` has the write order), recalling `scene` when there is one.
 ///
-/// Base case: the shared arming seam verbatim (base recall → presetLevel → settle, the
-/// ONE tested write order — see `arm_measurement`'s doc). Scene case: the recall targets
-/// the scene instead of base; everything after mirrors the seam (recall FIRST — it
-/// reverts earlier unsaved writes).
-///
-/// **HW bisect, 2026-08-31.** A zero-write BASE reading (`scene: None`, `writes` empty)
-/// left `arm_measurement`'s own trailing `SETTLE_AFTER_SET_MS` immediately followed by
-/// this fn's own trailing settle, with NOTHING sent between them — a ~600 ms
-/// last-command→engage idle gap that latched the device's stationary output floor 2/2 in
-/// a `--measure-pair` bisect. A single write in the loop broke the SAME shape 1/1 (the
-/// write itself keeps the gap at ~300 ms). This FALSIFIES the older "any command between
-/// the recall and the engage rescues it" wording (danger.md / gotchas.md, corrected the
-/// same day): those failing runs DID have an intervening `presetLevel` write and still
-/// latched — the true discriminator is the GAP, not whether a command was sent at all.
-///
-/// **The fix, BASE ARM ONLY:** when `writes` is empty, interleave the same proven breaker
-/// `capture_on_session`'s naked shape already uses — `heartbeat → settle → heartbeat` —
-/// before the final settle, landing the engage on the identical ≤300 ms-per-gap cadence
-/// `measure_scene_asis` and `capture_on_session` rely on. A non-empty `writes` loop
-/// already breaks the idle itself (HW-validated green — left untouched); the SCENE arm's
-/// own gap is already ≤300 ms by construction (its `set_knob` sits between two settles —
-/// left untouched too).
+/// BASE ARM ONLY: with `writes` empty, interleave `heartbeat → settle → heartbeat` before the
+/// final settle, or the trailing settles leave a ~600 ms idle gap that latches the floor.
+/// [→ evidence](../../notes/gotchas.md#an-engage-after-a-naked-scene-recall-latches-silence--break-the-idle-with-heartbeats)
 fn arm_pair_measurement(
     s: &mut Session,
     scene: Option<u32>,
@@ -4243,17 +4074,15 @@ fn classify_fs_outcome(
 }
 
 /// Is the switch's engaged loudness already at target (within `FS_TOL_LU`, not clamped)? The
-/// footswitch counterpart of `scene_at_target`, on the FS lane's tighter band (NOT delegated
-/// to `scene_at_target`, which is pinned to `KNOB_TOL_LU`) — a re-run leaves an in-tolerance
-/// switch untouched instead of re-solving and re-randomizing it (the idempotency gap PR #74
-/// deferred). `clamped` is always `false` here (the probe measures a real value at `cur`), but
-/// the param matches `scene_at_target` for parity and testability.
+/// footswitch counterpart of `scene_at_target`, on this lane's tighter band, so a re-run
+/// leaves an in-tolerance switch untouched instead of re-randomizing it. `clamped` is always
+/// `false` here (the probe measures a real value at `cur`), but the param matches
+/// `scene_at_target` for parity and testability.
 ///
-/// KEEPS the `!clamped` requirement, and the BASE lane's `already_on_target` deliberately does
-/// NOT — do not "restore parity" by copying that band here. The base lane can drop the flag
-/// only because its skip is provably complementary to `plan_level_pair`'s regimes (see
-/// `already_on_target`'s doc); this lane has no pair planner behind it, so dropping the flag
-/// would silently suppress an honest FS clamp the user must be told about.
+/// KEEPS the `!clamped` requirement where the BASE lane's `already_on_target` drops it — do
+/// not "restore parity" by copying that band here. That lane can drop the flag only because
+/// its skip is provably disjoint from a boost (see its doc); this one has no pair planner
+/// behind it, so dropping the flag would silently suppress an honest FS clamp.
 fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
     !clamped && (measured - target).abs() <= FS_TOL_LU
 }
@@ -5896,13 +5725,9 @@ pub fn apply_headroom_trade(
         });
     }
     let raised = crate::headroom_trade::raised_preset_level(preset_level, plan.raise_db);
-    // Raise FIRST and UNSAVED (shared prologue, `raise_preset_level_unsaved`).
-    // Every measure below connects LEAN (no `load_preset`), so the working-copy value survives
-    // each fresh re-amp connection (HW: unsaved writes persist across reconnects). A CONNECT
-    // failure here does NOT bail: nothing has been written yet, so there is nothing to back
-    // out. A failed `set_preset_level` is NOT proof the set never landed, though — the write
-    // may have reached the device and only its ack failed — so THAT failure bails, to avoid
-    // leaving a raise with no compensating fader.
+    // A CONNECT failure does NOT bail: nothing is written yet. A failed `set_preset_level` is
+    // NOT proof the set never landed (the write may have reached the device and only its ack
+    // failed), so THAT one bails, rather than leave a raise with no compensating fader.
     raise_preset_level_unsaved(
         raised,
         |e| TradeFailure {
@@ -6252,19 +6077,12 @@ pub fn redistribute_clamped_headroom(
         });
     }
 
-    // ONE save — new pl + every compensated outputLevel together, original scene
-    // recalled and the UNSAVED raised pl re-asserted after it (the recall would
-    // otherwise revert it to the saved value — see `recall_reassert_save`).
-    // No separate scene witness here: `recall_reassert_save` (called inside
-    // `save_deferred_scene_writes`) already registers the raised `new_preset_level` as this
-    // save's `PresetLevel` witness — that single value identifies the whole save.
+    // ONE save — new pl + every compensated outputLevel together, original scene recalled and
+    // the UNSAVED raised pl re-asserted after it (see `recall_reassert_save`). The raised pl
+    // alone identifies the whole save, so it is the witness.
     on_tail("Saving preset…");
-    save_deferred_scene_writes(
-        slot,
-        restore_scene,
-        &Reassert::preset_level_only(Some(new_preset_level)),
-        None,
-    )?;
+    let (reasserts, witness) = Reassert::preset_level_only(Some(new_preset_level));
+    save_deferred_scene_writes(slot, restore_scene, &reasserts, witness)?;
 
     // Post-save AUDIO spot-verify at the PERSISTED pl (the wrong-pl-solve guard). Pick a
     // compensated sound that actually moved (writes > 0); re-measure it as-is. Advisory —
@@ -6410,16 +6228,14 @@ fn run_scene_jobs(
     // never isolated anything.
     isolation_restore: &[(String, String, bool)],
     mut on_scene: impl FnMut(u32, Option<&BatchedSceneOutcome>),
-    // B6 (F10): the seam widened to carry a batch-wide caption for the two phases below that
-    // have no single scene to report progress against — "Saving preset…" just before
-    // `save_deferred_scene_writes`, "Verifying…" just before `verify_persisted_writes`. A
-    // no-op closure (`|_| {}`) is the byte-identical-to-before default for any caller that
-    // doesn't want the captions.
+    // A batch-wide caption for the two tail phases that have no single scene to report
+    // progress against — "Saving preset…" and "Verifying…". `|_| {}` for callers that want
+    // no captions.
     mut on_tail: impl FnMut(&str),
     mut cancelled: impl FnMut() -> bool,
     mut solve: impl FnMut(&SceneJob) -> Result<SceneSolve, String>,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    let reasserts = Reassert::preset_level_only(hold.map(|h| h.preset_level));
+    let (reasserts, hold_witness) = Reassert::preset_level_only(hold.map(|h| h.preset_level));
     let mut outcomes = Vec::with_capacity(jobs.len());
     let mut attempted = false;
     let mut stopped = false;
@@ -6539,30 +6355,26 @@ fn run_scene_jobs(
     // The batch's ONE persist — after the re-amp OFF, on its own clean connection.
     // Fired on the stopped path too, so already-reported scenes are never lost.
     if save && attempted {
-        // Witness: one written scene `outputLevel` this batch actually persisted — the
-        // freshness registry's anchor for a NEXT run's same-slot prepass load. `SaveWitness::
-        // Param` carries no group id: node+param alone locate the value (the comparator,
-        // `witness_value_in_doc`, never needed one).
-        // `written.first()` — the LOWEST-index written scene — is deliberate, not arbitrary:
-        // it maximizes the odds a later harvest's `scenes` tail (often truncated, HW) still
-        // reaches this scene's overlay (post-review amendment 3). Base jobs also land in
-        // `written` at `scene_slot == session::BASE_SCENE_SLOT`, so the `<` guard below is
-        // required, not a `!=` (post-review amendment 5) — a base write is a `Param`
-        // witness too, but not a SCENE one.
-        let scene_witness = written.first().map(|w| SaveWitness::Param {
-            node: w.node_id.clone(),
-            param: w.parameter_id.clone(),
-            value: w.value,
-            scene: (w.scene_slot < crate::session::BASE_SCENE_SLOT).then_some(w.scene_slot),
+        // Witness: the trade hold's raised `presetLevel` when there is one, else one written
+        // scene `outputLevel` this batch persisted — the freshness registry's anchor for a
+        // NEXT run's same-slot prepass load. `written.first()` (the LOWEST-index written
+        // scene) maximizes the odds a later harvest's often-truncated `scenes` tail still
+        // reaches that overlay. Base jobs also land in `written` at `BASE_SCENE_SLOT`, so the
+        // guard must be `<`, not `!=` — a base write is a `Param` witness but not a SCENE one.
+        let witness = hold_witness.or_else(|| {
+            written.first().map(|w| SaveWitness::Param {
+                node: w.node_id.clone(),
+                param: w.parameter_id.clone(),
+                value: w.value,
+                scene: (w.scene_slot < crate::session::BASE_SCENE_SLOT).then_some(w.scene_slot),
+            })
         });
         if stopped {
             // The callee already warns internally on its own first failure; this
             // catches the case where its retry ALSO failed (cancelled path only —
             // the non-cancelled `?` below still surfaces a hard error to the caller).
             on_tail("Saving preset…");
-            if let Err(e) =
-                save_deferred_scene_writes(slot, restore_scene, &reasserts, scene_witness)
-            {
+            if let Err(e) = save_deferred_scene_writes(slot, restore_scene, &reasserts, witness) {
                 log::warn!("save_deferred_scene_writes failed on cancel (slot {slot}): {e}");
             }
             // A cancelled run that LANDED A TRADE returns its outcomes (see below), so they
@@ -6573,7 +6385,7 @@ fn run_scene_jobs(
             }
         } else {
             on_tail("Saving preset…");
-            save_deferred_scene_writes(slot, restore_scene, &reasserts, scene_witness)?;
+            save_deferred_scene_writes(slot, restore_scene, &reasserts, witness)?;
             // Confirm the save kept what the run reports — no re-capture, one field-8 read,
             // after every audio step. A stopped run with no trade returns CANCELLED below and
             // its outcomes are discarded, so it is not worth a read.
@@ -6618,50 +6430,31 @@ fn run_scene_jobs(
     Ok(outcomes)
 }
 
-/// The scene batch's ONE persist: recall the preset's original active scene (so the
-/// save stamps the same base/scene/footswitch state the preset had before the run —
-/// a save stamps `lastLoadedScene` + switch states from the working state), then ONE
-/// `saveCurrentPreset` persisting every accumulated unsaved scene overlay. HW
-/// (`probe --defer-scenes`, fw 1.8.45): unsaved scene-edit writes survive scene
-/// recalls and reconnects; re-recalling a written scene does NOT revert it; base
-/// recall = wire slot 8; the single save persists ALL accumulated overlays. One
-/// retry on a fresh connection (the realistic failure is the HID open lockout, not
-/// the save itself). The connection never toggles re-amp, so the post-re-amp
-/// save-drop cannot bite.
+/// The scene batch's ONE persist: recall the preset's original active scene (a save stamps
+/// `lastLoadedScene` + switch states from the working state), then ONE `saveCurrentPreset`
+/// persisting every accumulated unsaved scene overlay. HW (`probe --defer-scenes`, fw
+/// 1.8.45): unsaved scene-edit writes survive scene recalls and reconnects; re-recalling a
+/// written scene does NOT revert it; base recall = wire slot 8; the single save persists ALL
+/// accumulated overlays. One retry on a fresh connection (the realistic failure is the HID
+/// open lockout, not the save itself). The connection never toggles re-amp, so the
+/// post-re-amp save-drop cannot bite.
 fn save_deferred_scene_writes(
     slot: u32,
     restore_scene: Option<u32>,
-    // Replaces the old `reassert_pl` + `extra_reassert` + `override_witness` trio — see
-    // `Reassert`'s and `recall_reassert_save`'s docs. A scene batch's own `[Reassert::PresetLevel]`
-    // singleton, a base-boost save's `[PresetLevel, Param]` pair, or an untraded scene batch's
-    // empty slice all flow through the one list.
     reasserts: &[Reassert],
-    // Fallback witness for when `reasserts` carries no `PresetLevel` (so `derive_save_witness`
-    // has nothing to register itself) — an untraded scene batch's own `Param` witness for the
-    // first scene overlay it wrote. `None` whenever `reasserts` DOES carry a `PresetLevel`.
-    scene_witness: Option<SaveWitness>,
+    witness: Option<SaveWitness>,
 ) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this is ALSO fired on cancel, to persist the scene overlays
     // already written. Bailing here would throw away the run's completed work.
     let attempt = || -> Result<(), String> {
         crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
         let mut s = Session::connect()?;
-        recall_reassert_save(&mut s, slot, restore_scene, reasserts)
+        recall_reassert_save(&mut s, slot, restore_scene, reasserts, witness.clone())
     };
     attempt().or_else(|e| {
         log::warn!("deferred scene save failed ({e}); retrying on a fresh connection");
         attempt()
-    })?;
-    // Registered ONLY when the save didn't already carry a derivable witness
-    // (`recall_reassert_save` registers that one itself) — a scene deferred save with no
-    // raised presetLevel needs its OWN witness so a later same-slot load has something to
-    // wait for.
-    if derive_save_witness(reasserts).is_none() {
-        if let Some(w) = scene_witness {
-            register_slot_save(slot, w);
-        }
-    }
-    Ok(())
+    })
 }
 
 /// One solved scene write, to be checked against what the batch-end save actually persisted.
@@ -7204,8 +6997,8 @@ fn fs_silent_geometry(min_real_lufs: f64) -> f64 {
 /// report clamped even when the measured value happens to sit on target.
 ///
 /// That `!clamped` requirement is this lane's OWN rule, not a shared one: the base lane's
-/// `already_on_target` drops it, and may, because its skip is provably complementary to
-/// `plan_level_pair`'s regimes. Nothing of the sort holds here — keep the flag.
+/// `already_on_target` drops it, and may, because its skip is provably disjoint from a boost.
+/// Nothing of the sort holds here — keep the flag.
 fn scene_at_target(measured: f64, target: f64, clamped: bool) -> bool {
     !clamped && (measured - target).abs() <= KNOB_TOL_LU
 }
@@ -10028,14 +9821,12 @@ mod tests {
         assert!(!super::level_unchanged(0.5, -1.0));
     }
 
-    // BUG→GATE (the boosted-preset re-run coin flip). After a BOOST run, `presetLevel` sits at
-    // LEVEL_MAX and the fader was solved so C lands on target — so run 2's own C round-trips
-    // through f32 storage + f64 log10 a few float units PAST exact (observed offline:
-    // -23.000000488 against a -23.0 target). `solve_level` then reports `clamped` for a target
-    // that is, for every practical purpose, already reached. The idempotency skip used to
-    // require `!clamped` and so bypassed itself on that hairline flip, re-persisting the
-    // identical presetLevel and surfacing a spurious `clamped` row. `already_on_target` is the
-    // band that must absorb it.
+    // BUG→GATE (the boosted-preset re-run coin flip). After a BOOST run `presetLevel` sits at
+    // LEVEL_MAX with C solved onto target, so run 2's C round-trips through f32 storage + f64
+    // log10 a few float units PAST exact (observed offline: -23.000000488 against -23.0) and
+    // `solve_level` reports `clamped` for a target already reached. `already_on_target` is the
+    // band that must absorb it — a skip requiring `!clamped` would re-persist the identical
+    // presetLevel and surface a spurious `clamped` row.
     #[test]
     fn a_hairline_float_overshoot_still_counts_as_on_target() {
         let c = -23.000_000_488_f64;
@@ -10260,7 +10051,14 @@ mod tests {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(30).expect("load_preset");
-        recall_reassert_save(&mut s, 30, Some(3), &[Reassert::PresetLevel(0.42)]).expect("save");
+        recall_reassert_save(
+            &mut s,
+            30,
+            Some(3),
+            &[Reassert::PresetLevel(0.42)],
+            Some(SaveWitness::PresetLevel(0.42)),
+        )
+        .expect("save");
         let tail: Vec<String> = sim
             .events()
             .iter()
@@ -10278,29 +10076,25 @@ mod tests {
         );
     }
 
-    // PHASE 2 HARDENING (deviation from the old contract, deliberately): the re-assert now
-    // fires whenever the caller HAS an owned value, even with no recall to revert. The OLD
-    // test this replaces (`recall_reassert_save_skips_the_reassert_without_a_recall`) pinned
-    // the opposite — "no recall → no re-assert" — reasoning that an unconditional write would
-    // be an unmotivated behavior change for a plain save. That stopped holding the moment a
-    // second caller (the base-boost continuation, via a `Reassert::Param` entry) needed a
-    // fader write reasserted on the SAME connection whenever a recall fires; making
-    // `presetLevel`'s own reassert unconditional too keeps both writes on one rule instead of
-    // two, and the write
-    // is provably harmless without a recall (the value is already the one sitting in the
-    // device's working copy from `set_knobs` on this same session).
+    // Without a recall there is nothing to revert — the re-assert must NOT fire.
     #[test]
-    fn recall_reassert_save_reasserts_even_without_a_recall() {
+    fn recall_reassert_save_skips_the_reassert_without_a_recall() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(30).expect("load_preset");
-        recall_reassert_save(&mut s, 30, None, &[Reassert::PresetLevel(0.42)]).expect("save");
+        recall_reassert_save(
+            &mut s,
+            30,
+            None,
+            &[Reassert::PresetLevel(0.42)],
+            Some(SaveWitness::PresetLevel(0.42)),
+        )
+        .expect("save");
         let ev = sim.events();
         assert!(
-            ev.iter().any(
-                |e| matches!(e, crate::sim_device::SimEvent::PresetLevel(v) if (*v - 0.42).abs() < 1e-6)
-            ),
-            "no recall still re-asserts the caller's owned value: {ev:?}"
+            !ev.iter()
+                .any(|e| matches!(e, crate::sim_device::SimEvent::PresetLevel(_))),
+            "no recall → no re-assert: {ev:?}"
         );
         assert!(
             ev.iter()
@@ -11870,20 +11664,13 @@ mod tests {
         );
     }
 
-    // 2026-08-31 bisect: a zero-write BASE `--measure-pair` reading used to
-    // land on a naked ~600 ms last-command→engage idle gap (two back-to-back
-    // `SETTLE_AFTER_SET_MS` settles with nothing sent between them) and latch the device's
-    // stationary output floor 2/2, while a single write in the loop broke the SAME shape 1/1.
-    // `arm_pair_measurement`'s naked-gap breaker (heartbeat → settle → heartbeat) must land a
-    // heartbeat strictly between the last write and the engage for exactly this shape — and
-    // ONLY this shape (base arm, zero writes).
+    // `arm_pair_measurement`'s naked-gap breaker must land a heartbeat strictly between the
+    // last write and the engage for the zero-write base arm — and ONLY that shape.
     //
-    // INVARIANT THIS GATE PINS: every inter-command gap in the choreography is ONE
-    // `SETTLE_AFTER_SET_MS` by construction — `SimDevice` has no clock, so wall-time can't be
-    // asserted here, only the STRUCTURAL fact (a heartbeat lands in the gap at all). This gate
-    // goes BLIND if a future edit adds a second bare settle without an intervening command
-    // elsewhere in the choreography — it would re-widen a gap back past the proven-safe
-    // cadence while this assertion still passes.
+    // WHAT THIS GATE CANNOT SEE: `SimDevice` has no clock, so only the STRUCTURAL fact (a
+    // heartbeat lands in the gap) is assertable, never the wall-time. Adding a second bare
+    // settle anywhere else in the choreography re-widens a gap past the proven-safe cadence
+    // while this assertion still passes.
     #[test]
     fn arm_pair_measurement_zero_write_base_arm_heartbeats_before_the_naked_engage() {
         let sim = crate::sim_device::SimDevice::new();

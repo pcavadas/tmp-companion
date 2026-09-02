@@ -1,7 +1,7 @@
 //! Probe entry point: batched-live per-scene leveling benchmark harness.
 
 use super::level::filter_amp_candidates;
-use super::scene_jobs::{build_scene_jobs, docs_as_refs};
+use super::scene_jobs::build_scene_jobs;
 use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
 use crate::leveller;
@@ -253,38 +253,33 @@ pub fn probe_bench_scene_leveling(
         // THE field-8 read for this bench run — the routing-structure fallback AND the raw
         // scene overlays `set_knobs` needs for its Scene Edit decision.
         let saved = super::scene_jobs::read_saved_preset(slot);
-        let jobs = match build_scene_jobs(
-            &wire_slots,
-            &candidates,
-            &docs_as_refs(&docs),
-            target_lufs,
-            saved.as_ref(),
-        ) {
-            Ok(jobs) => jobs,
-            Err(e) => {
-                for (scene_slot, scene_name) in &scene_rows {
-                    let row = leveller::SceneLevelBenchmarkRow {
-                        preset_slot: slot,
-                        ui_label: format!("{:03}", slot + 1),
-                        scene_slot: *scene_slot,
-                        scene_name: scene_name.clone(),
-                        strategy: leveller::SceneLevelStrategy::BatchedLive,
-                        elapsed_ms: 0,
-                        capture_windows: 0,
-                        parameter_writes: 0,
-                        final_lufs: None,
-                        error_lu: None,
-                        final_output_level: None,
-                        clamped: false,
-                        saved: false,
-                        failure: Some(e.clone()),
-                    };
-                    emit(&row);
-                    rows.push(row);
+        let jobs =
+            match build_scene_jobs(&wire_slots, &candidates, &docs, target_lufs, saved.as_ref()) {
+                Ok(jobs) => jobs,
+                Err(e) => {
+                    for (scene_slot, scene_name) in &scene_rows {
+                        let row = leveller::SceneLevelBenchmarkRow {
+                            preset_slot: slot,
+                            ui_label: format!("{:03}", slot + 1),
+                            scene_slot: *scene_slot,
+                            scene_name: scene_name.clone(),
+                            strategy: leveller::SceneLevelStrategy::BatchedLive,
+                            elapsed_ms: 0,
+                            capture_windows: 0,
+                            parameter_writes: 0,
+                            final_lufs: None,
+                            error_lu: None,
+                            final_output_level: None,
+                            clamped: false,
+                            saved: false,
+                            failure: Some(e.clone()),
+                        };
+                        emit(&row);
+                        rows.push(row);
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         let t0 = std::time::Instant::now();
         let outcome = leveller::level_scenes_live_batched(
             slot,

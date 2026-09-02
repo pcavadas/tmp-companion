@@ -401,14 +401,10 @@ export interface SetupChoice {
  *    pass has already put this exact sound on target and the row measures in-tolerance and
  *    skips its write.
  *
- *  THE SPLIT IS PER-ROW, AND BOTH HALVES ARE HW-MEASURED. Ranking every footswitch late
- *  was tried and is WRONG: on the online 410 arc, a base-context switch (its scenes enable
- *  NOTHING — every `ftswStates` is all-false) still moved all three leveled scenes by
- *  2.011 LU under an independent ffmpeg read, because `ftswStates` records whether a switch
- *  is ENGAGED in a scene, not whether its block is ACTIVE: 410's TubeScreamer is base-ON, so
- *  every scene renders it either way. Ranking every footswitch early is equally wrong: a
- *  scene-context row solved before its scene is measured against a sound that is not yet on
- *  target, which is what made a real preset's overdrive report an unreachable ceiling.
+ *  Rank order: 0 base, 1 base-context footswitch, 2 scene, 3 scene-context footswitch — the
+ *  split is per-row, not "all footswitches early" or "all footswitches late". HW evidence
+ *  (the online 410 arc) is in `notes/gotchas.md`'s "A scene renders the base chain's ON
+ *  blocks" entry.
  *
  *  `chosenFrom` emits this order; `useLevelingFlow` sorts by it so the run holds
  *  regardless of how its items were assembled. */

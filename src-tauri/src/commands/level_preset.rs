@@ -181,13 +181,10 @@ fn base_boost_candidate(
     force: &[(String, String, bool)],
 ) -> Option<leveller::SceneJob> {
     let candidates = filter_amp_candidates(session::extract_level_blocks(preset));
-    if candidates.is_empty() {
-        return None;
-    }
     build_scene_jobs_with_handles(
         &[session::BASE_SCENE_SLOT],
         &candidates,
-        &[(session::BASE_SCENE_SLOT, Some(preset))],
+        &[(session::BASE_SCENE_SLOT, Some(preset.clone()))],
         target_lufs,
         Some(preset),
         &[],
@@ -195,13 +192,11 @@ fn base_boost_candidate(
     .ok()
     .and_then(|jobs| jobs.into_iter().next())
     .filter(|job| job.skip.is_none() && job.knobs.len() == 1)
-    .filter(|job| {
-        !job.knobs.iter().any(|kt| match &kt.knob {
-            leveller::LevelKnob::Block {
-                group_id, node_id, ..
-            } => force.iter().any(|(g, n, _)| g == group_id && n == node_id),
-            leveller::LevelKnob::PresetLevel => false,
-        })
+    .filter(|job| match &job.knobs[0].knob {
+        leveller::LevelKnob::Block {
+            group_id, node_id, ..
+        } => !force.iter().any(|(g, n, _)| g == group_id && n == node_id),
+        leveller::LevelKnob::PresetLevel => true,
     })
     .map(|mut job| {
         job.force_bypass = force.to_vec();
@@ -395,51 +390,16 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                 // BASE MEANS BASE — every footswitch-owned on-off block is forced OFF, so the
                 // measurement describes the preset with nothing switched on. A preset saved
                 // with a pedal engaged does NOT measure that pedal here; that sound is its own
-                // footswitch row's job (user directive, 2026-08-20).
+                // footswitch row's job (user directive, 2026-08-20; the HW evidence behind it
+                // is in `notes/leveling.md`).
                 //
-                // This REVERTS a 2026-08-19 change that measured base as saved. That change was
-                // argued from an external ffmpeg read of −18.3 LUFS against a −23.0 target on
-                // "Plumes+BD2+OCD" — a real number, but a CONFOUNDED one: on the same day, on
-                // that same preset, the block's own footswitch row was clamping in every
-                // multi-row batch (see the isolation note in `footswitch.rs`), which by itself
-                // leaves the recalled sound exactly that hot. With the clamp fixed, base and
-                // its pedal row are separately reachable, and re-measuring is unambiguous
-                // (HW, 2026-08-20, ffmpeg `ebur128`, the player's own DI): base-as-saved and
-                // the FS6 row are the SAME sound — both −22.99 LUFS — while base with the four
-                // pedals off sits 4.7 LU away at −27.69. Measuring base as saved spends one of
-                // the run's rows on a duplicate and never levels the no-pedals sound at all.
-                //
-                // `ftsw` is LOAD-BEARING now, so the read must deliver it WHOLE: it sits at the
-                // tail, exactly where a large preset's field-8 read gets cut, and a short `ftsw`
-                // yields a short force list — pedals left on, and the wrong `presetLevel` SAVED.
-                // `read_slot_preset_complete` re-reads off a device backup when a required
-                // section is truncated, so an unreadable `ftsw` REFUSES instead of guessing.
-                // The same read still supplies `previous_level` (the idempotency-skip anchor,
-                // not a user-facing revert) and the save's `restore_scene`.
-                // `base_isolation_or_refuse` is the ONE shared "read → refuse-or-force" step
-                // (production + `probe --levelpreset`'s Base leg, Phase 5 isolation-parity
-                // fix) — this call site's behavior is unchanged, just extracted. Returns
-                // BEFORE the run-end `reamp_off_guaranteed` backstop, which is safe only
-                // because nothing has engaged re-amp yet on this path: every step above is a
-                // pure read. Same rule as the block arm's early refusal.
-                //
-                // Captured separately from the mapped `preset` below: `has_fs_scenes` is this
-                // SAME read's own fail-safe "scene presence" flag (`read_slot_preset_sections`'s
-                // doc) — `Some(empty)` only when the tail was read WHOLE and genuinely carries
-                // no `scenes`, conservative `true` on anything truncated/unknown. `required`
-                // only forces the backup fallback on a cut `ftsw`, so a preset whose `scenes`
-                // key alone falls past the field-8 cut (it sorts after `ftsw`, a documented
-                // large-preset truncation shape) still needs this flag rather than a bare
-                // `preset.get("scenes")` check on the (possibly `scenes`-less) parsed doc —
-                // see `leveller::scene_bearing_for_boost_gate`, which the v1 boost-routing gate
-                // below is threaded through.
-                let read = read_slot_preset_complete(slot, &["ftsw"]);
-                let has_fs_scenes = read.as_ref().is_ok_and(|(_, has_fs_scenes, _)| *has_fs_scenes);
-                let (preset, force, restore_scene) =
-                    crate::commands::doctor::base_isolation_or_refuse(
-                        read.map(|(preset, _, _)| preset),
-                        slot,
-                    )?;
+                // `ftsw` sits at the field-8 truncation cliff, so a short read yields a short
+                // force list — pedals left on, and the wrong `presetLevel` SAVED. The shared
+                // read REFUSES on a truncated `ftsw` rather than leveling a guess. Refusing
+                // here returns BEFORE the run-end `reamp_off_guaranteed` backstop, safe only
+                // because every step above is a pure read: nothing has engaged re-amp yet.
+                let (preset, has_fs_scenes, force, restore_scene) =
+                    crate::commands::doctor::read_base_isolation(slot)?;
                 // The original `lastLoadedScene` must be re-stamped by the save: the
                 // base-context measurement leaves base active, and saving there would
                 // rewrite the preset's on-load scene to base (HW, Hiwatt slot 31).
@@ -451,23 +411,12 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                      block(s) off",
                     force.len()
                 );
-                // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing
-                // (Phase 2, the plumes/BD2/OCD-class regression fix).
+                // ⟦BOOST⟧ Derive the base amp candidate for the plan-then-apply routing.
                 let base_amp = base_boost_candidate(&preset, target_lufs, &force);
                 log::info!(
-                    "level_preset slot={slot}: base boost candidate {}",
-                    match &base_amp {
-                        Some(job) => format!(
-                            "{} (has_scenes={})",
-                            job.knobs[0].knob.label(),
-                            leveller::scene_bearing_for_boost_gate(has_fs_scenes, Some(&preset))
-                        ),
-                        None => "none".to_string(),
-                    }
+                    "level_preset slot={slot}: base boost candidate {:?}",
+                    base_amp.as_ref().map(|j| j.knobs[0].knob.label())
                 );
-                // That read opened its own session — gap before level_preset reconnects, else
-                // the quick reopen risks the HID open-lockout (0xe00002c5).
-                crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
                 leveller::level_preset_impl(
                     slot,
                     &stim,
