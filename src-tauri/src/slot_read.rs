@@ -54,21 +54,35 @@ pub(crate) fn read_slot_preset_sections(
     // The occupant's name, read from the LIST rather than the body: `info` is exactly
     // the kind of tail a cut that takes `ftsw` also takes, so the partial cannot always
     // name itself — and the name is what guards the backup fallback's slot mapping.
-    // SNAPSHOT FIRST, live list only as a fallback. The live read runs on THIS session,
-    // which has just streamed a large preset body — precisely the back-to-back shape the
-    // list reassembly is documented to come back short on — and a short list means no
-    // entry for this slot, an empty name, and a hard refusal from
-    // `read_slot_preset_complete` even though the backup carries the preset perfectly.
-    // That is the reported "couldn't read this preset's controls" on the Hiwatt (HW,
-    // 2026-08-19: "the preset list did not answer with the slot's name"). The startup
-    // snapshot is the same list the UI shows and costs no device I/O.
+    // SNAPSHOT FIRST, then the partial's own `info` when the cut spared it, and only then a
+    // live list — on a FRESH session. A list read on THIS session, which has just streamed
+    // a large preset body, is precisely the back-to-back shape the list reassembly is
+    // documented to come back short on, and a short list means no entry for this slot, an
+    // empty name, and a hard refusal from `read_slot_preset_complete` even though the
+    // backup carries the preset perfectly. That is the reported "couldn't read this
+    // preset's controls" on the Hiwatt (HW, 2026-08-19: "the preset list did not answer
+    // with the slot's name") — and the probe's Friedman scene run (HW, 2026-09-02), which
+    // has NO startup snapshot and hit the same refusal off the same-session list.
     let name = if truncated.is_empty() {
         String::new() // nothing to address a fallback with — not read at all
     } else {
         crate::monitor::startup_preset_name(slot)
             .filter(|n| !n.is_empty())
             .or_else(|| {
-                s.list_my_presets()
+                preset
+                    .pointer("/info/displayName")
+                    .and_then(|v| v.as_str())
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                drop(s);
+                crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                Session::connect()
+                    .and_then(|mut s| {
+                        s.drain_until_quiet(250, 20)?;
+                        s.list_my_presets()
+                    })
                     .ok()
                     .and_then(|l| l.into_iter().find(|e| e.slot == slot))
                     .map(|e| e.name)

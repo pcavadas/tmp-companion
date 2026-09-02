@@ -357,6 +357,13 @@ PY
       log "[4b] scene count check: enumerated $ENUM_SCENES == source $SRC_SCENES"
     fi
   fi
+  # A count match only proves enumeration; a SKIPped row was enumerated and never leveled,
+  # and its re-measure can still land in tolerance by luck (HW: Friedman scene 3, 2026-09-02).
+  if [ "$FAILED" -eq 0 ] && grep -q '\[SKIP:' "$OUT_DIR/level-scenes.log"; then
+    err "a scene row was SKIPped — enumerated but never leveled:"
+    grep '\[SKIP:' "$OUT_DIR/level-scenes.log" >&2
+    FAILED=1
+  fi
 else
   log "[4b] no --scene-target given — skipping scene leveling"
 fi
@@ -527,6 +534,13 @@ if [ "$MISSING" -ne 0 ]; then
   err "validate-hbe: FAIL — $MISSING expectation row(s) were never emitted; that many sounds"
   err "                     went unvalidated. Named above; per-measure logs in $OUT_DIR"
   exit 1
+fi
+# A clamped row sits at its knob's end stop, not on a solved value: in tolerance or not, the
+# operator must see it.
+CLAMPED="$(grep -h 'CLAMPED' "$OUT_DIR"/level-*.log || true)"
+if [ -n "$CLAMPED" ]; then
+  err "clamped row(s) — leveled at a knob end stop, not a solved value:"
+  printf '%s\n' "$CLAMPED" >&2
 fi
 # Branch every known code explicitly — a SKIP or a VACUOUS pass must not read as a miss,
 # and (the point of naming 4 here) a VACUOUS pass must not silently fall into the `*)`
