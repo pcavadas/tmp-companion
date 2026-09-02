@@ -332,12 +332,6 @@ test.describe("Level — scene clamp taxonomy: zero-authority routing clamp (raw
     clamp_kind: string | null;
     clamp_reason: string | null;
   }
-  interface LevelBlock {
-    group_id: string;
-    node_id: string;
-    parameter_id: string;
-    value: number;
-  }
 
   test("403 scene 2 'Clean': both lane amps at outputLevel 0 clamp as no_authority, not scene_ceiling", async ({
     page,

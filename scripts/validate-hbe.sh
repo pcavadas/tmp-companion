@@ -83,8 +83,8 @@
 #   --no-clear                leave the imported preset in the slot instead of clearing it
 #
 # Exit: 0 = every row PASSed or SKIPped, with at least one row actually MEASURED · 1 = a
-#       leveling step failed, a row FAILed, or an expectation row was never emitted
-#       (MISSING) · 2 = usage/precondition error · 3 = validation SKIPPED (ffmpeg absent —
+#       leveling step failed, a row FAILed or CLAMPED, or an expectation row was never
+#       emitted (MISSING) · 2 = usage/precondition error · 3 = validation SKIPPED (ffmpeg absent —
 #       nothing was independently checked; the leveling itself still ran) · 4 = validation
 #       VACUOUS (every emitted row was clamped/persist-mismatched — nothing was
 #       independently verified; the leveling itself still ran and is saved).
@@ -539,9 +539,9 @@ fi
 # no clamps, so it fails the run even when its re-measure lands in tolerance.
 CLAMPED="$(grep -h 'CLAMPED' "$OUT_DIR"/level-*.log || true)"
 if [ -n "$CLAMPED" ]; then
-  err "clamped row(s) — leveled at a knob end stop, not a solved value:"
+  err "validate-hbe: FAIL — clamped row(s), leveled at a knob end stop, not a solved value:"
   printf '%s\n' "$CLAMPED" >&2
-  FAILED=1
+  exit 1
 fi
 # Branch every known code explicitly — a SKIP or a VACUOUS pass must not read as a miss,
 # and (the point of naming 4 here) a VACUOUS pass must not silently fall into the `*)`

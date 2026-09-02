@@ -1130,7 +1130,7 @@ fn scenes_missing_amp_bypass_flags_absent_and_partial_docs() {
         (2u32, Some(partial)),
     ];
     assert_eq!(
-        scenes_missing_amp_bypass(&docs),
+        scenes_missing_amp_bypass(&saved_structure(), &docs),
         vec![1, 2],
         "the absent doc AND the amp-less partial both need repair; the answerable one does not"
     );
@@ -1148,10 +1148,35 @@ fn a_doc_cut_between_two_amps_is_flagged_and_refused() {
     });
     let (answerable, _) = scene_docs_from_saved(&two_amp_swap_preset(), &[0]).unwrap();
     let docs = vec![(0u32, answerable[0].1.clone()), (1u32, Some(cut.clone()))];
-    assert_eq!(scenes_missing_amp_bypass(&docs), vec![1]);
+    assert_eq!(
+        scenes_missing_amp_bypass(&saved_structure(), &docs),
+        vec![1]
+    );
     let structure = session::extract_active_graph(&two_amp_base_saved(), None);
     let err = classify_scene_knobs(&structure, &cut, &two_amp_candidates()).unwrap_err();
     assert!(err.contains("every amp"), "{err}");
+}
+
+/// The complete saved graph every repair scan takes its amp roster from.
+fn saved_structure() -> session::ActiveGraph {
+    session::extract_active_graph(&two_amp_base_saved(), None)
+}
+
+// The roster must come from the COMPLETE saved graph, never from the live docs: when the only
+// doc is the one cut between the two amps, a roster read off that doc lists one amp and the
+// doc answers for itself (red under the docs-derived roster).
+#[test]
+fn a_cut_only_doc_is_flagged_off_the_saved_roster() {
+    let cut = serde_json::json!({
+        "audioGraph": { "template": "gtrSeries", "guitarNodes": { "G1": [
+            { "nodeId": "ACD_BE100", "dspUnitParameters": { "bypass": true } }
+        ] } }
+    });
+    let docs = vec![(1u32, Some(cut))];
+    assert_eq!(
+        scenes_missing_amp_bypass(&saved_structure(), &docs),
+        vec![1]
+    );
 }
 
 // The repair itself, end to end on the HW shape: two scenes the live prepass could not answer
@@ -1169,7 +1194,7 @@ fn repair_scene_docs_fills_only_the_unanswerable_scenes() {
     // Mark scene 0's doc so we can prove the repair did not touch it.
     docs[0].1.as_mut().unwrap()["__probe"] = serde_json::json!("untouched");
 
-    let needy = scenes_missing_amp_bypass(&docs);
+    let needy = scenes_missing_amp_bypass(&saved_structure(), &docs);
     assert_eq!(
         needy,
         vec![1],
@@ -1195,7 +1220,7 @@ fn repair_scene_docs_leaves_docs_untouched_when_the_saved_preset_cannot_answer()
     let mut truncated = two_amp_swap_preset();
     truncated["scenes"] = serde_json::json!([]);
     let mut docs = vec![(1u32, None)];
-    let needy = scenes_missing_amp_bypass(&docs);
+    let needy = scenes_missing_amp_bypass(&saved_structure(), &docs);
     assert!(!repair_scene_docs_from(&mut docs, &truncated, &needy));
     assert!(docs[0].1.is_none(), "no doc was invented");
 }
