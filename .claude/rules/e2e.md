@@ -103,6 +103,8 @@ Runs the full Level + Copy happy paths against the real unit **non-destructively
 
 **The emission seam:** `crate::validate_log`, appended to from the **measurement** seams — `leveller::measure_sound_asis_strict` (driven online by `e2e_measure_sound`) and `probe_api::level::probe_measure_current_lufs` (`probe --measure-scene --target … --dump-wav`). Not from the leveling run: the solve captures at its REFERENCE level, so its PCM is not the saved preset's output. Each row is written by the same capture that produced the run's own number, so it carries the WAV path, the engage verdict, and the sound's own **identity** (`slot` + `scene_slot`/`switch`) — never a position. That is why `LevelResult` now carries `scene_slot`: `level_scenes_apply_batched` filters failed scenes out of the array it returns, so index _i_ is not scene _i_ once anything fails.
 
+**Both probe emission seams resolve their stimulus through `probe_stimulus_path(topology_id)`** — the bundled topology WAV, consulting neither the profile's captured DI nor `TMP_LEVELLER_STIMULUS`, unlike the leveling arms that honour both. Unless both sides are pinned to one WAV, a run and its "independent" re-measure grade different waveforms, and the difference is large enough to move a verdict.
+
 Footswitch rows are now externally validated too — `probe --measure-footswitch <slot> <switch> <topology> [--lev g:n:p] [--target L] [--dump-wav D]` closed that hole. The **`doctor_apply` path is still NOT externally validated** (no expectation-emitting re-measure exists for it).
 
 **Env vars:**

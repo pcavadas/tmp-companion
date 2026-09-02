@@ -325,3 +325,12 @@ Read the entry in full before changing the behaviour it governs.
 ## `bun run tauri dev` shows only a taskbar entry, no window, on KDE/GNOME Wayland
 
 - HW-reproduced on a KDE Plasma Wayland session (AMD Radeon 680M, `radeonsi`, WebKitGTK 2.52): the dev process builds and runs cleanly — no crash, no error in stdout/stderr, backend connects to a real device — and a taskbar entry for "TMP Companion" appears, but no window content ever paints on any output; a full-screen screenshot taken while the process is running shows nothing where the window should be. **Inferred, not instrumented:** the shape matches a mapped-but-never-painted GTK/WebKitGTK surface — nothing here reads the surface state directly, so treat the mechanism as a hypothesis and the observations above as the evidence. `WEBKIT_DISABLE_DMABUF_RENDERER=1` alone did NOT fix it on this setup; forcing the whole app through XWayland with `GDK_BACKEND=x11` did — the window rendered immediately and stayed responsive. `scripts/tauri-dev-env.sh` sets `GDK_BACKEND=x11` automatically for `bun run tauri dev` when `XDG_SESSION_TYPE=wayland` on Linux and the caller hasn't already set `GDK_BACKEND`, so this should now be transparent; if it recurs, confirm the window truly never paints (vs. e.g. opening off-screen or minimized) before re-diagnosing.
+
+## An imported preset does not persist at list index 26 (device slot 27)
+
+- `probe --import-file` reported success and the row appeared in the list, but the preset never
+  materialised — reproduced **2/2** on 2026-09-01, fw 1.8.45, with the same `.preset` file that
+  imported cleanly to slot 29 moments later. The discriminator is the SLOT, not the file and not
+  the preset content. A first reading blamed the 45-100 s lazy-commit window (two imports had been
+  fired seconds apart); the clean import to 29 under the same timing falsifies that. Cause unknown
+  — treat slot 27 as unreliable for import and use another empty slot.

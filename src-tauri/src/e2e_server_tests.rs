@@ -48,6 +48,28 @@ fn test_stim() -> Vec<f32> {
 /// Point the offline capture model + seed at the committed fixtures. Each entry is
 /// (env var, path relative to `CARGO_MANIFEST_DIR`) — folds the scenario/sidecar/backup/
 /// stimulus var setup that the physics gates share into one call (no style fork).
+/// The scenario physics env: preset fixtures, the authored C table, the backup blob, stimulus.
+fn scenario_env() {
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+        (
+            "TMP_E2E_BACKUP_FIXTURE",
+            "/../e2e/fixtures/backup-fixture.bin",
+        ),
+        (
+            "TMP_E2E_STIMULUS",
+            "/resources/samples/guitar-humbucker.wav",
+        ),
+    ]);
+}
+
 fn set_e2e_env(pairs: &[(&str, &str)]) {
     for (k, v) in pairs {
         std::env::set_var(k, format!("{}{v}", env!("CARGO_MANIFEST_DIR")));
@@ -441,24 +463,7 @@ fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
 #[test]
 fn the_fs_prepass_announces_every_row_before_any_row_finishes() {
     let _serial = serial();
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -576,24 +581,7 @@ fn the_fs_prepass_announces_every_row_before_any_row_finishes() {
 #[test]
 fn the_scene_prepass_captions_its_own_phase_and_the_solve_does_not() {
     let _serial = serial();
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -1781,6 +1769,62 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
     );
 }
 
+/// The preset-28 ("Friedman HBE") first-run class: a scene whose live field-3 doc arrives cut
+/// before the amp nodes must still level ITS OWN amp, from the saved preset. HW 2026-09-01, two
+/// of four scenes pushed unanswerable docs and were silently SKIPPED — one of them swaps amps.
+///
+/// Paired with BASE, not a second scene: base's push is whole so `scene_jobs::structure_graph`
+/// still resolves, and base moves `presetLevel`, not a fader, leaving "`BASE_AMP` never written"
+/// clean. Asserted on write IDENTITY because `SimState::scene_output_level` matches
+/// node-agnostically — a wrong-amp solve converges to target exactly like a right one.
+#[test]
+fn a_truncated_swap_scene_levels_its_own_amp_not_the_base_one() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let _cancel_reset = SceneCancelReset;
+    scenario_env();
+    crate::leveller::clear_slot_save_registry();
+    let sim = crate::sim_device::SimDevice::new().with_truncated_scene_push(SWAP_SCENE, BASE_AMP);
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    let (_app, webview) = batched_scene_app();
+
+    let candidates = serde_json::json!([
+        {"groupId": "G1", "nodeId": BASE_AMP, "parameterId": "outputLevel", "value": 0.35},
+        {"groupId": "G1", "nodeId": SWAP_AMP, "parameterId": "outputLevel", "value": 0.35}
+    ]);
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": SWAP_SLOT,
+            "jobs": [
+                {"sceneSlot": 8, "targetLufs": -25.0},
+                {"sceneSlot": SWAP_SCENE, "targetLufs": -25.0}
+            ],
+            "candidates": candidates,
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    let rows = res.as_array().expect("results array").clone();
+    scene_row(&rows, Some(u64::from(SWAP_SCENE)))
+        .unwrap_or_else(|| panic!("the cut scene must come back leveled, not skipped: {rows:?}"));
+
+    let events = sim.events();
+    assert!(
+        wrote_output_level(&events, SWAP_AMP),
+        "the cut scene's OWN amp is what gets written, not {BASE_AMP}: {rows:?}"
+    );
+    assert!(
+        !wrote_output_level(&events, BASE_AMP),
+        "{BASE_AMP} is bypassed here and base's row moves presetLevel: {rows:?}"
+    );
+}
+
 /// The SCENE-leveling physics for slot 403 through the REAL `level_scenes_apply_batched`
 /// command over mock IPC — the same path the offline UI drives, minus the Channel-streaming
 /// seam (`.claude/rules/e2e.md`'s "The Channel-streaming seam"): this gate asserts the
@@ -1794,24 +1838,7 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
 #[test]
 fn level_defaults_403_scenes_solve_and_offbranch() {
     let _serial = serial();
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -2044,24 +2071,7 @@ const HIWATT_AMP: &str = "ACD_HiwattDR103CanMod";
 /// stimulus), plus a live SimDevice wired as the transport factory. Returns the fake so the
 /// caller can read its event log.
 fn hiwatt_sim() -> crate::sim_device::SimDevice {
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -3689,24 +3699,7 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
 #[test]
 fn a_mid_batch_failure_keeps_every_surviving_scenes_identity_and_emits_its_row() {
     let _serial = serial();
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -3871,24 +3864,7 @@ impl Drop for SceneCancelReset {
 /// log and its `presetLevel`. Also returns the event index the RUN starts at — the seed below
 /// saves, and a `Saved` count has to be able to exclude it.
 fn trade_sim() -> (crate::sim_device::SimDevice, usize) {
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
@@ -3916,6 +3892,11 @@ fn trade_sim() -> (crate::sim_device::SimDevice, usize) {
 /// guitar amp at that amp's authored base `outputLevel` (the fader the trade pays with), and
 /// the scene whose FULL overlay authors the SAME `outputLevel` as base — the row whose clamp
 /// the offline capture model and the planner agree about (see the section header).
+/// Fixture 400 "E2E Rig": `BASE_AMP` active in base, `SWAP_AMP` bypassed, scene 1 flips the pair.
+const SWAP_SLOT: u32 = 400;
+const SWAP_SCENE: u32 = 1;
+const BASE_AMP: &str = "ACD_JC120";
+const SWAP_AMP: &str = "ACD_TwinReverb65NoFx";
 const TRADE_SLOT: u32 = 404;
 const TRADE_PRESET_LEVEL: f32 = 0.6;
 const TRADE_AMP: &str = "ACD_HiwattDR103CanMod";
@@ -4485,24 +4466,7 @@ fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
     let _serial = serial();
     let _reset = RegistryReset;
     let _cancel_reset = SceneCancelReset;
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-        (
-            "TMP_E2E_BACKUP_FIXTURE",
-            "/../e2e/fixtures/backup-fixture.bin",
-        ),
-        (
-            "TMP_E2E_STIMULUS",
-            "/resources/samples/guitar-humbucker.wav",
-        ),
-    ]);
+    scenario_env();
     crate::leveller::clear_slot_save_registry();
     const RIG: u32 = 400;
     const TUBE_SCREAMER: &str = "ACD_TubeScreamer";

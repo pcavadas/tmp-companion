@@ -24,10 +24,10 @@ mapping — this skill would drift from it.
 What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on top of a green
 `gates.sh` (each row is cumulative):
 
-| Change class                                                                            | Escalate to                                                                                                                                       |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Leveling-math / device-behavior change (solver, capture model, clamp/idempotency logic) | attended **online**: `scripts/e2e.sh online`, then `scripts/gates.sh --record-online`                                                             |
-| Release-risk change to the solve/save/idempotency path                                  | + `scripts/e2e.sh soak <N>` (N ≥ 5) — the attended repeat lane for drift/engage-drop/stochastic device-state bugs a single online run won't catch |
+| Change class                                                                            | Escalate to                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Leveling-math / device-behavior change (solver, capture model, clamp/idempotency logic) | attended **online**: `scripts/e2e.sh online` — the runner stamps the online tier itself, and only when the full default spec set ran, the ffmpeg validation passed, and the tree key was unchanged across the run. A pass ending `NOT stamped` means re-run on the final tree; recording by hand certifies exactly what the runner declined to |
+| Release-risk change to the solve/save/idempotency path                                  | + `scripts/e2e.sh soak <N>` (N ≥ 5) — the attended repeat lane for drift/engage-drop/stochastic device-state bugs a single online run won't catch                                                                                                                                                                                              |
 
 ## 2. Enforcement reality (why "looks green" isn't optional to prove)
 
@@ -57,7 +57,18 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   before any `cargo` gate.
 - **Online false-green tell:** confirm the server log prints `seeded snapshot from the real
 device` (or `/health` reports `online: true`) before trusting a pass — a stale offline server
-  reused under `TMP_E2E_ONLINE=1` looks identical until you check.
+  reused under `TMP_E2E_ONLINE=1` looks identical until you check. A green spec run is not
+  evidence by itself: a Playwright expectation is self-referential, so one retargeted to the
+  observed number passes on the regression it should catch. The independent read is the ffmpeg
+  `level-validate` pass, and its receipt is the runner logging `external validation PASSED`
+  followed by the stamp. Read the runner's own exit status, never a pipeline's — `| tail`
+  reports tail's status and buffers a 40-minute run into silence.
+- **A restored file keeping its original mtime does not rebuild.** `mv`-ing a source version
+  back to A/B two builds leaves cargo's freshness check satisfied, so the "proof" run reuses the
+  previous binary. Confirm a compile line appeared, or `touch` the file after any restore.
+- **A Channel-streaming command called over raw HTTP hides its per-row outcomes** — they travel
+  only the `"__CHANNEL__:N"` stream, so `ok: true` can come back with rows silently missing; and
+  `level_scenes_apply_batched` yields `trade: null` unless `baseAnchor` is passed.
 - **Never `list_my_presets_strict` in a seed/sweep/write-path list read** — see `.claude/rules/danger.md`'s HID
   open-lockout rule for why (tolerant reads are correct there; strict is snapshot/monitor-only).
 - **A soak/online run needs the unit rested and Pro Control closed** — same preconditions as any
@@ -100,7 +111,10 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
    race check run single-threaded all pass for reasons unrelated to correctness. A documented
    GraphQL query shipped this way in PR #119: it was run once and "verified", but the fixture had
    23 items against a page size of 100, so its cursor bug could not manifest. Confirm the fixture
-   crosses the threshold that would trip the bug before trusting green.
+   crosses the threshold that would trip the bug before trusting green. For a leveling repro
+   that means the stimulus production actually resolves — the profile's captured DI, not the
+   bundled synthetic sample: reachable ceilings differ by more than 10 dB between them, so a
+   clamp cannot occur under the bundled one.
 
 7. **A verifier covers only what it actually reads — name the address space AND the fields, then
    prove it can fail.** Three real incidents of the same shape: a read-back checked the base graph

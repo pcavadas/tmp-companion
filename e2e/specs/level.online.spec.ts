@@ -36,7 +36,11 @@ import {
 // against that derived value — never a fixture constant.
 //
 // T1′ (below, describe #1's first test) — a CONSOLIDATED Friedman-shape (410) arc: base + 2
-// footswitches + all 3 scenes, re-measured strict for base+scenes only (4 ffmpeg rows, not 9).
+// footswitches + `SCENES_410`, re-measured strict for base+scenes only.
+// The ffmpeg-validated rows this FILE emits per online run — T1′'s 1 base + `SCENES_410.length`,
+// T5's 1 base + `SWITCH_SPECS_405.length`. `scripts/e2e.sh` greps this line and compares by
+// equality, so keep it in step with both.
+// STRICT_VALIDATE_ROWS=6
 // 410's own base pair is a plain TRADE solve (`headroom_trade::plan_level_pair`'s
 // `G≈+1.0 <= P_up≈+6.0`), so it must NEVER enter BOOST — this is the "see-saw" CONTROL this
 // arc exists to run, back-to-back with T5's Plumes-shape (405) BOOST case below, so a
@@ -123,6 +127,11 @@ const PRESET24 = SCENARIO[5]; // E2E Preset24 — the Plumes-shape first-run jou
 // falls back to the run's own solved `constant_c - 1` when the first attempt clamps; see the
 // file header's ROOT LESSON and T1′'s own comment).
 const BASE_TARGET_410 = -23;
+// The scene rows 410's arc levels. Its three overlays are byte-identical apart from
+// `sceneName`, so the third only costs a capture pair. Scene 2 is the droppable one: 0 is the
+// see-saw bracket's hardcoded row, 1 is `lastLoadedScene` (danger.md's batched-save revert
+// class). The FIXTURE keeps all three — E9 pins `scene_count == 3`.
+const SCENES_410 = [0, 1];
 // Scene and footswitch targets are no longer fixture constants — see T1′'s own AS-IS
 // derivation (file header's ROOT LESSON: a fixed sim-model ceiling doesn't hold as device
 // physics). `SCENE_TARGET_410`/`FS_TARGET_410`/`FS_TARGET_UNIVIBE` used to live here.
@@ -405,7 +414,7 @@ LFO'd knob can legitimately need the full KNOB_TOL_LU band`,
     // per-scene overlay only needs to go DOWN, and the floor is ~0.01 ≈ -34 dB of room), so
     // this can never clamp the way a fixed sim-model ceiling did on real hardware.
     const asIsScenes: number[] = [];
-    for (const sceneSlot of [0, 1, 2]) {
+    for (const sceneSlot of SCENES_410) {
       asIsScenes.push(await measure410({ scene: sceneSlot }));
     }
     const sceneTarget410 = Math.min(...asIsScenes) - 2.0;
@@ -415,7 +424,7 @@ LFO'd knob can legitimately need the full KNOB_TOL_LU band`,
       "level_scenes_apply_batched",
       {
         slot: FRIEDMAN.slot,
-        jobs: [0, 1, 2].map((sceneSlot) => ({
+        jobs: SCENES_410.map((sceneSlot) => ({
           sceneSlot,
           targetLufs: sceneTarget410,
         })),
@@ -434,7 +443,7 @@ LFO'd knob can legitimately need the full KNOB_TOL_LU band`,
     expect(
       scenes.map((r) => r.scene_slot).sort((a, b) => Number(a) - Number(b)),
       "every requested scene must come back (no silent mid-batch drop)",
-    ).toEqual([0, 1, 2]);
+    ).toEqual(SCENES_410);
     for (const r of scenes) {
       const id = String(r.scene_slot);
       expect(r.clamped, `scene ${id} must reach target, not clamp`).toBe(false);
@@ -466,11 +475,10 @@ ${asIsScenes.map((v) => v.toFixed(2)).join("/")}) — nothing downstream touches
 base-ON TubeScreamer, so this must still hold at the final re-measure below`,
     ).toBeLessThanOrEqual(DELTA);
 
-    // ── The strict gate: re-measure base + all 3 scenes from the SAVED state (4 rows).
+    // ── The strict gate: re-measure base + every scene in SCENES_410 from the SAVED state.
     // The 2 footswitch rows above are judged by their OWN solve result, not a second
-    // strict re-measure — the plan's online-budget table deliberately caps this
-    // consolidated arc's ffmpeg-validated rows at 4 (vs the retired arc's 9) to keep
-    // its cost down.
+    // strict re-measure — this arc caps its ffmpeg-validated rows to keep its cost down. It
+    // emits 1 + SCENES_410.length; STRICT_VALIDATE_ROWS at the top of this file counts them.
     const sceneRow = (slot: number): LevelResult | undefined =>
       scenes.find((r) => r.scene_slot === slot);
     const heard: Record<string, number> = {};
@@ -481,7 +489,7 @@ base-ON TubeScreamer, so this must still hold at the final re-measure below`,
         persistMismatch: base.persist_mismatch,
       },
     });
-    for (const scene of [0, 1, 2]) {
+    for (const scene of SCENES_410) {
       const row = sceneRow(scene);
       expect(
         row,

@@ -1137,40 +1137,6 @@ fn scenes_missing_amp_bypass_flags_absent_and_partial_docs() {
     );
 }
 
-// The point of the repair: the swap scene classifies onto the amp IT activates. Asserted by
-// NODE ID — a loudness assertion would pass just as well on the wrong amp.
-#[test]
-fn repaired_swap_scene_classifies_onto_its_own_amp_not_the_base_one() {
-    let saved = two_amp_swap_preset();
-    let structure = session::extract_active_graph(&two_amp_base_saved(), None);
-    let candidates = two_amp_candidates();
-
-    let (docs, _) = scene_docs_from_saved(&saved, &[1]).unwrap();
-    let doc = docs[0].1.clone().unwrap();
-    let (knobs, _) = classify_scene_knobs(&structure, &doc, &candidates)
-        .expect("the repaired doc answers, so the scene must classify");
-    assert_eq!(knobs.len(), 1);
-    assert_eq!(
-        knobs[0].1, "ACD_TwinReverb65NoFx",
-        "the swap scene must level the amp it activates, not the base-active BE100"
-    );
-    assert!((knobs[0].2 - 0.45).abs() < 1e-6, "scene's own outputLevel");
-
-    // Scene 0 keeps the base-active amp — the repair does not blanket-swap.
-    let (docs0, _) = scene_docs_from_saved(&saved, &[0]).unwrap();
-    let doc0 = docs0[0].1.clone().unwrap();
-    let (knobs0, _) = classify_scene_knobs(&structure, &doc0, &candidates).unwrap();
-    assert_eq!(knobs0[0].1, "ACD_BE100");
-
-    // And with NO usable doc the classifier still REFUSES rather than answering from base.
-    let err = classify_scene_knobs(&structure, &serde_json::Value::Null, &candidates)
-        .expect_err("an unanswerable doc must refuse, not fall back to base");
-    assert!(
-        err.contains("refusing to classify against the base graph"),
-        "{err}"
-    );
-}
-
 // The repair itself, end to end on the HW shape: two scenes the live prepass could not answer
 // (one pushed nothing, one arrived cut before the amps) are filled from the saved preset, the
 // scene that DID answer is left alone, and the swap scene ends up on its own amp.

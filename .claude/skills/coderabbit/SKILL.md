@@ -176,4 +176,6 @@ explicit go per N4. On #165, `approve` flipped the verdict in seconds and auto-m
   expensive mistake made here. **One open thread = no approval = no merge, full stop.**
 - **Thread replies are free; pushes are not.** A reply is answered in ~15-30 s and spends no quota; a
   push trips a fresh rate-limit window, and the windows lengthen under sustained use. When both
-  would work, reply.
+  would work, reply. The published limits are hourly review rates per plan on rolling windows,
+  tightened adaptively above recent-usage norms; there is no diff-size or lines-changed cap, so
+  splitting a PR buys iteration headroom, never eligibility.
