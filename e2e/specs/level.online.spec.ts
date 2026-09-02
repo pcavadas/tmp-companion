@@ -164,7 +164,7 @@ test.describe
     await page.close();
   });
 
-  test("base + 3 scenes + 2 footswitches re-measure at target after save; base stays TRADE, never BOOST (see-saw guard)", async ({
+  test("base + 2 scenes + 2 footswitches re-measure at target after save; base stays TRADE, never BOOST (see-saw guard)", async ({
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
