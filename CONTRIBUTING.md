@@ -28,7 +28,7 @@ CI (`.github/workflows/ci.yml`) runs all of the above plus the offline Playwrigh
 
 ### Developing on Linux
 
-The app **ships** on macOS. Linux is a supported _development_ platform, and Level/Doctor (re-amp) work there too: the crate builds and passes every gate, talks to a real Tone Master Pro over `hidraw`, and measures/levels/diagnoses over ALSA.
+The app **ships** on macOS, and also publishes an **alpha** `.deb`/`.rpm` from the same release run when that (non-blocking) Linux build succeeds — see `notes/linux-packaging.md`. Linux is otherwise a supported _development_ platform, and Level/Doctor (re-amp) work there too: the crate builds and passes every gate, talks to a real Tone Master Pro over `hidraw`, and measures/levels/diagnoses over ALSA.
 
 **Works on Linux:** every gate (`cargo check`/`clippy`/`fmt`/`test --lib`, the whole frontend toolchain, the offline Playwright e2e against `SimDevice`), real device I/O — connect, preset list, the backup scan — and re-amp: the **Level** and **Doctor** tabs, HW-validated end to end (measure → solve → apply, and a full Doctor spectral sweep) against a real unit.
 
@@ -60,7 +60,7 @@ sudo apt install libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
                  librsvg2-dev libasound2-dev
 ```
 
-**Device access.** `/dev/hidraw*` is root-only by default, so without a udev rule the app fails to open the unit with `EACCES`:
+**Device access.** `/dev/hidraw*` is root-only by default, so without a udev rule the app fails to open the unit with `EACCES`. **The `.deb`/`.rpm` packages install and reload this automatically** (`packaging/linux/postinst.sh`) — this manual step is only for a source build:
 
 ```bash
 sudo cp packaging/udev/70-fender-tone-master-pro.rules /etc/udev/rules.d/
@@ -71,7 +71,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 Then follow the build steps above. **Order matters** — `bun run build` must precede any `cargo` command, because `tauri-build`'s `generate_context!` panics when `dist/` is absent, and `dist/` is gitignored. Once that build has run, sanity-check the connection with `cargo run --bin probe`, which should print your preset list, and `cargo run --bin probe -- --audio-devices` to inspect audio-device enumeration and ALSA resolution — on Linux it also prints the `hw:CARD=…` card the production resolver lands on. The report's own `find_tmp()` pick is a diagnostic, not the production `audio::find_device` path.
 
-**`bun run tauri dev` shows only a taskbar entry, no window?** On some KDE/GNOME Wayland + GPU driver combinations, WebKitGTK's window is believed to map but never paint. `bun run tauri dev` already works around this automatically (`scripts/tauri-dev-env.sh` forces `GDK_BACKEND=x11` when it detects a Linux Wayland session and you haven't already set `GDK_BACKEND` yourself — an explicit value, e.g. `GDK_BACKEND=wayland`, is left alone); if it recurs anyway, see [→ evidence](notes/gotchas.md#bun-run-tauri-dev-shows-only-a-taskbar-entry-no-window-on-kdegnome-wayland).
+**`bun run tauri dev` shows only a taskbar entry, no window?** On some KDE/GNOME Wayland + GPU driver combinations, WebKitGTK's window is believed to map but never paint. `bun run tauri dev` already works around this automatically (`scripts/tauri-dev-env.sh` forces `GDK_BACKEND=x11` when it detects a Linux Wayland session and you haven't already set `GDK_BACKEND` yourself — an explicit value, e.g. `GDK_BACKEND=wayland`, is left alone); if it recurs anyway, see [→ evidence](notes/gotchas.md#bun-run-tauri-dev-shows-only-a-taskbar-entry-no-window-on-kdegnome-wayland). The packaged `.deb`/`.rpm` binary applies the same fix itself at startup (`bootstrap.rs`), so this should not affect a released install either.
 
 ## Pull requests
 

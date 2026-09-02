@@ -14,9 +14,26 @@ set -euo pipefail
 
 VERSION="${1:?release version required}"
 NOTES_B64="${2:-}"
+# Where release.yml's download-artifact steps stage the Linux build-deb/build-rpm
+# jobs' output, ahead of this script running as semantic-release's prepareCmd.
+LINUX_DIR="release-linux"
 
 echo "release-build: bumping src-tauri/tauri.conf.json to $VERSION"
-VERSION="$VERSION" node -e 'const f="src-tauri/tauri.conf.json",fs=require("fs");const j=JSON.parse(fs.readFileSync(f));j.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")'
+node scripts/bump-version.mjs "$VERSION"
+
+# The Linux jobs resolve their own version from an earlier `semantic-release
+# --dry-run` (resolve-version job) and stamp it into version.txt beside their
+# bundle. It SHOULD always agree with $VERSION — both analyze the same commits
+# at the same SHA — but a disagreement would publish a Linux package labelled
+# with the wrong version, which is worse than publishing none. Drop rather than
+# fail: a version mismatch is exactly the "Linux never blocks macOS" case.
+if [ -f "$LINUX_DIR/version.txt" ]; then
+  LINUX_VERSION="$(cat "$LINUX_DIR/version.txt")"
+  if [ "$LINUX_VERSION" != "$VERSION" ]; then
+    echo "release-build: WARNING Linux build version ($LINUX_VERSION) disagrees with this release ($VERSION) — dropping the Linux artifacts" >&2
+    rm -f "$LINUX_DIR"/*.deb "$LINUX_DIR"/*.rpm "$LINUX_DIR/version.txt"
+  fi
+fi
 
 echo "release-build: building the universal-apple-darwin bundle"
 bun run tauri build --target universal-apple-darwin

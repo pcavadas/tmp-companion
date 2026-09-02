@@ -23,6 +23,14 @@
           },
           {
             "path": "src-tauri/target/universal-apple-darwin/release/bundle/macos/latest.json"
+          },
+          {
+            "path": "release-linux/*.deb",
+            "name": "TMP-Companion-linux-alpha-amd64.deb"
+          },
+          {
+            "path": "release-linux/*.rpm",
+            "name": "TMP-Companion-linux-alpha-x86_64.rpm"
           }
         ]
       }

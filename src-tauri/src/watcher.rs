@@ -2,16 +2,25 @@
 //! frontend as Tauri events, so the UI can drop to "disconnected" on unplug
 //! and reconnect immediately on replug (instead of waiting for the 3 s poll).
 //!
-//! Uses a NON-seizing `IOHIDManager` that only registers matching/removal
-//! callbacks for the TMP's VID/PID — no `IOHIDManagerOpen`, no device I/O.
-//! That means it never interferes with the session's exclusive seize,
-//! generates zero protocol traffic, and cannot false-positive during
+//! On macOS, uses a NON-seizing `IOHIDManager` that only registers
+//! matching/removal callbacks for the TMP's VID/PID — no `IOHIDManagerOpen`, no
+//! device I/O. That means it never interferes with the session's exclusive
+//! seize, generates zero protocol traffic, and cannot false-positive during
 //! `with_released_seize` windows (the device's physical presence doesn't
 //! change while the seize is merely released for a leveling pass).
 //!
-//! On removal it also clears the shared session slot: the seized handle is
-//! dead once the device is gone, and dropping it keeps a later reconnect from
-//! colliding with our own stale exclusive handle (`0xe00002c5`).
+//! On Linux there is no netlink/udev-monitor equivalent reachable without a
+//! `udev` crate dependency (`hid.rs`'s hidraw transport deliberately has none —
+//! see its module note), so the Linux `imp` instead polls
+//! `hid::device_present()` — the same sysfs walk `hid.rs` uses to open the
+//! device, just without opening it — once a second. Same events, same
+//! detach-cleanup ordering, coarser latency (up to ~1 s vs. IOKit's
+//! near-instant callback).
+//!
+//! On removal (either platform) it also clears the shared session slot: the
+//! seized handle is dead once the device is gone, and dropping it keeps a
+//! later reconnect from colliding with our own stale exclusive handle
+//! (`0xe00002c5` on macOS; the `flock` on Linux).
 
 use std::sync::{Arc, Mutex};
 
@@ -19,22 +28,23 @@ use crate::session::Session;
 
 /// Event names the frontend listens for (`@tauri-apps/api/event`).
 ///
-/// Only the macOS `imp` emits these today, so off macOS they are genuinely dead
-/// until a platform watcher exists to fire them. The allow is scoped to exactly
-/// that case rather than blanket-applied to the module, so a constant going
-/// unused ON macOS still surfaces as a warning.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Only the macOS and Linux `imp`s emit these; off both platforms they are
+/// genuinely dead until a platform watcher exists to fire them. The allow is
+/// scoped to exactly that case rather than blanket-applied to the module, so a
+/// constant going unused on a platform that DOES have a watcher still surfaces
+/// as a warning.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub const EVT_ATTACHED: &str = "tmp://device-attached";
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub const EVT_DETACHED: &str = "tmp://device-detached";
 
 /// Spawn the watcher thread. Lives for the whole process; never joined.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
     imp::spawn(app, session);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn spawn(_app: tauri::AppHandle, _session: Arc<Mutex<Option<Session>>>) {}
 
 #[cfg(target_os = "macos")]
@@ -204,5 +214,88 @@ mod imp {
                 CFRunLoopRun(); // parks this thread for the process's life
             })
             .expect("spawn tmp-hotplug-watcher");
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::*;
+    use std::time::Duration;
+    use tauri::Emitter;
+
+    /// hidraw has no matching-callback equivalent reachable without a `udev`
+    /// crate (see the module doc), so this polls instead. A 1 s period is
+    /// negligible against a single small `/sys/class/hidraw` read and still
+    /// beats the UI's own 3 s connection-retry interval.
+    const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Pure edge detector — `None` on no change, else which event fired. The
+    /// call site seeds `last = false`, so a device already attached at process
+    /// start reports an ATTACHED edge on the very first poll: the same
+    /// semantics as IOHIDManager's matching callback firing for devices already
+    /// present at schedule time. Kept pure and separate from the poll loop so
+    /// the edge logic is unit-testable without a real hidraw node.
+    fn transition(last: bool, now: bool) -> Option<&'static str> {
+        match (last, now) {
+            (false, true) => Some(EVT_ATTACHED),
+            (true, false) => Some(EVT_DETACHED),
+            _ => None,
+        }
+    }
+
+    pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
+        std::thread::Builder::new()
+            .name("tmp-hotplug-watcher".into())
+            .spawn(move || {
+                log::info!(
+                    "hotplug: watcher armed (polling /sys/class/hidraw every {}s)",
+                    POLL_INTERVAL.as_secs()
+                );
+                let mut last = false;
+                loop {
+                    let now = crate::hid::device_present();
+                    if let Some(evt) = transition(last, now) {
+                        if evt == EVT_DETACHED {
+                            // Same cleanup, same order, as macOS's removed_cb:
+                            // drop the (now-dead) session first so a later
+                            // reconnect never collides with our own stale
+                            // flock, then reset monitor/doctor state.
+                            *crate::lock_ok(&session) = None;
+                            crate::monitor::reset_startup_state();
+                            crate::commands::doctor::clear_doctor_before_cache();
+                            log::info!("hotplug: TMP detached — session released");
+                        } else {
+                            log::info!("hotplug: TMP attached");
+                        }
+                        let _ = app.emit(evt, ());
+                    }
+                    last = now;
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            })
+            .expect("spawn tmp-hotplug-watcher");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn absent_to_present_seeded_from_startup_is_attached() {
+            // The seeded-false-at-startup case: a device already plugged in when
+            // the watcher spawns must still emit ATTACHED on the first poll.
+            assert_eq!(transition(false, true), Some(EVT_ATTACHED));
+        }
+
+        #[test]
+        fn present_to_absent_is_detached() {
+            assert_eq!(transition(true, false), Some(EVT_DETACHED));
+        }
+
+        #[test]
+        fn no_change_is_none() {
+            assert_eq!(transition(false, false), None);
+            assert_eq!(transition(true, true), None);
+        }
     }
 }

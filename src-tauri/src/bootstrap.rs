@@ -4,8 +4,31 @@
 // before `mod bootstrap`, so its macros are in textual scope here).
 use crate::*;
 
+/// Mirrors `scripts/tauri-dev-env.sh`'s Wayland workaround (see its header for the
+/// hardware evidence: WebKitGTK's native-Wayland window sometimes maps but never
+/// paints on some KDE/GNOME + GPU driver combos). That script only wraps `tauri
+/// dev`; a packaged bundle gets no wrapper, so the shipped binary needs its own
+/// copy or a released user hits a blank window on first launch. `-z
+/// "${GDK_BACKEND:-}"`: an EMPTY `GDK_BACKEND` counts as unset, and an explicit
+/// value (e.g. `wayland`) is left alone. Pure so the four cases are unit-testable
+/// without a real session.
+#[cfg(target_os = "linux")]
+fn should_force_x11(session_type: Option<&str>, gdk_backend: Option<&str>) -> bool {
+    session_type == Some("wayland") && gdk_backend.is_none_or(str::is_empty)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    if should_force_x11(
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        std::env::var("GDK_BACKEND").ok().as_deref(),
+    ) {
+        // SAFETY: called before any thread is spawned (the very top of `run()`,
+        // ahead of `tauri::Builder`), so there is no concurrent env access.
+        unsafe { std::env::set_var("GDK_BACKEND", "x11") };
+    }
+
     tauri::Builder::default()
         .manage(AppState::default())
         // Frontend (console/error) + backend `log::*` records → OS log dir
@@ -219,4 +242,33 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::should_force_x11;
+
+    #[test]
+    fn wayland_with_no_gdk_backend_forces_x11() {
+        assert!(should_force_x11(Some("wayland"), None));
+    }
+
+    #[test]
+    fn wayland_with_empty_gdk_backend_forces_x11() {
+        // An empty string is what `std::env::var(...).ok()` yields for a var set
+        // to "" — must be treated the same as unset, matching the shell script's
+        // `-z "${GDK_BACKEND:-}"`.
+        assert!(should_force_x11(Some("wayland"), Some("")));
+    }
+
+    #[test]
+    fn wayland_with_explicit_gdk_backend_is_left_alone() {
+        assert!(!should_force_x11(Some("wayland"), Some("wayland")));
+    }
+
+    #[test]
+    fn non_wayland_session_is_never_forced() {
+        assert!(!should_force_x11(Some("x11"), None));
+        assert!(!should_force_x11(None, None));
+    }
 }

@@ -5,10 +5,12 @@
 # the seat, via systemd-logind — no group to create and no user to add, and access
 # follows the active session rather than being granted permanently to a group.
 #
-# Install:
+# Install (source build — the .deb/.rpm packages install and reload this
+# automatically, see packaging/linux/postinst.sh):
 #   sudo cp packaging/udev/70-fender-tone-master-pro.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules && sudo udevadm trigger
-# Then unplug and replug the unit (the rule applies when the node is created).
+# `udevadm trigger` re-applies the rule to an already-connected unit — no
+# unplug/replug needed.
 #
 # The unit enumerates TWO USB interfaces — 1ed8:0044 and 1ed8:0047. Only 0044 carries
 # the control protocol this app speaks (hid.rs PID); 0047 is matched as well so the
