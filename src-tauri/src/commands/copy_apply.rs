@@ -292,8 +292,17 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // document actually shows the acked edit (`read_back_graph`).
     let graph = if save {
         // What the acked ops leave behind — the oracle the read-back is checked against.
+        // An edit that leaves the roster as it was (a same-model re-stamp: on the unit a
+        // node id IS its FenderId, so nothing the roster can see changes) makes the
+        // read-back unverifiable — pre-edit and post-edit documents look identical — so
+        // it is never adopted.
+        let pre = group_roster(
+            roster
+                .iter()
+                .map(|e| (e.group.as_str(), e.fender_id.as_str())),
+        );
         let expected = expected_roster(&roster, &job.ops);
-        read_back_graph(s, expected.as_ref(), list_index)
+        read_back_graph(s, &pre, expected.as_ref(), list_index)
     } else {
         None
     };
@@ -406,20 +415,39 @@ fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Ros
 /// patches from the edit it staged; an edit never triggers a refetch either way.
 fn read_back_graph(
     s: &Session,
+    pre: &Roster,
     expected: Option<&Roster>,
     list_index: u32,
 ) -> Option<session::ActiveGraph> {
     let carriers = s.json_payload_carriers();
-    let Some(graph) = s
-        .current_preset_value()
-        .ok()
-        .map(|v| session::extract_active_graph(&v, None))
-    else {
-        log::info!(
-            "[copy_apply] slot {list_index}: no post-save read-back (carriers {carriers:?}) — \
-             the cache is patched from the acked edit"
+    let Some(expected) = expected else {
+        log::warn!(
+            "[copy_apply] slot {list_index}: post-save read-back has no oracle (an acked op \
+             named a block the pre-edit roster lacks; carriers {carriers:?}) — ignored, the \
+             cache is patched from the acked edit"
         );
         return None;
+    };
+    if expected == pre {
+        log::info!(
+            "[copy_apply] slot {list_index}: post-save read-back is unverifiable (the acked \
+             ops leave the block roster unchanged; carriers {carriers:?}) — ignored, the \
+             cache is patched from the acked edit"
+        );
+        return None;
+    }
+    // `current_audio_graph`, not a bare `extract_active_graph`: it keeps the session
+    // reader's truncation guard, so a buffer-scraped document cut before a complete
+    // `template` is rejected instead of adopted with a default single-series shape.
+    let graph = match s.current_audio_graph() {
+        Ok(graph) => graph,
+        Err(e) => {
+            log::info!(
+                "[copy_apply] slot {list_index}: no usable post-save read-back ({e}; carriers \
+                 {carriers:?}) — the cache is patched from the acked edit"
+            );
+            return None;
+        }
     };
     let read = group_roster(
         graph
@@ -427,7 +455,7 @@ fn read_back_graph(
             .iter()
             .map(|n| (n.group_id.as_str(), n.model.as_str())),
     );
-    if expected == Some(&read) {
+    if *expected == read {
         log::info!(
             "[copy_apply] slot {list_index}: post-save read-back shows the acked edit \
              (carriers {carriers:?}) — adopted"

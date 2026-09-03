@@ -376,14 +376,22 @@ mod copy_level_e2e_tests {
     /// default document that tail cuts the second node out of BOTH the load-time roster and
     /// the post-save push. `with_ftsw` re-serializes with sorted keys, so a key sorting after
     /// `audioGraph` lands in the dropped tail instead.
-    fn padded_two_node_doc() -> String {
+    fn padded_doc(g1_nodes: &[(&str, &str)]) -> String {
+        let nodes = g1_nodes
+            .iter()
+            .map(|(fender, node)| {
+                format!(r#"{{"FenderId":"{fender}","nodeId":"{node}","dspUnitParameters":{{"bypass":false}}}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
-                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false}}}},
-                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
-            ]}}}},"zzTail":"{}"}}"#,
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[{nodes}]}}}},"zzTail":"{}"}}"#,
             "x".repeat(200)
         )
+    }
+
+    fn padded_two_node_doc() -> String {
+        padded_doc(&[("ACD_Twin57", "n1"), ("ACD_ChorusCE2", "n2")])
     }
 
     #[test]
@@ -416,15 +424,18 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn copy_adopts_a_post_save_read_back_that_shows_the_acked_edit() {
-        // A same-model re-stamp leaves the roster as it was, so the fake's (unmutated)
-        // post-save push DOES show the acked op — adopted, device node ids and all.
+        // The push after the save lists exactly the roster the acked remove leaves behind —
+        // adopted, device node ids and all.
         let sim = SimDevice::new()
             .with_preset_json(&padded_two_node_doc())
-            .with_stale_push_after_save();
+            .with_post_save_push(&padded_doc(&[("ACD_ChorusCE2", "n2")]));
         let job = CopyJob {
             list_index: 3,
             name: "Clean Verse".into(),
-            ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
+            ops: vec![CopyOp::Remove {
+                group: "G1".into(),
+                node_id: "n1".into(),
+            }],
         };
         let (item, _) = run_copy(sim, &job, true);
         assert_eq!(item.outcome, "updated");
@@ -435,9 +446,33 @@ mod copy_level_e2e_tests {
             graph
                 .nodes
                 .iter()
-                .map(|n| n.model.as_str())
+                .map(|n| (n.node_id.as_str(), n.model.as_str()))
                 .collect::<Vec<_>>(),
-            ["ACD_Twin57", "ACD_ChorusCE2"]
+            [("n2", "ACD_ChorusCE2")]
+        );
+    }
+
+    #[test]
+    fn copy_never_adopts_a_read_back_for_an_edit_the_roster_cannot_see() {
+        // A same-model re-stamp leaves the block roster exactly as it was (on the unit a
+        // node id IS its FenderId), so a pre-edit and a post-edit document are
+        // indistinguishable by roster: the fake's unmutated (load-time) push matches the
+        // expected roster and must STILL be refused — the cache keeps the acked edit.
+        let sim = SimDevice::new()
+            .with_preset_json(&padded_two_node_doc())
+            .with_stale_push_after_save();
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated");
+        assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
+        assert!(
+            item.graph.is_none(),
+            "a roster-invariant edit has no verifiable read-back: {:?}",
+            item.graph
         );
     }
 

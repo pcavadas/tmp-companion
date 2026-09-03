@@ -923,7 +923,8 @@ export interface CopyJob {
  * `BulkReplaceItem` plus the post-save signal graph, so the Copy view can patch its
  * cached library in place (no re-scan) after a write — `graph` is omitted when the
  * preset wasn't saved, its graph couldn't be read back, or the read-back didn't show the
- * blocks the acked ops produced (a stale held-session document, ignored). */
+ * blocks the acked ops produced (a stale held-session document, ignored), or the edit left
+ * the block roster unchanged (a same-model re-stamp — unverifiable, never adopted). */
 export interface CopyApplyItem {
   slot: number;
   name: string;

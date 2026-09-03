@@ -226,6 +226,17 @@ pub enum SimEvent {
     Heartbeat,
 }
 
+/// What a `saveCurrentPreset` pushes afterwards (see `SimState::post_save_push`). Only the
+/// `#[cfg(test)]` knobs construct it, so the non-test build sees no constructor.
+#[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub enum PostSavePush {
+    /// The slot's served document, unmutated by the edits — the load-time graph.
+    LoadTimeEcho,
+    /// A specific document (raw preset JSON).
+    Doc(String),
+}
+
 struct SimState {
     events: Vec<SimEvent>,
     /// Count of structural edits (`replace`/`insert`/`remove`) seen — drives the
@@ -236,11 +247,10 @@ struct SimState {
     drop_first: bool,
     /// When `Some(n)`, the Nth structural edit (1-based) is REJECTED with `presetError`.
     reject_at: Option<u32>,
-    /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push of the
-    /// slot's served document for the next `pump` — and this fake never mutates that
-    /// document on a structural edit, so it is exactly the LOAD-TIME (pre-edit) graph the
-    /// real unit handed the Copy post-save read-back (HW 2026-09-02, fw 1.8.45).
-    stale_push_after_save: bool,
+    /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push for the
+    /// next `pump` — the document a held session scrapes off its buffer as the Copy
+    /// post-save read-back.
+    post_save_push: Option<PostSavePush>,
     /// Device-initiated pushes waiting for the next `pump` (replies to a send are delivered
     /// synchronously from the send instead).
     pending_pushes: Vec<Vec<u8>>,
@@ -432,7 +442,7 @@ impl Default for SimState {
             structural_seen: 0,
             drop_first: false,
             reject_at: None,
-            stale_push_after_save: false,
+            post_save_push: None,
             pending_pushes: Vec::new(),
             songs: vec!["Opening Set".into(), "Encore".into()],
             setlists: vec!["Saturday Night".into()],
@@ -1032,7 +1042,16 @@ impl SimDevice {
     /// next `pump` — the stale post-save read-back the Copy cache patch must not trust.
     #[cfg(test)]
     pub fn with_stale_push_after_save(self) -> SimDevice {
-        self.state.lock().expect("sim lock").stale_push_after_save = true;
+        self.state.lock().expect("sim lock").post_save_push = Some(PostSavePush::LoadTimeEcho);
+        self
+    }
+
+    /// Like [`with_stale_push_after_save`], but the post-save push carries `json` — lets a
+    /// test hand the Copy read-back a document that DOES show the acked edit.
+    #[cfg(test)]
+    pub fn with_post_save_push(self, json: &str) -> SimDevice {
+        self.state.lock().expect("sim lock").post_save_push =
+            Some(PostSavePush::Doc(json.to_string()));
         self
     }
 
@@ -1330,10 +1349,14 @@ impl SimDevice {
             let scene = st.current_scene;
             st.saved_scene.insert(slot0, scene);
             st.events.push(SimEvent::Saved(slot0));
-            if st.stale_push_after_save {
-                // The document a held session scrapes off its buffer on the next pump:
-                // unmutated by the structural edits, i.e. the load-time graph.
-                let json = load_echo_json(&mut st, slot0);
+            if let Some(push) = st.post_save_push.clone() {
+                let json = match push {
+                    // This fake never mutates its served document on a structural edit,
+                    // so the echo is exactly the LOAD-TIME (pre-edit) graph the real unit
+                    // handed the Copy post-save read-back (HW 2026-09-02, fw 1.8.45).
+                    PostSavePush::LoadTimeEcho => load_echo_json(&mut st, slot0),
+                    PostSavePush::Doc(doc) => doc.into_bytes(),
+                };
                 let push = frame_multi(&current_preset_data_changed(&json));
                 st.pending_pushes.extend(push);
             }
