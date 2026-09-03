@@ -590,13 +590,14 @@ export function sameRoster(a: ActiveGraph, b: ActiveGraph): boolean {
 
 /** The graph the Copy save patches the library cache with. `optimistic` is rebuilt from the
  *  edit the device acked (`activeFromEditGraph`) and is the default; `readBack` — the
- *  document `copy_apply` scraped off the held session after the save — is adopted ONLY when
- *  it shows exactly those blocks (it then contributes the device's real node ids and params,
- *  which a later edit of an inserted block needs). A read-back that disagrees is a stale
- *  document, never the truth: on the unit (2026-09-02, fw 1.8.45) it was the LOAD-TIME graph,
- *  and preferring it patched the cache back to the pre-edit blocks. Whether a read-back is
- *  verifiable at all is the backend's call (`copy_apply` omits `graph` for an edit the roster
- *  cannot see, e.g. a same-model re-stamp) — this only checks the one it was handed. */
+ *  device's working copy, re-prompted by `copy_apply` after the last confirmed op and
+ *  BEFORE the save — is adopted ONLY when it shows exactly those blocks (it then contributes
+ *  the device's real node ids and params, which a later edit of an inserted block needs). A
+ *  read-back that disagrees is never the truth: the earlier buffer-scraped one (2026-09-02,
+ *  fw 1.8.45) was the LOAD-TIME graph, and preferring it patched the cache back to the
+ *  pre-edit blocks. Whether a read-back is verifiable at all is the backend's call
+ *  (`copy_apply` omits `graph` for an edit the roster cannot see, e.g. a same-model
+ *  re-stamp) — this only checks the one it was handed. */
 export function reconcileReadBack(
   optimistic: ActiveGraph,
   readBack: ActiveGraph | undefined,

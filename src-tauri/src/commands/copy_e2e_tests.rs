@@ -152,14 +152,16 @@ mod copy_level_e2e_tests {
     /// unrelated to this file's structural-op-ordering assertions — Phase 5's
     /// `SimEvent::Heartbeat` gate, added 2026-08-31, is the first thing to surface them
     /// here — so they are filtered out and every existing assertion keeps checking exactly
-    /// what it always checked.
+    /// what it always checked. `WorkingCopyRead` (the pre-save field-2 re-prompt) is
+    /// filtered for the same reason; the one test that pins its ORDER reads the events
+    /// unfiltered.
     fn run_copy(sim: SimDevice, job: &CopyJob, save: bool) -> (CopyApplyItem, Vec<SimEvent>) {
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let item = copy_apply_one(&mut s, job, save).unwrap();
         let ev = sim
             .events()
             .into_iter()
-            .filter(|e| !matches!(e, SimEvent::Heartbeat))
+            .filter(|e| !matches!(e, SimEvent::Heartbeat | SimEvent::WorkingCopyRead))
             .collect();
         (item, ev)
     }
@@ -368,7 +370,7 @@ mod copy_level_e2e_tests {
             "an over-cap insert must never reach the device, let alone save: {ev:?}"
         );
     }
-    // ── Post-save read-back: adopted only when it shows the acked edit ──
+    // ── Pre-save working-copy read-back: adopted only when it shows the acked edit ──
 
     /// The fake's default two-node graph, padded past the session reader's documented tail
     /// loss: `best_json_payload` reassembles with `reassemble_streams`, which drops the LAST
@@ -395,15 +397,13 @@ mod copy_level_e2e_tests {
     }
 
     #[test]
-    fn copy_ignores_a_post_save_read_back_that_still_shows_the_pre_edit_blocks() {
-        // HW 2026-09-02 (fw 1.8.45): after "Saved to the unit." the graph copy_apply handed
-        // back was the LOAD-TIME document scraped off the held session, and the Copy view
-        // patched its cache back to the original blocks. This fake's post-save push IS that
-        // document (it never mutates its served graph on a structural edit): after a remove
-        // the item must carry NO graph — the frontend then patches from the edit it staged.
-        let sim = SimDevice::new()
-            .with_preset_json(&padded_two_node_doc())
-            .with_stale_push_after_save();
+    fn copy_reads_the_working_copy_before_the_save_and_adopts_it_when_it_shows_the_edit() {
+        // The read-back is a REAL read: a field-2 `currentPresetDataRequest` re-prompt of the
+        // working copy (the `live_ftsw` shape), sent after the last confirmed op and BEFORE
+        // the rename/save. The fake mutates its working copy on a confirmed structural edit,
+        // so the re-prompt answers with the post-edit roster — adopted, device node ids and
+        // all — and the unfiltered event order proves the read never lands after the save.
+        let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
             list_index: 3,
             name: "Clean Verse".into(),
@@ -412,36 +412,12 @@ mod copy_level_e2e_tests {
                 node_id: "n1".into(),
             }],
         };
-        let (item, ev) = run_copy(sim, &job, true);
-        assert_eq!(item.outcome, "updated");
-        assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
-        assert!(
-            item.graph.is_none(),
-            "a read-back still listing the removed block must be ignored: {:?}",
-            item.graph
-        );
-    }
-
-    #[test]
-    fn copy_adopts_a_post_save_read_back_that_shows_the_acked_edit() {
-        // The push after the save lists exactly the roster the acked remove leaves behind —
-        // adopted, device node ids and all.
-        let sim = SimDevice::new()
-            .with_preset_json(&padded_two_node_doc())
-            .with_post_save_push(&padded_doc(&[("ACD_ChorusCE2", "n2")]));
-        let job = CopyJob {
-            list_index: 3,
-            name: "Clean Verse".into(),
-            ops: vec![CopyOp::Remove {
-                group: "G1".into(),
-                node_id: "n1".into(),
-            }],
-        };
-        let (item, _) = run_copy(sim, &job, true);
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let item = copy_apply_one(&mut s, &job, true).unwrap();
         assert_eq!(item.outcome, "updated");
         let graph = item
             .graph
-            .expect("a read-back matching the acked edit is adopted");
+            .expect("the pre-save working-copy read shows the acked edit → adopted");
         assert_eq!(
             graph
                 .nodes
@@ -450,29 +426,258 @@ mod copy_level_e2e_tests {
                 .collect::<Vec<_>>(),
             [("n2", "ACD_ChorusCE2")]
         );
+        let ev: Vec<SimEvent> = sim
+            .events()
+            .into_iter()
+            .filter(|e| !matches!(e, SimEvent::Heartbeat))
+            .collect();
+        assert_eq!(
+            ev,
+            vec![
+                SimEvent::Loaded(3),
+                SimEvent::Remove {
+                    group: "G1".into(),
+                    node_id: "n1".into(),
+                },
+                SimEvent::WorkingCopyRead,
+                SimEvent::Renamed("Clean Verse".into()),
+                SimEvent::Saved(3),
+            ],
+            "the working-copy read sits between the last op and the save"
+        );
     }
 
     #[test]
-    fn copy_never_adopts_a_read_back_for_an_edit_the_roster_cannot_see() {
-        // A same-model re-stamp leaves the block roster exactly as it was (on the unit a
-        // node id IS its FenderId), so a pre-edit and a post-edit document are
-        // indistinguishable by roster: the fake's unmutated (load-time) push matches the
-        // expected roster and must STILL be refused — the cache keeps the acked edit.
+    fn copy_a_stale_post_save_push_cannot_poison_the_read_back() {
+        // HW 2026-09-02 (fw 1.8.45): the buffer-scraped "read-back" after the save was the
+        // LOAD-TIME document and the Copy view patched its cache back to the original
+        // blocks. The read now happens BEFORE the save, so whatever the device pushes
+        // afterwards — here the pre-edit graph — is never what the item carries.
         let sim = SimDevice::new()
             .with_preset_json(&padded_two_node_doc())
             .with_stale_push_after_save();
         let job = CopyJob {
             list_index: 3,
             name: "Clean Verse".into(),
-            ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
+            ops: vec![CopyOp::Remove {
+                group: "G1".into(),
+                node_id: "n1".into(),
+            }],
         };
         let (item, ev) = run_copy(sim, &job, true);
         assert_eq!(item.outcome, "updated");
+        assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
+        let graph = item.graph.expect("the pre-save read is adopted");
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| n.model.as_str())
+                .collect::<Vec<_>>(),
+            ["ACD_ChorusCE2"],
+            "the stale post-save push must not resurrect the removed block"
+        );
+    }
+
+    #[test]
+    fn copy_never_adopts_a_read_back_for_an_edit_the_roster_cannot_see() {
+        // A same-model re-stamp leaves the block roster exactly as it was (on the unit a
+        // node id IS its FenderId), so a pre-edit and a post-edit document are
+        // indistinguishable by roster: the read is not even requested (the fake records no
+        // `WorkingCopyRead`) and the item carries no graph — the cache keeps the acked edit.
+        let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
+        };
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let item = copy_apply_one(&mut s, &job, true).unwrap();
+        assert_eq!(item.outcome, "updated");
+        let ev = sim.events();
         assert!(ev.contains(&SimEvent::Saved(3)), "{ev:?}");
         assert!(
             item.graph.is_none(),
             "a roster-invariant edit has no verifiable read-back: {:?}",
             item.graph
+        );
+        assert!(
+            !ev.contains(&SimEvent::WorkingCopyRead),
+            "an unverifiable edit must not spend a re-prompt: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn copy_ir_insert_addresses_the_new_node_by_its_fender_id() {
+        // An IR insert is two-step: insert the `ACD_UserIRTMS` placeholder, then point the
+        // NEW node's `file` param at the IR. The new node is addressed by its FenderId —
+        // on the unit a node id IS its FenderId, which the fake mirrors — never by diffing
+        // node-id sets off the session buffer (which `insert_node`'s `clear_raw` had just
+        // emptied, so that always degraded to a bare insert on hardware). The follow-up
+        // itself is software-green here; its HW validation is still pending.
+        let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![CopyOp::Insert {
+                group: "G1".into(),
+                before_fender_id: None,
+                repl: CopyRepl::Ir {
+                    fender_id: "ACD_UserIRTMS".into(),
+                    file: "Oversize.wav".into(),
+                },
+            }],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated");
+        assert!(
+            ev.contains(&SimEvent::Replace {
+                group: "G1".into(),
+                node_id: "ACD_UserIRTMS".into(),
+                fender_id: "ACD_UserIRTMS".into(),
+            }),
+            "the IR follow-up must target the newly-inserted node: {ev:?}"
+        );
+        let graph = item.graph.expect("the pre-save read shows the insert");
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| n.model.as_str())
+                .collect::<Vec<_>>(),
+            ["ACD_Twin57", "ACD_ChorusCE2", "ACD_UserIRTMS"]
+        );
+    }
+
+    #[test]
+    fn copy_refuses_an_ir_or_saved_insert_into_a_group_that_already_holds_that_model() {
+        // The IR/saved follow-up addresses the node it just added by FenderId (= its id on
+        // the unit). A group that already holds that model — here after an earlier op in
+        // the same job — would make that address ambiguous (the swap could re-point the
+        // EXISTING block), so the op is refused before the insert reaches the device.
+        let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
+        let ir = || CopyRepl::Ir {
+            fender_id: "ACD_UserIRTMS".into(),
+            file: "Oversize.wav".into(),
+        };
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![
+                CopyOp::Insert {
+                    group: "G1".into(),
+                    before_fender_id: None,
+                    repl: ir(),
+                },
+                CopyOp::Insert {
+                    group: "G1".into(),
+                    before_fender_id: None,
+                    repl: ir(),
+                },
+            ],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "error");
+        assert!(item.detail.contains("ambiguous"), "detail: {}", item.detail);
+        assert!(item.detail.contains("NOT saved"), "detail: {}", item.detail);
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::Insert { .. }))
+                .count(),
+            1,
+            "the first IR insert lands, the second never reaches the device: {ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::Saved(_))),
+            "a refused op must not save: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn copy_dropped_first_insert_is_applied_once_in_the_working_copy() {
+        // The cold first edit is silently DROPPED and retried; only the CONFIRMED send may
+        // land in the working copy, or the read-back would show the block twice and be
+        // refused (roster ≠ expected) — the retry must not double-apply.
+        let sim = SimDevice::new()
+            .with_preset_json(&padded_two_node_doc())
+            .with_drop_first();
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![CopyOp::Insert {
+                group: "G1".into(),
+                before_fender_id: Some("ACD_ChorusCE2".into()),
+                repl: CopyRepl::Model {
+                    fender_id: "ACD_TapeEcho".into(),
+                },
+            }],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated");
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::Insert { .. }))
+                .count(),
+            2,
+            "the dropped insert + its retry: {ev:?}"
+        );
+        let graph = item.graph.expect("the retried insert reads back once");
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| n.model.as_str())
+                .collect::<Vec<_>>(),
+            ["ACD_Twin57", "ACD_TapeEcho", "ACD_ChorusCE2"]
+        );
+    }
+
+    #[test]
+    fn sim_working_copy_render_shows_confirmed_edits_until_the_next_load() {
+        // The fake's field-2 re-prompt renders the working copy: confirmed structural edits
+        // in order (a dropped send never lands), group-scoped, `nodeId == FenderId` for a
+        // minted node; a load discards them. This is the offline stand-in for the HW fact
+        // the Copy read rests on (6/6 re-prompts showed the edit, fw 1.8.45, 2026-09-03).
+        let sim = SimDevice::new()
+            .with_preset_json(&padded_two_node_doc())
+            .with_drop_first();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.load_preset(3).unwrap();
+        let g1 = |s: &mut Session| -> Vec<(String, String)> {
+            let v = s
+                .live_preset_value(|_| true)
+                .expect("the re-prompt answers");
+            crate::audiograph::roster(&v)
+                .into_iter()
+                .filter(|(g, _, _)| g == "G1")
+                .map(|(_, node, fid)| (node, fid))
+                .collect()
+        };
+        assert!(
+            !s.insert_node("G1", None, "ACD_TapeEcho").unwrap(),
+            "dropped"
+        );
+        assert!(
+            s.insert_node("G1", None, "ACD_TapeEcho").unwrap(),
+            "retry confirms"
+        );
+        assert!(s.remove_node("G1", "n1").unwrap());
+        assert!(s.replace_node("G1", "n2", "ACD_Klon").unwrap());
+        assert_eq!(
+            g1(&mut s),
+            [
+                ("ACD_Klon".to_string(), "ACD_Klon".to_string()),
+                ("ACD_TapeEcho".to_string(), "ACD_TapeEcho".to_string()),
+            ]
+        );
+        s.load_preset(3).unwrap();
+        assert_eq!(
+            g1(&mut s),
+            [
+                ("n1".to_string(), "ACD_Twin57".to_string()),
+                ("n2".to_string(), "ACD_ChorusCE2".to_string()),
+            ],
+            "a load discards the working copy"
         );
     }
 

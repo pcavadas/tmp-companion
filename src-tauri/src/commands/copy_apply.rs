@@ -84,11 +84,13 @@ pub struct CopyJob {
 }
 
 /// One preset's outcome from a [`copy_apply`] run (streamed per preset). Like
-/// [`BulkReplaceItem`] (`slot`/`name`/`outcome`/`detail`) plus the post-save signal
-/// `graph` read back off the held session, so the Copy view can patch its cached library
-/// in place (no ~22 s re-scan) after a write. `graph` is `None` when the preset wasn't
-/// saved, its graph couldn't be read back, or the read-back did not show the blocks the
-/// acked ops produced (a stale buffered document — see [`read_back_graph`]).
+/// [`BulkReplaceItem`] (`slot`/`name`/`outcome`/`detail`) plus the signal `graph` the
+/// device's WORKING COPY showed in a field-2 re-prompt taken after the last confirmed op
+/// and BEFORE the save (the save itself is unacknowledged), so the Copy view can patch its
+/// cached library in place (no ~22 s re-scan) after a write. `graph` is `None` when the
+/// preset wasn't saved, the read could not be verified (a roster-invariant edit), no
+/// reply landed, or the reply did not show the blocks the acked ops produced (see
+/// [`read_working_copy`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct CopyApplyItem {
     pub slot: u32,
@@ -186,17 +188,11 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
                                              // editing/saving (active_matches prefers the PresetLoaded slot echo, falling back to
                                              // the active name only when no slot echo arrived).
     if !s.active_matches(list_index, Some(&name)) {
-        return Ok(CopyApplyItem {
-            slot: list_index,
-            name: name.clone(),
-            outcome: "error".to_string(),
-            detail: format!(
+        return Ok(error_item(list_index, &name, format!(
                 "could not confirm target preset loaded on held session (slot {:?} ≠ {list_index}, active {:?} ≠ target {name:?}) — not edited",
                 s.loaded_slot(),
                 s.active_preset_name()
-            ),
-            graph: None,
-        });
+            )));
     }
 
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
@@ -228,19 +224,45 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
                     (None, false, Some((group.as_str(), node_id.as_str())))
                 }
             };
+        // An IR/saved INSERT addresses the node it adds by FenderId (on the unit a node id
+        // IS its FenderId), so a group that ALREADY holds that model — after the ops so far
+        // — would make the follow-up swap ambiguous (it could re-point an existing block).
+        // (A cap-legal case: two cabinets in one group.)
+        if let CopyOp::Insert { group, repl, .. } = op {
+            // Refuse, never guess — and when the ops so far cannot be modelled at all
+            // (`expected_roster` → `None`, the same `None` that refuses the read), the
+            // group's contents are unknown, so the address is unverifiable: refuse too.
+            let ambiguous = !matches!(repl, CopyRepl::Model { .. })
+                && expected_roster(&roster, &job.ops[..i]).is_none_or(|r| {
+                    r.get(group)
+                        .is_some_and(|ids| ids.iter().any(|id| id == repl.insert_fender_id()))
+                });
+            if ambiguous {
+                return Ok(error_item(
+                    list_index,
+                    &name,
+                    format!(
+                        "op {}/{total} ({}) refused: {group} already holds a {} block (or the \
+                         ops so far cannot be modelled), so the inserted node's id would be \
+                         ambiguous — NOT saved",
+                        i + 1,
+                        describe_copy_op(op),
+                        repl.insert_fender_id()
+                    ),
+                ));
+            }
+        }
         let replaced = target.and_then(|(g, n)| blockcaps_replaced(&roster, g, n));
         if let Err(reason) = blockcaps_check(&counts, candidate_id, is_replace, replaced) {
-            return Ok(CopyApplyItem {
-                slot: list_index,
-                name: name.clone(),
-                outcome: "error".to_string(),
-                detail: format!(
+            return Ok(error_item(
+                list_index,
+                &name,
+                format!(
                     "op {}/{total} ({}) blocked by block-count cap: {reason} — NOT saved",
                     i + 1,
                     describe_copy_op(op)
                 ),
-                graph: None,
-            });
+            ));
         }
 
         match apply_copy_op(s, op, first) {
@@ -248,64 +270,61 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
                 blockcaps_advance(&mut counts, candidate_id, replaced);
             }
             Ok(false) => {
-                return Ok(CopyApplyItem {
-                    slot: list_index,
-                    name: name.clone(),
-                    outcome: "error".to_string(),
-                    detail: format!(
+                return Ok(error_item(
+                    list_index,
+                    &name,
+                    format!(
                         "device rejected op {}/{total} ({}) — presetError / no confirm — NOT saved",
                         i + 1,
                         describe_copy_op(op)
                     ),
-                    graph: None,
-                });
+                ));
             }
             Err(e) => {
-                return Ok(CopyApplyItem {
-                    slot: list_index,
-                    name: name.clone(),
-                    outcome: "error".to_string(),
-                    detail: format!(
+                return Ok(error_item(
+                    list_index,
+                    &name,
+                    format!(
                         "op {}/{total} ({}) failed: {e} — NOT saved",
                         i + 1,
                         describe_copy_op(op)
                     ),
-                    graph: None,
-                });
+                ));
             }
         }
     }
 
-    if save {
-        // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
-        // keeps the preset's name and song link.
-        if !name.is_empty() {
-            s.rename_current_preset(&name)?;
-        }
-        s.save_current_preset(list_index)?;
-    }
-    // Keep the live-controller status warm before the next preset.
-    s.heartbeat()?;
-    s.pump_collect(120)?;
-    // The post-save graph for the Copy view's in-place cache patch (no ~22 s re-scan) —
-    // only on save (an unsaved edit must not poison the cache), and only when the buffered
-    // document actually shows the acked edit (`read_back_graph`).
+    // The working-copy read for the Copy view's in-place cache patch (no ~22 s re-scan):
+    // a field-2 re-prompt of the device's LIVE document, taken after the last confirmed op
+    // and BEFORE the save (the footswitch flow's HW-proven re-prompt-then-save ordering),
+    // never a scrape of whatever the session still had buffered. Only on save (an unsaved
+    // edit must not poison the cache), and only when the read can be verified against the
+    // acked ops (`read_working_copy`).
     let graph = if save {
-        // What the acked ops leave behind — the oracle the read-back is checked against.
-        // An edit that leaves the roster as it was (a same-model re-stamp: on the unit a
-        // node id IS its FenderId, so nothing the roster can see changes) makes the
-        // read-back unverifiable — pre-edit and post-edit documents look identical — so
-        // it is never adopted.
+        // What the acked ops leave behind — the oracle the read is checked against. An
+        // edit that leaves the roster as it was (a same-model re-stamp: on the unit a node
+        // id IS its FenderId, so nothing the roster can see changes) is unverifiable —
+        // pre-edit and post-edit documents look identical — so no read is spent on it.
         let pre = group_roster(
             roster
                 .iter()
                 .map(|e| (e.group.as_str(), e.fender_id.as_str())),
         );
         let expected = expected_roster(&roster, &job.ops);
-        read_back_graph(s, &pre, expected.as_ref(), list_index)
+        let graph = read_working_copy(s, &pre, expected.as_ref(), list_index, &name);
+        // Identity-preserving persist (Pro Control's rename(current name) → save(slot)):
+        // keeps the preset's name and song link.
+        if !name.is_empty() {
+            s.rename_current_preset(&name)?;
+        }
+        s.save_current_preset(list_index)?;
+        graph
     } else {
         None
     };
+    // Keep the live-controller status warm before the next preset.
+    s.heartbeat()?;
+    s.pump_collect(120)?;
     Ok(CopyApplyItem {
         slot: list_index,
         name,
@@ -315,7 +334,18 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     })
 }
 
-/// Per-group ordered FenderId lists — the shape a post-save read-back is compared in. Node
+/// One target's `error` row: nothing was saved, and the frontend patches nothing.
+fn error_item(list_index: u32, name: &str, detail: String) -> CopyApplyItem {
+    CopyApplyItem {
+        slot: list_index,
+        name: name.to_string(),
+        outcome: "error".to_string(),
+        detail,
+        graph: None,
+    }
+}
+
+/// Per-group ordered FenderId lists — the shape the working-copy read is compared in. Node
 /// ids are deliberately NOT part of it (a device replace re-assigns them, an insert mints
 /// one); groups are keyed because the device lists nodes in sorted-group order while the
 /// frontend's optimistic graph lists them in signal order.
@@ -402,80 +432,121 @@ fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Ros
     ))
 }
 
-/// The post-save graph for the Copy view's cache patch — ONLY when the document the held
-/// session has buffered shows the blocks the acked ops produced. `current_preset_value` is
-/// not a read: it is the longest `presetJson` carrier that landed in the session buffer
-/// since the last op's `clear_raw()` (that op's confirm pumps plus the 120 ms post-save
-/// pump), and nothing requests a fresh field-3 after the save. HW 2026-09-02 (fw 1.8.45):
-/// that document was the PRE-edit graph, so the Copy view patched its cache back to the
-/// original blocks and the re-opened editor listed a deleted block again. Which carrier
-/// delivers the stale document is unproven (a late field-3 push, or the stored slot's
-/// field-9 reply inside the lazy-commit window, are the candidates), so the verdict line
-/// names every carrier present for the next online run to read. `None` = the frontend
-/// patches from the edit it staged; an edit never triggers a refetch either way.
-fn read_back_graph(
-    s: &Session,
+/// The working-copy graph for the Copy view's cache patch — a REAL read: `clear_raw` +
+/// `currentPresetDataRequest` (field 2) on the held session, the `Session::live_ftsw`
+/// wire shape, taken after the last confirmed op and BEFORE the save. HW 2026-09-03
+/// (fw 1.8.45, `probe --reprompt-map`, Copy's exact session shape): 6/6 re-prompts
+/// answered in ~520 ms with the POST-edit roster (insert and remove), the stream complete
+/// in its first slice, and both saves after a re-prompt persisted (field-8 read-back).
+/// The previous "read-back" was a buffer scrape that once returned the LOAD-TIME graph
+/// (HW 2026-09-02) and patched the cache back to the pre-edit blocks.
+///
+/// The roster oracle (`expected_roster`) is both the completion predicate — a mid-flight
+/// partial keeps pumping until the roster matches, then the payload must hold still for
+/// two slices before the parse is trusted (`Session::live_audio_graph`) — and the
+/// adoption guard. Verdicts, one line per saved slot: `adopted`; `truncated` (a per-group
+/// prefix of the oracle — checked first, since a tail insert's partial reads exactly as
+/// the pre-edit roster); `read == pre-edit` (the working copy does NOT show the acked
+/// edit — logged, never blocks the save: the ops were confirmed, and no HW sample of this
+/// contradiction exists yet); other mismatch; `no reply`. `None` = the frontend patches
+/// from the edit it staged; an edit never triggers a refetch either way.
+fn read_working_copy(
+    s: &mut Session,
     pre: &Roster,
     expected: Option<&Roster>,
     list_index: u32,
+    name: &str,
 ) -> Option<session::ActiveGraph> {
-    let carriers = s.json_payload_carriers();
     let Some(expected) = expected else {
         log::warn!(
-            "[copy_apply] slot {list_index}: post-save read-back has no oracle (an acked op \
-             named a block the pre-edit roster lacks; carriers {carriers:?}) — ignored, the \
-             cache is patched from the acked edit"
+            "[copy_apply] slot {list_index}: working-copy read has no oracle (an acked op \
+             named a block the pre-edit roster lacks) — not read, the cache is patched from \
+             the acked edit"
         );
         return None;
     };
     if expected == pre {
         log::info!(
-            "[copy_apply] slot {list_index}: post-save read-back is unverifiable (the acked \
-             ops leave the block roster unchanged; carriers {carriers:?}) — ignored, the \
-             cache is patched from the acked edit"
+            "[copy_apply] slot {list_index}: working-copy read is unverifiable (the acked \
+             ops leave the block roster unchanged) — not read, the cache is patched from \
+             the acked edit"
         );
         return None;
     }
-    // `current_audio_graph`, not a bare `extract_active_graph`: it keeps the session
-    // reader's truncation guard, so a buffer-scraped document cut before a complete
-    // `template` is rejected instead of adopted with a default single-series shape.
-    let graph = match s.current_audio_graph() {
+    // ONE node walk for every compare: the pre-edit roster came through
+    // `extract_active_graph` (model = FenderId, else nodeId), so the read must too.
+    let roster_of = |v: &serde_json::Value| {
+        let g = session::extract_active_graph(v, None);
+        group_roster(
+            g.nodes
+                .iter()
+                .map(|n| (n.group_id.as_str(), n.model.as_str())),
+        )
+    };
+    let graph = s.live_audio_graph(|v| roster_of(v) == *expected);
+    let carriers = s.json_payload_carriers();
+    let mut graph = match graph {
         Ok(graph) => graph,
         Err(e) => {
-            log::info!(
-                "[copy_apply] slot {list_index}: no usable post-save read-back ({e}; carriers \
-                 {carriers:?}) — the cache is patched from the acked edit"
+            // Classify whatever DID land so the next online run can read the failure shape.
+            let (warn, verdict) = match s.current_preset_value() {
+                Ok(v) => {
+                    let read = roster_of(&v);
+                    // A per-group prefix of the oracle is a partial cut inside the nodes —
+                    // tested FIRST, because a tail insert's partial reads exactly as the
+                    // pre-edit roster and must not be reported as a missing edit.
+                    let is_prefix = read
+                        .iter()
+                        .all(|(g, r)| expected.get(g).is_some_and(|e| e.starts_with(r)));
+                    let what = if is_prefix {
+                        "is truncated (a prefix of the acked edit)"
+                    } else if read == *pre {
+                        "== the PRE-edit roster — the device's working copy does NOT show the \
+                         acked edit"
+                    } else {
+                        "does NOT match the acked edit"
+                    };
+                    (
+                        !is_prefix,
+                        format!(
+                            "working-copy read {what} (carriers {carriers:?}; read {read:?}; \
+                             expected {expected:?})"
+                        ),
+                    )
+                }
+                Err(_) => (false, format!("no working-copy reply ({e})")),
+            };
+            let line = format!(
+                "[copy_apply] slot {list_index}: {verdict} — the cache is patched from the \
+                 acked edit"
             );
+            if warn {
+                log::warn!("{line}");
+            } else {
+                log::info!("{line}");
+            }
             return None;
         }
     };
-    let read = group_roster(
-        graph
-            .nodes
-            .iter()
-            .map(|n| (n.group_id.as_str(), n.model.as_str())),
-    );
-    if *expected == read {
-        log::info!(
-            "[copy_apply] slot {list_index}: post-save read-back shows the acked edit \
-             (carriers {carriers:?}) — adopted"
-        );
-        Some(graph)
-    } else {
-        log::warn!(
-            "[copy_apply] slot {list_index}: post-save read-back does NOT show the acked edit — \
-             ignored (carriers {carriers:?}; read {read:?}; expected {expected:?})"
-        );
-        None
+    // After `clear_raw` the reply carries no `currentPresetInfoChanged`/`PresetLoaded`
+    // stream, so the identity fields come from the job the read belongs to.
+    if graph.name.is_none() && !name.is_empty() {
+        graph.name = Some(name.to_string());
     }
+    graph.slot.get_or_insert(list_index);
+    log::info!(
+        "[copy_apply] slot {list_index}: working-copy read shows the acked edit (carriers \
+         {carriers:?}) — adopted"
+    );
+    Some(graph)
 }
 
 /// Apply ONE [`CopyOp`] on the held session, returning whether the device CONFIRMED it
 /// (`nodeReplaced`(40) / `nodeRemoved`(36) / `nodeInserted`(33)). `retry_drop` re-tries
 /// a single SILENT drop (the cold first edit after a fresh load) but never a
-/// `presetError`. IR/saved INSERT re-resolves the newly-added node id and applies the
-/// IR-file / saved-block follow-up; if the new id can't be resolved it FALLS BACK to a
-/// bare Model insert and `log::warn!`s the degradation.
+/// `presetError`. An IR/saved INSERT then applies its IR-file / saved-block follow-up to
+/// the node it added, addressed by FenderId (= its id on the unit); `copy_apply_one`
+/// refuses the op up front when that address would be ambiguous.
 fn apply_copy_op(s: &mut Session, op: &CopyOp, retry_drop: bool) -> Result<bool, String> {
     match op {
         CopyOp::Replace {
@@ -527,9 +598,15 @@ fn apply_copy_replace(
 
 /// INSERT a block. The Model insert is the faithful one-shot (`insert_node` 34). For an
 /// IR/saved insert we insert the bare model/placeholder, then RE-RESOLVE the
-/// newly-added node id (the node present after the insert that was absent before, read
-/// off the held session's roster) and apply the IR-file link / saved-block swap to it.
-/// If the new id can't be resolved, FALL BACK to the bare Model insert and warn.
+/// node it just added and apply the IR-file link / saved-block swap to it. On the unit a
+/// node's id IS its FenderId (`notes/write-safety.md`), so the new node is addressed as
+/// `repl.insert_fender_id()` directly — no before/after roster diff (the old diff read the
+/// session buffer, which `insert_node`'s `clear_raw` had just emptied, so it always
+/// degraded to a bare insert on hardware; and a partial "before" read could have diffed
+/// out an EXISTING node and pointed the IR/block swap at it). `copy_apply_one` refuses the
+/// op up front when the group already holds that model. The IR/saved follow-ups are
+/// software-green (SimDevice) with their HW validation still pending — `diffToOps` emits
+/// only Model inserts today.
 fn apply_copy_insert(
     s: &mut Session,
     group: &str,
@@ -538,8 +615,6 @@ fn apply_copy_insert(
     retry_drop: bool,
 ) -> Result<bool, String> {
     let insert_id = repl.insert_fender_id();
-    // Roster of this group BEFORE the insert — to diff the new node id afterwards.
-    let before: std::collections::HashSet<String> = roster_node_ids_in_group(s, group);
 
     // field-34 insert: `before_fender_id` is the anchor to insert AHEAD of (the device's
     // field-2 inserts BEFORE the referenced node); `None` appends at the group end.
@@ -552,52 +627,18 @@ fn apply_copy_insert(
         return Ok(false);
     }
 
-    // A plain Model insert is complete.
-    let CopyRepl::Model { .. } = repl else {
-        // IR / Saved → re-resolve the new node id and apply the content follow-up.
-        let after: std::collections::HashSet<String> = roster_node_ids_in_group(s, group);
-        let new_id = after.difference(&before).next().cloned();
-        match new_id {
-            Some(id) => match repl {
-                CopyRepl::Ir { file, .. } => {
-                    // Replace the just-inserted node WITH the IR (two-step: → ACD_UserIRTMS
-                    // + the string `file` param), full-fidelity.
-                    return s.replace_node_with_ir(group, &id, file);
-                }
-                CopyRepl::Saved { fender_id, index } => {
-                    return s.replace_node_with_block(group, &id, fender_id, *index);
-                }
-                CopyRepl::Model { .. } => unreachable!("handled above"),
-            },
-            None => {
-                log::warn!(
-                    "[copy_apply] IR/saved INSERT into {group} degraded to a bare insert: could not \
-                     re-resolve the newly-added node id on the held session (inserted {insert_id})"
-                );
-                // The bare insert DID land (confirmed) — report success, but the block is
-                // a bare placeholder/model, not the IR/saved content.
-                return Ok(true);
-            }
+    // IR / Saved → the content follow-up on the node just added (its id = its FenderId).
+    match repl {
+        CopyRepl::Model { .. } => Ok(true),
+        CopyRepl::Ir { file, .. } => {
+            // Replace the just-inserted node WITH the IR (two-step: → ACD_UserIRTMS + the
+            // string `file` param), full-fidelity.
+            s.replace_node_with_ir(group, insert_id, file)
         }
-    };
-    Ok(true)
-}
-
-/// The node ids currently in `group` on the held session (from a fresh field-3
-/// roster read). Empty if no preset JSON is available yet.
-fn roster_node_ids_in_group(s: &mut Session, group: &str) -> std::collections::HashSet<String> {
-    let _ = s.heartbeat();
-    let _ = s.pump_collect(200);
-    s.current_preset_value()
-        .ok()
-        .map(|v| {
-            audiograph::roster(&v)
-                .into_iter()
-                .filter(|(g, _, _)| g == group)
-                .map(|(_, node_id, _)| node_id)
-                .collect()
-        })
-        .unwrap_or_default()
+        CopyRepl::Saved { fender_id, index } => {
+            s.replace_node_with_block(group, insert_id, fender_id, *index)
+        }
+    }
 }
 
 /// Short human description of a `CopyOp` for the per-preset `error` detail.

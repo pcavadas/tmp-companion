@@ -206,11 +206,11 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
       .then((items) => {
         // Patch the cached library graph in place so a second edit reads the just-saved
         // path WITHOUT a ~22 s backup re-scan — an edit NEVER triggers a refetch. The edit
-        // the device acked is the truth (optimistic); the post-save read-back is adopted
-        // only when it shows those same blocks (`reconcileReadBack`), because it is not a
-        // fresh read but whatever document the held session still had buffered — on the
-        // unit that was the LOAD-TIME graph, which patched the cache back to the pre-edit
-        // blocks. Done from the resolved result (not the channel, which the offline bridge
+        // the device acked is the truth (optimistic); the device's working-copy read
+        // (taken by the backend BEFORE the save) is adopted only when it shows those same
+        // blocks (`reconcileReadBack`) — the earlier buffer-scraped read-back once handed
+        // back the LOAD-TIME graph and patched the cache back to the pre-edit blocks.
+        // Done from the resolved result (not the channel, which the offline bridge
         // doesn't stream). ONLY for a CONFIRMED save: a "skipped"/"error" item (device
         // rejected the edit) must NOT patch the cache, or it would assert blocks the unit
         // never saved.

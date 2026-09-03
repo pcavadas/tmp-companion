@@ -1203,6 +1203,47 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--reprompt-map") {
+        // --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]
+        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let name = args.get(i + 2).cloned().unwrap_or_default();
+        let group = args.get(i + 3).cloned().unwrap_or_default();
+        let opt = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|j| args.get(j + 1))
+                .cloned()
+        };
+        let (remove, insert, before) = (opt("--remove"), opt("--insert"), opt("--before"));
+        let commit = args.iter().any(|a| a == "--commit");
+        if slot == 0
+            || name.is_empty()
+            || group.is_empty()
+            || (remove.is_none() && insert.is_none())
+        {
+            eprintln!("usage: probe --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_reprompt_map(
+            slot,
+            &name,
+            &group,
+            remove.as_deref(),
+            insert.as_deref(),
+            before.as_deref(),
+            commit,
+        ) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--insert-map") {
         // --insert-map <slot> <group> <fenderId> [--before <id>] [--at-index <n>]
         // EMPIRICAL: load slot, print ordered group roster, insert (field-34 --before OR

@@ -73,6 +73,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::audiograph;
 use crate::hid::HidTransport;
 use crate::proto;
 
@@ -108,6 +109,7 @@ const F_REPLACE_WITH_BLOCK: u32 = 100;
 const F_INSERT_NODE: u32 = 34;
 const F_REMOVE_NODE: u32 = 35;
 const F_NODE_JSON_REQUEST: u32 = 119;
+const F_NODE_JSON_RESPONSE: u32 = 120;
 const F_RENAME: u32 = 13;
 const F_SAVE: u32 = 14;
 const F_SET_PRESET_LEVEL: u32 = 76;
@@ -168,6 +170,11 @@ pub enum SimEvent {
     },
     /// `removeNode`(35).
     Remove { group: String, node_id: String },
+    /// `currentPresetDataRequest`(2) — the working-copy re-prompt (`Session::live_ftsw` /
+    /// `live_preset_value`). Recorded so a test can pin WHERE a read sits relative to the
+    /// edits and the save (Copy reads BEFORE saving; a read after the save was the scrape
+    /// the 2026-09-02 stale-cache incident came from).
+    WorkingCopyRead,
     /// `renameCurrentPreset`(13).
     Renamed(String),
     /// `saveCurrentPreset`(14) — the **0-based** list index.
@@ -226,15 +233,28 @@ pub enum SimEvent {
     Heartbeat,
 }
 
-/// What a `saveCurrentPreset` pushes afterwards (see `SimState::post_save_push`). Only the
-/// `#[cfg(test)]` knobs construct it, so the non-test build sees no constructor.
+/// A CONFIRMED structural edit on the current working copy (`replaceNode` /
+/// `replaceNodeWithBlock` / `insertNode` / `removeNode`), applied in order when the fake
+/// renders a field-2 re-prompt (`load_echo_json` with `working = true`): the device's
+/// working copy shows a confirmed edit (HW 6/6 re-prompts, fw 1.8.45, 2026-09-03), and Copy
+/// reads it there BEFORE saving. Cleared by the next `loadPreset`; a save does NOT bake it
+/// into the scenario doc (as before — the stored doc stays the fixture).
 #[derive(Clone, Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
-pub enum PostSavePush {
-    /// The slot's served document, unmutated by the edits — the load-time graph.
-    LoadTimeEcho,
-    /// A specific document (raw preset JSON).
-    Doc(String),
+enum WorkingEdit {
+    Replace {
+        group: String,
+        node_id: String,
+        fender_id: String,
+    },
+    Insert {
+        group: String,
+        before: Option<String>,
+        fender_id: String,
+    },
+    Remove {
+        group: String,
+        node_id: String,
+    },
 }
 
 struct SimState {
@@ -247,10 +267,16 @@ struct SimState {
     drop_first: bool,
     /// When `Some(n)`, the Nth structural edit (1-based) is REJECTED with `presetError`.
     reject_at: Option<u32>,
-    /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push for the
-    /// next `pump` — the document a held session scrapes off its buffer as the Copy
-    /// post-save read-back.
-    post_save_push: Option<PostSavePush>,
+    /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push of the
+    /// PRE-edit (load-time) document for the next `pump` — the stale document a held
+    /// session once scraped off its buffer as the Copy post-save read-back (HW 2026-09-02).
+    stale_push_after_save: bool,
+    /// Confirmed structural edits since the last load — see [`WorkingEdit`].
+    working_edits: Vec<WorkingEdit>,
+    /// String `changeParameter` writes (`(group, node, param) → value`) since the last load,
+    /// served back by `nodeJsonRequest`(119) so a string-param verify read (the IR `file`
+    /// link in `Session::replace_node_with_ir`) sees what it wrote.
+    string_params: std::collections::BTreeMap<(String, String, String), String>,
     /// Device-initiated pushes waiting for the next `pump` (replies to a send are delivered
     /// synchronously from the send instead).
     pending_pushes: Vec<Vec<u8>>,
@@ -442,7 +468,9 @@ impl Default for SimState {
             structural_seen: 0,
             drop_first: false,
             reject_at: None,
-            post_save_push: None,
+            stale_push_after_save: false,
+            working_edits: Vec::new(),
+            string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
             songs: vec!["Opening Set".into(), "Encore".into()],
             setlists: vec!["Saturday Night".into()],
@@ -1038,20 +1066,12 @@ impl SimDevice {
         self
     }
 
-    /// After every `saveCurrentPreset`, push the slot's served (pre-edit) document on the
-    /// next `pump` — the stale post-save read-back the Copy cache patch must not trust.
+    /// After every `saveCurrentPreset`, push the slot's PRE-edit (load-time) document on the
+    /// next `pump` — the stale post-save document a Copy read taken BEFORE the save must
+    /// never be poisoned by.
     #[cfg(test)]
     pub fn with_stale_push_after_save(self) -> SimDevice {
-        self.state.lock().expect("sim lock").post_save_push = Some(PostSavePush::LoadTimeEcho);
-        self
-    }
-
-    /// Like [`with_stale_push_after_save`], but the post-save push carries `json` — lets a
-    /// test hand the Copy read-back a document that DOES show the acked edit.
-    #[cfg(test)]
-    pub fn with_post_save_push(self, json: &str) -> SimDevice {
-        self.state.lock().expect("sim lock").post_save_push =
-            Some(PostSavePush::Doc(json.to_string()));
+        self.state.lock().expect("sim lock").stale_push_after_save = true;
         self
     }
 
@@ -1215,6 +1235,9 @@ impl SimDevice {
         let mut st = self.state.lock().expect("sim lock");
 
         if let Some(lp) = proto::first_bytes(&f, F_LOAD_PRESET) {
+            // A load re-instantiates the stored preset: the working copy starts clean.
+            st.working_edits.clear();
+            st.string_params.clear();
             let dev_slot = proto::first_varint(&proto::parse(lp), 6).unwrap_or(0);
             let slot0 = dev_slot.saturating_sub(1) as u32;
             st.events.push(SimEvent::Loaded(slot0));
@@ -1267,7 +1290,7 @@ impl SimDevice {
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
             // post-load push the `blockcaps` guard reads as the pre-edit roster
             // (`Session::current_preset_value`). May exceed one HID frame, so chunk it.
-            let json = load_echo_json(&mut st, slot0);
+            let json = load_echo_json(&mut st, slot0, false);
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
             reports.extend(frame_multi(&current_preset_data_changed(&json)));
             return reports;
@@ -1279,8 +1302,9 @@ impl SimDevice {
             // have: `Session::live_ftsw` sends exactly this and reads `ftsw` off the reply.
             // Also fires inside the handshake burst, which is faithful — the real unit pushes
             // its current preset there too.
+            st.events.push(SimEvent::WorkingCopyRead);
             let current_slot = st.current_slot;
-            let json = load_echo_json(&mut st, current_slot);
+            let json = load_echo_json(&mut st, current_slot, true);
             return frame_multi(&current_preset_data_changed(&json));
         }
         if let Some(dr) = proto::first_bytes(&f, F_PRESET_DATA_REQUEST) {
@@ -1299,22 +1323,38 @@ impl SimDevice {
         if let Some(rn) = proto::first_bytes(&f, F_REPLACE_NODE) {
             let (group, node_id, fender_id) = three_strings(rn);
             st.events.push(SimEvent::Replace {
-                group,
-                node_id,
-                fender_id,
+                group: group.clone(),
+                node_id: node_id.clone(),
+                fender_id: fender_id.clone(),
             });
-            return structural_reply(&mut st, F_NODE_REPLACED);
+            return confirm_structural(
+                &mut st,
+                F_NODE_REPLACED,
+                WorkingEdit::Replace {
+                    group,
+                    node_id,
+                    fender_id,
+                },
+            );
         }
         if let Some(rb) = proto::first_bytes(&f, F_REPLACE_WITH_BLOCK) {
             let (group, node_id, fender_id) = three_strings(rb);
             let index = proto::first_varint(&proto::parse(rb), 4).unwrap_or(0);
             st.events.push(SimEvent::ReplaceWithBlock {
-                group,
-                node_id,
-                fender_id,
+                group: group.clone(),
+                node_id: node_id.clone(),
+                fender_id: fender_id.clone(),
                 index,
             });
-            return structural_reply(&mut st, F_NODE_REPLACED);
+            return confirm_structural(
+                &mut st,
+                F_NODE_REPLACED,
+                WorkingEdit::Replace {
+                    group,
+                    node_id,
+                    fender_id,
+                },
+            );
         }
         if let Some(ins) = proto::first_bytes(&f, F_INSERT_NODE) {
             let inner = proto::parse(ins);
@@ -1324,19 +1364,32 @@ impl SimDevice {
                 proto::first_bytes(&inner, 2).map(|b| String::from_utf8_lossy(b).into_owned());
             let fender_id = str_field(&inner, 3);
             st.events.push(SimEvent::Insert {
-                group,
-                before,
-                fender_id,
+                group: group.clone(),
+                before: before.clone(),
+                fender_id: fender_id.clone(),
             });
-            return structural_reply(&mut st, F_NODE_INSERTED);
+            return confirm_structural(
+                &mut st,
+                F_NODE_INSERTED,
+                WorkingEdit::Insert {
+                    group,
+                    before,
+                    fender_id,
+                },
+            );
         }
         if let Some(rm) = proto::first_bytes(&f, F_REMOVE_NODE) {
             let inner = proto::parse(rm);
+            let (group, node_id) = (str_field(&inner, 1), str_field(&inner, 2));
             st.events.push(SimEvent::Remove {
-                group: str_field(&inner, 1),
-                node_id: str_field(&inner, 2),
+                group: group.clone(),
+                node_id: node_id.clone(),
             });
-            return structural_reply(&mut st, F_NODE_REMOVED);
+            return confirm_structural(
+                &mut st,
+                F_NODE_REMOVED,
+                WorkingEdit::Remove { group, node_id },
+            );
         }
         if let Some(rename) = proto::first_bytes(&f, F_RENAME) {
             st.events
@@ -1349,14 +1402,11 @@ impl SimDevice {
             let scene = st.current_scene;
             st.saved_scene.insert(slot0, scene);
             st.events.push(SimEvent::Saved(slot0));
-            if let Some(push) = st.post_save_push.clone() {
-                let json = match push {
-                    // This fake never mutates its served document on a structural edit,
-                    // so the echo is exactly the LOAD-TIME (pre-edit) graph the real unit
-                    // handed the Copy post-save read-back (HW 2026-09-02, fw 1.8.45).
-                    PostSavePush::LoadTimeEcho => load_echo_json(&mut st, slot0),
-                    PostSavePush::Doc(doc) => doc.into_bytes(),
-                };
+            if st.stale_push_after_save {
+                // The PRE-edit (load-time) document — exactly what the real unit handed the
+                // Copy post-save buffer scrape (HW 2026-09-02, fw 1.8.45). A read taken
+                // BEFORE the save never sees it.
+                let json = load_echo_json(&mut st, slot0, false);
                 let push = frame_multi(&current_preset_data_changed(&json));
                 st.pending_pushes.extend(push);
             }
@@ -1406,7 +1456,7 @@ impl SimDevice {
             // `outputLevel` node-agnostically, so re-serving the same graph per scene is enough
             // for the amp pick to resolve — without it, the pre-pass harvests nothing and every
             // scene fails to classify ("read failed").
-            let json = load_echo_json(&mut st, current_slot);
+            let json = load_echo_json(&mut st, current_slot, true);
             return frame_multi(&current_preset_data_changed(&json));
         }
         if let Some(cp) = proto::first_bytes(&f, F_CHANGE_PARAMETER) {
@@ -1417,6 +1467,13 @@ impl SimDevice {
                 str_field(&inner, 2),
                 str_field(&inner, 3),
             );
+            // stringVal(6): kept per node so `nodeJsonRequest` can serve it back.
+            if let Some(sv) = proto::first_bytes(&inner, 6) {
+                st.string_params.insert(
+                    (group.clone(), node.clone(), param.clone()),
+                    String::from_utf8_lossy(sv).into_owned(),
+                );
+            }
             let scene = st.scene_key();
             let float_val = inner
                 .iter()
@@ -1554,10 +1611,27 @@ impl SimDevice {
             st.ftsw_clear(addr, index);
             return Vec::new();
         }
-        if proto::first_bytes(&f, F_NODE_JSON_REQUEST).is_some() {
-            // The edit-context preamble: the device replies `nodeJsonResponse`(120), but
-            // `replace_node`/`remove_node` ignore that reply — an empty ack suffices.
-            return Vec::new();
+        if let Some(nj) = proto::first_bytes(&f, F_NODE_JSON_REQUEST) {
+            // `nodeJsonRequest`(119) → `nodeJsonResponse`(120){ nodeJsonString(1) }. The
+            // edit-context preamble (`replace_node`/`remove_node` ignore the reply) AND the
+            // string-param verify read behind `Session::replace_node_with_ir`, which needs
+            // the `file` it just wrote served back: the node JSON carries this session's
+            // string `changeParameter` writes for that node, nothing else, so the reply
+            // stays inside ONE frame (a multi-frame reply loses its final frame to the
+            // session reader — the `padded_doc` note in `copy_e2e_tests`).
+            let inner = proto::parse(nj);
+            let (group, node) = (str_field(&inner, 1), str_field(&inner, 2));
+            let params: serde_json::Map<String, serde_json::Value> = st
+                .string_params
+                .iter()
+                .filter(|((g, n, _), _)| *g == group && *n == node)
+                .map(|((_, _, p), v)| (p.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            let json = serde_json::json!({ "dspUnitParameters": params }).to_string();
+            return frame_multi(&preset_message(
+                F_NODE_JSON_RESPONSE,
+                &proto::len_delimited(1, json.as_bytes()),
+            ));
         }
         Vec::new()
     }
@@ -2264,7 +2338,15 @@ fn truncate_scene_push(_st: &SimState, json: Vec<u8>) -> Vec<u8> {
 /// LATER `ensure_fresh_load` barrier witnessing a `SaveWitness::Param` (a footswitch bake)
 /// can actually match against this echo; any other slot (and all non-e2e builds) uses the
 /// shared default two-node graph (`with_preset_json` overrides it).
-fn load_echo_json(st: &mut SimState, slot0: u32) -> Vec<u8> {
+/// `working`: render the WORKING COPY (the confirmed structural edits since the last load
+/// applied — a field-2 re-prompt) rather than the load-time document (a load echo, or the
+/// stale post-save push). An edit-free working copy is byte-identical to the load echo.
+fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
+    let edits = if working {
+        st.working_edits.clone()
+    } else {
+        Vec::new()
+    };
     #[cfg(feature = "e2e")]
     if let Some(j) = scenario_json_for(slot0) {
         let doc = st.committed_doc(slot0).clone();
@@ -2273,13 +2355,117 @@ fn load_echo_json(st: &mut SimState, slot0: u32) -> Vec<u8> {
         // saved array — the field-3 push is the LIVE document, which is what makes it the
         // confirm channel for the no-echo footswitch setters.
         let ftsw = st.ftsw_working.as_ref().or(doc.ftsw.as_ref());
-        return truncate_scene_push(st, with_ftsw(&patched, ftsw).into_bytes());
+        let json = with_working_edits(with_ftsw(&patched, ftsw), &edits);
+        return truncate_scene_push(st, json.into_bytes());
     }
     let _ = slot0;
-    truncate_scene_push(
-        st,
-        with_ftsw(&st.preset_json, st.ftsw_working.as_ref()).into_bytes(),
-    )
+    let json = with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits);
+    truncate_scene_push(st, json.into_bytes())
+}
+
+/// Apply `edits` in order to the preset JSON. No edits → the input verbatim (key order and
+/// the `truncate_scene_push` marker offsets untouched); otherwise the document is
+/// re-serialized with sorted keys, like [`with_ftsw`].
+fn with_working_edits(json: String, edits: &[WorkingEdit]) -> String {
+    if edits.is_empty() {
+        return json;
+    }
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return json;
+    };
+    for e in edits {
+        apply_working_edit(&mut v, e);
+    }
+    serde_json::to_string(&v).unwrap_or(json)
+}
+
+/// The node array of `group` under whichever graph holds it; `create` adds an empty group
+/// (G* under `guitarNodes`, M* under `micNodes`) when the document has none.
+fn group_nodes_mut<'a>(
+    v: &'a mut serde_json::Value,
+    group: &str,
+    create: bool,
+) -> Option<&'a mut Vec<serde_json::Value>> {
+    let existing = audiograph::GRAPHS
+        .into_iter()
+        .find(|g| v.pointer(&format!("/audioGraph/{g}/{group}")).is_some());
+    let graph = match existing {
+        Some(g) => g,
+        None if create && group.starts_with('M') => "micNodes",
+        None if create => "guitarNodes",
+        None => return None,
+    };
+    let ag = v.get_mut("audioGraph")?.as_object_mut()?;
+    let groups = ag
+        .entry(graph)
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()?;
+    groups
+        .entry(group)
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+}
+
+/// One structural edit on the working copy, group-scoped like the device's own ops. On the
+/// unit a node's id IS its FenderId (`notes/write-safety.md`), so an inserted or replaced
+/// node is minted with `nodeId == FenderId`.
+fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
+    match e {
+        WorkingEdit::Replace {
+            group,
+            node_id,
+            fender_id,
+        } => {
+            if let Some(nodes) = group_nodes_mut(v, group, false) {
+                if let Some(node) = nodes
+                    .iter_mut()
+                    .find(|n| audiograph::node_id(n) == Some(node_id.as_str()))
+                {
+                    if let Some(obj) = node.as_object_mut() {
+                        obj.insert(
+                            "nodeId".into(),
+                            serde_json::Value::String(fender_id.clone()),
+                        );
+                        obj.insert(
+                            "FenderId".into(),
+                            serde_json::Value::String(fender_id.clone()),
+                        );
+                    }
+                }
+            }
+        }
+        WorkingEdit::Remove { group, node_id } => {
+            if let Some(nodes) = group_nodes_mut(v, group, false) {
+                nodes.retain(|n| audiograph::node_id(n) != Some(node_id.as_str()));
+            }
+        }
+        WorkingEdit::Insert {
+            group,
+            before,
+            fender_id,
+        } => {
+            if let Some(nodes) = group_nodes_mut(v, group, true) {
+                // field-2 = the FenderId to insert BEFORE; absent → append at the group end.
+                let at = before
+                    .as_deref()
+                    .and_then(|b| {
+                        nodes
+                            .iter()
+                            .position(|n| n.get("FenderId").and_then(|x| x.as_str()) == Some(b))
+                    })
+                    .unwrap_or(nodes.len());
+                nodes.insert(
+                    at,
+                    serde_json::json!({
+                        "nodeId": fender_id,
+                        "FenderId": fender_id,
+                        "nodeType": "dspUnit",
+                        "dspUnitParameters": { "bypass": false }
+                    }),
+                );
+            }
+        }
+    }
 }
 
 /// The field-8 (`presetDataChanged`) read body for `slot0` — the slot's static scenario
@@ -2337,18 +2523,28 @@ fn list_response(tms: u32, names: &[String]) -> Vec<u8> {
     proto::len_delimited(tms, &proto::len_delimited(F_LIST_RESPONSE, &records))
 }
 
+/// Reply to a structural edit AND land it in the working copy iff the reply is the
+/// confirm — a dropped or rejected send must never mutate the working copy.
+fn confirm_structural(st: &mut SimState, confirm_field: u32, edit: WorkingEdit) -> Vec<Vec<u8>> {
+    let (reply, confirmed) = structural_reply(st, confirm_field);
+    if confirmed {
+        st.working_edits.push(edit);
+    }
+    reply
+}
+
 /// Produce the framed confirm/reject reply for a structural edit, honoring the
-/// drop-first / reject-at injections.
-fn structural_reply(st: &mut SimState, confirm_field: u32) -> Vec<Vec<u8>> {
+/// drop-first / reject-at injections. The flag says whether the reply IS the confirm.
+fn structural_reply(st: &mut SimState, confirm_field: u32) -> (Vec<Vec<u8>>, bool) {
     st.structural_seen += 1;
     let n = st.structural_seen;
     if st.drop_first && n == 1 {
-        return Vec::new(); // silent drop — no confirm, no error
+        return (Vec::new(), false); // silent drop — no confirm, no error
     }
     if st.reject_at == Some(n) {
-        return vec![frame(&preset_message(F_PRESET_ERROR, &[]))];
+        return (vec![frame(&preset_message(F_PRESET_ERROR, &[]))], false);
     }
-    vec![frame(&preset_message(confirm_field, &[]))]
+    (vec![frame(&preset_message(confirm_field, &[]))], true)
 }
 
 impl HidTransport for SimDevice {
@@ -3443,7 +3639,7 @@ mod ftsw_tests {
     fn rendered(sim: &SimDevice) -> serde_json::Value {
         let mut st = sim.state.lock().expect("sim lock");
         let slot = st.current_slot;
-        let body = load_echo_json(&mut st, slot);
+        let body = load_echo_json(&mut st, slot, true);
         serde_json::from_slice(&body).expect("the rendered field-3 body is valid JSON")
     }
 

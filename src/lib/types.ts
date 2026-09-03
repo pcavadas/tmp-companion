@@ -920,11 +920,12 @@ export interface CopyJob {
 }
 
 /** One preset's outcome from a `copy_apply` run (`lib::CopyApplyItem`). Like
- * `BulkReplaceItem` plus the post-save signal graph, so the Copy view can patch its
- * cached library in place (no re-scan) after a write — `graph` is omitted when the
- * preset wasn't saved, its graph couldn't be read back, or the read-back didn't show the
- * blocks the acked ops produced (a stale held-session document, ignored), or the edit left
- * the block roster unchanged (a same-model re-stamp — unverifiable, never adopted). */
+ * `BulkReplaceItem` plus the signal graph the device's WORKING COPY showed in a re-prompt
+ * taken after the last confirmed op and BEFORE the save (the save itself is
+ * unacknowledged), so the Copy view can patch its cached library in place (no re-scan)
+ * after a write — `graph` is omitted when the preset wasn't saved, the edit left the block
+ * roster unchanged (a same-model re-stamp — unverifiable, never read), no reply landed, or
+ * the reply didn't show the blocks the acked ops produced (ignored). */
 export interface CopyApplyItem {
   slot: number;
   name: string;

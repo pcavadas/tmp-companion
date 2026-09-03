@@ -13,7 +13,7 @@
 use serde_json::{Map, Value};
 
 /// The two node graphs a preset carries.
-const GRAPHS: [&str; 2] = ["guitarNodes", "micNodes"];
+pub(crate) const GRAPHS: [&str; 2] = ["guitarNodes", "micNodes"];
 
 /// The preset's master `presetLevel` (`audioGraph.presetLevel`, linear amplitude).
 /// Shared by search indexing and the leveling revert snapshot.
