@@ -332,6 +332,32 @@ describe("copyModel — post-save read-back reconciliation", () => {
     expect(reconcileReadBack(optimistic, stale)).toBe(optimistic);
   });
 
+  it("compares each group as a multiset: a duplicated model the device placed elsewhere still matches", () => {
+    // Online 2026-09-03: chained inserts of one model into a group already holding it —
+    // the device anchors on ITS pick among the duplicates, so the projected order differs.
+    const optimistic = chain([
+      ["G1", "n1", "ACD_TS"],
+      ["G1", "uid-1", "ACD_TS"],
+      ["G1", "n2", "ACD_Cry"],
+    ]);
+    const readBack = chain(
+      [
+        ["G1", "ACD_TS", "ACD_TS"],
+        ["G1", "ACD_Cry", "ACD_Cry"],
+        ["G1", "ACD_TS", "ACD_TS"],
+      ],
+      "device",
+    );
+    expect(sameRoster(optimistic, readBack)).toBe(true);
+    expect(reconcileReadBack(optimistic, readBack)).toBe(readBack);
+    // Fewer of the same blocks is NOT the same roster (a partial, or a missing edit).
+    const partial = chain([
+      ["G1", "ACD_TS", "ACD_TS"],
+      ["G1", "ACD_Cry", "ACD_Cry"],
+    ]);
+    expect(sameRoster(optimistic, partial)).toBe(false);
+  });
+
   it("compares per group, not by flat signal order", () => {
     // Optimistic `nodes` are in signal order (G4 before G1 here); a device graph lists
     // sorted groups. Same blocks per group → the same roster.

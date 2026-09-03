@@ -164,8 +164,10 @@ fn group_roster_fender_ids(v: &serde_json::Value, group: &str) -> Vec<String> {
         .collect()
 }
 
-/// Live ordered FenderIds in `group` off the held session, retry-pumping because the
-/// post-edit field-3 push can lag a single heartbeat window.
+/// Ordered FenderIds in `group` off whatever field-3 document the held session has
+/// BUFFERED (retry-pumping for a lagging load push). A buffer read, not a re-prompt: after
+/// a structural edit it shows nothing new — use `Session::live_preset_value` for the
+/// working copy.
 fn ordered_group(s: &mut Session, group: &str) -> Vec<String> {
     for _ in 0..10 {
         let _ = s.heartbeat();
@@ -180,9 +182,8 @@ fn ordered_group(s: &mut Session, group: &str) -> Vec<String> {
     Vec::new()
 }
 
-/// Ordered FenderIds in `group` of the SAVED preset at `device_slot` (field-8 read, the
-/// reliable post-save order source — the live working copy doesn't refresh after an edit
-/// on a lean session).
+/// Ordered FenderIds in `group` of the SAVED preset at `device_slot` (field-8 read — the
+/// stored document, i.e. what a save actually persisted).
 fn field8_group_order(device_slot: u32, group: &str) -> Vec<String> {
     let read = || -> Result<Vec<String>, String> {
         let mut v = Session::connect()?;
@@ -408,4 +409,223 @@ fn held_insert_one(
             detail,
         })
     }
+}
+
+/// `current_audio_graph` as one report line: does the buffered document parse to a graph
+/// with its routing template (the product's truncation guard)?
+fn describe_graph(s: &Session) -> String {
+    match s.current_audio_graph() {
+        Ok(g) => format!(
+            "Ok(template={:?}, nodes={}, split_mix={})",
+            g.template,
+            g.nodes.len(),
+            g.split_mix.is_some()
+        ),
+        Err(e) => format!("Err({e})"),
+    }
+}
+
+/// EXPERIMENT (`probe --reprompt-map <slot> <name> <group> (--remove <nodeId> |
+/// --insert <fenderId> [--before <id>]) [--commit]`): does a field-2 working-copy re-prompt sent on Copy's
+/// EXACT held-session shape — load + `connection_request`/list/info re-arm, one confirmed
+/// structural edit, then `Session::live_preset_value` (the `live_ftsw` wire shape: NO
+/// re-arm, batch 3, heartbeat-pumped) — answer with the POST-edit roster? The recorded
+/// pre-edit result (`notes/write-safety.md`) came from the `--insert-map` DRY arm, whose
+/// re-prompt re-sent `connection_request` on the live session (the field-2 then goes
+/// unanswered) and read its buffer without clearing it. Prints the roster before, the re-prompt's
+/// roster twice (repeatability) with payload growth per pump then reverts by reload (DRY),
+/// or runs the PRODUCT seam — `Session::live_audio_graph` then the immediate rename/save —
+/// and reads the slot back over field-8 to prove the save persists the edit (COMMIT).
+pub fn probe_reprompt_map(
+    device_slot: u32,
+    name: &str,
+    group: &str,
+    remove: Option<&str>,
+    insert: Option<&str>,
+    before: Option<&str>,
+    commit: bool,
+) -> Result<String, String> {
+    let list_index = device_slot.saturating_sub(1);
+    let mut report = String::new();
+    report.push_str(&format!(
+        "[probe --reprompt-map] slot {device_slot:03} group={group} remove={remove:?} insert={insert:?} before={before:?} ({})\n",
+        if commit { "COMMIT (saves, field-8 readback)" } else { "DRY (reverted by reload)" }
+    ));
+    // The target's name comes from the caller, as it does for Copy (`CopyJob.name`). A
+    // `list_my_presets` on the live session BEFORE the load left the whole load + re-arm
+    // unanswered (fields=[] for 10 s, HW 2026-09-03; cause unresolved) — a separate
+    // observation from the old arm's pre-edit reading, which `TMP_PROBE_LEGACY_REPROMPT`
+    // below isolates.
+    let name = name.to_string();
+    let mut s = Session::connect()?;
+    s.begin_live_edit()?;
+
+    // Copy's per-preset preamble (`copy_apply_one`), verbatim.
+    s.clear_raw();
+    s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
+    s.send_and_collect(&proto::connection_request(), 80)?;
+    s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
+    s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+    // Timed confirm: Copy waits 8 × 150 ms; here keep pumping up to ~10 s and report
+    // WHEN the echo landed, so a slow unit is measured rather than mis-read as a drop.
+    let t_load = std::time::Instant::now();
+    let mut matched_at = None;
+    for _ in 0..64 {
+        if s.active_matches(list_index, Some(&name)) {
+            matched_at = Some(t_load.elapsed().as_millis());
+            break;
+        }
+        let _ = s.heartbeat();
+        let _ = s.pump_collect(150);
+    }
+    report.push_str(&format!(
+        "  LOAD confirm: matched after {matched_at:?} ms (loaded={:?}, active={:?}, fields={:?})\n",
+        s.loaded_slot(),
+        s.active_preset_name(),
+        s.seen_preset_fields()
+    ));
+    if !s.active_matches(list_index, Some(&name)) {
+        return Err(format!(
+            "could not confirm slot {device_slot} loaded (loaded={:?}, active={:?}, list name={name:?}, reply fields={:?})",
+            s.loaded_slot(),
+            s.active_preset_name(),
+            s.seen_preset_fields()
+        ));
+    }
+    let pre = ordered_group(&mut s, group);
+    report.push_str(&format!("  BEFORE {group}: {pre:?}\n"));
+    report.push_str(&format!(
+        "  LOAD push: payload={}B current_audio_graph={}\n",
+        s.json_payload_len(),
+        describe_graph(&s)
+    ));
+
+    let do_op = |s: &mut Session| -> Result<bool, String> {
+        match (remove, insert) {
+            (Some(node), _) => s.remove_node(group, node),
+            (None, Some(fid)) => s.insert_node(group, before, fid),
+            (None, None) => Err("nothing to do".into()),
+        }
+    };
+    let mut confirmed = do_op(&mut s)?;
+    if !confirmed && !s.saw_preset_error() {
+        confirmed = do_op(&mut s)?;
+    }
+    let seen = s.seen_preset_fields();
+    if s.saw_preset_error() || !confirmed {
+        report.push_str(&format!(
+            "  REJECTED/UNCONFIRMED confirmed={confirmed} presetError={} reply_fields={seen:?} — reverting\n",
+            s.saw_preset_error()
+        ));
+        s.clear_raw();
+        let _ = s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200);
+        return Ok(report);
+    }
+    report.push_str(&format!("  CONFIRMED reply_fields={seen:?}\n"));
+
+    // `TMP_PROBE_LEGACY_REPROMPT=1`: the `--insert-map` DRY arm's re-prompt shape instead
+    // (`connection_request` re-sent on the live session, batch 2, buffer read without a
+    // clear) — to isolate which part of that shape produced the recorded pre-edit reading.
+    if std::env::var("TMP_PROBE_LEGACY_REPROMPT").is_ok() {
+        let _ = s.send_and_collect(&proto::connection_request(), 80);
+        let _ = s.send_and_collect(&proto::current_preset_data_request(2), 200);
+        let order = ordered_group(&mut s, group);
+        report.push_str(&format!(
+            "  LEGACY re-prompt (connection_request + batch 2, no clear): {group}={order:?} payload={}B carriers={:?} fields={:?}\n",
+            s.json_payload_len(),
+            s.json_payload_carriers(),
+            s.seen_preset_fields()
+        ));
+    }
+    if commit {
+        // COMMIT = the PRODUCT seam with the product's timing: `live_audio_graph` (accept
+        // → two stable slices) then the rename/save IMMEDIATELY, as `copy_apply_one` does —
+        // the persistence sample must not be taken after extra quiet the product never has.
+        let t0 = std::time::Instant::now();
+        let want: Vec<String> = match (remove, insert) {
+            (Some(node), _) => pre.iter().filter(|f| *f != node).cloned().collect(),
+            (None, Some(fid)) => {
+                let mut w = pre.clone();
+                let at = before
+                    .and_then(|b| w.iter().position(|f| f == b))
+                    .unwrap_or(w.len());
+                w.insert(at, fid.to_string());
+                w
+            }
+            (None, None) => Vec::new(),
+        };
+        let graph = s.live_audio_graph(|v| group_roster_fender_ids(v, group) == want);
+        report.push_str(&format!(
+            "  PRODUCT read after {} ms: {}\n",
+            t0.elapsed().as_millis(),
+            match &graph {
+                Ok(g) => format!(
+                    "Ok(template={:?}, nodes={}) payload={}B",
+                    g.template,
+                    g.nodes.len(),
+                    s.json_payload_len()
+                ),
+                Err(e) => format!("Err({e})"),
+            }
+        ));
+        if !name.is_empty() {
+            s.rename_current_preset(&name)?;
+        }
+        s.save_current_preset(list_index)?;
+        s.heartbeat()?;
+        s.pump_collect(120)?;
+        drop(s);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let after = field8_group_order(device_slot, group);
+        report.push_str(&format!(
+            "  AFTER (field-8, saved) {group}: {after:?} — {}\n",
+            if after == want {
+                "PERSISTED the edit"
+            } else {
+                "does NOT match the acked edit"
+            }
+        ));
+        return Ok(report);
+    }
+
+    // DRY: the re-prompt twice — first parse accepted, then 4 more pumps to watch the
+    // payload grow/stabilise (a partial mid-flight is the documented hazard) — then revert.
+    for round in 1..=2 {
+        let t0 = std::time::Instant::now();
+        let first = s.live_preset_value(|v| !group_roster_fender_ids(v, group).is_empty());
+        match first {
+            Ok(v) => report.push_str(&format!(
+                "  REPROMPT#{round} first accepted parse after {} ms: {group}={:?} payload={}B carriers={:?}\n",
+                t0.elapsed().as_millis(),
+                group_roster_fender_ids(&v, group),
+                s.json_payload_len(),
+                s.json_payload_carriers()
+            )),
+            Err(e) => report.push_str(&format!("  REPROMPT#{round} NO reply: {e}\n")),
+        }
+        report.push_str(&format!(
+            "    current_audio_graph on the reply: {}\n",
+            describe_graph(&s)
+        ));
+        for k in 1..=4 {
+            let _ = s.heartbeat();
+            let _ = s.pump_collect(200);
+            let roster = s
+                .current_preset_value()
+                .map(|v| group_roster_fender_ids(&v, group))
+                .unwrap_or_default();
+            report.push_str(&format!(
+                "    +pump{k}: {group}={roster:?} payload={}B\n",
+                s.json_payload_len()
+            ));
+        }
+    }
+
+    s.clear_raw();
+    s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
+    s.heartbeat()?;
+    s.pump_collect(120)?;
+    let reverted = ordered_group(&mut s, group);
+    report.push_str(&format!("  REVERTED (reload) {group}: {reverted:?}\n"));
+    Ok(report)
 }

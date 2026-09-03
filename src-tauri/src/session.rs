@@ -1375,6 +1375,12 @@ impl Session {
         })
     }
 
+    /// Byte length of the presetJson carrier [`Self::current_preset_value`] would parse —
+    /// how much of a field-3 reply has landed so far (the growth-stability gate).
+    pub(crate) fn json_payload_len(&self) -> usize {
+        self.best_json_payload().len()
+    }
+
     /// The largest reassembled `presetJson` payload found in the accumulated
     /// streams, across all three carriers (presetMessage submessage field →
     /// presetJson inner field): currentPresetDataChanged 3→1,
@@ -2232,23 +2238,80 @@ impl Session {
         Ok(())
     }
 
+    /// Re-prompt the device for its live WORKING COPY (`currentPresetDataRequest`, field 2
+    /// → a fresh field-3 push) and return the first parse `done` accepts, pumping the reply
+    /// in ≤8 × 200 ms slices under the live-controller heartbeat. This is the ONE re-prompt
+    /// seam: the buffer is cleared first, so nothing buffered before the request can pass
+    /// as the reply — the difference between a read and the buffer scrape the 2026-09-02
+    /// Copy stale-cache incident came from. `Err` names the carriers that landed when no
+    /// accepted parse arrived within the budget. Keep the wire shape as is: it is the
+    /// HW-proven footswitch confirm channel ([`Self::live_ftsw`], fw 1.8.45).
+    pub(crate) fn live_preset_value(
+        &mut self,
+        done: impl Fn(&serde_json::Value) -> bool,
+    ) -> Result<serde_json::Value, String> {
+        self.clear_raw();
+        let _ = self.send_and_collect(&proto::current_preset_data_request(3), 300);
+        let mut last = String::new();
+        for _ in 0..8 {
+            let _ = self.heartbeat();
+            let _ = self.pump_collect(200);
+            match self.current_preset_value() {
+                Ok(v) if done(&v) => return Ok(v),
+                Ok(_) => last = "a reply parsed but was not accepted".to_string(),
+                Err(e) => last = e,
+            }
+        }
+        Err(format!(
+            "no accepted working-copy reply ({last}; carriers {:?})",
+            self.json_payload_carriers()
+        ))
+    }
+
+    /// The working-copy GRAPH behind a re-prompt: [`Self::live_preset_value`] until `done`
+    /// accepts a parse, then hold until no new report lands for two 200 ms slices (bounded
+    /// at 6, a heartbeat per slice — `read_slot_preset_json_inner`'s growth-stability
+    /// pattern on the raw report count, which needs no reassembly), re-check `done` on
+    /// what landed, then [`Self::current_audio_graph`] with its truncation guard. The Copy read and the
+    /// `probe --reprompt-map` COMMIT arm share this exact seam, so the probe's
+    /// "save persists after a re-prompt" sample is taken with the product's own timing.
+    pub(crate) fn live_audio_graph(
+        &mut self,
+        done: impl Fn(&serde_json::Value) -> bool,
+    ) -> Result<ActiveGraph, String> {
+        self.live_preset_value(&done)?;
+        let (mut last, mut stable) = (self.raw.len(), 0u32);
+        for _ in 0..6 {
+            let _ = self.heartbeat();
+            let _ = self.pump_collect(200);
+            let len = self.raw.len();
+            if len == last {
+                stable += 1;
+                if stable >= 2 {
+                    break;
+                }
+            } else {
+                stable = 0;
+            }
+            last = len;
+        }
+        // The seam's own guarantee: the document handed back is one `done` accepts, even if
+        // frames kept landing after the first accepted parse.
+        match self.current_preset_value() {
+            Ok(v) if done(&v) => self.current_audio_graph(),
+            Ok(_) => Err("the working-copy reply changed after it was accepted".to_string()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Re-prompt and read the live WORKING-COPY `ftsw` array (`currentPresetDataRequest`
     /// → fresh field-3 push). Reflects UNSAVED edits, so it's how a footswitch set/clear is
     /// confirmed (no dedicated echo). `ftsw` sits at byte ~4330 of field-3, before the
     /// scene-tail truncation, so it survives the partial. `None` if no field-3 lands.
     pub fn live_ftsw(&mut self) -> Option<serde_json::Value> {
-        self.clear_raw();
-        let _ = self.send_and_collect(&proto::current_preset_data_request(3), 300);
-        for _ in 0..8 {
-            let _ = self.heartbeat();
-            let _ = self.pump_collect(200);
-            if let Ok(v) = self.current_preset_value() {
-                if let Some(ftsw) = v.get("ftsw") {
-                    return Some(ftsw.clone());
-                }
-            }
-        }
-        None
+        self.live_preset_value(|v| v.get("ftsw").is_some())
+            .ok()
+            .and_then(|v| v.get("ftsw").cloned())
     }
 
     /// Re-import a full preset to the device. `preset_bytes` is the

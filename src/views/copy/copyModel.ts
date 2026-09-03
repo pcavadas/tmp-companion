@@ -575,7 +575,13 @@ export function groupRoster(graph: ActiveGraph): Map<string, string[]> {
   return out;
 }
 
-/** True when both graphs carry the same blocks, per group, in the same order. */
+/** True when both graphs carry the same blocks per group, as a MULTISET — within-group
+ *  order is not compared: the unit accepts several blocks of one model in a group, and
+ *  with a node id being its FenderId an insert anchored on a duplicated model lands where
+ *  the device decides (online 2026-09-03: four TubeScreamers in one group, the device's
+ *  order ≠ the projected one). A multiset match still proves the read is the post-edit
+ *  document (a stale one has different blocks, a partial fewer), and adopting it hands the
+ *  cache the device's real order. */
 export function sameRoster(a: ActiveGraph, b: ActiveGraph): boolean {
   const ra = groupRoster(a);
   const rb = groupRoster(b);
@@ -583,20 +589,23 @@ export function sameRoster(a: ActiveGraph, b: ActiveGraph): boolean {
   for (const [group, models] of ra) {
     const other = rb.get(group);
     if (other?.length !== models.length) return false;
-    if (models.some((m, i) => m !== other[i])) return false;
+    const sa = [...models].sort();
+    const sb = [...other].sort();
+    if (sa.some((m, i) => m !== sb[i])) return false;
   }
   return true;
 }
 
 /** The graph the Copy save patches the library cache with. `optimistic` is rebuilt from the
  *  edit the device acked (`activeFromEditGraph`) and is the default; `readBack` — the
- *  document `copy_apply` scraped off the held session after the save — is adopted ONLY when
- *  it shows exactly those blocks (it then contributes the device's real node ids and params,
- *  which a later edit of an inserted block needs). A read-back that disagrees is a stale
- *  document, never the truth: on the unit (2026-09-02, fw 1.8.45) it was the LOAD-TIME graph,
- *  and preferring it patched the cache back to the pre-edit blocks. Whether a read-back is
- *  verifiable at all is the backend's call (`copy_apply` omits `graph` for an edit the roster
- *  cannot see, e.g. a same-model re-stamp) — this only checks the one it was handed. */
+ *  device's working copy, re-prompted by `copy_apply` after the last confirmed op and
+ *  BEFORE the save — is adopted ONLY when it shows exactly those blocks (it then contributes
+ *  the device's real node ids and params, which a later edit of an inserted block needs). A
+ *  read-back that disagrees is never the truth: the earlier buffer-scraped one (2026-09-02,
+ *  fw 1.8.45) was the LOAD-TIME graph, and preferring it patched the cache back to the
+ *  pre-edit blocks. Whether a read-back is verifiable at all is the backend's call
+ *  (`copy_apply` omits `graph` for an edit the roster cannot see, e.g. a same-model
+ *  re-stamp) — this only checks the one it was handed. */
 export function reconcileReadBack(
   optimistic: ActiveGraph,
   readBack: ActiveGraph | undefined,
