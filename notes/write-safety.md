@@ -28,7 +28,7 @@ Overwriting a song-bound slot with a **different-identity** preset empties the s
 
 On the real unit a block's `nodeId` **equals** its FenderId (model id) — there is no per-instance handle distinct from the model. Consequences for the Copy/edit op-list (`copyModel.diffToOps`):
 
-- A single device group can never hold **two blocks of the same model** — they'd be indistinguishable on the wire — so that state is unrepresentable, not merely unsupported.
+- A device group CAN hold **two blocks of the same model** (ONLINE `copy.spec.ts` 2026-09-03, fw 1.8.45: four `ACD_TubeScreamer` in G1 after chained inserts, confirmed by the working-copy re-prompt), but they are indistinguishable on the wire — so any op addressing one of them (a FenderId anchor, an IR/saved follow-up) hits whichever the device picks. Companion treats the state as unaddressable: `copy_apply` refuses an IR/saved insert into a group already holding that model, and the read-back roster compares per-group MULTISETS because the projected ORDER of a duplicate-anchored insert is not reliable.
 - Anchoring an insert by FenderId (`insertNode` field-2 = "before this node") is therefore **unambiguous and sufficient**; there's no need for a per-instance anchor.
 - The op-list is emitted `removes → replaces → inserts`, inserts **right-to-left**, so each insert's anchor is still present when it lands. This is what makes "insert A before B, insert C after B, then remove B → exactly `[A, C]`" correct: the inserts anchor on the surviving siblings in the FINAL graph, never on the removed B. (Locked by `copyModel.test.ts` "INV-A".)
 

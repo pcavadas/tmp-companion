@@ -711,8 +711,21 @@ mod copy_level_e2e_tests {
             },
         ];
         let got = expected_roster(&pre, &ops).expect("every target and anchor resolves");
+        // Per-group MULTISETS (sorted): within-group order is not part of the oracle.
         assert_eq!(got["G1"], ["ACD_Comp", "ACD_Klon"]);
-        assert_eq!(got["G4"], ["ACD_TapeEcho", "ACD_SmallHall"]);
+        assert_eq!(got["G4"], ["ACD_SmallHall", "ACD_TapeEcho"]);
+        // The device places an insert anchored on a duplicated model where IT decides
+        // (ONLINE 2026-09-03: four TubeScreamers in one group) — the same blocks in another
+        // order are the same roster, so that read is adopted with the device's order.
+        let a = group_roster([("G1", "ACD_TS"), ("G1", "ACD_Cry"), ("G1", "ACD_TS")].into_iter());
+        let b = group_roster([("G1", "ACD_TS"), ("G1", "ACD_TS"), ("G1", "ACD_Cry")].into_iter());
+        assert_eq!(a, b);
+        let c = group_roster([("G1", "ACD_TS"), ("G1", "ACD_Cry")].into_iter());
+        assert!(
+            is_partial_of(&c, &a),
+            "fewer of the same blocks = a partial"
+        );
+        assert!(!is_partial_of(&a, &c));
         // An op on a node the pre-edit roster never had → unknown: the read-back is refused.
         let ghost = [CopyOp::Remove {
             group: "G1".into(),

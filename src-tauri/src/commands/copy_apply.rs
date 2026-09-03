@@ -345,10 +345,17 @@ fn error_item(list_index: u32, name: &str, detail: String) -> CopyApplyItem {
     }
 }
 
-/// Per-group ordered FenderId lists — the shape the working-copy read is compared in. Node
-/// ids are deliberately NOT part of it (a device replace re-assigns them, an insert mints
-/// one); groups are keyed because the device lists nodes in sorted-group order while the
-/// frontend's optimistic graph lists them in signal order.
+/// Per-group SORTED FenderId lists (a multiset per group) — the shape the working-copy
+/// read is compared in. Node ids are deliberately NOT part of it (a device replace
+/// re-assigns them, an insert mints one); groups are keyed because the device lists nodes
+/// in sorted-group order while the frontend's optimistic graph lists them in signal
+/// order; and WITHIN a group the order is dropped because the unit accepts several blocks
+/// of one model in a group (ONLINE `copy.spec.ts` 2026-09-03: four `ACD_TubeScreamer` in
+/// G1 after chained inserts) and, with a node id being its FenderId, an insert anchored on
+/// a duplicated model lands where the device decides, not where `expected_roster`
+/// projects. A multiset match still proves the post-edit document: a partial has fewer
+/// nodes and a stale one a different multiset — and the adopted read then carries the
+/// device's real order.
 type Roster = std::collections::BTreeMap<String, Vec<String>>;
 
 fn group_roster<'a>(nodes: impl Iterator<Item = (&'a str, &'a str)>) -> Roster {
@@ -358,7 +365,26 @@ fn group_roster<'a>(nodes: impl Iterator<Item = (&'a str, &'a str)>) -> Roster {
             .or_default()
             .push(fender_id.to_string());
     }
+    out.values_mut().for_each(|v| v.sort());
     out
+}
+
+/// `read` ⊆ `expected` as per-group multisets with fewer nodes in total — a partial cut
+/// inside the nodes.
+fn is_partial_of(read: &Roster, expected: &Roster) -> bool {
+    let count = |r: &Roster| r.values().map(Vec::len).sum::<usize>();
+    count(read) < count(expected)
+        && read.iter().all(|(g, r)| {
+            expected.get(g).is_some_and(|e| {
+                let mut pool = e.clone();
+                r.iter().all(|id| {
+                    pool.iter()
+                        .position(|x| x == id)
+                        .map(|i| pool.swap_remove(i))
+                        .is_some()
+                })
+            })
+        })
 }
 
 /// The roster the acked `ops` leave behind, applied in order to the PRE-edit roster the
@@ -492,14 +518,12 @@ fn read_working_copy(
             let (warn, verdict) = match s.current_preset_value() {
                 Ok(v) => {
                     let read = roster_of(&v);
-                    // A per-group prefix of the oracle is a partial cut inside the nodes —
-                    // tested FIRST, because a tail insert's partial reads exactly as the
-                    // pre-edit roster and must not be reported as a missing edit.
-                    let is_prefix = read
-                        .iter()
-                        .all(|(g, r)| expected.get(g).is_some_and(|e| e.starts_with(r)));
+                    // A partial cut inside the nodes — tested FIRST, because a tail
+                    // insert's partial reads exactly as the pre-edit roster and must not be
+                    // reported as a missing edit.
+                    let is_prefix = is_partial_of(&read, expected);
                     let what = if is_prefix {
-                        "is truncated (a prefix of the acked edit)"
+                        "is truncated (a partial of the acked edit)"
                     } else if read == *pre {
                         "== the PRE-edit roster — the device's working copy does NOT show the \
                          acked edit"
