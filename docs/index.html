@@ -710,6 +710,20 @@
                   href="https://github.com/pcavadas/tmp-companion/releases/latest/download/TMP-Companion-macOS.dmg"
                   >macOS (.dmg)</a
                 >
+                <span style="color: var(--ink-2); font-size: 13.5px"
+                  >Linux — alpha (<a
+                    class="link"
+                    data-linux-asset="TMP-Companion-linux-alpha-amd64.deb"
+                    href="https://github.com/pcavadas/tmp-companion/releases/latest"
+                    >.deb</a
+                  >,
+                  <a
+                    class="link"
+                    data-linux-asset="TMP-Companion-linux-alpha-x86_64.rpm"
+                    href="https://github.com/pcavadas/tmp-companion/releases/latest"
+                    >.rpm</a
+                  >)</span
+                >
                 <a
                   class="link"
                   href="https://github.com/pcavadas/tmp-companion/blob/main/LICENSE"
@@ -728,5 +742,38 @@
         </div>
       </div>
     </footer>
+
+    <!--
+      TEMPORARY — delete this script once the Linux packaging path is proven
+      stable, and hard-code `releases/latest/download/<asset>` hrefs above the
+      way the macOS button does.
+
+      The Linux release jobs are non-blocking (`continue-on-error`, release.yml),
+      so a release can legitimately ship the DMG alone — v1.21.2 through v1.22.5
+      carried no Linux assets at all — and a hard-coded `latest/download/` link
+      would 404 for that release. The two links above therefore point at the
+      release page, which always resolves; this upgrades them in place to the
+      same one-click direct download the macOS link gives, but only for the
+      assets the latest release actually carries.
+    -->
+    <script>
+      fetch(
+        "https://api.github.com/repos/pcavadas/tmp-companion/releases/latest",
+      )
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then((release) => {
+          const assets = release.assets || [];
+          for (const link of document.querySelectorAll("[data-linux-asset]")) {
+            const asset = assets.find(
+              (a) => a.name === link.dataset.linuxAsset,
+            );
+            if (asset) link.href = asset.browser_download_url;
+          }
+        })
+        .catch(() => {
+          // Offline, rate-limited (60 unauthenticated req/h per IP), or no
+          // release: the links keep pointing at the release page.
+        });
+    </script>
   </body>
 </html>
