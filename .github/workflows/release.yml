@@ -304,6 +304,7 @@ jobs:
     # presence, exactly mirroring how `release` itself tolerates missing Linux assets.
     if: ${{ !cancelled() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
+    environment: release # APT_GPG_PRIVATE_KEY is scoped to this environment
     permissions:
       contents: write
     timeout-minutes: 15
@@ -325,6 +326,11 @@ jobs:
           echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
           FPR="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/{print $10; exit}')"
           echo "FPR=$FPR" >>"$GITHUB_ENV"
+          # packaging/apt/conf/distributions ships a placeholder SignWith — the
+          # real fingerprint is only known once the secret is imported above.
+          # Substituted here in the runner's checkout only; never committed
+          # back (the "Commit and push" step only stages docs/apt + docs/rpm).
+          sed -i "s/PLACEHOLDER_FPR/$FPR/" packaging/apt/conf/distributions
 
       - name: Download .deb artifact (if any)
         continue-on-error: true
@@ -368,15 +374,15 @@ jobs:
           # Verify the signature was created and can be verified
           gpg --batch --verify docs/rpm/repodata/repomd.xml.asc docs/rpm/repodata/repomd.xml
           gpg --batch --yes --export --armor "$FPR" >docs/rpm/RPM-GPG-KEY-tmp-companion
-          cat >docs/rpm/tmp-companion.repo <<'EOF'
-[tmp-companion]
-name=TMP Companion
-baseurl=https://pcavadas.github.io/tmp-companion/rpm
-enabled=1
-gpgcheck=0
-repo_gpgcheck=1
-gpgkey=https://pcavadas.github.io/tmp-companion/rpm/RPM-GPG-KEY-tmp-companion
-EOF
+          printf '%s\n' \
+            '[tmp-companion]' \
+            'name=TMP Companion' \
+            'baseurl=https://pcavadas.github.io/tmp-companion/rpm' \
+            'enabled=1' \
+            'gpgcheck=0' \
+            'repo_gpgcheck=1' \
+            'gpgkey=https://pcavadas.github.io/tmp-companion/rpm/RPM-GPG-KEY-tmp-companion' \
+            >docs/rpm/tmp-companion.repo
 
       - name: Commit and push
         run: |

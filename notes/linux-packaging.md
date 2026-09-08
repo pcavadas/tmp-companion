@@ -187,6 +187,12 @@ so there is exactly one checkout → commit → push to `main` per run — two
 independent jobs each pushing in the same run would race each other's
 fast-forward.
 
+`packaging/apt/conf/distributions` ships with a `SignWith: PLACEHOLDER_FPR`
+placeholder rather than a real fingerprint — the CI job `sed`s the imported
+key's actual fingerprint into its own checkout right after importing
+`APT_GPG_PRIVATE_KEY`, so the repo config never needs a manual, easy-to-forget
+edit and stays correct even if the signing key is ever rotated.
+
 ## Release pipeline shape
 
 ```text
