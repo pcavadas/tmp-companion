@@ -193,6 +193,21 @@ key's actual fingerprint into its own checkout right after importing
 `APT_GPG_PRIVATE_KEY`, so the repo config never needs a manual, easy-to-forget
 edit and stays correct even if the signing key is ever rotated.
 
+**Known gap — the `release` GitHub Environment has no deployment-branch
+restriction.** `workflow_dispatch` (the manual fallback for an auto-merged
+push that `GITHUB_TOKEN` silently skips — see the workflow's top-of-file
+comment) can run against any branch a collaborator selects in the Actions UI,
+and `environment: release` carries no branch policy (`protection_rules` is
+empty via the API) — so a non-`main` dispatch could reach every `release`-
+scoped secret, Apple certs and `TAURI_SIGNING_PRIVATE_KEY` included, a gap
+that predates this feature. `publish-linux-repos` adds its own
+`github.ref == 'refs/heads/main'` guard as defense-in-depth for the new
+`APT_GPG_PRIVATE_KEY` exposure, but that only protects this one job — the
+real fix is a GitHub Environment deployment-branch rule (Settings →
+Environments → `release` → restrict to `main`), which is a repo-settings
+change outside what a workflow file can express, and is a pre-existing gap
+on the `release` job itself, not something introduced here.
+
 ## Release pipeline shape
 
 ```text

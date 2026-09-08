@@ -302,7 +302,17 @@ jobs:
     # forces GitHub Actions to report `success` even when steps genuinely failed.
     # Whether there's anything to publish is determined at runtime from artifact
     # presence, exactly mirroring how `release` itself tolerates missing Linux assets.
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    #
+    # `github.ref == 'refs/heads/main'` is deliberate, separate from the
+    # resolve-version gate above: `workflow_dispatch` can run this workflow
+    # against ANY branch a collaborator selects in the Actions UI, and the
+    # `release` GitHub Environment has no deployment-branch restriction
+    # configured (checked via the API — protection_rules is empty), so nothing
+    # else stops a non-main dispatch from reaching APT_GPG_PRIVATE_KEY and this
+    # job's contents: write. This is this job's own guard, not a fix for that
+    # gap — see notes/linux-packaging.md for the full picture and the
+    # pre-existing exposure on the `release` job itself.
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: release # APT_GPG_PRIVATE_KEY is scoped to this environment
     permissions:
