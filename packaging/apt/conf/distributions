@@ -1,0 +1,8 @@
+Origin: TMP Companion
+Label: TMP Companion
+Codename: stable
+Suite: stable
+Components: main
+Architectures: amd64
+Description: TMP Companion self-hosted apt repository (alpha Linux packaging)
+SignWith: [PLACEHOLDER_FPR]

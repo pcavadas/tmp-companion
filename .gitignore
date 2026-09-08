@@ -26,3 +26,6 @@ dts-gen/
 .claude/*.local.md
 .claude/scheduled_tasks.lock
 CLAUDE.local.md
+
+# reprepro's transient working DB, rebuilt fresh every publish run
+docs/apt/db/
