@@ -111,6 +111,103 @@ install's in-app update check finds nothing at that endpoint and stays silent
 re-downloading the latest `.deb`/`.rpm`. Not worth standing up and signing a second
 updater channel for an alpha; revisit once Linux has left alpha.
 
+## Apt + dnf/yum repositories
+
+Every release that produces a `.deb`/`.rpm` also publishes it into a real,
+standards-compliant package repository hosted on this same GitHub Pages site —
+`https://pcavadas.github.io/tmp-companion/apt` (reprepro, pool/dists layout) and
+`https://pcavadas.github.io/tmp-companion/rpm` (createrepo_c, repodata layout).
+Both are rebuilt fresh every release run, not incrementally maintained —
+`docs/apt/db/` (reprepro's working Berkeley DB) is gitignored and rebuilt from
+scratch each run; `docs/rpm/repodata/` has no separate working state since
+`createrepo_c` is stateless.
+
+**Signing.** One dedicated RSA-4096 sign-only GPG key (distinct from the Tauri
+updater minisign key and the Apple signing certs), private key held as the
+`APT_GPG_PRIVATE_KEY` secret scoped to the `release` GitHub Environment — same
+trust boundary as the Apple secrets. Passphrase-less: the key material is
+already protected as a scoped Actions secret, and a passphrase only adds CI
+complexity (loopback pinentry) for no additional real security. RSA over
+Ed25519 specifically because the rpm side only needs broad client
+compatibility, not signature size/speed — RSA has zero known verification gaps
+across every apt or dnf/yum client that has shipped; Ed25519 support in older
+enterprise dnf/GPGME stacks is not universally reliable. The public key is
+re-exported from the imported private key on every CI run — `docs/apt/pubkey.gpg`
+(dearmored, for apt's `Signed-By=`) and `docs/rpm/RPM-GPG-KEY-tmp-companion`
+(armored, the dnf/yum convention) — so it's always in sync automatically,
+never hand-maintained.
+
+**Apt repo signs are Release-level, not per-package** — that's `reprepro`'s
+normal signing model. **The rpm repo signs `repodata/repomd.xml` only**, not
+each individual `.rpm` (`rpm --addsign` is deliberately skipped — see the CI
+job comments). `primary.xml.gz` records each rpm's SHA-256, and `repomd.xml`
+records a checksum of `primary.xml.gz`, so signing `repomd.xml` transitively
+covers every listed package — the same trust chain apt's own
+Release→Packages.gz→.deb chain gives. The `.repo` file therefore ships
+`gpgcheck=0`, `repo_gpgcheck=1` — `gpgcheck=1` with no embedded per-package
+signature would make every `dnf install` fail outright.
+
+**Pruning: only the latest version is kept in the working tree.** Each publish
+run does `reprepro remove stable <pkg>` before `includedeb`, and rewrites
+`docs/rpm/*.rpm` outright before `createrepo_c`. This keeps the _served_ repo
+small; it does **not** shrink git history — old pool/rpm blobs remain in past
+commits, an accepted tradeoff of a git-backed static host. Given the project's
+alpha posture and the existing "users re-download the latest `.deb`/`.rpm`"
+update model (see "No Linux updater channel" above), keeping only the latest
+version is the right default: there is no in-place upgrade story that depends
+on an old version staying installable from this repo, and a growing served
+pool with no expiry policy is a worse failure mode (unbounded Pages storage)
+than "reinstall a needed old version from a GitHub Release asset instead" —
+Assets already keep every past release's artifact indefinitely.
+
+**Install (end users).**
+
+```bash
+# apt (Debian/Ubuntu)
+curl -fsSL https://pcavadas.github.io/tmp-companion/apt/pubkey.gpg \
+  | sudo tee /usr/share/keyrings/tmp-companion.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/tmp-companion.gpg] https://pcavadas.github.io/tmp-companion/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/tmp-companion.list
+sudo apt update && sudo apt install tmp-companion
+
+# dnf/yum (Fedora/RHEL-family)
+sudo curl -fsSL -o /etc/yum.repos.d/tmp-companion.repo \
+  https://pcavadas.github.io/tmp-companion/rpm/tmp-companion.repo
+sudo dnf install tmp-companion
+```
+
+**CI job.** `publish-linux-repos` in `release.yml`, gated on
+`needs.release.result == 'success'` only — never on `build-deb`/`build-rpm`'s
+`result`, which `continue-on-error: true` forces to report `success` even when
+the underlying build genuinely failed. Whether there's anything to publish is
+determined at runtime from artifact presence (`hashFiles(...)`), the same
+tolerant pattern the `release` job already uses for its own Linux-asset
+download. Combined into one job rather than split `publish-apt`/`publish-rpm`
+so there is exactly one checkout → commit → push to `main` per run — two
+independent jobs each pushing in the same run would race each other's
+fast-forward.
+
+`packaging/apt/conf/distributions` ships with a `SignWith: PLACEHOLDER_FPR`
+placeholder rather than a real fingerprint — the CI job `sed`s the imported
+key's actual fingerprint into its own checkout right after importing
+`APT_GPG_PRIVATE_KEY`, so the repo config never needs a manual, easy-to-forget
+edit and stays correct even if the signing key is ever rotated.
+
+**Known gap — the `release` GitHub Environment has no deployment-branch
+restriction.** `workflow_dispatch` (the manual fallback for an auto-merged
+push that `GITHUB_TOKEN` silently skips — see the workflow's top-of-file
+comment) can run against any branch a collaborator selects in the Actions UI,
+and `environment: release` carries no branch policy (`protection_rules` is
+empty via the API) — so a non-`main` dispatch could reach every `release`-
+scoped secret, Apple certs and `TAURI_SIGNING_PRIVATE_KEY` included, a gap
+that predates this feature. `publish-linux-repos` adds its own
+`github.ref == 'refs/heads/main'` guard as defense-in-depth for the new
+`APT_GPG_PRIVATE_KEY` exposure, but that only protects this one job — the
+real fix is a GitHub Environment deployment-branch rule (Settings →
+Environments → `release` → restrict to `main`), which is a repo-settings
+change outside what a workflow file can express, and is a pre-existing gap
+on the `release` job itself, not something introduced here.
+
 ## Release pipeline shape
 
 ```text
@@ -121,6 +218,9 @@ resolve-version (ubuntu)              semantic-release --dry-run → next versio
               │
               ▼
         release (macos-14)            downloads both bundles, runs the real semantic-release
+              │
+              ▼
+        publish-linux-repos (ubuntu)  publishes docs/apt + docs/rpm to GitHub Pages
 ```
 
 `resolve-version` needs `permissions: contents: write` despite writing nothing:
