@@ -1,0 +1,6 @@
+Archive: stable
+Component: main
+Origin: TMP Companion
+Label: TMP Companion
+Architecture: amd64
+Description: TMP Companion self-hosted apt repository (alpha Linux packaging)

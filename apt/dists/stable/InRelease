@@ -1,0 +1,39 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: TMP Companion
+Label: TMP Companion
+Suite: stable
+Codename: stable
+Date: Sat, 03 Oct 2026 01:02:19 UTC
+Architectures: amd64
+Components: main
+Description: TMP Companion self-hosted apt repository (alpha Linux packaging)
+MD5Sum:
+ 5eb21a01684fd0bafe51e4dfed23ebf1 891 main/binary-amd64/Packages
+ 921b0ff9bbcf051419f2e96952d42d0f 590 main/binary-amd64/Packages.gz
+ 4d7e57b6ddf63bfead75a257f71a0894 173 main/binary-amd64/Release
+SHA1:
+ 5e11e7ffa7a92ae6125633b4a1666532477d3a0f 891 main/binary-amd64/Packages
+ 60a96493c993e2e438b66aa4242d05e0b84bb6e7 590 main/binary-amd64/Packages.gz
+ ee079b33c2cdda110fcb6dc407080344f52af345 173 main/binary-amd64/Release
+SHA256:
+ 2aee0d04668c4e0fe1d90ef84c2ef526c7dbb517ad06b082a01484a74a7d2d52 891 main/binary-amd64/Packages
+ 97e76a54944f03b98948e19f4ebda13fc50abc6064b645fe77f67bf378a17292 590 main/binary-amd64/Packages.gz
+ c7bdbfe7230972c3c6744e36a9eecf94e04c0ba581306f4007c926c4836bd5aa 173 main/binary-amd64/Release
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEcLWcOQXyvHhEIRzpuLX2g5RZYqMFAmrAVBsACgkQuLX2g5RZ
+YqP8Tg//fYd+/OXkqDl6njpsQdChWeatYPn5fYfRzFYYf0G96XT6q7fVVpcKXFYa
+FbBcGv1qUBh61Hkv7BEQtz+UH6NcymBMSkuCyMv/aJglpK4KLa/bQumKuXfi6nkx
+xjiE1iSvwgMMfp/3Ps99bdOAMcz+TG/fYmg2G/6pdlCR40szzAWW44xbA4s3hxhq
+64SbyB/26auJ/Xbfh98x582OOx/N/HaVPRBA61r6gWAHKrWK8c/wk8m2kA5OgQHJ
+E+k+PjZS/LWvW9FqA1yejDvdGL/hjxEoPIb/RH76DmFUM7IRvB4J0mJ0ZJ1FHpgC
+mA2DG9ENKzTtClTwYEMyaHRJKF2ya1dlEs6i6+VEAp5vBFymOWJV4GoypY1V19E4
+bqKRnCkdKh0UK/D8QG1WSxqh7XXBnhKY66U7E1Z/nsXeKkfzKgGFdS7/1Gtm5hy0
+hIGcC/V6ID+da4/yUEvvQIZlys9oAchiUCDQe/fHK+v2n+ZZ6cHwNX3j5uNDKTtL
+hd3msXMNZV+eh0SV53Dns9o4zPrwJuE/f4fXwSe9cdljyv/GLSuGGWMXMSwqM8eb
+MFfK+/TjvlW76mXgc+LG26Kog4mVd4UAanzt7Ab5sO6AR1uXo4OsMCgV3EHlKCyR
+Gw+mssX6/VHZJ75cjqsj+1yp78yDQVnYFM7jPvi5f86ezd2gqPI=
+=ztHc
+-----END PGP SIGNATURE-----

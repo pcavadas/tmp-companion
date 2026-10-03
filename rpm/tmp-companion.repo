@@ -1,0 +1,7 @@
+[tmp-companion]
+name=TMP Companion
+baseurl=https://pcavadas.github.io/tmp-companion/rpm
+enabled=1
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=https://pcavadas.github.io/tmp-companion/rpm/RPM-GPG-KEY-tmp-companion
