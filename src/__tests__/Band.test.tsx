@@ -50,7 +50,7 @@ describe("BandMeter", () => {
 
 describe("BandSpark", () => {
   it("draws 6 bars for a 6-band sound", () => {
-    const { container } = render(
+    render(
       <ThemeProvider>
         <BandSpark
           balanceDb={[-6, 4, -2, -8, -12, -18]}
@@ -63,7 +63,6 @@ describe("BandSpark", () => {
     );
     const spark = screen.getByTitle("Band balance");
     expect(spark.children).toHaveLength(6);
-    void container;
   });
 
   it("draws 7 bars with no index gaps for a bass-vi sound", () => {
