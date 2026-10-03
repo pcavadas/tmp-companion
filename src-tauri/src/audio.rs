@@ -399,9 +399,9 @@ const TMP_NATIVE_CHANNELS: u16 = 4;
 /// absolute indices (the dry-DI tap `DRY_INSTRUMENT_IN_CH` above all) then
 /// land on the wrong lane, silently measuring a microphone instead of the
 /// guitar. A TMP-only aggregate keeps the native count and layout, so the
-/// count test admits it. macOS-only: Linux resolves by `/proc/asound` PCM id
-/// (see the `imp` modules), so the native-count tiebreak isn't needed there.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// count test admits it. macOS and Windows: Linux resolves by `/proc/asound` PCM
+/// id (see the `imp` modules), so the native-count tiebreak isn't needed there.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 fn pick_match_index(channel_counts: &[u16]) -> Option<usize> {
     channel_counts
         .iter()
@@ -537,7 +537,30 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+mod imp {
+    use super::{pick_match_index, Device};
+
+    /// WASAPI names an endpoint "<jack> (<USB product string>)" — e.g. "Line (Tone
+    /// Master Pro)" — so the same "tone master" substring match as macOS applies, and
+    /// the native-4 tiebreak keeps a hypothetical virtual/aggregate endpoint from
+    /// shadowing the physical one. With Fender's own (Thesycon) driver installed the
+    /// unit's audio side enumerates under its 0x0047 product id as "Fender Tone Master
+    /// Pro" — still a substring hit, so both driver stacks resolve here.
+    pub(super) fn find_device<I, F>(devs: I, channels_of: F) -> Option<Device>
+    where
+        I: Iterator<Item = Device>,
+        F: Fn(&Device) -> u16,
+    {
+        let mut matches: Vec<Device> = devs
+            .filter(|d| d.to_string().to_lowercase().contains("tone master"))
+            .collect();
+        let counts: Vec<u16> = matches.iter().map(channels_of).collect();
+        pick_match_index(&counts).map(|i| matches.swap_remove(i))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use super::Device;
 
@@ -547,6 +570,156 @@ mod imp {
         F: Fn(&Device) -> u16,
     {
         None
+    }
+}
+
+#[cfg(any(windows, test))]
+mod endpoint_unity;
+
+/// Windows only: hold the TMP's OWN audio endpoints at unity volume for the
+/// LIFETIME of a re-amp session, restoring the user's values on drop. Shared-
+/// mode WASAPI applies the endpoint's Windows master volume (the system slider
+/// for "Speakers (Fender Tone Master Pro)") to everything a client plays into
+/// it — and the capture side's level to what it records — so a nudged slider
+/// silently attenuates the injected stimulus and every measurement derived
+/// from it. HW 2026-08-31: the render endpoint sat at 8% (-38 dB); the clean
+/// scene of a two-amp preset measured -34.6 LUFS through the inject while the
+/// identical live input produced -14.3, and only the driven scenes' compression
+/// masked the loss elsewhere. macOS/Linux have no such layer (`hw:`/CoreAudio
+/// bypass the desktop mixer), so this is a Windows-only seam.
+///
+/// RESTORE, not pin: the same slider can be the only thing keeping a Windows
+/// monitoring loop ("Listen to this device", a DAW echo) quiet in the player's
+/// rig — pinning 100% permanently doubled the user's live guitar the moment it
+/// landed. The hold touches ONLY endpoints whose friendly name matches the
+/// unit — never the user's speakers. Setup is transactional: a COM failure
+/// restores every touched endpoint and rejects the measurement.
+#[cfg(windows)]
+mod endpoint_volume {
+    use windows::core::{GUID, PCWSTR};
+    use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        eCapture, eRender, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    };
+    use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
+        COINIT_MULTITHREADED, STGM_READ,
+    };
+
+    use super::endpoint_unity::{Endpoint, State};
+
+    /// Identity only: do not move thread-affine COM interfaces with the streams.
+    pub(super) struct TmpEndpoint {
+        id: String,
+        name: String,
+    }
+
+    struct ComInit(bool);
+    impl Drop for ComInit {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+    pub(super) type UnityHold = super::endpoint_unity::UnityHold<TmpEndpoint>;
+
+    impl Endpoint for TmpEndpoint {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn state(&self) -> Result<State, String> {
+            with_tmp_endpoint(&self.id, &self.name, |vol| unsafe {
+                Ok(State {
+                    scalar: vol.GetMasterVolumeLevelScalar()?,
+                    muted: vol.GetMute()?.as_bool(),
+                })
+            })
+        }
+        fn set_scalar(&self, scalar: f32) -> Result<(), String> {
+            with_tmp_endpoint(&self.id, &self.name, |vol| unsafe {
+                vol.SetMasterVolumeLevelScalar(scalar, &GUID::zeroed())
+            })
+        }
+        fn set_muted(&self, muted: bool) -> Result<(), String> {
+            with_tmp_endpoint(&self.id, &self.name, |vol| unsafe {
+                vol.SetMute(muted, &GUID::zeroed())
+            })
+        }
+    }
+
+    pub(super) fn hold_tmp_unity() -> Result<UnityHold, String> {
+        let mut endpoints = Vec::new();
+        for_each_tmp_endpoint(|id, name| {
+            endpoints.push(TmpEndpoint {
+                id: id.to_string(),
+                name: name.to_string(),
+            });
+            Ok(())
+        })
+        .map_err(|e| format!("enumerate TMP endpoint volume: {e}"))?;
+        UnityHold::new(endpoints)
+            .map_err(|e| format!("cannot hold TMP endpoint volume at unity: {e}"))
+    }
+
+    fn with_tmp_endpoint<T>(
+        id: &str,
+        name: &str,
+        f: impl FnOnce(&IAudioEndpointVolume) -> windows::core::Result<T>,
+    ) -> Result<T, String> {
+        // Friendly names can repeat after a replug or with multiple TMP units.
+        // Reopen exactly the endpoint whose original state was recorded.
+        let id: Vec<u16> = id.encode_utf16().chain(Some(0)).collect();
+        (|| unsafe {
+            let _com = ComInit(CoInitializeEx(None, COINIT_MULTITHREADED).is_ok());
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let device = enumerator.GetDevice(PCWSTR(id.as_ptr()))?;
+            let vol: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
+            f(&vol)
+        })()
+        .map_err(|e| format!("{name}: {e}"))
+    }
+
+    /// Discover active TMP endpoints by friendly name, retaining their opaque
+    /// endpoint IDs for subsequent reads, writes and restoration.
+    fn for_each_tmp_endpoint(
+        mut f: impl FnMut(&str, &str) -> windows::core::Result<()>,
+    ) -> windows::core::Result<()> {
+        unsafe {
+            // Balance both S_OK and S_FALSE; a changed apartment mode does not
+            // acquire a reference and must not be uninitialized here.
+            let _com = ComInit(CoInitializeEx(None, COINIT_MULTITHREADED).is_ok());
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            for flow in [eRender, eCapture] {
+                let devices = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)?;
+                for i in 0..devices.GetCount()? {
+                    let device = devices.Item(i)?;
+                    let store = device.OpenPropertyStore(STGM_READ)?;
+                    let mut value = store.GetValue(&PKEY_Device_FriendlyName)?;
+                    // Copy the name before releasing GetValue's owning PROPVARIANT,
+                    // including values with a type we cannot use for discovery.
+                    let inner = &value.Anonymous.Anonymous;
+                    let name = (inner.vt.0 == 31)
+                        .then(|| inner.Anonymous.pwszVal.to_string().unwrap_or_default());
+                    PropVariantClear(&mut value)?;
+                    let Some(name) = name else { continue };
+                    if !name.to_lowercase().contains("tone master") {
+                        continue;
+                    }
+                    let raw_id = device.GetId()?;
+                    let id = raw_id.to_string();
+                    // GetId allocates with the COM task allocator. Free it even
+                    // if converting the UTF-16 ID fails.
+                    CoTaskMemFree(Some(raw_id.0.cast()));
+                    f(&id?, &name)?;
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -659,6 +832,40 @@ struct ReampStreams {
     in_dev: Device,
     out_cfg: SupportedStreamConfig,
     in_cfg: SupportedStreamConfig,
+    /// Holds the TMP's Windows endpoint volumes at unity for as long as the
+    /// session's streams live — see [`endpoint_volume`].
+    #[cfg(windows)]
+    volume_hold: endpoint_volume::UnityHold,
+}
+
+/// What to append to a "no config" error on hosts where the missing config is a
+/// user-side setting rather than a hardware limit. WASAPI shared mode only ever
+/// offers an endpoint's Windows "default format" (rate + channel layout, set in the
+/// Sound control panel): HW-measured, the Thesycon-driven unit enumerated as a
+/// stereo "Speakers" output and a 44.1 kHz "Line" input until those were changed,
+/// so the fix is the user's, and the error must say so.
+fn host_config_hint() -> &'static str {
+    if cfg!(windows) {
+        " — in Windows Sound settings set the Tone Master Pro output to 4 channels (Speakers → Configure → Quadraphonic) and both its Speakers and Line endpoints to a 48000 Hz default format (Properties → Advanced), then retry. Windows FORGETS the Quadraphonic setting after a reboot or a device replug, so re-doing Configure is routinely needed even when it was set before"
+    } else {
+        ""
+    }
+}
+
+/// Preserve the input-only failure and tell Windows users which capture format
+/// to change, without requiring them to reconfigure an unused output endpoint.
+fn input_config_error(sample_rate: u32, min_channels: usize, windows: bool) -> String {
+    let mut error = format!(
+        "no F32/I32 input config at {sample_rate} Hz with ≥{min_channels} channels — the dry \
+         instrument tap is USB-Out 3; is a non-TMP device named \"Tone Master\" \
+         selected?"
+    );
+    if windows {
+        error.push_str(&format!(
+            " — in Windows Sound settings set the Tone Master Pro Line input to a {sample_rate} Hz default format with at least {min_channels} channels (Properties → Advanced), then retry"
+        ));
+    }
+    error
 }
 
 /// Format a cpal stream-build failure, adding the one piece of context the
@@ -694,6 +901,10 @@ fn stream_error(what: &str, err: &str, linux: bool) -> String {
 /// Find the TMP and pick a 48 kHz output config (≥3 ch for USB-In 3) + input
 /// config. Errors describe exactly which half is missing.
 fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
+    // A nudged Windows volume slider on the unit's endpoints silently scales the
+    // inject/capture — hold unity for the session (restored when the streams drop).
+    #[cfg(windows)]
+    let volume_hold = endpoint_volume::hold_tmp_unity()?;
     let host = cpal::default_host();
     let out_dev = find_device(host.output_devices().map_err(|e| e.to_string())?, |d| {
         channels_rates_formats(d.supported_output_configs().ok()).0
@@ -711,7 +922,12 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
         sample_rate,
         (REAMP_INSTRUMENT_OUT_CH + 1) as u16,
     )
-    .ok_or_else(|| format!("no F32/I32 output config at {sample_rate} Hz with ≥3 channels"))?;
+    .ok_or_else(|| {
+        format!(
+            "no F32/I32 output config at {sample_rate} Hz with ≥3 channels{}",
+            host_config_hint()
+        )
+    })?;
     let in_cfg = pick_config(
         in_dev
             .supported_input_configs()
@@ -719,13 +935,20 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
         sample_rate,
         1,
     )
-    .ok_or_else(|| format!("no F32/I32 input config at {sample_rate} Hz"))?;
+    .ok_or_else(|| {
+        format!(
+            "no F32/I32 input config at {sample_rate} Hz{}",
+            host_config_hint()
+        )
+    })?;
 
     Ok(ReampStreams {
         out_dev,
         in_dev,
         out_cfg,
         in_cfg,
+        #[cfg(windows)]
+        volume_hold,
     })
 }
 
@@ -1335,6 +1558,9 @@ fn ring_append_raw(buf: &mut std::collections::VecDeque<f32>, data: &Data, cap: 
 pub struct LiveReamp {
     _out_stream: cpal::Stream,
     _in_stream: cpal::Stream,
+    /// Fields drop in declaration order: stop both streams before restoring volume.
+    #[cfg(windows)]
+    _volume_hold: endpoint_volume::UnityHold,
     captured: Arc<Mutex<std::collections::VecDeque<f32>>>,
     channels: usize,
     sample_rate: u32,
@@ -1354,6 +1580,8 @@ impl LiveReamp {
             in_dev,
             out_cfg,
             in_cfg,
+            #[cfg(windows)]
+            volume_hold,
         } = streams;
 
         let out_ch = out_cfg.channels() as usize;
@@ -1423,6 +1651,8 @@ impl LiveReamp {
         out_stream.play().map_err(|e| format!("play output: {e}"))?;
 
         Ok(Self {
+            #[cfg(windows)]
+            _volume_hold: volume_hold,
             _out_stream: out_stream,
             _in_stream: in_stream,
             captured,
@@ -1459,6 +1689,10 @@ impl LiveReamp {
 /// index — a sub-3-channel negotiation fails here, loudly, instead of letting
 /// `Capture::channel`'s zero-pad read as "the player played nothing".
 pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
+    // The capture endpoint's Windows level scales what we record (see
+    // `endpoint_volume`); calibration must read the instrument at unity.
+    #[cfg(windows)]
+    let _volume_hold = endpoint_volume::hold_tmp_unity()?;
     let host = cpal::default_host();
     let in_dev = find_device(host.input_devices().map_err(|e| e.to_string())?, |d| {
         channels_rates_formats(d.supported_input_configs().ok()).0
@@ -1471,14 +1705,7 @@ pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
         sample_rate,
         (DRY_INSTRUMENT_IN_CH + 1) as u16,
     )
-    .ok_or_else(|| {
-        format!(
-            "no F32/I32 input config at {sample_rate} Hz with ≥{} channels — the dry \
-             instrument tap is USB-Out 3; is a non-TMP device named \"Tone Master\" \
-             selected?",
-            DRY_INSTRUMENT_IN_CH + 1
-        )
-    })?;
+    .ok_or_else(|| input_config_error(sample_rate, DRY_INSTRUMENT_IN_CH + 1, cfg!(windows)))?;
     let in_ch = in_cfg.channels() as usize;
 
     let captured = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
@@ -2368,5 +2595,28 @@ mod pipewire_hint_tests {
                 "missed: {err}",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod input_config_hint_tests {
+    use super::input_config_error;
+
+    #[test]
+    fn windows_calibration_failure_names_only_the_capture_format() {
+        let error = input_config_error(48_000, 3, true);
+        assert!(error.contains("48000 Hz with ≥3 channels"));
+        assert!(error.contains("USB-Out 3"));
+        assert!(error.contains("Windows Sound settings"));
+        assert!(error.contains("Line input"));
+        assert!(error.contains("Properties → Advanced"));
+        assert!(!error.contains("Speakers"));
+    }
+
+    #[test]
+    fn other_hosts_keep_the_input_failure_without_windows_advice() {
+        let error = input_config_error(48_000, 3, false);
+        assert!(error.contains("USB-Out 3"));
+        assert!(!error.contains("Windows"));
     }
 }

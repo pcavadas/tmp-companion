@@ -78,7 +78,8 @@ export function RunPage({
     if (it.outcome === "unconverged")
       return `off target · ${fmtLufs(it.value)}`;
     if (it.outcome === "offbranch") return offbranchStatus(it.silenceHint);
-    if (it.outcome === "skipped") return "skipped · read failed";
+    if (it.outcome === "skipped")
+      return `skipped · ${it.skipReason ?? "read failed"}`;
     return `${fmtLufs(it.value)} LUFS`;
   };
   const resultColor = (it: RunItem): string =>

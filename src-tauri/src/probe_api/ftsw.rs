@@ -184,7 +184,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     ));
     let mut after = s.live_ftsw();
     let mut framing = "no-batch";
-    if after.as_ref().and_then(&find_probe).is_none() {
+    if after.as_ref().and_then(find_probe).is_none() {
         s.set_footswitch_assignment(target as u32, target_index, &func_json, false, Some(11))?;
         report.push_str(&format!(
             "  [set batch=11] PresetMessage fields the device replied with: {:?}\n",
@@ -193,7 +193,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         after = s.live_ftsw();
         framing = "batch=11";
     }
-    let landed = after.as_ref().and_then(&find_probe);
+    let landed = after.as_ref().and_then(find_probe);
     match (landed, &after) {
         (Some((si, fi)), Some(f)) => {
             report.push_str(&format!(
@@ -223,7 +223,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         let after_swap = s.live_ftsw();
         let after_fn = after_swap
             .as_ref()
-            .and_then(&find_probe)
+            .and_then(find_probe)
             .and_then(|(a, b)| func_at(after_swap.as_ref().unwrap(), a, b));
         report.push_str(&format!(
             "  [swap=true] before: {}\n              after:  {}\n",
@@ -237,7 +237,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     // UNKNOWN 3 — clear.
     s.clear_footswitch_assignment(target as u32, target_index)?;
     let after_clear = s.live_ftsw();
-    let gone = after_clear.as_ref().and_then(&find_probe).is_none();
+    let gone = after_clear.as_ref().and_then(find_probe).is_none();
     report.push_str(&format!(
         "  [clear] {} — switch [{target}] func count: was {} now {}\n",
         if gone {
@@ -262,7 +262,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         report.push_str(&format!(
             "  [commit] field-8 readback slot {:03}: PROBE persisted = {}\n",
             list_index + 1,
-            persisted.as_ref().and_then(&find_probe).is_some()
+            persisted.as_ref().and_then(find_probe).is_some()
         ));
         // RESTORE: clear the probe fn and re-save.
         let mut r = Session::connect()?;
@@ -277,7 +277,7 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
         let restored = read_slot_ftsw(list_index + 1);
         report.push_str(&format!(
             "  [restore] field-8 readback: PROBE gone = {}, switch [{target}] func count = {} (original {})\n",
-            restored.as_ref().and_then(&find_probe).is_none(),
+            restored.as_ref().and_then(find_probe).is_none(),
             restored.as_ref().map(|f| func_count(f, target)).unwrap_or(99),
             func_count(&ftsw0, target)
         ));

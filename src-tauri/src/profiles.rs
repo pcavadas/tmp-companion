@@ -284,6 +284,10 @@ fn remove_any(path: &Path) {
 /// self-healing against a leftover from a previous failed save: any existing
 /// entry there is cleared FIRST (`remove_any`), and again on this call's own
 /// failure path, so one bad leftover can never wedge every future save.
+///
+/// Windows preserves atomic replacement and syncs the temporary file contents,
+/// but does not sync the replacement directory entry. A successful save is not
+/// guaranteed to survive sudden power loss on Windows.
 pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
@@ -320,7 +324,10 @@ pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
     // The rename above is durable on disk only once the DIRECTORY ENTRY itself
     // is synced — without this, a power loss right after a successful rename
     // can still lose it. `File::open` on a directory succeeds read-only, so
-    // this doesn't need write access to the parent.
+    // this doesn't need write access to the parent. Unix only: Windows refuses to
+    // open a directory as a plain file (`ERROR_ACCESS_DENIED`). Windows therefore
+    // has the weaker power-loss durability guarantee documented above.
+    #[cfg(unix)]
     if let Some(parent) = path.parent() {
         std::fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
@@ -747,6 +754,32 @@ mod tests {
         let tmp = dir.join("profiles.json.tmp");
         assert!(!tmp.exists(), "temp file leaked after a successful save");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_replaces_existing_profile_and_cleans_up_failed_rename() {
+        let dir = tmp_dir("save-replace-and-rename-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.json");
+        let mut store = sample_store();
+        save_to_path(&path, &store).unwrap();
+        store.playback_level = PlaybackLevel::Quiet;
+        save_to_path(&path, &store).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            serde_json::to_string_pretty(&store).unwrap()
+        );
+        assert!(!dir.join("profiles.json.tmp").exists());
+        // A non-empty destination directory makes rename fail on every platform.
+        let blocked = dir.join("blocked.json");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("sentinel"), b"keep").unwrap();
+        assert!(save_to_path(&blocked, &store)
+            .unwrap_err()
+            .starts_with("rename "));
+        assert_eq!(std::fs::read(blocked.join("sentinel")).unwrap(), b"keep");
+        assert!(!dir.join("blocked.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]

@@ -184,7 +184,7 @@ fn backup_preset_scenes_parse_names_and_fs_tags() {
 }
 
 /// Build a real in-memory device-backup archive from one SQL script: run it through
-/// `sqlite3` to a fresh temp `normalDb.db3`, tar it under the firmware's logical
+/// SQLite to a fresh temp `normalDb.db3`, tar it under the firmware's logical
 /// `databaseBackup` entry name, then LZ4-frame compress — the exact shape
 /// `read_backup_archive` decodes. Shared by the two backup-decode tests and the
 /// showcase-fixture generator (a per-call counter keeps parallel temp dirs distinct).
@@ -207,12 +207,10 @@ fn build_backup_archive_with_settings(sql: &str, settings_json: Option<&[u8]>) -
     let _ = std::fs::create_dir_all(&dir);
     let db_path = dir.join("normalDb.db3");
     let _ = std::fs::remove_file(&db_path);
-    let status = std::process::Command::new("sqlite3")
-        .arg(&db_path)
-        .arg(sql)
-        .status()
-        .expect("spawn sqlite3");
-    assert!(status.success(), "sqlite3 create failed");
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("create db");
+        conn.execute_batch(sql).expect("sqlite create failed");
+    }
     let db_bytes = std::fs::read(&db_path).expect("read db");
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_dir(&dir);

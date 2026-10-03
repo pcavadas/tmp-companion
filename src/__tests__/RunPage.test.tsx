@@ -174,6 +174,34 @@ describe("RunPage grouped rows", () => {
     expect(screen.queryByText("done · −24.3")).not.toBeInTheDocument();
     expect(screen.queryByText(/clamped/)).not.toBeInTheDocument();
   });
+
+  // A skipped row carries the backend's own reason when one came over the progress
+  // channel (a scene-write policy refusal, a per-scene failure) — the generic
+  // "read failed" is only the fallback for a skip with no message.
+  it("states a skipped row's backend reason verbatim", async () => {
+    const reason = "shares the base preset’s knobs — level Base instead";
+    const skipped: RunItem = {
+      ...activeItem,
+      status: "result",
+      outcome: "skipped",
+      skipReason: reason,
+    };
+    render(runPage(null, [skipped]));
+    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
+    expect(screen.getByText(`skipped · ${reason}`)).toBeInTheDocument();
+    expect(screen.queryByText(/read failed/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to read failed for a skip with no reason", async () => {
+    const skipped: RunItem = {
+      ...activeItem,
+      status: "result",
+      outcome: "skipped",
+    };
+    render(runPage(null, [skipped]));
+    await userEvent.click(screen.getByText("E2E Hiwatt 3S"));
+    expect(screen.getByText("skipped · read failed")).toBeInTheDocument();
+  });
 });
 
 // Issue 6b: the batch-wide tail caption ("Saving…" / "Verifying…") has no row of its

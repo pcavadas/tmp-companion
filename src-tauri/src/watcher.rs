@@ -17,7 +17,11 @@
 //! detach-cleanup ordering, coarser latency (up to ~1 s vs. IOKit's
 //! near-instant callback).
 //!
-//! On removal (either platform) it also clears the shared session slot: the
+//! Windows also registers non-seizing Configuration Manager HID notifications.
+//! Queued removal/arrival events survive a quick replug between the one-second
+//! SetupAPI presence polls. Failed scans preserve the previous presence state.
+//!
+//! On removal (all supported platforms) it also clears the shared session slot: the
 //! seized handle is dead once the device is gone, and dropping it keeps a
 //! later reconnect from colliding with our own stale exclusive handle
 //! (`0xe00002c5` on macOS; the `flock` on Linux).
@@ -28,23 +32,29 @@ use crate::session::Session;
 
 /// Event names the frontend listens for (`@tauri-apps/api/event`).
 ///
-/// Only the macOS and Linux `imp`s emit these; off both platforms they are
+/// The macOS, Linux and Windows `imp`s emit these; elsewhere they are
 /// genuinely dead until a platform watcher exists to fire them. The allow is
 /// scoped to exactly that case rather than blanket-applied to the module, so a
 /// constant going unused on a platform that DOES have a watcher still surfaces
 /// as a warning.
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", windows)),
+    allow(dead_code)
+)]
 pub const EVT_ATTACHED: &str = "tmp://device-attached";
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", windows)),
+    allow(dead_code)
+)]
 pub const EVT_DETACHED: &str = "tmp://device-detached";
 
 /// Spawn the watcher thread. Lives for the whole process; never joined.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
 pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
     imp::spawn(app, session);
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn spawn(_app: tauri::AppHandle, _session: Arc<Mutex<Option<Session>>>) {}
 
 #[cfg(target_os = "macos")]
@@ -217,85 +227,190 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(windows)]
+mod windows_notifications;
+
+#[cfg(any(target_os = "linux", windows))]
 mod imp {
     use super::*;
     use std::time::Duration;
     use tauri::Emitter;
 
-    /// hidraw has no matching-callback equivalent reachable without a `udev`
-    /// crate (see the module doc), so this polls instead. A 1 s period is
-    /// negligible against a single small `/sys/class/hidraw` read and still
-    /// beats the UI's own 3 s connection-retry interval.
+    /// Poll the non-seizing Linux/Windows presence backend once a second,
+    /// faster than the UI's three-second connection-retry interval.
     const POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-    /// Pure edge detector — `None` on no change, else which event fired. The
-    /// call site seeds `last = false`, so a device already attached at process
-    /// start reports an ATTACHED edge on the very first poll: the same
-    /// semantics as IOHIDManager's matching callback firing for devices already
-    /// present at schedule time. Kept pure and separate from the poll loop so
-    /// the edge logic is unit-testable without a real hidraw node.
-    fn transition(last: bool, now: bool) -> Option<&'static str> {
-        match (last, now) {
-            (false, true) => Some(EVT_ATTACHED),
-            (true, false) => Some(EVT_DETACHED),
-            _ => None,
-        }
-    }
 
     pub fn spawn(app: tauri::AppHandle, session: Arc<Mutex<Option<Session>>>) {
         std::thread::Builder::new()
             .name("tmp-hotplug-watcher".into())
             .spawn(move || {
                 log::info!(
-                    "hotplug: watcher armed (polling /sys/class/hidraw every {}s)",
+                    "hotplug: watcher armed (polling {} every {}s)",
+                    if cfg!(windows) {
+                        "Windows HID interfaces"
+                    } else {
+                        "/sys/class/hidraw"
+                    },
                     POLL_INTERVAL.as_secs()
                 );
                 let mut last = false;
+                #[cfg(windows)]
+                let mut notifications = None;
                 loop {
-                    let now = crate::hid::device_present();
-                    if let Some(evt) = transition(last, now) {
-                        if evt == EVT_DETACHED {
-                            // Same cleanup, same order, as macOS's removed_cb:
-                            // drop the (now-dead) session first so a later
-                            // reconnect never collides with our own stale
-                            // flock, then reset monitor/doctor state.
-                            *crate::lock_ok(&session) = None;
-                            crate::monitor::reset_startup_state();
-                            crate::commands::doctor::clear_doctor_before_cache();
-                            log::info!("hotplug: TMP detached — session released");
-                        } else {
-                            log::info!("hotplug: TMP attached");
+                    #[cfg(windows)]
+                    {
+                        // Register before the initial scan, then retain every
+                        // removal witness even if the next scan is already true.
+                        // Retry registration errors while polling remains active.
+                        if notifications.is_none() {
+                            match super::windows_notifications::Notifications::register() {
+                                Ok(registered) => notifications = Some(registered),
+                                Err(error) => {
+                                    log::warn!("hotplug: notification registration failed: {error}")
+                                }
+                            }
                         }
-                        let _ = app.emit(evt, ());
+                        if let Some(registered) = &notifications {
+                            for evt in observe_notifications(&mut last, registered.observations()) {
+                                emit_event(&app, &session, evt);
+                            }
+                        }
                     }
-                    last = now;
+                    #[cfg(target_os = "linux")]
+                    let scan = Ok(crate::hid::device_present());
+                    #[cfg(windows)]
+                    let scan = crate::hid::device_present();
+                    let event = match observe_presence(&mut last, scan) {
+                        Ok(event) => event,
+                        Err(error) => {
+                            log::warn!("hotplug: presence scan failed: {error}");
+                            std::thread::sleep(POLL_INTERVAL);
+                            continue;
+                        }
+                    };
+                    if let Some(evt) = event {
+                        emit_event(&app, &session, evt);
+                    }
                     std::thread::sleep(POLL_INTERVAL);
                 }
             })
             .expect("spawn tmp-hotplug-watcher");
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn absent_to_present_seeded_from_startup_is_attached() {
-            // The seeded-false-at-startup case: a device already plugged in when
-            // the watcher spawns must still emit ATTACHED on the first poll.
-            assert_eq!(transition(false, true), Some(EVT_ATTACHED));
+    fn emit_event(app: &tauri::AppHandle, session: &Arc<Mutex<Option<Session>>>, evt: &str) {
+        if evt == EVT_DETACHED {
+            // Same cleanup order as macOS: release the stale handle, reset the
+            // monitor and Doctor caches, then notify the frontend.
+            *crate::lock_ok(session) = None;
+            crate::monitor::reset_startup_state();
+            crate::commands::doctor::clear_doctor_before_cache();
+            log::info!("hotplug: TMP detached — session released");
+        } else {
+            log::info!("hotplug: TMP attached");
         }
+        let _ = app.emit(evt, ());
+    }
+}
 
-        #[test]
-        fn present_to_absent_is_detached() {
-            assert_eq!(transition(true, false), Some(EVT_DETACHED));
-        }
+/// A failed presence scan is uncertainty, not a physical detach. Keep the last
+/// successful observation; startup is seeded false to emit an initial attach.
+#[cfg(any(target_os = "linux", windows, test))]
+fn observe_presence(
+    last: &mut bool,
+    scan: Result<bool, String>,
+) -> Result<Option<&'static str>, String> {
+    let now = scan?;
+    let event = match (*last, now) {
+        (false, true) => Some(EVT_ATTACHED),
+        (true, false) => Some(EVT_DETACHED),
+        _ => None,
+    };
+    *last = now;
+    Ok(event)
+}
 
-        #[test]
-        fn no_change_is_none() {
-            assert_eq!(transition(false, false), None);
-            assert_eq!(transition(true, true), None);
-        }
+/// Drain notification observations in order before reconciling the current scan.
+/// A removal followed by arrival must still release the old session.
+#[cfg(any(windows, test))]
+fn observe_notifications(
+    last: &mut bool,
+    observations: impl Iterator<Item = bool>,
+) -> Vec<&'static str> {
+    observations
+        .filter_map(|present| observe_presence(last, Ok(present)).ok().flatten())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_replug_between_present_polls_still_emits_detach_then_attach() {
+        let mut last = true;
+        assert_eq!(
+            observe_notifications(&mut last, [false, true].into_iter()),
+            vec![EVT_DETACHED, EVT_ATTACHED]
+        );
+        assert_eq!(observe_presence(&mut last, Ok(true)).unwrap(), None);
+    }
+
+    #[test]
+    fn notification_cleanup_is_not_lost_when_the_following_scan_fails() {
+        let mut last = true;
+        assert_eq!(
+            observe_notifications(&mut last, [false].into_iter()),
+            vec![EVT_DETACHED]
+        );
+        assert!(observe_presence(&mut last, Err("scan unavailable".into())).is_err());
+        assert!(!last);
+        assert_eq!(
+            observe_presence(&mut last, Ok(true)).unwrap(),
+            Some(EVT_ATTACHED)
+        );
+    }
+
+    #[test]
+    fn present_at_startup_emits_attach_once() {
+        let mut last = false;
+        assert_eq!(
+            observe_presence(&mut last, Ok(true)).unwrap(),
+            Some(EVT_ATTACHED)
+        );
+        assert_eq!(observe_presence(&mut last, Ok(true)).unwrap(), None);
+    }
+
+    #[test]
+    fn physical_removal_emits_detach_once() {
+        let mut last = true;
+        assert_eq!(
+            observe_presence(&mut last, Ok(false)).unwrap(),
+            Some(EVT_DETACHED)
+        );
+        assert_eq!(observe_presence(&mut last, Ok(false)).unwrap(), None);
+    }
+
+    #[test]
+    fn failed_scan_preserves_presence_until_an_actual_removal() {
+        let mut last = true;
+        assert!(observe_presence(&mut last, Err("temporary SetupAPI failure".into())).is_err());
+        assert!(last);
+        assert_eq!(observe_presence(&mut last, Ok(true)).unwrap(), None);
+        assert_eq!(
+            observe_presence(&mut last, Ok(false)).unwrap(),
+            Some(EVT_DETACHED)
+        );
+    }
+
+    #[test]
+    fn failed_startup_scan_does_not_prevent_a_later_attach() {
+        let mut last = false;
+        assert!(observe_presence(&mut last, Err("temporary SetupAPI failure".into())).is_err());
+        assert!(!last);
+        assert_eq!(observe_presence(&mut last, Ok(false)).unwrap(), None);
+        assert_eq!(
+            observe_presence(&mut last, Ok(true)).unwrap(),
+            Some(EVT_ATTACHED)
+        );
     }
 }

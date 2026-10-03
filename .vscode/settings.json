@@ -1,0 +1,6 @@
+{
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "[bat]": { "files.eol": "\r\n" },
+  "[powershell]": { "files.eol": "\r\n" }
+}

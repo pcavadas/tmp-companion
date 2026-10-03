@@ -948,7 +948,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     // regression guard — a partial failure must not sweep the whole run into "skipped").
     await waitFor(
       () => {
-        expect(screen.getAllByText("couldn’t read it")).toHaveLength(1);
+        expect(screen.getAllByText("device dropped the level")).toHaveLength(1);
       },
       { timeout: 3000 },
     );

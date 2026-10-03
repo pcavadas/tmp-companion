@@ -84,9 +84,11 @@ const PROBLEM: Record<ProblemKey, (it: RunItem) => Problem> = {
             : "Nothing came through USB 1/2, so we couldn’t hear this one.",
     };
   },
-  skipped: () => ({
-    short: "couldn’t read it",
-    msg: "We couldn’t read this one from the unit.",
+  // The backend's own reason when one came over the progress channel (a scene-write
+  // policy refusal, a per-scene failure) — the generic read-failed copy only when none did.
+  skipped: (it) => ({
+    short: it.skipReason ? "skipped" : "couldn’t read it",
+    msg: it.skipReason ?? "We couldn’t read this one from the unit.",
     fix: "Retry",
   }),
   notrun: () => ({

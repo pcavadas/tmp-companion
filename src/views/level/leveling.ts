@@ -553,6 +553,10 @@ export interface RunItem {
    *  reverts it, so a later re-run's default is never shadowed by a stale caption. */
   activeMessage?: string | null;
   outcome?: Outcome;
+  /** WHY a row was skipped — the backend's own per-sound message (the planner's
+   *  "no active amp" / a capture error / a refused scene write), shown verbatim.
+   *  Null when the skip happened client-side with no message. */
+  skipReason?: string | null;
   /** Measured (predicted) loudness, or null. */
   value?: number | null;
   /** Scene rows only: this row's handle pick, carried from Set up into the dispatch

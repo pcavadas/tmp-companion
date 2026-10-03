@@ -135,7 +135,10 @@ pub(crate) fn dump_processed_capture(
     label: &str,
 ) -> Result<String, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create dir {dir}: {e}"))?;
-    let path = format!("{}/{label}.wav", dir.trim_end_matches('/'));
+    let path = std::path::Path::new(dir)
+        .join(format!("{label}.wav"))
+        .to_string_lossy()
+        .into_owned();
     match cap.processed_stereo() {
         Some(stereo) => write_wav_stereo(&path, &stereo, cap.sample_rate)?,
         None => write_wav_mono(&path, &cap.channel(0), cap.sample_rate)?,

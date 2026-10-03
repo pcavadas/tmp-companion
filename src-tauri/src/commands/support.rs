@@ -134,9 +134,12 @@ fn append_bundle_members<R: tauri::Runtime, W: std::io::Write>(
 ) -> Result<(), String> {
     use tauri::Manager;
 
-    // Everything text-y gets this stripped → `~`. Empty when HOME is unset (scrub
-    // then no-ops, tested).
-    let home = std::env::var("HOME").unwrap_or_default();
+    // Scrub both values: HOME may be empty or differ from Windows USERPROFILE.
+    let homes: Vec<String> = ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .filter(|value| !value.is_empty())
+        .collect();
 
     // logs/<name> — every *.log in the app log dir, tail-capped + scrubbed.
     if let Ok(log_dir) = app.path().app_log_dir() {
@@ -151,7 +154,7 @@ fn append_bundle_members<R: tauri::Runtime, W: std::io::Write>(
                 };
                 let capped = tail_cap(&bytes, LOG_TAIL_CAP);
                 let name = p.file_name().and_then(|x| x.to_str()).unwrap_or("log.log");
-                append_scrubbed(builder, &format!("logs/{name}"), capped, &home, now)?;
+                append_scrubbed(builder, &format!("logs/{name}"), capped, &homes, now)?;
             }
         }
     }
@@ -160,7 +163,7 @@ fn append_bundle_members<R: tauri::Runtime, W: std::io::Write>(
     if let Ok(dir) = profiles::app_config_dir(app) {
         let ds = dir.join("support").join("device-settings.json");
         if let Ok(bytes) = std::fs::read(&ds) {
-            append_scrubbed(builder, "device-settings.json", &bytes, &home, now)?;
+            append_scrubbed(builder, "device-settings.json", &bytes, &homes, now)?;
         }
     }
 
@@ -177,13 +180,13 @@ fn append_bundle_members<R: tauri::Runtime, W: std::io::Write>(
         "preset_name": preset_name,
     });
     let meta_str = serde_json::to_string_pretty(&meta).map_err(|e| format!("encode meta: {e}"))?;
-    append_scrubbed(builder, "meta.json", meta_str.as_bytes(), &home, now)?;
+    append_scrubbed(builder, "meta.json", meta_str.as_bytes(), &homes, now)?;
 
     // preset-graph.json — only when a preset was picked. Named for what it IS: the
     // app's PARSED signal-chain graph (the shared scan store's ActiveGraph), not the
     // device's raw presetJson — a triager must not mistake it for ground truth.
     if let Some(pj) = preset_json {
-        append_scrubbed(builder, "preset-graph.json", pj.as_bytes(), &home, now)?;
+        append_scrubbed(builder, "preset-graph.json", pj.as_bytes(), &homes, now)?;
     }
 
     Ok(())
@@ -194,10 +197,10 @@ fn append_scrubbed<W: std::io::Write>(
     builder: &mut tar::Builder<W>,
     name: &str,
     bytes: &[u8],
-    home: &str,
+    homes: &[String],
     mtime: u64,
 ) -> Result<(), String> {
-    let text = scrub_home(&String::from_utf8_lossy(bytes), home);
+    let text = scrub_homes(&String::from_utf8_lossy(bytes), homes);
     append_text(builder, name, text.as_bytes(), mtime)
 }
 
@@ -260,13 +263,26 @@ fn macos_product_version() -> Option<String> {
 
 // ─── Pure helpers (device/FS-free, unit-tested) ───────────────────────────────
 
-/// Replace every occurrence of the user's home path with `~`. A no-op when `home`
-/// is empty (HOME unset) — never turns an empty needle into a `~` explosion.
-fn scrub_home(content: &str, home: &str) -> String {
-    if home.is_empty() {
-        return content.to_string();
+/// Scrub every non-empty home, including native, slash-normalized and JSON-escaped
+/// Windows paths. Longest first prevents a shorter home from hiding a longer one.
+fn scrub_homes(content: &str, homes: &[String]) -> String {
+    let mut variants = Vec::new();
+    for home in homes.iter().filter(|home| !home.is_empty()) {
+        for path in [
+            home.clone(),
+            home.replace('\\', "/"),
+            home.replace('/', "\\"),
+        ] {
+            let escaped = serde_json::to_string(&path).expect("string serialization");
+            variants.push(escaped[1..escaped.len() - 1].to_string());
+            variants.push(path);
+        }
     }
-    content.replace(home, "~")
+    variants.sort_by_key(|path| std::cmp::Reverse(path.len()));
+    variants.dedup();
+    variants
+        .iter()
+        .fold(content.to_string(), |text, home| text.replace(home, "~"))
 }
 
 /// `PRETTY_NAME` from an `/etc/os-release` body (e.g. `Debian GNU/Linux forky/sid`).
@@ -366,13 +382,37 @@ mod tests {
     fn scrub_replaces_home_and_no_ops_without_it() {
         let home = "/Users/alice";
         assert_eq!(
-            scrub_home("log at /Users/alice/Library/Logs/x.log", home),
+            scrub_homes("log at /Users/alice/Library/Logs/x.log", &[home.into()]),
             "log at ~/Library/Logs/x.log"
         );
         // Content without the home path is untouched.
-        assert_eq!(scrub_home("no home here", home), "no home here");
+        assert_eq!(scrub_homes("no home here", &[home.into()]), "no home here");
         // Empty HOME → identity (never explodes into `~~~`).
-        assert_eq!(scrub_home("/Users/alice/x", ""), "/Users/alice/x");
+        assert_eq!(
+            scrub_homes("/Users/alice/x", &[String::new()]),
+            "/Users/alice/x"
+        );
+    }
+
+    #[test]
+    fn scrub_both_homes_and_all_windows_representations_in_tar_members() {
+        let homes = vec![
+            String::new(),
+            "/home/other".into(),
+            r"C:\Users\alice".into(),
+        ];
+        let text = r#"/home/other/log C:\Users\alice\log C:/Users/alice/log {"path":"C:\\Users\\alice\\log"}"#;
+        let mut builder = tar::Builder::new(Vec::new());
+        append_scrubbed(&mut builder, "log.txt", text.as_bytes(), &homes, 0).unwrap();
+        let bytes = builder.into_inner().unwrap();
+        let mut archive = tar::Archive::new(std::io::Cursor::new(bytes));
+        let mut member = archive.entries().unwrap().next().unwrap().unwrap();
+        let mut scrubbed = String::new();
+        std::io::Read::read_to_string(&mut member, &mut scrubbed).unwrap();
+        assert!(!scrubbed.contains("alice"), "{scrubbed}");
+        assert!(!scrubbed.contains("other"), "{scrubbed}");
+        assert_eq!(scrubbed.matches('~').count(), 4);
+        assert_eq!(scrub_homes(text, &[String::new()]), text);
     }
 
     #[test]
