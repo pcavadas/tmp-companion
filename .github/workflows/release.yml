@@ -44,6 +44,7 @@ jobs:
   # publish plugin, so the elevated token is only ever spent on that dry-run push
   # probe and the GitHub plugin's read-only permission check.
   resolve-version:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -219,7 +220,7 @@ jobs:
     # skipped (nothing releasable) — this job's own behavior is unchanged from
     # before the Linux jobs existed either way. Only a cancelled run, or a genuine
     # resolve-version failure (as opposed to "nothing to release"), skips it.
-    if: ${{ !cancelled() && needs.resolve-version.result == 'success' }}
+    if: ${{ !cancelled() && needs.resolve-version.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: macos-14 # macOS-only crate; ARM host cross-builds the universal (arm64+x86_64) binary
     environment: release # gates the Apple signing/notarization secrets to this env
     permissions:
@@ -292,3 +293,111 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bunx semantic-release
+
+  publish-linux-repos:
+    needs: [resolve-version, build-deb, build-rpm, release]
+    # Artifact presence, not continue-on-error build results, determines publication.
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      actions: read # artifact inventory through the REST API
+    outputs:
+      changed: ${{ steps.publish.outputs.changed }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Inspect available Linux artifacts
+        id: available
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/select-linux-artifacts.sh >> "$GITHUB_OUTPUT"
+
+      - name: Download .deb artifact (if any)
+        if: steps.available.outputs.deb == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-deb
+          path: incoming-deb
+
+      - name: Download .rpm artifact (if any)
+        if: steps.available.outputs.rpm == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-rpm
+          path: incoming-rpm
+
+      - name: Detect package artifacts before importing a key
+        id: artifacts
+        shell: bash
+        env:
+          EXPECTED_DEB: ${{ steps.available.outputs.deb }}
+          EXPECTED_RPM: ${{ steps.available.outputs.rpm }}
+        run: |
+          deb=false rpm=false found=false
+          for package in incoming-deb/*.deb; do
+            if [ -f "$package" ]; then deb=true; fi
+          done
+          for package in incoming-rpm/*.rpm; do
+            if [ -f "$package" ]; then rpm=true; fi
+          done
+          if [ "$EXPECTED_DEB" = true ] && [ "$deb" = false ]; then
+            echo "linux-deb artifact contains no Debian package" >&2; exit 1
+          fi
+          if [ "$EXPECTED_RPM" = true ] && [ "$rpm" = false ]; then
+            echo "linux-rpm artifact contains no RPM package" >&2; exit 1
+          fi
+          if [ "$deb" = true ] || [ "$rpm" = true ]; then found=true; fi
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+
+      - name: Install repo-building tools
+        if: steps.artifacts.outputs.found == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y reprepro createrepo-c gnupg rpm
+
+      - name: Import the dedicated signing key
+        if: steps.artifacts.outputs.found == 'true'
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME="$(mktemp -d "$RUNNER_TEMP/linux-repo-key.XXXXXX")"
+          chmod 700 "$GNUPGHOME"
+          export GNUPGHOME
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          keys="$(gpg --batch --list-secret-keys --with-colons)"
+          test "$(printf '%s\n' "$keys" | awk -F: '$1 == "sec" { n++ } END { print n+0 }')" -eq 1
+          FPR="$(printf '%s\n' "$keys" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          echo "FPR=$FPR" >> "$GITHUB_ENV"
+
+      - name: Publish to the generated repository branch
+        if: steps.artifacts.outputs.found == 'true'
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: bash scripts/publish-linux-repos.sh incoming-deb incoming-rpm "$FPR" "$VERSION"
+
+      - name: Remove the temporary signing key
+        if: always()
+        run: |
+          if [ -n "${GNUPGHOME:-}" ]; then
+            gpgconf --homedir "$GNUPGHOME" --kill gpg-agent || true
+            rm -rf "$GNUPGHOME"
+          fi
+
+  deploy-linux-repos:
+    needs: publish-linux-repos
+    # GITHUB_TOKEN pushes do not trigger another workflow. Deploy explicitly.
+    if: ${{ !cancelled() && needs.publish-linux-repos.outputs.changed == 'true' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

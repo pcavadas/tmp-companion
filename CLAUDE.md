@@ -66,7 +66,7 @@ cargo run --bin probe                         # headless HW re-validation (devic
 ## Rules with no other home
 
 - **App icon (level-meter mark):** flat terracotta (`#d97757`) macOS-squircle tile, 3 white bottom-aligned level bars in a 6:11:8 height rhythm. [→ evidence](notes/gotchas.md#app-icon-level-meter-mark)
-- **Marketing site** (`docs/index.html` + `.nojekyll` + `assets/`): GitHub Pages branch-deploy from `main` `/docs`. It is a PROJECT repo, so the URL is a `/tmp-companion/` **subpath** — all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml--nojekyll--assets)
+- **Marketing site** (`docs/index.html` + `.nojekyll` + `assets/`): GitHub Pages Actions deployment combines `main` `docs/` with the `codex/linux-package-repos` branch (see `.github/workflows/pages.yml`). It is a PROJECT repo, so the URL is a `/tmp-companion/` **subpath** — all asset paths must be RELATIVE. [→ evidence](notes/gotchas.md#marketing-site-docsindexhtml--nojekyll--assets)
 - **CodeRabbit: progressive review is automatic — post NO command on a reviewed PR.** Pushing fix commits or replying to threads is enough. [→ evidence](notes/gotchas.md#coderabbit-progressive-review-is-automatic--post-no-command-on-a-reviewed-pr)
 - **Auto-merge arms ONLY for `main`-targeted PRs.** [→ evidence](notes/gotchas.md#auto-merge-arms-only-for-main-targeted-prs)
 - **Connection is fully automatic** — there are no manual Connect/Disconnect buttons. [→ evidence](notes/gotchas.md#fully-automatic-connection)

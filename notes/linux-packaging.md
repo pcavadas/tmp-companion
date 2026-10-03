@@ -18,13 +18,13 @@ Linux install of this app needs done automatically:
   `packaging/udev/70-fender-tone-master-pro.rules` landing in
   `/usr/lib/udev/rules.d/` and udev reloading, the app finds no device at all
   (`EACCES` — see `hid.rs`'s `open_device()`).
-- **Guarantee `sqlite3` on `PATH`.** `backup_read.rs` shells out to the `sqlite3` CLI for
-  the whole library-scan/block-discovery/scene-handle path — an out-of-Cargo runtime
-  dependency an AppImage cannot bundle a guarantee for.
+- **Run install and removal hooks.** They reload udev and re-trigger connected HID devices
+  when the access rule is added or removed. Backup reads now use bundled SQLite through
+  `rusqlite`; that path no longer requires command-line SQLite.
 
-A real package solves both as metadata: `bundle.linux.deb/rpm.files` ships the rule,
-`postInstallScript` (`packaging/linux/postinst.sh`) reloads udev, and `depends` pulls in
-`sqlite3`/`libasound2` (deb) or `sqlite`/`alsa-lib` (rpm). Arch, NixOS, and other
+A real package declares these files, hooks and runtime libraries in its metadata:
+`bundle.linux.deb/rpm.files` ships the rule, `postInstallScript` reloads udev, and
+`postRemoveScript` updates device access after removal. Arch, NixOS, and other
 non-deb/rpm distros are expected to build from source (`CONTRIBUTING.md`).
 
 ## The udev rule and postinst
@@ -108,8 +108,81 @@ unpacked package tree to run the check locally without installing anything.
 `scripts/latest-json.mjs` emits only `darwin-aarch64`/`darwin-x86_64` keys. A Linux
 install's in-app update check finds nothing at that endpoint and stays silent
 (`useUpdater.ts` treats any check failure as silent-fail by design) — Linux users update by
-re-downloading the latest `.deb`/`.rpm`. Not worth standing up and signing a second
+installing updates through apt/dnf or re-downloading the latest `.deb`/`.rpm`. Not worth standing up and signing a second
 updater channel for an alpha; revisit once Linux has left alpha.
+
+## Apt + dnf/yum repositories
+
+A release with Linux artifacts publishes signed package repositories at
+`https://pcavadas.github.io/tmp-companion/apt` and
+`https://pcavadas.github.io/tmp-companion/rpm`. Package files and generated metadata
+are committed to `codex/linux-package-repos`, under `apt/` and `rpm/`.
+They are not committed to protected `main` or mixed into the website's source.
+
+**Publication.** The `publish-linux-repos` job in `release.yml` downloads whatever
+Linux builds succeeded. An API error, expired artifact or failed download of an
+existing artifact fails publication; an absent artifact is an allowed skip. With no artifacts, the source checkout runs but publication skips key import, signing,
+the generated-repository checkout and push. If only one format is available, its repository is replaced and the other
+format's published files remain unchanged. Both replacement builds are verified
+before the generated checkout is updated and pushed as one commit.
+
+`scripts/build-linux-repos.sh` renders `packaging/apt/conf/distributions` into a
+temporary configuration directory and substitutes the imported key's full fingerprint
+automatically. The tracked placeholder stays unchanged. Publication supplies the
+`sound` section, which the Tauri Debian bundle omits, and its `optional` priority. The APT database and complete
+pool/dists output are built from scratch outside the checkout; an absent database
+cannot leave old package blobs behind. RPM metadata and packages are also rebuilt
+in a fresh directory. Each replaced format serves only the current successful build.
+Older package blobs remain in Git history and older release assets remain available.
+
+**Signing.** A dedicated RSA-4096 signing key, separate from the Tauri updater key,
+is stored as `APT_GPG_PRIVATE_KEY` in the `release` environment. The environment allows
+only `main`, and release/publication jobs also have explicit main-only guards.
+The passphrase-free key is imported into a temporary private GnuPG home that is removed
+when the job finishes. Its public keys are exported with the repository:
+`apt/pubkey.gpg` is binary for apt's `Signed-By`; `rpm/RPM-GPG-KEY-tmp-companion` is
+armored for dnf/yum.
+
+APT signs Release and InRelease metadata. RPM signs `repodata/repomd.xml`, whose
+checksums cover the package indexes and packages. Individual RPM packages are not
+signed, so the configuration keeps `gpgcheck=0` and `repo_gpgcheck=1`.
+RSA targets broad client compatibility; native Ubuntu apt and Fedora dnf validation
+are the tested client boundaries.
+
+**Pages deployment.** `.github/workflows/pages.yml` checks out the current `main`
+website, overlays the generated branch's repositories with `scripts/compose-pages.sh`,
+and deploys one Pages artifact. Website changes trigger it directly. After package
+publication, the release workflow calls it explicitly: a `GITHUB_TOKEN` push does not
+trigger another Actions workflow. A missing generated branch permits website-only
+deployment. GitHub Pages must use the **GitHub Actions** deployment source.
+The website stays under its existing `/tmp-companion/` project path and retains
+relative asset links.
+
+**Install and upgrade.**
+
+```bash
+# apt (Debian/Ubuntu)
+curl -fsSL https://pcavadas.github.io/tmp-companion/apt/pubkey.gpg \
+  | sudo tee /usr/share/keyrings/tmp-companion.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/tmp-companion.gpg] https://pcavadas.github.io/tmp-companion/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/tmp-companion.list
+sudo apt update && sudo apt install tmp-companion
+# Later: sudo apt update && sudo apt install --only-upgrade tmp-companion
+
+# dnf/yum (Fedora/RHEL-family)
+sudo curl -fsSL -o /etc/yum.repos.d/tmp-companion.repo \
+  https://pcavadas.github.io/tmp-companion/rpm/tmp-companion.repo
+sudo dnf install tmp-companion
+# Later: sudo dnf upgrade tmp-companion
+```
+
+**Validation.** CI builds two versions of each real Tauri package. The
+`.github/scripts/test-linux-repos.py` gate uses temporary RSA signing keys and
+local repositories to check signatures, native apt/dnf installation and upgrades,
+payloads, tamper rejection, repeated publication, pruning without an APT database,
+missing-format preservation, no-artifact behavior, failed replacement builds,
+the unchanged signing template, and Pages composition. Its Git tests push only to a
+temporary local bare repository and verify that package publication never changes `main`.
 
 ## Release pipeline shape
 
@@ -121,6 +194,12 @@ resolve-version (ubuntu)              semantic-release --dry-run → next versio
               │
               ▼
         release (macos-14)            downloads both bundles, runs the real semantic-release
+              │
+              ▼
+        publish-linux-repos (ubuntu)  commits apt/ + rpm/ to codex/linux-package-repos
+              │
+              ▼
+        deploy-linux-repos           calls pages.yml to compose and deploy the site
 ```
 
 `resolve-version` needs `permissions: contents: write` despite writing nothing:
