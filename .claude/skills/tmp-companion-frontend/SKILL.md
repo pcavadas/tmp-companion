@@ -5,7 +5,7 @@ description: "How to build and change the TMP Companion app's React/TypeScript f
 
 # TMP Companion frontend
 
-TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` commands and a React 18 + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
+TMP Companion is a Tauri 2 desktop app: a Rust backend exposing ~90 `invoke` commands and a React + TypeScript frontend that talks to it. This skill is the playbook for changing that frontend without re-deriving the house conventions — the app receives recurring **design handoffs** that would otherwise each re-learn the same token mapping, file layout, test scaffold and lint traps.
 
 **Orient first.** [`notes/overview.md`](../../../notes/overview.md) is the architecture map (_what is where_) and [`.claude/rules/frontend.md`](../../rules/frontend.md) carries the edit-time lint/contract rules, loading automatically when you open a `src/` file. This skill is the _how-to_. `CLAUDE.md` is the index and wins on any rule it states; tell the user if you spot drift.
 
@@ -91,7 +91,7 @@ Tests are **Vitest + React Testing Library**, jsdom environment, rendered throug
 
 `bun run lint` (`--max-warnings 0`) + `bunx tsc --noEmit` are the strict checks — see `.claude/rules/frontend.md` for the escape-hatch ban and the other common findings. Two more, restated here because this skill's own frontmatter names them:
 
-- **`react-hooks/refs`** ERRORS on reading/writing `ref.current` during render — **sync the ref in an EFFECT (after commit), not during render.** The old "this `useRef` read is a false positive — keep it in React state" guidance is SUPERSEDED.
+- **`react-hooks/refs`** ERRORS on reading/writing `ref.current` during render — **sync the ref in an EFFECT (after commit), not during render.**
 - **`react-hooks/set-state-in-effect`** ERRORS on a synchronous `setState` in an effect — use the **"adjust state during render when an input changes"** prev-compare pattern (`const [prev,setPrev]=useState(x); if (x!==prev){setPrev(x); …}`), or derive the value during render (no state at all). Timers/ref-writes stay in the effect; only the `setState` moves.
 
 More traps (other eslint rules, fresh-worktree/TypeScript-6 setup, stale IDE diagnostics): `references/gotchas.md`.
@@ -108,7 +108,7 @@ bun run format        # prettier --write — run before calling a change "done"
 bun run build         # Vite production build
 ```
 
-Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export; for a cleanup/refactor, the criterion is the **loaded-content budget** — tokens in the always-loaded and skill-body tiers went down, and every deliverable and link still resolves. `git diff --stat` is supporting evidence only: a docs or component split legitimately adds files while cutting loaded tokens. State plainly what you verified.
+Then sanity-check against the _ask_: for a handoff, re-walk its deliverable list vs the final export. State plainly what you verified.
 
 ## References
 

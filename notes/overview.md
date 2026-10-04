@@ -34,7 +34,7 @@ A macOS-first Tauri 2 desktop app (Rust backend + React/TypeScript frontend) tha
 
 ### Module docs are the authority
 
-**Read the module's own header rather than any prose summary.** 94 of 99 backend files carry a `//!` header and 263 of 288 frontend files carry a `//` header — between them that is the per-module documentation, kept next to the code it describes so it cannot drift the way a central tree does.
+**Read the module's own header rather than any prose summary.** nearly every backend file carries a `//!` header and nearly every frontend file a `//` header — between them that is the per-module documentation, kept next to the code it describes so it cannot drift the way a central tree does.
 
 ### Modules beyond the 6-tab UI
 
