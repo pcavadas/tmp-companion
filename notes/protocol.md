@@ -73,7 +73,7 @@ Load-bearing latch rules (fw 1.8.45):
   re-amp — loading it in a throwaway load connection (then reconnecting to capture) measures
   whatever scene the unit was already on. Bit the Doctor capture (`capture_full_at`); the
   leveling `set_knob` re-asserts scene + scene-edit per connection for the same reason.
-- **`outputLevel = 0` is deep digital silence**; `loudest_loudness` errors ("no signal
+- **`outputLevel = 0` is deep digital silence**; the leveling measurement errors ("no signal
   captured") on a silent capture — treat that error as a sentinel deep floor, never
   propagate it (else it aborts the scene).
 - Leveling is **one-shot open-loop**: `captured_LUFS = 20·log10(level) + C`. Measure once,

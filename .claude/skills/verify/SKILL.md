@@ -35,9 +35,7 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   a red gate aborts the push with the failing gate's own output.
 - `scripts/claude-hooks/gate-pr.sh` (a `PreToolUse(Bash)` hook) blocks `gh pr create`/`gh pr merge`
   on a stale/missing green stamp, and additionally requires a fresh **online** stamp
-  (`--check-online`) when the diff touches a device-facing path (`leveller.rs`/`footswitch.rs`/
-  `session.rs`/`audio.rs`/`commands/level_*`/`commands/doctor.rs` — `gate-pr.sh`'s `device_re`
-  is the authoritative list; keep this line in sync with it).
+  (`--check-online`) when the diff touches a device-facing path (`gate-pr.sh`'s `device_re` is the list).
 - `scripts/claude-hooks/block-bypass.sh` blocks `--no-verify`/`HUSKY=0`/`core.hooksPath` on any
   `git commit`/`git push` — there is no sanctioned bypass; fix the red gate instead.
 - CI (`ci.yml`) stays the remote authority; these are the local/agent layer that keeps a red tree
@@ -52,8 +50,8 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   based at 7800 (`scripts/e2e.sh`'s `PORT_BASE`), never a fixed 7600; check `$TMP_E2E_PORT` or
   the e2e.sh log line before killing a hardcoded port, and prefer letting `scripts/e2e.sh` sweep
   the range itself.
-- **Fresh worktree needs deps before checks, not just before dev** (CLAUDE.md's "Traps that fire when you run something" /
-  worktree traps" section) — `bun install` before typecheck/lint/test/build, `bun run build`
+- **Fresh worktree needs deps before checks, not just before dev** (CLAUDE.md's "Fresh clone or worktree"
+  trap) — `bun install` before typecheck/lint/test/build, `bun run build`
   before any `cargo` gate.
 - **Online false-green tell:** confirm the server log prints `seeded snapshot from the real
 device` (or `/health` reports `online: true`) before trusting a pass — a stale offline server
@@ -69,8 +67,8 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
 - **A Channel-streaming command called over raw HTTP hides its per-row outcomes** — they travel
   only the `"__CHANNEL__:N"` stream, so `ok: true` can come back with rows silently missing; and
   `level_scenes_apply_batched` yields `trade: null` unless `baseAnchor` is passed.
-- **Never `list_my_presets_strict` in a seed/sweep/write-path list read** — see `.claude/rules/danger.md`'s HID
-  open-lockout rule for why (tolerant reads are correct there; strict is snapshot/monitor-only).
+- **Never `list_my_presets_strict` in a seed/sweep/write-path list read** — see `.claude/rules/e2e.md`'s "Seeding and
+  list reads" for why (strict is snapshot/monitor-only).
 - **A soak/online run needs the unit rested and Pro Control closed** — same preconditions as any
   online `e2e.sh` invocation; a handshake failure reports the "close Pro Control" hint.
 - **A docs-only change gets NO automated gate**, so nothing catches a stray non-ASCII character
@@ -81,12 +79,10 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
 ## 4. Standing rules
 
 1. **An explicitly stated invariant ships WITH its executable gate in the same PR.** "The app
-   must do X" without a spec/test asserting X is not done — PR #74 shipped "2 consecutive
-   leveling runs must produce the same result" as a requirement with no gate anywhere asserting
-   it, and the requirement quietly broke in production before this harness caught it
-   (`e2e/specs/level.spec.ts`'s idempotency test — offline — and `e2e/specs/level.online.spec.ts`'s
-   idempotency test — online — are that gate now; merged/absorbed from the now-deleted
-   `level-rerun.spec.ts`, e2e suite consolidation).
+   must do X" without a spec/test asserting X is not done — an unasserted requirement breaks
+   quietly. Example: leveling idempotency ("2 consecutive runs produce the same result") is gated
+   by the idempotency tests in `e2e/specs/level.spec.ts` (offline) and
+   `e2e/specs/level.online.spec.ts` (online).
 2. **A deferred fix ships WITH a tracking marker + an expected-fail note**, naming the limit
    inline at the skip site (e.g. `test.skip(..., "harness limit: needs a field-8 read model")`).
    Expected-fail annotations are reserved for harness-internal infrastructure limits — **never**

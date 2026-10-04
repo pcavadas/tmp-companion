@@ -73,7 +73,7 @@ Three rules that follow from it:
 - **The `spaceN = 2N` mnemonic holds only through `space8`.** Do not guess past there — `space10` is 24, not 20.
 - **A value that must AGREE across surfaces gets a role-named const, not a primitive** — e.g. `DIALOG_PAD_X` (`src/ui/Dialog.tsx`). Role-named constants live beside their component, not in a central density map.
 
-There is no `density` token group. An earlier revision of this file documented `row` / `pad` / `rowPadY` / `paneY` / `sectionGap`; none of those ever existed in `tokens.ts` and they must not be reintroduced. (`Density` in `src/views/CatalogView.tsx` is an unrelated component-local display-mode prop.)
+There is no `density` token group. (`Density` in `src/views/CatalogView.tsx` is an unrelated component-local display-mode prop.)
 
 ## Letter-spacing
 

@@ -96,7 +96,7 @@ This is how you verify the camelCase-top-level / snake_case-nested arg contract 
 
 ## Gotchas
 
-- **Use REAL timers, never `vi.useFakeTimers()`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and then run their own poll interval **and** their own timeout on the frozen clock — so they hang forever. Let async resolve naturally; `T_LOAD`-scale delays are fine to wait out with `findBy*`/`waitFor` on real timers.
+- **Use REAL timers, never `vi.useFakeTimers()`.** RTL's `waitFor`/`findBy` detect fake timers via the `jest` global and then run their own poll interval **and** their own timeout on the frozen clock — so they hang forever. Let async resolve naturally; short mock delays are fine to wait out with `findBy*`/`waitFor` on real timers.
 - **Prefer async `findBy*`** for anything that appears after a mount fetch (`await screen.findByText("Rhythm")`), then synchronous `getBy*` for siblings already present.
 - **`.at(-1)` may not typecheck** depending on the lib target — index with `calls[calls.length - 1]` instead.
 - A passing test is NOT implied by a green `tsc`/build — `bun run test` is its own step. `invoke.test.ts`'s exact `cmd` wrapper-count assertion is covered in `SKILL.md`'s "Wiring a Tauri command into the UI" section — bump it on add/remove, and mind the named-export-only exception there.
