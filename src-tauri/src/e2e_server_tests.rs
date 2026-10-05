@@ -3636,14 +3636,16 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
     );
 }
 
-/// The rebalance flow renders EVERY capture at the run's own `presetLevel`. Each capture
-/// recalls the scene, and a recall reverts an unsaved level to the saved one, so a headroom
-/// trade's held raise must be re-asserted after the LAST recall before each engage. On the
-/// regression only `correct_iter` did: the lane solos, the mute floor, the combined point and
-/// the first verified apply rendered at the SAVED level, skewing the secant by the whole raise.
-/// Structural (event order), so it holds whatever the capture physics reads.
+/// The rebalance flow renders EVERY capture at the run's own `presetLevel` — a headroom
+/// trade's held raise, else the preset's SAVED level (`scene_capture_level`, the level the
+/// prepass rendered at). Each capture recalls the scene, and a recall reverts an unsaved level
+/// (and inside a lazy-commit window renders a stale one), so the level must be re-asserted after
+/// the LAST recall before each engage. On the regression only `correct_iter` did, and only with
+/// a trade: the lane solos, mute floor, combined point and first verified apply rendered at the
+/// device's load-store level, skewing the secant by the difference. Structural (event order), so
+/// it holds whatever the capture physics reads.
 #[test]
-fn every_rebalance_capture_asserts_the_held_preset_level() {
+fn every_rebalance_capture_asserts_the_run_preset_level() {
     let _serial = serial();
     let _reset = RegistryReset;
     scenario_env();
@@ -3654,12 +3656,16 @@ fn every_rebalance_capture_asserts_the_held_preset_level() {
     let stim = test_stim();
 
     // Fixture 403 "E2E Parallel": two lane amps, both with a Full overlay in scene 0.
-    const HELD: f32 = 0.42;
     let saved = crate::read_saved_preset(403);
-    {
-        let mut s = crate::session::Session::connect_lean().expect("connect");
-        s.load_preset(403).expect("load 403");
-    }
+    let saved_pl = saved
+        .as_ref()
+        .and_then(crate::audiograph::preset_level)
+        .expect("fixture 403 authors a presetLevel") as f32;
+    const HELD: f32 = 0.42;
+    assert!(
+        (saved_pl - HELD).abs() > 1e-3,
+        "fixture premise: the held level must differ from the saved {saved_pl}"
+    );
     let lane = |group: &str, node: &str| crate::leveller::KnobTarget {
         knob: crate::leveller::LevelKnob::Block {
             group_id: group.into(),
@@ -3671,62 +3677,71 @@ fn every_rebalance_capture_asserts_the_held_preset_level() {
         hi: 1.0,
         current: 1.0,
     };
-    let job = crate::leveller::SceneJob {
-        scene_slot: 0,
-        target_lufs: -23.0,
-        knobs: vec![lane("G2", "ampA"), lane("G3", "ampB")],
-        skip: None,
-        rebalanceable: true,
-        handle: None,
-        prepass: None,
-        force_bypass: vec![],
-    };
     let hold = crate::leveller::TradeHold {
         preset_level: HELD,
         writes: vec![],
         force_bypass_restore: vec![],
     };
-    let from = sim.events().len();
-    let _ = crate::leveller::level_scenes_rebalance(
-        403,
-        &[job],
-        &stim,
-        false,
-        None,
-        saved.as_ref(),
-        Some(&hold),
-        &[],
-        |_, _| {},
-        |_| {},
-        || false,
-    );
 
     use crate::sim_device::SimEvent;
-    let ev = &sim.events()[from..];
-    let engages: Vec<usize> = ev
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| matches!(e, SimEvent::ReAmp(true)))
-        .map(|(i, _)| i)
-        .collect();
-    // Solo A, solo B, mute floor, combined, first verified apply — at minimum.
-    assert!(
-        engages.len() >= 5,
-        "the rebalance flow must have run its captures: {ev:?}"
-    );
-    for (n, &at) in engages.iter().enumerate() {
-        let recall = ev[..at]
-            .iter()
-            .rposition(|e| matches!(e, SimEvent::LoadScene(_)))
-            .unwrap_or_else(|| panic!("capture #{n} has no scene recall before it: {ev:?}"));
-        assert!(
-            ev[recall..at]
-                .iter()
-                .any(|e| matches!(e, SimEvent::PresetLevel(v) if (v - HELD).abs() < 1e-6)),
-            "capture #{n} renders at the SAVED level: no held presetLevel after its recall: \
-             {:?}",
-            &ev[recall..=at]
+    for (case, hold, want) in [
+        ("trade hold", Some(&hold), HELD),
+        ("no trade", None, saved_pl),
+    ] {
+        {
+            let mut s = crate::session::Session::connect_lean().expect("connect");
+            s.load_preset(403).expect("load 403");
+        }
+        let job = crate::leveller::SceneJob {
+            scene_slot: 0,
+            target_lufs: -23.0,
+            knobs: vec![lane("G2", "ampA"), lane("G3", "ampB")],
+            skip: None,
+            rebalanceable: true,
+            handle: None,
+            prepass: None,
+            force_bypass: vec![],
+        };
+        let from = sim.events().len();
+        let _ = crate::leveller::level_scenes_rebalance(
+            403,
+            &[job],
+            &stim,
+            false,
+            None,
+            saved.as_ref(),
+            hold,
+            &[],
+            |_, _| {},
+            |_| {},
+            || false,
         );
+
+        let ev = &sim.events()[from..];
+        let engages: Vec<usize> = ev
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, SimEvent::ReAmp(true)))
+            .map(|(i, _)| i)
+            .collect();
+        // Solo A, solo B, mute floor, combined, first verified apply — at minimum.
+        assert!(
+            engages.len() >= 5,
+            "{case}: the rebalance flow must have run its captures: {ev:?}"
+        );
+        for (n, &at) in engages.iter().enumerate() {
+            let recall = ev[..at]
+                .iter()
+                .rposition(|e| matches!(e, SimEvent::LoadScene(_)))
+                .unwrap_or_else(|| panic!("{case}: capture #{n} has no scene recall: {ev:?}"));
+            assert!(
+                ev[recall..at]
+                    .iter()
+                    .any(|e| matches!(e, SimEvent::PresetLevel(v) if (v - want).abs() < 1e-6)),
+                "{case}: capture #{n} does not assert presetLevel {want} after its recall: {:?}",
+                &ev[recall..=at]
+            );
+        }
     }
 }
 

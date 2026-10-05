@@ -7914,9 +7914,11 @@ pub fn level_scenes_rebalance(
     on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    // Same rule as `level_scenes_oneshot`: a landed trade's raise is UNSAVED, and every
-    // per-scene capture recalls its scene (which reverts it), so it is re-asserted per capture.
-    let intended_preset_level = hold.map(|h| h.preset_level);
+    // Same rule and same level as `level_scenes_oneshot`: every per-scene capture recalls its
+    // scene, which reverts an unsaved raise and, inside a save's lazy-commit window, renders the
+    // stale load-store level — so the held or saved level is re-asserted per capture, matching
+    // the prepass (see `scene_capture_level`).
+    let intended_preset_level = scene_capture_level(hold, saved);
     let result = run_scene_jobs(
         slot,
         jobs,
