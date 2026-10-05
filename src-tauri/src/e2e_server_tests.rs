@@ -3636,6 +3636,100 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
     );
 }
 
+/// The rebalance flow renders EVERY capture at the run's own `presetLevel`. Each capture
+/// recalls the scene, and a recall reverts an unsaved level to the saved one, so a headroom
+/// trade's held raise must be re-asserted after the LAST recall before each engage. On the
+/// regression only `correct_iter` did: the lane solos, the mute floor, the combined point and
+/// the first verified apply rendered at the SAVED level, skewing the secant by the whole raise.
+/// Structural (event order), so it holds whatever the capture physics reads.
+#[test]
+fn every_rebalance_capture_asserts_the_held_preset_level() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    let stim = test_stim();
+
+    // Fixture 403 "E2E Parallel": two lane amps, both with a Full overlay in scene 0.
+    const HELD: f32 = 0.42;
+    let saved = crate::read_saved_preset(403);
+    {
+        let mut s = crate::session::Session::connect_lean().expect("connect");
+        s.load_preset(403).expect("load 403");
+    }
+    let lane = |group: &str, node: &str| crate::leveller::KnobTarget {
+        knob: crate::leveller::LevelKnob::Block {
+            group_id: group.into(),
+            node_id: node.into(),
+            parameter_id: "outputLevel".into(),
+            scene_slot: Some(0),
+        },
+        lo: 0.0,
+        hi: 1.0,
+        current: 1.0,
+    };
+    let job = crate::leveller::SceneJob {
+        scene_slot: 0,
+        target_lufs: -23.0,
+        knobs: vec![lane("G2", "ampA"), lane("G3", "ampB")],
+        skip: None,
+        rebalanceable: true,
+        handle: None,
+        prepass: None,
+        force_bypass: vec![],
+    };
+    let hold = crate::leveller::TradeHold {
+        preset_level: HELD,
+        writes: vec![],
+        force_bypass_restore: vec![],
+    };
+    let from = sim.events().len();
+    let _ = crate::leveller::level_scenes_rebalance(
+        403,
+        &[job],
+        &stim,
+        false,
+        None,
+        saved.as_ref(),
+        Some(&hold),
+        &[],
+        |_, _| {},
+        |_| {},
+        || false,
+    );
+
+    use crate::sim_device::SimEvent;
+    let ev = &sim.events()[from..];
+    let engages: Vec<usize> = ev
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, SimEvent::ReAmp(true)))
+        .map(|(i, _)| i)
+        .collect();
+    // Solo A, solo B, mute floor, combined, first verified apply — at minimum.
+    assert!(
+        engages.len() >= 5,
+        "the rebalance flow must have run its captures: {ev:?}"
+    );
+    for (n, &at) in engages.iter().enumerate() {
+        let recall = ev[..at]
+            .iter()
+            .rposition(|e| matches!(e, SimEvent::LoadScene(_)))
+            .unwrap_or_else(|| panic!("capture #{n} has no scene recall before it: {ev:?}"));
+        assert!(
+            ev[recall..at]
+                .iter()
+                .any(|e| matches!(e, SimEvent::PresetLevel(v) if (v - HELD).abs() < 1e-6)),
+            "capture #{n} renders at the SAVED level: no held presetLevel after its recall: \
+             {:?}",
+            &ev[recall..=at]
+        );
+    }
+}
+
 // ───────────────── P5 external validation: identity + flags on the emitted rows ─────────
 //
 // The bug class this closes: the first design zipped a scene batch's RESULT vec against
