@@ -117,10 +117,9 @@ export default tseslint.config(
   },
 
   {
-    // process.env.TMP_E2E_ONLINE is set by scripts/e2e.sh on the e2e_server
-    // SUBPROCESS only — the Playwright test process never inherits it, so a
-    // spec/fixture that reads it directly silently takes the offline branch
-    // even online. HW-reproduced twice: `doctor-apply.online.spec.ts`'s original
+    // process.env.TMP_E2E_ONLINE is no mode signal in the Playwright test
+    // process — each config pins it on its own e2e_server — so a spec/fixture
+    // that reads it directly silently takes the offline branch even online. HW-reproduced twice: `doctor-apply.online.spec.ts`'s original
     // describe-level `test.skip(!process.env.TMP_E2E_ONLINE)` (always true) and
     // `ensureScenario` (`e2e/fixtures/scenario.ts`) gating its online/offline
     // check the same way, which silently skipped `e2e_seed_scenario` online and
@@ -137,7 +136,7 @@ export default tseslint.config(
           selector:
             "MemberExpression[object.object.name='process'][object.property.name='env'][property.name='TMP_E2E_ONLINE']",
           message:
-            "process.env.TMP_E2E_ONLINE is never inherited by the Playwright test process (only the e2e_server subprocess sees it) — use `await isOnline(page)` from e2e/fixtures/scenario.ts instead.",
+            "process.env.TMP_E2E_ONLINE is no mode signal in the Playwright test process (each config pins it on its own e2e_server) — use `await isOnline(page)` from e2e/fixtures/scenario.ts instead.",
         },
         {
           // Bracket form: process.env["TMP_E2E_ONLINE"] — same env read, computed
@@ -145,7 +144,7 @@ export default tseslint.config(
           selector:
             "MemberExpression[computed=true][object.object.name='process'][object.property.name='env'][property.value='TMP_E2E_ONLINE']",
           message:
-            "process.env.TMP_E2E_ONLINE is never inherited by the Playwright test process (only the e2e_server subprocess sees it) — use `await isOnline(page)` from e2e/fixtures/scenario.ts instead.",
+            "process.env.TMP_E2E_ONLINE is no mode signal in the Playwright test process (each config pins it on its own e2e_server) — use `await isOnline(page)` from e2e/fixtures/scenario.ts instead.",
         },
       ],
     },
