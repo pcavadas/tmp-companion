@@ -1,16 +1,16 @@
 Package: tmp-companion
-Version: 1.27.1
+Version: 1.27.2
 Architecture: amd64
-Installed-Size: 36041
+Installed-Size: 36070
 Maintainer: Pedro CAVADAS
 Depends: sqlite3, libasound2, libwebkit2gtk-4.1-0, libgtk-3-0
 Priority: optional
 Section: sound
-Filename: pool/main/t/tmp-companion/tmp-companion_1.27.1_amd64.deb
-Size: 17038216
-SHA256: 191ed7c0fae3abefdbb7a70b9bfee7003fbae976c373733780014d624a1a3844
-SHA1: 8fc8a75c555a4f9290371c83bdf7f70280573ae3
-MD5sum: 469125ece0ee8c64edbc4fd5a1ae3053
+Filename: pool/main/t/tmp-companion/tmp-companion_1.27.2_amd64.deb
+Size: 17018310
+SHA256: c77efc554cbdf0994ef6d1cfde45b9b43c3c6798429183d7c034fa87e0896468
+SHA1: 2be252db42e8e89ebdd4f2beec586bc20ec377fd
+MD5sum: 3422069ade78d70e521f95d6b62ec902
 Description: USB controller for the Tone Master Pro: leveling, block copy, song/setlist editing.
  Desktop companion for the Fender Tone Master Pro: search and inventory your preset library, bulk-edit parameters/blocks/IRs/footswitches, manage songs and setlists, and auto-level loudness to a LUFS target over USB. Full-preset edits round-trip through the offline .preset codec; live edits and leveling drive the device directly in re-amp mode.
 
