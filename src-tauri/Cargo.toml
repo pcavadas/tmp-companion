@@ -43,7 +43,7 @@ lz4_flex = "0.14"
 tar = "0.4"
 # The backup's `normalDb.db3` is queried in-process. `bundled` compiles SQLite from the
 # vendored amalgamation so no platform needs a `sqlite3` CLI on PATH (Windows ships none).
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 realfft = "3.5.0"
 
 # macOS-only: IOKit HID (exclusive device seize) is
