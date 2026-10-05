@@ -71,7 +71,7 @@ libc = "0.2"
 # scales the app's inject/capture by the endpoint's Windows master volume, so
 # re-amp must force the TMP's endpoints to unity. Same crate family the tree
 # already pulls via tao/cpal.
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
   "Win32_Media_Audio",
   "Win32_Media_Audio_Endpoints",
   "Win32_System_Com",
