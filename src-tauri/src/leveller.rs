@@ -7563,11 +7563,12 @@ impl<F: FnMut(&[f32], bool) -> Result<Option<f64>, String>> HeldLevels<F> {
         Ok(v)
     }
 
+    /// Relative tolerance (~0.001 dB): an absolute one spans several dB at low levels.
     fn holds(&self, levels: &[f32]) -> bool {
         self.held
             .iter()
             .zip(levels)
-            .all(|(a, b)| (a - b).abs() <= 1e-3)
+            .all(|(a, b)| (a - b).abs() <= 1e-4 * a.abs().max(b.abs()))
     }
 }
 
@@ -9604,6 +9605,17 @@ mod tests {
         let (c, writes) = run_core(&base, &levels0, (-30.0, -35.0, -26.0), |_| None);
         assert_eq!(c.levels, base.to_vec(), "base@-30 beats levels0@-35");
         assert!((c.lufs + 30.0).abs() < 1e-9, "lufs {}", c.lufs);
+        assert_eq!(writes.last().unwrap().0, base.to_vec());
+    }
+
+    // At a low output level, levels a few dB apart differ by < 1e-3 in absolute terms:
+    // the restore to base must still be written, not skipped as "already held".
+    #[test]
+    fn correct_iter_restores_base_at_low_output_level() {
+        let base = [0.0011_f32];
+        let levels0 = [0.0011 * 10f32.powf(4.0 / 20.0)];
+        let (c, writes) = run_core(&base, &levels0, (-30.0, -35.0, -26.0), |_| None);
+        assert_eq!(c.levels, base.to_vec());
         assert_eq!(writes.last().unwrap().0, base.to_vec());
     }
 
