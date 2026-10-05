@@ -16,6 +16,12 @@ const VITE = process.env.TMP_E2E_VITE_PORT ?? "1421";
 //   bunx playwright test --config e2e/playwright.online.config.ts
 export default defineConfig({
   testDir: "./specs",
+  // Fails fast if the bridge server (e.g. an adopted offline orphan) isn't online (#193).
+  globalSetup: "./fixtures/assert-mode.ts",
+  metadata: {
+    expectOnline: true,
+    healthUrls: [`http://127.0.0.1:${PORT}/health`],
+  },
   fullyParallel: false,
   workers: 1, // the device is exclusive-seize
   // Unconditional (not gated on CI, unlike the offline config): the online lane always

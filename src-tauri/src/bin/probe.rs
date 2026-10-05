@@ -230,9 +230,9 @@ fn main() {
             .get(1)
             .is_some_and(|arg| arg == "--seed-scenario" || arg == "--audio-devices");
     #[cfg(feature = "e2e")]
-    if std::env::var("TMP_E2E_ONLINE").is_err() && !capture_free_only {
+    if !tmp_companion_lib::e2e_online() && !capture_free_only {
         eprintln!(
-            "[probe] REFUSING TO RUN: this is an `--features e2e` build without TMP_E2E_ONLINE, \
+            "[probe] REFUSING TO RUN: this is an `--features e2e` build without TMP_E2E_ONLINE=1, \
              so audio captures would be FAKE (stimulus passthrough), not the device.\n\
              Rebuild the production binary:  cargo build --bin probe"
         );

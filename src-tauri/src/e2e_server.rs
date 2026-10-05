@@ -6,15 +6,21 @@
 //! backend down to the (faked) unit. No window, no HTTP-framework dependency: a localhost
 //! `std::net` server wrapping `tauri::test::get_ipc_response`. Request/response only —
 //! the V1 Copy/Level journeys complete on the command's return value, not on Channels.
-//! The one source of truth for the e2e mode: `TMP_E2E_ONLINE` set ⇒ drive the REAL device
-//! (no SimDevice factory, real re-amp, real device backup); unset ⇒ the offline fake. Read
-//! by `run_e2e_server`, the `/sim/reset` guard, and `audio::reamp_capture`.
+//! The one source of truth for the e2e mode: `TMP_E2E_ONLINE=1` ⇒ drive the REAL device
+//! (no SimDevice factory, real re-amp, real device backup); anything else ⇒ the
+//! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `audio::reamp_capture`.
 
 use crate::*;
 
+/// Strict parse of `TMP_E2E_ONLINE`: only the exact value `1` is online (#193).
+pub(crate) fn online_from(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
 #[cfg(feature = "e2e")]
-pub(crate) fn e2e_online() -> bool {
-    std::env::var("TMP_E2E_ONLINE").is_ok()
+pub fn e2e_online() -> bool {
+    // Lib unit tests never drive hardware, whatever the ambient env says.
+    !cfg!(test) && online_from(std::env::var("TMP_E2E_ONLINE").ok().as_deref())
 }
 
 /// The OFFLINE fake transport is installed in THIS process: every device "op" is an
@@ -861,9 +867,8 @@ fn e2e_route(
         return ("200 OK", Vec::new());
     }
     match (method, path) {
-        // `online` is AUTHORITATIVE for mode-split specs: the Playwright process does NOT
-        // inherit TMP_E2E_ONLINE (only the server subprocess does), so specs read it here,
-        // never from process.env. (e2e.sh's readiness curl only checks the 200, not the body.)
+        // `online` is AUTHORITATIVE for mode-split specs — they read it here, never from
+        // process.env. (e2e.sh's readiness curl only checks the 200, not the body.)
         ("GET", "/health") => (
             "200 OK",
             serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),

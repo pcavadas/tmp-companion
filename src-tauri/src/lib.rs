@@ -221,7 +221,7 @@ pub(crate) static MONITOR_SPAWNED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_offline_fake;
 #[cfg(feature = "e2e")]
-pub(crate) use e2e_server::e2e_online;
+pub use e2e_server::e2e_online;
 #[cfg(feature = "e2e")]
 pub(crate) use e2e_server::e2e_showcase;
 #[cfg(feature = "e2e")]

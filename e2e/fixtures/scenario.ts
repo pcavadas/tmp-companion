@@ -99,9 +99,8 @@ export async function listPresets(page: Page): Promise<Preset[]> {
  *
  *  Mode is read from the SERVER via `isOnline`, never `process.env.TMP_E2E_ONLINE` —
  *  the same trap `clearScenario` below already avoids (its own comment: "Ask the
- *  SERVER, never `process.env.TMP_E2E_ONLINE`"). `scripts/e2e.sh` sets that var ONLY
- *  on the server's `cargo run` invocation, so the Playwright process never inherits
- *  it — a `process.env` read here always took the offline branch online too, a
+ *  SERVER, never `process.env.TMP_E2E_ONLINE`"). The Playwright process's env is no mode
+ *  signal — a `process.env` read here always took the offline branch online too, a
  *  presence-only check that a structurally mutilated preset trivially passes, so
  *  `e2e_seed_scenario` (and its re-verify) was never even invoked online
  *  (2026-08-01 incident, third and final link — see the registry in
@@ -347,9 +346,8 @@ export async function armCommitLatency(page: Page, ms: number): Promise<void> {
   expect(res.ok(), "POST /sim/commit-latency").toBeTruthy();
 }
 
-/** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE:
- *  the Playwright process does not inherit TMP_E2E_ONLINE, so a mode-split spec must ask the
- *  server, not process.env. */
+/** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE;
+ *  the Playwright process's env is no mode signal, so never read process.env. */
 export async function isOnline(page: Page): Promise<boolean> {
   const res = await page.request.get(`${SERVER}/health`);
   return ((await res.json()) as { online?: boolean }).online === true;
@@ -374,9 +372,8 @@ export async function isOnline(page: Page): Promise<boolean> {
  *  by `e2e_seed_scenario`, which offline is unreachable because `ensureScenario` above
  *  early-returns once the reset has put the presets back). */
 export async function clearScenario(page: Page): Promise<void> {
-  // Ask the SERVER, never `process.env.TMP_E2E_ONLINE` — `scripts/e2e.sh` sets that var
-  // only on the `cargo run` server invocation, so the Playwright process does NOT inherit
-  // it (same trap documented in level.spec.ts's merged idempotency test). An env check here would read
+  // Ask the SERVER, never `process.env.TMP_E2E_ONLINE` — the Playwright process's env is
+  // no mode signal (same trap documented in level.spec.ts's merged idempotency test). An env check here would read
   // "offline" during an ONLINE run and skip the device recovery — no re-amp OFF, leaving
   // the unit input-muted.
   if (!(await isOnline(page))) return;

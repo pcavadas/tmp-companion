@@ -33,6 +33,15 @@ const WORKERS = Number(process.env.TMP_E2E_WORKERS ?? "3");
 // at a server opened against the real device. Device is exclusive-seize → `workers: 1`.
 export default defineConfig({
   testDir: "./specs",
+  // Fails fast if any bridge server (e.g. an adopted orphan) reports online (#193).
+  globalSetup: "./fixtures/assert-mode.ts",
+  metadata: {
+    expectOnline: false,
+    healthUrls: Array.from(
+      { length: WORKERS },
+      (_, i) => `http://127.0.0.1:${String(PORT + i)}/health`,
+    ),
+  },
   // Some spec files are online-only ORACLES in their entirety — `*.online.spec.ts` needs a
   // real device (the offline capture is a stimulus passthrough for anything needing real
   // audio). Offline they can only ever `test.skip(...)`, but the skip is decided INSIDE the
@@ -82,7 +91,8 @@ export default defineConfig({
     // pick up backend changes.
     ...Array.from({ length: WORKERS }, (_, i) => ({
       command: `"${E2E_SERVER}"`,
-      env: { TMP_E2E_PORT: String(PORT + i) },
+      // "0" beats any ambient TMP_E2E_ONLINE=1 (the server parses `=1` strictly).
+      env: { TMP_E2E_PORT: String(PORT + i), TMP_E2E_ONLINE: "0" },
       url: `http://127.0.0.1:${String(PORT + i)}/health`,
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,

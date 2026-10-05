@@ -54,7 +54,7 @@ export default defineConfig({
       url: `http://127.0.0.1:${PORT}/health`,
       reuseExistingServer: false,
       timeout: 180_000,
-      env: { TMP_E2E_SHOWCASE: "1" },
+      env: { TMP_E2E_SHOWCASE: "1", TMP_E2E_ONLINE: "0" },
     },
   ],
 });

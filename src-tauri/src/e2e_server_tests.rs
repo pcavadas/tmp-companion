@@ -4605,3 +4605,15 @@ fn an_fs_scene_context_recalls_its_scene_before_the_engage_and_base_without_one(
          {base_lufs:.2}"
     );
 }
+
+/// #193: only the exact value `1` is online; `0`, empty and `true` must stay offline.
+#[test]
+fn online_from_is_strict() {
+    assert!(crate::e2e_server::online_from(Some("1")));
+    for v in [Some("0"), Some(""), Some("true"), None] {
+        assert!(
+            !crate::e2e_server::online_from(v),
+            "{v:?} must not be online"
+        );
+    }
+}
