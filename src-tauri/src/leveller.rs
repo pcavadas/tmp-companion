@@ -7532,6 +7532,57 @@ fn correct_iter(
     // contract as `apply_first_verified`'s.
     force_bypass: &[(String, String, bool)],
 ) -> Result<Correction, String> {
+    let apply = |levels: &[f32], verify: bool| -> Result<Option<f64>, String> {
+        let opts = LevelOptions {
+            verify,
+            defer,
+            intended_preset_level,
+            ..Default::default()
+        };
+        let targets = zip_targets(knobs, levels);
+        Ok(apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1)
+    };
+
+    correct_iter_core(base, levels0, measured0, v0, target, floor, apply)
+}
+
+/// The device as `correct_iter_core` sees it: every write goes through [`Self::write`], so
+/// `held` (what the device holds, and what the batch-end save persists) and `writes` can't
+/// drift from the writes actually made.
+struct HeldLevels<F> {
+    apply: F,
+    held: Vec<f32>,
+    writes: u32,
+}
+
+impl<F: FnMut(&[f32], bool) -> Result<Option<f64>, String>> HeldLevels<F> {
+    fn write(&mut self, levels: &[f32], verify: bool) -> Result<Option<f64>, String> {
+        let v = (self.apply)(levels, verify)?;
+        self.held = levels.to_vec();
+        self.writes += 1;
+        Ok(v)
+    }
+
+    /// Relative tolerance (~0.001 dB): an absolute one spans several dB at low levels.
+    fn holds(&self, levels: &[f32]) -> bool {
+        self.held
+            .iter()
+            .zip(levels)
+            .all(|(a, b)| (a - b).abs() <= 1e-4 * a.abs().max(b.abs()))
+    }
+}
+
+/// The correction loop proper, over an injected `apply(levels, verify) -> measured LUFS`
+/// (the device write + optional capture) so the loop is unit-testable without hardware.
+fn correct_iter_core(
+    base: &[f32],
+    levels0: Vec<f32>,
+    measured0: f64,
+    v0: f64,
+    target: f64,
+    floor: f32,
+    apply: impl FnMut(&[f32], bool) -> Result<Option<f64>, String>,
+) -> Result<Correction, String> {
     let max_base = base
         .iter()
         .map(|&x| x.clamp(1e-3, 1.0) as f64)
@@ -7544,32 +7595,30 @@ fn correct_iter(
             .map(|&b| (b as f64 * k).clamp(LEVEL_MIN as f64, LEVEL_MAX as f64) as f32)
             .collect()
     };
-    let apply = |levels: &[f32], verify: bool| -> Result<Option<f64>, String> {
-        let opts = LevelOptions {
-            verify,
-            defer,
-            intended_preset_level,
-            ..Default::default()
-        };
-        let targets = zip_targets(knobs, levels);
-        Ok(apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1)
-    };
-
-    let k0 = levels0[0] as f64 / (base[0].max(1e-3)) as f64; // shared factor (uniform across lanes)
+    // Shared factor, read off the loudest base lane so a muted lane 0 can't zero it. Every
+    // lane muted → k0 = 1 (no applied gain), which keeps levels0 below.
+    let k0 = (0..base.len())
+        .filter(|&i| base[i] > 1e-3)
+        .max_by(|&a, &b| base[a].total_cmp(&base[b]))
+        .map_or(1.0, |i| levels0[i] as f64 / base[i] as f64);
     let applied_db0 = 20.0 * k0.max(1e-9).log10();
-    let mut writes = 0u32; // the device currently holds levels0 (applied by the caller)
+    // The caller already applied levels0.
+    let mut dev = HeldLevels {
+        apply,
+        held: levels0.clone(),
+        writes: 0,
+    };
 
     // No-authority: a big applied gain barely moved the capture → the amp isn't on the USB
     // 1/2 path. Restore `base` (don't leave it slammed) and report the distinct reason.
     if no_authority(applied_db0, v0 - measured0) {
         let reason = no_authority_reason(applied_db0 < 0.0);
-        apply(base, false)?;
-        writes += 1;
+        dev.write(base, false)?;
         return Ok(Correction {
             lufs: measured0,
             levels: base.to_vec(),
             clamp_reason: Some(reason),
-            writes,
+            writes: dev.writes,
         });
     }
 
@@ -7579,9 +7628,21 @@ fn correct_iter(
             lufs: v0,
             levels: levels0,
             clamp_reason: None,
-            writes,
+            writes: 0,
         });
     }
+
+    // Best MEASURED point. `base@measured0` competes too, so an adverse first response can't
+    // be kept over where the preset started (after a headroom trade `measured0` is MODELLED —
+    // `retarget_prepass_after_trade` — the same value the secant seed already trusts). Strict
+    // `<`: a tie keeps the incumbent, so levels0 wins ties and costs no write.
+    let mut best = (levels0.clone(), v0);
+    let consider = |best: &mut (Vec<f32>, f64), levels: &[f32], v: f64| {
+        if (v - target).abs() < (best.1 - target).abs() {
+            *best = (levels.to_vec(), v);
+        }
+    };
+    consider(&mut best, base, measured0);
 
     // CONFIRMATION PROBE — the verdict above needs a move of at least `NO_AUTHORITY_MIN_DB`
     // to be conclusive, but the first step is sized by the SOLVE, not by what a verdict
@@ -7602,23 +7663,16 @@ fn correct_iter(
         let probe_levels = levels_for(probe_db);
         // Only meaningful if the floor actually lets the knobs travel that far; if it does
         // not, the reading stays inconclusive and the ordinary clamp is the honest answer.
-        if probe_levels
-            .iter()
-            .zip(&levels0)
-            .any(|(a, b)| (a - b).abs() > 1e-3)
-        {
-            let vp = apply(&probe_levels, true)?;
-            writes += 1;
-            match vp {
+        if !dev.holds(&probe_levels) {
+            match dev.write(&probe_levels, true)? {
                 // Conclusive: a full `NO_AUTHORITY_MIN_DB` drop moved nothing.
                 Some(vp) if (vp - measured0).abs() < KNOB_TOL_LU => {
-                    apply(base, false)?;
-                    writes += 1;
+                    dev.write(base, false)?;
                     return Ok(Correction {
                         lufs: measured0,
                         levels: base.to_vec(),
                         clamp_reason: Some(no_authority_reason(true)),
-                        writes,
+                        writes: dev.writes,
                     });
                 }
                 // It DID move, so the knob has authority and the flat first reading was the
@@ -7627,10 +7681,11 @@ fn correct_iter(
                 // below expects to find it.
                 Some(vp) => {
                     prev = (probe_db, vp);
-                    apply(&levels0, false)?;
-                    writes += 1;
+                    consider(&mut best, &probe_levels, vp);
+                    dev.write(&levels0, false)?;
                 }
-                // Capture dropped — no verdict either way; fall through unchanged.
+                // Capture dropped — no verdict either way; the device holds the probe, so
+                // the land-on-best below puts it back.
                 None => {}
             }
         }
@@ -7638,8 +7693,6 @@ fn correct_iter(
 
     // Bounded secant. Seed points: `prev` (base, or the probe above) and levels0@v0.
     let mut last = (applied_db0, v0);
-    let mut best = (levels0.clone(), v0); // best MEASURED point
-    let mut device = levels0; // what the device currently holds
     for _ in 0..MEASURE_CORRECT_MAX {
         if (last.1 - target).abs() <= KNOB_TOL_LU {
             break;
@@ -7649,39 +7702,27 @@ fn correct_iter(
             break;
         };
         let next_levels = levels_for(next_db);
-        if next_levels
-            .iter()
-            .zip(&device)
-            .all(|(a, b)| (a - b).abs() <= 1e-3)
-        {
+        if dev.holds(&next_levels) {
             break; // pinned — stepping changes nothing
         }
-        let vn = apply(&next_levels, true)?;
-        writes += 1;
-        device = next_levels.clone();
-        let Some(vn) = vn else { break }; // capture failed — land on best below
-        if (vn - target).abs() < (best.1 - target).abs() {
-            best = (next_levels, vn);
-        }
+        let Some(vn) = dev.write(&next_levels, true)? else {
+            break; // capture failed — land on best below
+        };
+        consider(&mut best, &next_levels, vn);
         prev = last;
         last = (next_db, vn);
     }
 
     // Land on best: persist the best point if the device isn't already there (the
     // apply_levels-saves-the-last-write fix). No verify needed — best.1 is known.
-    if device
-        .iter()
-        .zip(&best.0)
-        .any(|(a, b)| (a - b).abs() > 1e-3)
-    {
-        apply(&best.0, false)?;
-        writes += 1;
+    if !dev.holds(&best.0) {
+        dev.write(&best.0, false)?;
     }
     Ok(Correction {
         lufs: best.1,
         levels: best.0,
         clamp_reason: None,
-        writes,
+        writes: dev.writes,
     })
 }
 
@@ -9505,47 +9546,159 @@ mod tests {
         assert!(super::secant_next_db((0.0, -30.0), (6.0, -29.99), -20.0).is_none());
     }
 
-    // Item 1 — the bounded secant converges on a SATURATING (compressor-like) response where
-    // the open-loop slope-1 first apply overshoots and one step would still miss, within
-    // MEASURE_CORRECT_MAX steps, honoring the trust region. Mirrors `correct_iter`'s loop.
-    #[test]
-    fn correct_iter_secant_converges_on_compressor() {
-        let l0 = -30.0_f64;
-        let (g, tau) = (15.0_f64, 8.0_f64); // saturating: dB-out/dB-in slope < 1, decreasing
-        let model = |db: f64| l0 + g * (1.0 - (-db / tau).exp());
-        let target = -22.0_f64;
+    // `correct_iter_core` harness: `model` answers each VERIFIED write (None = capture
+    // dropped); every write is recorded. Asserts the invariant every case must hold: the
+    // device's final state (last write, else `levels0`) is exactly `Correction.levels` —
+    // the deferred save persists the device, not what was reported.
+    type Writes = Vec<(Vec<f32>, bool)>;
+    fn run_core(
+        base: &[f32],
+        levels0: &[f32],
+        (measured0, v0, target): (f64, f64, f64),
+        mut model: impl FnMut(&[f32]) -> Option<f64>,
+    ) -> (super::Correction, Writes) {
+        let mut writes: Writes = Vec::new();
+        let c = super::correct_iter_core(
+            base,
+            levels0.to_vec(),
+            measured0,
+            v0,
+            target,
+            super::LEVEL_MIN,
+            |lv, verify| {
+                writes.push((lv.to_vec(), verify));
+                Ok(if verify { model(lv) } else { None })
+            },
+        )
+        .unwrap();
+        let device = writes.last().map_or(levels0, |w| w.0.as_slice());
+        assert_eq!(
+            device,
+            c.levels.as_slice(),
+            "device state must equal the returned levels"
+        );
+        (c, writes)
+    }
 
-        // Seed exactly as correct_iter: base@0 and the open-loop first apply at db0=target-l0
-        // (assumes slope 1 → overshoots through the compressor).
-        let db0 = target - l0;
-        let mut prev = (0.0_f64, model(0.0));
-        let mut last = (db0, model(db0));
-        let mut best = last;
-        let mut steps = 0u32;
-        let mut max_step = 0.0_f64;
-        while steps < super::MEASURE_CORRECT_MAX && (last.1 - target).abs() > super::KNOB_TOL_LU {
-            let Some(next_db) = super::secant_next_db(prev, last, target) else {
-                break;
-            };
-            max_step = max_step.max((next_db - last.0).abs());
-            let vn = model(next_db);
-            steps += 1;
-            if (vn - target).abs() < (best.1 - target).abs() {
-                best = (next_db, vn);
-            }
-            prev = last;
-            last = (next_db, vn);
+    fn gain(levels: &[f32], base: &[f32]) -> f64 {
+        let lv = levels.iter().cloned().fold(0.0_f32, f32::max) as f64;
+        let b = base.iter().cloned().fold(0.0_f32, f32::max) as f64;
+        20.0 * (lv / b).log10()
+    }
+
+    // #186: a dropped probe capture leaves the probe levels on the device; a later flat-slope
+    // stop must not report levels0 while the device holds the probe.
+    #[test]
+    fn correct_iter_dropped_probe_capture_keeps_device_honest() {
+        let base = [0.2_f32];
+        let levels0 = [0.2 * 10f32.powf(4.0 / 20.0)];
+        let (c, writes) = run_core(&base, &levels0, (-30.0, -30.1, -26.0), |_| None);
+        assert!(writes.iter().any(|w| w.1), "the probe must have fired");
+        assert!(c.clamp_reason.is_none());
+    }
+
+    // #189: an adverse first response must not beat the original base point.
+    #[test]
+    fn correct_iter_adverse_first_response_falls_back_to_base() {
+        let base = [0.1_f32];
+        let levels0 = [0.1 * 10f32.powf(4.0 / 20.0)];
+        let (c, writes) = run_core(&base, &levels0, (-30.0, -35.0, -26.0), |_| None);
+        assert_eq!(c.levels, base.to_vec(), "base@-30 beats levels0@-35");
+        assert!((c.lufs + 30.0).abs() < 1e-9, "lufs {}", c.lufs);
+        assert_eq!(writes.last().unwrap().0, base.to_vec());
+    }
+
+    // At a low output level, levels a few dB apart differ by < 1e-3 in absolute terms:
+    // the restore to base must still be written, not skipped as "already held".
+    #[test]
+    fn correct_iter_restores_base_at_low_output_level() {
+        let base = [0.0011_f32];
+        let levels0 = [0.0011 * 10f32.powf(4.0 / 20.0)];
+        let (c, writes) = run_core(&base, &levels0, (-30.0, -35.0, -26.0), |_| None);
+        assert_eq!(c.levels, base.to_vec());
+        assert_eq!(writes.last().unwrap().0, base.to_vec());
+    }
+
+    // #189b: a measured probe point closer to target than levels0/base can win.
+    #[test]
+    fn correct_iter_probe_point_can_be_best() {
+        let base = [0.1_f32];
+        let levels0 = [0.1 * 10f32.powf(4.0 / 20.0)];
+        let probe_lv = 0.1 * 10f32.powf(-2.0 / 20.0);
+        let (c, _) = run_core(&base, &levels0, (-30.0, -30.1, -29.0), |lv| {
+            Some(if (lv[0] - probe_lv).abs() < 1e-6 {
+                -29.0
+            } else {
+                -30.1
+            })
+        });
+        assert!((c.lufs + 29.0).abs() < 1e-9, "lufs {}", c.lufs);
+        assert!((c.levels[0] - probe_lv).abs() < 1e-6);
+    }
+
+    // #188: a muted lane 0 must not zero the shared gain (and fake a no-authority verdict).
+    #[test]
+    fn correct_iter_muted_lane_zero_still_corrects() {
+        for (base, levels0) in [
+            ([0.0_f32, 0.5], [0.0_f32, 0.7]),
+            ([0.5_f32, 0.0], [0.7_f32, 0.0]),
+        ] {
+            let v0 = -30.0 + gain(&levels0, &base);
+            let (c, writes) = run_core(&base, &levels0, (-30.0, v0, -26.0), |lv| {
+                Some(-30.0 + gain(lv, &base))
+            });
+            assert!(
+                !writes.is_empty(),
+                "a correction write must happen: {base:?}"
+            );
+            assert!(c.clamp_reason.is_none(), "no false verdict: {base:?}");
+            assert!(
+                (c.lufs + 26.0).abs() <= super::KNOB_TOL_LU,
+                "lufs {}",
+                c.lufs
+            );
         }
+    }
+
+    // #188b: every lane muted → nothing to scale: keep levels0, no writes, no verdict.
+    #[test]
+    fn correct_iter_all_lanes_muted_is_a_noop() {
+        let (c, writes) = run_core(&[0.0, 0.0], &[0.0, 0.0], (-30.0, -30.0, -26.0), |_| None);
+        assert!(writes.is_empty());
+        assert!(c.clamp_reason.is_none());
+        assert_eq!(c.levels, vec![0.0, 0.0]);
+    }
+
+    // The secant converges on a saturating (compressor-like) response through the real
+    // loop (`correct_iter_core`), not a mirror of it.
+    #[test]
+    fn correct_iter_core_converges_on_compressor() {
+        let (l0, g, tau, target) = (-30.0_f64, 15.0_f64, 8.0_f64, -22.0_f64);
+        let base = [0.1_f32];
+        let model = |lv: &[f32]| l0 + g * (1.0 - (-gain(lv, &base) / tau).exp());
+        let levels0 = [0.1 * 10f32.powf(((target - l0) / 20.0) as f32)];
+        let v0 = model(&levels0);
+        let (c, writes) = run_core(&base, &levels0, (model(&base), v0, target), |lv| {
+            Some(model(lv))
+        });
         assert!(
-            (best.1 - target).abs() <= super::KNOB_TOL_LU,
-            "converged to {} (target {target})",
-            best.1
+            (c.lufs - target).abs() <= super::KNOB_TOL_LU,
+            "lufs {}",
+            c.lufs
         );
-        assert!(steps <= super::MEASURE_CORRECT_MAX, "steps={steps}");
+        let steps: Vec<f64> = writes.iter().map(|w| gain(&w.0, &base)).collect();
         assert!(
-            max_step <= super::BATCH_TRUST_DB as f64 + 1e-9,
-            "trust region honored, max step {max_step} dB"
+            steps.len() as u32 <= super::MEASURE_CORRECT_MAX,
+            "steps={steps:?}"
         );
+        let mut prev_db = gain(&levels0, &base);
+        for db in steps {
+            assert!(
+                (db - prev_db).abs() <= super::BATCH_TRUST_DB as f64 + 1e-6,
+                "trust region: {prev_db} → {db}"
+            );
+            prev_db = db;
+        }
     }
 
     // Drive the secant loop against a synthetic dB-of-amplitude knob, searching
