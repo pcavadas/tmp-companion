@@ -84,9 +84,9 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S7  | A posted lever provably failed — S3's `review` no-oped (0 reviews, 0 threads), or SP's `resume` left `PAUSED` on the same head               | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 `mergeStateStatus: DIRTY` is not a review state — `main` moved and the branch now conflicts. Rebase
-onto `origin/main` and push with `--force-with-lease` (never merge `main` into a PR branch), resolve,
-re-enter at S1. Preserve what the incoming side added: a conflict in a file both branches edited is
-two sessions' findings.
+onto `origin/main` (never merge `main` into a PR branch), resolve the conflicts and finish the rebase,
+then push with `--force-with-lease` and re-enter at S1. Preserve what the incoming side added: a
+conflict in a file both branches edited is two sessions' findings.
 
 ## 4. Handling one finding (deterministic)
 
