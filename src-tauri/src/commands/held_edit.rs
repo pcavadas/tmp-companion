@@ -105,7 +105,7 @@ pub(crate) fn held_replace_one(
     }
     // Keep live-controller status before the next preset (no long quiet gap).
     s.heartbeat()?;
-    s.pump_collect(120)?;
+    s.pump_silent(120)?;
     Ok(BulkReplaceItem {
         slot: list_index,
         name,

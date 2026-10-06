@@ -22,7 +22,7 @@ pub(crate) fn read_setlist_list() -> Result<Vec<session::SetlistRecord>, String>
             if let Some(r) = s.harvest_setlists_strict() {
                 return Ok(r);
             }
-            s.pump_more(250)?;
+            s.pump_collect_alive(250)?;
         }
     }
     Err("could not read a complete setlist list (multi-packet response kept truncating)".into())
@@ -59,7 +59,7 @@ pub(crate) fn read_setlist_songs_raw(setlist_slot: u32) -> Result<Vec<u32>, Stri
             if let Some(r) = s.harvest_setlist_songs_strict() {
                 return Ok(r);
             }
-            s.pump_more(250)?;
+            s.pump_collect_alive(250)?;
         }
     }
     Err(format!(

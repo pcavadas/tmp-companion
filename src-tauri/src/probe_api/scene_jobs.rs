@@ -763,13 +763,13 @@ pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<Scene
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
     }
     s.raw.clear();
     s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
     for _ in 0..6 {
         s.heartbeat()?;
-        s.pump_collect(200)?;
+        s.pump_silent(200)?;
     }
     let post_load_doc = s.current_preset_value().ok();
     // The wire scene the device currently has materialized (0-based scenes[] index;
@@ -802,7 +802,7 @@ pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<Scene
                     let mut doc = None;
                     for _ in 0..4 {
                         s.heartbeat()?;
-                        s.pump_collect(150)?;
+                        s.pump_silent(150)?;
                         if let Ok(v) = s.current_preset_value() {
                             doc = Some(v);
                             break;
@@ -822,7 +822,7 @@ pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<Scene
             let mut doc = None;
             for _ in 0..4 {
                 s.heartbeat()?;
-                s.pump_collect(150)?;
+                s.pump_silent(150)?;
                 if let Ok(v) = s.current_preset_value() {
                     doc = Some(v);
                     break;

@@ -6,7 +6,7 @@
 //! nothing here is compiled into a release binary.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A pluck train with a distinctive envelope (like the shipped stimuli) — a
@@ -90,8 +90,13 @@ pub(crate) fn fs13_capture() -> Vec<f32> {
 /// records (`0x33` start · `0x34` continue · `0x35` final). A slice `[..k]` of it is a
 /// tail-truncated read as the HW one arrives (no terminal frame).
 pub(crate) fn my_presets_list_frames(total: usize) -> Vec<Vec<u8>> {
+    preset_list_frames(1, total)
+}
+
+/// [`my_presets_list_frames`] for any preset list (`list_enum` 1 / 3 / 4).
+pub(crate) fn preset_list_frames(list_enum: u64, total: usize) -> Vec<Vec<u8>> {
     let mut resp = Vec::new();
-    crate::proto::field_varint(&mut resp, 1, 1); // listEnum = My Presets
+    crate::proto::field_varint(&mut resp, 1, list_enum);
     for i in 0..total {
         let name = if i % 3 == 0 {
             format!("Preset {i}")
@@ -101,41 +106,79 @@ pub(crate) fn my_presets_list_frames(total: usize) -> Vec<Vec<u8>> {
         let rec = crate::proto::len_delimited(1, name.as_bytes());
         resp.extend(crate::proto::len_delimited(2, &rec));
     }
-    // presetMessage(2) → presetListResponse(5)
-    let body = crate::proto::len_delimited(2, &crate::proto::len_delimited(5, &resp));
-    crate::sim_device::frame_multi(&body)
+    // presetMessage → presetListResponse(5)
+    crate::sim_device::frame_multi(&crate::sim_device::preset_message(5, &resp))
+}
+
+/// The device's inbound framing of a `presetDataChanged`(9) reply — the field-8 slot
+/// read — carrying a `len`-byte presetJson. Slice it into batches to stream it.
+pub(crate) fn preset_data_frames(len: usize) -> Vec<Vec<u8>> {
+    crate::sim_device::frame_multi(&crate::sim_device::preset_data_changed(1, &vec![b'x'; len]))
+}
+
+/// The `importPresetResponse`(118) echo the device sends after an import landed at
+/// `(list_enum, slot)`.
+pub(crate) fn import_echo_frames(list_enum: u64, slot: u64) -> Vec<Vec<u8>> {
+    let mut echo = Vec::new();
+    crate::proto::field_varint(&mut echo, 2, list_enum);
+    crate::proto::field_varint(&mut echo, 3, slot);
+    crate::sim_device::frame_multi(&crate::sim_device::preset_message(118, &echo))
+}
+
+/// `frames` as reply batches of `per` frames — one batch per pump window.
+pub(crate) fn streamed(frames: &[Vec<u8>], per: usize) -> Vec<Batch> {
+    frames.chunks(per).map(<[Vec<u8>]>::to_vec).collect()
 }
 
 type Batch = Vec<Vec<u8>>;
+/// Scripted replies: `(request body, reply batches)`, consumed in order per request.
+type Script = VecDeque<(Vec<u8>, Vec<Batch>)>;
 
-/// A scripted transport for preset-list reads. Every `preset_list_request` pops the
-/// next scripted reply — report batches, the first delivered with the send and each
-/// later one by one `pump` (an empty batch = a stalled window). Every sent body is
-/// recorded. [`Self::with_inactivity_timeout`] models the device dropping the HID client
-/// (see `Session::list_my_presets`): once the host has written nothing for longer than
-/// the timeout, every undelivered batch is lost.
+/// A scripted device for reply-wait tests. Each scripted request body pops its next
+/// reply — report batches, the first delivered with the send and each later one by one
+/// `pump` (an empty batch = a stalled window). Every sent body is recorded.
+///
+/// [`Self::device`] models fw 1.8.58's client drop (see
+/// `Session::list_my_presets`): once the host has written nothing for longer than the
+/// timeout, every undelivered batch is lost and the client is LAPSED — it answers and
+/// applies nothing (a heartbeat does not revive it) until a `connectionRequest` reopens
+/// it. A `connectionRequest` on an OPEN client is counted as a live re-arm (the device
+/// answers it with a `connectionError`).
 #[derive(Clone, Default)]
-pub(crate) struct ListTransport {
-    replies: Arc<Mutex<VecDeque<Vec<Batch>>>>,
+pub(crate) struct ScriptedTransport {
+    replies: Arc<Mutex<Script>>,
     pending: Arc<Mutex<VecDeque<Batch>>>,
     pub sent: Arc<Mutex<Vec<Vec<u8>>>>,
     timeout_ms: Option<u64>,
     idle_ms: Arc<AtomicU64>,
+    lapsed: Arc<AtomicBool>,
+    dropped_writes: Arc<AtomicU64>,
+    live_rearms: Arc<AtomicU64>,
 }
 
-impl ListTransport {
-    /// Queue `batches` as if already in flight (the handshake's own list reply).
+impl ScriptedTransport {
+    /// A device with fw 1.8.58's inactivity drop.
+    pub fn device() -> Self {
+        Self {
+            timeout_ms: Some(crate::session::HID_INACTIVITY_DROP_MS),
+            ..Self::default()
+        }
+    }
+    /// Queue `batches` as if already in flight (e.g. the handshake's own list reply).
     pub fn with_pending(self, batches: Vec<Batch>) -> Self {
         self.pending.lock().unwrap().extend(batches);
         self
     }
     /// Script the reply to the next `preset_list_request(1, 1)`.
     pub fn with_reply(self, batches: Vec<Batch>) -> Self {
-        self.replies.lock().unwrap().push_back(batches);
-        self
+        self.with_reply_to(&crate::proto::preset_list_request(1, 1), batches)
     }
-    pub fn with_inactivity_timeout(mut self, ms: u64) -> Self {
-        self.timeout_ms = Some(ms);
+    /// Script the reply to the next send of exactly `request`.
+    pub fn with_reply_to(self, request: &[u8], batches: Vec<Batch>) -> Self {
+        self.replies
+            .lock()
+            .unwrap()
+            .push_back((request.to_vec(), batches));
         self
     }
     /// Start the host-silence clock at `ms` — e.g. the handshake's final pump window.
@@ -146,6 +189,14 @@ impl ListTransport {
     /// Host silence since the last write, in nominal pump milliseconds.
     pub fn idle_ms(&self) -> u64 {
         self.idle_ms.load(Ordering::SeqCst)
+    }
+    /// Writes (other than heartbeats) a lapsed client ignored.
+    pub fn dropped_writes(&self) -> u64 {
+        self.dropped_writes.load(Ordering::SeqCst)
+    }
+    /// `connectionRequest`s sent to a client that was still open.
+    pub fn live_rearms(&self) -> u64 {
+        self.live_rearms.load(Ordering::SeqCst)
     }
     pub fn count_sent(&self, body: &[u8]) -> usize {
         self.sent
@@ -161,37 +212,57 @@ impl ListTransport {
     pub fn heartbeats(&self) -> usize {
         self.count_sent(&crate::proto::heartbeat())
     }
-    fn wrote(&self, body: &[u8]) {
-        self.sent.lock().unwrap().push(body.to_vec());
-        self.idle_ms.store(0, Ordering::SeqCst);
+    fn past_timeout(&self, idle: u64) -> bool {
+        self.timeout_ms.is_some_and(|t| idle > t)
     }
-    /// Advance the host-silence clock by `ms`; past the timeout the queue is dropped.
+    /// Record a write; `true` when the client is lapsed and ignores it.
+    fn wrote(&self, body: &[u8]) -> bool {
+        self.sent.lock().unwrap().push(body.to_vec());
+        let idle = self.idle_ms.swap(0, Ordering::SeqCst);
+        let lapsed = self.lapsed.load(Ordering::SeqCst) || self.past_timeout(idle);
+        let reopen = body == crate::proto::connection_request();
+        if lapsed && !reopen {
+            self.lapsed.store(true, Ordering::SeqCst);
+            if body != crate::proto::heartbeat() {
+                self.dropped_writes.fetch_add(1, Ordering::SeqCst);
+            }
+            return true;
+        }
+        if reopen && !lapsed {
+            self.live_rearms.fetch_add(1, Ordering::SeqCst);
+        }
+        self.lapsed.store(false, Ordering::SeqCst);
+        false
+    }
+    /// Advance the host-silence clock by `ms`; past the timeout the client lapses and
+    /// its queue is dropped.
     fn idle(&self, ms: u64) -> bool {
         let idle = self.idle_ms.fetch_add(ms, Ordering::SeqCst) + ms;
-        let dropped = self.timeout_ms.is_some_and(|t| idle > t);
+        let dropped = self.past_timeout(idle);
         if dropped {
+            self.lapsed.store(true, Ordering::SeqCst);
             self.pending.lock().unwrap().clear();
         }
         dropped
     }
 }
 
-impl crate::hid::HidTransport for ListTransport {
+impl crate::hid::HidTransport for ScriptedTransport {
     fn send(&self, body: &[u8]) -> Result<(), String> {
         self.wrote(body);
         Ok(())
     }
     fn transact(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
-        self.wrote(body);
-        let mut batches: VecDeque<Batch> = if body == crate::proto::preset_list_request(1, 1) {
-            self.replies
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_default()
-                .into()
-        } else {
-            VecDeque::new()
+        if self.wrote(body) {
+            self.idle(ms);
+            return Ok(Vec::new());
+        }
+        let mut batches: VecDeque<Batch> = {
+            let mut replies = self.replies.lock().unwrap();
+            match replies.iter().position(|(req, _)| req == body) {
+                Some(i) => replies.remove(i).map(|(_, b)| b).unwrap_or_default().into(),
+                None => VecDeque::new(),
+            }
         };
         let first = batches.pop_front().unwrap_or_default();
         self.pending.lock().unwrap().extend(batches);
@@ -213,7 +284,7 @@ impl crate::hid::HidTransport for ListTransport {
 
 /// A [`crate::session::Session`] over `t` whose accumulator already holds `raw` (the
 /// handshake's reports).
-pub(crate) fn session_over(t: &ListTransport, raw: Vec<Vec<u8>>) -> crate::session::Session {
+pub(crate) fn session_over(t: &ScriptedTransport, raw: Vec<Vec<u8>>) -> crate::session::Session {
     let mut s = crate::session::Session::from_transport(Box::new(t.clone()));
     s.raw = raw;
     s

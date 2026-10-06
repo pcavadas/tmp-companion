@@ -2619,7 +2619,7 @@ pub(crate) fn frame_multi(body: &[u8]) -> Vec<Vec<u8>> {
 /// `FenderMessageTMS{ preset(2): PresetMessage{ field: payload } }`. Built with the
 /// crate's golden-tested protobuf encoders so the fake's wire bytes can't drift from
 /// the real codec.
-fn preset_message(field: u32, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn preset_message(field: u32, payload: &[u8]) -> Vec<u8> {
     proto::len_delimited(TMS_PRESET, &proto::len_delimited(field, payload))
 }
 
@@ -2646,7 +2646,7 @@ fn current_preset_data_changed(json: &[u8]) -> Vec<u8> {
 /// `presetDataChanged`(9) — `{ listEnum(1)=1, presetSlot(2)=dev_slot, presetJson(3) }`.
 /// `presetJson` is PLAINTEXT here (unlike field 3's lz4 block): the read path hands the
 /// field-9 bytes straight to `from_utf8_lossy` (`session::read_slot_preset_json`).
-fn preset_data_changed(dev_slot: u64, json: &[u8]) -> Vec<u8> {
+pub(crate) fn preset_data_changed(dev_slot: u64, json: &[u8]) -> Vec<u8> {
     let mut inner = Vec::new();
     proto::field_varint(&mut inner, 1, 1);
     proto::field_varint(&mut inner, 2, dev_slot);

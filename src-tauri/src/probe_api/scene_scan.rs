@@ -224,13 +224,13 @@ pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
     }
     s.raw.clear();
     s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 300)?;
     for _ in 0..6 {
         s.heartbeat()?;
-        s.pump_collect(200)?;
+        s.pump_silent(200)?;
     }
     let mut out = format!("[probe --scene-doc] list_index={list_index}\n");
     match s.current_preset_value() {
@@ -243,7 +243,7 @@ pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String
         let mut doc = None;
         for _ in 0..4 {
             s.heartbeat()?;
-            s.pump_collect(150)?;
+            s.pump_silent(150)?;
             if let Ok(v) = s.current_preset_value() {
                 doc = Some(v);
                 break;
@@ -315,13 +315,13 @@ pub fn probe_scene_node_doc(
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
     }
     s.raw.clear();
     s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 300)?;
     for _ in 0..6 {
         s.heartbeat()?;
-        s.pump_collect(200)?;
+        s.pump_silent(200)?;
     }
     let mut out = format!("[probe --scene-node-doc] list_index={list_index} {group}/{node}\n");
     match s.current_preset_value() {
@@ -334,7 +334,7 @@ pub fn probe_scene_node_doc(
         let mut doc = None;
         for _ in 0..4 {
             s.heartbeat()?;
-            s.pump_collect(150)?;
+            s.pump_silent(150)?;
             if let Ok(v) = s.current_preset_value() {
                 doc = Some(v);
                 break;
@@ -426,8 +426,8 @@ pub fn probe_scan_scenes_passive() -> Result<String, String> {
     let overall = Instant::now();
     let mut s = Session::connect()?;
     let presets = s.list_my_presets()?;
-    // Drain the handshake flood before the first re-armed read (a read fired
-    // mid-flood is dropped device-side — the classic 0/25).
+    // Drain the handshake flood before the first re-armed read (a read queued
+    // behind the flood used to be lost to the inactivity drop).
     s.drain_until_quiet(250, 20)?;
     let non_empty: Vec<_> = presets
         .iter()
@@ -496,7 +496,7 @@ pub fn probe_scan_scenes_load() -> Result<String, String> {
     // a session with sustained heartbeat cadence.
     for _ in 0..16 {
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
     }
 
     let mut out =
@@ -515,7 +515,7 @@ pub fn probe_scan_scenes_load() -> Result<String, String> {
         let mut scenes: Option<Vec<String>> = None;
         let mut seen = 0usize;
         for _ in 0..8 {
-            s.pump_collect(150)?;
+            s.pump_collect_alive(150)?;
             let bodies = s.push_bodies();
             for b in bodies.iter().skip(seen) {
                 if let Some(names) = session::decode_scene_list(b) {
@@ -537,7 +537,7 @@ pub fn probe_scan_scenes_load() -> Result<String, String> {
                     scenes = Some(names);
                     break;
                 }
-                let _ = s.pump_collect(200);
+                let _ = s.pump_collect_alive(200);
             }
         }
         let elapsed = t0.elapsed();
@@ -608,7 +608,7 @@ pub fn probe_scan_scenes_full_live() -> Result<String, String> {
     let mut s = Session::connect()?;
     for _ in 0..16 {
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
     }
 
     let mut out = format!(
@@ -625,7 +625,7 @@ pub fn probe_scan_scenes_full_live() -> Result<String, String> {
         let mut live: Option<session::CurrentPresetLive> = None;
         let mut seen = 0usize;
         for _ in 0..12 {
-            s.pump_collect(150)?;
+            s.pump_collect_alive(150)?;
             let bodies = s.push_bodies();
             for b in bodies.iter().skip(seen) {
                 if let Some(l) = session::decode_current_preset_live(b) {

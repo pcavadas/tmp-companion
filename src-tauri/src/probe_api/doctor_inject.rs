@@ -193,7 +193,7 @@ pub fn probe_doctor_inject(
     // graph carries the freshly-inserted vehicle WITH its parameter values — print
     // them, so an unmapped controlId shows up as an unchanged default instead of a
     // silent no-op one has to infer from an unmoved after-capture.
-    let _ = ops_s.pump_collect(700);
+    let _ = ops_s.pump_collect_alive(700);
     // Re-resolve the tail off the EDITED graph, not the before-capture's: an
     // inserted time-effect (e.g. `--doctor-defects`'s `washed` recipe, a
     // reverb) can turn a known-dry chain wet, and reusing the before tail

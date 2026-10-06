@@ -90,8 +90,8 @@ fn read_slot_scenes_raw(list_index: u32) -> Result<(Vec<u8>, PresetScenes), Stri
 }
 
 /// Does a field-8 [`PresetScenes`] read look like it landed on the scene-tail cut
-/// (notes/gotchas.md's field-8 slot-addressed-read entry — the partial is
-/// device-truncated at a PER-SLOT-DETERMINISTIC size, so retrying cannot help)? Either
+/// (notes/gotchas.md's field-8 slot-addressed-read entry — on fw 1.8.58 the cut was the
+/// device's inactivity drop, which the kept-alive read no longer hits)? Either
 /// tell fires:
 /// - a repaired scene name is empty — the tolerant unwind lands mid-object, so the
 ///   scene survives but its `sceneName` sits past the cut, or
@@ -307,7 +307,7 @@ pub(crate) async fn scan_preset_scenes(
     with_released_seize(state.session.clone(), move || {
         let mut s = Session::connect()?;
         // Drain the handshake flood before the first re-armed read (a read
-        // fired mid-flood is dropped device-side — the classic 0/25).
+        // queued behind the flood used to be lost to the inactivity drop).
         s.drain_until_quiet(250, 20)?;
         for &idx in &list_indices {
             if SCENE_SCAN_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
@@ -612,7 +612,7 @@ pub(crate) async fn list_saved_blocks(
                 if let Some(blob) = find_block_presets_blob(&s.push_bodies()) {
                     return parse_block_presets_map(&blob);
                 }
-                s.pump_collect(250)?;
+                s.pump_collect_alive(250)?;
             }
         }
         Err("device sent no allBlockPresetsResponse after retries".to_string())
@@ -629,11 +629,11 @@ pub(crate) async fn list_user_irs(state: State<'_, AppState>) -> Result<Vec<User
         let mut s = Session::connect()?; // handshake already issues userIRListRequest(batch 2)
                                          // A standalone re-send + a few pump windows in case the burst reply was missed.
         s.heartbeat()?;
-        s.pump_collect(80)?;
+        s.pump_silent(80)?;
         s.send_and_collect(&proto::userir_field2(2), 500)?;
         for _ in 0..5 {
             s.heartbeat()?;
-            s.pump_collect(200)?;
+            s.pump_silent(200)?;
         }
         let bodies = s.push_bodies();
         drop(s);

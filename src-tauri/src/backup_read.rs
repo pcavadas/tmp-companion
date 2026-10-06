@@ -477,9 +477,8 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
 
 /// The COMPLETE saved `presetJson` for ONE user slot, off a device backup — the
 /// canonical full-preset source when a slot-addressed field-8 read comes back
-/// TAIL-TRUNCATED. That truncation is per-slot-DETERMINISTIC, so re-reading the same
-/// slot cannot lengthen it; the backup DB is the only transport that carries the whole
-/// document.
+/// TAIL-TRUNCATED (on fw 1.8.58 a cut is the device's inactivity drop, which the
+/// kept-alive read no longer hits — this stays the fallback for any partial).
 ///
 /// `device_slot` is the DB `slot` = list index + 1 (see [`BackupPresetRow::slot`]).
 /// IDENTITY-GUARDED (danger.md's address-space rule): the caller states the slot,

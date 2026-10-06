@@ -91,7 +91,7 @@ pub fn probe_bench_scene_leveling(
             // (125, PresetLoaded, field-3) on a live-cadence session.
             for _ in 0..16 {
                 s.heartbeat()?;
-                s.pump_collect(120)?;
+                s.pump_silent(120)?;
             }
             s.raw.clear();
             s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
@@ -101,7 +101,7 @@ pub fn probe_bench_scene_leveling(
             // (block discovery) needs the extra turns to finish arriving.
             for _ in 0..10 {
                 s.heartbeat()?;
-                s.pump_collect(200)?;
+                s.pump_silent(200)?;
                 let bodies = s.push_bodies();
                 for b in bodies.iter().skip(seen) {
                     if let Some(names) = session::decode_scene_list(b) {
@@ -123,7 +123,7 @@ pub fn probe_bench_scene_leveling(
                         scenes = Some(names);
                         break;
                     }
-                    let _ = s.pump_collect(200);
+                    let _ = s.pump_collect_alive(200);
                 }
             }
             let blocks = s.current_preset_blocks()?;
@@ -140,7 +140,7 @@ pub fn probe_bench_scene_leveling(
                     let mut doc = None;
                     for _ in 0..4 {
                         s.heartbeat()?;
-                        s.pump_collect(150)?;
+                        s.pump_silent(150)?;
                         if let Ok(v) = s.current_preset_value() {
                             doc = Some(v);
                             break;

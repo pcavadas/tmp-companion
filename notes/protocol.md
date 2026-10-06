@@ -122,8 +122,8 @@ There is **no** USB path that returns a byte-complete preset:
 
 - `currentPresetDataChanged` (field 3, LZ4) is a partial that truncates inside the scenes;
   session-health-dependent (~3.4 KB lean vs ~17 KB on a dense-heartbeat session).
-- `presetDataRequest` (field 8) → `presetDataChanged` (field 9, plaintext) is a
-  per-slot-deterministic partial (cut inside the final scene). Must carry **no**
+- `presetDataRequest` (field 8) → `presetDataChanged` (field 9, plaintext) was a
+  partial cut inside the final scene on silent harvests; kept alive it reads whole (fw 1.8.58). Must carry **no**
   `batchStatus`; on a QUIET line re-arm the burst state with a leading `connection_request`,
   but on an ALREADY-LIVE (dense-heartbeat) session the re-arm draws a `connectionError` —
   use `read_slot_preset_json_live` there.

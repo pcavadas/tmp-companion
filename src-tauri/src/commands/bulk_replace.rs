@@ -247,7 +247,7 @@ pub(crate) fn blockcaps_pre_edit_roster(
     for i in 0..10 {
         if i > 0 {
             let _ = s.heartbeat();
-            let _ = s.pump_collect(250);
+            let _ = s.pump_silent(250);
         }
         if let Ok(v) = s.current_preset_value() {
             let roster = blockcaps::roster_from_preset(&v);
@@ -373,7 +373,7 @@ fn replace_one_live(
         let mut s1 = Session::connect()?;
         s1.load_preset(list_index)?;
         s1.heartbeat()?;
-        s1.pump_collect(500)?;
+        s1.pump_silent(500)?;
     }
     // Quiet settle before reconnecting — avoids the HID open-lockout a rapid
     // drop→reopen triggers.

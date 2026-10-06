@@ -324,7 +324,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     };
     // Keep the live-controller status warm before the next preset.
     s.heartbeat()?;
-    s.pump_collect(120)?;
+    s.pump_silent(120)?;
     Ok(CopyApplyItem {
         slot: list_index,
         name,

@@ -1001,7 +1001,7 @@ pub(crate) fn ensure_fresh_load_paced(
             }
             let slice_start = std::time::Instant::now();
             let _ = s.heartbeat();
-            let _ = s.pump_collect(STALE_HEARTBEAT_MS);
+            let _ = s.pump_silent(STALE_HEARTBEAT_MS);
             let slice_target = Duration::from_millis(STALE_HEARTBEAT_MS);
             let slice_elapsed = slice_start.elapsed();
             if slice_elapsed < slice_target {
@@ -4776,7 +4776,7 @@ fn write_fs_values_on_session(
     }
     for _ in 0..8 {
         let _ = s.heartbeat();
-        let _ = s.pump_collect(150);
+        let _ = s.pump_silent(150);
     }
     // Base is a RECALL (wire slot 8), never an omission — see this function's doc.
     recall_base(s)?;
@@ -4868,7 +4868,7 @@ fn write_fs_values_on_session(
         }
         // Keep the live controller warm between chunked writes.
         let _ = s.heartbeat();
-        let _ = s.pump_collect(150);
+        let _ = s.pump_silent(150);
     }
     // Mirror each bake into the scenes whose overlay restated the base value (grouped by
     // scene: one recall, then that scene's writes back-to-back — the write must follow its

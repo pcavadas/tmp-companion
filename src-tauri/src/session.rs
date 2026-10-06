@@ -343,8 +343,8 @@ pub struct SetlistRecord {
 /// Burst shapes for [`Session::connect_slotread`] (field-8 investigation).
 #[derive(Clone, Copy, Debug)]
 pub enum SlotReadBurst {
-    /// Full Pro Control burst, read appended last (the classic AC1 spike —
-    /// the 0/25-on-1.8.45 baseline).
+    /// Full Pro Control burst, read appended last (the classic AC1 spike — 0/25 on
+    /// 1.8.45 while its window was silent).
     Classic,
     /// Read injected right after `connection_request` + the My Presets list
     /// request, BEFORE the flood; the standard burst remainder follows.
@@ -354,8 +354,92 @@ pub enum SlotReadBurst {
     Minimal,
 }
 
+/// The transport plus how long the HOST has been silent (see [`HID_INACTIVITY_DROP_MS`]):
+/// every write resets it, every pump extends it. `nominal_ms` (summed pump windows) makes
+/// it testable on fakes whose pumps return instantly; on hardware wall-clock is the
+/// truth (it also counts settles between pumps), so [`Self::silent_ms`] takes the max.
+///
+/// It also REOPENS: a write after a silence the device may have dropped the client in is
+/// preceded by a `connectionRequest` (a lapsed client silently ignores everything else,
+/// setters included). `auto_reopen` off is for experiments that measure lapsed behavior.
+struct TrackedHid {
+    inner: Box<dyn HidTransport>,
+    last_write: std::cell::Cell<std::time::Instant>,
+    nominal_ms: std::cell::Cell<u64>,
+    auto_reopen: bool,
+}
+
+impl TrackedHid {
+    fn new(inner: Box<dyn HidTransport>) -> Self {
+        Self {
+            inner,
+            last_write: std::cell::Cell::new(std::time::Instant::now()),
+            nominal_ms: std::cell::Cell::new(0),
+            auto_reopen: true,
+        }
+    }
+    /// About to write `body`: reopen a client the device may have dropped, then reset
+    /// the silence clock.
+    fn wrote(&self, body: &[u8]) -> Result<(), String> {
+        if self.auto_reopen && self.maybe_lapsed() {
+            let reopen = proto::connection_request();
+            if body != reopen {
+                self.inner.transact(&reopen, 100)?;
+            }
+        }
+        self.last_write.set(std::time::Instant::now());
+        self.nominal_ms.set(0);
+        Ok(())
+    }
+    /// One write + its pump window.
+    fn timed(
+        &self,
+        body: &[u8],
+        ms: u64,
+        f: impl FnOnce(&dyn HidTransport) -> Result<Vec<Vec<u8>>, String>,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        self.wrote(body)?;
+        let r = f(self.inner.as_ref());
+        self.waited(ms);
+        r
+    }
+    fn waited(&self, ms: u64) {
+        self.nominal_ms.set(self.nominal_ms.get() + ms);
+    }
+    fn silent_ms(&self) -> u64 {
+        let wall = self.last_write.get().elapsed().as_millis() as u64;
+        wall.max(self.nominal_ms.get())
+    }
+    /// Whether the device may have dropped the client: silence at or past
+    /// [`CLEARLY_LIVE_MS`].
+    fn maybe_lapsed(&self) -> bool {
+        self.silent_ms() >= CLEARLY_LIVE_MS
+    }
+}
+
+impl HidTransport for TrackedHid {
+    fn send(&self, body: &[u8]) -> Result<(), String> {
+        self.wrote(body)?;
+        self.inner.send(body)
+    }
+    fn transact(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.timed(body, ms, |t| t.transact(body, ms))
+    }
+    fn transact_chunked(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.timed(body, ms, |t| t.transact_chunked(body, ms))
+    }
+    fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.timed(body, ms, |t| t.transact_eager(body, ms))
+    }
+    fn pump(&self, ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        let r = self.inner.pump(ms);
+        self.waited(ms);
+        r
+    }
+}
+
 pub struct Session {
-    hid: Box<dyn HidTransport>,
+    hid: TrackedHid,
     batch: u64,
     /// Raw input reports accumulated during the current high-level operation.
     /// Reassembled cumulatively (a multi-packet stream can span pump windows).
@@ -368,11 +452,42 @@ pub struct Session {
     fw_version: Option<String>,
 }
 
-/// fw 1.8.58 drops the HID client after this long with no INBOUND frame — see
-/// [`Session::list_my_presets`].
-const HID_INACTIVITY_DROP_MS: u64 = 750;
+/// fw 1.8.58 drops the HID client after this long with no INBOUND frame (static RE,
+/// `ClientManager` timeout `0x0065e490`): the reply in flight and the whole send queue
+/// are discarded, and the LAPSED client answers and applies nothing — a heartbeat does
+/// not revive it — until a `connectionRequest` reopens it. A heartbeat on a live client
+/// refreshes the timer without drawing a reply frame. Waits for a reply therefore keep
+/// the client alive ([`Session::pump_collect_alive`]); writes after a silence reopen it
+/// first (`TrackedHid`).
+pub(crate) const HID_INACTIVITY_DROP_MS: u64 = 750;
 /// Host-silence cap of a keepalive window: well inside [`HID_INACTIVITY_DROP_MS`].
-const KEEPALIVE_WINDOW_MS: u64 = 350;
+pub(crate) const KEEPALIVE_WINDOW_MS: u64 = 350;
+/// How long an import waits for its `importPresetResponse` echo.
+const IMPORT_ECHO_WAIT_MS: u64 = 1500;
+/// How long a standalone field-78 preset-JSON request waits for its reply.
+const CURRENT_JSON_WAIT_MS: u64 = 6_800;
+/// Host silence under which the client is certainly still open. Between this and the
+/// drop the device's timer and ours may disagree, so callers treat it as lapsed: a
+/// re-arm on a still-live client costs one `connectionError`, a skipped one costs the read.
+const CLEARLY_LIVE_MS: u64 = HID_INACTIVITY_DROP_MS - 150;
+
+/// The handshake's base pump windows `[connect, per-request, final]` (full or lean).
+fn handshake_base_windows(lean: bool) -> [u64; 3] {
+    if lean {
+        [50, 5, 75]
+    } else {
+        [200, 20, 300]
+    }
+}
+
+/// One handshake pump window under the `TMP_HANDSHAKE_SCALE` bisect knob, capped below
+/// the inactivity drop: every window is followed by the next request, so a window IS
+/// the burst's longest host silence, and one past the drop discards the burst mid-flood.
+fn handshake_window(ms: u64, scale: Option<f64>) -> u64 {
+    scale
+        .map_or(ms, |s| ((ms as f64) * s).round() as u64)
+        .min(CLEARLY_LIVE_MS)
+}
 
 /// FenderMessageTMS top-level oneof field numbers.
 const TMS_PRESET: u32 = 2;
@@ -480,8 +595,6 @@ impl Session {
         let _ = self.hid.send(&proto::heartbeat());
         let start = Instant::now();
         self.send_and_collect(&proto::backup_request(), 120)?;
-        let mut last_hb = Instant::now();
-
         // Inline reassembler (mirrors proto::reassemble_streams_final, but decodes
         // each completed stream as it closes so we never hold the whole frame set).
         let mut current: Option<Vec<u8>> = None;
@@ -511,9 +624,8 @@ impl Session {
             }
             // Keep the live-controller session alive (PC's ~250 ms cadence) or the
             // device aborts the backup mid-build/stream.
-            if last_hb.elapsed().as_millis() >= 250 {
+            if self.hid.silent_ms() >= 250 {
                 let _ = self.hid.send(&proto::heartbeat());
-                last_hb = Instant::now();
             }
             let reports = if pending.is_empty() {
                 self.hid.pump(120)?
@@ -703,15 +815,14 @@ impl Session {
     /// Pump until the inbound stream goes quiet (`max_windows` windows of
     /// `window_ms` with no new reports, or stop growing). Used by the passive
     /// scene scan to drain the handshake flood before the first re-armed
-    /// field-8 read — a read fired mid-flood is dropped device-side (the
-    /// classic 0/25). NOTE: a batch-bearing `preset_list_request` is NOT
+    /// field-8 read. NOTE: a batch-bearing `preset_list_request` is NOT
     /// answered on a minimal burst (HW-observed — the device only answers it
     /// inside the recognized full sequence), so the scan can't avoid the full
     /// handshake; it drains it instead.
     pub fn drain_until_quiet(&mut self, window_ms: u64, max_windows: u32) -> Result<(), String> {
         let mut last = self.raw.len();
         for _ in 0..max_windows {
-            self.pump_collect(window_ms)?;
+            self.pump_silent(window_ms)?;
             if self.raw.len() == last {
                 return Ok(());
             }
@@ -729,20 +840,18 @@ impl Session {
     /// the device answers exactly ONE data request per burst state, and a
     /// re-sent `connection_request` re-arms that state on the OPEN connection
     /// — so a whole-library sweep rides one connection (25/25, ~0.9 s/slot).
-    /// The classic full-handshake placement was 0/25 ("ProductProfile
-    /// collision"): the reply is dropped device-side when the read rides
-    /// behind the ~480-frame preset-list/ProductProfile flood — fire reads
-    /// only on a QUIET line ([`Self::drain_until_quiet`] after a full
-    /// handshake, or a minimal burst).
+    /// The classic full-handshake placement was 0/25 on 1.8.45: the reply queued
+    /// behind the ~480-frame flood and was discarded by the inactivity drop during the
+    /// silent window ([`HID_INACTIVITY_DROP_MS`]).
     /// `Ok(None)` = the device didn't answer this read (caller counts a miss).
     ///
     /// For a DEDICATED/QUIET session (every `probe_*` sweep + `scan_preset_scenes`):
-    /// the leading `connection_request` re-arms the burst state the device needs
-    /// before it will answer a data request. On a LIVE-CONTROLLER session (the
-    /// monitor's dense ~250 ms heartbeat) that state is ALREADY armed, so the
-    /// re-arm is not just redundant — the device answers it with a `connectionError`
-    /// on the next heartbeat (HW: 1 error/read + ~140 ms slower). Use
-    /// [`Self::read_slot_preset_json_live`] there instead.
+    /// a session silent past the device's inactivity drop has LAPSED, and the leading
+    /// `connection_request` re-arm reopens it before the data request. The read itself
+    /// heartbeats, so the next read on the same session finds it live and skips the
+    /// re-arm — on a live session the re-arm only draws a `connectionError` (HW: 1
+    /// error/read + ~140 ms slower). On the monitor's LIVE-CONTROLLER session use
+    /// [`Self::read_slot_preset_json_live`], which never re-arms.
     pub fn read_slot_preset_json(&mut self, device_slot: u32) -> Result<Option<Vec<u8>>, String> {
         self.read_slot_preset_json_inner(device_slot, false)
     }
@@ -765,54 +874,39 @@ impl Session {
         device_slot: u32,
         on_live_session: bool,
     ) -> Result<Option<Vec<u8>>, String> {
+        self.read_list_preset_json(1, device_slot, on_live_session)
+    }
+
+    /// [`Self::read_slot_preset_json`] on any preset list (`list_enum`: 1 = My Presets,
+    /// 4 = Factory, 3 = Cloud).
+    pub(crate) fn read_list_preset_json(
+        &mut self,
+        list_enum: u64,
+        device_slot: u32,
+        on_live_session: bool,
+    ) -> Result<Option<Vec<u8>>, String> {
         self.raw.clear();
-        // A quiet/dedicated session needs the `connection_request` re-arm before
-        // the device answers a data request; a live-controller session is already
-        // armed, so re-arming it only provokes a `connectionError` (HW-confirmed).
-        if !on_live_session {
-            self.send_and_collect(&proto::connection_request(), 100)?;
+        // Re-arm a lapsed quiet session (see the doc): the list request's write reopens
+        // the client first (`TrackedHid`).
+        if !on_live_session && self.hid.maybe_lapsed() {
             self.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
         }
         self.send_and_collect(
-            &proto::preset_data_request(1, device_slot as u64, None),
+            &proto::preset_data_request(list_enum, device_slot as u64, None),
             200,
         )?;
-        // Growth-stability harvest: pump in short slices until the field-9
-        // payload stops growing for two slices (a 17 KB reply is ~290 frames,
-        // ~1 s end-to-end; small presets land in the first slice). On a live
-        // session, fire the live-controller heartbeat on a 250 ms elapsed gate
-        // before each pump (the `device_backup` keepalive shape) so a long read
-        // never starves the monitor's heartbeat.
-        let mut last_hb = std::time::Instant::now();
-        let (mut last, mut stable) = (0usize, 0u32);
-        for _ in 0..24 {
-            if on_live_session && last_hb.elapsed().as_millis() as u64 >= 250 {
-                self.heartbeat()?;
-                last_hb = std::time::Instant::now();
-            }
-            self.pump_collect(150)?;
-            let len = self.try_preset_data_json().map(|b| b.len()).unwrap_or(0);
-            if len > 0 && len == last {
-                stable += 1;
-                if stable >= 2 {
-                    break;
-                }
-            } else {
-                stable = 0;
-            }
-            last = len;
-        }
+        // Growth-stability harvest: a 17 KB reply is ~290 frames, ~1 s end-to-end; small
+        // presets land in the first slice.
+        self.pump_until_stable(24, 150, |s| s.try_preset_data_json().map_or(0, |b| b.len()))?;
         Ok(self.try_preset_data_json())
     }
 
     /// Slot-read investigation (`probe --slotread-x`): connect with the
     /// slot-addressed read injected at a chosen position in the burst. The
-    /// classic AC1 spike appends it LAST — after the device has started
-    /// streaming the three preset lists + the ~17 KB ProductProfile (fw
-    /// 1.8.45), whose frames share the unkeyed `0x33/0x34/0x35` framing with
-    /// the field-9 reply (the suspected "ProductProfile collision"). These
-    /// variants shape the burst so the reply can't collide: `Early` fires the
-    /// read before the flood requests, `Minimal` never sends the flood at all.
+    /// classic AC1 spike appends it LAST, behind the three preset lists + the ~17 KB
+    /// ProductProfile. (The suspected "ProductProfile collision" was the inactivity
+    /// drop: the device never interleaves replies.) `Early` fires the read before the
+    /// flood requests, `Minimal` never sends the flood at all.
     /// Read-only — sends NO LoadPreset.
     pub fn connect_slotread(variant: SlotReadBurst, extra: &[u8]) -> Result<Session, String> {
         if matches!(variant, SlotReadBurst::Classic) {
@@ -820,7 +914,7 @@ impl Session {
         }
         let hid = open_transport()?;
         let mut s = Session {
-            hid,
+            hid: TrackedHid::new(hid),
             batch: 0,
             raw: Vec::new(),
             fw_version: None,
@@ -829,7 +923,7 @@ impl Session {
         s.send_and_collect(&proto::preset_list_request(1, 1), 20)?; // My Presets
                                                                     // The read fires here — before favorites/factory/cloud/ProductProfile
                                                                     // can flood the unkeyed framing.
-        s.send_and_collect(extra, 1500)?;
+        s.send_and_collect_alive(extra, 1500)?;
         if matches!(variant, SlotReadBurst::Early) {
             // Complete the standard burst so the device sees the full
             // load-bearing sequence (tests placement, not burst trimming).
@@ -889,7 +983,7 @@ impl Session {
     ) -> Result<Session, String> {
         let hid = open_transport()?;
         let mut s = Session {
-            hid,
+            hid: TrackedHid::new(hid),
             batch: 0,
             raw: Vec::new(),
             fw_version: None,
@@ -907,7 +1001,7 @@ impl Session {
     #[cfg(any(test, feature = "e2e"))]
     pub(crate) fn from_transport(hid: Box<dyn HidTransport>) -> Session {
         Session {
-            hid,
+            hid: TrackedHid::new(hid),
             batch: 4,
             raw: Vec::new(),
             fw_version: None,
@@ -952,14 +1046,11 @@ impl Session {
         // how long the host pumps for replies it will never read (see
         // `connect_lean`). TMP_HANDSHAKE_SCALE is a diagnostic env override for
         // probe bisects on top of either set.
-        let base: [u64; 3] = if lean { [50, 5, 75] } else { [200, 20, 300] };
-        let hs = |ms: u64| -> u64 {
-            std::env::var("TMP_HANDSHAKE_SCALE")
-                .ok()
-                .and_then(|v| v.parse::<f64>().ok())
-                .map(|s| ((ms as f64) * s).round() as u64)
-                .unwrap_or(ms)
-        };
+        let base = handshake_base_windows(lean);
+        let scale = std::env::var("TMP_HANDSHAKE_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok());
+        let hs = |ms: u64| handshake_window(ms, scale);
         self.send_and_collect(&proto::connection_request(), hs(base[0]))?;
         self.send_and_collect(&proto::preset_list_request(1, 1), hs(base[1]))?; // My Presets
         self.send_and_collect(&proto::favorite_list_request(2), hs(base[1]))?;
@@ -982,14 +1073,14 @@ impl Session {
         // but it streams a multi-packet blob (~2 s), so only fetch it when the
         // caller needs it (discovery), not on every leveling connect.
         if fetch_preset_json {
-            self.send_and_collect(&proto::current_preset_data_json_request(4), 1800)?;
+            self.send_and_collect_alive(&proto::current_preset_data_json_request(4), 1800)?;
         }
         // AC1 spike: inject a slot-addressed read inside the burst window. The
         // device only answers data requests while actively streaming this burst
         // (a drain drops it to the silent standalone state), so we send WITHOUT
         // draining and tolerate concurrent handshake streams in reassembly.
         if let Some(extra) = extra_burst {
-            self.send_and_collect(&extra, 2000)?;
+            self.send_and_collect_alive(&extra, 2000)?;
         }
         // Continue the batch counter past the handshake's fixed values.
         self.batch = 4;
@@ -1008,17 +1099,10 @@ impl Session {
     }
 
     /// Pump (no send) and accumulate the raw reports received during `ms`.
-    pub(crate) fn pump_collect(&mut self, ms: u64) -> Result<(), String> {
+    pub(crate) fn pump_silent(&mut self, ms: u64) -> Result<(), String> {
         let reports = self.hid.pump(ms)?;
         self.raw.extend(reports);
         Ok(())
-    }
-
-    /// Public pump-and-accumulate for the in-burst harvest probes
-    /// (`connect_with_burst_request` → pump → `harvest_*`). Lets a caller keep
-    /// draining the burst window until a reply lands without exposing `raw`.
-    pub fn pump_more(&mut self, ms: u64) -> Result<(), String> {
-        self.pump_collect(ms)
     }
 
     /// Rich-harvest warmup: the heartbeat/pump turns that establish this session as a live
@@ -1028,7 +1112,7 @@ impl Session {
     pub(crate) fn rich_warmup(&mut self) -> Result<(), String> {
         for _ in 0..8 {
             self.heartbeat()?;
-            self.pump_collect(120)?;
+            self.pump_silent(120)?;
         }
         Ok(())
     }
@@ -1044,7 +1128,7 @@ impl Session {
         self.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
         for _ in 0..10 {
             self.heartbeat()?;
-            self.pump_collect(200)?;
+            self.pump_silent(200)?;
         }
         Ok(())
     }
@@ -1055,7 +1139,7 @@ impl Session {
     /// Used to tell a silent-ignore (no reply) from an error reply.
     pub fn send_and_dump(&mut self, body: &[u8], ms: u64) -> Result<String, String> {
         self.raw.clear();
-        self.send_and_collect(body, ms)?;
+        self.send_and_collect_alive(body, ms)?;
         let streams = self.streams();
         let mut out = format!("  reply streams: {}\n", streams.len());
         for (i, s) in streams.iter().enumerate() {
@@ -1106,7 +1190,7 @@ impl Session {
             if poll_secs > 0 { format!("every {poll_secs}s") } else { "OFF".to_string() }
         );
         while start.elapsed().as_secs() < seconds {
-            self.pump_collect(pump_ms)?;
+            self.pump_silent(pump_ms)?;
             let streams = self.streams_final();
             for _ in first_seen.len()..streams.len() {
                 first_seen.push(start.elapsed().as_secs_f32());
@@ -1186,12 +1270,12 @@ impl Session {
     /// path); this is a manual / first-paint top-up for a mid-preset connect.
     pub fn request_scene_list(&mut self) -> Result<Vec<String>, String> {
         self.raw.clear();
-        self.send_and_collect(&proto::scene_list_request(), 400)?;
+        self.send_and_collect(&proto::scene_list_request(), KEEPALIVE_WINDOW_MS)?;
         for _ in 0..6 {
             if let Some(names) = self.push_bodies().iter().find_map(|b| decode_scene_list(b)) {
                 return Ok(names);
             }
-            self.pump_collect(300)?;
+            self.keepalive_pump()?;
         }
         self.push_bodies()
             .iter()
@@ -1221,11 +1305,9 @@ impl Session {
     /// session churn; accepting the first decode was the truncation, not the
     /// device). Two consecutive no-growth pump windows = complete.
     ///
-    /// KEEPALIVE: fw 1.8.58 drops the HID client after 0.75 s with no INBOUND frame and
-    /// discards the reply in flight (static RE, `ClientManager` timeout `0x0065e490`; a
-    /// heartbeat refreshes it without a reply frame). So every window heartbeats while
-    /// the list is unproven, and a harvest that ends on such a window pauses past the
-    /// timeout — callers keep getting the LAPSED session they always got.
+    /// KEEPALIVE ([`HID_INACTIVITY_DROP_MS`]): every window is kept alive while the list is
+    /// unproven, and a harvest that ends on such a window then [`Self::lapse`]s — callers
+    /// keep getting the LAPSED session they always got.
     pub fn list_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
         // The handshake already issued preset_list_request(1) and accumulated
         // its reply; check that first. Only re-query if it isn't there yet (a short
@@ -1252,7 +1334,7 @@ impl Session {
                 self.keepalive_pump()?;
                 self.keepalive_pump()?;
             } else {
-                self.pump_collect(700)?;
+                self.pump_silent(700)?;
             }
             if let Some(found) = self.best_preset_list() {
                 names = Some(found);
@@ -1277,8 +1359,7 @@ impl Session {
             }
         }
         if alive {
-            // The last heartbeat opened one keepalive window; lapse the rest of the way.
-            self.pump_collect(HID_INACTIVITY_DROP_MS - KEEPALIVE_WINDOW_MS + 100)?;
+            self.lapse()?;
         }
         let names =
             names.ok_or_else(|| "no PresetListResponse received from device".to_string())?;
@@ -1310,18 +1391,81 @@ impl Session {
         Ok(self.harvest_preset_list_strict())
     }
 
-    /// One heartbeat-led pump window — the device never sees more than
-    /// [`KEEPALIVE_WINDOW_MS`] of host silence.
+    /// One kept-alive [`KEEPALIVE_WINDOW_MS`] window.
     fn keepalive_pump(&mut self) -> Result<(), String> {
-        self.heartbeat()?;
-        self.pump_collect(KEEPALIVE_WINDOW_MS)
+        self.pump_collect_alive(KEEPALIVE_WINDOW_MS)
     }
 
-    /// Re-arm a QUIET session and re-request My Presets (`connection_request` →
-    /// `preset_list_request`) — the shared retry recipe of [`Self::list_my_presets_strict`]
-    /// and [`Self::reread_my_presets`].
+    /// Pump `ms` in slices of at most [`KEEPALIVE_WINDOW_MS`], heartbeating before any
+    /// slice that would otherwise carry the host silence to [`CLEARLY_LIVE_MS`] — a reply
+    /// streaming through the wait is never cut by the device's inactivity drop.
+    pub(crate) fn pump_collect_alive(&mut self, ms: u64) -> Result<(), String> {
+        let mut left = ms;
+        while left > 0 {
+            let w = left.min(KEEPALIVE_WINDOW_MS);
+            if self.hid.silent_ms() + w >= CLEARLY_LIVE_MS {
+                self.heartbeat()?;
+            }
+            self.pump_silent(w)?;
+            left -= w;
+        }
+        Ok(())
+    }
+
+    /// Pump kept-alive `window`-ms slices (at most `max`) until `len` reads the same
+    /// non-zero value for two slices running — a multi-frame reply that stopped growing.
+    pub(crate) fn pump_until_stable(
+        &mut self,
+        max: u32,
+        window: u64,
+        len: impl Fn(&Self) -> usize,
+    ) -> Result<(), String> {
+        let (mut last, mut stable) = (0usize, 0u32);
+        for _ in 0..max {
+            self.pump_collect_alive(window)?;
+            let cur = len(self);
+            if cur > 0 && cur == last {
+                stable += 1;
+                if stable >= 2 {
+                    break;
+                }
+            } else {
+                stable = 0;
+            }
+            last = cur;
+        }
+        Ok(())
+    }
+
+    /// [`Self::send_and_collect`] whose window past [`KEEPALIVE_WINDOW_MS`] is kept alive.
+    pub(crate) fn send_and_collect_alive(&mut self, body: &[u8], ms: u64) -> Result<(), String> {
+        let first = ms.min(KEEPALIVE_WINDOW_MS);
+        self.send_and_collect(body, first)?;
+        self.pump_collect_alive(ms - first)
+    }
+
+    /// Pump silently until the device has dropped the client — the LAPSED session the
+    /// quiet-session re-arm recipes expect.
+    pub(crate) fn lapse(&mut self) -> Result<(), String> {
+        let target = HID_INACTIVITY_DROP_MS + 100;
+        let silent = self.hid.silent_ms();
+        if silent < target {
+            self.pump_silent(target - silent)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a write after a silence first reopens a client the device may have
+    /// dropped (on by default — see [`TrackedHid`]). Off only for experiments that
+    /// measure lapsed behavior itself.
+    pub(crate) fn set_auto_reopen(&mut self, on: bool) {
+        self.hid.auto_reopen = on;
+    }
+
+    /// Re-request My Presets — the shared retry of [`Self::list_my_presets_strict`] and
+    /// [`Self::reread_my_presets`]. A lapsed client is reopened by the write itself
+    /// (`TrackedHid`); a live one is not re-armed (that only draws a `connectionError`).
     fn rearm_my_presets_request(&mut self) -> Result<(), String> {
-        self.send_and_collect(&proto::connection_request(), 100)?;
         self.send_and_collect(&proto::preset_list_request(1, 1), 200)
     }
 
@@ -1340,18 +1484,15 @@ impl Session {
     /// handshake already issued `preset_list_request(4)` and accumulated its reply,
     /// so harvest from the shared accumulator first and only re-query if absent.
     pub fn list_factory_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
-        let mut names = best_factory_list_from_reports(&self.raw);
-        if names.is_none() {
+        if best_factory_list_from_reports(&self.raw).is_none() {
             let b = self.next_batch();
-            self.send_and_collect(&proto::preset_list_request(4, b), 1000)?;
-            for _ in 0..8 {
-                if let Some(found) = best_factory_list_from_reports(&self.raw) {
-                    names = Some(found);
-                    break;
-                }
-                self.pump_collect(700)?;
-            }
+            self.send_and_collect(&proto::preset_list_request(4, b), KEEPALIVE_WINDOW_MS)?;
         }
+        // A decodable list is not a complete one (the My-Presets truncation class).
+        self.pump_until_stable(20, KEEPALIVE_WINDOW_MS, |s| {
+            best_factory_list_from_reports(&s.raw).map_or(0, |n| n.len())
+        })?;
+        let names = best_factory_list_from_reports(&self.raw);
         let names = names
             .ok_or_else(|| "no Factory PresetListResponse received from device".to_string())?;
         Ok(preset_entries(names))
@@ -1367,7 +1508,7 @@ impl Session {
     /// 3. falls back to the tolerant list with a warning — a warned short list beats a
     ///    failed connect (truncation is tail-only, and the next reconnect re-reads).
     ///
-    /// Every wait heartbeats (the device's inactivity drop — see [`Self::list_my_presets`])
+    /// Every wait is kept alive ([`HID_INACTIVITY_DROP_MS`])
     /// and none ends in a lapse: the monitor keeps this session live straight after.
     ///
     /// NOT for the leveller/probe/clear call sites — they shape their own bursts
@@ -1419,12 +1560,15 @@ impl Session {
     pub fn fetch_current_preset_json(&mut self) -> Result<String, String> {
         self.raw.clear();
         let b = self.next_batch();
-        self.send_and_collect(&proto::current_preset_data_json_request(b), 1200)?;
-        for _ in 0..8 {
+        self.send_and_collect(
+            &proto::current_preset_data_json_request(b),
+            KEEPALIVE_WINDOW_MS,
+        )?;
+        for _ in 0..CURRENT_JSON_WAIT_MS.div_ceil(KEEPALIVE_WINDOW_MS) {
             if let Some(j) = self.try_preset_json() {
                 return Ok(j);
             }
-            self.pump_collect(700)?;
+            self.keepalive_pump()?;
         }
         self.try_preset_json()
             .ok_or_else(|| "no preset JSON received from device".to_string())
@@ -1488,7 +1632,7 @@ impl Session {
         let steps = (settle_ms / 250).max(1);
         for _ in 0..steps {
             self.heartbeat()?;
-            self.pump_more(250)?;
+            self.pump_silent(250)?;
         }
         let payload = self.best_json_payload();
         if payload.is_empty() {
@@ -1710,25 +1854,9 @@ impl Session {
     /// large multi-packet preset is fully reassembled before we read it.
     pub fn harvest_slot_read(&mut self) -> Result<Vec<u8>, String> {
         let best = |s: &Self| s.try_preset_data_json().or_else(|| s.try_export_json());
-        // Pump until the payload stops growing for two windows. 20×500 ms covers
-        // the largest preset observed (~17 KB / ~290 packets); a patient 60-iter
-        // run confirmed the device stops at the same byte count, so this is the
-        // device's full output, not a harvest-timing cut.
-        let mut last_len = 0usize;
-        let mut stable = 0u32;
-        for _ in 0..20 {
-            self.pump_collect(500)?;
-            let len = best(self).map(|b| b.len()).unwrap_or(0);
-            if len > 0 && len == last_len {
-                stable += 1;
-                if stable >= 2 {
-                    break; // grew then settled — stream complete
-                }
-            } else {
-                stable = 0;
-            }
-            last_len = len;
-        }
+        // Kept alive: the old "device stops at the same byte count" baseline was measured on
+        // SILENT windows, whose stop the inactivity drop also produces.
+        self.pump_until_stable(28, KEEPALIVE_WINDOW_MS, |s| best(s).map_or(0, |b| b.len()))?;
         best(self).ok_or_else(|| {
             format!(
                 "no slot-read reply (field 9/116). Streams seen: {}",
@@ -1859,7 +1987,7 @@ impl Session {
             .clamp(1, 32);
         for _ in 0..n {
             self.heartbeat()?;
-            self.pump_collect(200)?;
+            self.pump_silent(200)?;
         }
         Ok(())
     }
@@ -1875,7 +2003,7 @@ impl Session {
                 return true;
             }
             let _ = self.heartbeat();
-            let _ = self.pump_collect(150);
+            let _ = self.pump_silent(150);
         }
         self.active_preset_name().as_deref() == Some(name)
     }
@@ -1896,7 +2024,7 @@ impl Session {
     fn node_json_request(&mut self, group: &str, node_id: &str) -> Result<(), String> {
         self.send_chunked_collect(&proto::node_json_request(group, node_id), 200)?;
         self.heartbeat()?;
-        self.pump_collect(200)?;
+        self.pump_silent(200)?;
         Ok(())
     }
 
@@ -1997,7 +2125,7 @@ impl Session {
     fn confirm_structural_edit(&mut self, success_field: u32) -> Result<bool, String> {
         for _ in 0..10 {
             self.heartbeat()?;
-            self.pump_collect(200)?;
+            self.pump_silent(200)?;
             if self.saw_preset_field(success_field) {
                 return Ok(true);
             }
@@ -2164,7 +2292,7 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(&proto::node_json_request(dest_group, node_id), 200)?;
         self.heartbeat()?;
-        self.pump_collect(200)?;
+        self.pump_silent(200)?;
         Ok(self.push_bodies().iter().rev().find_map(|b| {
             let pm_fields = proto::parse(b);
             let pm = proto::first_bytes(&pm_fields, TMS_PRESET)?;
@@ -2215,7 +2343,7 @@ impl Session {
             200,
         )?;
         self.heartbeat()?;
-        self.pump_collect(150)?;
+        self.pump_silent(150)?;
         Ok(self
             .read_node_param_str(dest_group, &new_id, "file")?
             .as_deref()
@@ -2286,7 +2414,7 @@ impl Session {
             250,
         )?;
         self.heartbeat()?;
-        self.pump_collect(200)?;
+        self.pump_silent(200)?;
         Ok(())
     }
 
@@ -2299,7 +2427,7 @@ impl Session {
             250,
         )?;
         self.heartbeat()?;
-        self.pump_collect(200)?;
+        self.pump_silent(200)?;
         Ok(())
     }
 
@@ -2320,7 +2448,7 @@ impl Session {
         let mut last = String::new();
         for _ in 0..8 {
             let _ = self.heartbeat();
-            let _ = self.pump_collect(200);
+            let _ = self.pump_silent(200);
             match self.current_preset_value() {
                 Ok(v) if done(&v) => return Ok(v),
                 Ok(_) => last = "a reply parsed but was not accepted".to_string(),
@@ -2348,7 +2476,7 @@ impl Session {
         let (mut last, mut stable) = (self.raw.len(), 0u32);
         for _ in 0..6 {
             let _ = self.heartbeat();
-            let _ = self.pump_collect(200);
+            let _ = self.pump_silent(200);
             let len = self.raw.len();
             if len == last {
                 stable += 1;
@@ -2390,19 +2518,32 @@ impl Session {
         self.raw.clear();
         let payload = proto::lz4_block_compress_stored(preset_bytes);
         let body = proto::import_preset_request(&payload);
-        // Longer pump than setters (300 ms): a ~100-frame import takes longer to
-        // ingest, and any importPresetResponse echo trails the whole burst.
-        let reports = self.hid.transact_chunked(&body, 1500)?;
-        self.raw.extend(reports);
+        // Longer wait than setters (300 ms): a ~100-frame import takes longer to
+        // ingest, and any importPresetResponse echo trails the whole burst — kept alive,
+        // and over as soon as the echo lands.
+        self.send_chunked_collect(&body, KEEPALIVE_WINDOW_MS)?;
+        let mut echo = self.import_echo();
+        for _ in 1..IMPORT_ECHO_WAIT_MS.div_ceil(KEEPALIVE_WINDOW_MS) {
+            if echo.is_some() {
+                break;
+            }
+            self.keepalive_pump()?;
+            echo = self.import_echo();
+        }
         // Stored-preset mutation — see save_current_preset's choke-point note.
         crate::commands::doctor::clear_doctor_before_cache();
-        // importPresetResponse: ImportPresetResponse{ presetJson=1, listEnum=2, presetSlot=3 }
-        Ok(self.streams().iter().find_map(|s| {
+        Ok(echo)
+    }
+
+    /// The `(listEnum, presetSlot)` of an `importPresetResponse`(118) echo, if one landed.
+    fn import_echo(&self) -> Option<(u32, u32)> {
+        // ImportPresetResponse{ presetJson=1, listEnum=2, presetSlot=3 }
+        self.streams().iter().find_map(|s| {
             let fields = dig(&s.body, TMS_PRESET, 118)?;
             let slot = field_n(&fields, 3)?.as_u64()? as u32;
             let list_enum = field_n(&fields, 2).and_then(Val::as_u64).unwrap_or(0) as u32;
             Some((list_enum, slot))
-        }))
+        })
     }
 
     /// Relocate a user preset between **0-based list indices** `old`→`new` —
@@ -3809,30 +3950,6 @@ mod tests {
         }
     }
 
-    /// Records every body the handshake sends; replies are empty (the handshake
-    /// never parses them inline — it only accumulates).
-    struct RecordingTransport(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
-    impl crate::hid::HidTransport for RecordingTransport {
-        fn send(&self, body: &[u8]) -> Result<(), String> {
-            self.0.lock().unwrap().push(body.to_vec());
-            Ok(())
-        }
-        fn transact(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-            self.0.lock().unwrap().push(body.to_vec());
-            Ok(Vec::new())
-        }
-        fn transact_chunked(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-            self.0.lock().unwrap().push(body.to_vec());
-            Ok(Vec::new())
-        }
-        fn pump(&self, _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-            Ok(Vec::new())
-        }
-        fn transact_eager(&self, body: &[u8], max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-            self.transact(body, max_ms)
-        }
-    }
-
     /// Streams `chunks` backup chunks, one per pump, `gap` apart, then BACKUP_COMPLETE.
     /// `chunks == 0` never answers at all.
     struct PacedBackupTransport {
@@ -3893,7 +4010,7 @@ mod tests {
     }
     fn backup_session(t: PacedBackupTransport) -> Session {
         Session {
-            hid: Box::new(t),
+            hid: TrackedHid::new(Box::new(t)),
             batch: 0,
             raw: Vec::new(),
             fw_version: None,
@@ -3927,18 +4044,15 @@ mod tests {
         assert!(err.contains("stalled for 1s"), "{err}");
     }
 
+    /// Every body the handshake sends (the scripted device answers nothing — the
+    /// handshake never parses replies inline, it only accumulates).
     fn handshake_sends(lean: bool) -> Vec<Vec<u8>> {
-        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut s = Session {
-            hid: Box::new(RecordingTransport(sent.clone())),
-            batch: 0,
-            raw: Vec::new(),
-            fw_version: None,
-        };
+        let t = crate::test_support::ScriptedTransport::default();
+        let mut s = crate::test_support::session_over(&t, Vec::new());
         s.handshake(false, None, false, lean).unwrap();
-        // A binding, not a tail expression: the guard temporary must drop before `s`
+        // A binding, not a tail expression: the guard temporary must drop before `t`
         // (E0597 otherwise).
-        let sends = sent.lock().unwrap().clone();
+        let sends = t.sent.lock().unwrap().clone();
         sends
     }
 
@@ -5302,8 +5416,8 @@ mod tests {
     }
 
     // Preset-list harvest gates (online e2e 2026-10-05/06: the seed read 473 / 496 / 459 of
-    // 504 as complete). `ListTransport` + `my_presets_list_frames` script the device side.
-    use crate::test_support::{my_presets_list_frames, session_over, ListTransport};
+    // 504 as complete). `ScriptedTransport` + `my_presets_list_frames` script the device side.
+    use crate::test_support::{my_presets_list_frames, session_over, streamed, ScriptedTransport};
 
     /// A reply that pauses one window with no growth yet must not pass the fast path —
     /// only a strict (terminal-0x35) decode licenses it.
@@ -5311,7 +5425,7 @@ mod tests {
     fn list_my_presets_waits_out_a_one_window_stall_in_the_handshake_reply() {
         let frames = my_presets_list_frames(504);
         let cut = frames.len() - 9;
-        let t = ListTransport::default().with_pending(vec![Vec::new(), frames[cut..].to_vec()]);
+        let t = ScriptedTransport::default().with_pending(vec![Vec::new(), frames[cut..].to_vec()]);
         let mut s = session_over(&t, frames[..cut].to_vec());
         assert_eq!(s.list_my_presets().unwrap().len(), 504);
     }
@@ -5320,7 +5434,7 @@ mod tests {
     /// silent window, with no heartbeat.
     #[test]
     fn list_my_presets_returns_a_complete_handshake_reply_after_one_window() {
-        let t = ListTransport::default();
+        let t = ScriptedTransport::default();
         let mut s = session_over(&t, my_presets_list_frames(504));
         assert_eq!(s.list_my_presets().unwrap().len(), 504);
         assert_eq!(t.idle_ms(), 700, "exactly one silent window");
@@ -5329,12 +5443,11 @@ mod tests {
 
     /// The handshake's last write is ~300 ms back when the harvest starts, so one SILENT
     /// 700 ms window crosses the device's inactivity drop mid-stream.
-    fn in_flight_handshake_reply() -> (ListTransport, Session) {
+    fn in_flight_handshake_reply() -> (ScriptedTransport, Session) {
         let frames = my_presets_list_frames(504);
-        let t = ListTransport::default()
-            .with_inactivity_timeout(HID_INACTIVITY_DROP_MS)
+        let t = ScriptedTransport::device()
             .with_idle(300)
-            .with_pending(frames[60..].chunks(40).map(<[Vec<u8>]>::to_vec).collect());
+            .with_pending(streamed(&frames[60..], 40));
         let s = session_over(&t, frames[..60].to_vec());
         (t, s)
     }
@@ -5360,12 +5473,128 @@ mod tests {
     #[test]
     fn list_my_presets_strict_rearm_outlives_the_inactivity_drop() {
         let frames = my_presets_list_frames(504);
-        let t = ListTransport::default()
-            .with_inactivity_timeout(HID_INACTIVITY_DROP_MS)
-            .with_reply(frames.chunks(40).map(<[Vec<u8>]>::to_vec).collect());
+        let t = ScriptedTransport::device().with_reply(streamed(&frames, 40));
         let mut s = session_over(&t, Vec::new());
         assert_eq!(s.list_my_presets_strict().unwrap().len(), 504);
         assert_eq!(t.list_requests(), 1);
+    }
+
+    /// The quiet field-8 read: a multi-frame reply streaming past the inactivity drop
+    /// arrives whole; the read re-arms the lapsed session it starts on, and the next read
+    /// on the session it kept alive needs no re-arm.
+    #[test]
+    fn slot_read_survives_the_inactivity_drop_and_rearms_only_a_lapsed_session() {
+        use crate::test_support::preset_data_frames;
+        let req = |slot| proto::preset_data_request(1, slot, None);
+        let t = ScriptedTransport::device()
+            .with_reply_to(&req(5), streamed(&preset_data_frames(17_000), 30))
+            .with_reply_to(&req(6), streamed(&preset_data_frames(9_000), 30));
+        let mut s = session_over(&t, Vec::new());
+        s.pump_silent(1_000).unwrap(); // a drained, lapsed session
+        assert_eq!(s.read_slot_preset_json(5).unwrap().unwrap().len(), 17_000);
+        assert_eq!(s.read_slot_preset_json(6).unwrap().unwrap().len(), 9_000);
+        assert_eq!(t.count_sent(&proto::connection_request()), 1);
+        assert_eq!((t.live_rearms(), t.dropped_writes()), (0, 0));
+    }
+
+    /// A small reply that lands inside the send window ends after its stability slices,
+    /// not the full budget.
+    #[test]
+    fn slot_read_of_a_small_preset_stops_once_stable() {
+        use crate::test_support::preset_data_frames;
+        let t = ScriptedTransport::device().with_reply_to(
+            &proto::preset_data_request(1, 3, None),
+            vec![preset_data_frames(3_500)],
+        );
+        let mut s = session_over(&t, Vec::new());
+        assert_eq!(s.read_slot_preset_json(3).unwrap().unwrap().len(), 3_500);
+        assert!(
+            t.heartbeats() <= 1,
+            "{} heartbeats — ran past stable",
+            t.heartbeats()
+        );
+    }
+
+    /// The `extra_burst` and field-78 handshake windows (2000 / 1800 ms) keep their
+    /// streaming replies alive.
+    #[test]
+    fn handshake_keeps_the_extra_burst_and_field78_replies_alive() {
+        use crate::test_support::preset_data_frames;
+        let extra = proto::preset_data_request(1, 5, None);
+        let field78 = proto::current_preset_data_json_request(4);
+        let t = ScriptedTransport::device()
+            .with_reply_to(&field78, vec![Vec::new(); 5])
+            .with_reply_to(&extra, streamed(&preset_data_frames(17_000), 30));
+        let mut s = session_over(&t, Vec::new());
+        s.handshake(true, Some(extra), false, false).unwrap();
+        s.pump_collect_alive(2_000).unwrap(); // the callers' harvest
+        assert_eq!(s.try_preset_data_json().unwrap().len(), 17_000);
+        assert_eq!(t.dropped_writes(), 0);
+    }
+
+    /// A write after a long silent wait reopens the client first — a lapsed client
+    /// answers `connectionError` and applies nothing (the setter is silently lost).
+    #[test]
+    fn a_write_after_a_long_wait_reopens_the_client_first() {
+        let t = ScriptedTransport::device();
+        let mut s = session_over(&t, Vec::new());
+        s.pump_silent(1_000).unwrap();
+        s.clear_user_preset(415).unwrap();
+        assert_eq!(t.dropped_writes(), 0);
+        assert_eq!(t.count_sent(&proto::connection_request()), 1);
+        // The escape hatch for experiments that measure lapsed behavior itself.
+        s.set_auto_reopen(false);
+        s.pump_silent(1_000).unwrap();
+        s.clear_user_preset(415).unwrap();
+        assert_eq!(t.dropped_writes(), 1);
+    }
+
+    #[test]
+    fn a_write_on_a_live_client_does_not_reopen_it() {
+        let t = ScriptedTransport::device();
+        let mut s = session_over(&t, Vec::new());
+        s.pump_silent(300).unwrap();
+        s.clear_user_preset(415).unwrap();
+        assert_eq!(t.count_sent(&proto::connection_request()), 0);
+        assert_eq!(t.live_rearms(), 0);
+    }
+
+    /// Every handshake window is followed by the next request, so a window is the burst's
+    /// longest host silence: even the `TMP_HANDSHAKE_SCALE` bisect knob can't push one
+    /// past the inactivity drop.
+    #[test]
+    fn handshake_windows_stay_below_the_inactivity_drop() {
+        for lean in [false, true] {
+            for w in handshake_base_windows(lean) {
+                assert_eq!(handshake_window(w, None), w);
+                assert!(handshake_window(w, Some(100.0)) < HID_INACTIVITY_DROP_MS);
+            }
+        }
+    }
+
+    /// The Factory list waits out a reply still streaming (a decodable list is not a
+    /// complete one) and keeps the session alive while it does.
+    #[test]
+    fn list_factory_presets_waits_out_a_streaming_reply() {
+        let frames = crate::test_support::preset_list_frames(4, 120);
+        let t = ScriptedTransport::device()
+            .with_idle(300)
+            .with_pending(streamed(&frames[10..], 10));
+        let mut s = session_over(&t, frames[..10].to_vec());
+        assert_eq!(s.list_factory_presets().unwrap().len(), 120);
+    }
+
+    /// The import echo trails the upload by more than the inactivity drop; the wait keeps
+    /// the client alive so the echo is not discarded.
+    #[test]
+    fn import_preset_keeps_the_echo_window_alive() {
+        let bytes = b"{\"info\":{}}".to_vec();
+        let body = proto::import_preset_request(&proto::lz4_block_compress_stored(&bytes));
+        let echo = crate::test_support::import_echo_frames(1, 7);
+        let t =
+            ScriptedTransport::device().with_reply_to(&body, vec![Vec::new(), Vec::new(), echo]);
+        let mut s = session_over(&t, Vec::new());
+        assert_eq!(s.import_preset(&bytes).unwrap(), Some((1, 7)));
     }
 
     /// Callers have always received a LAPSED session, and the follow-on re-arm recipes
@@ -5373,7 +5602,7 @@ mod tests {
     #[test]
     fn list_my_presets_lets_the_session_lapse_after_a_keepalive_harvest() {
         let frames = my_presets_list_frames(504);
-        let t = ListTransport::default();
+        let t = ScriptedTransport::default();
         let mut s = session_over(&t, frames[..60].to_vec());
         assert!(s.list_my_presets().unwrap().len() < 504);
         assert!(t.heartbeats() > 0);

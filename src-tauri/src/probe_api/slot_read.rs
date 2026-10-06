@@ -40,13 +40,11 @@ pub fn probe_listen(seconds: u64, hb_ms: u64, poll_secs: u64) -> Result<(), Stri
 }
 
 /// AC1: read a library slot's preset JSON over USB and report whether
-/// it is a complete preset or a partial. **RESOLVED on 1.7.75 HW:** USB does NOT
-/// yield a complete preset — `presetDataRequest` (field 8 → `presetDataChanged`
-/// 9, plaintext) returns a per-slot-DETERMINISTIC partial (e.g. slot 0 = 1669 B
-/// empty nodes; slot 1 = 17264 B with scenes but cut mid-`uuid`); the device
-/// truncates the stream at the source. `exportPresetRequest` (115) is unimplemented
-/// (no response). So the canonical full-preset source is OFFLINE `.preset` files;
-/// this path serves USB partials (search/inventory/quick reads), not backup.
+/// it is a complete preset or a partial. On 1.7.75 HW `presetDataRequest` (field 8 →
+/// `presetDataChanged` 9, plaintext) returned partials (e.g. slot 1 = 17264 B cut
+/// mid-`uuid`) — on fw 1.8.58 that cut is the device's inactivity drop on a silent
+/// harvest; kept alive, a large preset reads whole. `exportPresetRequest` (115) is
+/// unimplemented (no response).
 ///
 /// The request MUST ride inside the handshake burst with NO batchStatus — a
 /// standalone post-handshake request, or one carrying a batch, gets no reply.
@@ -136,28 +134,7 @@ pub fn probe_dump_list(
     );
     let (mut ok, mut miss) = (0u32, 0u32);
     for slot in from_slot..=to_slot {
-        s.raw.clear();
-        s.send_and_collect(&proto::connection_request(), 100)?;
-        s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-        s.send_and_collect(
-            &proto::preset_data_request(list_enum as u64, slot as u64, None),
-            200,
-        )?;
-        let (mut last, mut stable) = (0usize, 0u32);
-        for _ in 0..24 {
-            s.pump_collect(150)?;
-            let len = s.try_preset_data_json().map(|b| b.len()).unwrap_or(0);
-            if len > 0 && len == last {
-                stable += 1;
-                if stable >= 2 {
-                    break;
-                }
-            } else {
-                stable = 0;
-            }
-            last = len;
-        }
-        match s.try_preset_data_json() {
+        match s.read_list_preset_json(list_enum as u64, slot, false)? {
             Some(raw) => {
                 let decoded = match proto::lz4_block_decompress(&raw) {
                     Ok(d) if !d.is_empty() => d,
@@ -281,35 +258,21 @@ fn slotread_report(
 }
 
 /// Pump until the field-9 reply stops growing (2 stable windows), bounded.
-/// A lighter `harvest_slot_read` for the experiment matrix (12×400 ms instead
-/// of 20×500 ms — 9 connections back-to-back must not take minutes).
+/// A lighter `harvest_slot_read` for the experiment matrix (half its budget — 9
+/// connections back-to-back must not take minutes).
 fn slotread_harvest(s: &mut Session) -> Option<Vec<u8>> {
-    let mut last = 0usize;
-    let mut stable = 0u32;
-    for _ in 0..12 {
-        if s.pump_more(400).is_err() {
-            break;
-        }
-        let len = s.try_preset_data_json().map(|b| b.len()).unwrap_or(0);
-        if len > 0 && len == last {
-            stable += 1;
-            if stable >= 2 {
-                break;
-            }
-        } else {
-            stable = 0;
-        }
-        last = len;
-    }
+    let _ = s.pump_until_stable(14, crate::session::KEEPALIVE_WINDOW_MS, |s| {
+        s.try_preset_data_json().map_or(0, |b| b.len())
+    });
     s.try_preset_data_json()
 }
 
 /// Investigation (`probe --slotread-x [deviceSlot…]`): can the slot-addressed
 /// `presetDataRequest` (field 8 → `presetDataChanged` 9) serve a
 /// NON-DESTRUCTIVE per-slot scene read — no LoadPreset, the unit's selected
-/// preset never changes? The connect-fast benchmark scored the
-/// classic in-burst read 0/25 on fw 1.8.45 ("ProductProfile collision"); this
-/// matrix separates a device-side drop from a host-side reassembly loss:
+/// preset never changes? The connect-fast benchmark scored the classic in-burst read
+/// 0/25 on fw 1.8.45 — on fw 1.8.58 that is the inactivity drop discarding the queued
+/// reply during a silent window (3/3 once kept alive). The matrix:
 ///   B          post-handshake read on a warmed dense-heartbeat LIVE session
 ///   C-early    in-burst, read fired BEFORE the flood requests
 ///   C-minimal  trimmed burst: connection_request + My Presets + read only
@@ -347,7 +310,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
     );
     for _ in 0..16 {
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
     }
     for &slot in &slots {
         s.raw.clear();
@@ -369,6 +332,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
         let first_req = proto::preset_data_request(1, slots[0] as u64, None);
         match Session::connect_slotread(SlotReadBurst::Minimal, &first_req) {
             Ok(mut s) => {
+                s.set_auto_reopen(false); // the question is whether the session keeps answering
                 let reply = slotread_harvest(&mut s);
                 out += &slotread_report("D", slots[0], &name_of(slots[0]), reply.as_deref(), &s);
                 for &slot in &slots[1..] {
@@ -393,6 +357,7 @@ pub fn probe_slotread_experiments(device_slots: Vec<u32>) -> Result<String, Stri
         let first_req = proto::preset_data_request(1, slots[0] as u64, None);
         match Session::connect_slotread(SlotReadBurst::Minimal, &first_req) {
             Ok(mut s) => {
+                s.set_auto_reopen(false); // the explicit per-read re-arm is what's measured
                 let reply = slotread_harvest(&mut s);
                 out += &format!(
                     "  ({:.2}s){}",
@@ -460,7 +425,7 @@ pub fn probe_slotread_live(device_slot: u32, rounds: u32) -> Result<String, Stri
         // Warm a Pro-Control-style dense heartbeat → live-controller status.
         for _ in 0..16 {
             s.heartbeat()?;
-            s.pump_collect(120)?;
+            s.pump_silent(120)?;
         }
         let mut out = format!("── {label} on a warmed dense-heartbeat live session ──\n");
         for r in 0..rounds {

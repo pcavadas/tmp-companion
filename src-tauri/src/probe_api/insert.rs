@@ -171,7 +171,7 @@ fn group_roster_fender_ids(v: &serde_json::Value, group: &str) -> Vec<String> {
 fn ordered_group(s: &mut Session, group: &str) -> Vec<String> {
     for _ in 0..10 {
         let _ = s.heartbeat();
-        let _ = s.pump_collect(250);
+        let _ = s.pump_silent(250);
         if let Ok(v) = s.current_preset_value() {
             let roster = group_roster_fender_ids(&v, group);
             if !roster.is_empty() {
@@ -280,7 +280,7 @@ pub fn probe_insert_map(
         }
         s.save_current_preset(list_index)?;
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
         drop(s);
         std::thread::sleep(std::time::Duration::from_millis(600));
         field8_group_order(device_slot, group)
@@ -291,7 +291,7 @@ pub fn probe_insert_map(
         s.clear_raw();
         s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
         order
     };
     report.push_str(&format!(
@@ -352,7 +352,7 @@ fn held_insert_one(
 
     // Content read-back: coax a fresh field-3 push, then check the block is present.
     s.heartbeat()?;
-    s.pump_collect(250)?;
+    s.pump_silent(250)?;
     let present = s
         .current_preset_value()
         .ok()
@@ -389,7 +389,7 @@ fn held_insert_one(
         }
         s.save_current_preset(list_index)?;
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
         Ok(BulkReplaceItem {
             slot: list_index,
             name: name.to_string(),
@@ -401,7 +401,7 @@ fn held_insert_one(
         s.clear_raw();
         s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
         Ok(BulkReplaceItem {
             slot: list_index,
             name: name.to_string(),
@@ -476,7 +476,7 @@ pub fn probe_reprompt_map(
             break;
         }
         let _ = s.heartbeat();
-        let _ = s.pump_collect(150);
+        let _ = s.pump_silent(150);
     }
     report.push_str(&format!(
         "  LOAD confirm: matched after {matched_at:?} ms (loaded={:?}, active={:?}, fields={:?})\n",
@@ -573,7 +573,7 @@ pub fn probe_reprompt_map(
         }
         s.save_current_preset(list_index)?;
         s.heartbeat()?;
-        s.pump_collect(120)?;
+        s.pump_silent(120)?;
         drop(s);
         std::thread::sleep(std::time::Duration::from_millis(600));
         let after = field8_group_order(device_slot, group);
@@ -609,7 +609,7 @@ pub fn probe_reprompt_map(
         ));
         for k in 1..=4 {
             let _ = s.heartbeat();
-            let _ = s.pump_collect(200);
+            let _ = s.pump_silent(200);
             let roster = s
                 .current_preset_value()
                 .map(|v| group_roster_fender_ids(&v, group))
@@ -624,7 +624,7 @@ pub fn probe_reprompt_map(
     s.clear_raw();
     s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
     s.heartbeat()?;
-    s.pump_collect(120)?;
+    s.pump_silent(120)?;
     let reverted = ordered_group(&mut s, group);
     report.push_str(&format!("  REVERTED (reload) {group}: {reverted:?}\n"));
     Ok(report)
