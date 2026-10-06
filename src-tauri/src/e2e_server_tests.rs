@@ -3703,7 +3703,7 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
             force_bypass: vec![],
         };
         let from = sim.events().len();
-        let _ = crate::leveller::level_scenes_rebalance(
+        let outcomes = crate::leveller::level_scenes_rebalance(
             403,
             &[job],
             &stim,
@@ -3715,6 +3715,12 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
             |_, _| {},
             |_| {},
             || false,
+        )
+        .unwrap_or_else(|e| panic!("{case}: the rebalance run must succeed: {e}"));
+        // A failed solve can still log five engages without reaching the first verified apply.
+        assert!(
+            outcomes.len() == 1 && outcomes[0].failure.is_none(),
+            "{case}: the rebalance scene must solve: {outcomes:?}"
         );
 
         let ev = &sim.events()[from..];
