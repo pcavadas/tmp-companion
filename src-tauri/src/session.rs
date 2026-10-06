@@ -368,6 +368,12 @@ pub struct Session {
     fw_version: Option<String>,
 }
 
+/// fw 1.8.58 drops the HID client after this long with no INBOUND frame — see
+/// [`Session::list_my_presets`].
+const HID_INACTIVITY_DROP_MS: u64 = 750;
+/// Host-silence cap of a keepalive window: well inside [`HID_INACTIVITY_DROP_MS`].
+const KEEPALIVE_WINDOW_MS: u64 = 350;
+
 /// FenderMessageTMS top-level oneof field numbers.
 const TMS_PRESET: u32 = 2;
 const TMS_SETTINGS: u32 = 3;
@@ -1214,13 +1220,20 @@ impl Session {
     /// Pro Control's single long session in full — the flood streams slower under
     /// session churn; accepting the first decode was the truncation, not the
     /// device). Two consecutive no-growth pump windows = complete.
+    ///
+    /// KEEPALIVE: fw 1.8.58 drops the HID client after 0.75 s with no INBOUND frame and
+    /// discards the reply in flight (static RE, `ClientManager` timeout `0x0065e490`; a
+    /// heartbeat refreshes it without a reply frame). So every window heartbeats while
+    /// the list is unproven, and a harvest that ends on such a window pauses past the
+    /// timeout — callers keep getting the LAPSED session they always got.
     pub fn list_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
         // The handshake already issued preset_list_request(1) and accumulated
-        // its reply; check that first. Only re-query if it isn't there yet.
+        // its reply; check that first. Only re-query if it isn't there yet (a short
+        // send window — the keepalive windows below collect the reply).
         let mut names = self.best_preset_list();
         if names.is_none() {
             let b = self.next_batch();
-            self.send_and_collect(&proto::preset_list_request(1, b), 1000)?;
+            self.send_and_collect(&proto::preset_list_request(1, b), 200)?;
         }
         // Growth metric = record count + total content bytes, not count alone:
         // the tolerant decode's final-frame tail case can GROW IN CONTENT at a
@@ -1230,13 +1243,21 @@ impl Session {
             n.as_ref()
                 .map_or(0, |v| v.len() + v.iter().map(String::len).sum::<usize>())
         };
-        let (mut stable, mut grew) = (0u32, false);
+        let mut proven = self.my_presets_proven(names.as_deref());
+        let (mut stable, mut grew, mut alive) = (0u32, false, false);
         for _ in 0..12 {
             let prev = weigh(&names);
-            self.pump_collect(700)?;
+            alive = !proven;
+            if alive {
+                self.keepalive_pump()?;
+                self.keepalive_pump()?;
+            } else {
+                self.pump_collect(700)?;
+            }
             if let Some(found) = self.best_preset_list() {
                 names = Some(found);
             }
+            proven = self.my_presets_proven(names.as_deref());
             let cur = weigh(&names);
             if cur > 0 && cur == prev {
                 stable += 1;
@@ -1246,7 +1267,8 @@ impl Session {
                 // call actually watched the flood grow. Keeps the truncation fix
                 // without taxing every tolerant read a flat 1.4 s — the read sits
                 // in a 3×-per-preset loop under bulk runs (`replace_inplace_with`).
-                if stable >= if grew { 2 } else { 1 } {
+                // The fast path needs PROOF: a decodable list is not a complete one.
+                if stable >= if grew || !proven { 2 } else { 1 } {
                     break;
                 }
             } else {
@@ -1254,9 +1276,64 @@ impl Session {
                 stable = 0;
             }
         }
+        if alive {
+            // The last heartbeat opened one keepalive window; lapse the rest of the way.
+            self.pump_collect(HID_INACTIVITY_DROP_MS - KEEPALIVE_WINDOW_MS + 100)?;
+        }
         let names =
             names.ok_or_else(|| "no PresetListResponse received from device".to_string())?;
         Ok(preset_entries(names))
+    }
+
+    /// Whether the tolerant harvest `names` is PROVEN complete: a strict
+    /// (terminal-0x35) decode of the same length is present.
+    fn my_presets_proven(&self, names: Option<&[String]>) -> bool {
+        names.is_some_and(|n| {
+            self.harvest_preset_list_strict()
+                .is_some_and(|strict| strict.len() == n.len())
+        })
+    }
+
+    /// Keepalive windows until a complete (strict) My-Presets decode lands — at most ~1 s,
+    /// and none past a window that brought nothing new (that reply is done or dropped).
+    fn await_strict_list(&mut self) -> Result<Option<Vec<String>>, String> {
+        for _ in 0..3 {
+            if let Some(found) = self.harvest_preset_list_strict() {
+                return Ok(Some(found));
+            }
+            let before = self.raw.len();
+            self.keepalive_pump()?;
+            if self.raw.len() == before {
+                break;
+            }
+        }
+        Ok(self.harvest_preset_list_strict())
+    }
+
+    /// One heartbeat-led pump window — the device never sees more than
+    /// [`KEEPALIVE_WINDOW_MS`] of host silence.
+    fn keepalive_pump(&mut self) -> Result<(), String> {
+        self.heartbeat()?;
+        self.pump_collect(KEEPALIVE_WINDOW_MS)
+    }
+
+    /// Re-arm a QUIET session and re-request My Presets (`connection_request` →
+    /// `preset_list_request`) — the shared retry recipe of [`Self::list_my_presets_strict`]
+    /// and [`Self::reread_my_presets`].
+    fn rearm_my_presets_request(&mut self) -> Result<(), String> {
+        self.send_and_collect(&proto::connection_request(), 100)?;
+        self.send_and_collect(&proto::preset_list_request(1, 1), 200)
+    }
+
+    /// Re-read the My-Presets list on this HELD session (no reopen — every failed open
+    /// resets the HID open-lockout). `raw` MUST be cleared: a stale truncated list left
+    /// in it out-weighs the fresh reply's mid-flood partials in the tolerant harvest.
+    /// Quiet sessions only — a re-arm on a live one draws a `connectionError`.
+    pub fn reread_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
+        self.drain_until_quiet(250, 20)?;
+        self.raw.clear();
+        self.rearm_my_presets_request()?;
+        self.list_my_presets()
     }
 
     /// Enumerate the FACTORY list (listEnum = 4). Mirrors [`list_my_presets`]: the
@@ -1280,60 +1357,48 @@ impl Session {
         Ok(preset_entries(names))
     }
 
-    /// Completeness-validated My-Presets list for the snapshot path. The tolerant
-    /// `list_my_presets` now waits out growth (its stability harvest), but its
-    /// completeness is still judged by TIME, not evidence — a mid-flood stall
-    /// longer than a pump window can still return a tail-truncated response
-    /// (historically: 371 of 504 records when the monitor reconnected right after
-    /// a heavy field-8 sweep left the line flooded). This variant proves
-    /// completeness by the terminal 0x35 frame instead:
-    /// 1. tries the strict harvest on the already-accumulated handshake reports;
-    /// 2. retries by RE-ARMING the open session (the `read_slot_preset_json`
-    ///    recipe: quiet line → `connection_request` → `preset_list_request`) —
-    ///    WITHOUT clearing `raw`, because `assemble_startup_snapshot` harvests the
-    ///    startup graph from these same reports after the list read; appending is
-    ///    safe since strict rejects the old truncated streams and longest-complete
-    ///    wins picks the fresh full response;
-    /// 3. falls back to the tolerant longest-wins list with a diagnostic warning —
-    ///    a warned short list beats a failed connect (truncation is tail-only, so
-    ///    present entries keep correct slots, and the next monitor reconnect
-    ///    re-reads the list).
+    /// Completeness-validated My-Presets list for the snapshot path: completeness is
+    /// proven by the terminal 0x35 frame, not judged by time (the tolerant harvest once
+    /// served 371 of 504 here, after a heavy field-8 sweep left the line flooded).
+    /// 1. strict harvest of the handshake reports, waiting out a reply still in flight;
+    /// 2. retries by RE-ARMING the open session — WITHOUT clearing `raw`, because
+    ///    `assemble_startup_snapshot` harvests the startup graph from these same reports
+    ///    (appending is safe: strict rejects the old truncated streams);
+    /// 3. falls back to the tolerant list with a warning — a warned short list beats a
+    ///    failed connect (truncation is tail-only, and the next reconnect re-reads).
+    ///
+    /// Every wait heartbeats (the device's inactivity drop — see [`Self::list_my_presets`])
+    /// and none ends in a lapse: the monitor keeps this session live straight after.
     ///
     /// NOT for the leveller/probe/clear call sites — they shape their own bursts
     /// and a re-arm would clobber their accumulator timing; they stay on the
     /// tolerant `list_my_presets`.
     pub fn list_my_presets_strict(&mut self) -> Result<Vec<PresetEntry>, String> {
-        let mut names = self.harvest_preset_list_strict();
+        let mut names = if self.best_preset_list().is_some() {
+            self.await_strict_list()?
+        } else {
+            None
+        };
         for _attempt in 0..2 {
             if names.is_some() {
                 break;
             }
             self.drain_until_quiet(250, 20)?;
-            self.send_and_collect(&proto::connection_request(), 100)?;
-            self.send_and_collect(&proto::preset_list_request(1, 1), 200)?;
-            for _ in 0..4 {
-                if let Some(found) = self.harvest_preset_list_strict() {
-                    names = Some(found);
-                    break;
-                }
-                self.pump_collect(250)?;
-            }
+            self.rearm_my_presets_request()?;
+            names = self.await_strict_list()?;
         }
-        let names = match names {
-            Some(n) => n,
-            None => {
-                let tolerant = self
-                    .best_preset_list()
-                    .ok_or_else(|| "no PresetListResponse received from device".to_string())?;
-                log::warn!(
-                    "list_my_presets_strict: no complete decode after retries; serving the \
-                     tolerant longest-wins list ({} records — tail may be truncated)",
-                    tolerant.len()
-                );
-                tolerant
-            }
-        };
-        Ok(preset_entries(names))
+        if let Some(n) = names {
+            return Ok(preset_entries(n));
+        }
+        let tolerant = self
+            .best_preset_list()
+            .ok_or_else(|| "no PresetListResponse received from device".to_string())?;
+        log::warn!(
+            "list_my_presets_strict: no complete decode after retries; serving the \
+             tolerant longest-wins list ({} records — tail may be truncated)",
+            tolerant.len()
+        );
+        Ok(preset_entries(tolerant))
     }
 
     /// Best My-Presets list decoded from all reports accumulated so far. Tries BOTH
@@ -5234,5 +5299,88 @@ mod tests {
         assert_eq!(map.get(&0), Some(&5)); // Arpeges → switch 5 (FS6)
         assert_eq!(map.get(&5), Some(&7)); // Dist → switch 7 (FS8)
         assert_eq!(map.get(&4), None); // Lofi: inactive switch → em-dash
+    }
+
+    // Preset-list harvest gates (online e2e 2026-10-05/06: the seed read 473 / 496 / 459 of
+    // 504 as complete). `ListTransport` + `my_presets_list_frames` script the device side.
+    use crate::test_support::{my_presets_list_frames, session_over, ListTransport};
+
+    /// A reply that pauses one window with no growth yet must not pass the fast path —
+    /// only a strict (terminal-0x35) decode licenses it.
+    #[test]
+    fn list_my_presets_waits_out_a_one_window_stall_in_the_handshake_reply() {
+        let frames = my_presets_list_frames(504);
+        let cut = frames.len() - 9;
+        let t = ListTransport::default().with_pending(vec![Vec::new(), frames[cut..].to_vec()]);
+        let mut s = session_over(&t, frames[..cut].to_vec());
+        assert_eq!(s.list_my_presets().unwrap().len(), 504);
+    }
+
+    /// The hot path is unchanged: an already-complete handshake reply returns after ONE
+    /// silent window, with no heartbeat.
+    #[test]
+    fn list_my_presets_returns_a_complete_handshake_reply_after_one_window() {
+        let t = ListTransport::default();
+        let mut s = session_over(&t, my_presets_list_frames(504));
+        assert_eq!(s.list_my_presets().unwrap().len(), 504);
+        assert_eq!(t.idle_ms(), 700, "exactly one silent window");
+        assert_eq!(t.heartbeats(), 0);
+    }
+
+    /// The handshake's last write is ~300 ms back when the harvest starts, so one SILENT
+    /// 700 ms window crosses the device's inactivity drop mid-stream.
+    fn in_flight_handshake_reply() -> (ListTransport, Session) {
+        let frames = my_presets_list_frames(504);
+        let t = ListTransport::default()
+            .with_inactivity_timeout(HID_INACTIVITY_DROP_MS)
+            .with_idle(300)
+            .with_pending(frames[60..].chunks(40).map(<[Vec<u8>]>::to_vec).collect());
+        let s = session_over(&t, frames[..60].to_vec());
+        (t, s)
+    }
+
+    #[test]
+    fn list_my_presets_keeps_the_session_alive_while_the_list_streams() {
+        let (t, mut s) = in_flight_handshake_reply();
+        assert_eq!(s.list_my_presets().unwrap().len(), 504);
+        assert!(t.heartbeats() > 0);
+    }
+
+    /// The strict read waits out a handshake reply still in flight — heartbeating, so the
+    /// device doesn't drop it — instead of draining (which lapses the session and loses it)
+    /// and re-requesting.
+    #[test]
+    fn list_my_presets_strict_waits_out_an_in_flight_handshake_reply() {
+        let (t, mut s) = in_flight_handshake_reply();
+        assert_eq!(s.list_my_presets_strict().unwrap().len(), 504);
+        assert_eq!(t.list_requests(), 0);
+    }
+
+    /// The strict re-arm's own reply streams past the inactivity drop; it must survive.
+    #[test]
+    fn list_my_presets_strict_rearm_outlives_the_inactivity_drop() {
+        let frames = my_presets_list_frames(504);
+        let t = ListTransport::default()
+            .with_inactivity_timeout(HID_INACTIVITY_DROP_MS)
+            .with_reply(frames.chunks(40).map(<[Vec<u8>]>::to_vec).collect());
+        let mut s = session_over(&t, Vec::new());
+        assert_eq!(s.list_my_presets_strict().unwrap().len(), 504);
+        assert_eq!(t.list_requests(), 1);
+    }
+
+    /// Callers have always received a LAPSED session, and the follow-on re-arm recipes
+    /// assume one — a harvest that ends on a heartbeat window must still hand one back.
+    #[test]
+    fn list_my_presets_lets_the_session_lapse_after_a_keepalive_harvest() {
+        let frames = my_presets_list_frames(504);
+        let t = ListTransport::default();
+        let mut s = session_over(&t, frames[..60].to_vec());
+        assert!(s.list_my_presets().unwrap().len() < 504);
+        assert!(t.heartbeats() > 0);
+        assert!(
+            t.idle_ms() > HID_INACTIVITY_DROP_MS,
+            "{} ms idle",
+            t.idle_ms()
+        );
     }
 }

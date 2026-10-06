@@ -2591,7 +2591,7 @@ fn frame(body: &[u8]) -> Vec<u8> {
 /// `0x34` continue / `0x35` final chunking (≤60 B each), so `streams_final` reassembles
 /// it byte-identically. A short body collapses to a single `0x35` frame (= [`frame`]).
 /// Needed for the showcase song/setlist lists, which exceed one frame.
-fn frame_multi(body: &[u8]) -> Vec<Vec<u8>> {
+pub(crate) fn frame_multi(body: &[u8]) -> Vec<Vec<u8>> {
     const MAX: usize = 60;
     if body.len() <= MAX {
         return vec![frame(body)];

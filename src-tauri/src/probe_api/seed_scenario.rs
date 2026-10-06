@@ -524,9 +524,27 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
 /// length check IS the completeness check), and a LARGER bank means a fw rev
 /// moved the slot layout out from under our destructive slot assumptions.
 const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45; fail-loud if a fw rev resizes the bank
+/// Held-session re-reads of a SHORT list before the size gate fails the run (online e2e
+/// 2026-10-05/06: one-off 473 / 496 / 459 reads; a read right after returned 504). A LARGER
+/// list is never re-read — that is a bank resize, not a truncation.
+const LIST_REREADS: u32 = 2;
 
 fn read_full_list(s: &mut Session) -> Result<Vec<session::PresetEntry>, String> {
-    let list = s.list_my_presets()?;
+    let mut list = s.list_my_presets()?;
+    for attempt in 1..=LIST_REREADS {
+        if list.len() >= MY_PRESETS_BANK_SIZE {
+            break;
+        }
+        // The frame summary splits the causes: a list stream that just stops (a device-side
+        // drop) vs a foreign `0x33` mid-list (host-side report loss).
+        eprintln!(
+            "[seed] preset list read {} of {MY_PRESETS_BANK_SIZE} records (tail-truncated) — \
+             re-reading on the held session ({attempt}/{LIST_REREADS}); frames: {}",
+            list.len(),
+            s.raw_frame_summary()
+        );
+        list = s.reread_my_presets()?;
+    }
     if list.len() != MY_PRESETS_BANK_SIZE {
         return Err(format!(
             "preset list size {} != the expected {MY_PRESETS_BANK_SIZE} (truncated read, or a \
@@ -1013,5 +1031,82 @@ mod tests {
                 p.name
             );
         }
+    }
+
+    // `read_full_list` gates (online e2e 2026-10-05/06): a short read re-reads on the HELD
+    // session; the exact-bank-size gate stays.
+    use crate::test_support::{my_presets_list_frames, session_over, ListTransport};
+
+    /// Frames dropped off the end of the handshake's list reply.
+    const CUT: usize = 20;
+
+    fn truncated(full: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        full[..full.len() - CUT].to_vec()
+    }
+
+    #[test]
+    fn read_full_list_rereads_a_truncated_list_on_the_held_session() {
+        let full = my_presets_list_frames(MY_PRESETS_BANK_SIZE);
+        let t = ListTransport::default().with_reply(vec![full.clone()]);
+        let mut s = session_over(&t, truncated(&full));
+        assert_eq!(read_full_list(&mut s).unwrap().len(), MY_PRESETS_BANK_SIZE);
+        assert_eq!(t.list_requests(), 1);
+        // The re-arm recipe: `connection_request` immediately before the list request.
+        let sent = t.sent.lock().unwrap().clone();
+        let at = sent
+            .iter()
+            .position(|b| *b == crate::proto::preset_list_request(1, 1))
+            .unwrap();
+        assert_eq!(sent[at - 1], crate::proto::connection_request());
+    }
+
+    /// Host-side report loss (the device never interleaves replies) can leave a foreign
+    /// `0x33` stream-start mid-list: the list's remaining frames then reassemble into the
+    /// foreign stream, so no wait completes it — only a fresh request does.
+    #[test]
+    fn read_full_list_rereads_a_list_cut_by_a_foreign_stream_start() {
+        let full = my_presets_list_frames(MY_PRESETS_BANK_SIZE);
+        let t = ListTransport::default().with_reply(vec![full.clone()]);
+        let mut raw = truncated(&full);
+        raw.push(vec![0x00, 0x33, 0x00, 4, 0x1a, 0x02, 0x08, 0x01]);
+        raw.extend_from_slice(&full[full.len() - CUT..]);
+        let mut s = session_over(&t, raw);
+        assert!(s.list_my_presets().unwrap().len() < MY_PRESETS_BANK_SIZE);
+        assert_eq!(read_full_list(&mut s).unwrap().len(), MY_PRESETS_BANK_SIZE);
+        assert_eq!(t.list_requests(), 1);
+    }
+
+    /// The re-read's own reply streams past the device's inactivity drop
+    /// (see `Session::list_my_presets`); it must survive.
+    #[test]
+    fn read_full_list_reread_outlives_the_inactivity_drop() {
+        let full = my_presets_list_frames(MY_PRESETS_BANK_SIZE);
+        let t = ListTransport::default()
+            .with_inactivity_timeout(750)
+            .with_reply(full.chunks(40).map(<[Vec<u8>]>::to_vec).collect());
+        let mut s = session_over(&t, truncated(&full));
+        assert_eq!(read_full_list(&mut s).unwrap().len(), MY_PRESETS_BANK_SIZE);
+        assert_eq!(t.list_requests(), 1);
+    }
+
+    #[test]
+    fn read_full_list_still_refuses_a_list_that_stays_truncated() {
+        let short = truncated(&my_presets_list_frames(MY_PRESETS_BANK_SIZE));
+        let t = (0..LIST_REREADS).fold(ListTransport::default(), |t, _| {
+            t.with_reply(vec![short.clone()])
+        });
+        let mut s = session_over(&t, short.clone());
+        let err = read_full_list(&mut s).unwrap_err();
+        assert!(err.contains("!= the expected 504"), "{err}");
+        assert_eq!(t.list_requests(), LIST_REREADS as usize);
+    }
+
+    #[test]
+    fn read_full_list_refuses_a_larger_bank_without_rereading() {
+        let t = ListTransport::default();
+        let mut s = session_over(&t, my_presets_list_frames(MY_PRESETS_BANK_SIZE + 1));
+        let err = read_full_list(&mut s).unwrap_err();
+        assert!(err.contains("size 505"), "{err}");
+        assert_eq!(t.list_requests(), 0);
     }
 }
