@@ -193,7 +193,7 @@ pub fn probe_mixer_state() -> Result<String, String> {
                 "no TMS-5 stream"
             }
         );
-        s.drain_until_quiet(250, 8)?;
+        s.pump_collect_alive(500)?;
     }
 
     let channels: Vec<ChannelState> = s
@@ -210,9 +210,9 @@ pub fn probe_mixer_state() -> Result<String, String> {
                 "TMS 5 IS served but the state reply has a different shape — decode it before \
                  concluding anything"
             } else {
-                "TMS 5 read as NOT served on this attempt — mixer state is unreadable live over \
-                 this protocol, so a leveling pre-flight must read `settingsBackup.mixerSaveData` \
-                 from a device backup instead (see open-questions.md A1)"
+                "no TMS-5 reply on this attempt (fw 1.8.58 serves TMS 5 on an open client — \
+                 check the session was not lapsed) — `settingsBackup.mixerSaveData` from a \
+                 device backup is the fallback (see open-questions.md A1)"
             }
         );
         return Ok(out);

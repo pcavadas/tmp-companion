@@ -238,7 +238,7 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     }
 
     let dump = s.send_and_dump(&proto::switch_template(template_type), 1500)?;
-    std::thread::sleep(std::time::Duration::from_millis(800));
+    s.pump_collect_alive(800)?;
     // Non-fatal: if switchTemplate is ignored there is no push to capture, and a
     // timeout here is itself a data point rather than an error to abort on.
     let after = s
@@ -373,7 +373,7 @@ pub(crate) fn discover_active_graph() -> Result<(session::ActiveGraph, String), 
                         }
                         Err(e) => errors.push(format!("{e}\n{diagnostics}")),
                     }
-                    s.pump_more(250)?;
+                    s.pump_collect_alive(250)?;
                 }
             }
             Err(e) => errors.push(e),
@@ -401,14 +401,12 @@ pub fn probe_reamp_off() -> Result<(), String> {
 
 /// Discover a preset's level-type block controls (the leveling-knob candidates).
 ///
-/// Primary path is the 1.8.45-SAFE RICH LEAN SESSION (the bench intel-session /
-/// `prepass_scene_docs` pattern): heartbeat warmup → `send_and_collect(LoadPreset)`
-/// → pump past the 125 hit → read `current_preset_blocks` from the accumulated
-/// field-3 push bodies. `connect_for_discovery` (field-78) is effectively DEAD on
-/// fw 1.8.45 — it never delivers `currentPresetDataChanged` — so it can no longer be
-/// the primary; it stays only as a fallback for older firmware. Without this, FS-scene
-/// leveling found zero amp candidates and silently skipped every scene (the device
-/// never switched scenes).
+/// Primary path is the RICH LEAN SESSION (the bench intel-session / `prepass_scene_docs`
+/// pattern): heartbeat warmup → `send_and_collect(LoadPreset)` → pump past the 125 hit →
+/// read `current_preset_blocks` from the accumulated field-3 push bodies. Field-78
+/// (`connect_for_discovery`) is the fallback: it failed on 1.8.45 while its window was
+/// silent, and delivers kept-alive on 1.8.58. Without this, FS-scene leveling found zero
+/// amp candidates and silently skipped every scene (the device never switched scenes).
 ///
 /// DANGER — every path below LOADS `slot`, so this is a stale-load site (`danger.md`'s
 /// lazy-commit clause): a discovery load inside a same-slot save's commit window
@@ -581,7 +579,7 @@ pub fn probe_diag_frames() -> Result<String, String> {
             "  pump {i}: strict={strict:?}\n    frames: {}\n",
             s.raw_frame_summary()
         );
-        s.pump_more(300)?;
+        s.pump_collect_alive(300)?;
     }
     Ok(out)
 }
@@ -1065,7 +1063,7 @@ fn write_three_and_save(
     }
     for _ in 0..8 {
         let _ = s.heartbeat();
-        let _ = s.pump_collect(150);
+        let _ = s.pump_silent(150);
     }
     // presetLevel (global) + base amp outputLevel — base scene is active after a load. The
     // presetLevel ack is advisory (flaky on a lean session, HW); the read-back confirms.
@@ -1075,7 +1073,7 @@ fn write_three_and_save(
     std::thread::sleep(Duration::from_millis(crate::leveller::SETTLE_AFTER_SET_MS));
     s.change_parameter(group_id, node_id, "outputLevel", base_ol)?;
     let _ = s.heartbeat();
-    let _ = s.pump_collect(150);
+    let _ = s.pump_silent(150);
     // Scene overlay — recall the scene, enable scene edit, write within the ~700 ms window.
     s.load_scene(scene_slot)?;
     std::thread::sleep(Duration::from_millis(150));

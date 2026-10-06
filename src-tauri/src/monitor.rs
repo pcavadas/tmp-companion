@@ -748,7 +748,7 @@ fn startup_live(session: &mut Session) -> (Option<session::CurrentPresetLive>, b
         return (Some(live), false);
     }
     for _ in 0..STARTUP_GRAPH_WARMUP_STEPS {
-        if session.heartbeat().is_err() || session.pump_more(STARTUP_GRAPH_WARMUP_MS).is_err() {
+        if session.heartbeat().is_err() || session.pump_silent(STARTUP_GRAPH_WARMUP_MS).is_err() {
             return (None, false);
         }
         if let Some(live) = live_from_pushes(session) {
@@ -812,8 +812,13 @@ fn pump_loop(
     live_rx: &Receiver<LiveCmd>,
     metadata_rx: &Receiver<MetadataReadCmd>,
 ) -> PumpExit {
-    let _live = LiveFlagGuard::arm(); // sender-side gate for the live command lane
-    let mut last_hb = std::time::Instant::now();
+    // Sender-side gate for the live command lane.
+    let _live = LiveFlagGuard::arm();
+    // First heartbeat due at once: the startup read before this loop may already have
+    // used most of the device's host-silence budget (`session::HID_INACTIVITY_DROP_MS`).
+    let mut last_hb = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(HEARTBEAT_MS))
+        .unwrap_or_else(std::time::Instant::now);
     loop {
         // Live-sync stopped: drop our Session (free the seize) so `stop_live_sync` can
         // re-establish the persistent UI session. Return to the (disabled) outer loop.
@@ -851,7 +856,7 @@ fn pump_loop(
                 return PumpExit::Error;
             }
         }
-        if session.pump_more(PUMP_MS).is_err() {
+        if session.pump_silent(PUMP_MS).is_err() {
             return PumpExit::Error; // device gone / seize lost — reconnect from the top
         }
         let bodies = session.push_bodies();

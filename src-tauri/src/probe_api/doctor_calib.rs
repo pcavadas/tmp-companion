@@ -591,7 +591,7 @@ pub fn probe_doctor_calib_factory(
                     // harvest it, then resolve THIS preset's production tail
                     // (`doctor::doctor_tail_ms`) so the capture below matches
                     // the window `commands/doctor.rs` actually uses for it.
-                    let _ = s.pump_collect(700);
+                    let _ = s.pump_collect_alive(700);
                     match s.current_preset_value() {
                         Ok(doc) => tail_ms = u64::from(super::doctor_inject::tail_ms_for_doc(&doc)),
                         Err(e) => eprintln!(

@@ -22,18 +22,15 @@ pub fn probe_re_blocks() -> Result<String, String> {
             .join(" ")
     };
     // Attempt 1: ride the request inside the handshake burst (batch-2 group).
-    let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(2)))?;
-    for _ in 0..4 {
-        s.pump_collect(250)?;
-    }
+    let mut s = block_presets_session()?;
     // Attempt 2: send it post-handshake as a request/response message (no batchStatus),
     // keeping the session alive with heartbeats — the framing the ReplaceNode family uses.
     s.heartbeat()?;
-    s.pump_collect(80)?;
+    s.pump_silent(80)?;
     s.send_and_collect(&proto::request_all_block_presets(None), 600)?;
     for _ in 0..8 {
         s.heartbeat()?;
-        s.pump_collect(250)?;
+        s.pump_silent(250)?;
     }
     let bodies = s.push_bodies();
     drop(s); // release the HID seize before host-side work
@@ -283,16 +280,24 @@ pub fn probe_discover_diff(from_id: &str, device_slots: &[u32]) -> Result<String
     Ok(report)
 }
 
+/// One in-burst `RequestAllBlockPresets` read on its own connection, kept alive through
+/// the reply — the received message bodies.
+pub(super) fn block_presets_bodies() -> Result<Vec<Vec<u8>>, String> {
+    Ok(block_presets_session()?.push_bodies())
+}
+
+/// The connection behind [`block_presets_bodies`], for a caller that keeps using it.
+fn block_presets_session() -> Result<Session, String> {
+    let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(2)))?;
+    s.pump_collect_alive(1000)?;
+    Ok(s)
+}
+
 /// Validate the PRODUCTION saved-block decode path live (`probe --saved-blocks`):
 /// the exact `list_saved_blocks` flow (RequestAllBlockPresets → decode →
 /// `parse_block_presets_map`), printed as a summary. Read-only.
 pub fn probe_saved_blocks() -> Result<String, String> {
-    let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(2)))?;
-    for _ in 0..4 {
-        s.pump_collect(250)?;
-    }
-    let bodies = s.push_bodies();
-    drop(s);
+    let bodies = block_presets_bodies()?;
     let blob = find_block_presets_blob(&bodies)
         .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
     let blocks = parse_block_presets_map(&blob)?;

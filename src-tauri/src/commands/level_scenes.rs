@@ -425,20 +425,20 @@ fn pick_scene_level_knob(
         let mut s = Session::connect()?;
         for _ in 0..16 {
             s.heartbeat()?;
-            s.pump_collect(120)?;
+            s.pump_silent(120)?;
         }
         s.raw.clear();
         s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
         for _ in 0..8 {
             s.heartbeat()?;
-            s.pump_collect(200)?;
+            s.pump_silent(200)?;
         }
         if let Some(sl) = scene_slot {
             s.raw.clear();
             s.send_and_collect(&proto::load_scene(sl as u64), 300)?;
             for _ in 0..8 {
                 s.heartbeat()?;
-                s.pump_collect(200)?;
+                s.pump_silent(200)?;
             }
         }
         s.current_preset_value()?

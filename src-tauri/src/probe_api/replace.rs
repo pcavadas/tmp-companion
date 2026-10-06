@@ -53,7 +53,7 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
         ));
         s1.load_preset(list_index)?;
         s1.heartbeat()?;
-        s1.pump_collect(900)?;
+        s1.pump_silent(900)?;
         (group, node_id, cur_name)
     };
 
@@ -67,13 +67,13 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
     // heartbeat to KEEP live-controller status, the way Pro Control does.
     for _ in 0..8 {
         s.heartbeat()?;
-        s.pump_collect(200)?;
+        s.pump_silent(200)?;
     }
     if oneconn {
         s.load_preset(list_index)?;
         for _ in 0..4 {
             s.heartbeat()?;
-            s.pump_collect(200)?;
+            s.pump_silent(200)?;
         }
         report.push_str("conn2: ONECONN — reloaded preset in the edit connection\n");
     } else {
@@ -88,7 +88,7 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
         s.clear_raw();
         s.send_and_collect(&proto::node_json_request(&group, &node_id), 200)?;
         s.heartbeat()?;
-        s.pump_collect(200)?;
+        s.pump_silent(200)?;
         let got_120 = s.push_bodies().iter().any(|b| {
             proto::first_bytes(&proto::parse(b), 2)
                 .map(|pm| proto::first_bytes(&proto::parse(pm), 120).is_some())
@@ -117,7 +117,7 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
     s.send_chunked_collect(&proto::replace_node(&group, &node_id, to_id, batch), 200)?;
     for _ in 0..8 {
         s.heartbeat()?;
-        s.pump_collect(200)?;
+        s.pump_silent(200)?;
     }
     // 4) dump every reply body (streams + push bodies) — TMS top + presetMessage
     //    inner fields, flagging nodeReplaced(40) and any NON-empty connectionError.
@@ -165,7 +165,7 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
             report.push_str(&format!("renameCurrentPreset({cur_name:?}) sent\n"));
         }
         s.save_current_preset(list_index)?;
-        s.pump_collect(400)?;
+        s.pump_silent(400)?;
         let vraw = s.read_slot_preset_json(dev_slot)?.unwrap_or_default();
         if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
             report.push_str(&format!(
@@ -381,13 +381,7 @@ pub fn probe_bulk_replace_saved(
     let mut report = String::new();
     // Resolve the saved dual-cab block (synchronous decode, same path as probe_saved_blocks).
     let saved = {
-        let mut s =
-            Session::connect_with_burst_request(&proto::request_all_block_presets(Some(2)))?;
-        for _ in 0..4 {
-            s.pump_collect(250)?;
-        }
-        let bodies = s.push_bodies();
-        drop(s);
+        let bodies = super::inspect::block_presets_bodies()?;
         let blob = find_block_presets_blob(&bodies)
             .ok_or_else(|| "device sent no allBlockPresetsResponse".to_string())?;
         parse_block_presets_map(&blob)?

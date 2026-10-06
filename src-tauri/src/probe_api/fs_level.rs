@@ -28,7 +28,7 @@ pub fn probe_repro_chunked() -> Result<String, String> {
             // Pump heartbeats (NOT a passive sleep) to keep the session live up to the set.
             for _ in 0..8 {
                 let _ = s.heartbeat();
-                let _ = s.pump_collect(150);
+                let _ = s.pump_silent(150);
             }
             s.set_footswitch_assignment(switch, 1, json, false, None)?;
             let seen = s.seen_preset_fields();
@@ -101,7 +101,7 @@ pub fn probe_clear_footswitch(slot: u32, switch: u32, index: u32) -> Result<Stri
     // lets the live-controller status lapse and the device silently drops the edit).
     for _ in 0..8 {
         let _ = s.heartbeat();
-        let _ = s.pump_collect(150);
+        let _ = s.pump_silent(150);
     }
     s.clear_footswitch_assignment(switch, index)?;
     if s.saw_preset_error() {
@@ -222,7 +222,7 @@ pub fn probe_bake_validate(
         s.load_preset(slot)?;
         for _ in 0..8 {
             let _ = s.heartbeat();
-            let _ = s.pump_collect(150);
+            let _ = s.pump_silent(150);
         }
         s.change_parameter(group, node, param, orig as f32)?;
         s.save_current_preset(slot)?;
@@ -918,7 +918,7 @@ pub fn probe_set_param_save(
         s.load_preset(list_index)?;
         for _ in 0..8 {
             let _ = s.heartbeat();
-            let _ = s.pump_collect(150);
+            let _ = s.pump_silent(150);
         }
         s.load_scene(crate::session::BASE_SCENE_SLOT)?;
         std::thread::sleep(std::time::Duration::from_millis(

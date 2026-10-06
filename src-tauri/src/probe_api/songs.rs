@@ -21,7 +21,7 @@ pub(crate) fn read_song_presets(song_slot: u32) -> Result<Vec<session::SongPrese
             if !r.is_empty() {
                 return Ok(r);
             }
-            s.pump_more(400)?;
+            s.pump_collect_alive(400)?;
         }
     }
     Ok(Vec::new())
@@ -73,7 +73,7 @@ pub(crate) fn read_song_list() -> Result<Vec<session::SongRecord>, String> {
             if let Some(r) = s.harvest_songs_strict() {
                 return Ok(r);
             }
-            s.pump_more(250)?;
+            s.pump_collect_alive(250)?;
         }
     }
     Err("could not read a complete song list (multi-packet response kept truncating)".into())

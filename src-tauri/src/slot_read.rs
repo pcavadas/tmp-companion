@@ -25,10 +25,10 @@ pub(crate) fn read_slot_preset_parsed(
 /// A large preset's field-8 read comes back TAIL-TRUNCATED and `tolerant_parse_json`
 /// salvages the prefix — so the document parses and a tail section (`ftsw`, `scenes`) is
 /// simply absent or a short prefix. A caller that reads one of those to decide what to
-/// DO then acts on "this preset has no footswitches" for a preset that has ten. The
-/// truncation is per-slot-DETERMINISTIC, so re-reading the same slot cannot lengthen it
-/// (`notes/gotchas.md`'s field-8 entry) — the choices are the device backup or refusing,
-/// never a retry.
+/// DO then acts on "this preset has no footswitches" for a preset that has ten. On fw
+/// 1.8.58 the cuts were the device's inactivity drop on a silent harvest — kept alive, a
+/// large preset reads whole — so a partial is now unexpected; it still falls back to the
+/// device backup or refuses.
 ///
 /// SOFT form: it reports and does not decide. Use it where the answer is best-effort
 /// (`level_preset`'s base isolation reads `presetLevel` and `lastLoadedScene` out of the
@@ -78,11 +78,10 @@ pub(crate) fn read_slot_preset_sections(
             .or_else(|| {
                 drop(s);
                 crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+                // List straight off the fresh handshake's reply — a silent drain first
+                // would let the device drop the client mid-list (`list_my_presets`).
                 Session::connect()
-                    .and_then(|mut s| {
-                        s.drain_until_quiet(250, 20)?;
-                        s.list_my_presets()
-                    })
+                    .and_then(|mut s| s.list_my_presets())
                     .ok()
                     .and_then(|l| l.into_iter().find(|e| e.slot == slot))
                     .map(|e| e.name)

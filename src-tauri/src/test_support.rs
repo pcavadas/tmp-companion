@@ -1,8 +1,13 @@
 //! Test-only fixtures and synthetic-signal helpers shared across module test
-//! suites (`audio`'s onset tests, `leveller`'s Doctor onset-gate tests) —
-//! ONE home so a shared fixture/generator can't drift between the two.
+//! suites (`audio`'s onset tests, `leveller`'s Doctor onset-gate tests, the
+//! preset-list readers' scripted HID transport) —
+//! ONE home so a shared fixture/generator can't drift between suites.
 //! `#[cfg(test)]`-gated at the `mod test_support;` declaration in `lib.rs`;
 //! nothing here is compiled into a release binary.
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// A pluck train with a distinctive envelope (like the shipped stimuli) — a
 /// synthetic stand-in for the real guitar-humbucker Doctor stimulus, which
@@ -79,4 +84,208 @@ pub(crate) fn fs13_envelope() -> Vec<f64> {
 
 pub(crate) fn fs13_capture() -> Vec<f32> {
     reconstruct_capture(&fs13_envelope())
+}
+
+/// The device's inbound framing of one My-Presets `presetListResponse` carrying `total`
+/// records (`0x33` start · `0x34` continue · `0x35` final). A slice `[..k]` of it is a
+/// tail-truncated read as the HW one arrives (no terminal frame).
+pub(crate) fn my_presets_list_frames(total: usize) -> Vec<Vec<u8>> {
+    preset_list_frames(1, total)
+}
+
+/// [`my_presets_list_frames`] for any preset list (`list_enum` 1 / 3 / 4).
+pub(crate) fn preset_list_frames(list_enum: u64, total: usize) -> Vec<Vec<u8>> {
+    let mut resp = Vec::new();
+    crate::proto::field_varint(&mut resp, 1, list_enum);
+    for i in 0..total {
+        let name = if i % 3 == 0 {
+            format!("Preset {i}")
+        } else {
+            "Empty".to_string()
+        };
+        let rec = crate::proto::len_delimited(1, name.as_bytes());
+        resp.extend(crate::proto::len_delimited(2, &rec));
+    }
+    // presetMessage → presetListResponse(5)
+    crate::sim_device::frame_multi(&crate::sim_device::preset_message(5, &resp))
+}
+
+/// The device's inbound framing of a `presetDataChanged`(9) reply — the field-8 slot
+/// read — carrying a `len`-byte presetJson. Slice it into batches to stream it.
+pub(crate) fn preset_data_frames(len: usize) -> Vec<Vec<u8>> {
+    crate::sim_device::frame_multi(&crate::sim_device::preset_data_changed(1, &vec![b'x'; len]))
+}
+
+/// The `importPresetResponse`(118) echo the device sends after an import landed at
+/// `(list_enum, slot)`.
+pub(crate) fn import_echo_frames(list_enum: u64, slot: u64) -> Vec<Vec<u8>> {
+    let mut echo = Vec::new();
+    crate::proto::field_varint(&mut echo, 2, list_enum);
+    crate::proto::field_varint(&mut echo, 3, slot);
+    crate::sim_device::frame_multi(&crate::sim_device::preset_message(118, &echo))
+}
+
+/// `frames` as reply batches of `per` frames — one batch per pump window.
+pub(crate) fn streamed(frames: &[Vec<u8>], per: usize) -> Vec<Batch> {
+    frames.chunks(per).map(<[Vec<u8>]>::to_vec).collect()
+}
+
+type Batch = Vec<Vec<u8>>;
+/// Scripted replies: `(request body, reply batches)`, consumed in order per request.
+type Script = VecDeque<(Vec<u8>, Vec<Batch>)>;
+
+/// A scripted device for reply-wait tests. Each scripted request body pops its next
+/// reply — report batches, the first delivered with the send and each later one by one
+/// `pump` (an empty batch = a stalled window). Every sent body is recorded.
+///
+/// [`Self::device`] models fw 1.8.58's client drop (see
+/// `Session::list_my_presets`): once the host has written nothing for longer than the
+/// timeout, every undelivered batch is lost and the client is LAPSED — it answers and
+/// applies nothing (a heartbeat does not revive it) until a `connectionRequest` reopens
+/// it. A `connectionRequest` on an OPEN client is counted as a live re-arm (the device
+/// answers it with a `connectionError`).
+#[derive(Clone, Default)]
+pub(crate) struct ScriptedTransport {
+    replies: Arc<Mutex<Script>>,
+    pending: Arc<Mutex<VecDeque<Batch>>>,
+    pub sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    timeout_ms: Option<u64>,
+    idle_ms: Arc<AtomicU64>,
+    lapsed: Arc<AtomicBool>,
+    dropped_writes: Arc<AtomicU64>,
+    live_rearms: Arc<AtomicU64>,
+}
+
+impl ScriptedTransport {
+    /// A device with fw 1.8.58's inactivity drop.
+    pub fn device() -> Self {
+        Self {
+            timeout_ms: Some(crate::session::HID_INACTIVITY_DROP_MS),
+            ..Self::default()
+        }
+    }
+    /// Queue `batches` as if already in flight (e.g. the handshake's own list reply).
+    pub fn with_pending(self, batches: Vec<Batch>) -> Self {
+        self.pending.lock().unwrap().extend(batches);
+        self
+    }
+    /// Script the reply to the next `preset_list_request(1, 1)`.
+    pub fn with_reply(self, batches: Vec<Batch>) -> Self {
+        self.with_reply_to(&crate::proto::preset_list_request(1, 1), batches)
+    }
+    /// Script the reply to the next send of exactly `request`.
+    pub fn with_reply_to(self, request: &[u8], batches: Vec<Batch>) -> Self {
+        self.replies
+            .lock()
+            .unwrap()
+            .push_back((request.to_vec(), batches));
+        self
+    }
+    /// Start the host-silence clock at `ms` — e.g. the handshake's final pump window.
+    pub fn with_idle(self, ms: u64) -> Self {
+        self.idle_ms.store(ms, Ordering::SeqCst);
+        self
+    }
+    /// Host silence since the last write, in nominal pump milliseconds.
+    pub fn idle_ms(&self) -> u64 {
+        self.idle_ms.load(Ordering::SeqCst)
+    }
+    /// Writes (other than heartbeats) a lapsed client ignored.
+    pub fn dropped_writes(&self) -> u64 {
+        self.dropped_writes.load(Ordering::SeqCst)
+    }
+    /// `connectionRequest`s sent to a client that was still open.
+    pub fn live_rearms(&self) -> u64 {
+        self.live_rearms.load(Ordering::SeqCst)
+    }
+    pub fn count_sent(&self, body: &[u8]) -> usize {
+        self.sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|b| *b == body)
+            .count()
+    }
+    pub fn list_requests(&self) -> usize {
+        self.count_sent(&crate::proto::preset_list_request(1, 1))
+    }
+    pub fn heartbeats(&self) -> usize {
+        self.count_sent(&crate::proto::heartbeat())
+    }
+    fn past_timeout(&self, idle: u64) -> bool {
+        self.timeout_ms.is_some_and(|t| idle > t)
+    }
+    /// Record a write; `true` when the client is lapsed and ignores it.
+    fn wrote(&self, body: &[u8]) -> bool {
+        self.sent.lock().unwrap().push(body.to_vec());
+        let idle = self.idle_ms.swap(0, Ordering::SeqCst);
+        let lapsed = self.lapsed.load(Ordering::SeqCst) || self.past_timeout(idle);
+        let reopen = body == crate::proto::connection_request();
+        if lapsed && !reopen {
+            self.lapsed.store(true, Ordering::SeqCst);
+            if body != crate::proto::heartbeat() {
+                self.dropped_writes.fetch_add(1, Ordering::SeqCst);
+            }
+            return true;
+        }
+        if reopen && !lapsed {
+            self.live_rearms.fetch_add(1, Ordering::SeqCst);
+        }
+        self.lapsed.store(false, Ordering::SeqCst);
+        false
+    }
+    /// Advance the host-silence clock by `ms`; past the timeout the client lapses and
+    /// its queue is dropped.
+    fn idle(&self, ms: u64) -> bool {
+        let idle = self.idle_ms.fetch_add(ms, Ordering::SeqCst) + ms;
+        let dropped = self.past_timeout(idle);
+        if dropped {
+            self.lapsed.store(true, Ordering::SeqCst);
+            self.pending.lock().unwrap().clear();
+        }
+        dropped
+    }
+}
+
+impl crate::hid::HidTransport for ScriptedTransport {
+    fn send(&self, body: &[u8]) -> Result<(), String> {
+        self.wrote(body);
+        Ok(())
+    }
+    fn transact(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        if self.wrote(body) {
+            self.idle(ms);
+            return Ok(Vec::new());
+        }
+        let mut batches: VecDeque<Batch> = {
+            let mut replies = self.replies.lock().unwrap();
+            match replies.iter().position(|(req, _)| req == body) {
+                Some(i) => replies.remove(i).map(|(_, b)| b).unwrap_or_default().into(),
+                None => VecDeque::new(),
+            }
+        };
+        let first = batches.pop_front().unwrap_or_default();
+        self.pending.lock().unwrap().extend(batches);
+        Ok(if self.idle(ms) { Vec::new() } else { first })
+    }
+    fn transact_chunked(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.transact(body, ms)
+    }
+    fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.transact(body, ms)
+    }
+    fn pump(&self, ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        if self.idle(ms) {
+            return Ok(Vec::new());
+        }
+        Ok(self.pending.lock().unwrap().pop_front().unwrap_or_default())
+    }
+}
+
+/// A [`crate::session::Session`] over `t` whose accumulator already holds `raw` (the
+/// handshake's reports).
+pub(crate) fn session_over(t: &ScriptedTransport, raw: Vec<Vec<u8>>) -> crate::session::Session {
+    let mut s = crate::session::Session::from_transport(Box::new(t.clone()));
+    s.raw = raw;
+    s
 }
