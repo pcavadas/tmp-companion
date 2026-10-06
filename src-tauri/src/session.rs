@@ -367,6 +367,8 @@ struct TrackedHid {
     last_write: std::cell::Cell<std::time::Instant>,
     nominal_ms: std::cell::Cell<u64>,
     auto_reopen: bool,
+    /// Reports the reopen's own pump window collected, handed out with the next batch.
+    reopened: std::cell::RefCell<Vec<Vec<u8>>>,
 }
 
 impl TrackedHid {
@@ -376,6 +378,7 @@ impl TrackedHid {
             last_write: std::cell::Cell::new(std::time::Instant::now()),
             nominal_ms: std::cell::Cell::new(0),
             auto_reopen: true,
+            reopened: std::cell::RefCell::new(Vec::new()),
         }
     }
     /// About to write `body`: reopen a client the device may have dropped, then reset
@@ -384,7 +387,8 @@ impl TrackedHid {
         if self.auto_reopen && self.maybe_lapsed() {
             let reopen = proto::connection_request();
             if body != reopen {
-                self.inner.transact(&reopen, 100)?;
+                let reports = self.inner.transact(&reopen, 100)?;
+                self.reopened.borrow_mut().extend(reports);
             }
         }
         self.last_write.set(std::time::Instant::now());
@@ -401,7 +405,16 @@ impl TrackedHid {
         self.wrote(body)?;
         let r = f(self.inner.as_ref());
         self.waited(ms);
-        r
+        r.map(|reports| self.with_reopened(reports))
+    }
+    /// `reports`, preceded by any the reopen collected (oldest first).
+    fn with_reopened(&self, reports: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        let mut out = self.reopened.take();
+        if out.is_empty() {
+            return reports;
+        }
+        out.extend(reports);
+        out
     }
     fn waited(&self, ms: u64) {
         self.nominal_ms.set(self.nominal_ms.get() + ms);
@@ -434,7 +447,7 @@ impl HidTransport for TrackedHid {
     fn pump(&self, ms: u64) -> Result<Vec<Vec<u8>>, String> {
         let r = self.inner.pump(ms);
         self.waited(ms);
-        r
+        r.map(|reports| self.with_reopened(reports))
     }
 }
 
@@ -5547,6 +5560,20 @@ mod tests {
         s.pump_silent(1_000).unwrap();
         s.clear_user_preset(415).unwrap();
         assert_eq!(t.dropped_writes(), 1);
+    }
+
+    /// The reopen's own reply window is not dropped: its reports reach `raw` with the next
+    /// batch — on the send-only (heartbeat) path too.
+    #[test]
+    fn the_reopen_reply_reaches_raw() {
+        let frames = crate::test_support::preset_data_frames(100);
+        let t = ScriptedTransport::device()
+            .with_reply_to(&proto::connection_request(), vec![frames.clone()]);
+        let mut s = session_over(&t, Vec::new());
+        s.pump_silent(1_000).unwrap();
+        s.heartbeat().unwrap();
+        s.pump_silent(50).unwrap();
+        assert_eq!(s.raw, frames);
     }
 
     #[test]
