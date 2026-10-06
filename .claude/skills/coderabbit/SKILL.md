@@ -17,9 +17,11 @@ Within that scope it is a **decision procedure**: observe state with §2, look i
 one action named. A situation not in the table means **wait** — the table is deliberately closed so
 an unrecognised state can't be improvised into a command.
 
-**Progressive review is automatic.** On a reviewed PR, pushing fix commits and replying to threads is
-enough — the incremental review picks up the delta and re-approves. A command there burns quota for
-nothing.
+**Reviews are automatic.** `.coderabbit.yaml` sets `auto_review.enabled: true` for `main`, so
+opening a non-draft PR and every later push start a review on their own — no command needed. On a
+reviewed PR, pushing fix commits and replying to threads is enough; the incremental review picks up
+the delta and re-approves. A command there burns quota for nothing. The one gap: a push that lands
+inside the hourly limit window is skipped and never retried — that is row S3.
 
 ## 1. Hard rules (settled by the repo owner; no self-granted exceptions)
 
