@@ -17,9 +17,11 @@ Within that scope it is a **decision procedure**: observe state with §2, look i
 one action named. A situation not in the table means **wait** — the table is deliberately closed so
 an unrecognised state can't be improvised into a command.
 
-**Progressive review is automatic.** On a reviewed PR, pushing fix commits and replying to threads is
-enough — the incremental review picks up the delta and re-approves. A command there burns quota for
-nothing.
+**Reviews are automatic.** `.coderabbit.yaml` sets `auto_review.enabled: true` for `main`, so
+opening a non-draft PR and every later push start a review on their own — no command needed. On a
+reviewed PR, pushing fix commits and replying to threads is enough; the incremental review picks up
+the delta and re-approves. A command there burns quota for nothing. The one gap: a push that lands
+inside the hourly limit window is skipped and never retried — that is row S3.
 
 ## 1. Hard rules (settled by the repo owner; no self-granted exceptions)
 
@@ -83,8 +85,9 @@ Evaluate top to bottom; take the FIRST matching row and only that action.
 | S6  | `APPROVED` + CI green + `mergeStateStatus` clean                                                                                             | **Not done yet** — auto-merge still has to land it. Keep watching; report completion only from `gh pr view --json state` reading `MERGED`, never from an approval.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | S7  | A posted lever provably failed — S3's `review` no-oped (0 reviews, 0 threads), or SP's `resume` left `PAUSED` on the same head               | **Stop. Flag a human.** Do not post again (N1 forbids the old escalation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-`mergeStateStatus: DIRTY` is not a review state — `main` moved and the branch now conflicts. Merge
-`origin/main` in (never rebase + force-push a PR branch), resolve, re-enter at S1. Preserve what the
+`mergeStateStatus: DIRTY` is not a review state — `main` moved and the branch now conflicts. Fetch
+`origin` and rebase onto `origin/main` (never merge `main` into a PR branch), resolve the conflicts
+and finish the rebase, then push with `--force-with-lease` and re-enter at S1. Preserve what the
 incoming side added: a conflict in a file both branches edited is two sessions' findings.
 
 ## 4. Handling one finding (deterministic)
