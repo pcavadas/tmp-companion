@@ -7767,13 +7767,19 @@ fn no_authority(applied_db: f64, response: f64) -> bool {
 /// Fresh-connect, set a SET of knobs (before engage), engage re-amp once, measure the
 /// processed pair on the full capture — the multi-knob `measure_knob_at` used by the
 /// rebalance flow to read one lane SOLO (the other muted) and the balanced combination.
+/// `intended_preset_level` is re-asserted AFTER `set_knobs`, whose scene recall would
+/// otherwise revert an unsaved level (see [`LevelOptions::intended_preset_level`]).
 fn measure_knobs_at(
     stimulus: &[f32],
     targets: &[(&LevelKnob, f32)],
     saved: Option<&serde_json::Value>,
+    intended_preset_level: Option<f32>,
 ) -> Result<lufs::Loudness, String> {
     let mut s = Session::connect_lean()?;
     set_knobs(&mut s, targets, saved)?;
+    if let Some(pl) = intended_preset_level {
+        set_knob(&mut s, &LevelKnob::PresetLevel, pl, None)?;
+    }
     settle_or_cancel(SETTLE_AFTER_SET_MS)?;
     engage_measure_disengage(&mut s, stimulus)
 }
@@ -7787,8 +7793,14 @@ fn measure_mute_floor(
     a: &LevelKnob,
     b: &LevelKnob,
     saved: Option<&serde_json::Value>,
+    intended_preset_level: Option<f32>,
 ) -> Result<f64, String> {
-    match measure_knobs_at(stimulus, &[(a, 0.0), (b, 0.0)], saved) {
+    match measure_knobs_at(
+        stimulus,
+        &[(a, 0.0), (b, 0.0)],
+        saved,
+        intended_preset_level,
+    ) {
         Ok(l) => Ok(l.integrated_lufs),
         Err(e) if e.contains(NO_SIGNAL_CAPTURED) => Ok(MUTE_FLOOR_SILENT_LUFS),
         Err(e) => Err(e),
@@ -7819,13 +7831,13 @@ pub fn mute_floor_report(
         s.load_preset(slot)?;
         crate::settle(Duration::from_millis(settle_after_load_ms()));
     }
-    let combined = measure_knobs_at(stimulus, &[(a, cur_a), (b, cur_b)], saved)?;
+    let combined = measure_knobs_at(stimulus, &[(a, cur_a), (b, cur_b)], saved, None)?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
-    let floor_lufs = measure_mute_floor(stimulus, a, b, saved)?;
+    let floor_lufs = measure_mute_floor(stimulus, a, b, saved, None)?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
-    let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)], saved)?;
+    let a_solo = measure_knobs_at(stimulus, &[(a, cur_a), (b, 0.0)], saved, None)?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
-    let b_solo = measure_knobs_at(stimulus, &[(a, 0.0), (b, cur_b)], saved)?;
+    let b_solo = measure_knobs_at(stimulus, &[(a, 0.0), (b, cur_b)], saved, None)?;
     let _ = Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false).map(|_| ()));
 
     let silent = floor_lufs <= MUTE_FLOOR_SILENT_LUFS + 1e-6;
@@ -7902,9 +7914,11 @@ pub fn level_scenes_rebalance(
     on_tail: impl FnMut(&str),
     cancelled: impl FnMut() -> bool,
 ) -> Result<Vec<BatchedSceneOutcome>, String> {
-    // Same rule as `level_scenes_oneshot`: a landed trade's raise is UNSAVED, and every
-    // per-scene capture recalls its scene (which reverts it), so it is re-asserted per capture.
-    let intended_preset_level = hold.map(|h| h.preset_level);
+    // Same rule and same level as `level_scenes_oneshot`: every per-scene capture recalls its
+    // scene, which reverts an unsaved raise and, inside a save's lazy-commit window, renders the
+    // stale load-store level — so the held or saved level is re-asserted per capture, matching
+    // the prepass (see `scene_capture_level`).
+    let intended_preset_level = scene_capture_level(hold, saved);
     let result = run_scene_jobs(
         slot,
         jobs,
@@ -7960,10 +7974,9 @@ fn rebalance_one_scene(
     defer: bool,
     verify: bool,
     saved: Option<&serde_json::Value>,
-    // The run's own `presetLevel`, re-asserted on the corrective captures — see
-    // [`LevelOptions::intended_preset_level`]. The solo/combined captures above route
-    // through `measure_knobs_at`, which arms its own context; this covers the
-    // `correct_iter` tail, which re-applies through `apply_levels`.
+    // The run's own `presetLevel`, re-asserted on EVERY capture below (solos, floor, combined,
+    // first apply, correction) — see [`LevelOptions::intended_preset_level`]. Each recalls the
+    // scene, which reverts an unsaved level; asserting it on only some captures skews the secant.
     intended_preset_level: Option<f32>,
 ) -> Result<SceneSolve, String> {
     let a = &job.knobs[0];
@@ -7975,12 +7988,26 @@ fn rebalance_one_scene(
     // Solo captures feed the per-lane model constants (c_a/c_b) with no verify
     // backstop downstream — floor-guarded like the combined measurement below.
     let la_solo = require_live(
-        || measure_knobs_at(stimulus, &[(&a.knob, cur_a), (&b.knob, 0.0)], saved),
+        || {
+            measure_knobs_at(
+                stimulus,
+                &[(&a.knob, cur_a), (&b.knob, 0.0)],
+                saved,
+                intended_preset_level,
+            )
+        },
         stimulus,
     )?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let lb_solo = require_live(
-        || measure_knobs_at(stimulus, &[(&a.knob, 0.0), (&b.knob, cur_b)], saved),
+        || {
+            measure_knobs_at(
+                stimulus,
+                &[(&a.knob, 0.0), (&b.knob, cur_b)],
+                saved,
+                intended_preset_level,
+            )
+        },
         stimulus,
     )?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
@@ -7992,7 +8019,7 @@ fn rebalance_one_scene(
     // If so, the equal-solo balance is only approximate (the combined joint-k still hits the
     // overall target) → flag the scene "verify by ear". One extra capture; rebalance is opt-in.
     // A SILENT floor (deep mute) is the best case → huge margin → no flag.
-    let floor_lufs = measure_mute_floor(stimulus, &a.knob, &b.knob, saved)?;
+    let floor_lufs = measure_mute_floor(stimulus, &a.knob, &b.knob, saved, intended_preset_level)?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
     let min_solo = la_solo.integrated_lufs.min(lb_solo.integrated_lufs);
     let verify_by_ear = (min_solo - floor_lufs) < REBALANCE_BLEED_MARGIN_DB;
@@ -8004,7 +8031,14 @@ fn rebalance_one_scene(
     // Floor-guarded: both lanes live at balanced levels must produce a lively capture
     // (the DELIBERATE floor measurement above is measure_mute_floor — never guarded).
     let combined = require_live(
-        || measure_knobs_at(stimulus, &[(&a.knob, la_bal), (&b.knob, lb_bal)], saved),
+        || {
+            measure_knobs_at(
+                stimulus,
+                &[(&a.knob, la_bal), (&b.knob, lb_bal)],
+                saved,
+                intended_preset_level,
+            )
+        },
         stimulus,
     )?;
     crate::settle(Duration::from_millis(RECONNECT_GAP_MS));
@@ -8043,6 +8077,7 @@ fn rebalance_one_scene(
     let opts = LevelOptions {
         verify,
         defer,
+        intended_preset_level,
         ..Default::default()
     };
     let knob_refs = [&a.knob, &b.knob];
