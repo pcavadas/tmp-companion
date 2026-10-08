@@ -279,7 +279,8 @@ pub(crate) async fn update_song_full(
 // ─── Song-assignment device WRITE (SongMessage 14–17) ────────────────────────────
 
 /// Bind a user preset (+ scene) to a Song row on the device — `assignSongPreset`.
-/// `user_list_index` is 0-based (session applies the device +1). DEVICE WRITE.
+/// `user_list_index` is 0-based (session applies the device +1). The label and both
+/// colours overwrite the row's, so pass its current ones. DEVICE WRITE.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn song_assign(
@@ -289,6 +290,7 @@ pub(crate) async fn song_assign(
     footswitch_label: String,
     footswitch_color: u32,
     preset_scene_slot: u32,
+    footswitch_color_inactive: u32,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
@@ -299,6 +301,7 @@ pub(crate) async fn song_assign(
             &footswitch_label,
             footswitch_color,
             preset_scene_slot,
+            footswitch_color_inactive,
         )
     })
     .await

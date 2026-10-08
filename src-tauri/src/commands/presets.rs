@@ -9,7 +9,7 @@ use crate::*;
 // ritual UI (confirm → write → read-back verify); none ever runs unattended.
 
 /// The active preset's signal-chain graph for the "now playing" strip
-/// (blocks + routing, read live via the field-78 discovery handshake). No load —
+/// (blocks + routing, read live via the discovery handshake). No load —
 /// reads whatever preset is currently active on the device.
 #[tauri::command]
 pub(crate) async fn read_active_preset(
@@ -606,8 +606,9 @@ pub(crate) async fn list_saved_blocks(
 ) -> Result<Vec<SavedBlock>, String> {
     with_released_seize(state.session.clone(), move || {
         for _attempt in 0..4 {
-            let mut s =
-                Session::connect_with_burst_request(&proto::request_all_block_presets(Some(2)))?;
+            let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(
+                Some(proto::BATCH_DRAIN),
+            ))?;
             for _ in 0..8 {
                 if let Some(blob) = find_block_presets_blob(&s.push_bodies()) {
                     return parse_block_presets_map(&blob);
@@ -630,7 +631,7 @@ pub(crate) async fn list_user_irs(state: State<'_, AppState>) -> Result<Vec<User
                                          // A standalone re-send + a few pump windows in case the burst reply was missed.
         s.heartbeat()?;
         s.pump_silent(80)?;
-        s.send_and_collect(&proto::userir_field2(2), 500)?;
+        s.send_and_collect(&proto::userir_field2(proto::BATCH_DRAIN), 500)?;
         for _ in 0..5 {
             s.heartbeat()?;
             s.pump_silent(200)?;

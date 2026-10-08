@@ -6,18 +6,17 @@ use crate::proto;
 use crate::session;
 use crate::session::Session;
 
-/// Read a Song's preset assignments. Song reads ride the handshake burst AND
-/// need a top-level `batchStatus` (like preset *reads*; unlike setters, which omit
-/// it) — a no-batch or standalone request gets no reply (HW-confirmed 1.7.75, via
-/// a batchStatus sweep). The accepted batch tracks the burst's active group, so we
-/// sweep a few and take the first that yields records. Empty Vec = the song is
-/// genuinely empty.
+/// Read a Song's preset assignments. Song reads ride the handshake burst with
+/// [`proto::BATCH_DRAIN`] (fw 1.8.58: 1/2 only queue, 3 queues and drains, ≥4 is
+/// dropped), and only a reply carrying this `songSlot` counts — a stale queued
+/// request for another song can be answered on this session. Empty Vec = the song
+/// is genuinely empty.
 pub(crate) fn read_song_presets(song_slot: u32) -> Result<Vec<session::SongPresetRecord>, String> {
-    for batch in [2u64, 3, 1, 4] {
-        let req = proto::song_preset_list_request(song_slot as u64, Some(batch));
+    let req = proto::song_preset_list_request(song_slot as u64, Some(proto::BATCH_DRAIN));
+    for _ in 0..4 {
         let mut s = Session::connect_with_burst_request(&req)?;
         for _ in 0..6 {
-            let r = s.harvest_song_presets();
+            let r = s.harvest_song_presets(song_slot);
             if !r.is_empty() {
                 return Ok(r);
             }
@@ -57,17 +56,15 @@ pub fn probe_song_presets(song_slot: u32) -> Result<String, String> {
 }
 
 /// Read every Song's metadata (name / notes / BPM) — the net-new live
-/// `songListResponse` read. Song reads ride the handshake burst AND need a
-/// top-level `batchStatus` (same constraint as [`read_song_presets`]), so sweep a
-/// few batch values and take the first that yields records. Empty Vec = no songs.
+/// `songListResponse` read. Same in-burst batch-3 contract as
+/// [`read_song_presets`]. Empty Vec = no songs.
 pub(crate) fn read_song_list() -> Result<Vec<session::SongRecord>, String> {
     // FAIL-CLOSED: a single multi-packet read can be tail-truncated by concurrent
     // device streams (reassemble_streams can't demux concurrent 0x33 streams), so
     // accept ONLY a strictly-complete response (`harvest_songs_strict`), retrying
     // independent reads until one lands. See the reassembly review.
-    for attempt in 0..10 {
-        let batch = [2u64, 3, 1, 4][attempt % 4];
-        let req = proto::song_list_request(Some(batch));
+    let req = proto::song_list_request(Some(proto::BATCH_DRAIN));
+    for _ in 0..10 {
         let mut s = Session::connect_with_burst_request(&req)?;
         for _ in 0..8 {
             if let Some(r) = s.harvest_songs_strict() {
@@ -255,7 +252,8 @@ pub(crate) fn converge_song_bpm(
         Some((i, r)) => ((i + 1) as u32, r.user_preset_slot),
         None => {
             let mut s = Session::connect()?;
-            s.assign_song_preset(slot, 1, 0, "", 0, 1)?;
+            // An all-empty song: no label or colours to keep.
+            s.assign_song_preset(slot, 1, 0, "", 0, 1, 0)?;
             (1u32, 1u32)
         }
     };
@@ -335,7 +333,7 @@ pub fn probe_assign_song_preset(
     {
         let mut s = Session::connect()?;
         // label/colour are cosmetic footswitch fields; scene 0 = base.
-        s.assign_song_preset(slot, row, list_index, "PROBE", 1, 0)?;
+        s.assign_song_preset(slot, row, list_index, "PROBE", 1, 0, 1)?;
         std::thread::sleep(std::time::Duration::from_millis(600));
     }
     let rows = read_song_presets(slot)?;

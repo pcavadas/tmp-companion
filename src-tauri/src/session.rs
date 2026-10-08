@@ -187,6 +187,9 @@ pub struct SongPresetRecord {
     pub user_preset_slot: u32,
     pub preset_scene_slot: u32,
     pub preset_scene_name: String,
+    pub footswitch_label: String,
+    pub footswitch_color: u32,
+    pub footswitch_color_inactive: u32,
 }
 
 /// One block (DSP node) in the active preset's signal chain, for the
@@ -453,7 +456,9 @@ impl HidTransport for TrackedHid {
 
 pub struct Session {
     hid: TrackedHid,
-    batch: u64,
+    /// Set once the handshake's batch-3 drain is sent; from then on every request must
+    /// be answered on this connection (see [`proto::answered_at_once`]).
+    handshake_done: bool,
     /// Raw input reports accumulated during the current high-level operation.
     /// Reassembled cumulatively (a multi-packet stream can span pump windows).
     /// Cleared at the start of each operation that reads a reply.
@@ -477,8 +482,6 @@ pub(crate) const HID_INACTIVITY_DROP_MS: u64 = 750;
 pub(crate) const KEEPALIVE_WINDOW_MS: u64 = 350;
 /// How long an import waits for its `importPresetResponse` echo.
 const IMPORT_ECHO_WAIT_MS: u64 = 1500;
-/// How long a standalone field-78 preset-JSON request waits for its reply.
-const CURRENT_JSON_WAIT_MS: u64 = 6_800;
 /// Host silence under which the client is certainly still open. Between this and the
 /// drop the device's timer and ours may disagree, so callers treat it as lapsed: a
 /// re-arm on a still-live client costs one `connectionError`, a skipped one costs the read.
@@ -541,17 +544,15 @@ impl Session {
         Self::connect_inner(false, None, false, true)
     }
 
-    /// Like `connect`, but the handshake also issues the field-78 request so the
-    /// device emits the current preset's `currentPresetDataChanged` JSON (adds
-    /// ~2 s). Use for block enumeration (`current_preset_blocks`), not leveling.
+    /// Like `connect`, but the handshake also waits out the drain's
+    /// `currentPresetDataChanged` (field 3) JSON (adds ~2 s). Use for block enumeration (`current_preset_blocks`), not leveling.
     pub fn connect_for_discovery() -> Result<Session, String> {
         Self::connect_inner(true, None, false, false)
     }
 
     /// AC1 spike: run the handshake with an extra slot-addressed read
     /// request injected INSIDE the burst (the only window the device answers
-    /// data requests — standalone post-handshake requests get no reply, same as
-    /// field-78). The reply (presetDataChanged 9 or exportPresetResponse 116) is
+    /// data requests). The reply (presetDataChanged 9 or exportPresetResponse 116) is
     /// then harvested from the accumulated streams by the caller.
     pub fn connect_with_burst_request(extra: &[u8]) -> Result<Session, String> {
         Self::connect_inner(false, Some(extra.to_vec()), false, false)
@@ -899,10 +900,10 @@ impl Session {
         on_live_session: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         self.raw.clear();
-        // Re-arm a lapsed quiet session (see the doc): the list request's write reopens
-        // the client first (`TrackedHid`).
+        // Re-arm a lapsed quiet session (see the doc): the write reopens the client
+        // first (`TrackedHid`). A small batch-3 request, so nothing is left queued.
         if !on_live_session && self.hid.maybe_lapsed() {
-            self.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
+            self.send_and_collect(&proto::current_preset_info_request(proto::BATCH_DRAIN), 20)?;
         }
         self.send_and_collect(
             &proto::preset_data_request(list_enum, device_slot as u64, None),
@@ -928,9 +929,9 @@ impl Session {
         let hid = open_transport()?;
         let mut s = Session {
             hid: TrackedHid::new(hid),
-            batch: 0,
             raw: Vec::new(),
             fw_version: None,
+            handshake_done: false,
         };
         s.send_and_collect(&proto::connection_request(), 200)?;
         s.send_and_collect(&proto::preset_list_request(1, 1), 20)?; // My Presets
@@ -949,7 +950,6 @@ impl Session {
             s.send_and_collect(&proto::userir_field2(2), 20)?;
             s.send_and_collect(&proto::current_preset_data_request(3), 300)?;
         }
-        s.batch = 4;
         Ok(s)
     }
 
@@ -997,9 +997,9 @@ impl Session {
         let hid = open_transport()?;
         let mut s = Session {
             hid: TrackedHid::new(hid),
-            batch: 0,
             raw: Vec::new(),
             fw_version: None,
+            handshake_done: false,
         };
         s.handshake(fetch_preset_json, extra_burst, request_firmware, lean)?;
         Ok(s)
@@ -1015,9 +1015,9 @@ impl Session {
     pub(crate) fn from_transport(hid: Box<dyn HidTransport>) -> Session {
         Session {
             hid: TrackedHid::new(hid),
-            batch: 4,
             raw: Vec::new(),
             fw_version: None,
+            handshake_done: false,
         }
     }
 
@@ -1026,11 +1026,6 @@ impl Session {
     /// the burst didn't carry a `currentFwResponse`.
     pub fn firmware_version(&self) -> Option<String> {
         self.fw_version.clone()
-    }
-
-    fn next_batch(&mut self) -> u64 {
-        self.batch += 1;
-        self.batch
     }
 
     /// Full first-connect handshake, replicating the device's captured 1.7.2
@@ -1048,12 +1043,13 @@ impl Session {
         lean: bool,
     ) -> Result<(), String> {
         // Replicate Pro Control's first-connect sequence, INCLUDING its exact
-        // batchStatus values. The device stops answering partway through if the
-        // host increments the batch on every request (observed live: it went
-        // silent after the Factory list, so only the preset lists ever arrived).
-        // Pro Control groups the post-connect requests under batch=2, with the
-        // current-preset data/json requests at 3/4. Mirroring that grouping is
-        // what makes the device stream the full handshake (incl. the preset JSON).
+        // batchStatus values. fw 1.8.58 (static RE, HW-confirmed): batchStatus 1/2
+        // only QUEUE a request, 3 queues it and then answers the whole queue in
+        // order, 0/absent answers at once, and ≥4 is DROPPED with no reply. The
+        // queue survives a lapse and a reconnect, and a later drain answers
+        // whoever is on HID then — so every queued request here is closed by the
+        // batch-3 `currentPresetDataRequest`, and nothing after the handshake may
+        // leave a 1/2 behind (see [`proto::BATCH_DRAIN`]).
         //
         // The request SEQUENCE is identical in both window sets — `lean` only trims
         // how long the host pumps for replies it will never read (see
@@ -1081,12 +1077,12 @@ impl Session {
             self.send_and_collect(&proto::current_fw_request(), 200)?;
         }
         self.send_and_collect(&proto::current_preset_data_request(3), hs(base[2]))?;
-        // The field-78 json request right after field-2 is what makes the device
-        // emit the current preset's `currentPresetDataChanged` (field 3) JSON —
-        // but it streams a multi-packet blob (~2 s), so only fetch it when the
-        // caller needs it (discovery), not on every leveling connect.
+        self.handshake_done = true;
+        // The drain's last reply is `currentPresetDataChanged` (field 3), the current
+        // preset's JSON: a multi-packet blob (~2 s). Only a discovery connect waits
+        // it out.
         if fetch_preset_json {
-            self.send_and_collect_alive(&proto::current_preset_data_json_request(4), 1800)?;
+            self.pump_collect_alive(1800)?;
         }
         // AC1 spike: inject a slot-addressed read inside the burst window. The
         // device only answers data requests while actively streaming this burst
@@ -1095,8 +1091,6 @@ impl Session {
         if let Some(extra) = extra_burst {
             self.send_and_collect_alive(&extra, 2000)?;
         }
-        // Continue the batch counter past the handshake's fixed values.
-        self.batch = 4;
         Ok(())
     }
 
@@ -1106,6 +1100,11 @@ impl Session {
 
     /// Send a request and accumulate the raw reports received during `ms`.
     pub(crate) fn send_and_collect(&mut self, body: &[u8], ms: u64) -> Result<(), String> {
+        debug_assert!(
+            !self.handshake_done || proto::answered_at_once(body),
+            "after the handshake a request must carry batchStatus 0, 3 or none \
+             (1/2 only queue for a later session, ≥4 is dropped)"
+        );
         let reports = self.hid.transact(body, ms)?;
         self.raw.extend(reports);
         Ok(())
@@ -1190,10 +1189,9 @@ impl Session {
         let start = std::time::Instant::now();
         let mut last_hb = std::time::Instant::now();
         let mut last_poll = std::time::Instant::now();
-        let mut poll_batch = 100u64; // distinct from the handshake's 1..4 grouping
-                                     // Pump in short windows so a sub-second heartbeat can actually fire on time
-                                     // (a 700 ms window would cap the cadence at ~1.4/sec). 150 ms lets ~250 ms
-                                     // heartbeats land close to PC's 4/sec.
+        // Pump in short windows so a sub-second heartbeat can actually fire on time
+        // (a 700 ms window would cap the cadence at ~1.4/sec). 150 ms lets ~250 ms
+        // heartbeats land close to PC's 4/sec.
         let pump_ms = if hb_ms > 0 { hb_ms.clamp(40, 150) } else { 200 };
         let mut first_seen: Vec<f32> = Vec::new();
         let mut printed = 0usize;
@@ -1226,14 +1224,13 @@ impl Session {
                 // answers these standalone (the in-handshake-only requests do NOT —
                 // known gotcha), the reply streams reflect the live scene.
                 self.hid
-                    .send(&proto::current_preset_info_request(poll_batch))?;
+                    .send(&proto::current_preset_info_request(proto::BATCH_DRAIN))?;
                 self.hid
-                    .send(&proto::current_preset_data_request(poll_batch))?;
+                    .send(&proto::current_preset_data_request(proto::BATCH_DRAIN))?;
                 println!(
-                    "[t+{:>7.1}s] -> poll sent (currentPresetInfo + currentPresetData, batch={poll_batch})",
+                    "[t+{:>7.1}s] -> poll sent (currentPresetInfo + currentPresetData, batch=3)",
                     start.elapsed().as_secs_f32()
                 );
-                poll_batch += 1;
                 last_poll = std::time::Instant::now();
             }
         }
@@ -1327,8 +1324,7 @@ impl Session {
         // send window — the keepalive windows below collect the reply).
         let mut names = self.best_preset_list();
         if names.is_none() {
-            let b = self.next_batch();
-            self.send_and_collect(&proto::preset_list_request(1, b), 200)?;
+            self.send_and_collect(&proto::preset_list_request(1, proto::BATCH_DRAIN), 200)?;
         }
         // Growth metric = record count + total content bytes, not count alone:
         // the tolerant decode's final-frame tail case can GROW IN CONTENT at a
@@ -1479,7 +1475,16 @@ impl Session {
     /// [`Self::reread_my_presets`]. A lapsed client is reopened by the write itself
     /// (`TrackedHid`); a live one is not re-armed (that only draws a `connectionError`).
     fn rearm_my_presets_request(&mut self) -> Result<(), String> {
-        self.send_and_collect(&proto::preset_list_request(1, 1), 200)
+        self.send_and_collect(&proto::preset_list_request(1, proto::BATCH_DRAIN), 200)
+    }
+
+    /// Re-arm the open connection and ask for a fresh `currentPresetInfoChanged`
+    /// (field 22) after a load — the held-edit preamble. Batch 3 so the request is
+    /// answered on this session (a 1/2 would only queue, and a later session's
+    /// handshake would replay it). Callers then [`Self::await_active_preset`].
+    pub(crate) fn rearm_active_info(&mut self) -> Result<(), String> {
+        self.send_and_collect(&proto::connection_request(), 80)?;
+        self.send_and_collect(&proto::current_preset_info_request(proto::BATCH_DRAIN), 120)
     }
 
     /// Re-read the My-Presets list on this HELD session (no reopen — every failed open
@@ -1498,8 +1503,10 @@ impl Session {
     /// so harvest from the shared accumulator first and only re-query if absent.
     pub fn list_factory_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
         if best_factory_list_from_reports(&self.raw).is_none() {
-            let b = self.next_batch();
-            self.send_and_collect(&proto::preset_list_request(4, b), KEEPALIVE_WINDOW_MS)?;
+            self.send_and_collect(
+                &proto::preset_list_request(4, proto::BATCH_DRAIN),
+                KEEPALIVE_WINDOW_MS,
+            )?;
         }
         // A decodable list is not a complete one (the My-Presets truncation class).
         self.pump_until_stable(20, KEEPALIVE_WINDOW_MS, |s| {
@@ -1566,35 +1573,6 @@ impl Session {
     /// counts except for the final-frame tail case.
     fn best_preset_list(&self) -> Option<Vec<String>> {
         best_preset_list_from_reports(&self.raw)
-    }
-
-    /// Fetch the current preset's JSON (`currentPresetDataJsonRequest` →
-    /// `currentPresetDataJsonResponse.presetJson`, LZ4-block compressed).
-    pub fn fetch_current_preset_json(&mut self) -> Result<String, String> {
-        self.raw.clear();
-        let b = self.next_batch();
-        self.send_and_collect(
-            &proto::current_preset_data_json_request(b),
-            KEEPALIVE_WINDOW_MS,
-        )?;
-        for _ in 0..CURRENT_JSON_WAIT_MS.div_ceil(KEEPALIVE_WINDOW_MS) {
-            if let Some(j) = self.try_preset_json() {
-                return Ok(j);
-            }
-            self.keepalive_pump()?;
-        }
-        self.try_preset_json()
-            .ok_or_else(|| "no preset JSON received from device".to_string())
-    }
-
-    fn try_preset_json(&self) -> Option<String> {
-        self.streams().iter().find_map(|s| {
-            // presetMessage(2) → currentPresetDataJsonResponse(79) → presetJson(1)
-            let inner = dig(&s.body, TMS_PRESET, 79)?;
-            let payload = field1(&inner).and_then(|v| v.as_bytes())?;
-            let raw = proto::lz4_block_decompress(payload).ok()?;
-            String::from_utf8(raw).ok()
-        })
     }
 
     /// Byte length of the presetJson carrier [`Self::current_preset_value`] would parse —
@@ -2099,9 +2077,7 @@ impl Session {
         if self.active_matches(list_index, expected_name) {
             return Ok(());
         }
-        self.send_and_collect(&proto::connection_request(), 80)?;
-        self.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-        self.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+        self.rearm_active_info()?;
         if let Some(name) = expected_name {
             self.await_active_preset(name, 8);
         }
@@ -2576,7 +2552,9 @@ impl Session {
     /// `user_list_index` is a **0-based list index**; the device `userPresetSlot` is
     /// 1-based, so `+1` is applied (consistent with every other slot setter). The
     /// `song_slot` / `song_preset_slot` / `preset_scene_slot` are song-internal
-    /// positions passed through. Fire-and-forget; verify by re-reading the song.
+    /// positions passed through. The label and both colours are written as given
+    /// (an empty/zero value stores ""/OFF), so pass the row's current ones.
+    /// Fire-and-forget; verify by re-reading the song.
     #[allow(clippy::too_many_arguments)]
     pub fn assign_song_preset(
         &mut self,
@@ -2586,6 +2564,7 @@ impl Session {
         footswitch_label: &str,
         footswitch_color: u32,
         preset_scene_slot: u32,
+        footswitch_color_inactive: u32,
     ) -> Result<(), String> {
         self.hid.transact(
             &proto::assign_song_preset(
@@ -2595,6 +2574,7 @@ impl Session {
                 footswitch_label,
                 footswitch_color as u64,
                 preset_scene_slot as u64,
+                footswitch_color_inactive as u64,
             ),
             300,
         )?;
@@ -2761,21 +2741,28 @@ impl Session {
         Ok(())
     }
 
-    /// Decode the Song-preset reply from the accumulated streams. Largest record
-    /// set wins (a complete multi-packet response beats a stray/partial frame).
-    pub fn harvest_song_presets(&self) -> Vec<SongPresetRecord> {
+    /// Decode `song_slot`'s Song-preset reply from the accumulated streams. Largest
+    /// record set wins (a complete multi-packet response beats a stray/partial
+    /// frame); a reply for another song is ignored.
+    pub fn harvest_song_presets(&self, song_slot: u32) -> Vec<SongPresetRecord> {
+        let text = |r: &[(u32, proto::Val)], f| {
+            proto::first_bytes(r, f)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default()
+        };
         self.streams()
             .iter()
-            .map(|s| {
-                proto::song_preset_list_records(&s.body)
-                    .iter()
+            .filter_map(|s| proto::song_preset_list_records(&s.body, song_slot as u64))
+            .map(|recs| {
+                recs.iter()
                     .map(|r| SongPresetRecord {
                         is_empty: proto::first_varint(r, 1).unwrap_or(0) != 0,
                         user_preset_slot: proto::first_varint(r, 2).unwrap_or(0) as u32,
                         preset_scene_slot: proto::first_varint(r, 5).unwrap_or(0) as u32,
-                        preset_scene_name: proto::first_bytes(r, 6)
-                            .map(|b| String::from_utf8_lossy(b).into_owned())
-                            .unwrap_or_default(),
+                        preset_scene_name: text(r, 6),
+                        footswitch_label: text(r, 3),
+                        footswitch_color: proto::first_varint(r, 4).unwrap_or(0) as u32,
+                        footswitch_color_inactive: proto::first_varint(r, 7).unwrap_or(0) as u32,
                     })
                     .collect::<Vec<_>>()
             })
@@ -2858,10 +2845,10 @@ impl Session {
             .max_by_key(|v| v.len())
     }
 
-    pub fn harvest_setlist_songs_strict(&self) -> Option<Vec<u32>> {
+    pub fn harvest_setlist_songs_strict(&self, setlist_slot: u32) -> Option<Vec<u32>> {
         self.streams_final()
             .iter()
-            .filter_map(|s| proto::setlist_song_list_records_strict(&s.body))
+            .filter_map(|s| proto::setlist_song_list_records_strict(&s.body, setlist_slot as u64))
             .map(|records| {
                 records
                     .iter()
@@ -4024,9 +4011,9 @@ mod tests {
     fn backup_session(t: PacedBackupTransport) -> Session {
         Session {
             hid: TrackedHid::new(Box::new(t)),
-            batch: 0,
             raw: Vec::new(),
             fw_version: None,
+            handshake_done: false,
         }
     }
 
@@ -5528,21 +5515,24 @@ mod tests {
         );
     }
 
-    /// The `extra_burst` and field-78 handshake windows (2000 / 1800 ms) keep their
-    /// streaming replies alive.
+    /// The `extra_burst` and discovery handshake windows (2000 / 1800 ms) keep their
+    /// streaming replies alive, and the handshake never sends a batch the firmware
+    /// drops (≥4).
     #[test]
-    fn handshake_keeps_the_extra_burst_and_field78_replies_alive() {
+    fn handshake_keeps_the_extra_burst_and_discovery_replies_alive() {
         use crate::test_support::preset_data_frames;
         let extra = proto::preset_data_request(1, 5, None);
-        let field78 = proto::current_preset_data_json_request(4);
         let t = ScriptedTransport::device()
-            .with_reply_to(&field78, vec![Vec::new(); 5])
             .with_reply_to(&extra, streamed(&preset_data_frames(17_000), 30));
         let mut s = session_over(&t, Vec::new());
         s.handshake(true, Some(extra), false, false).unwrap();
         s.pump_collect_alive(2_000).unwrap(); // the callers' harvest
         assert_eq!(s.try_preset_data_json().unwrap().len(), 17_000);
         assert_eq!(t.dropped_writes(), 0);
+        let sent = t.sent.lock().unwrap();
+        assert!(sent
+            .iter()
+            .all(|b| !matches!(proto::batch_status(b), Some(n) if n >= 4)));
     }
 
     /// A write after a long silent wait reopens the client first — a lapsed client

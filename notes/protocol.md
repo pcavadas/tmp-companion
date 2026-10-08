@@ -11,18 +11,25 @@ session), and `notes/write-safety.md` (the write/read-back story).
 
 ## Handshake `batchStatus` grouping
 
-Requests carry a `batchStatus` field; the device answers a burst **only** if the host
-mirrors Pro Control's exact grouping — it does **not** increment per request:
+Requests carry a `batchStatus` field (FenderMessageTMS field 10). On fw 1.8.58 (static RE
+of the server's message processor, HW-confirmed; 1.1.100 is identical):
 
-- `preset_list_request(filter=1)` → `batchStatus = 1`
-- favorite / `preset_list(4)` / `preset_list(3)` / `product_profile` / `current_preset_info`
-  / `settings66` / `userir` → all `batchStatus = 2`
-- `current_preset_data_request` → `3`
-- `current_preset_data_json_request` → `4`
+- `0` or absent → answered at once;
+- `1` / `2` → only **queued**;
+- `3` → queued, then the **whole queue is answered in order**;
+- `4` and above → **dropped**, no reply.
 
-Increment the batch on every request and the device goes silent after the first couple of
-replies (observed: it answered the two preset lists, then nothing). So `list_my_presets`
-worked but product profile / current-preset data / preset JSON never arrived.
+The queue is device state: it survives the HID inactivity drop and a fresh
+`connectionRequest`, and a later batch 3 sends the stale replies to whoever is on HID
+then. Only a device backup/restore/firmware update clears it.
+
+The handshake mirrors Pro Control: `preset_list_request(1)` = 1; favorite /
+`preset_list(4)` / `preset_list(3)` / `product_profile` / `current_preset_info` /
+`settings66` / `userir` = 2; `current_preset_data_request` = 3, which drains the lot and
+whose own reply (`currentPresetDataChanged`, field 3) comes last. **Every request after
+the handshake uses `proto::BATCH_DRAIN` (3) or none**, so nothing is left queued for the
+next session. The old "increment and the device goes silent" observation is the ≥4 drop;
+the old handshake's field-78 request (batch 4) was a no-op.
 
 **Setters and the heartbeat OMIT `batchStatus`** — only _requests_ carry it. A
 `SetReAmpMode` / `SetPresetLevel` / `LoadPreset` / `SaveCurrentPreset` sent _with_ a

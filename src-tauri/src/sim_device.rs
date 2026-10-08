@@ -146,6 +146,8 @@ const F_PRESET_LEVEL_CHANGED: u32 = 77;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "e2e", derive(serde::Serialize))]
 pub enum SimEvent {
+    /// A request whose `batchStatus` is 4 or more — fw 1.8.58 drops it with no reply.
+    BatchDropped(u64),
     /// `loadPreset` — the **0-based** list index (the fake echoes `PresetLoaded`).
     Loaded(u32),
     /// `replaceNode`(39) → a stock model.
@@ -259,6 +261,10 @@ enum WorkingEdit {
 
 struct SimState {
     events: Vec<SimEvent>,
+    /// Requests sent with `batchStatus` 1/2, waiting for a batch 3 to answer them
+    /// (fw 1.8.58). Shared device state, so it outlives a transport clone — a
+    /// reconnect — just as the real queue outlives a lapse.
+    batch_queue: Vec<Vec<u8>>,
     /// Count of structural edits (`replace`/`insert`/`remove`) seen — drives the
     /// drop-first / reject-at adversarial injections.
     structural_seen: u32,
@@ -465,6 +471,7 @@ impl Default for SimState {
     fn default() -> Self {
         SimState {
             events: Vec::new(),
+            batch_queue: Vec::new(),
             structural_seen: 0,
             drop_first: false,
             reject_at: None,
@@ -1207,6 +1214,33 @@ impl SimDevice {
             .rendered_bypass(group, node)
     }
 
+    /// The firmware's batch gate (fw 1.8.58 static RE, HW-confirmed): `batchStatus`
+    /// 0/absent is answered at once, 1/2 only queue, 3 queues and then answers the
+    /// whole queue in order, and 4 or more is dropped with no reply.
+    fn receive(&self, body: &[u8]) -> Vec<Vec<u8>> {
+        // The lock is released before `handle`, which takes it again.
+        let lock = || self.state.lock().expect("sim lock");
+        match proto::batch_status(body).unwrap_or(0) {
+            0 => self.handle(body),
+            1 | 2 => {
+                lock().batch_queue.push(body.to_vec());
+                Vec::new()
+            }
+            3 => {
+                let queued = {
+                    let mut st = lock();
+                    st.batch_queue.push(body.to_vec());
+                    std::mem::take(&mut st.batch_queue)
+                };
+                queued.iter().flat_map(|b| self.handle(b)).collect()
+            }
+            n => {
+                lock().events.push(SimEvent::BatchDropped(n));
+                Vec::new()
+            }
+        }
+    }
+
     /// Parse one request body and produce the device's framed reply reports.
     fn handle(&self, body: &[u8]) -> Vec<Vec<u8>> {
         let top = proto::parse(body);
@@ -1649,13 +1683,20 @@ impl SimDevice {
         } else {
             &mut st.setlists
         };
-        if !is_song && proto::first_bytes(&f, F_SETLIST_SONGS_REQUEST).is_some() {
-            // Empty but COMPLETE membership response so the read resolves (no modeled songs).
-            let resp = proto::len_delimited(
-                TMS_SETLIST,
-                &proto::len_delimited(F_SETLIST_SONGS_RESPONSE, &[]),
-            );
-            return vec![frame(&resp)];
+        if !is_song {
+            if let Some(req) = proto::first_bytes(&f, F_SETLIST_SONGS_REQUEST) {
+                // Empty but COMPLETE membership response so the read resolves (no modeled
+                // songs), echoing `setlistSlot` like the firmware's reply.
+                let mut inner = Vec::new();
+                if let Some(slot) = proto::first_varint(&proto::parse(req), 1) {
+                    proto::field_varint(&mut inner, 1, slot);
+                }
+                let resp = proto::len_delimited(
+                    TMS_SETLIST,
+                    &proto::len_delimited(F_SETLIST_SONGS_RESPONSE, &inner),
+                );
+                return vec![frame(&resp)];
+            }
         }
         if proto::first_bytes(&f, F_LIST_REQUEST).is_some() {
             return frame_multi(&list_response(tms, list));
@@ -2557,10 +2598,10 @@ impl HidTransport for SimDevice {
         Ok(()) // fire-and-forget (heartbeat) — no reply
     }
     fn transact(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-        Ok(self.handle(body))
+        Ok(self.receive(body))
     }
     fn transact_chunked(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-        Ok(self.handle(body))
+        Ok(self.receive(body))
     }
     fn pump(&self, _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
         // Replies are delivered synchronously from the send; only a queued device push
@@ -2570,7 +2611,7 @@ impl HidTransport for SimDevice {
         ))
     }
     fn transact_eager(&self, body: &[u8], _max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
-        Ok(self.handle(body))
+        Ok(self.receive(body))
     }
 }
 
@@ -3720,5 +3761,50 @@ mod ftsw_tests {
             "every ftsw wire op is recorded: {:?}",
             sim.events()
         );
+    }
+}
+
+#[cfg(test)]
+mod batch_model_tests {
+    use super::*;
+
+    fn song_list(batch: Option<u64>) -> Vec<u8> {
+        proto::song_list_request(batch)
+    }
+
+    /// 1/2 wait for a 3, which answers the whole queue in order; 0/absent answers at once.
+    #[test]
+    fn a_queued_request_is_answered_only_by_a_later_batch_3() {
+        let sim = SimDevice::new();
+        assert!(sim.receive(&song_list(Some(2))).is_empty());
+        assert!(!sim.receive(&song_list(None)).is_empty());
+        let one = sim.receive(&song_list(None)).len();
+        assert_eq!(sim.receive(&song_list(Some(3))).len(), 2 * one);
+    }
+
+    /// The queue is device state: a reconnect (a transport clone) inherits it, so a
+    /// stale request is answered on whichever session drains next.
+    #[test]
+    fn the_queue_outlives_a_reconnect() {
+        let sim = SimDevice::new();
+        assert!(sim.receive(&song_list(Some(1))).is_empty());
+        let next_session = sim.clone();
+        let one = next_session.receive(&song_list(None)).len();
+        assert_eq!(next_session.receive(&song_list(Some(3))).len(), 2 * one);
+    }
+
+    #[test]
+    fn batch_4_and_above_is_dropped() {
+        let sim = SimDevice::new();
+        for b in [4, 5, 100] {
+            assert!(sim.receive(&song_list(Some(b))).is_empty());
+        }
+        assert!(!sim.receive(&song_list(Some(3))).is_empty());
+        let dropped: Vec<_> = sim
+            .events()
+            .into_iter()
+            .filter(|e| matches!(e, SimEvent::BatchDropped(_)))
+            .collect();
+        assert_eq!(dropped.len(), 3);
     }
 }
