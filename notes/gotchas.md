@@ -351,3 +351,25 @@ Read the entry in full before changing the behaviour it governs.
   the preset content. A first reading blamed the 45-100 s lazy-commit window (two imports had been
   fired seconds apart); the clean import to 29 under the same timing falsifies that. Cause unknown
   — treat slot 27 as unreliable for import and use another empty slot.
+- **Likely cause (fw 1.8.58 static RE, not HW-reproduced):** an import always lands in the LOWEST
+  empty user slot. If list index 26 was the lowest empty slot, the import landed ON the target, and
+  `replace_inplace_with` then loaded it, saved it over itself and cleared it as its own scratch
+  copy. The clean import to 29 fits: 27 was empty again and took the scratch. An import that lands
+  on its target now returns at once (`Landing::InPlace`).
+
+## A body rejected at load becomes a silent empty preset that keeps its name
+
+- fw 1.8.58 static RE (tmp-audit `COMPANION_QUESTIONS.md` Q6): an import validates only LZ4 and
+  JSON syntax and stores the JSON verbatim. Shape checks run at LOAD; a throwing check is caught,
+  the working copy becomes an empty preset that keeps the stored display name, and no
+  `presetError` is sent. A later save persists the empty body.
+- The in-place re-import path (`replace_inplace_with`: OFFLINE edits, migration, `probe
+--restore`) loads the scratch import and saves it over the original. Its only pre-save guard
+  was `confirm_active` (slot + name), which passes on the substitute, and the guarded clear then
+  deleted the only intact copy. It now reads the working copy and refuses the save unless its
+  per-group blocks match the file's (`Session::confirm_loaded_body`, fail-closed on a short read).
+- The pre-import validator (`footswitch::validate_import_body`) enforces only the two HW-proven
+  discard shapes. Static RE also names a footswitch row count other than 10 or 20 and a
+  non-integer `version` as load-time rejects. The unit contradicts both: fixtures 405 and 410
+  carry 9- and 5-row `ftsw`, every fixture carries `info.version: 5.0`, and the seed's
+  empty-body check passes on them online.

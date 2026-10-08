@@ -1,5 +1,6 @@
 //! "Copy blocks between presets" — ordered replace/insert/remove op apply.
 #![allow(clippy::too_many_arguments)]
+use crate::blockcaps::{group_roster, Roster};
 use crate::*;
 
 /// The block content a copy [`CopyOp`] applies — the SAME three "with a block"
@@ -343,30 +344,6 @@ fn error_item(list_index: u32, name: &str, detail: String) -> CopyApplyItem {
         detail,
         graph: None,
     }
-}
-
-/// Per-group SORTED FenderId lists (a multiset per group) — the shape the working-copy
-/// read is compared in. Node ids are deliberately NOT part of it (a device replace
-/// re-assigns them, an insert mints one); groups are keyed because the device lists nodes
-/// in sorted-group order while the frontend's optimistic graph lists them in signal
-/// order; and WITHIN a group the order is dropped because the unit accepts several blocks
-/// of one model in a group (ONLINE `copy.spec.ts` 2026-09-03: four `ACD_TubeScreamer` in
-/// G1 after chained inserts) and, with a node id being its FenderId, an insert anchored on
-/// a duplicated model lands where the device decides, not where `expected_roster`
-/// projects. A multiset match still proves the post-edit document: a partial has fewer
-/// nodes and a stale one a different multiset — and the adopted read then carries the
-/// device's real order.
-type Roster = std::collections::BTreeMap<String, Vec<String>>;
-
-fn group_roster<'a>(nodes: impl Iterator<Item = (&'a str, &'a str)>) -> Roster {
-    let mut out = Roster::new();
-    for (group, fender_id) in nodes {
-        out.entry(group.to_string())
-            .or_default()
-            .push(fender_id.to_string());
-    }
-    out.values_mut().for_each(|v| v.sort());
-    out
 }
 
 /// `read` ⊆ `expected` as per-group multisets with fewer nodes in total — a partial cut

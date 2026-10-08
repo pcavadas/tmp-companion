@@ -133,6 +133,59 @@ pub struct RosterEntry {
     pub dual_cab: bool,
 }
 
+/// Per-group SORTED FenderId lists (a multiset per group) — the shape the working-copy
+/// read is compared in. Node ids are deliberately NOT part of it (a device replace
+/// re-assigns them, an insert mints one); groups are keyed because the device lists nodes
+/// in sorted-group order while the frontend's optimistic graph lists them in signal
+/// order; and WITHIN a group the order is dropped because the unit accepts several blocks
+/// of one model in a group (ONLINE `copy.spec.ts` 2026-09-03: four `ACD_TubeScreamer` in
+/// G1 after chained inserts) and, with a node id being its FenderId, an insert anchored on
+/// a duplicated model lands where the device decides, not where `expected_roster`
+/// projects. A multiset match still proves the post-edit document: a partial has fewer
+/// nodes and a stale one a different multiset — and the adopted read then carries the
+/// device's real order.
+pub(crate) type Roster = std::collections::BTreeMap<String, Vec<String>>;
+
+pub(crate) fn group_roster<'a>(nodes: impl Iterator<Item = (&'a str, &'a str)>) -> Roster {
+    let mut out = Roster::new();
+    for (group, fender_id) in nodes {
+        out.entry(group.to_string())
+            .or_default()
+            .push(fender_id.to_string());
+    }
+    out.values_mut().for_each(|v| v.sort());
+    out
+}
+
+/// [`group_roster`] of a decoded preset's whole graph.
+pub(crate) fn group_roster_of(nodes: &[crate::session::GraphNode]) -> Roster {
+    group_roster(
+        nodes
+            .iter()
+            .map(|n| (n.group_id.as_str(), n.model.as_str())),
+    )
+}
+
+/// The loaded working copy must hold the imported file's blocks, group by group. An empty
+/// roster where the file has blocks is the firmware's silent load-time substitute; any
+/// other difference (a `DUBS_Unknown` rename, a read cut short) also refuses — this gates
+/// an irreversible overwrite, so it fails closed.
+pub(crate) fn check_loaded_roster(file: &Roster, live: &Roster) -> Result<(), String> {
+    if file == live {
+        return Ok(());
+    }
+    if live.is_empty() {
+        return Err(
+            "the loaded import has NO blocks where the file has some — the device replaced \
+             it with an empty body at load"
+                .to_string(),
+        );
+    }
+    Err(format!(
+        "the loaded import's blocks {live:?} differ from the file's {file:?}"
+    ))
+}
+
 /// Walk decoded preset JSON into the pre-edit roster the guard counts against —
 /// sourced from `session::extract_active_graph`, the ONE place that owns the node walk
 /// AND the load-bearing dual-cab discriminator (`cabsim2enabled` is a real second cab
@@ -268,6 +321,43 @@ pub fn check_op(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn groups(groups: &[(&str, &[&str])]) -> Roster {
+        group_roster(
+            groups
+                .iter()
+                .flat_map(|(g, ids)| ids.iter().map(move |id| (*g, *id))),
+        )
+    }
+
+    #[test]
+    fn the_empty_load_substitute_fails_the_loaded_body_check() {
+        let file = groups(&[("G1", &["ACD_TubeScreamer"]), ("G2", &["ACD_TwinReverb65"])]);
+        let err = check_loaded_roster(&file, &Roster::new()).unwrap_err();
+        assert!(err.contains("empty body"), "{err}");
+    }
+
+    #[test]
+    fn the_loaded_body_check_ignores_order_within_a_group_only() {
+        let file = groups(&[("G1", &["ACD_TubeScreamer", "ACD_Rat", "ACD_TubeScreamer"])]);
+        let live = groups(&[("G1", &["ACD_Rat", "ACD_TubeScreamer", "ACD_TubeScreamer"])]);
+        assert!(check_loaded_roster(&file, &live).is_ok());
+        assert!(check_loaded_roster(&Roster::new(), &Roster::new()).is_ok());
+        let moved = groups(&[
+            ("G1", &["ACD_Rat", "ACD_TubeScreamer"]),
+            ("G2", &["ACD_TubeScreamer"]),
+        ]);
+        assert!(check_loaded_roster(&file, &moved).is_err());
+    }
+
+    #[test]
+    fn a_renamed_or_cut_body_fails_the_loaded_body_check() {
+        let file = groups(&[("G1", &["ACD_TubeScreamer", "ACD_TwinReverb65"])]);
+        let renamed = groups(&[("G1", &["DUBS_Unknown", "ACD_TwinReverb65"])]);
+        let cut = groups(&[("G1", &["ACD_TubeScreamer"])]);
+        assert!(check_loaded_roster(&file, &renamed).is_err());
+        assert!(check_loaded_roster(&file, &cut).is_err());
+    }
 
     // Real ids from `block-classification.json` / `model-cpu.json`.
     const CAB_A: &str = "ACD_AC30BrilliantCabIR";
