@@ -2284,8 +2284,8 @@ impl Session {
     }
 
     /// [`Self::confirmed_node_id`], else the one node `group` holds that is not in `known`
-    /// (a working-copy read) — for a confirm that carried no id, whose HW payload is not
-    /// decoded yet. `None` unless exactly one.
+    /// (a working-copy read) — for a confirm that carried no id. `None` unless exactly
+    /// one.
     pub(crate) fn inserted_node_id(&mut self, group: &str, known: &[String]) -> Option<String> {
         if let Some(id) = self.confirmed_node_id() {
             return Some(id);
@@ -2314,7 +2314,32 @@ impl Session {
         fender_id: &str,
         was: Option<usize>,
     ) -> Result<bool, String> {
-        if self.insert_node(group, before, fender_id)? {
+        self.insert_once_with(group, fender_id, was, |s| {
+            s.insert_node(group, before, fender_id)
+        })
+    }
+
+    /// [`Self::insert_node_once`] for [`Self::insert_node_at_index`].
+    pub(crate) fn insert_node_at_index_once(
+        &mut self,
+        group: &str,
+        index: u32,
+        fender_id: &str,
+        was: Option<usize>,
+    ) -> Result<bool, String> {
+        self.insert_once_with(group, fender_id, was, |s| {
+            s.insert_node_at_index(group, index, fender_id)
+        })
+    }
+
+    fn insert_once_with(
+        &mut self,
+        group: &str,
+        fender_id: &str,
+        was: Option<usize>,
+        send: impl Fn(&mut Self) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        if send(self)? {
             return Ok(true);
         }
         if self.saw_preset_error() {
@@ -2322,7 +2347,7 @@ impl Session {
         }
         match was.and_then(|was| self.insert_landed(group, fender_id, was)) {
             Some(true) => Ok(true),
-            Some(false) => self.insert_node(group, before, fender_id),
+            Some(false) => send(self),
             None => Ok(false),
         }
     }

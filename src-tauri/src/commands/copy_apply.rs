@@ -289,14 +289,6 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
     let mut ids = DeviceIds::new(&roster);
-    let anchored: std::collections::HashSet<&Anchor> = job
-        .ops
-        .iter()
-        .filter_map(|o| match o {
-            CopyOp::Insert { before, .. } => before.as_ref(),
-            _ => None,
-        })
-        .collect();
 
     // Apply each op in order. The FIRST structural edit after a fresh load can be
     // silently DROPPED — retry it once (but NEVER on a presetError, a real rejection).
@@ -397,23 +389,13 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
         match apply_copy_op(s, op, first, anchor_id.as_deref(), before.as_deref()) {
             Ok(true) => {
                 blockcaps_advance(&mut counts, candidate_id, replaced);
-                // A block a later insert anchors on needs its new id: the confirm's, else
-                // a read. Any other block's id is taken only if the confirm carries it.
+                // Every new block's id — the confirm's, else a read — so later ops in the
+                // group can address it and tell it apart from the next new block.
                 let minted = match op {
                     CopyOp::Remove { .. } => None,
-                    CopyOp::Replace { group, node_id, .. }
-                        if anchored.contains(&Anchor::node(node_id)) =>
-                    {
+                    CopyOp::Replace { group, .. } | CopyOp::Insert { group, .. } => {
                         s.inserted_node_id(group, &ids.group_ids(group))
                     }
-                    CopyOp::Insert {
-                        group,
-                        key: Some(key),
-                        ..
-                    } if anchored.contains(&Anchor::Inserted { key: key.clone() }) => {
-                        s.inserted_node_id(group, &ids.group_ids(group))
-                    }
-                    _ => s.confirmed_node_id(),
                 };
                 ids.advance(op, minted);
             }

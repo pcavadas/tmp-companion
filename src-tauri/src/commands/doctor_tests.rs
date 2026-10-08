@@ -794,3 +794,41 @@ fn doctor_inserts_are_refused_on_a_missing_anchor_or_over_budget() {
         .expect_err("over the CPU budget");
     assert!(over.contains("ProcessorUtilization"), "{over}");
 }
+
+/// An insert whose confirm is lost but which landed is read back, not re-sent, and its
+/// param follow-up still targets the block the device minted.
+#[test]
+fn doctor_insert_whose_confirm_is_lost_is_read_back_not_resent() {
+    use crate::sim_device::{SimDevice, SimEvent};
+    let doc = format!(
+        r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[{},{}]}}}},"zzTail":"{}"}}"#,
+        r#"{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false}}"#,
+        r#"{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}"#,
+        "x".repeat(200)
+    );
+    let sim = SimDevice::new()
+        .with_preset_json(&doc)
+        .with_lost_first_confirm();
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    let op = doctor::DoctorOp::InsertNode {
+        group_id: "G1".to_string(),
+        before_node_id: Some("n2".to_string()),
+        fender_id: "ACD_TubeScreamer".to_string(),
+        params: vec![("level".to_string(), 0.5)],
+    };
+    apply_doctor_ops(&mut s, &[op]).expect("the landed insert is confirmed by its read-back");
+    let ev = sim.events();
+    let inserts = ev
+        .iter()
+        .filter(|e| matches!(e, SimEvent::Insert { .. }))
+        .count();
+    assert_eq!(inserts, 1, "re-sent after a lost confirm: {ev:?}");
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            SimEvent::ChangeParameter { node, param, .. }
+                if node == "ACD_TubeScreamer" && param == "level"
+        )),
+        "the param must target the minted id: {ev:?}"
+    );
+}

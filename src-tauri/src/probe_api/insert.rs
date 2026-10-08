@@ -252,7 +252,7 @@ pub fn probe_insert_map(
     // ONE insert, guarded; an unconfirmed one is read back before any re-send.
     let was = insert_guard(&mut s, group, before, fender_id)?;
     let confirmed = match at_index {
-        Some(idx) => s.insert_node_at_index(group, idx, fender_id)?,
+        Some(idx) => s.insert_node_at_index_once(group, idx, fender_id, Some(was))?,
         None => s.insert_node_once(group, before, fender_id, Some(was))?,
     };
     let seen = s.seen_preset_fields();

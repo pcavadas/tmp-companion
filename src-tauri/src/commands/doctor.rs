@@ -904,7 +904,9 @@ fn before_cache_put(key: BeforeKey, clip: String) {
 /// failure's detail string; the caller decides how to recover (both today:
 /// restore the stored preset and report the detail).
 fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), String> {
-    let mut known = Vec::new();
+    // The working copy's (group, FenderId, node id)s, kept current as inserts land: the
+    // read-back count and the known ids an unconfirmed insert's id is told apart from.
+    let mut placed: Vec<(String, String, String)> = Vec::new();
     if ops
         .iter()
         .any(|op| matches!(op, doctor::DoctorOp::InsertNode { .. }))
@@ -912,7 +914,10 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
         let live = s.live_preset_value(|v| v.get("audioGraph").is_some())?;
         let roster = blockcaps::roster_from_preset(&live);
         check_doctor_inserts(&roster, ops)?;
-        known = roster.into_iter().map(|e| e.node_id).collect();
+        placed = roster
+            .into_iter()
+            .map(|e| (e.group, e.fender_id, e.node_id))
+            .collect();
     }
     for op in ops {
         let outcome: Result<bool, String> = match op {
@@ -929,23 +934,42 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
                 before_node_id,
                 fender_id,
                 params,
-            } => match s.insert_node(group_id, before_node_id.as_deref(), fender_id) {
-                Ok(true) if params.is_empty() => Ok(true),
-                Ok(true) => {
-                    let Some(node) = s.inserted_node_id(group_id, &known) else {
-                        return Err(format!("could not identify the inserted {fender_id}"));
-                    };
-                    let mut r = Ok(true);
-                    for (p, v) in params {
-                        if let Err(e) = s.change_parameter(group_id, &node, p, *v as f32) {
-                            r = Err(e);
-                            break;
+            } => {
+                let was = placed
+                    .iter()
+                    .filter(|(g, f, _)| g == group_id && f == fender_id)
+                    .count();
+                match s.insert_node_once(group_id, before_node_id.as_deref(), fender_id, Some(was))
+                {
+                    Ok(true) => {
+                        let known: Vec<String> =
+                            placed.iter().map(|(_, _, id)| id.clone()).collect();
+                        let node = s.inserted_node_id(group_id, &known);
+                        // Counted even unidentified: the next insert's read-back needs it.
+                        placed.push((
+                            group_id.clone(),
+                            fender_id.clone(),
+                            node.clone().unwrap_or_default(),
+                        ));
+                        let node = match node {
+                            Some(n) => n,
+                            None if params.is_empty() => continue,
+                            None => {
+                                return Err(format!("could not identify the inserted {fender_id}"))
+                            }
+                        };
+                        let mut r = Ok(true);
+                        for (p, v) in params {
+                            if let Err(e) = s.change_parameter(group_id, &node, p, *v as f32) {
+                                r = Err(e);
+                                break;
+                            }
                         }
+                        r
                     }
-                    r
+                    other => other,
                 }
-                other => other,
-            },
+            }
         };
         match outcome {
             Ok(true) => continue,
