@@ -133,7 +133,7 @@ describe("MatchCard — reuse vs insert", () => {
           {
             kind: "insert_node",
             groupId: "G1",
-            beforeFenderId: null,
+            beforeNodeId: null,
             fenderId: "ACD_TenBandEQStereo",
             params: [["gain62hz", 3]],
           },
@@ -157,12 +157,27 @@ describe("MatchCard — reuse vs insert", () => {
           {
             kind: "insert_node",
             groupId: "G1",
-            beforeFenderId: null,
+            beforeNodeId: null,
             fenderId: "ACD_TenBandEQStereo",
             params: [["gain62hz", 3]],
           },
         ],
       }),
     );
+  });
+
+  it("offers no Apply when the new EQ-10 would push the chain over the CPU budget", () => {
+    // Two 36% GuitarSynths: + the EQ-10 crosses 76.5, where the device aborts
+    // the insert — so the card stays read-only.
+    const synth = (id: string): GraphNode => ({
+      ...AMP_NODE,
+      node_id: id,
+      model: "ACD_GuitarSynth",
+    });
+    renderCard([AMP_NODE, synth("s1"), synth("s2")]);
+
+    expect(
+      screen.queryByRole("button", { name: /apply to the unit/i }),
+    ).not.toBeInTheDocument();
   });
 });

@@ -1,17 +1,21 @@
 //! Firmware-faithful pre-flight guard for the Tone Master Pro's 5 block-count caps
 //! (`NodeSelectionRestrictions`, decompiled from `tone-master-stomp-client`).
 //!
-//! **This is the SOLE enforcement.** The device audio engine (`tm-stomp-server`) does
-//! NOT enforce any of these caps and cannot reject an over-cap edit with a
+//! **This is the SOLE enforcement of the 4 count caps.** The device audio engine
+//! (`tm-stomp-server`) does NOT enforce them and cannot reject an over-cap edit with a
 //! `presetError` — two independent decompile passes confirmed the count-cap code path
-//! is entirely client-side (UI-only) in `tone-master-stomp-client`. So the Rust apply
-//! path (`lib.rs`'s `copy_apply_one` / `held_replace_one` / `replace_one_live`) is the
-//! primary, fail-closed guard: it must catch every over-cap edit BEFORE it reaches the
-//! device, because nothing downstream will.
+//! is entirely client-side (UI-only) in `tone-master-stomp-client`. The CPU budget is
+//! different: the server does check it (fw 1.8.58 static RE), but an over-budget
+//! INSERT gets no reply and its exception aborts the server process (a replace gets
+//! `presetError` 14). So the Rust apply path (`lib.rs`'s `copy_apply_one` /
+//! `held_replace_one` / `replace_one_live`) is the primary, fail-closed guard for all
+//! 5 rules: it must catch every over-cap edit BEFORE it reaches the device.
 //!
 //! The 5 rules, in firmware enum order (the order `check_op` reports the first
 //! violation in):
-//! 0. `ProcessorUtilization` — Σ per-block `cpuByBid` ≤ `budget` (76.5).
+//! 0. `ProcessorUtilization` — Σ per-block `cpuByBid`, rounded half away from zero,
+//!    ≤ `budget` (76.5), so a total of exactly 76.5 fails. An id missing from the
+//!    table costs `unknownCost` (20), as on the device.
 //! 1. `FXLoopCoexistence` — `ACD_FxLoop3_4` (stereo) is mutually exclusive with EITHER
 //!    `ACD_FxLoop3` or `ACD_FxLoop4` (mono). Bidirectional; not a count.
 //! 2. `ConvolutionReverbLimit` — max 1 member of `convolutionSet`.
@@ -99,9 +103,22 @@ fn sets() -> &'static Sets {
     })
 }
 
+/// The firmware's budget test: `frinta(total) > budget` fails. The epsilon keeps a
+/// sum that drifted just under a `.5` boundary on the failing side.
+fn over_budget(total: f64) -> bool {
+    (total + 1e-6).round() > costs().budget
+}
+
+fn cost(id: &str) -> f64 {
+    let c = costs();
+    c.cpu_by_bid.get(id).copied().unwrap_or(c.unknown_cost)
+}
+
 /// The CPU budget + per-block cost table, parsed once from `model-cpu.json`.
 struct Costs {
     budget: f64,
+    /// What the firmware charges a FenderId missing from its table (`FUN_00cacd90`).
+    unknown_cost: f64,
     cpu_by_bid: HashMap<String, f64>,
 }
 
@@ -111,6 +128,7 @@ fn costs() -> &'static Costs {
         let v: Value = serde_json::from_str(include_str!("../../src/models/model-cpu.json"))
             .expect("model-cpu.json must parse");
         let budget = v.get("budget").and_then(Value::as_f64).unwrap_or(76.5);
+        let unknown_cost = v.get("unknownCost").and_then(Value::as_f64).unwrap_or(20.0);
         let cpu_by_bid = v
             .get("cpuByBid")
             .and_then(Value::as_object)
@@ -118,7 +136,11 @@ fn costs() -> &'static Costs {
             .flatten()
             .filter_map(|(k, val)| val.as_f64().map(|f| (k.clone(), f)))
             .collect();
-        Costs { budget, cpu_by_bid }
+        Costs {
+            budget,
+            unknown_cost,
+            cpu_by_bid,
+        }
     })
 }
 
@@ -238,7 +260,7 @@ impl Counts {
         if s.fx_loop_mono.contains(id) {
             self.fx_mono += 1;
         }
-        self.cpu += costs().cpu_by_bid.get(id).copied().unwrap_or(0.0);
+        self.cpu += cost(id);
     }
 
     /// Subtract one node's contribution (a remove, or the replaced-anchor side of a
@@ -260,8 +282,30 @@ impl Counts {
         if s.fx_loop_mono.contains(id) {
             self.fx_mono -= 1;
         }
-        self.cpu -= costs().cpu_by_bid.get(id).copied().unwrap_or(0.0);
+        self.cpu -= cost(id);
     }
+}
+
+/// The guard for one `insertNode` against the pre-edit `roster`, advancing `counts` on
+/// success. fw 1.8.58 answers an anchor its group lacks, or an insert over the CPU
+/// budget, with no reply and aborts its server (static RE), so neither may be sent.
+pub fn check_insert(
+    roster: &[RosterEntry],
+    counts: &mut Counts,
+    group: &str,
+    before: Option<&str>,
+    fender_id: &str,
+) -> Result<(), String> {
+    if let Some(b) = before.filter(|b| !roster.iter().any(|e| e.group == group && e.node_id == *b))
+    {
+        return Err(format!(
+            "{group} holds no node {b} to insert {fender_id} before — not sent"
+        ));
+    }
+    check_op(counts, fender_id, None, false, false, false)
+        .map_err(|r| format!("adding {fender_id} would break the device's {r} limit — not sent"))?;
+    counts.add(fender_id, false);
+    Ok(())
 }
 
 /// The pre-edit counts a roster (every node BEFORE any op in the job/plan is applied)
@@ -300,7 +344,7 @@ pub fn check_op(
         next.remove(replaced_id.unwrap_or(""), replaced_dual_cab);
     }
 
-    if next.cpu > costs().budget + 1e-6 {
+    if over_budget(next.cpu) {
         return Err(BlockCapError::ProcessorUtilization);
     }
     if next.fx_stereo > 0 && next.fx_mono > 0 {
@@ -507,12 +551,40 @@ mod tests {
     }
 
     #[test]
-    fn unknown_id_costs_nothing() {
-        let c = counts(&roster(&[]));
+    fn unknown_id_costs_twenty_like_the_firmware() {
+        // 3 × 20 = 60 fits; a fourth unknown reaches 80.
+        let ids = [
+            ("ACD_NotA", false),
+            ("ACD_NotB", false),
+            ("ACD_NotC", false),
+        ];
+        let c = counts(&roster(&ids));
+        assert!((c.cpu - 60.0).abs() < 1e-9);
         assert_eq!(
-            check_op(&c, "ACD_NotARealBlock", None, false, false, false),
+            check_op(&c, "ACD_NotD", None, false, false, false),
+            Err(BlockCapError::ProcessorUtilization)
+        );
+    }
+
+    #[test]
+    fn a_total_of_exactly_the_budget_fails() {
+        // ACD_GuitarSynth 36 + 36 = 72; + ACD_LoFi 9.5 (1.8.58) = 81.5 fails, while
+        // 72 + ACD_Blackbox 1.7 = 73.7 fits. 76.4 fits, 76.5 rounds to 77 and fails.
+        let c = counts(&roster(&[
+            ("ACD_GuitarSynth", false),
+            ("ACD_GuitarSynth", false),
+        ]));
+        assert_eq!(
+            check_op(&c, "ACD_LoFi", None, false, false, false),
+            Err(BlockCapError::ProcessorUtilization)
+        );
+        assert_eq!(
+            check_op(&c, "ACD_Blackbox", None, false, false, false),
             Ok(())
         );
+        assert!(!over_budget(76.4));
+        assert!(over_budget(76.5));
+        assert!(over_budget(76.4 + 0.1));
     }
 
     #[test]

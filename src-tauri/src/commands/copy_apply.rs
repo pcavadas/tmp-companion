@@ -55,14 +55,14 @@ pub enum CopyOp {
         node_id: String,
         repl: CopyRepl,
     },
-    /// Insert `repl` into `group` via field-34 `insert_node`. `before_fender_id` is the
-    /// block to insert AHEAD of (the device's field-2 inserts BEFORE the referenced node,
-    /// HW-verified fw 1.8.45); `None` appends at the group end. `diffToOps` sets it to the
-    /// inserted block's in-array successor's FenderId, or `None` when it's last.
+    /// Insert `repl` into `group` via field-34 `insert_node`, BEFORE the block `before`
+    /// names (`None` appends at the group end). `key` names this insert for a later one
+    /// that anchors on it.
     Insert {
         group: String,
-        #[serde(rename = "beforeFenderId")]
-        before_fender_id: Option<String>,
+        #[serde(default)]
+        key: Option<String>,
+        before: Option<Anchor>,
         repl: CopyRepl,
     },
     /// Remove the block `node_id` from `group` — `removeNode` (the device re-links).
@@ -71,6 +71,97 @@ pub enum CopyOp {
         #[serde(rename = "nodeId")]
         node_id: String,
     },
+}
+
+/// The block an insert lands before: an original block by its pre-edit `nodeId`, or an
+/// insert earlier in the same job by its `key`. The device matches the anchor on the
+/// group's CURRENT node ids (fw 1.8.58 static RE) and a replace or insert mints a new
+/// id, so [`DeviceIds`] resolves it from the confirms at send time.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Anchor {
+    Node {
+        #[serde(rename = "nodeId")]
+        node_id: String,
+    },
+    Inserted {
+        key: String,
+    },
+}
+
+impl Anchor {
+    fn node(node_id: &str) -> Anchor {
+        Anchor::Node {
+            node_id: node_id.to_string(),
+        }
+    }
+}
+
+/// The device's current node ids, tracked through a job's confirmed ops.
+struct DeviceIds {
+    /// `(group, id)` of every block in the working copy whose id is known.
+    live: Vec<(String, String)>,
+    /// Anchor → the block's current id.
+    alias: std::collections::HashMap<Anchor, String>,
+}
+
+impl DeviceIds {
+    fn new(roster: &[blockcaps::RosterEntry]) -> DeviceIds {
+        DeviceIds {
+            live: roster
+                .iter()
+                .map(|e| (e.group.clone(), e.node_id.clone()))
+                .collect(),
+            alias: roster
+                .iter()
+                .map(|e| (Anchor::node(&e.node_id), e.node_id.clone()))
+                .collect(),
+        }
+    }
+
+    /// The current id `anchor` names, if that block is known to be in `group` now.
+    fn resolve(&self, group: &str, anchor: &Anchor) -> Option<&str> {
+        let id = self.alias.get(anchor)?;
+        self.live
+            .iter()
+            .any(|(g, x)| g == group && x == id)
+            .then_some(id.as_str())
+    }
+
+    /// The ids of the blocks `group` is known to hold now.
+    fn group_ids(&self, group: &str) -> Vec<String> {
+        self.live
+            .iter()
+            .filter(|(g, _)| g == group)
+            .map(|(_, id)| id.clone())
+            .collect()
+    }
+
+    /// Record a confirmed op. `minted` is the id its confirm carried; without one the
+    /// block stays unaddressable, so nothing can anchor on it.
+    fn advance(&mut self, op: &CopyOp, minted: Option<String>) {
+        match op {
+            CopyOp::Remove { group, node_id } | CopyOp::Replace { group, node_id, .. } => {
+                let key = Anchor::node(node_id);
+                if let Some(old) = self.alias.remove(&key) {
+                    self.live.retain(|(g, x)| !(g == group && *x == old));
+                }
+                if let (CopyOp::Replace { .. }, Some(new)) = (op, minted) {
+                    self.live.push((group.clone(), new.clone()));
+                    self.alias.insert(key, new);
+                }
+            }
+            CopyOp::Insert { group, key, .. } => {
+                if let Some(new) = minted {
+                    self.live.push((group.clone(), new.clone()));
+                    if let Some(key) = key {
+                        self.alias
+                            .insert(Anchor::Inserted { key: key.clone() }, new);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// One target preset for a [`copy_apply`] run: its 0-based `list_index`, display
@@ -197,6 +288,15 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+    let mut ids = DeviceIds::new(&roster);
+    let anchored: std::collections::HashSet<&Anchor> = job
+        .ops
+        .iter()
+        .filter_map(|o| match o {
+            CopyOp::Insert { before, .. } => before.as_ref(),
+            _ => None,
+        })
+        .collect();
 
     // Apply each op in order. The FIRST structural edit after a fresh load can be
     // silently DROPPED — retry it once (but NEVER on a presetError, a real rejection).
@@ -223,19 +323,49 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
                     (None, false, Some((group.as_str(), node_id.as_str())))
                 }
             };
-        // An IR/saved INSERT addresses the node it adds by FenderId (on the unit a node id
-        // IS its FenderId), so a group that ALREADY holds that model — after the ops so far
-        // — would make the follow-up swap ambiguous (it could re-point an existing block).
-        // (A cap-legal case: two cabinets in one group.)
+        // The group's contents before this op, for an insert's anchor check, its
+        // IR/saved address check and its read-then-retry. `None` when the ops so far
+        // cannot be modelled: the group's contents are then unknown.
+        let before = match op {
+            CopyOp::Insert { group, .. } => expected_roster(&roster, &job.ops[..i])
+                .map(|r| r.get(group).cloned().unwrap_or_default()),
+            _ => None,
+        };
+        // fw 1.8.58 answers an insert whose anchor is not in the group with no reply and
+        // aborts its server (static RE), so the anchor must resolve to a block known to be
+        // there now.
+        let mut anchor_id = None;
+        if let CopyOp::Insert {
+            group,
+            before: Some(anchor),
+            ..
+        } = op
+        {
+            match ids.resolve(group, anchor) {
+                Some(id) => anchor_id = Some(id.to_string()),
+                None => {
+                    return Ok(error_item(
+                        list_index,
+                        &name,
+                        format!(
+                            "op {}/{total} ({}) refused: its anchor is not a block {group} is \
+                             known to hold now — NOT sent",
+                            i + 1,
+                            describe_copy_op(op),
+                        ),
+                    ));
+                }
+            }
+        }
         if let CopyOp::Insert { group, repl, .. } = op {
-            // Refuse, never guess — and when the ops so far cannot be modelled at all
-            // (`expected_roster` → `None`, the same `None` that refuses the read), the
-            // group's contents are unknown, so the address is unverifiable: refuse too.
+            // An IR/saved INSERT addresses the node it adds by FenderId (on the unit a node
+            // id IS its FenderId), so a group that ALREADY holds that model would make the
+            // follow-up swap ambiguous (it could re-point an existing block). (A cap-legal
+            // case: two cabinets in one group.) Refuse, never guess.
             let ambiguous = !matches!(repl, CopyRepl::Model { .. })
-                && expected_roster(&roster, &job.ops[..i]).is_none_or(|r| {
-                    r.get(group)
-                        .is_some_and(|ids| ids.iter().any(|id| id == repl.insert_fender_id()))
-                });
+                && before
+                    .as_ref()
+                    .is_none_or(|ids| ids.iter().any(|id| id == repl.insert_fender_id()));
             if ambiguous {
                 return Ok(error_item(
                     list_index,
@@ -264,18 +394,38 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
             ));
         }
 
-        match apply_copy_op(s, op, first) {
+        match apply_copy_op(s, op, first, anchor_id.as_deref(), before.as_deref()) {
             Ok(true) => {
                 blockcaps_advance(&mut counts, candidate_id, replaced);
+                // A block a later insert anchors on needs its new id: the confirm's, else
+                // a read. Any other block's id is taken only if the confirm carries it.
+                let minted = match op {
+                    CopyOp::Remove { .. } => None,
+                    CopyOp::Replace { group, node_id, .. }
+                        if anchored.contains(&Anchor::node(node_id)) =>
+                    {
+                        s.inserted_node_id(group, &ids.group_ids(group))
+                    }
+                    CopyOp::Insert {
+                        group,
+                        key: Some(key),
+                        ..
+                    } if anchored.contains(&Anchor::Inserted { key: key.clone() }) => {
+                        s.inserted_node_id(group, &ids.group_ids(group))
+                    }
+                    _ => s.confirmed_node_id(),
+                };
+                ids.advance(op, minted);
             }
             Ok(false) => {
                 return Ok(error_item(
                     list_index,
                     &name,
                     format!(
-                        "device rejected op {}/{total} ({}) — presetError / no confirm — NOT saved",
+                        "device rejected op {}/{total} ({}) — {} — NOT saved",
                         i + 1,
-                        describe_copy_op(op)
+                        describe_copy_op(op),
+                        s.rejection()
                     ),
                 ));
             }
@@ -364,28 +514,28 @@ fn is_partial_of(read: &Roster, expected: &Roster) -> bool {
 
 /// The roster the acked `ops` leave behind, applied in order to the PRE-edit roster the
 /// blockcaps guard read off the load-time document. Mirrors `diffToOps`' contract: a
-/// replace keeps its position, a remove drops the block, an insert lands BEFORE the first
-/// same-group block carrying the anchor FenderId (or appends to its group). `None` when an
+/// replace keeps its position, a remove drops the block, an insert lands BEFORE its
+/// anchor (or appends to its group). `None` when an
 /// op's target or anchor isn't in the roster — the model then can't say what the device
 /// holds, and the read-back is refused rather than trusted.
 fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Roster> {
     struct Work {
         group: String,
-        /// `None` once the device re-assigned it (a replace) or minted it (an insert).
-        node_id: Option<String>,
+        /// The job's name for the block (its pre-edit node id, or an insert's key).
+        anchor: Option<Anchor>,
         fender_id: String,
     }
     let mut work: Vec<Work> = pre
         .iter()
         .map(|e| Work {
             group: e.group.clone(),
-            node_id: Some(e.node_id.clone()),
+            anchor: Some(Anchor::node(&e.node_id)),
             fender_id: e.fender_id.clone(),
         })
         .collect();
-    let find = |work: &[Work], group: &str, node_id: &str| {
+    let find = |work: &[Work], group: &str, anchor: &Anchor| {
         work.iter()
-            .position(|w| w.group == group && w.node_id.as_deref() == Some(node_id))
+            .position(|w| w.group == group && w.anchor.as_ref() == Some(anchor))
     };
     for op in ops {
         match op {
@@ -394,23 +544,21 @@ fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Ros
                 node_id,
                 repl,
             } => {
-                let i = find(&work, group, node_id)?;
-                work[i].node_id = None;
+                let i = find(&work, group, &Anchor::node(node_id))?;
                 work[i].fender_id = repl.insert_fender_id().to_string();
             }
             CopyOp::Remove { group, node_id } => {
-                let i = find(&work, group, node_id)?;
+                let i = find(&work, group, &Anchor::node(node_id))?;
                 work.remove(i);
             }
             CopyOp::Insert {
                 group,
-                before_fender_id,
+                key,
+                before,
                 repl,
             } => {
-                let at = match before_fender_id {
-                    Some(anchor) => work
-                        .iter()
-                        .position(|w| &w.group == group && &w.fender_id == anchor)?,
+                let at = match before {
+                    Some(anchor) => find(&work, group, anchor)?,
                     None => work
                         .iter()
                         .rposition(|w| &w.group == group)
@@ -420,7 +568,7 @@ fn expected_roster(pre: &[blockcaps::RosterEntry], ops: &[CopyOp]) -> Option<Ros
                     at,
                     Work {
                         group: group.clone(),
-                        node_id: None,
+                        anchor: key.clone().map(|key| Anchor::Inserted { key }),
                         fender_id: repl.insert_fender_id().to_string(),
                     },
                 );
@@ -543,10 +691,17 @@ fn read_working_copy(
 /// Apply ONE [`CopyOp`] on the held session, returning whether the device CONFIRMED it
 /// (`nodeReplaced`(40) / `nodeRemoved`(36) / `nodeInserted`(33)). `retry_drop` re-tries
 /// a single SILENT drop (the cold first edit after a fresh load) but never a
-/// `presetError`. An IR/saved INSERT then applies its IR-file / saved-block follow-up to
+/// `presetError`; an insert first reads the working copy against `before` (its group's
+/// FenderIds before the op), see [`Session::insert_landed`]. An IR/saved INSERT then applies its IR-file / saved-block follow-up to
 /// the node it added, addressed by FenderId (= its id on the unit); `copy_apply_one`
 /// refuses the op up front when that address would be ambiguous.
-fn apply_copy_op(s: &mut Session, op: &CopyOp, retry_drop: bool) -> Result<bool, String> {
+fn apply_copy_op(
+    s: &mut Session,
+    op: &CopyOp,
+    retry_drop: bool,
+    anchor_id: Option<&str>,
+    before: Option<&[String]>,
+) -> Result<bool, String> {
     match op {
         CopyOp::Replace {
             group,
@@ -566,14 +721,9 @@ fn apply_copy_op(s: &mut Session, op: &CopyOp, retry_drop: bool) -> Result<bool,
             }
             Ok(confirmed)
         }
-        CopyOp::Insert {
-            group,
-            before_fender_id,
-            repl,
-        } => {
-            let confirmed =
-                apply_copy_insert(s, group, before_fender_id.as_deref(), repl, retry_drop)?;
-            Ok(confirmed)
+        CopyOp::Insert { group, repl, .. } => {
+            let retry = if retry_drop { before } else { None };
+            apply_copy_insert(s, group, anchor_id, repl, retry)
         }
     }
 }
@@ -609,20 +759,16 @@ fn apply_copy_replace(
 fn apply_copy_insert(
     s: &mut Session,
     group: &str,
-    before_fender_id: Option<&str>,
+    anchor_id: Option<&str>,
     repl: &CopyRepl,
-    retry_drop: bool,
+    retry: Option<&[String]>,
 ) -> Result<bool, String> {
     let insert_id = repl.insert_fender_id();
 
-    // field-34 insert: `before_fender_id` is the anchor to insert AHEAD of (the device's
-    // field-2 inserts BEFORE the referenced node); `None` appends at the group end.
-    let do_insert = |s: &mut Session| s.insert_node(group, before_fender_id, insert_id);
-    let mut confirmed = do_insert(s)?;
-    if !confirmed && retry_drop && !s.saw_preset_error() {
-        confirmed = do_insert(s)?;
-    }
-    if !confirmed {
+    // field-34 insert: `anchor_id` is the node id to insert AHEAD of; `None` appends at
+    // the group end.
+    let was = retry.map(|before| before.iter().filter(|id| *id == insert_id).count());
+    if !s.insert_node_once(group, anchor_id, insert_id, was)? {
         return Ok(false);
     }
 
@@ -652,13 +798,15 @@ fn describe_copy_op(op: &CopyOp) -> String {
         }
         CopyOp::Insert {
             group,
-            before_fender_id,
+            before,
             repl,
+            ..
         } => format!(
             "insert {} into {group}{}",
             repl.insert_fender_id(),
-            match before_fender_id.as_deref() {
-                Some(b) => format!(" before {b}"),
+            match before {
+                Some(Anchor::Node { node_id }) => format!(" before {node_id}"),
+                Some(Anchor::Inserted { key }) => format!(" before inserted {key}"),
                 None => " (append)".to_string(),
             }
         ),

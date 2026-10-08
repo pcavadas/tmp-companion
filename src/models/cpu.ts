@@ -3,7 +3,7 @@
 // The Tone Master Pro caps each preset at a fixed share of its audio-core DSP
 // budget; every block in the signal path draws against it. These figures are the
 // device's OWN per-module costs — extracted from the `utilizationPercentage` /
-// `utilizationBudget` JSON blob embedded in `tm-stomp-server` (fw 1.8.45, 468
+// `utilizationBudget` JSON blob embedded in `tm-stomp-server` (fw 1.8.58, 467
 // modules), NOT synthesized. Regenerate `model-cpu.json` when firmware revs (see
 // that file's header). Keyed by ACD_ FenderId
 // (= a catalog `bid`, or a device audioGraph node's model id).
@@ -27,6 +27,28 @@ export function cpuForBid(bid: string | null | undefined): number | null {
   if (!bid) return null;
   const id = resolveDeviceId(bid, has);
   return has(id) ? BY_BID[id] : null;
+}
+
+/** The cost the device's budget check charges `bid`: its table cost, or
+ *  `unknownCost` (fw 1.8.58: 20) for an id the table lacks. For budget checks only;
+ *  display keeps {@link cpuForBid}'s `null`. */
+export function chargedCpu(bid: string): number {
+  return cpuForBid(bid) ?? cpuData.unknownCost;
+}
+
+/** Σ {@link chargedCpu} over `models`, rounded to 0.1 like the table's own costs. */
+export function chargedTotal(models: Iterable<string>): number {
+  let sum = 0;
+  for (const m of models) sum += chargedCpu(m);
+  return Math.round(sum * 10) / 10;
+}
+
+/** The device's budget test: the total, rounded half away from zero, must not
+ *  exceed {@link CPU_BUDGET} — so exactly 76.5 fails. The epsilon keeps a sum that
+ *  drifted just under a `.5` boundary on the failing side. Mirrors
+ *  `blockcaps::over_budget`. */
+export function overCpuBudget(total: number): boolean {
+  return Math.round(total + 1e-6) > CPU_BUDGET;
 }
 
 /** Format a CPU cost as the UI string (e.g. `13.8%`); `null` renders as the

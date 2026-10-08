@@ -50,7 +50,7 @@ struct DefectRecipe {
 fn eq10_insert(group_id: &str, gains: &[(&str, f64)]) -> doctor::DoctorOp {
     doctor::DoctorOp::InsertNode {
         group_id: group_id.to_string(),
-        before_fender_id: None,
+        before_node_id: None,
         fender_id: "ACD_TenBandEQStereo".to_string(),
         params: gains.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
     }
@@ -64,7 +64,7 @@ fn eq10_insert(group_id: &str, gains: &[(&str, f64)]) -> doctor::DoctorOp {
 fn peq_insert(group_id: &str, params: &[(&str, f64)]) -> doctor::DoctorOp {
     doctor::DoctorOp::InsertNode {
         group_id: group_id.to_string(),
-        before_fender_id: None,
+        before_node_id: None,
         fender_id: "ACD_FiveBandParamEQ".to_string(),
         params: params.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
     }
@@ -107,7 +107,7 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             rationale: "ACD_TMSmallHall reverb inserted with `mix` (its `REVERB_MIX`-table controlId — the SAME one the washed Rx turns down) cranked to 0.9 of range. Decay is left at the freshly-inserted block's device default: no decay controlId is documented anywhere in this repo, and mix alone should already push the post-stimulus tail well past the washed threshold.",
             ops: vec![doctor::DoctorOp::InsertNode {
                 group_id: group_id.to_string(),
-                before_fender_id: None,
+                before_node_id: None,
                 fender_id: "ACD_TMSmallHall".to_string(),
                 params: vec![("mix".to_string(), 0.9)],
             }],
@@ -119,7 +119,7 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
             rationale: "ACD_CryBabyGCB95 inserted at its DEFAULT (cocked) pedal position — the canonical playable resonance (HW: a wide mid bump, transfer Q≈6, inside the resonant [2,16] Q window; the chain's own cab-comb lines sit at Q 39+ and are excluded by the ceiling).",
             ops: vec![doctor::DoctorOp::InsertNode {
                 group_id: group_id.to_string(),
-                before_fender_id: None,
+                before_node_id: None,
                 fender_id: "ACD_CryBabyGCB95".to_string(),
                 params: Vec::new(),
             }],

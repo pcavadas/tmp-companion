@@ -30,7 +30,7 @@
 //!                                  names, exact ALSA PCM id (Linux), channels, rates,
 //!                                  sample formats, and which one find_tmp() would pick.
 //!                                  Linux also prints the /proc/asound Fender-VID card table.
-//!   probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <FENDER_ID>] [--slot N] [--commit]
+//!   probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot N] [--commit]
 //!                                  ADD a block to the device's CURRENT ACTIVE preset via
 //!                                  live insertNode (field 34). No --commit = DRY RUN
 //!                                  (insert + verify, then revert); --commit = save in-place
@@ -783,7 +783,7 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--insert-active") {
-        // --insert-active <NEW_MODEL_ID> [--group G1] [--after <FENDER_ID>] [--slot N] [--commit]
+        // --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot N] [--commit]
         // ADD a block to the device's CURRENT ACTIVE preset (live insertNode, field 34).
         // No --commit = DRY RUN (insert + verify, then revert). --commit = save in-place.
         let fender_id = args.get(i + 1).cloned().unwrap_or_default();
@@ -804,7 +804,7 @@ fn main() {
             .and_then(|s| s.parse().ok());
         let commit = args.iter().any(|a| a == "--commit");
         if fender_id.is_empty() || fender_id.starts_with("--") {
-            eprintln!("usage: probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <FENDER_ID>] [--slot <deviceSlot>] [--commit]");
+            eprintln!("usage: probe --insert-active <NEW_MODEL_ID> [--group G1] [--after <NODE_ID>] [--slot <deviceSlot>] [--commit]");
             std::process::exit(2);
         }
         match tmp_companion_lib::probe_insert_active(

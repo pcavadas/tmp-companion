@@ -138,7 +138,8 @@ describe("copyModel — edits → device ops", () => {
       {
         kind: "insert",
         group: "G1",
-        beforeFenderId: "ACD_TwinReverb", // before the successor → lands after Comp
+        key: expect.any(String) as string,
+        before: { kind: "node", nodeId: "n2" }, // before the successor → lands after Comp
         repl: { kind: "model", fenderId: "ACD_Klon" },
       },
     ]);
@@ -152,7 +153,8 @@ describe("copyModel — edits → device ops", () => {
       {
         kind: "insert",
         group: "G1",
-        beforeFenderId: "ACD_TwinReverb", // before the tapped block
+        key: expect.any(String) as string,
+        before: { kind: "node", nodeId: "n2" }, // before the tapped block
         repl: { kind: "model", fenderId: "ACD_Klon" },
       },
     ]);
@@ -231,7 +233,8 @@ describe("copyModel — edits → device ops", () => {
       {
         kind: "insert",
         group: "G1",
-        beforeFenderId: "ACD_Delay", // before Hall's successor → after Hall, within G1
+        key: expect.any(String) as string,
+        before: { kind: "node", nodeId: "d" }, // before Hall's successor → after Hall, within G1
         repl: { kind: "model", fenderId: "ACD_Klon" },
       },
     ]);

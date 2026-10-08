@@ -1227,13 +1227,13 @@ pub enum DoctorOp {
         param: String,
         value: f64,
     },
-    /// Live `insertNode` (+ param writes on the fresh node). `beforeFenderId`
-    /// None = append to the group.
+    /// Live `insertNode` (+ param writes on the fresh node), before the node
+    /// `beforeNodeId` names; None = append to the group.
     InsertNode {
         #[serde(rename = "groupId")]
         group_id: String,
-        #[serde(rename = "beforeFenderId")]
-        before_fender_id: Option<String>,
+        #[serde(rename = "beforeNodeId")]
+        before_node_id: Option<String>,
         #[serde(rename = "fenderId")]
         fender_id: String,
         params: Vec<(String, f64)>,
@@ -1477,7 +1477,8 @@ struct GraphFacts {
     /// wins over a bypassed one. Unlike the carriers above, a BYPASSED comp is
     /// still a fact (the fix is "switch it back on").
     comp: Option<bool>,
-    /// First node of the first guitar group (the "front of chain" insert anchor).
+    /// `(group, node_id)` of the first node of the first guitar group (the "front of
+    /// chain" insert anchor).
     front: Option<(String, String)>,
     /// The chain carries a time-based block ([`has_time_effect`]) — gates
     /// `washed` the same way [`doctor_tail_ms`] gates the capture tail: a
@@ -1544,7 +1545,7 @@ fn graph_facts(nodes: &[DoctorNode]) -> GraphFacts {
     };
     for n in nodes {
         if f.front.is_none() && n.group_id.starts_with('G') {
-            f.front = Some((n.group_id.clone(), n.model.clone()));
+            f.front = Some((n.group_id.clone(), n.node_id.clone()));
         }
         if COMP_IDS.contains(&n.model.as_str()) && f.comp != Some(false) {
             f.comp = Some(n.bypassed);
@@ -1632,14 +1633,10 @@ fn chain_preview(nodes: &[DoctorNode], template: &str, inserted: &str, at: usize
 struct CabAnchor {
     /// The cab's group id (the insert's group).
     group: String,
-    /// The same-group `beforeFenderId` anchor: the next node's FenderId
-    /// (`model`), or `None` when the cab ends its group (append — same
-    /// position). The wire's `beforeFenderId` is same-group only and matches
-    /// by MODEL; a cross-group or unknown anchor is silently dropped. When the
-    /// model is duplicated in the group the device resolves the FIRST
-    /// instance — a wire limitation, still same-group and post-cab. Bypassed
-    /// neighbours still anchor (position is chain order, not audibility —
-    /// skipping one would drift the block when it's re-enabled).
+    /// The same-group anchor: the next node's id, or `None` when the cab ends its
+    /// group (append — same position). Bypassed neighbours still anchor (position is
+    /// chain order, not audibility — skipping one would drift the block when it's
+    /// re-enabled).
     before: Option<String>,
     /// Chain-preview insert index (cab index + 1).
     at: usize,
@@ -1651,25 +1648,12 @@ fn after_cab_anchor(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<CabAncho
     let idx = nodes
         .iter()
         .position(|n| &n.group_id == cab_group && &n.node_id == cab_node)?;
-    // The wire anchor is the neighbour's FenderId (`model`), NOT its node_id —
-    // insertNode field-2 names a same-group MODEL to insert before; a node_id
-    // only coincides with it on a model's first instance (a duplicated model
-    // gets a suffixed node_id, and the device silently drops an unknown
-    // anchor → the insert would fall to the group's tail, after time-effects).
-    // If that same model ALSO appears EARLIER in the group (before the cab),
-    // `beforeFenderId` would resolve to that earlier instance instead — landing
-    // (and on save, PERSISTING) the insert BEFORE the cab. Refuse the ambiguous
-    // anchor and fall back to `None` (append at the group's tail — unambiguous,
-    // always still post-cab).
+    // The wire anchor is the neighbour's node id: the device looks it up among the
+    // group's node ids, which are unique (fw 1.8.58 static RE).
     let before = nodes
         .get(idx + 1)
         .filter(|n| &n.group_id == cab_group)
-        .map(|n| n.model.clone())
-        .filter(|model| {
-            !nodes[..idx]
-                .iter()
-                .any(|n| &n.group_id == cab_group && &n.model == model)
-        });
+        .map(|n| n.node_id.clone());
     Some(CabAnchor {
         group: cab_group.clone(),
         before,
@@ -1785,7 +1769,7 @@ fn eq_move(
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: anchor.group,
-            before_fender_id: anchor.before,
+            before_node_id: anchor.before,
             fender_id: EQ10_STEREO.to_string(),
             params: gains.iter().map(|(p, v)| ((*p).to_string(), *v)).collect(),
         }],
@@ -1950,7 +1934,7 @@ fn cut_move(
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: group,
-            before_fender_id: None,
+            before_node_id: None,
             fender_id: HIGH_LOW_PASS.to_string(),
             params: vec![(param.to_string(), freq)],
         }],
@@ -1987,7 +1971,7 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
     ) {
         return Some(a);
     }
-    let (group, first_fid) = facts.front.clone()?;
+    let (group, first_node) = facts.front.clone()?;
     let cpu_note = insert_cpu_note(nodes, COMPRESSOR)?;
     Some(Rx {
         kind: RxKind::Chain,
@@ -1996,7 +1980,7 @@ fn comp_front(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: group,
-            before_fender_id: Some(first_fid),
+            before_node_id: Some(first_node),
             fender_id: COMPRESSOR.to_string(),
             params: Vec::new(),
         }],
@@ -2037,7 +2021,7 @@ fn comp_after_cab(nodes: &[DoctorNode], facts: &GraphFacts) -> Option<Rx> {
         cpu_note,
         ops: vec![DoctorOp::InsertNode {
             group_id: anchor.group.clone(),
-            before_fender_id: anchor.before,
+            before_node_id: anchor.before,
             fender_id: COMPRESSOR_STUDIO.to_string(),
             params: Vec::new(),
         }],
@@ -4162,16 +4146,16 @@ mod tests {
     // class, pinned exhaustively at the public `generate_rx` boundary so the
     // guarantee survives any refactor of eq_move / graph_facts / after_cab_anchor.
 
-    /// The (fender_id, before_fender_id) of the single inserted block, if any.
+    /// The (fender_id, before_node_id) of the single inserted block, if any.
     fn eq_insert(rx: &[Rx]) -> Option<(String, Option<String>)> {
         rx.iter()
             .find(|r| r.kind == RxKind::Chain)
             .and_then(|r| match &r.ops[0] {
                 DoctorOp::InsertNode {
                     fender_id,
-                    before_fender_id,
+                    before_node_id,
                     ..
-                } => Some((fender_id.clone(), before_fender_id.clone())),
+                } => Some((fender_id.clone(), before_node_id.clone())),
                 _ => None,
             })
     }
@@ -4272,11 +4256,11 @@ mod tests {
         match &chain_rx.ops[0] {
             DoctorOp::InsertNode {
                 group_id,
-                before_fender_id,
+                before_node_id,
                 ..
             } => {
                 assert_eq!(group_id, "G1");
-                assert_eq!(before_fender_id.as_deref(), None);
+                assert_eq!(before_node_id.as_deref(), None);
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
@@ -4284,8 +4268,8 @@ mod tests {
 
     #[test]
     fn eq_insert_anchor_never_crosses_into_another_group() {
-        // Cab last in G1, a mic group M1 follows. beforeFenderId is a same-group
-        // anchor (a cross-group one is silently dropped on the wire), so the
+        // Cab last in G1, a mic group M1 follows. beforeNodeId must name a node
+        // in the insert's own group (fw 1.8.58 aborts on one it lacks), so the
         // anchor must be None (append to G1), never the M1 node.
         let mut p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         p.push(DoctorNode {
@@ -4421,11 +4405,11 @@ mod tests {
         match &chain.ops[0] {
             DoctorOp::InsertNode {
                 fender_id,
-                before_fender_id,
+                before_node_id,
                 ..
             } => {
                 assert_eq!(fender_id, "ACD_DynaComp");
-                assert_eq!(before_fender_id.as_deref(), Some("ACD_TubeScreamer"));
+                assert_eq!(before_node_id.as_deref(), Some("ACD_TubeScreamer"));
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
@@ -4550,12 +4534,12 @@ mod tests {
         match &chain_rx[0].ops[0] {
             DoctorOp::InsertNode {
                 group_id,
-                before_fender_id,
+                before_node_id,
                 fender_id,
                 ..
             } => {
                 assert_eq!(group_id, "G1");
-                assert_eq!(before_fender_id.as_deref(), Some("ACD_TMSmallHall"));
+                assert_eq!(before_node_id.as_deref(), Some("ACD_TMSmallHall"));
                 assert_eq!(fender_id, "ACD_CompressorSimpleSoftKnee");
             }
             other => panic!("expected InsertNode, got {other:?}"),
@@ -4578,17 +4562,17 @@ mod tests {
             match &chain_rx.ops[0] {
                 DoctorOp::InsertNode {
                     group_id,
-                    before_fender_id,
+                    before_node_id,
                     ..
                 } => {
                     assert_eq!(group_id, "G1");
-                    assert!(before_fender_id.is_none());
+                    assert!(before_node_id.is_none());
                 }
                 other => panic!("expected InsertNode, got {other:?}"),
             }
         };
 
-        // Cab last in its group → append (before_fender_id: None).
+        // Cab last in its group → append (before_node_id: None).
         let mut p = chain(&["ACD_TweedDeluxe", "ACD_CabSimTMS"], &[]);
         assert_appends_in_g1(&p);
 
@@ -4607,12 +4591,9 @@ mod tests {
     }
 
     #[test]
-    fn spiky_comp_anchor_is_the_neighbours_fender_id() {
-        // Two same-model reverb nodes after the cab: the wire anchor matches
-        // by MODEL (insertNode field-2 is a FenderId — a node_id like
-        // "reverb-a" is unknown to the device and would be silently dropped,
-        // appending at the group tail). The device resolves the first
-        // instance; both sit right after the cab here, so position holds.
+    fn spiky_comp_anchor_is_the_neighbours_node_id() {
+        // Two same-model reverb nodes after the cab: the device matches the
+        // anchor on node id (fw 1.8.58), so it names the cab's own neighbour.
         let p = vec![
             DoctorNode {
                 group_id: "G1".into(),
@@ -4639,25 +4620,21 @@ mod tests {
             .find(|r| r.kind == RxKind::Chain)
             .expect("chain rx");
         match &chain_rx.ops[0] {
-            DoctorOp::InsertNode {
-                before_fender_id, ..
-            } => {
-                assert_eq!(before_fender_id.as_deref(), Some("ACD_TMSmallHall"));
+            DoctorOp::InsertNode { before_node_id, .. } => {
+                assert_eq!(before_node_id.as_deref(), Some("reverb-a"));
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
     }
 
     #[test]
-    fn spiky_comp_anchor_falls_back_to_append_on_an_earlier_duplicate() {
+    fn spiky_comp_anchors_on_the_post_cab_instance_of_a_duplicated_model() {
         // A SAME-model (non-time-effect) pedal sits BOTH before and after the
-        // cab. The device resolves `beforeFenderId` to the FIRST same-group
-        // match — the earlier one — so naively anchoring on the model name
-        // would land (and on save, persist) the insert BEFORE the cab. The
-        // anchor must detect the ambiguity and fall back to append (before:
-        // None) instead. Deliberately NOT a time-effect model — that trips
-        // `comp_after_cab`'s separate time-effect-before-cab advisory bail
-        // (see the sibling test below), which would mask this scenario.
+        // cab. A model anchor would name both; the post-cab instance's node id
+        // names only it, so the insert lands right after the cab. Deliberately
+        // NOT a time-effect model — that trips `comp_after_cab`'s separate
+        // time-effect-before-cab advisory bail (see the sibling test below),
+        // which would mask this scenario.
         let p = vec![
             DoctorNode {
                 group_id: "G1".into(),
@@ -4693,14 +4670,8 @@ mod tests {
             .find(|r| r.kind == RxKind::Chain)
             .expect("chain rx");
         match &chain_rx.ops[0] {
-            DoctorOp::InsertNode {
-                before_fender_id, ..
-            } => {
-                assert_eq!(
-                    before_fender_id, &None,
-                    "ambiguous anchor must fall back to append, never resolve to the \
-                     earlier pre-cab instance"
-                );
+            DoctorOp::InsertNode { before_node_id, .. } => {
+                assert_eq!(before_node_id.as_deref(), Some("od-late"));
             }
             other => panic!("expected InsertNode, got {other:?}"),
         }
@@ -5906,13 +5877,13 @@ mod tests {
         );
         let ins = DoctorOp::InsertNode {
             group_id: "G1".into(),
-            before_fender_id: None,
+            before_node_id: None,
             fender_id: "ACD_DynaComp".into(),
             params: vec![],
         };
         let v = serde_json::to_value(&ins).unwrap();
         assert_eq!(v["kind"], "insert_node");
-        assert!(v.get("beforeFenderId").is_some());
+        assert!(v.get("beforeNodeId").is_some());
         assert_eq!(v["fenderId"], "ACD_DynaComp");
     }
 

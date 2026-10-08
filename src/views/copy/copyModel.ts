@@ -17,9 +17,10 @@
 // copied-in styling; `nodeId === null` marks an inserted (not-yet-on-device) block.
 
 import { resolveBlockArt, shortFallback } from "../../models/blockArt";
-import { cpuForBid } from "../../models/cpu";
+import { chargedTotal, cpuForBid } from "../../models/cpu";
 import type {
   ActiveGraph,
+  CopyAnchor,
   CopyOp,
   GraphNode,
   InputLane,
@@ -391,13 +392,12 @@ export function isEdited(edit: PresetEdit): boolean {
   return diffToOps(edit).length > 0;
 }
 
-/** Total DSP cost of the edited graph (sum of every block's real cost). */
+/** Total DSP cost of the edited graph, as the device's budget check charges it
+ *  (an uncosted id counts `UNKNOWN_CPU`). */
 export function cpuOfGraph(graph: EditGraph): number {
-  let sum = 0;
-  eachBlock(graph, (b) => {
-    sum += cpuForBid(b.model) ?? 0;
-  });
-  return Math.round(sum * 10) / 10;
+  const models: string[] = [];
+  eachBlock(graph, (b) => models.push(b.model));
+  return chargedTotal(models);
 }
 
 /** The origin palette: every DISTINCT block in the reference preset, in path order. */
@@ -486,15 +486,10 @@ export function removeEditBlock(edit: PresetEdit, uid: string): PresetEdit {
 // append when the insert is last in its group (HW-verified: cross-group anchoring made
 // the device drop the insert). Consecutive inserts are emitted RIGHT-TO-LEFT so each
 // one's successor is already on the device when it anchors. Order: removes, replaces,
-// then inserts — inserts anchor by the (post-replace) FenderId.
-//
-// DEVICE LIMITATION (no per-instance node identity): on the real unit a block's `nodeId`
-// EQUALS its FenderId (model id) — there is no per-instance handle distinct from the
-// model. So a single group can never hold two blocks of the SAME model (they'd be
-// indistinguishable on the wire), and anchoring an insert by FenderId is sufficient and
-// unambiguous. The earlier worry that bracketing a block with two same-model inserts
-// could misplace them ("BUG-1") cannot arise — the duplicate-same-model-in-one-group
-// state is unrepresentable. The right-to-left emit + remove-then-insert order is what
+// then inserts — each anchor names a block by its original nodeId or an earlier insert's
+// key, and the backend resolves it to the id the device holds now (a replace or insert
+// mints one: the FenderId, suffixed `_1`, `_2`… when the group already uses
+// it, fw 1.8.58 static RE). The right-to-left emit + remove-then-insert order is what
 // makes the user's "insert A before B, insert C after B, remove B → exactly [A, C]"
 // case correct (see copyModel.test.ts "INV-A"). See notes/write-safety.md.
 
@@ -532,25 +527,31 @@ export function diffToOps(edit: PresetEdit): CopyOp[] {
     // Inserts RIGHT-TO-LEFT: anchor each BEFORE the next block IN ITS OWN DEVICE GROUP.
     // `insertNode` field-2 (the "before" anchor) must name a node in the SAME group as the
     // insert — a visual series can span groups (e.g. an amp in G1 then pedals in G4), so
-    // the in-array successor may belong to a different group; anchoring on it would name a
-    // node absent from the insert's group and the device rejects it. So skip past
-    // other-group blocks to the next SAME-group successor; none after it → append at the
-    // group end (beforeFenderId = null).
+    // the in-array successor may belong to a different group; fw 1.8.58 aborts on an
+    // anchor its group lacks. So skip past other-group blocks to the next SAME-group
+    // successor; none after it → append at the group end (before = null). The successor
+    // is named by its original nodeId, or — when it is itself new, and so already
+    // inserted by this right-to-left walk — by its key; the backend maps either to the
+    // device's current id.
     for (let i = arr.length - 1; i >= 0; i--) {
       const b = arr[i];
       if (b.nodeId != null) continue; // original/surviving tile — not an insert
-      let beforeFenderId: string | null = null;
+      let before: CopyAnchor | null = null;
       for (let j = i + 1; j < arr.length; j++) {
         const nx = arr[j];
         if (nx.group === b.group) {
-          beforeFenderId = nx.model;
+          before =
+            nx.nodeId != null
+              ? { kind: "node", nodeId: nx.nodeId }
+              : { kind: "inserted", key: nx.uid };
           break;
         }
       }
       inserts.push({
         kind: "insert",
         group: b.group,
-        beforeFenderId,
+        key: b.uid,
+        before,
         repl: { kind: "model", fenderId: b.model },
       });
     }

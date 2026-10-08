@@ -13,9 +13,9 @@ mod audition_copy_tests {
                   "repl": { "kind": "model", "fenderId": "ACD_HiwattDR103CanMod" } },
                 { "kind": "replace", "group": "M1", "nodeId": "ACD_CabSimTMS",
                   "repl": { "kind": "saved", "fenderId": "ACD_CabSimTMS", "index": 3 } },
-                { "kind": "insert", "group": "G1", "beforeFenderId": "ACD_Comp",
+                { "kind": "insert", "group": "G1", "key": "cb1", "before": { "kind": "node", "nodeId": "ACD_Comp" },
                   "repl": { "kind": "ir", "fenderId": "ACD_UserIRTMS", "file": "Oversize.wav" } },
-                { "kind": "insert", "group": "G2", "beforeFenderId": null,
+                { "kind": "insert", "group": "G2", "before": null,
                   "repl": { "kind": "model", "fenderId": "ACD_Klon" } },
                 { "kind": "remove", "group": "G1", "nodeId": "ACD_Comp" }
             ]
@@ -54,14 +54,21 @@ mod audition_copy_tests {
         // op2: insert BEFORE a FenderId → ir (file)
         let CopyOp::Insert {
             group,
-            before_fender_id,
+            key,
+            before,
             repl,
         } = &job.ops[2]
         else {
             panic!("insert")
         };
         assert_eq!(group, "G1");
-        assert_eq!(before_fender_id.as_deref(), Some("ACD_Comp"));
+        assert_eq!(key.as_deref(), Some("cb1"));
+        assert_eq!(
+            before,
+            &Some(Anchor::Node {
+                node_id: "ACD_Comp".into()
+            })
+        );
         let CopyRepl::Ir { fender_id, file } = repl else {
             panic!("ir repl")
         };
@@ -71,15 +78,10 @@ mod audition_copy_tests {
         assert_eq!(repl.insert_fender_id(), "ACD_UserIRTMS");
 
         // op3: insert APPEND (before = None) → model
-        let CopyOp::Insert {
-            before_fender_id,
-            repl,
-            ..
-        } = &job.ops[3]
-        else {
+        let CopyOp::Insert { before, repl, .. } = &job.ops[3] else {
             panic!("insert")
         };
-        assert!(before_fender_id.is_none(), "null beforeFenderId → append");
+        assert!(before.is_none(), "null before → append");
         assert_eq!(repl.insert_fender_id(), "ACD_Klon");
 
         // op4: remove
@@ -198,7 +200,10 @@ mod copy_level_e2e_tests {
                 model_replace("G1", "n2", "ACD_Klon"),
                 CopyOp::Insert {
                     group: "G1".into(),
-                    before_fender_id: Some("ACD_Klon".into()),
+                    key: None,
+                    before: Some(Anchor::Node {
+                        node_id: "n2".into(),
+                    }),
                     repl: CopyRepl::Model {
                         fender_id: "ACD_TapeEcho".into(),
                     },
@@ -242,6 +247,13 @@ mod copy_level_e2e_tests {
         );
         assert_eq!(item.outcome, "error");
         assert!(item.detail.contains("NOT saved"), "detail: {}", item.detail);
+        // The fake rejects with code 14, a replace over the CPU budget on fw 1.8.58.
+        assert!(
+            item.detail
+                .contains("presetError 14: over the device's CPU budget"),
+            "detail: {}",
+            item.detail
+        );
         assert!(
             !ev.iter()
                 .any(|e| matches!(e, SimEvent::Saved(_) | SimEvent::Renamed(_))),
@@ -348,7 +360,8 @@ mod copy_level_e2e_tests {
             name: "Stadium Lead".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
-                before_fender_id: None,
+                key: None,
+                before: None,
                 repl: CopyRepl::Model {
                     fender_id: "ACD_Ampeg66B15CabIR".into(), // a 3rd cabinet member
                 },
@@ -521,7 +534,8 @@ mod copy_level_e2e_tests {
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
-                before_fender_id: None,
+                key: None,
+                before: None,
                 repl: CopyRepl::Ir {
                     fender_id: "ACD_UserIRTMS".into(),
                     file: "Oversize.wav".into(),
@@ -566,12 +580,14 @@ mod copy_level_e2e_tests {
             ops: vec![
                 CopyOp::Insert {
                     group: "G1".into(),
-                    before_fender_id: None,
+                    key: None,
+                    before: None,
                     repl: ir(),
                 },
                 CopyOp::Insert {
                     group: "G1".into(),
-                    before_fender_id: None,
+                    key: None,
+                    before: None,
                     repl: ir(),
                 },
             ],
@@ -606,7 +622,10 @@ mod copy_level_e2e_tests {
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
-                before_fender_id: Some("ACD_ChorusCE2".into()),
+                key: None,
+                before: Some(Anchor::Node {
+                    node_id: "n2".into(),
+                }),
                 repl: CopyRepl::Model {
                     fender_id: "ACD_TapeEcho".into(),
                 },
@@ -629,6 +648,187 @@ mod copy_level_e2e_tests {
                 .map(|n| n.model.as_str())
                 .collect::<Vec<_>>(),
             ["ACD_Twin57", "ACD_TapeEcho", "ACD_ChorusCE2"]
+        );
+    }
+
+    /// The `(before, fender_id)` of every insert sent, and whether any anchor missed.
+    fn inserts_sent(ev: &[SimEvent]) -> (Vec<(Option<String>, String)>, bool) {
+        let sent = ev
+            .iter()
+            .filter_map(|e| match e {
+                SimEvent::Insert {
+                    before, fender_id, ..
+                } => Some((before.clone(), fender_id.clone())),
+                _ => None,
+            })
+            .collect();
+        (
+            sent,
+            ev.iter().any(|e| matches!(e, SimEvent::AnchorMiss { .. })),
+        )
+    }
+
+    #[test]
+    fn copy_anchors_an_insert_on_the_device_node_id_not_the_model() {
+        // A stored node whose id is not its FenderId (`cab1`, as in the scenario fixtures;
+        // a load keeps the stored id): the
+        // device looks the anchor up by node id, so a FenderId anchor would miss it.
+        let sim = SimDevice::new().with_preset_json(&padded_doc(&[
+            ("ACD_Twin57", "n1"),
+            ("ACD_CabSimTMS", "cab1"),
+        ]));
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![CopyOp::Insert {
+                group: "G1".into(),
+                key: Some("k1".into()),
+                before: Some(Anchor::Node {
+                    node_id: "cab1".into(),
+                }),
+                repl: CopyRepl::Model {
+                    fender_id: "ACD_TapeEcho".into(),
+                },
+            }],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated", "{item:?}");
+        let (sent, missed) = inserts_sent(&ev);
+        assert_eq!(sent, [(Some("cab1".into()), "ACD_TapeEcho".into())]);
+        assert!(!missed, "{ev:?}");
+    }
+
+    #[test]
+    fn copy_chains_inserts_on_the_ids_the_device_minted() {
+        // Two blocks of one model between Twin and Chorus: the second anchors on the first,
+        // whose id the device minted. A second ACD_TapeEcho in the group is minted
+        // `ACD_TapeEcho_1`, so only the id the device gave names the first one.
+        assert_chained_echo_inserts(SimDevice::new().with_preset_json(&padded_two_node_doc()));
+    }
+
+    #[test]
+    fn copy_reads_a_minted_id_the_confirm_did_not_carry() {
+        // The same chain when the confirms carry no id: the first insert's id is read off
+        // the working copy, because the second insert anchors on it.
+        assert_chained_echo_inserts(
+            SimDevice::new()
+                .with_preset_json(&padded_two_node_doc())
+                .with_bare_confirms(),
+        );
+    }
+
+    fn assert_chained_echo_inserts(sim: SimDevice) {
+        let echo = || CopyRepl::Model {
+            fender_id: "ACD_TapeEcho".into(),
+        };
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![
+                CopyOp::Insert {
+                    group: "G1".into(),
+                    key: Some("k2".into()),
+                    before: Some(Anchor::Node {
+                        node_id: "n2".into(),
+                    }),
+                    repl: echo(),
+                },
+                CopyOp::Insert {
+                    group: "G1".into(),
+                    key: Some("k1".into()),
+                    before: Some(Anchor::Inserted { key: "k2".into() }),
+                    repl: echo(),
+                },
+            ],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated", "{item:?}");
+        let (sent, missed) = inserts_sent(&ev);
+        assert_eq!(
+            sent,
+            [
+                (Some("n2".into()), "ACD_TapeEcho".into()),
+                (Some("ACD_TapeEcho".into()), "ACD_TapeEcho".into()),
+            ]
+        );
+        assert!(!missed, "{ev:?}");
+        let graph = item.graph.expect("both inserts read back");
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| n.node_id.as_str())
+                .collect::<Vec<_>>(),
+            ["n1", "ACD_TapeEcho_1", "ACD_TapeEcho", "n2"]
+        );
+    }
+
+    #[test]
+    fn copy_insert_whose_confirm_is_lost_is_read_back_not_resent() {
+        // The insert lands but its confirm never arrives: a blind re-send would add a
+        // second block. The working-copy read shows it landed, so nothing is re-sent.
+        let sim = SimDevice::new()
+            .with_preset_json(&padded_two_node_doc())
+            .with_lost_first_confirm();
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![CopyOp::Insert {
+                group: "G1".into(),
+                key: None,
+                before: Some(Anchor::Node {
+                    node_id: "n2".into(),
+                }),
+                repl: CopyRepl::Model {
+                    fender_id: "ACD_TapeEcho".into(),
+                },
+            }],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::Insert { .. }))
+                .count(),
+            1,
+            "landed once, never re-sent: {ev:?}"
+        );
+        let graph = item.graph.expect("the landed insert reads back");
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .map(|n| n.model.as_str())
+                .collect::<Vec<_>>(),
+            ["ACD_Twin57", "ACD_TapeEcho", "ACD_ChorusCE2"]
+        );
+    }
+
+    #[test]
+    fn copy_refuses_an_insert_anchored_on_a_block_the_group_lacks() {
+        // fw 1.8.58 aborts its server on an insert whose anchor is not in the group, so
+        // such an op is refused before anything is sent.
+        let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
+        let job = CopyJob {
+            list_index: 3,
+            name: "Clean Verse".into(),
+            ops: vec![CopyOp::Insert {
+                group: "G1".into(),
+                key: None,
+                before: Some(Anchor::Node {
+                    node_id: "n9".into(),
+                }),
+                repl: CopyRepl::Model {
+                    fender_id: "ACD_TapeEcho".into(),
+                },
+            }],
+        };
+        let (item, ev) = run_copy(sim, &job, true);
+        assert_eq!(item.outcome, "error");
+        assert!(item.detail.contains("NOT sent"), "{}", item.detail);
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::Insert { .. })),
+            "nothing inserted: {ev:?}"
         );
     }
 
@@ -701,12 +901,16 @@ mod copy_level_e2e_tests {
             model_replace("G1", "n2", "ACD_Klon"),
             CopyOp::Insert {
                 group: "G1".into(),
-                before_fender_id: Some("ACD_Klon".into()),
+                key: None,
+                before: Some(Anchor::Node {
+                    node_id: "n2".into(),
+                }),
                 repl: model("ACD_Comp"),
             },
             CopyOp::Insert {
                 group: "G4".into(),
-                before_fender_id: None,
+                key: None,
+                before: None,
                 repl: model("ACD_SmallHall"),
             },
         ];

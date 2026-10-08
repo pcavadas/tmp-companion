@@ -2109,10 +2109,15 @@ impl Session {
     /// True if any reply body carries `presetMessage` inner `field` (e.g. 40
     /// `nodeReplaced`, 53 `presetError`).
     fn saw_preset_field(&self, field: u32) -> bool {
-        self.push_bodies().iter().any(|b| {
-            proto::first_bytes(&proto::parse(b), TMS_PRESET)
-                .map(|pm| proto::first_bytes(&proto::parse(pm), field).is_some())
-                .unwrap_or(false)
+        self.preset_field(field).is_some()
+    }
+
+    /// The parsed inner fields of the LAST reply carrying `presetMessage` inner `field`.
+    fn preset_field(&self, field: u32) -> Option<Vec<(u32, proto::Val)>> {
+        self.push_bodies().iter().rev().find_map(|b| {
+            let top = proto::parse(b);
+            let pm = proto::parse(proto::first_bytes(&top, TMS_PRESET)?);
+            Some(proto::parse(proto::first_bytes(&pm, field)?))
         })
     }
 
@@ -2213,7 +2218,14 @@ impl Session {
             &proto::insert_node(dest_group, before, fender_id, None),
             200,
         )?;
-        self.confirm_structural_edit(NODE_INSERTED)
+        let confirmed = self.confirm_structural_edit(NODE_INSERTED)?;
+        // HW evidence for whether `nodeInserted` carries the minted id (never decoded).
+        log::info!(
+            "insertNode {dest_group} {fender_id} before {before:?}: confirmed={confirmed} \
+             device id {:?}",
+            self.confirmed_node_id()
+        );
+        Ok(confirmed)
     }
 
     /// INSERT a block at a POSITION (`index`, group-relative) within `dest_group` —
@@ -2237,11 +2249,103 @@ impl Session {
         self.confirm_structural_edit(NODE_INSERTED)
     }
 
+    /// Did an unconfirmed insert of `fender_id` into `group` land anyway? Its confirm can
+    /// be lost while the block is added, and a blind re-send would then add a second one.
+    /// Reads the working copy and compares the group's count of `fender_id` with `was`
+    /// (the count before the insert): one more → landed, the same → not, anything else
+    /// (or no read) → `None`, never guessed.
+    fn insert_landed(&mut self, group: &str, fender_id: &str, was: usize) -> Option<bool> {
+        let graph = self
+            .live_audio_graph(|v| v.get("audioGraph").is_some())
+            .map_err(|e| log::warn!("insert read-back failed: {e}"))
+            .ok()?;
+        let now = graph
+            .nodes
+            .iter()
+            .filter(|n| n.group_id == group && n.model == fender_id)
+            .count();
+        match now.checked_sub(was) {
+            Some(1) => Some(true),
+            Some(0) => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The id the device gave the node the last confirmed insert/replace added: the
+    /// `nodeId` in `nodeInserted`/`nodeReplaced`'s `nodeJson` (field 3 of both). The
+    /// firmware mints it from the FenderId, made unique in the group with `_1`, `_2`, …
+    /// (fw 1.8.58 static RE), so it depends on what the group already holds.
+    pub fn confirmed_node_id(&self) -> Option<String> {
+        let reply = self
+            .preset_field(NODE_INSERTED)
+            .or_else(|| self.preset_field(NODE_REPLACED))?;
+        let v: serde_json::Value = serde_json::from_slice(proto::first_bytes(&reply, 3)?).ok()?;
+        crate::audiograph::node_id(&v).map(str::to_string)
+    }
+
+    /// [`Self::confirmed_node_id`], else the one node `group` holds that is not in `known`
+    /// (a working-copy read) — for a confirm that carried no id, whose HW payload is not
+    /// decoded yet. `None` unless exactly one.
+    pub(crate) fn inserted_node_id(&mut self, group: &str, known: &[String]) -> Option<String> {
+        if let Some(id) = self.confirmed_node_id() {
+            return Some(id);
+        }
+        let graph = self
+            .live_audio_graph(|v| v.get("audioGraph").is_some())
+            .ok()?;
+        let mut new = graph
+            .nodes
+            .iter()
+            .filter(|n| n.group_id == group && !known.contains(&n.node_id));
+        match (new.next(), new.next()) {
+            (Some(n), None) => Some(n.node_id.clone()),
+            _ => None,
+        }
+    }
+
+    /// Insert like [`Self::insert_node`], but an unconfirmed insert with no `presetError`
+    /// is read back before it is re-sent: its confirm can be lost while the block lands,
+    /// and a blind re-send would add a second one. `was` is the group's count of
+    /// `fender_id` before the insert; `None` never re-sends.
+    pub(crate) fn insert_node_once(
+        &mut self,
+        group: &str,
+        before: Option<&str>,
+        fender_id: &str,
+        was: Option<usize>,
+    ) -> Result<bool, String> {
+        if self.insert_node(group, before, fender_id)? {
+            return Ok(true);
+        }
+        if self.saw_preset_error() {
+            return Ok(false);
+        }
+        match was.and_then(|was| self.insert_landed(group, fender_id, was)) {
+            Some(true) => Ok(true),
+            Some(false) => self.insert_node(group, before, fender_id),
+            None => Ok(false),
+        }
+    }
+
     /// True if the device REJECTED the last edit with `presetError` (53) — lets a caller
     /// distinguish a rejection (never retry, never save) from a silent drop (retry the
     /// cold first edit once).
     pub fn saw_preset_error(&self) -> bool {
         self.saw_preset_field(PRESET_ERROR)
+    }
+
+    /// Why the device refused the last edit, for a log or error line: `presetError`'s
+    /// code (`PresetErrorMessage.error`, field 1), named where fw 1.8.58 static RE pins
+    /// it, or "no confirm" when none arrived.
+    pub fn rejection(&self) -> String {
+        let code = self
+            .preset_field(PRESET_ERROR)
+            .map(|err| proto::first_varint(&err, 1).unwrap_or(0));
+        match code {
+            Some(14) => "presetError 14: over the device's CPU budget".to_string(),
+            Some(c) => format!("presetError {c}"),
+            None => "no confirm".to_string(),
+        }
     }
 
     /// Every distinct PresetMessage inner field number present in the accumulated reply
@@ -2259,25 +2363,6 @@ impl Session {
             }
         }
         seen.into_iter().collect()
-    }
-
-    /// The new node's id from the most recent `nodeReplaced`(40) reply's `nodeJson`
-    /// (field 3) — needed to target a follow-up param set after a replace. `None` if no
-    /// such reply is in the buffer or its JSON lacks an id.
-    fn last_replaced_node_id(&self) -> Option<String> {
-        self.push_bodies().iter().rev().find_map(|b| {
-            let pm_fields = proto::parse(b);
-            let pm = proto::first_bytes(&pm_fields, TMS_PRESET)?;
-            let nr_fields = proto::parse(pm);
-            let nr = proto::first_bytes(&nr_fields, NODE_REPLACED)?;
-            let nr_inner = proto::parse(nr);
-            let node_json = proto::first_bytes(&nr_inner, 3)?; // NodeReplaced.nodeJson
-            let v: serde_json::Value = serde_json::from_slice(node_json).ok()?;
-            v.get("nodeId")
-                .or_else(|| v.get("FenderId"))
-                .and_then(|x| x.as_str())
-                .map(String::from)
-        })
     }
 
     /// Read a STRING `dspUnitParameter` of `node_id` in `dest_group` by re-requesting
@@ -2336,7 +2421,7 @@ impl Session {
         // The IR node's id after the replace (from nodeReplaced.nodeJson); fall back to
         // the FenderId the device assigns when no echo carries it.
         let new_id = self
-            .last_replaced_node_id()
+            .confirmed_node_id()
             .unwrap_or_else(|| "ACD_UserIRTMS".to_string());
         self.clear_raw();
         self.send_chunked_collect(

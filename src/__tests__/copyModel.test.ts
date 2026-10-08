@@ -133,11 +133,11 @@ describe("applyEditOp / isEdited — any replace is an edit", () => {
 
 // The device's insertNode field-2 inserts the new block BEFORE the referenced node
 // (HW-verified fw 1.8.45), and field-2 omitted appends. So diffToOps anchors each insert
-// on its in-array SUCCESSOR (beforeFenderId), in the successor's group, or null to append.
+// on its in-array SUCCESSOR (`before`), in the successor's group, or null to append.
 describe("diffToOps — insert anchoring (before-the-successor)", () => {
   it("insert BEFORE the amp anchors on the amp itself, in the amp's group", () => {
     // Amp is the only block of group G2; inserting before it must anchor on the amp
-    // (beforeFenderId), landing the new block ahead of it inside G2.
+    // (`before`), landing the new block ahead of it inside G2.
     const edit = initEdit([1], () => multiGroupGraph())[1];
     const ampUid = stageBlocks(edit)[1].uid;
     const after = applyEditOp(edit, ampUid, "before", "ACD_Klon");
@@ -145,7 +145,7 @@ describe("diffToOps — insert anchoring (before-the-successor)", () => {
     const ins = diffToOps(after).find((o) => o.kind === "insert");
     if (ins?.kind !== "insert") throw new Error("expected an insert op");
     expect(ins.group).toBe("G2"); // the amp's group — the new block joins it ahead of the amp
-    expect(ins.beforeFenderId).toBe("ACD_TwinReverb65NoFx"); // before the amp
+    expect(ins.before).toEqual({ kind: "node", nodeId: "n2" }); // before the amp
   });
 
   it("insert AFTER a block anchors on that block's SUCCESSOR", () => {
@@ -156,7 +156,7 @@ describe("diffToOps — insert anchoring (before-the-successor)", () => {
     const ins = diffToOps(after).find((o) => o.kind === "insert");
     if (ins?.kind !== "insert") throw new Error("expected an insert op");
     expect(ins.group).toBe("G1");
-    expect(ins.beforeFenderId).toBe("ACD_TwinReverb65NoFx"); // successor → lands after DynaComp
+    expect(ins.before).toEqual({ kind: "node", nodeId: "n2" }); // successor → lands after DynaComp
   });
 
   it("insert BEFORE the FIRST block anchors on that first block (a head insert)", () => {
@@ -165,10 +165,10 @@ describe("diffToOps — insert anchoring (before-the-successor)", () => {
 
     const ins = diffToOps(after).find((o) => o.kind === "insert");
     if (ins?.kind !== "insert") throw new Error("expected an insert op");
-    expect(ins.beforeFenderId).toBe("ACD_DynaComp"); // before the first block → at the head
+    expect(ins.before).toEqual({ kind: "node", nodeId: "n1" }); // before the first block → at the head
   });
 
-  it("insert AFTER the LAST block appends (beforeFenderId null)", () => {
+  it("insert AFTER the LAST block appends (before null)", () => {
     const edit = initEdit([1], () => graph())[1];
     const lastUid = stageBlocks(edit)[1].uid;
     const after = applyEditOp(edit, lastUid, "after", "ACD_Klon");
@@ -176,7 +176,7 @@ describe("diffToOps — insert anchoring (before-the-successor)", () => {
     const ins = diffToOps(after).find((o) => o.kind === "insert");
     if (ins?.kind !== "insert") throw new Error("expected an insert op");
     expect(ins.group).toBe("G1");
-    expect(ins.beforeFenderId == null).toBe(true); // no successor → append at group end
+    expect(ins.before).toBeNull(); // no successor → append at group end
   });
 
   // A visual series spanning two groups: amp in G1 then a pedal in G4. The in-array
@@ -206,7 +206,7 @@ describe("diffToOps — insert anchoring (before-the-successor)", () => {
     const ins = diffToOps(after).find((o) => o.kind === "insert");
     if (ins?.kind !== "insert") throw new Error("expected an insert op");
     expect(ins.group).toBe("G1");
-    expect(ins.beforeFenderId == null).toBe(true); // append to G1, NOT before the G4 pedal
+    expect(ins.before).toBeNull(); // append to G1, NOT before the G4 pedal
   });
 
   it("insert BEFORE a later-group block anchors on it, in that block's group", () => {
@@ -217,7 +217,7 @@ describe("diffToOps — insert anchoring (before-the-successor)", () => {
     const ins = diffToOps(after).find((o) => o.kind === "insert");
     if (ins?.kind !== "insert") throw new Error("expected an insert op");
     expect(ins.group).toBe("G4"); // joins the pedal's group
-    expect(ins.beforeFenderId).toBe("ACD_POG"); // before the G4 pedal
+    expect(ins.before).toEqual({ kind: "node", nodeId: "pog" }); // before the G4 pedal
   });
 });
 
@@ -264,8 +264,13 @@ describe("diffToOps — bracket-and-delete + net-no-op", () => {
     const aIns = ops.find(
       (o) => o.kind === "insert" && o.repl.fenderId === "ACD_Klon",
     );
-    if (aIns?.kind !== "insert") throw new Error("expected A's insert op");
-    expect(aIns.beforeFenderId).toBe("ACD_TapeEcho"); // before C, NOT the deleted B
+    const cIns = ops.find(
+      (o) => o.kind === "insert" && o.repl.fenderId === "ACD_TapeEcho",
+    );
+    if (aIns?.kind !== "insert" || cIns?.kind !== "insert")
+      throw new Error("expected both insert ops");
+    // before C — named by C's key, since C is new — NOT the deleted B
+    expect(aIns.before).toEqual({ kind: "inserted", key: cIns.key });
   });
 
   it("insert then remove the same inserted block is a net no-op → no device ops", () => {

@@ -183,7 +183,7 @@ pub fn probe_doctor_inject(
     // cab, never pre-drive).
     let ops = vec![doctor::DoctorOp::InsertNode {
         group_id: last_group,
-        before_fender_id: None,
+        before_node_id: None,
         fender_id: fender_id.to_string(),
         params: gains.to_vec(),
     }];

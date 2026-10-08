@@ -34,7 +34,7 @@ Path-scoped rules only load once Claude **reads** a matching file, so anything t
 
 ## Invariants no single module can state
 
-- **`blockcaps.rs` is the SOLE enforcement of the 5 block-count caps.** The device audio engine does NOT reject an over-cap edit and cannot return a `presetError` for one — the cap code is client-side only. Any new apply path must call it, because nothing downstream will.
+- **`blockcaps.rs` is the SOLE enforcement of the 5 block-count caps.** The device enforces none of the 4 count caps, and its CPU-budget check is fatal: an over-budget INSERT gets no reply and aborts the server (fw 1.8.58 static RE; a replace gets `presetError` 14). Any new apply path must call it, because nothing downstream will.
 - **`SCRATCH_SLOTS` (`probe_api/mod.rs`) is the ONE declaration of the scratch zone** — widening it is one edit, not four. It is not a universal guard: `probe_import_file` (and the in-place replace path behind it) guards an EMPTY TARGET slot instead, so an import — or the scratch copy a refused in-place replace leaves behind — can land at any empty USER slot, outside the zone.
 - **Block art is original SVG through the BlockArt engine — never an `<img>` photo tile.** The copyrighted vendor PNGs are not bundled and must not be reintroduced (Fender IP).
 - **`ui/primitives.tsx` is deliberately NOT split** — `Modal` renders `Button`, so splitting reintroduces a circular import.

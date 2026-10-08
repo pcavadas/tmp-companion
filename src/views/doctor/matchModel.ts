@@ -193,7 +193,7 @@ export function eqBandLabel(controlId: string): string {
  *  (`doctor.rs`'s `graph_facts`'s `front` field): `group_id` starting with
  *  "G" (mic groups start "M"). This is by construction the last "G"-prefixed
  *  index in the whole node list, so nothing in its own group follows it —
- *  the insert is always an append (`beforeFenderId: null` at the call site).
+ *  the insert is always an append (`beforeNodeId: null` at the call site).
  *  Returns `null` when the chain has no guitar nodes at all — the caller
  *  doesn't offer Apply then. */
 export function lastGuitarGroup(nodes: GraphNode[]): string | null {

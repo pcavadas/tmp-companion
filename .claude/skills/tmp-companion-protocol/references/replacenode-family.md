@@ -106,7 +106,7 @@ The structural-edit counterpart that ADDS a block (the messages above only repla
 ```proto
 message InsertNode {
   string groupId = 1;                 // group KEY, e.g. "G1" (NOT the graph name "guitarNodes")
-  string nodeIdInsertLocation = 2;    // OPTIONAL: omit = APPEND to end of group; set = a SAME-group FenderId to insert BEFORE
+  string nodeIdInsertLocation = 2;    // OPTIONAL: omit = APPEND to end of group; set = a SAME-group NODE ID to insert BEFORE (fw 1.8.58: a miss aborts the server)
   string fenderId = 3;                // new block model ID
 }
 ```
