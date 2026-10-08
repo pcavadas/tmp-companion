@@ -169,9 +169,9 @@ impl ScriptedTransport {
         self.pending.lock().unwrap().extend(batches);
         self
     }
-    /// Script the reply to the next `preset_list_request(1, 1)`.
+    /// Script the reply to the next My Presets re-read (`preset_list_request` at batch 3).
     pub fn with_reply(self, batches: Vec<Batch>) -> Self {
-        self.with_reply_to(&crate::proto::preset_list_request(1, 1), batches)
+        self.with_reply_to(&Self::list_reread(), batches)
     }
     /// Script the reply to the next send of exactly `request`.
     pub fn with_reply_to(self, request: &[u8], batches: Vec<Batch>) -> Self {
@@ -207,7 +207,10 @@ impl ScriptedTransport {
             .count()
     }
     pub fn list_requests(&self) -> usize {
-        self.count_sent(&crate::proto::preset_list_request(1, 1))
+        self.count_sent(&Self::list_reread())
+    }
+    fn list_reread() -> Vec<u8> {
+        crate::proto::preset_list_request(1, crate::proto::BATCH_DRAIN)
     }
     pub fn heartbeats(&self) -> usize {
         self.count_sent(&crate::proto::heartbeat())

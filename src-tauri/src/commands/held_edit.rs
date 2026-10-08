@@ -38,9 +38,7 @@ pub(crate) fn held_replace_one(
     // ── RE-ARM: re-arm the device's reply state on the open connection + force a fresh
     //    currentPresetInfoChanged (field 22). Echo-gated: await_active_preset exits as
     //    soon as the field-22 for `name` lands. ──
-    s.send_and_collect(&proto::connection_request(), 80)?;
-    s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-    s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+    s.rearm_active_info()?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
                                              // SAFETY 1 — confirm the held session re-attached to the TARGET preset before
                                              // editing+saving (a load that didn't take leaves a DIFFERENT preset active, and

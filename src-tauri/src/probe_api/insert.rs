@@ -234,9 +234,7 @@ pub fn probe_insert_map(
     // Load + re-arm the target preset (the held_insert_one preamble).
     s.clear_raw();
     s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
-    s.send_and_collect(&proto::connection_request(), 80)?;
-    s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-    s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+    s.rearm_active_info()?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
     if !s.active_matches(list_index, Some(&name)) {
         return Err(format!(
@@ -286,7 +284,7 @@ pub fn probe_insert_map(
         field8_group_order(device_slot, group)
     } else {
         let _ = s.send_and_collect(&proto::connection_request(), 80);
-        let _ = s.send_and_collect(&proto::current_preset_data_request(2), 200);
+        let _ = s.send_and_collect(&proto::current_preset_data_request(proto::BATCH_DRAIN), 200);
         let order = ordered_group(&mut s, group);
         s.clear_raw();
         s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
@@ -321,9 +319,7 @@ fn held_insert_one(
     // LOAD on the held session + RE-ARM the edit context to the just-loaded preset.
     s.clear_raw();
     s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
-    s.send_and_collect(&proto::connection_request(), 80)?;
-    s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-    s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+    s.rearm_active_info()?;
     let _ = s.await_active_preset(name, 8); // pump for the fresh currentPresetInfoChanged
                                             // SAFETY — confirm the held session re-attached to the TARGET preset (active_matches
                                             // prefers the PresetLoaded slot echo, falling back to the active name) before editing.
@@ -463,9 +459,7 @@ pub fn probe_reprompt_map(
     // Copy's per-preset preamble (`copy_apply_one`), verbatim.
     s.clear_raw();
     s.send_and_collect(&proto::load_preset(device_slot as u64, 1), 200)?;
-    s.send_and_collect(&proto::connection_request(), 80)?;
-    s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-    s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+    s.rearm_active_info()?;
     // Timed confirm: Copy waits 8 × 150 ms; here keep pumping up to ~10 s and report
     // WHEN the echo landed, so a slow unit is measured rather than mis-read as a drop.
     let t_load = std::time::Instant::now();
@@ -524,14 +518,15 @@ pub fn probe_reprompt_map(
     report.push_str(&format!("  CONFIRMED reply_fields={seen:?}\n"));
 
     // `TMP_PROBE_LEGACY_REPROMPT=1`: the `--insert-map` DRY arm's re-prompt shape instead
-    // (`connection_request` re-sent on the live session, batch 2, buffer read without a
-    // clear) — to isolate which part of that shape produced the recorded pre-edit reading.
+    // (`connection_request` re-sent on the live session, buffer read without a clear) —
+    // to isolate which part of that shape produced the recorded pre-edit reading. (It
+    // also sent batch 2, which fw 1.8.58 only queues: no reply on this session.)
     if std::env::var("TMP_PROBE_LEGACY_REPROMPT").is_ok() {
         let _ = s.send_and_collect(&proto::connection_request(), 80);
-        let _ = s.send_and_collect(&proto::current_preset_data_request(2), 200);
+        let _ = s.send_and_collect(&proto::current_preset_data_request(proto::BATCH_DRAIN), 200);
         let order = ordered_group(&mut s, group);
         report.push_str(&format!(
-            "  LEGACY re-prompt (connection_request + batch 2, no clear): {group}={order:?} payload={}B carriers={:?} fields={:?}\n",
+            "  LEGACY re-prompt (connection_request, no clear): {group}={order:?} payload={}B carriers={:?} fields={:?}\n",
             s.json_payload_len(),
             s.json_payload_carriers(),
             s.seen_preset_fields()

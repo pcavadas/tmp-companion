@@ -288,7 +288,9 @@ pub(super) fn block_presets_bodies() -> Result<Vec<Vec<u8>>, String> {
 
 /// The connection behind [`block_presets_bodies`], for a caller that keeps using it.
 fn block_presets_session() -> Result<Session, String> {
-    let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(2)))?;
+    let mut s = Session::connect_with_burst_request(&proto::request_all_block_presets(Some(
+        proto::BATCH_DRAIN,
+    )))?;
     s.pump_collect_alive(1000)?;
     Ok(s)
 }

@@ -180,9 +180,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     //    (mirrors `held_replace_one`). ──
     s.clear_raw();
     s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
-    s.send_and_collect(&proto::connection_request(), 80)?;
-    s.send_and_collect(&proto::preset_list_request(1, 1), 20)?;
-    s.send_and_collect(&proto::current_preset_info_request(2), 120)?;
+    s.rearm_active_info()?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
                                              // SAFETY — confirm the held session re-attached to the TARGET preset before
                                              // editing/saving (active_matches prefers the PresetLoaded slot echo, falling back to

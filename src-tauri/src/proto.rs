@@ -227,9 +227,22 @@ pub fn current_fw_request() -> Vec<u8> {
     request(3, 1, 1, None)
 }
 
-/// PresetMessage.currentPresetDataJsonRequest{ dummy = true }.
-pub fn current_preset_data_json_request(batch: u64) -> Vec<u8> {
-    request(2, 78, 1, Some(batch))
+/// `batchStatus` (FenderMessageTMS field 10) that queues a request and then answers
+/// the whole queue in order — the value for any request that needs its reply on this
+/// connection after the handshake. fw 1.8.58 (static RE, HW-confirmed): 0/absent
+/// answers at once, 1/2 only queue (until some later batch 3, on any session), and
+/// ≥4 is dropped with no reply.
+pub const BATCH_DRAIN: u64 = 3;
+
+/// Whether a request is answered on the connection that sends it: its `batchStatus`
+/// is absent, 0 or [`BATCH_DRAIN`].
+pub fn answered_at_once(body: &[u8]) -> bool {
+    matches!(batch_status(body), None | Some(0) | Some(BATCH_DRAIN))
+}
+
+/// A request's top-level `batchStatus` (FenderMessageTMS field 10), if set.
+pub fn batch_status(body: &[u8]) -> Option<u64> {
+    first_varint(&parse(body), 10)
 }
 
 /// FenderMessageTMS.backupMessage(8).backupRequest(1){ dummy = true }. Triggers
@@ -843,9 +856,13 @@ pub fn setlist_song_list_request(setlist_slot: u64, batch: Option<u64>) -> Vec<u
 /// SongMessage.assignSongPreset — bind a user preset (+ scene) to a Song row.
 /// SongMessage is TMS field **11**; inner `assignSongPreset` is field
 /// **14**; `AssignSongPreset{ songSlot=1, songPresetSlot=2, userPresetSlot=3,
-/// footswitchLabel=4, footswitchColor=5, presetSceneSlot=6 }`. `userPresetSlot` is
-/// 1-based (device slot = list index + 1; the caller applies the +1, like the other
-/// setters). A setter → NO batchStatus. proto3 zero-omission on numeric fields.
+/// footswitchLabel=4, footswitchColor=5, presetSceneSlot=6,
+/// footswitchColorInactive=7 }`. `userPresetSlot` is 1-based (device slot = list
+/// index + 1; the caller applies the +1, like the other setters). A setter → NO
+/// batchStatus. The firmware writes fields 3–7 unconditionally (fw 1.8.58 static RE:
+/// an omitted label stores "" and an omitted colour stores OFF), so they are always
+/// emitted and the caller passes the row's real label and both colours.
+#[allow(clippy::too_many_arguments)]
 pub fn assign_song_preset(
     song_slot: u64,
     song_preset_slot: u64,
@@ -853,6 +870,7 @@ pub fn assign_song_preset(
     footswitch_label: &str,
     footswitch_color: u64,
     preset_scene_slot: u64,
+    footswitch_color_inactive: u64,
 ) -> Vec<u8> {
     let mut inner = Vec::new();
     if song_slot != 0 {
@@ -861,18 +879,11 @@ pub fn assign_song_preset(
     if song_preset_slot != 0 {
         field_varint(&mut inner, 2, song_preset_slot);
     }
-    if user_preset_slot != 0 {
-        field_varint(&mut inner, 3, user_preset_slot);
-    }
-    if !footswitch_label.is_empty() {
-        field_bytes(&mut inner, 4, footswitch_label.as_bytes());
-    }
-    if footswitch_color != 0 {
-        field_varint(&mut inner, 5, footswitch_color);
-    }
-    if preset_scene_slot != 0 {
-        field_varint(&mut inner, 6, preset_scene_slot);
-    }
+    field_varint(&mut inner, 3, user_preset_slot);
+    field_bytes(&mut inner, 4, footswitch_label.as_bytes());
+    field_varint(&mut inner, 5, footswitch_color);
+    field_varint(&mut inner, 6, preset_scene_slot);
+    field_varint(&mut inner, 7, footswitch_color_inactive);
     len_delimited(11, &len_delimited(14, &inner))
 }
 
@@ -1163,22 +1174,19 @@ pub fn next_empty_preset_slot_response(tms_body: &[u8]) -> Option<u64> {
     first_varint(&parse(resp), 1)
 }
 
-/// Decode a `songPresetListResponse` body to its raw record field-sets. Walks
-/// TMS → songMessage[11] → songPresetListResponse[13] → repeated record[2], and
-/// returns each record's parsed fields. The caller pulls `isEmpty[1]`,
-/// `userPresetSlot[2]`, `presetSceneSlot[5]`, `presetSceneName[6]` per
-/// `SongPresetListRecord.proto`.
-pub fn song_preset_list_records(tms_body: &[u8]) -> Vec<Vec<(u32, Val)>> {
+/// Decode a `songPresetListResponse` body to its raw record field-sets, or `None`
+/// when the body is not the reply for `song_slot`. Walks TMS → songMessage[11] →
+/// songPresetListResponse[13]{ songSlot[1], repeated record[2] } and returns each
+/// record's parsed fields (`SongPresetListRecord.proto`). The slot check matters
+/// because a stale queued request for another song can be answered on this
+/// session (fw 1.8.58: queued batch items survive a lapse and reply to whoever is
+/// on HID when the next batch 3 drains them).
+pub fn song_preset_list_records(tms_body: &[u8], song_slot: u64) -> Option<Vec<Vec<(u32, Val)>>> {
     let top = parse(tms_body);
-    let Some(sm) = first_bytes(&top, 11) else {
-        return Vec::new();
-    };
-    let sm_fields = parse(sm);
-    let Some(resp) = first_bytes(&sm_fields, 13) else {
-        return Vec::new();
-    };
-    let resp_fields = parse(resp);
-    all_bytes(&resp_fields, 2).into_iter().map(parse).collect()
+    let sm_fields = parse(first_bytes(&top, 11)?);
+    let resp_fields = parse(first_bytes(&sm_fields, 13)?);
+    (first_varint(&resp_fields, 1).unwrap_or(0) == song_slot)
+        .then(|| all_bytes(&resp_fields, 2).into_iter().map(parse).collect())
 }
 
 // The non-strict `song_list_records` / `setlist_list_records` /
@@ -1474,9 +1482,15 @@ pub fn song_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>>
 pub fn setlist_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
     list_records_strict(tms_body, 12, 3).map(|(_, recs)| recs)
 }
-/// Strict, completeness-validated `setlistSongListResponse` decode (TMS[12]→resp[13]→rec[2]).
-pub fn setlist_song_list_records_strict(tms_body: &[u8]) -> Option<Vec<Vec<(u32, Val)>>> {
-    list_records_strict(tms_body, 12, 13).map(|(_, recs)| recs)
+/// Strict, completeness-validated `setlistSongListResponse` decode
+/// (TMS[12]→resp[13]{ setlistSlot[1], rec[2] }), gated to `setlist_slot` for the
+/// same stale-reply reason as [`song_preset_list_records`].
+pub fn setlist_song_list_records_strict(
+    tms_body: &[u8],
+    setlist_slot: u64,
+) -> Option<Vec<Vec<(u32, Val)>>> {
+    let (resp, recs) = list_records_strict(tms_body, 12, 13)?;
+    (first_varint(&resp, 1).unwrap_or(0) == setlist_slot).then_some(recs)
 }
 
 // ─── device → host stream reassembly ─────────────────────────────────────────
@@ -1611,11 +1625,15 @@ mod tests {
     }
 
     #[test]
-    fn current_preset_data_json_request_matches_golden() {
-        assert_eq!(
-            hex(&current_preset_data_json_request(4)),
-            "1205f2040208015004"
-        );
+    fn only_batch_0_3_or_none_is_answered_at_once() {
+        assert!(answered_at_once(&current_preset_info_request(BATCH_DRAIN)));
+        assert!(answered_at_once(&song_list_request(None)));
+        assert!(answered_at_once(&preset_data_request(1, 3, None)));
+        for queued_or_dropped in [1, 2, 4, 5] {
+            assert!(!answered_at_once(&song_list_request(Some(
+                queued_or_dropped
+            ))));
+        }
     }
 
     #[test]
@@ -2343,8 +2361,9 @@ mod tests {
     #[test]
     fn song_write_setters_encode() {
         // assignSongPreset[14]{ songSlot=1, songPresetSlot=2, userPresetSlot=3,
-        //   footswitchLabel="Lead", footswitchColor=7, presetSceneSlot=4 }
-        let body = assign_song_preset(1, 2, 3, "Lead", 7, 4);
+        //   footswitchLabel="Lead", footswitchColor=7, presetSceneSlot=4,
+        //   footswitchColorInactive=5 }
+        let body = assign_song_preset(1, 2, 3, "Lead", 7, 4, 5);
         let inner = parse(first_bytes(&parse(&body), 11).unwrap());
         let assign = parse(first_bytes(&inner, 14).unwrap());
         assert_eq!(first_varint(&assign, 1), Some(1));
@@ -2353,6 +2372,15 @@ mod tests {
         assert_eq!(first_bytes(&assign, 4), Some(b"Lead".as_ref()));
         assert_eq!(first_varint(&assign, 5), Some(7));
         assert_eq!(first_varint(&assign, 6), Some(4));
+        assert_eq!(first_varint(&assign, 7), Some(5));
+        // Zero/empty values are still sent: the firmware stores an omitted field as
+        // "" / OFF over the row's real label and colours.
+        let zeros =
+            parse(first_bytes(&parse(&assign_song_preset(1, 2, 3, "", 0, 0, 0)), 11).unwrap());
+        let zeros = parse(first_bytes(&zeros, 14).unwrap());
+        for f in 4..=7 {
+            assert!(zeros.iter().any(|(n, _)| *n == f), "field {f} omitted");
+        }
 
         // move[15], swap[16], clear[17]
         let mv = parse(first_bytes(&parse(&move_song_preset(1, 2, 0)), 11).unwrap());
@@ -2441,7 +2469,7 @@ mod tests {
 
     #[test]
     fn song_preset_list_response_decodes_records() {
-        // songMessage[11]{ songPresetListResponse[13]{
+        // songMessage[11]{ songPresetListResponse[13]{ songSlot[1]=4,
         //   record[2]={ userPresetSlot[2]=12, presetSceneSlot[5]=3, presetSceneName[6]="A" },
         //   record[2]={ isEmpty[1]=1 } } }.
         let mut r0 = Vec::new();
@@ -2451,18 +2479,21 @@ mod tests {
         let mut r1 = Vec::new();
         field_varint(&mut r1, 1, 1);
         let mut resp = Vec::new();
+        field_varint(&mut resp, 1, 4);
         field_bytes(&mut resp, 2, &r0);
         field_bytes(&mut resp, 2, &r1);
         let body = len_delimited(11, &len_delimited(13, &resp));
 
-        let recs = song_preset_list_records(&body);
+        // Another song's reply is not this song's rows.
+        assert!(song_preset_list_records(&body, 3).is_none());
+        let recs = song_preset_list_records(&body, 4).unwrap();
         assert_eq!(recs.len(), 2);
         assert_eq!(first_varint(&recs[0], 2), Some(12)); // userPresetSlot
         assert_eq!(first_varint(&recs[0], 5), Some(3)); // presetSceneSlot
         assert_eq!(first_bytes(&recs[0], 6), Some(&b"A"[..])); // presetSceneName
         assert_eq!(first_varint(&recs[1], 1), Some(1)); // isEmpty
                                                         // A body with no songMessage yields no records (no panic).
-        assert!(song_preset_list_records(&connection_request()).is_empty());
+        assert!(song_preset_list_records(&connection_request(), 4).is_none());
     }
 
     #[test]

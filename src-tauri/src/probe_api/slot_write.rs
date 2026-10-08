@@ -198,9 +198,8 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
     // read cannot distinguish "unserved" from "applied then discarded". Only a
     // same-connection pair can.
     //
-    // `capture_full_preset_json` (the dense-heartbeat capture), NOT
-    // `fetch_current_preset_json`: the latter returns empty on a plain session, and
-    // an empty read compared against an empty read silently looks like "unchanged".
+    // `capture_full_preset_json` (the dense-heartbeat capture): a read that comes
+    // back empty compared against an empty read silently looks like "unchanged".
     // The AFTER read passes `None` so it captures the CURRENT working copy without
     // reloading — a reload would discard the very edit being measured.
     // `Some(slot)` would RE-load the preset, and re-loading the preset that is
@@ -425,7 +424,7 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
         Ok(_) => log::info!("rich block discovery for slot={slot}: loaded but no level blocks"),
         Err(e) => log::warn!("rich block discovery for slot={slot}: {e}"),
     }
-    // Fallback for older firmware where the field-78 discovery handshake works.
+    // Fallback: the discovery handshake's own field-3 push.
     {
         let mut s = Session::connect()?;
         s.load_preset(slot)?;
@@ -570,7 +569,7 @@ pub fn probe_clear_preset(slot: u32, expect_name: &str) -> Result<String, String
 /// setlist-list read, so the multi-packet framing (0x33 start / 0x34 cont / 0x35 final)
 /// and any interleaved foreign streams are visible, plus whether a strict decode lands.
 pub fn probe_diag_frames() -> Result<String, String> {
-    let req = proto::setlist_list_request(Some(2));
+    let req = proto::setlist_list_request(Some(proto::BATCH_DRAIN));
     let mut s = Session::connect_with_burst_request(&req)?;
     let mut out = String::from("[diag-frames] setlist read, per-pump frame magics:\n");
     for i in 0..6 {
