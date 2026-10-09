@@ -60,6 +60,10 @@ pub(crate) fn held_replace_one(
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
+    // SAFETY 1b — the loaded preset is the one discovery planned against.
+    if let Err(detail) = confirm_plan_identity(s, plan) {
+        return Ok(error_item(list_index, name, detail));
+    }
     let candidate_id = repl_arg_fender_id(repl);
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).
@@ -142,4 +146,92 @@ pub(crate) fn replace_many_held(
         out.push(item);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod plan_identity_tests {
+    use super::*;
+    use crate::sim_device::{SimDevice, SimEvent};
+
+    /// The sim's default two-node graph, under a given `info.preset_id`. The trailing
+    /// `scenes` padding keeps `info` clear of the ≤60 B the session's field-3
+    /// reassembly drops off every document's tail (see `sim_device`'s `ftsw_tests` note).
+    fn doc_with_id(id: &str) -> String {
+        format!(
+            r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[
+                {{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{{"bypass":false,"outputLevel":0.5}}}},
+                {{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{{"bypass":false}}}}
+            ]}}}},"info":{{"displayName":"Stadium Lead","preset_id":"{id}"}},
+            "scenes":[{{"sceneName":"{pad}"}}]}}"#,
+            pad = "x".repeat(120)
+        )
+    }
+
+    fn plan(preset_id: Option<&str>) -> ReplacePlan {
+        ReplacePlan {
+            list_index: 5,
+            name: "Stadium Lead".into(),
+            preset_id: preset_id.map(str::to_string),
+            targets: vec![("G1".into(), "n2".into())],
+        }
+    }
+
+    fn run(sim: SimDevice, plan: &ReplacePlan) -> (BulkReplaceItem, Vec<SimEvent>) {
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        let repl = ReplArg::Model {
+            fender_id: "ACD_DeluxeReverb65".into(),
+        };
+        let item = held_replace_one(&mut s, plan, &repl, true).unwrap();
+        (item, sim.events())
+    }
+
+    /// #169: a different preset swapped into the slot after discovery shares the node
+    /// ids the plan targets, so only `preset_id` tells them apart. Nothing may be edited
+    /// or saved.
+    #[test]
+    fn a_preset_swapped_into_the_slot_after_discovery_is_not_edited_or_saved() {
+        let sim = SimDevice::new().with_preset_json(&doc_with_id("pid-other"));
+        let (item, ev) = run(sim, &plan(Some("pid-planned")));
+        assert_eq!(item.outcome, "error", "{}", item.detail);
+        assert!(item.detail.contains("pid-other") && item.detail.contains("pid-planned"));
+        assert!(
+            !ev.iter().any(|e| matches!(
+                e,
+                SimEvent::Replace { .. } | SimEvent::Renamed(_) | SimEvent::Saved(_)
+            )),
+            "no edit, rename or save may reach the swapped preset: {ev:?}"
+        );
+    }
+
+    #[test]
+    fn the_planned_preset_is_edited_and_saved() {
+        let sim = SimDevice::new().with_preset_json(&doc_with_id("pid-planned"));
+        let (item, ev) = run(sim, &plan(Some("pid-planned")));
+        assert_eq!(item.outcome, "updated", "{}", item.detail);
+        assert!(ev.contains(&SimEvent::Saved(5)), "{ev:?}");
+    }
+
+    #[test]
+    fn verdict_refuses_an_unreadable_live_id() {
+        assert!(plan_identity_verdict(&plan(Some("pid-planned")), None).is_err());
+    }
+
+    /// fw 1.8.58: empty slots and bodies rejected at load carry the template's id under
+    /// the slot's stored name. Discovery drops it (`identity_preset_id_of`), so a plan
+    /// never expects it, and a live template always refuses.
+    #[test]
+    fn the_empty_template_id_never_identifies_a_preset() {
+        use crate::library::{identity_preset_id_of, TEMPLATE_PRESET_ID};
+        let body = serde_json::json!({ "info": { "preset_id": TEMPLATE_PRESET_ID } });
+        assert_eq!(identity_preset_id_of(&body), None);
+        assert!(
+            plan_identity_verdict(&plan(Some("pid-planned")), Some(TEMPLATE_PRESET_ID)).is_err()
+        );
+        assert!(plan_identity_verdict(&plan(None), Some(TEMPLATE_PRESET_ID)).is_err());
+    }
+
+    #[test]
+    fn verdict_refuses_when_discovery_read_no_usable_id() {
+        assert!(plan_identity_verdict(&plan(None), Some("pid-planned")).is_err());
+    }
 }

@@ -125,6 +125,10 @@ pub(crate) async fn bulk_replace_live(
 pub(crate) struct ReplacePlan {
     pub(crate) list_index: u32,
     pub(crate) name: String,
+    /// The discovered body's `info.preset_id` (`library::identity_preset_id_of`). The
+    /// writers require it to match the loaded working copy before the first edit
+    /// ([`confirm_plan_identity`]); `None` refuses the preset.
+    pub(crate) preset_id: Option<String>,
     /// `(group, node_id)` of every node matching the requested `from_id`.
     pub(crate) targets: Vec<(String, String)>,
 }
@@ -158,6 +162,7 @@ pub(crate) fn discover_replace_plans(
         plans.push(ReplacePlan {
             list_index: dev_slot.saturating_sub(1),
             name,
+            preset_id: crate::library::identity_preset_id_of(&value).map(str::to_string),
             targets,
         });
     }
@@ -202,7 +207,7 @@ fn discover_replace_plans_via_backup(
     let plans = device_slots
         .iter()
         .map(|&dev_slot| {
-            let (name, targets) = match by_slot.get(&dev_slot) {
+            let (name, preset_id, targets) = match by_slot.get(&dev_slot) {
                 Some(row) => {
                     let targets = row
                         .blocks
@@ -210,18 +215,77 @@ fn discover_replace_plans_via_backup(
                         .filter(|b| b.fender_id == from_id)
                         .map(|b| (b.group_id.clone(), b.node_id.clone()))
                         .collect();
-                    (row.name.clone(), targets)
+                    let id = row.preset_id.clone();
+                    let id = id.filter(|id| id != crate::library::TEMPLATE_PRESET_ID);
+                    (row.name.clone(), id, targets)
                 }
-                None => (String::new(), Vec::new()),
+                None => (String::new(), None, Vec::new()),
             };
             ReplacePlan {
                 list_index: dev_slot.saturating_sub(1),
                 name,
+                preset_id,
                 targets,
             }
         })
         .collect();
     Ok(plans)
+}
+
+/// An `error` row for `list_index` (the preset was not edited).
+pub(crate) fn error_item(list_index: u32, name: String, detail: String) -> BulkReplaceItem {
+    BulkReplaceItem {
+        slot: list_index,
+        name,
+        outcome: "error".to_string(),
+        detail,
+    }
+}
+
+/// Confirm the loaded working copy is still the body `plan` was discovered from. The
+/// slot echo only proves the load took, and node ids repeat across presets. Every save
+/// re-mints `preset_id` and imports keep it (fw 1.8.58), so a match means "this slot's
+/// body is unchanged since discovery". Re-prompts once when nothing is buffered.
+pub(crate) fn confirm_plan_identity(s: &mut Session, plan: &ReplacePlan) -> Result<(), String> {
+    let id_of = |v: serde_json::Value| crate::library::preset_id_of(&v).map(str::to_string);
+    let live_id = s.current_preset_value().ok().and_then(id_of).or_else(|| {
+        s.live_preset_value(|v| crate::library::preset_id_of(v).is_some())
+            .ok()
+            .and_then(id_of)
+    });
+    plan_identity_verdict(plan, live_id.as_deref())
+}
+
+/// [`confirm_plan_identity`]'s decision, pure. Both ids must be present, not the
+/// template's, and equal. No slot + name fallback: a body rejected at load becomes the
+/// template under the slot's STORED name, so slot and name both confirm an empty body.
+pub(crate) fn plan_identity_verdict(
+    plan: &ReplacePlan,
+    live_id: Option<&str>,
+) -> Result<(), String> {
+    let slot = plan.list_index;
+    let name = &plan.name;
+    let Some(want) = plan.preset_id.as_deref() else {
+        return Err(format!(
+            "list index {slot} ({name:?}): discovery read no usable info.preset_id \
+             — refusing to edit an unidentified preset"
+        ));
+    };
+    match live_id {
+        Some(got) if got == want => Ok(()),
+        Some(crate::library::TEMPLATE_PRESET_ID) => Err(format!(
+            "list index {slot} loaded as the firmware's empty template, not {name:?} \
+             (an empty slot or a body rejected at load) — not edited"
+        )),
+        Some(got) => Err(format!(
+            "list index {slot} now holds preset_id {got:?}, not the discovered {want:?} \
+             ({name:?}) — the slot's body changed since discovery; not edited"
+        )),
+        None => Err(format!(
+            "could not read the loaded preset's info.preset_id at list index {slot} \
+             (expected {want:?}, {name:?}) — refusing to edit an unidentified preset"
+        )),
+    }
 }
 
 // ─── blockcaps guard plumbing ──────────────────────────────────────────────────
@@ -401,6 +465,10 @@ fn replace_one_live(
     // ── blockcaps guard — read the PRE-edit roster now, before the first structural
     //    edit (fail-closed: an unreadable roster refuses the WHOLE target). ──
     let (roster, mut counts) = blockcaps_pre_edit_roster(&mut s)?;
+    // SAFETY 1b — the loaded preset is the one discovery planned against.
+    if let Err(detail) = confirm_plan_identity(&mut s, plan) {
+        return Ok(error_item(list_index, name, detail));
+    }
     let candidate_id = repl_arg_fender_id(repl);
 
     // SAFETY 2 — only persist if EVERY replace is confirmed (nodeReplaced/40).

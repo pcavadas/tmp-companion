@@ -42,6 +42,15 @@ pub(crate) fn preset_id_of(value: &Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+/// `info.preset_id` of fw 1.8.58's "Empty" template (factory slot 0). Every empty slot
+/// and every body the firmware rejected at load carries it, so it identifies nothing.
+pub(crate) const TEMPLATE_PRESET_ID: &str = "af08d1ac-e88e-4e93-a92d-92c7e8913fbf";
+
+/// [`preset_id_of`] for identity checks: also `None` for [`TEMPLATE_PRESET_ID`].
+pub(crate) fn identity_preset_id_of(value: &Value) -> Option<&str> {
+    preset_id_of(value).filter(|id| *id != TEMPLATE_PRESET_ID)
+}
+
 /// One `.preset` file ingested from the export folder, plus its reconciliation
 /// against the live device. `decoded_json` is the canonical full preset JSON;
 /// `list_index` is `Some` only once matched to a (uniquely-named) device slot.
