@@ -2573,11 +2573,11 @@ impl Session {
         done: impl Fn(&serde_json::Value) -> bool,
     ) -> Result<serde_json::Value, String> {
         self.clear_raw();
-        let _ = self.send_and_collect(&proto::current_preset_data_request(3), 300);
+        let _ = self.send_and_collect_alive(&proto::current_preset_data_request(3), 300);
         let mut last = String::new();
         for _ in 0..8 {
             let _ = self.heartbeat();
-            let _ = self.pump_silent(200);
+            let _ = self.pump_collect_alive(200);
             match self.current_preset_value() {
                 Ok(v) if done(&v) => return Ok(v),
                 Ok(_) => last = "a reply parsed but was not accepted".to_string(),
