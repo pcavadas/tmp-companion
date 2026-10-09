@@ -897,16 +897,23 @@ export interface CopyRepl {
   fenderId: string;
 }
 
+/** The block an insert lands before (`lib::Anchor`): an original block by its pre-edit
+ * `nodeId`, or an earlier insert in the same job by its `key`. The backend resolves it to
+ * the device's current node id at send time (a replace or insert mints a new one). */
+export type CopyAnchor =
+  { kind: "node"; nodeId: string } | { kind: "inserted"; key: string };
+
 /** One structural op applied to a target preset (`lib::CopyOp`). `nodeId` / `group`
- * address the existing block. An insert anchors BEFORE a FenderId (`beforeFenderId`,
- * field-34 insertNode — field-2 is the block to insert AHEAD of); `beforeFenderId` null
- * appends at the group end. */
+ * address the existing block. An insert lands BEFORE `before` (field-34 insertNode),
+ * or appends at the group end when `before` is null; `key` names it for a later insert
+ * that anchors on it. */
 export type CopyOp =
   | { kind: "replace"; group: string; nodeId: string; repl: CopyRepl }
   | {
       kind: "insert";
       group: string;
-      beforeFenderId?: string | null;
+      key: string;
+      before: CopyAnchor | null;
       repl: CopyRepl;
     }
   | { kind: "remove"; group: string; nodeId: string };
@@ -1036,7 +1043,7 @@ export type DoctorOp =
   | {
       kind: "insert_node";
       groupId: string;
-      beforeFenderId: string | null;
+      beforeNodeId: string | null;
       fenderId: string;
       params: [string, number][];
     };

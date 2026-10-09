@@ -16,8 +16,8 @@ use crate::BulkReplaceItem;
 /// in a read-back, then RELOADS the preset to DISCARD the edit (nothing saved). The
 /// active preset is resolved by: explicit `slot_override` (1-based device slot) →
 /// `loaded_slot()` echo → unique active-name match in the list; ambiguous/unknown errors
-/// out asking for `--slot`. Append by default (`after = None`), or insert after a given
-/// FenderId. Group defaults to the primary guitar group "G1" (the capture's group).
+/// out asking for `--slot`. Append by default (`after = None`), or insert BEFORE the node
+/// whose id `after` names. Group defaults to the primary guitar group "G1" (the capture's group).
 pub fn probe_insert_active(
     fender_id: &str,
     group: Option<&str>,
@@ -249,15 +249,12 @@ pub fn probe_insert_map(
         ordered_group(&mut s, group)
     ));
 
-    // ONE insert (retry once past the cold-first-edit silent drop, never past a reject).
-    let do_insert = |s: &mut Session| match at_index {
-        Some(idx) => s.insert_node_at_index(group, idx, fender_id),
-        None => s.insert_node(group, before, fender_id),
+    // ONE insert, guarded; an unconfirmed one is read back before any re-send.
+    let was = insert_guard(&mut s, group, before, fender_id)?;
+    let confirmed = match at_index {
+        Some(idx) => s.insert_node_at_index_once(group, idx, fender_id, Some(was))?,
+        None => s.insert_node_once(group, before, fender_id, Some(was))?,
     };
-    let mut confirmed = do_insert(&mut s)?;
-    if !confirmed && !s.saw_preset_error() {
-        confirmed = do_insert(&mut s)?;
-    }
     let seen = s.seen_preset_fields();
     let rejected = s.saw_preset_error();
 
@@ -302,8 +299,8 @@ pub fn probe_insert_map(
 /// Insert one block into the preset at 0-based `list_index` on a HELD session — the
 /// `held_replace_one` shape, with `insertNode` instead of `replaceNode`. Load + re-arm +
 /// the same SAFETY gate (only proceed when the held session re-attached to the TARGET
-/// preset). The insert gets a single RETRY on a silent DROP (the held path's cold first
-/// structural edit after a fresh load can be dropped; an immediate retry lands it), but
+/// preset). An unconfirmed insert is read back and re-sent once only when it did not land
+/// (the held path's cold first structural edit after a fresh load can be dropped), but
 /// NEVER on a `presetError` (a rejection — never saved). Saves only when the edit is
 /// confirmed (nodeInserted) OR read back as present, and never on a presetError.
 #[allow(clippy::too_many_arguments)]
@@ -336,15 +333,21 @@ fn held_insert_one(
         });
     }
 
-    // INSERT — bare insertNode, with a single retry for the cold-first-edit DROP.
-    let mut confirmed = s.insert_node(group, after, fender_id)?;
-    let mut seen = s.seen_preset_fields();
-    let mut rejected = s.saw_preset_error();
-    if !confirmed && !rejected {
-        confirmed = s.insert_node(group, after, fender_id)?;
-        seen = s.seen_preset_fields();
-        rejected = s.saw_preset_error();
-    }
+    // The guard and the read-then-retry, against the group before the insert.
+    let was = match insert_guard(s, group, after, fender_id) {
+        Ok(was) => was,
+        Err(detail) => {
+            return Ok(BulkReplaceItem {
+                slot: list_index,
+                name: name.to_string(),
+                outcome: "error".to_string(),
+                detail,
+            })
+        }
+    };
+    let confirmed = s.insert_node_once(group, after, fender_id, Some(was))?;
+    let seen = s.seen_preset_fields();
+    let rejected = s.saw_preset_error();
 
     // Content read-back: coax a fresh field-3 push, then check the block is present.
     s.heartbeat()?;
@@ -405,6 +408,28 @@ fn held_insert_one(
             detail,
         })
     }
+}
+
+/// [`blockcaps::check_insert`] against the buffered load-time document; `Ok` carries the
+/// group's count of `fender_id` for [`Session::insert_node_once`].
+fn insert_guard(
+    s: &mut Session,
+    group: &str,
+    before: Option<&str>,
+    fender_id: &str,
+) -> Result<usize, String> {
+    let roster = crate::blockcaps::roster_from_preset(&s.complete_graph_value()?);
+    crate::blockcaps::check_insert(
+        &roster,
+        &mut crate::blockcaps::counts(&roster),
+        group,
+        before,
+        fender_id,
+    )?;
+    Ok(roster
+        .iter()
+        .filter(|e| e.group == group && e.fender_id == fender_id)
+        .count())
 }
 
 /// `current_audio_graph` as one report line: does the buffered document parse to a graph
@@ -494,17 +519,16 @@ pub fn probe_reprompt_map(
         describe_graph(&s)
     ));
 
-    let do_op = |s: &mut Session| -> Result<bool, String> {
-        match (remove, insert) {
-            (Some(node), _) => s.remove_node(group, node),
-            (None, Some(fid)) => s.insert_node(group, before, fid),
-            (None, None) => Err("nothing to do".into()),
+    let confirmed = match (remove, insert) {
+        (Some(node), _) => {
+            s.remove_node(group, node)? || (!s.saw_preset_error() && s.remove_node(group, node)?)
         }
+        (None, Some(fid)) => {
+            let was = insert_guard(&mut s, group, before, fid)?;
+            s.insert_node_once(group, before, fid, Some(was))?
+        }
+        (None, None) => return Err("nothing to do".into()),
     };
-    let mut confirmed = do_op(&mut s)?;
-    if !confirmed && !s.saw_preset_error() {
-        confirmed = do_op(&mut s)?;
-    }
     let seen = s.seen_preset_fields();
     if s.saw_preset_error() || !confirmed {
         report.push_str(&format!(

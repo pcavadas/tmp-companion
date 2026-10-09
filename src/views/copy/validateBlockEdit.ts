@@ -16,7 +16,7 @@
 // convolution reverb AND a cabinet; its `…NoFxCabIR` sibling is a cabinet only).
 
 import blockClassification from "../../models/block-classification.json";
-import { CPU_BUDGET } from "../../models/cpu";
+import { CPU_BUDGET, chargedCpu, overCpuBudget } from "../../models/cpu";
 import {
   blockArrays,
   cpuOfGraph,
@@ -72,6 +72,7 @@ export function classify(model: string): {
  *  present anywhere in the graph — loops 1/2 are non-placeable rear-panel fixtures
  *  and never appear here since they're not in `fxLoopStereo`/`fxLoopMono`. */
 export interface BaseCounts {
+  cpu: number;
   conv: number;
   cabinet: number;
   glooper: number;
@@ -83,6 +84,7 @@ export function baseCounts(graph: EditGraph): BaseCounts {
   let cabinet = 0;
   let glooper = 0;
   const fxLoopPresent = new Set<string>();
+  const cpu = cpuOfGraph(graph);
   for (const arr of blockArrays(graph)) {
     for (const b of arr) {
       const c = classify(b.model);
@@ -94,7 +96,7 @@ export function baseCounts(graph: EditGraph): BaseCounts {
       }
     }
   }
-  return { conv, cabinet, glooper, fxLoopPresent };
+  return { cpu, conv, cabinet, glooper, fxLoopPresent };
 }
 
 function countReason(counts: {
@@ -123,7 +125,7 @@ export interface CheckOpOpts {
 
 /** The per-op guard behind the grey-out: would placing `candidateModel` via `mode`
  *  (against a graph currently at `counts`) violate a firmware cap? Mode-aware:
- *  `replace` frees the anchor's own slot (count + coexistence); `before`/`after`
+ *  `replace` frees the anchor's own slot (CPU, count + coexistence); `before`/`after`
  *  never do (a fresh insert is never a dual-cab node — `applyEditOp`'s insert
  *  branch never sets `cabSim2Enabled`). Returns the first violated reason, or
  *  `null` when the placement is fine. */
@@ -136,6 +138,12 @@ export function checkOp(
   const cand = classify(candidateModel);
   const anchor = mode === "replace" ? opts.anchor : undefined;
   const anchorClass = anchor ? classify(anchor.model) : null;
+
+  const cpu =
+    counts.cpu +
+    chargedCpu(candidateModel) -
+    (anchor ? chargedCpu(anchor.model) : 0);
+  if (overCpuBudget(cpu)) return "ProcessorUtilization";
 
   // FX-loop coexistence: fold the anchor's freed slot + the candidate into the
   // present set, then test both directions at once.
@@ -162,7 +170,7 @@ export function checkOp(
  *  (`cpuOfGraph`, NOT `presetCpu` — this is the staged edit, not a live read).
  *  Returns the first violated reason in firmware rule order, or `null`. */
 export function checkEdit(edit: PresetEdit): BlockEditReason | null {
-  if (cpuOfGraph(edit.graph) > CPU_BUDGET) return "ProcessorUtilization";
   const counts = baseCounts(edit.graph);
+  if (overCpuBudget(counts.cpu)) return "ProcessorUtilization";
   return fxLoopReason(counts.fxLoopPresent) ?? countReason(counts);
 }

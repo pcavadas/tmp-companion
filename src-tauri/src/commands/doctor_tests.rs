@@ -53,7 +53,7 @@ fn doctor_apply_job_round_trips_from_frontend_json() {
             "ops": [
                 { "kind": "param", "groupId": "G1", "nodeId": "ACD_CabSimTMS",
                   "param": "lpf", "value": 8000.0 },
-                { "kind": "insert_node", "groupId": "G1", "beforeFenderId": null,
+                { "kind": "insert_node", "groupId": "G1", "beforeNodeId": null,
                   "fenderId": "ACD_TenBandEQStereo", "params": [["gain250hz", -3.0]] }
             ],
             "topologyId": "guitar-humbucker",
@@ -69,12 +69,12 @@ fn doctor_apply_job_round_trips_from_frontend_json() {
     match &job.ops[1] {
         doctor::DoctorOp::InsertNode {
             fender_id,
-            before_fender_id,
+            before_node_id,
             params,
             ..
         } => {
             assert_eq!(fender_id, "ACD_TenBandEQStereo");
-            assert!(before_fender_id.is_none());
+            assert!(before_node_id.is_none());
             assert_eq!(params[0], ("gain250hz".to_string(), -3.0));
         }
         other => panic!("expected InsertNode, got {other:?}"),
@@ -559,7 +559,7 @@ fn bypass_only_conflict_ignores_insert_node_ops() {
     let preset = preset_with_scene0_overlay(serde_json::json!({ "bypass": false }));
     let ops = vec![doctor::DoctorOp::InsertNode {
         group_id: "G1".to_string(),
-        before_fender_id: None,
+        before_node_id: None,
         fender_id: "ACD_TenBandEQStereo".to_string(),
         params: Vec::new(),
     }];
@@ -757,4 +757,107 @@ fn apply_ops_under_scene_recalls_base_explicitly_for_none() {
         )),
         "a None scene must write base, not the leftover saved scene 3: {ev:?}"
     );
+}
+
+fn insert_op(before: Option<&str>, fender_id: &str) -> doctor::DoctorOp {
+    doctor::DoctorOp::InsertNode {
+        group_id: "G1".to_string(),
+        before_node_id: before.map(str::to_string),
+        fender_id: fender_id.to_string(),
+        params: Vec::new(),
+    }
+}
+
+fn g1_roster(nodes: &[(&str, &str)]) -> Vec<crate::blockcaps::RosterEntry> {
+    let nodes: Vec<_> = nodes
+        .iter()
+        .map(|(fid, id)| serde_json::json!({ "FenderId": fid, "nodeId": id }))
+        .collect();
+    crate::blockcaps::roster_from_preset(
+        &serde_json::json!({ "audioGraph": { "guitarNodes": { "G1": nodes } } }),
+    )
+}
+
+#[test]
+fn doctor_inserts_are_refused_on_a_missing_anchor_or_over_budget() {
+    // fw 1.8.58 aborts its server on both, so neither may reach the device.
+    let roster = g1_roster(&[("ACD_GuitarSynth", "synth"), ("ACD_GuitarSynth", "synth_1")]);
+    assert!(check_doctor_inserts(&roster, &[insert_op(Some("synth_1"), "ACD_Blackbox")]).is_ok());
+    let miss = check_doctor_inserts(
+        &roster,
+        &[insert_op(Some("ACD_GuitarSynth_1"), "ACD_Blackbox")],
+    )
+    .expect_err("an anchor the group lacks");
+    assert!(miss.contains("not sent"), "{miss}");
+    // 36 + 36 + 9.5 = 81.5 > 76.5.
+    let over = check_doctor_inserts(&roster, &[insert_op(None, "ACD_LoFi")])
+        .expect_err("over the CPU budget");
+    assert!(over.contains("ProcessorUtilization"), "{over}");
+}
+
+/// An insert whose confirm is lost but which landed is read back, not re-sent, and its
+/// param follow-up still targets the block the device minted.
+#[test]
+fn doctor_insert_whose_confirm_is_lost_is_read_back_not_resent() {
+    use crate::sim_device::{SimDevice, SimEvent};
+    let doc = format!(
+        r#"{{"audioGraph":{{"template":"gtrSeries","guitarNodes":{{"G1":[{},{}]}}}},"zzTail":"{}"}}"#,
+        r#"{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false}}"#,
+        r#"{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}"#,
+        "x".repeat(200)
+    );
+    let sim = SimDevice::new()
+        .with_preset_json(&doc)
+        .with_lost_first_confirm();
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    let op = doctor::DoctorOp::InsertNode {
+        group_id: "G1".to_string(),
+        before_node_id: Some("n2".to_string()),
+        fender_id: "ACD_TubeScreamer".to_string(),
+        params: vec![("level".to_string(), 0.5)],
+    };
+    apply_doctor_ops(&mut s, &[op]).expect("the landed insert is confirmed by its read-back");
+    let ev = sim.events();
+    let inserts = ev
+        .iter()
+        .filter(|e| matches!(e, SimEvent::Insert { .. }))
+        .count();
+    assert_eq!(inserts, 1, "re-sent after a lost confirm: {ev:?}");
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            SimEvent::ChangeParameter { node, param, .. }
+                if node == "ACD_TubeScreamer" && param == "level"
+        )),
+        "the param must target the minted id: {ev:?}"
+    );
+}
+
+/// A working copy cut inside `audioGraph` under-counts the blocks the CPU budget and the
+/// anchors are checked against, so Doctor refuses on it and sends no insert.
+#[test]
+fn doctor_refuses_inserts_on_a_read_cut_inside_the_audio_graph() {
+    use crate::sim_device::{SimDevice, SimEvent};
+    // No tail pad: the sim's field-3 reassembly drops the last ≤60 B, which here cuts
+    // through `template` into the last node — a tolerant parse still yields n1.
+    let doc = format!(
+        r#"{{"audioGraph":{{"guitarNodes":{{"G1":[{},{}]}},"template":"gtrSeries"}}}}"#,
+        r#"{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false}}"#,
+        r#"{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}"#,
+    );
+    let sim = SimDevice::new().with_preset_json(&doc);
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    let op = doctor::DoctorOp::InsertNode {
+        group_id: "G1".to_string(),
+        before_node_id: None,
+        fender_id: "ACD_TubeScreamer".to_string(),
+        params: vec![],
+    };
+    apply_doctor_ops(&mut s, &[op]).expect_err("a cut read is refused");
+    let inserts = sim
+        .events()
+        .iter()
+        .filter(|e| matches!(e, SimEvent::Insert { .. }))
+        .count();
+    assert_eq!(inserts, 0, "inserted on a cut read");
 }

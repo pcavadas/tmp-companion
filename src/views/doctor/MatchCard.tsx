@@ -8,7 +8,7 @@
 
 import { useTheme } from "../../theme/ThemeContext";
 import { signedDb } from "../../lib/format";
-import { cpuForBid } from "../../models/cpu";
+import { chargedTotal, cpuForBid, overCpuBudget } from "../../models/cpu";
 import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
 import { doctorCard } from "./severity";
 import {
@@ -85,10 +85,20 @@ export function MatchCard({
   ) : null;
 
   const groupId = lastGuitarGroup(nodes);
+  // Reuse an existing non-bypassed EQ-10 (a value-aware param move, no CPU
+  // change) rather than stacking a second one — mirrors doctor.rs's `eq_move`
+  // reuse branch. Only falls back to inserting when the chain has none, and
+  // only when the insert fits the device's CPU budget (the device aborts on an
+  // over-budget insert; the backend refuses it too).
+  const reuseEq = existingEq10(nodes);
+  const insertFits =
+    reuseEq != null ||
+    !overCpuBudget(chargedTotal([...nodes.map((n) => n.model), EQ10_STEREO]));
 
-  // No guitar chain to insert into, or nothing actionable → read-only, no
-  // Apply (PrescriptionCard's apply path always needs a real op to send).
-  if (groupId == null || moves.length === 0) {
+  // No guitar chain to insert into, nothing actionable, or no room for the EQ
+  // → read-only, no Apply (PrescriptionCard's apply path always needs a real
+  // op to send).
+  if (groupId == null || moves.length === 0 || !insertFits) {
     return (
       <div style={doctorCard(t)}>
         <div style={{ fontFamily: t.serif, fontSize: t.fsName, color: t.ink }}>
@@ -111,10 +121,6 @@ export function MatchCard({
     );
   }
 
-  // Reuse an existing non-bypassed EQ-10 (a value-aware param move, no CPU
-  // change) rather than stacking a second one — mirrors doctor.rs's `eq_move`
-  // reuse branch. Only falls back to inserting when the chain has none.
-  const reuseEq = existingEq10(nodes);
   let ops: DoctorOp[];
   let kind: DoctorRx["kind"];
   let cpuNote: string;
@@ -127,7 +133,7 @@ export function MatchCard({
       {
         kind: "insert_node",
         groupId,
-        beforeFenderId: null,
+        beforeNodeId: null,
         fenderId: EQ10_STEREO,
         params: moves.map((m): [string, number] => [m.controlId, m.gainDb]),
       },

@@ -163,13 +163,17 @@ pub enum SimEvent {
         fender_id: String,
         index: u64,
     },
-    /// `insertNode`(34) — field-2 = the FenderId to insert BEFORE; `before = None`
+    /// `insertNode`(34) — field-2 = the nodeId to insert BEFORE; `before = None`
     /// appends at the group end.
     Insert {
         group: String,
         before: Option<String>,
         fender_id: String,
     },
+    /// An `insertNode` whose anchor names no node in its group. fw 1.8.58 sends no reply
+    /// and aborts its server on this (static RE), so the fake applies nothing and answers
+    /// nothing; a test asserts it never fires.
+    AnchorMiss { group: String, before: String },
     /// `removeNode`(35).
     Remove { group: String, node_id: String },
     /// `currentPresetDataRequest`(2) — the working-copy re-prompt (`Session::live_ftsw` /
@@ -247,11 +251,13 @@ enum WorkingEdit {
         group: String,
         node_id: String,
         fender_id: String,
+        new_id: String,
     },
     Insert {
         group: String,
         before: Option<String>,
         fender_id: String,
+        new_id: String,
     },
     Remove {
         group: String,
@@ -271,6 +277,12 @@ struct SimState {
     /// When set, the FIRST structural edit is silently DROPPED (no confirm, no error) —
     /// reproduces the cold-first-edit drop the held-session path retries past.
     drop_first: bool,
+    /// When set, the FIRST structural edit LANDS but its confirm is lost — the case a
+    /// blind re-send would turn into a second block.
+    lose_first_confirm: bool,
+    /// When set, `nodeInserted`/`nodeReplaced` carry no new node id (their HW payload is
+    /// not decoded yet).
+    bare_confirms: bool,
     /// When `Some(n)`, the Nth structural edit (1-based) is REJECTED with `presetError`.
     reject_at: Option<u32>,
     /// When set, a `saveCurrentPreset` queues a `currentPresetDataChanged`(3) push of the
@@ -474,6 +486,8 @@ impl Default for SimState {
             batch_queue: Vec::new(),
             structural_seen: 0,
             drop_first: false,
+            lose_first_confirm: false,
+            bare_confirms: false,
             reject_at: None,
             stale_push_after_save: false,
             working_edits: Vec::new(),
@@ -1066,6 +1080,20 @@ impl SimDevice {
         self
     }
 
+    /// Land the first structural edit but lose its confirm (forces the read-then-retry).
+    #[cfg(test)]
+    pub fn with_lost_first_confirm(self) -> SimDevice {
+        self.state.lock().expect("sim lock").lose_first_confirm = true;
+        self
+    }
+
+    /// Confirm structural edits without the new node's id.
+    #[cfg(test)]
+    pub fn with_bare_confirms(self) -> SimDevice {
+        self.state.lock().expect("sim lock").bare_confirms = true;
+        self
+    }
+
     /// REJECT the `n`th structural edit (1-based) with `presetError` (never save after).
     #[cfg(test)]
     pub fn with_reject_at(self, n: u32) -> SimDevice {
@@ -1361,15 +1389,7 @@ impl SimDevice {
                 node_id: node_id.clone(),
                 fender_id: fender_id.clone(),
             });
-            return confirm_structural(
-                &mut st,
-                F_NODE_REPLACED,
-                WorkingEdit::Replace {
-                    group,
-                    node_id,
-                    fender_id,
-                },
-            );
+            return confirm_replace(&mut st, group, node_id, fender_id);
         }
         if let Some(rb) = proto::first_bytes(&f, F_REPLACE_WITH_BLOCK) {
             let (group, node_id, fender_id) = three_strings(rb);
@@ -1380,20 +1400,12 @@ impl SimDevice {
                 fender_id: fender_id.clone(),
                 index,
             });
-            return confirm_structural(
-                &mut st,
-                F_NODE_REPLACED,
-                WorkingEdit::Replace {
-                    group,
-                    node_id,
-                    fender_id,
-                },
-            );
+            return confirm_replace(&mut st, group, node_id, fender_id);
         }
         if let Some(ins) = proto::first_bytes(&f, F_INSERT_NODE) {
             let inner = proto::parse(ins);
             let group = str_field(&inner, 1);
-            // field-2 = the FenderId to insert BEFORE (None → append).
+            // field-2 = the nodeId to insert BEFORE (None → append).
             let before =
                 proto::first_bytes(&inner, 2).map(|b| String::from_utf8_lossy(b).into_owned());
             let fender_id = str_field(&inner, 3);
@@ -1402,13 +1414,25 @@ impl SimDevice {
                 before: before.clone(),
                 fender_id: fender_id.clone(),
             });
+            let ids = working_group_ids(&mut st, &group, None);
+            if let Some(b) = before.as_ref().filter(|b| !ids.contains(b)) {
+                st.events.push(SimEvent::AnchorMiss {
+                    group,
+                    before: b.clone(),
+                });
+                return Vec::new();
+            }
+            let new_id = mint_node_id(&ids, &fender_id);
+            let reply = node_json_payload(&group, &fender_id, &new_id);
             return confirm_structural(
                 &mut st,
                 F_NODE_INSERTED,
+                reply,
                 WorkingEdit::Insert {
                     group,
                     before,
                     fender_id,
+                    new_id,
                 },
             );
         }
@@ -1422,6 +1446,7 @@ impl SimDevice {
             return confirm_structural(
                 &mut st,
                 F_NODE_REMOVED,
+                Vec::new(),
                 WorkingEdit::Remove { group, node_id },
             );
         }
@@ -2383,6 +2408,12 @@ fn truncate_scene_push(_st: &SimState, json: Vec<u8>) -> Vec<u8> {
 /// applied — a field-2 re-prompt) rather than the load-time document (a load echo, or the
 /// stale post-save push). An edit-free working copy is byte-identical to the load echo.
 fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
+    let json = render_json(st, slot0, working);
+    truncate_scene_push(st, json.into_bytes())
+}
+
+/// [`load_echo_json`] before any injected truncation.
+fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     let edits = if working {
         st.working_edits.clone()
     } else {
@@ -2396,12 +2427,67 @@ fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
         // saved array — the field-3 push is the LIVE document, which is what makes it the
         // confirm channel for the no-echo footswitch setters.
         let ftsw = st.ftsw_working.as_ref().or(doc.ftsw.as_ref());
-        let json = with_working_edits(with_ftsw(&patched, ftsw), &edits);
-        return truncate_scene_push(st, json.into_bytes());
+        return with_working_edits(with_ftsw(&patched, ftsw), &edits);
     }
     let _ = slot0;
-    let json = with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits);
-    truncate_scene_push(st, json.into_bytes())
+    with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits)
+}
+
+/// The node ids `group` holds in the current working copy, minus `except`.
+fn working_group_ids(st: &mut SimState, group: &str, except: Option<&str>) -> Vec<String> {
+    let slot0 = st.current_slot;
+    serde_json::from_str::<serde_json::Value>(&render_json(st, slot0, true))
+        .map(|v| {
+            audiograph::roster(&v)
+                .into_iter()
+                .filter(|(g, id, _)| g == group && Some(id.as_str()) != except)
+                .map(|(_, id, _)| id)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The firmware's id for a new node (fw 1.8.58 `FUN_00c7fd80`): its FenderId, or the
+/// first free `<FenderId>_<n>` when the group already uses it.
+fn mint_node_id(ids: &[String], base: &str) -> String {
+    if !ids.iter().any(|id| id == base) {
+        return base.to_string();
+    }
+    (1..)
+        .map(|n| format!("{base}_{n}"))
+        .find(|id| !ids.contains(id))
+        .expect("an unbounded range always finds a free id")
+}
+
+/// Confirm a replace, minting the new node's id against the rest of its group.
+fn confirm_replace(
+    st: &mut SimState,
+    group: String,
+    node_id: String,
+    fender_id: String,
+) -> Vec<Vec<u8>> {
+    let new_id = mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
+    let reply = node_json_payload(&group, &fender_id, &new_id);
+    confirm_structural(
+        st,
+        F_NODE_REPLACED,
+        reply,
+        WorkingEdit::Replace {
+            group,
+            node_id,
+            fender_id,
+            new_id,
+        },
+    )
+}
+
+/// `NodeInserted`/`NodeReplaced { group = 1, nodeJson = 3 }` — the new node's JSON
+/// carries its id.
+fn node_json_payload(group: &str, fender_id: &str, new_id: &str) -> Vec<u8> {
+    let json = serde_json::json!({ "nodeId": new_id, "FenderId": fender_id }).to_string();
+    let mut p = proto::len_delimited(1, group.as_bytes());
+    p.extend_from_slice(&proto::len_delimited(3, json.as_bytes()));
+    p
 }
 
 /// Apply `edits` in order to the preset JSON. No edits → the input verbatim (key order and
@@ -2447,15 +2533,15 @@ fn group_nodes_mut<'a>(
         .as_array_mut()
 }
 
-/// One structural edit on the working copy, group-scoped like the device's own ops. On the
-/// unit a node's id IS its FenderId (`notes/write-safety.md`), so an inserted or replaced
-/// node is minted with `nodeId == FenderId`.
+/// One structural edit on the working copy, group-scoped like the device's own ops. An
+/// inserted or replaced node carries the id [`mint_node_id`] gave it.
 fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
     match e {
         WorkingEdit::Replace {
             group,
             node_id,
             fender_id,
+            new_id,
         } => {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 if let Some(node) = nodes
@@ -2463,10 +2549,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                     .find(|n| audiograph::node_id(n) == Some(node_id.as_str()))
                 {
                     if let Some(obj) = node.as_object_mut() {
-                        obj.insert(
-                            "nodeId".into(),
-                            serde_json::Value::String(fender_id.clone()),
-                        );
+                        obj.insert("nodeId".into(), serde_json::Value::String(new_id.clone()));
                         obj.insert(
                             "FenderId".into(),
                             serde_json::Value::String(fender_id.clone()),
@@ -2484,21 +2567,18 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             group,
             before,
             fender_id,
+            new_id,
         } => {
             if let Some(nodes) = group_nodes_mut(v, group, true) {
-                // field-2 = the FenderId to insert BEFORE; absent → append at the group end.
+                // field-2 = the nodeId to insert BEFORE; absent → append at the group end.
                 let at = before
                     .as_deref()
-                    .and_then(|b| {
-                        nodes
-                            .iter()
-                            .position(|n| n.get("FenderId").and_then(|x| x.as_str()) == Some(b))
-                    })
+                    .and_then(|b| nodes.iter().position(|n| audiograph::node_id(n) == Some(b)))
                     .unwrap_or(nodes.len());
                 nodes.insert(
                     at,
                     serde_json::json!({
-                        "nodeId": fender_id,
+                        "nodeId": new_id,
                         "FenderId": fender_id,
                         "nodeType": "dspUnit",
                         "dspUnitParameters": { "bypass": false }
@@ -2564,28 +2644,40 @@ fn list_response(tms: u32, names: &[String]) -> Vec<u8> {
     proto::len_delimited(tms, &proto::len_delimited(F_LIST_RESPONSE, &records))
 }
 
-/// Reply to a structural edit AND land it in the working copy iff the reply is the
-/// confirm — a dropped or rejected send must never mutate the working copy.
-fn confirm_structural(st: &mut SimState, confirm_field: u32, edit: WorkingEdit) -> Vec<Vec<u8>> {
-    let (reply, confirmed) = structural_reply(st, confirm_field);
-    if confirmed {
+/// Reply to a structural edit AND land it in the working copy iff it lands — a dropped
+/// or rejected send must never mutate the working copy.
+fn confirm_structural(
+    st: &mut SimState,
+    confirm_field: u32,
+    payload: Vec<u8>,
+    edit: WorkingEdit,
+) -> Vec<Vec<u8>> {
+    let (reply, lands) = structural_reply(st, confirm_field, &payload);
+    if lands {
         st.working_edits.push(edit);
     }
     reply
 }
 
 /// Produce the framed confirm/reject reply for a structural edit, honoring the
-/// drop-first / reject-at injections. The flag says whether the reply IS the confirm.
-fn structural_reply(st: &mut SimState, confirm_field: u32) -> (Vec<Vec<u8>>, bool) {
+/// drop-first / lost-confirm / reject-at injections. The flag says whether the edit lands.
+fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (Vec<Vec<u8>>, bool) {
     st.structural_seen += 1;
     let n = st.structural_seen;
     if st.drop_first && n == 1 {
         return (Vec::new(), false); // silent drop — no confirm, no error
     }
-    if st.reject_at == Some(n) {
-        return (vec![frame(&preset_message(F_PRESET_ERROR, &[]))], false);
+    if st.lose_first_confirm && n == 1 {
+        return (Vec::new(), true); // applied, but the confirm never arrives
     }
-    (vec![frame(&preset_message(confirm_field, &[]))], true)
+    if st.reject_at == Some(n) {
+        // Code 14: what fw 1.8.58 sends for a replace over the CPU budget.
+        let mut code = Vec::new();
+        proto::field_varint(&mut code, 1, 14);
+        return (vec![frame(&preset_message(F_PRESET_ERROR, &code))], false);
+    }
+    let payload = if st.bare_confirms { &[][..] } else { payload };
+    (frame_multi(&preset_message(confirm_field, payload)), true)
 }
 
 impl HidTransport for SimDevice {

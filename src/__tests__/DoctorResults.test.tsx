@@ -1236,7 +1236,7 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                         {
                           kind: "insert_node",
                           groupId: "g",
-                          beforeFenderId: null,
+                          beforeNodeId: null,
                           fenderId: "ACD_CompressorSimpleSoftKnee",
                           params: [],
                         },

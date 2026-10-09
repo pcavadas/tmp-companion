@@ -4,7 +4,14 @@
 // the lookup regressed (suffix stripping, null handling, preset summing).
 
 import { describe, it, expect } from "vitest";
-import { CPU_BUDGET, cpuForBid, cpuStr, presetCpu } from "../models/cpu";
+import {
+  CPU_BUDGET,
+  chargedCpu,
+  cpuForBid,
+  cpuStr,
+  overCpuBudget,
+  presetCpu,
+} from "../models/cpu";
 import { MODELS } from "../models/catalog";
 import type { ActiveGraph, GraphNode } from "../lib/types";
 
@@ -79,5 +86,19 @@ describe("CPU cost layer", () => {
     expect(costed.length).toBeGreaterThan(330);
     const mic = MODELS.find((m) => m.cat === "Microphones");
     expect(mic?.cpu).toBeNull();
+  });
+});
+
+describe("device budget rule (fw 1.8.58)", () => {
+  it("rounds half away from zero, so exactly the budget fails", () => {
+    expect(overCpuBudget(76.4)).toBe(false);
+    expect(overCpuBudget(76.5)).toBe(true);
+    expect(overCpuBudget(76.4 + 0.1)).toBe(true);
+  });
+
+  it("charges an uncosted id 20 and uses the 1.8.58 costs", () => {
+    expect(chargedCpu("ACD_NotARealBlock")).toBe(20);
+    expect(chargedCpu("ACD_LoFi")).toBe(9.5);
+    expect(chargedCpu("ACD_British212AlnicoBlue")).toBe(20);
   });
 });

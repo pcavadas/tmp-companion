@@ -898,12 +898,27 @@ fn before_cache_put(key: BeforeKey, clip: String) {
 /// have `confirm_active` + `begin_live_edit`'d the session). Shared by
 /// `doctor_apply` (unsaved A/B) and `doctor_save` (rebuild-from-scratch
 /// persist) — the ONE home of the per-op wire semantics (`Param` →
-/// `change_parameter`; `InsertNode` → `insert_node` + its param follow-ups —
-/// the fresh node's id == its fender id, Doctor only inserts models ABSENT
-/// from the chain, so no collision). Returns the first failure's detail
-/// string; the caller decides how to recover (both today: restore the stored
-/// preset and report the detail).
+/// `change_parameter`; `InsertNode` → `insert_node` + its param follow-ups on
+/// the id the device's confirm gave the fresh node). Inserts are first checked
+/// against the live roster ([`check_doctor_inserts`]). Returns the first
+/// failure's detail string; the caller decides how to recover (both today:
+/// restore the stored preset and report the detail).
 fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), String> {
+    // The working copy's (group, FenderId, node id)s, kept current as inserts land: the
+    // read-back count and the known ids an unconfirmed insert's id is told apart from.
+    let mut placed: Vec<(String, String, String)> = Vec::new();
+    if ops
+        .iter()
+        .any(|op| matches!(op, doctor::DoctorOp::InsertNode { .. }))
+    {
+        let live = s.live_complete_value()?;
+        let roster = blockcaps::roster_from_preset(&live);
+        check_doctor_inserts(&roster, ops)?;
+        placed = roster
+            .into_iter()
+            .map(|e| (e.group, e.fender_id, e.node_id))
+            .collect();
+    }
     for op in ops {
         let outcome: Result<bool, String> = match op {
             doctor::DoctorOp::Param {
@@ -916,22 +931,45 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
                 .map(|_| true),
             doctor::DoctorOp::InsertNode {
                 group_id,
-                before_fender_id,
+                before_node_id,
                 fender_id,
                 params,
-            } => match s.insert_node(group_id, before_fender_id.as_deref(), fender_id) {
-                Ok(true) => {
-                    let mut r = Ok(true);
-                    for (p, v) in params {
-                        if let Err(e) = s.change_parameter(group_id, fender_id, p, *v as f32) {
-                            r = Err(e);
-                            break;
+            } => {
+                let was = placed
+                    .iter()
+                    .filter(|(g, f, _)| g == group_id && f == fender_id)
+                    .count();
+                match s.insert_node_once(group_id, before_node_id.as_deref(), fender_id, Some(was))
+                {
+                    Ok(true) => {
+                        let known: Vec<String> =
+                            placed.iter().map(|(_, _, id)| id.clone()).collect();
+                        let node = s.inserted_node_id(group_id, &known);
+                        // Counted even unidentified: the next insert's read-back needs it.
+                        placed.push((
+                            group_id.clone(),
+                            fender_id.clone(),
+                            node.clone().unwrap_or_default(),
+                        ));
+                        let node = match node {
+                            Some(n) => n,
+                            None if params.is_empty() => continue,
+                            None => {
+                                return Err(format!("could not identify the inserted {fender_id}"))
+                            }
+                        };
+                        let mut r = Ok(true);
+                        for (p, v) in params {
+                            if let Err(e) = s.change_parameter(group_id, &node, p, *v as f32) {
+                                r = Err(e);
+                                break;
+                            }
                         }
+                        r
                     }
-                    r
+                    other => other,
                 }
-                other => other,
-            },
+            }
         };
         match outcome {
             Ok(true) => continue,
@@ -940,6 +978,30 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
         }
     }
     Ok(())
+}
+
+/// [`blockcaps::check_insert`] for every Doctor insert, against the live pre-edit
+/// `roster` (the apply path has no other cap or anchor check).
+fn check_doctor_inserts(
+    roster: &[blockcaps::RosterEntry],
+    ops: &[doctor::DoctorOp],
+) -> Result<(), String> {
+    let mut counts = blockcaps::counts(roster);
+    ops.iter().try_for_each(|op| match op {
+        doctor::DoctorOp::InsertNode {
+            group_id,
+            before_node_id,
+            fender_id,
+            ..
+        } => blockcaps::check_insert(
+            roster,
+            &mut counts,
+            group_id,
+            before_node_id.as_deref(),
+            fender_id,
+        ),
+        doctor::DoctorOp::Param { .. } => Ok(()),
+    })
 }
 
 /// Open a live-edit session on `list_index`, confirm identity, recall `scene`,

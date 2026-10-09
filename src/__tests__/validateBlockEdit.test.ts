@@ -220,3 +220,36 @@ describe("checkEdit — the save-gate", () => {
     expect(checkEdit(e)).toBe("ComboHalfStackCabinetsLimit");
   });
 });
+
+describe("checkOp — CPU budget (per op, like the device)", () => {
+  it("greys an insert that would push the total over budget", () => {
+    const counts = baseCounts(graph([block(HEAVY_PEDAL), block(HEAVY_PEDAL)]));
+    expect(checkOp(counts, HEAVY_PEDAL, "before")).toBe("ProcessorUtilization");
+  });
+
+  it("a replace frees the anchor's own cost", () => {
+    const anchor = block(HEAVY_PEDAL);
+    const counts = baseCounts(graph([block(HEAVY_PEDAL), anchor]));
+    expect(
+      checkOp(counts, HEAVY_PEDAL, "replace", {
+        anchor: { model: anchor.model },
+      }),
+    ).toBeNull();
+  });
+
+  it("charges an uncosted id 20, as the device does", () => {
+    // 52.8 + 20 = 72.8 fits; a second unknown reaches 92.8.
+    const counts = baseCounts(graph([block(HEAVY_PEDAL), block(HEAVY_PEDAL)]));
+    expect(checkOp(counts, "ACD_NotARealBlock", "before")).toBeNull();
+    const withOne = baseCounts(
+      graph([
+        block(HEAVY_PEDAL),
+        block(HEAVY_PEDAL),
+        block("ACD_NotARealBlock"),
+      ]),
+    );
+    expect(checkOp(withOne, "ACD_NotARealBlock", "before")).toBe(
+      "ProcessorUtilization",
+    );
+  });
+});
