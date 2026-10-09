@@ -832,3 +832,32 @@ fn doctor_insert_whose_confirm_is_lost_is_read_back_not_resent() {
         "the param must target the minted id: {ev:?}"
     );
 }
+
+/// A working copy cut inside `audioGraph` under-counts the blocks the CPU budget and the
+/// anchors are checked against, so Doctor refuses on it and sends no insert.
+#[test]
+fn doctor_refuses_inserts_on_a_read_cut_inside_the_audio_graph() {
+    use crate::sim_device::{SimDevice, SimEvent};
+    // No tail pad: the sim's field-3 reassembly drops the last ≤60 B, which here cuts
+    // through `template` into the last node — a tolerant parse still yields n1.
+    let doc = format!(
+        r#"{{"audioGraph":{{"guitarNodes":{{"G1":[{},{}]}},"template":"gtrSeries"}}}}"#,
+        r#"{"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false}}"#,
+        r#"{"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}"#,
+    );
+    let sim = SimDevice::new().with_preset_json(&doc);
+    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
+    let op = doctor::DoctorOp::InsertNode {
+        group_id: "G1".to_string(),
+        before_node_id: None,
+        fender_id: "ACD_TubeScreamer".to_string(),
+        params: vec![],
+    };
+    apply_doctor_ops(&mut s, &[op]).expect_err("a cut read is refused");
+    let inserts = sim
+        .events()
+        .iter()
+        .filter(|e| matches!(e, SimEvent::Insert { .. }))
+        .count();
+    assert_eq!(inserts, 0, "inserted on a cut read");
+}

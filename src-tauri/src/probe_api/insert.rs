@@ -418,7 +418,7 @@ fn insert_guard(
     before: Option<&str>,
     fender_id: &str,
 ) -> Result<usize, String> {
-    let roster = crate::blockcaps::roster_from_preset(&s.current_preset_value()?);
+    let roster = crate::blockcaps::roster_from_preset(&s.complete_graph_value()?);
     crate::blockcaps::check_insert(
         &roster,
         &mut crate::blockcaps::counts(&roster),

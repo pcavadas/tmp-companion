@@ -1640,13 +1640,35 @@ impl Session {
     /// truncated mid-object; `audioGraph` and usually `scenes` survive). The shared
     /// read under [`current_preset_blocks`] / the per-scene amp pick.
     pub fn current_preset_value(&self) -> Result<serde_json::Value, String> {
-        let payload = self.best_json_payload();
-        let text = decode_preset_json(&payload).ok_or_else(|| {
+        parse_preset_text(&self.buffered_preset_text()?)
+    }
+
+    /// The buffered `currentPresetDataChanged` (field 3) document, decoded but unparsed.
+    fn buffered_preset_text(&self) -> Result<String, String> {
+        decode_preset_json(&self.best_json_payload()).ok_or_else(|| {
             "no preset JSON in handshake — currentPresetDataChanged absent (is a preset loaded?)"
                 .to_string()
-        })?;
-        tolerant_parse_json(&text)
-            .ok_or_else(|| "could not parse preset JSON, even tolerantly".to_string())
+        })
+    }
+
+    /// [`Self::current_preset_value`], refused unless the buffered document's `audioGraph`
+    /// arrived whole ([`json_section_complete`]; the scenes tail may still be cut, as it
+    /// routinely is on HW). A tolerant parse of a read cut inside the nodes reads as a
+    /// shorter roster, so every insert-safety decision (budget, anchor, did it land) reads
+    /// through this.
+    pub(crate) fn complete_graph_value(&self) -> Result<serde_json::Value, String> {
+        let text = self.buffered_preset_text()?;
+        if !json_section_complete(&text, "audioGraph") {
+            return Err("the working-copy read was cut inside audioGraph".to_string());
+        }
+        parse_preset_text(&text)
+    }
+
+    /// A fresh working-copy read ([`Self::live_audio_graph`]) through
+    /// [`Self::complete_graph_value`].
+    pub(crate) fn live_complete_value(&mut self) -> Result<serde_json::Value, String> {
+        self.live_audio_graph(|v| v.get("audioGraph").is_some())?;
+        self.complete_graph_value()
     }
 
     /// The current preset's leveling-candidate block controls, parsed from the data
@@ -2253,16 +2275,15 @@ impl Session {
     /// be lost while the block is added, and a blind re-send would then add a second one.
     /// Reads the working copy and compares the group's count of `fender_id` with `was`
     /// (the count before the insert): one more → landed, the same → not, anything else
-    /// (or no read) → `None`, never guessed.
+    /// (or no read, or one cut inside `audioGraph`) → `None`, never guessed.
     fn insert_landed(&mut self, group: &str, fender_id: &str, was: usize) -> Option<bool> {
-        let graph = self
-            .live_audio_graph(|v| v.get("audioGraph").is_some())
+        let doc = self
+            .live_complete_value()
             .map_err(|e| log::warn!("insert read-back failed: {e}"))
             .ok()?;
-        let now = graph
-            .nodes
+        let now = crate::blockcaps::roster_from_preset(&doc)
             .iter()
-            .filter(|n| n.group_id == group && n.model == fender_id)
+            .filter(|e| e.group == group && e.fender_id == fender_id)
             .count();
         match now.checked_sub(was) {
             Some(1) => Some(true),
@@ -2290,15 +2311,12 @@ impl Session {
         if let Some(id) = self.confirmed_node_id() {
             return Some(id);
         }
-        let graph = self
-            .live_audio_graph(|v| v.get("audioGraph").is_some())
-            .ok()?;
-        let mut new = graph
-            .nodes
-            .iter()
-            .filter(|n| n.group_id == group && !known.contains(&n.node_id));
+        let roster = crate::blockcaps::roster_from_preset(&self.live_complete_value().ok()?);
+        let mut new = roster
+            .into_iter()
+            .filter(|e| e.group == group && !known.contains(&e.node_id));
         match (new.next(), new.next()) {
-            (Some(n), None) => Some(n.node_id.clone()),
+            (Some(e), None) => Some(e.node_id),
             _ => None,
         }
     }
@@ -3466,6 +3484,12 @@ fn decode_preset_json(payload: &[u8]) -> Option<String> {
         }
     }
     Some(String::from_utf8_lossy(payload).into_owned())
+}
+
+/// [`tolerant_parse_json`] with the readers' shared error.
+fn parse_preset_text(text: &str) -> Result<serde_json::Value, String> {
+    tolerant_parse_json(text)
+        .ok_or_else(|| "could not parse preset JSON, even tolerantly".to_string())
 }
 
 /// Parse possibly-TRUNCATED preset JSON. Tries a strict parse first; on failure

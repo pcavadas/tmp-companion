@@ -911,7 +911,7 @@ fn apply_doctor_ops(s: &mut Session, ops: &[doctor::DoctorOp]) -> Result<(), Str
         .iter()
         .any(|op| matches!(op, doctor::DoctorOp::InsertNode { .. }))
     {
-        let live = s.live_preset_value(|v| v.get("audioGraph").is_some())?;
+        let live = s.live_complete_value()?;
         let roster = blockcaps::roster_from_preset(&live);
         check_doctor_inserts(&roster, ops)?;
         placed = roster
