@@ -1177,9 +1177,112 @@ pub fn scene_contexts_for_switches(preset: &Value) -> Vec<FsSceneContext> {
         .collect()
 }
 
+/// Every `func == "param"` ftsw entry in `p`, in ONE walk: `(total param entries,
+/// customLabels of any whose valueType is NOT a JSON number)`. Deliberately does NOT look
+/// at the `exp` block: its entries legitimately carry the STRING `"valueType": "float"`
+/// (verified against a verbatim device export) and must not be gated by this shape.
+pub(crate) fn param_entries_missing_value_type(p: &Value) -> (usize, Vec<String>) {
+    let params: Vec<&Value> = p["ftsw"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|bank| bank.as_array().into_iter().flatten())
+        .filter(|entry| entry["func"] == "param")
+        .collect();
+    let missing = params
+        .iter()
+        .filter(|entry| !entry["valueType"].is_number())
+        .map(|entry| {
+            entry["customLabel"]
+                .as_str()
+                .unwrap_or("<unlabeled>")
+                .to_string()
+        })
+        .collect();
+    (params.len(), missing)
+}
+
+/// Indices of the `ftsw` rows stacking more than one entry.
+pub(crate) fn stacked_ftsw_rows(p: &Value) -> Vec<usize> {
+    p["ftsw"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .enumerate()
+                .filter(|(_, r)| r.as_array().is_some_and(|a| a.len() > 1))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Refuse an import body carrying either footswitch shape a HW bisect (fw 1.8.45) proved
+/// makes the firmware silently replace the WHOLE imported preset: a `func:"param"` entry
+/// with no numeric `valueType`, or a row stacking more than one entry (see `danger.md`).
+pub fn validate_import_body(p: &Value) -> Result<(), String> {
+    let (_, missing) = param_entries_missing_value_type(p);
+    if !missing.is_empty() {
+        return Err(format!(
+            "import refused: param footswitches {missing:?} carry no numeric valueType — \
+             the firmware would replace the whole preset with a default body"
+        ));
+    }
+    let stacked = stacked_ftsw_rows(p);
+    if !stacked.is_empty() {
+        return Err(format!(
+            "import refused: footswitch rows {stacked:?} stack more than one entry — the \
+             firmware would replace the whole preset with an empty body"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_import_body_refuses_only_the_hw_proven_discard_shapes() {
+        let param = |vt: Option<Value>| {
+            let mut e = serde_json::json!({"func": "param", "customLabel": "VERB"});
+            if let Some(v) = vt {
+                e["valueType"] = v;
+            }
+            e
+        };
+        let ok = serde_json::json!({"ftsw": [[param(Some(2.into()))], []]});
+        assert!(validate_import_body(&ok).is_ok());
+        let no_vt = serde_json::json!({"ftsw": [[param(None)]]});
+        assert!(validate_import_body(&no_vt).unwrap_err().contains("VERB"));
+        let on_off = serde_json::json!({"func": "on-off"});
+        let stacked = serde_json::json!({"ftsw": [[], [on_off, param(Some(2.into()))]]});
+        assert!(validate_import_body(&stacked).unwrap_err().contains("[1]"));
+        // The `exp` block's STRING valueType is device-authored and stays legal.
+        let exp = serde_json::json!({"exp": {"exp1": [{"func": "param", "valueType": "float"}]}});
+        assert!(validate_import_body(&exp).is_ok());
+    }
+
+    /// Static RE names more load-time rejects (row count ≠ 10/20, a non-integer
+    /// `version`), but the unit contradicts both: these fixtures seed and verify on
+    /// the unit. Pin that the validator does not enforce them.
+    #[test]
+    fn validate_import_body_accepts_short_ftsw_and_float_version_fixtures() {
+        let raw = include_str!("../../e2e/fixtures/scenario-presets.json");
+        let fixtures: Vec<Value> = serde_json::from_str(raw).unwrap();
+        let mut short = 0;
+        for f in &fixtures {
+            let p: Value = serde_json::from_str(f["presetJson"].as_str().unwrap()).unwrap();
+            let rows = p["ftsw"].as_array().map_or(0, Vec::len);
+            if rows != 10 && rows != 20 {
+                short += 1;
+            }
+            assert!(validate_import_body(&p).is_ok(), "{}", f["name"]);
+        }
+        assert!(
+            short >= 2,
+            "the 9- and 5-row fixtures moved ({short} found)"
+        );
+    }
 
     /// A 3-scene / 3-switch preset: switch 0 enabled by scene 1 ALONE (the auto-detect case),
     /// switch 1 by scenes 0 and 2 (preselects the first, scene 0), switch 2 by nobody.

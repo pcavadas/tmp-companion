@@ -64,8 +64,9 @@ pub(crate) struct ReplaceOutcome {
 }
 
 /// Reusable in-place-edit core (AC7): import a scratch copy → locate it by observing
-/// which previously-empty slot filled → `load(scratch)` → `save_current_preset(orig)`
-/// to overwrite the original slot → **guarded** `clear(scratch)` → re-read to confirm
+/// which previously-empty slot filled → `load(scratch)` → prove the loaded body carries the
+/// file's blocks → `save_current_preset(orig)` to overwrite the original slot →
+/// **guarded** `clear(scratch)` → re-read to confirm
 /// the edit landed and the Song-1 binding survived. All addresses are 0-based list
 /// indices; `session.rs` translates each to the 1-based device userSlot.
 pub(crate) fn replace_inplace_core(
@@ -81,13 +82,20 @@ pub(crate) fn replace_inplace_core(
 /// every open is one more chance to land in the device's post-close open LOCKOUT
 /// (`0xe00002c5`, armed by aborted sessions and re-armed by each failed attempt),
 /// so the seed keeps its open count minimal.
-/// The write-safety chain (floored landing lists → `confirm_active` → guarded clear)
-/// is identical in both modes.
+/// The write-safety chain (floored landing lists → `confirm_active` → loaded-body check →
+/// guarded clear) is identical in both modes. An import that landed ON the (empty)
+/// target needs none of it and returns at once.
 pub(crate) fn replace_inplace_with(
     orig_list_index: u32,
     bytes: &[u8],
     verify: bool,
 ) -> Result<ReplaceOutcome, String> {
+    // The blocks the loaded scratch must hold before it may be saved over the original.
+    let file: serde_json::Value = crate::library::decode_preset_bytes(bytes)
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("preset JSON: {e}")))?;
+    let file_roster =
+        crate::blockcaps::group_roster_of(&crate::session::extract_active_graph(&file, None).nodes);
+
     // TOLERANT reads for both landing-detection lists — strict decodes only
     // terminal-frame streams and fails/garbles on the interleaved responses that
     // back-to-back lean sessions produce (HW-observed: tolerant 504/504 on a healthy
@@ -148,24 +156,48 @@ pub(crate) fn replace_inplace_with(
         .map(|p| (p.slot, p.name.clone()))
         .ok_or_else(|| "could not locate the imported scratch preset (no previously-empty slot became occupied)".to_string())?;
 
+    // The outcome when no report reads run (lean mode, or an import already in place).
+    let unverified = |orig_name_after: Option<String>| ReplaceOutcome {
+        orig_list_index,
+        scratch_slot,
+        scratch_name: scratch_name.clone(),
+        orig_name_before: orig_name_before.clone(),
+        orig_name_after,
+        scratch_name_after: None,
+        edit_landed: true,
+        had_binding: false,
+        binding_preserved: false,
+        songs_before: songs_before.clone(),
+        songs_after: Vec::new(),
+    };
+    // An import lands in the LOWEST empty slot (fw 1.8.58), so an empty target can be
+    // the landing slot itself: the import is already in place, and the load → save →
+    // clear below would save it over itself and then clear it.
+    if scratch_slot == orig_list_index {
+        return Ok(unverified(Some(scratch_name.clone())));
+    }
+
     // 3) Land it on the original slot. The session layer translates these 0-based
     // list indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
     Session::connect()?.load_preset(scratch_slot)?; // scratch becomes current (persists across reconnect)
                                                     // Fresh connection re-attaches to the now-current preset; CONFIRM it is the scratch
-                                                    // copy BEFORE saving it over the (real, irreplaceable) original slot. A dropped load
-                                                    // would leave a DIFFERENT preset current, and saving that over orig_list_index is
-                                                    // silent data loss — so the guard lives in the SAME connection as the mutation. On
-                                                    // failure ABORT before the save (and before the clear), leaving the scratch import on
-                                                    // the device for manual recovery.
+                                                    // copy, holding the file's blocks, BEFORE saving it over the (real, irreplaceable)
+                                                    // original slot. A dropped load would leave a DIFFERENT preset current, and a body
+                                                    // rejected at load an EMPTY one under the scratch's name; saving either over
+                                                    // orig_list_index is silent data loss — so the guards live in the SAME connection as
+                                                    // the mutation. On failure ABORT before the save (and before the clear), leaving the
+                                                    // scratch import on the device for manual recovery.
     let mut save_conn = Session::connect()?;
+    let kept = |e: String| {
+        format!(
+            "{e}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
+             the original slot {orig_list_index} was NOT modified."
+        )
+    };
     save_conn
         .confirm_active(scratch_slot, Some(&scratch_name))
-        .map_err(|e| {
-            format!(
-                "{e}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
-                 the original slot {orig_list_index} was NOT modified."
-            )
-        })?;
+        .and_then(|()| save_conn.confirm_loaded_body(&file_roster))
+        .map_err(kept)?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
     drop(save_conn); // end the save's connection before guarded_clear opens the next one
     guarded_clear(scratch_slot, &scratch_name)?; // remove the scratch copy (guarded)
@@ -173,19 +205,7 @@ pub(crate) fn replace_inplace_with(
     if !verify {
         // Lean mode: the write is done (confirm_active gated the save; the clear was
         // guarded) — skip the report reads. Fields the reads would fill stay empty.
-        return Ok(ReplaceOutcome {
-            orig_list_index,
-            scratch_slot,
-            scratch_name,
-            orig_name_before,
-            orig_name_after: None,
-            scratch_name_after: None,
-            edit_landed: true,
-            had_binding: false,
-            binding_preserved: false,
-            songs_before,
-            songs_after: Vec::new(),
-        });
+        return Ok(unverified(None));
     }
 
     // 4) Re-read and confirm slot / Song-link survival. Settle first: clear/save are

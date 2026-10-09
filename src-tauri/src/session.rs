@@ -2094,6 +2094,18 @@ impl Session {
         ))
     }
 
+    /// Prove the loaded working copy holds `file`'s blocks before a save writes it over
+    /// another slot: a body the firmware rejects at LOAD becomes a silent EMPTY preset that
+    /// keeps the stored name (fw 1.8.58, no `presetError`), which [`Self::confirm_active`]
+    /// passes. Re-prompts the working copy (the HW-proven [`Self::live_audio_graph`] seam).
+    pub(crate) fn confirm_loaded_body(
+        &mut self,
+        file: &crate::blockcaps::Roster,
+    ) -> Result<(), String> {
+        let live = self.live_audio_graph(|v| v.get("audioGraph").is_some())?;
+        crate::blockcaps::check_loaded_roster(file, &crate::blockcaps::group_roster_of(&live.nodes))
+    }
+
     /// True if any reply body carries `presetMessage` inner `field` (e.g. 40
     /// `nodeReplaced`, 53 `presetError`).
     fn saw_preset_field(&self, field: u32) -> bool {
@@ -2504,6 +2516,14 @@ impl Session {
     /// the device reports in `importPresetResponse` (118) if it replies; the device
     /// chooses the slot (Pro Control then `loadPreset`s it).
     pub fn import_preset(&mut self, preset_bytes: &[u8]) -> Result<Option<(u32, u32)>, String> {
+        // The ONE import choke point: refuse a body the firmware would silently replace.
+        // An undecodable body passes through — the firmware's own LZ4/JSON check handles it.
+        if let Some(doc) = crate::library::decode_preset_bytes(preset_bytes)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        {
+            crate::footswitch::validate_import_body(&doc)?;
+        }
         self.raw.clear();
         let payload = proto::lz4_block_compress_stored(preset_bytes);
         let body = proto::import_preset_request(&payload);
@@ -5612,6 +5632,17 @@ mod tests {
             ScriptedTransport::device().with_reply_to(&body, vec![Vec::new(), Vec::new(), echo]);
         let mut s = session_over(&t, Vec::new());
         assert_eq!(s.import_preset(&bytes).unwrap(), Some((1, 7)));
+    }
+
+    /// A body carrying a HW-proven discard shape is refused before a single frame leaves.
+    #[test]
+    fn import_preset_refuses_a_discard_shape_before_sending() {
+        let doc = br#"{"ftsw":[[{"func":"on-off"},{"func":"param","valueType":2}]]}"#;
+        let bytes = crate::backup::xor_jld(doc);
+        let t = ScriptedTransport::device();
+        let mut s = session_over(&t, Vec::new());
+        assert!(s.import_preset(&bytes).unwrap_err().contains("stack"));
+        assert!(t.sent.lock().unwrap().is_empty());
     }
 
     /// Callers have always received a LAPSED session, and the follow-on re-arm recipes

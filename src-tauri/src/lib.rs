@@ -1603,35 +1603,6 @@ mod fixture_gates {
         }
     }
 
-    /// Every `func == "param"` ftsw entry in `p`, in ONE walk: `(total param entries,
-    /// customLabels of any whose valueType is NOT a JSON number)`. A single traversal
-    /// feeds both the vacuity floor and the gate predicate below so they can't drift
-    /// out of sync if one filter chain is edited and not the other; the same pair also
-    /// proves the negative case actually flips the predicate (forked copy, `valueType`
-    /// deleted). Deliberately does NOT look at the `exp` block: its entries legitimately
-    /// carry the STRING `"valueType": "float"` (verified against a verbatim device
-    /// export) and must not be gated by this shape.
-    fn param_footswitch_value_types(p: &serde_json::Value) -> (usize, Vec<String>) {
-        let params: Vec<&serde_json::Value> = p["ftsw"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|bank| bank.as_array().into_iter().flatten())
-            .filter(|entry| entry["func"] == "param")
-            .collect();
-        let missing = params
-            .iter()
-            .filter(|entry| !entry["valueType"].is_number())
-            .map(|entry| {
-                entry["customLabel"]
-                    .as_str()
-                    .unwrap_or("<unlabeled>")
-                    .to_string()
-            })
-            .collect();
-        (params.len(), missing)
-    }
-
     /// NON-REGRESSION GATE (HW bisect 2026-08-09, fw 1.8.45): importing a preset whose
     /// `ftsw` array carries a `func: "param"` entry with NO `valueType` field makes the
     /// device silently DISCARD the whole imported preset at its lazy commit and
@@ -1641,7 +1612,7 @@ mod fixture_gates {
     fn every_param_footswitch_in_every_fixture_carries_a_numeric_value_type() {
         let mut checked = 0usize;
         for (idx, name, _, p) in fixtures() {
-            let (total, missing) = param_footswitch_value_types(&p);
+            let (total, missing) = crate::footswitch::param_entries_missing_value_type(&p);
             checked += total;
             assert!(
                 missing.is_empty(),
@@ -1673,7 +1644,7 @@ mod fixture_gates {
             Some(serde_json::json!(2)),
             "E2E Rig ftsw[9] moved or lost its valueType — update this fork's index/value"
         );
-        let (_, missing) = param_footswitch_value_types(&forked);
+        let (_, missing) = crate::footswitch::param_entries_missing_value_type(&forked);
         assert!(
             !missing.is_empty(),
             "deleting valueType from a param entry must make the gate condition fail"
@@ -1687,18 +1658,6 @@ mod fixture_gates {
     /// body" entry.
     #[test]
     fn every_fixture_footswitch_row_carries_at_most_one_entry() {
-        fn stacked_rows(p: &serde_json::Value) -> Vec<usize> {
-            p["ftsw"]
-                .as_array()
-                .map(|rows| {
-                    rows.iter()
-                        .enumerate()
-                        .filter(|(_, r)| r.as_array().is_some_and(|a| a.len() > 1))
-                        .map(|(i, _)| i)
-                        .collect()
-                })
-                .unwrap_or_default()
-        }
         let mut singles = 0usize;
         for (idx, name, _, p) in fixtures() {
             singles += p["ftsw"].as_array().map_or(0, |rows| {
@@ -1706,7 +1665,7 @@ mod fixture_gates {
                     .filter(|r| r.as_array().is_some_and(|a| a.len() == 1))
                     .count()
             });
-            let stacked = stacked_rows(&p);
+            let stacked = crate::footswitch::stacked_ftsw_rows(&p);
             assert!(
                 stacked.is_empty(),
                 "{name} ({idx}): ftsw rows {stacked:?} stack multiple entries — see \
@@ -1732,7 +1691,7 @@ mod fixture_gates {
             .as_array_mut()
             .expect("MUDDY row")
             .push(extra);
-        assert_eq!(stacked_rows(&forked), vec![2]);
+        assert_eq!(crate::footswitch::stacked_ftsw_rows(&forked), vec![2]);
     }
 
     /// NON-REGRESSION GATE for the fixture-scene corruption class (real 1.8.45 unit,
