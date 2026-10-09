@@ -51,6 +51,18 @@ pub(crate) fn identity_preset_id_of(value: &Value) -> Option<&str> {
     preset_id_of(value).filter(|id| *id != TEMPLATE_PRESET_ID)
 }
 
+/// The identity guards' shared refusal of [`TEMPLATE_PRESET_ID`] — never matched, not
+/// even to itself. `what` names the side that carried it.
+pub(crate) fn refuse_template_id(id: Option<&str>, what: &str) -> Result<(), String> {
+    if id == Some(TEMPLATE_PRESET_ID) {
+        return Err(format!(
+            "{what} carries the \"Empty\" template's preset_id — an empty slot or a body the \
+             firmware rejected at load, not a preset"
+        ));
+    }
+    Ok(())
+}
+
 /// One `.preset` file ingested from the export folder, plus its reconciliation
 /// against the live device. `decoded_json` is the canonical full preset JSON;
 /// `list_index` is `Some` only once matched to a (uniquely-named) device slot.

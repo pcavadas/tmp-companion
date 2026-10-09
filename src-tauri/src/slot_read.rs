@@ -125,6 +125,8 @@ pub(crate) fn read_slot_preset_complete(
     if tail.truncated.is_empty() {
         return Ok((preset, has_fs_scenes, len));
     }
+    // Before the multi-second backup transfer.
+    let expect_id = backup_expect_id(&preset, slot)?;
     if tail.name.is_empty() {
         return Err(format!(
             "slot {}: the preset is too large to read over USB — its {} section(s) were cut \
@@ -149,7 +151,6 @@ pub(crate) fn read_slot_preset_complete(
         let mut s = Session::connect()?;
         s.device_backup(60, |_| {})?.0
     };
-    let expect_id = crate::library::preset_id_of(&preset);
     let doc =
         backup_read::preset_json_from_backup(&blob, i64::from(slot) + 1, &tail.name, expect_id)
             .map_err(|e| {
@@ -170,4 +171,37 @@ pub(crate) fn read_slot_preset_complete(
         .and_then(|s| s.as_array())
         .is_none_or(|a| !a.is_empty());
     Ok((doc, has_fs_scenes, len))
+}
+
+/// The id the backup fallback expects: the partial's own (`None` when the cut took
+/// `info`), refused when it is the "Empty" template's.
+fn backup_expect_id(preset: &serde_json::Value, slot: u32) -> Result<Option<&str>, String> {
+    let id = crate::library::preset_id_of(preset);
+    crate::library::refuse_template_id(id, "the field-8 read")
+        .map_err(|e| format!("slot {}: {e}", slot + 1))?;
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn backup_expect_id_refuses_a_template_partial() {
+        let template = json!({"info": {"preset_id": crate::library::TEMPLATE_PRESET_ID}});
+        let err = backup_expect_id(&template, 400).expect_err("template partial must refuse");
+        assert!(
+            err.contains("slot 401") && err.contains("\"Empty\" template"),
+            "{err}"
+        );
+
+        let real = json!({"info": {"preset_id": "aaaaaaaa-0000-0000-0000-000000000001"}});
+        assert_eq!(
+            backup_expect_id(&real, 400),
+            Ok(Some("aaaaaaaa-0000-0000-0000-000000000001"))
+        );
+        // A cut that took `info` still falls back to slot + name.
+        assert_eq!(backup_expect_id(&json!({"ftsw": []}), 400), Ok(None));
+    }
 }

@@ -170,6 +170,40 @@ fn backup_slot_read_treats_empty_string_ids_as_absent() {
     assert_eq!(doc["scenes"][0]["sceneName"], "Rhythm");
 }
 
+/// The "Empty" template id (fw 1.8.58: every empty slot and every body rejected at load,
+/// under the slot's STORED name) identifies nothing, so it refuses on EITHER side —
+/// including the template-vs-template pair a plain equality would pass.
+#[test]
+fn backup_slot_read_refuses_the_empty_template_id_on_either_side() {
+    let tpl = crate::library::TEMPLATE_PRESET_ID;
+    let archive_for = |id: &str| {
+        let body = format!(
+            r#"{{"info":{{"displayName":"Big Rig","preset_id":"{id}"}},"scenes":[{{"sceneName":"Rhythm","uuid":"a"}}]}}"#
+        );
+        build_backup_archive(&format!(
+            "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+             INSERT INTO UserPresets VALUES (401, 'Big Rig', '{body}');"
+        ))
+    };
+    let real = "aaaaaaaa-0000-0000-0000-000000000001";
+
+    for (row_id, expect) in [
+        (tpl, Some(tpl)),
+        (tpl, Some(real)),
+        (tpl, None),
+        (real, Some(tpl)),
+    ] {
+        let err = preset_json_from_backup(&archive_for(row_id), 401, "Big Rig", expect)
+            .expect_err("a template id on either side must refuse");
+        assert!(
+            err.contains("\"Empty\" template"),
+            "{row_id} / {expect:?}: {err}"
+        );
+    }
+    preset_json_from_backup(&archive_for(real), 401, "Big Rig", Some(real))
+        .expect("a real id on both sides still passes");
+}
+
 #[test]
 fn backup_preset_scenes_parse_names_and_fs_tags() {
     // The DB presetJson is the same plaintext shape as the live field-3 doc:

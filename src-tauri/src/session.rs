@@ -2116,16 +2116,20 @@ impl Session {
         ))
     }
 
-    /// Prove the loaded working copy holds `file`'s blocks before a save writes it over
-    /// another slot: a body the firmware rejects at LOAD becomes a silent EMPTY preset that
-    /// keeps the stored name (fw 1.8.58, no `presetError`), which [`Self::confirm_active`]
-    /// passes. Re-prompts the working copy (the HW-proven [`Self::live_audio_graph`] seam).
+    /// Prove the loaded working copy is the import before a save writes it over another
+    /// slot: a body the firmware rejects at LOAD becomes a silent EMPTY preset that keeps
+    /// the stored name (fw 1.8.58, no `presetError`), which [`Self::confirm_active`]
+    /// passes. Re-prompts the working copy (the HW-proven [`Self::live_audio_graph`] seam)
+    /// and hands `check` its block roster and the accepted document.
     pub(crate) fn confirm_loaded_body(
         &mut self,
-        file: &crate::blockcaps::Roster,
+        check: impl FnOnce(&crate::blockcaps::Roster, &serde_json::Value) -> Result<(), String>,
     ) -> Result<(), String> {
         let live = self.live_audio_graph(|v| v.get("audioGraph").is_some())?;
-        crate::blockcaps::check_loaded_roster(file, &crate::blockcaps::group_roster_of(&live.nodes))
+        check(
+            &crate::blockcaps::group_roster_of(&live.nodes),
+            &self.current_preset_value()?,
+        )
     }
 
     /// True if any reply body carries `presetMessage` inner `field` (e.g. 40

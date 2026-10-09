@@ -93,8 +93,7 @@ pub(crate) fn replace_inplace_with(
     // The blocks the loaded scratch must hold before it may be saved over the original.
     let file: serde_json::Value = crate::library::decode_preset_bytes(bytes)
         .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("preset JSON: {e}")))?;
-    let file_roster =
-        crate::blockcaps::group_roster_of(&crate::session::extract_active_graph(&file, None).nodes);
+    let file_roster = import_roster(&file)?;
 
     // TOLERANT reads for both landing-detection lists — strict decodes only
     // terminal-frame streams and fails/garbles on the interleaved responses that
@@ -196,7 +195,10 @@ pub(crate) fn replace_inplace_with(
     };
     save_conn
         .confirm_active(scratch_slot, Some(&scratch_name))
-        .and_then(|()| save_conn.confirm_loaded_body(&file_roster))
+        .and_then(|()| {
+            save_conn
+                .confirm_loaded_body(|roster, doc| check_loaded_body(&file_roster, roster, doc))
+        })
         .map_err(kept)?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
     drop(save_conn); // end the save's connection before guarded_clear opens the next one
@@ -240,6 +242,29 @@ pub(crate) fn replace_inplace_with(
         songs_before,
         songs_after,
     })
+}
+
+/// The blocks the loaded scratch must hold, refused up front (before the import) for a
+/// file that is itself the "Empty" template.
+fn import_roster(file: &serde_json::Value) -> Result<crate::blockcaps::Roster, String> {
+    crate::library::refuse_template_id(crate::library::preset_id_of(file), "the preset file")?;
+    Ok(crate::blockcaps::group_roster_of(
+        &crate::session::extract_active_graph(file, None).nodes,
+    ))
+}
+
+/// The loaded working copy may be saved over the original only if it holds the file's
+/// blocks and is not the template substitute (which a block-less file's roster passes).
+fn check_loaded_body(
+    file_roster: &crate::blockcaps::Roster,
+    live_roster: &crate::blockcaps::Roster,
+    live_doc: &serde_json::Value,
+) -> Result<(), String> {
+    crate::library::refuse_template_id(
+        crate::library::preset_id_of(live_doc),
+        "the loaded import",
+    )?;
+    crate::blockcaps::check_loaded_roster(file_roster, live_roster)
 }
 
 /// String-reporting wrapper over [`replace_inplace_core`] for the probe subcommands.
@@ -317,4 +342,41 @@ pub fn probe_restore(snapshot_path: &str) -> Result<String, String> {
         &bytes,
         &format!("restore={snapshot_path} (slot {})", snap.slot),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blockcaps::Roster;
+    use crate::library::TEMPLATE_PRESET_ID;
+    use serde_json::json;
+
+    fn body(id: &str) -> serde_json::Value {
+        json!({"audioGraph": {"template": "gtrSeries", "guitarNodes": {"G1": [
+            {"nodeId": "ACD_Comp", "FenderId": "ACD_Comp", "dspUnitParameters": {"bypass": false}}
+        ]}}, "info": {"displayName": "Big Rig", "preset_id": id}})
+    }
+
+    #[test]
+    fn a_template_body_on_either_side_refuses_the_in_place_save() {
+        let real = body("aaaaaaaa-0000-0000-0000-000000000001");
+        let roster = import_roster(&real).expect("a real file imports");
+        check_loaded_body(&roster, &roster, &real).expect("the file's own body passes");
+
+        let err = import_roster(&body(TEMPLATE_PRESET_ID)).expect_err("template file");
+        assert!(
+            err.contains("preset file") && err.contains("Empty"),
+            "{err}"
+        );
+
+        // The loaded side refuses even with the file's blocks in it…
+        let err =
+            check_loaded_body(&roster, &roster, &body(TEMPLATE_PRESET_ID)).expect_err("template");
+        assert!(err.contains("loaded import"), "{err}");
+        // …and catches the substitute a block-less file's roster check would pass.
+        let empty_file = json!({"info": {"preset_id": "aaaaaaaa-0000-0000-0000-000000000002"}});
+        let substitute = json!({"info": {"preset_id": TEMPLATE_PRESET_ID}});
+        let roster = import_roster(&empty_file).expect("block-less file");
+        assert!(check_loaded_body(&roster, &Roster::new(), &substitute).is_err());
+    }
 }
