@@ -488,8 +488,9 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
 /// IDENTITY-GUARDED (danger.md's address-space rule): the caller states the slot,
 /// the name it expects there, and — when its own partial could name one —
 /// `expect_id` (the partial's `info.preset_id`, per `crate::library::preset_id_of`).
-/// The row is refused on a name mismatch, and again on an `expect_id` mismatch or a
-/// body with no id when one was expected: a second connection sits between whatever
+/// The row is refused on a name mismatch, on an `expect_id` mismatch, on a body with no
+/// id when one was expected, and whenever either side is the "Empty" template's id
+/// (`crate::library::TEMPLATE_PRESET_ID`): a second connection sits between whatever
 /// named the slot and this backup transfer, and a preset body silently taken from the
 /// WRONG slot would drive writes and a save against the wrong preset. Section key
 /// order is alphabetical (`ftsw` < `info` < `scenes`), so for a caller whose
@@ -556,6 +557,9 @@ fn backup_row_preset_json(
 
     let expect_id = expect_id.filter(|s| !s.is_empty());
     let got_id = crate::library::preset_id_of(&doc);
+    crate::library::refuse_template_id(expect_id, "the expected id")
+        .and_then(|()| crate::library::refuse_template_id(got_id, "the backup row"))
+        .map_err(|e| format!("device slot {device_slot} (named {expect_name:?}): {e}"))?;
     match (expect_id, got_id) {
         (Some(want), Some(got)) if want != got => {
             return Err(format!(

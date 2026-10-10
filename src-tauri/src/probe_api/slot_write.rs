@@ -175,17 +175,7 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
         .ok_or_else(|| format!("list index {slot}: no presetJson on the device (empty slot?)"))?;
     let expected_json = session::tolerant_parse_json(&String::from_utf8_lossy(&expected_raw))
         .ok_or_else(|| format!("list index {slot}: presetJson did not parse"))?;
-    // `preset_id_of` (not a raw pointer walk): it normalizes an EMPTY id to `None`,
-    // so a `""` here refuses like an absent id instead of vacuously matching a `""`
-    // read back from the capture below.
-    let expected_id = crate::library::preset_id_of(&expected_json)
-        .ok_or_else(|| format!("list index {slot}: presetJson has no info.preset_id"))?
-        .to_string();
-    let expected_name = expected_json
-        .pointer("/info/displayName")
-        .and_then(|v| v.as_str())
-        .unwrap_or("<unnamed>")
-        .to_string();
+    let expected_id = expected_identity(&expected_json, slot)?;
     // NO pre-drain here. `capture_full_preset_json` waits for the field-3
     // currentPresetDataChanged PUSH, and `drain_until_quiet` eats exactly that —
     // draining first made the capture fail with "no payload captured". This is the
@@ -209,32 +199,7 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
 
     // Verify identity BEFORE writing, from the same read the "before" comparison
     // already needs — never trust that the caller loaded the right preset earlier.
-    // Compares preset_id (the canonical identity); displayName is extracted too,
-    // but only for the error message — it's context, not the check.
-    let field_of = |j: &str, key: &str| {
-        let needle = format!("\"{key}\":\"");
-        j.find(&needle).and_then(|i| {
-            let r = &j[i + needle.len()..];
-            r.find('"').map(|e| r[..e].to_string())
-        })
-    };
-    let active_name = field_of(&before, "displayName").unwrap_or_else(|| "<unknown>".into());
-    match field_of(&before, "preset_id") {
-        Some(id) if id == expected_id => {}
-        Some(_) => {
-            return Err(format!(
-                "refusing switchTemplate: active preset is {active_name:?}, not \
-                 {expected_name:?} (list index {slot}) — load the scratch preset first"
-            ));
-        }
-        None => {
-            return Err(format!(
-                "refusing switchTemplate: could not read the active preset's preset_id from \
-                 the pre-switch capture, so identity against list index {slot} \
-                 ({expected_name:?}) could not be confirmed"
-            ));
-        }
-    }
+    switch_template_identity(&expected_json, expected_id, &before, slot)?;
 
     let dump = s.send_and_dump(&proto::switch_template(template_type), 1500)?;
     s.pump_collect_alive(800)?;
@@ -245,13 +210,8 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
         .map(|v| String::from_utf8_lossy(&v).into_owned())
         .unwrap_or_default();
 
-    // Substring-scan rather than JSON-parse: currentPresetDataJson is TRUNCATED on
-    // this firmware (~5 KB), so serde would fail on a reply that still carries the
-    // one field being measured.
-    // Reuses `field_of` above rather than re-deriving the scan: the old copy carried a
-    // hand-counted `i + 12` offset for `"template":"` that would silently mis-slice if
-    // the key were ever renamed. Same unterminated-value-reads-as-absent semantics.
-    let tpl = |j: &str| field_of(j, "template").unwrap_or_else(|| "<absent>".into());
+    // Substring scan (`json_str_field`): the capture is truncated, so serde would fail.
+    let tpl = |j: &str| json_str_field(j, "template").unwrap_or_else(|| "<absent>".into());
     let (b, a) = (tpl(&before), tpl(&after));
     // An absent read is NOT evidence of "unchanged" — two failed reads compare
     // equal and would otherwise manufacture a false negative. Say inconclusive.
@@ -270,6 +230,56 @@ pub fn probe_switch_template(slot: u32, template_type: &str) -> Result<String, S
         before.len(),
         after.len()
     ))
+}
+
+/// The first `"key":"value"` string in `j`, by substring scan — the pre-switch capture
+/// is TRUNCATED on this firmware (~5 KB), so serde would fail on a reply that still
+/// carries the field. An unterminated value reads as absent.
+fn json_str_field(j: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    j.find(&needle).and_then(|i| {
+        let r = &j[i + needle.len()..];
+        r.find('"').map(|e| r[..e].to_string())
+    })
+}
+
+/// The saved body's `info.preset_id`, refused (before any capture) when absent, empty or
+/// the "Empty" template's — none of those identifies a preset.
+fn expected_identity(expected_json: &serde_json::Value, slot: u32) -> Result<&str, String> {
+    library::identity_preset_id_of(expected_json).ok_or_else(|| {
+        format!(
+            "list index {slot}: presetJson has no info.preset_id identifying a preset (absent, \
+             empty, or the \"Empty\" template's)"
+        )
+    })
+}
+
+/// [`probe_switch_template`]'s pre-write check: the active working copy (`before`) must
+/// carry the saved body's `expected_id` — never the displayName, which is user-editable
+/// and duplicable.
+fn switch_template_identity(
+    expected_json: &serde_json::Value,
+    expected_id: &str,
+    before: &str,
+    slot: u32,
+) -> Result<(), String> {
+    let expected_name = expected_json
+        .pointer("/info/displayName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<unnamed>");
+    let active_name = json_str_field(before, "displayName").unwrap_or_else(|| "<unknown>".into());
+    match json_str_field(before, "preset_id") {
+        Some(id) if id == expected_id => Ok(()),
+        Some(_) => Err(format!(
+            "refusing switchTemplate: active preset is {active_name:?}, not \
+             {expected_name:?} (list index {slot}) — load the scratch preset first"
+        )),
+        None => Err(format!(
+            "refusing switchTemplate: could not read the active preset's preset_id from \
+             the pre-switch capture, so identity against list index {slot} \
+             ({expected_name:?}) could not be confirmed"
+        )),
+    }
 }
 
 /// HW PROBE (DEVICE WRITE): reorder a user preset, `from` → `to` (0-based list
@@ -1322,4 +1332,39 @@ pub fn probe_scene_write_cell(
         scene,
         value,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::TEMPLATE_PRESET_ID;
+
+    fn saved(id: &str) -> serde_json::Value {
+        serde_json::json!({"info": {"displayName": "Scratch", "preset_id": id}})
+    }
+    fn active(id: &str) -> String {
+        format!(r#"{{"info":{{"displayName":"Scratch","preset_id":"{id}"}}"#)
+    }
+
+    fn switch_template_identity(
+        saved: &serde_json::Value,
+        before: &str,
+        slot: u32,
+    ) -> Result<(), String> {
+        super::switch_template_identity(saved, expected_identity(saved, slot)?, before, slot)
+    }
+
+    #[test]
+    fn switch_template_identity_refuses_the_empty_template_on_either_side() {
+        let real = "aaaaaaaa-0000-0000-0000-000000000001";
+        switch_template_identity(&saved(real), &active(real), 400).expect("same real id");
+
+        // Template vs template matches byte-for-byte and must still refuse.
+        let err =
+            switch_template_identity(&saved(TEMPLATE_PRESET_ID), &active(TEMPLATE_PRESET_ID), 400)
+                .expect_err("template saved body");
+        assert!(err.contains("Empty"), "{err}");
+        assert!(switch_template_identity(&saved(TEMPLATE_PRESET_ID), &active(real), 400).is_err());
+        assert!(switch_template_identity(&saved(real), &active(TEMPLATE_PRESET_ID), 400).is_err());
+    }
 }

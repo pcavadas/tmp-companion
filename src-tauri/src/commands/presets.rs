@@ -159,10 +159,11 @@ pub(crate) fn scenes_from_backup_row(
         ));
     }
     let field8_id = field8_id.filter(|s| !s.is_empty());
-    match (
-        field8_id,
-        row.preset_id.as_deref().filter(|s| !s.is_empty()),
-    ) {
+    let row_id = row.preset_id.as_deref().filter(|s| !s.is_empty());
+    crate::library::refuse_template_id(field8_id, "the field-8 partial")
+        .and_then(|()| crate::library::refuse_template_id(row_id, "the backup row"))
+        .map_err(|e| format!("read_preset_scenes_complete: slot {device_slot}: {e}"))?;
+    match (field8_id, row_id) {
         (Some(want), Some(got)) if want != got => {
             return Err(format!(
                 "read_preset_scenes_complete: backup row for slot {device_slot} \
@@ -224,6 +225,9 @@ pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScene
         .as_ref()
         .and_then(|d| crate::library::preset_id_of(d))
         .map(str::to_string);
+    // Before the multi-second backup transfer — `scenes_from_backup_row` re-checks both sides.
+    crate::library::refuse_template_id(field8_id.as_deref(), "the field-8 partial")
+        .map_err(|e| format!("read_preset_scenes_complete: slot {}: {e}", list_index + 1))?;
     let max_ref = doc.as_ref().and_then(footswitch::max_referenced_scene);
     log::warn!(
         "read_preset_scenes_complete: slot {} {field8_name:?} scene list truncated by the \
@@ -826,6 +830,22 @@ mod truncation_fallback_tests {
         assert_eq!(scenes.fs, vec![Some(1), None, Some(3), Some(4)]);
         assert_eq!(scenes.footswitches.len(), 1);
         assert_eq!(scenes.footswitches[0].label, "Boost");
+    }
+
+    #[test]
+    fn the_empty_template_id_on_either_side_is_refused() {
+        let tpl = crate::library::TEMPLATE_PRESET_ID;
+        for (field8, row) in [(tpl, tpl), (tpl, ROW_ID), (ROW_ID, tpl)] {
+            let rows = vec![backup_row_id(25, "HBE ANATOMY", Some(row), vec![])];
+            let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(field8), &rows) {
+                Ok(_) => panic!("{field8} / {row}: a template id must be refused"),
+                Err(e) => e,
+            };
+            assert!(err.contains("\"Empty\" template"), "{err}");
+        }
+        // A template row refuses even when the partial carried no id to compare.
+        let rows = vec![backup_row_id(25, "HBE ANATOMY", Some(tpl), vec![])];
+        assert!(scenes_from_backup_row(24, "HBE ANATOMY", None, &rows).is_err());
     }
 
     const OTHER_ID: &str = "bbbbbbbb-0000-0000-0000-000000000002";
