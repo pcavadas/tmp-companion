@@ -341,7 +341,7 @@ describe("libraryScan — Doctor scene overrides", () => {
     vi.mocked(invoke).mockReset();
   });
 
-  it("keys scene overrides by list index and drops them when a Copy save patches the graph", async () => {
+  it("keys scene overrides by list index and keeps them when a Copy save patches the graph", async () => {
     const override = {
       group_id: "G1",
       node_id: "plate1",
@@ -367,9 +367,12 @@ describe("libraryScan — Doctor scene overrides", () => {
       [],
     ]);
 
-    // The patched graph's overlays are unknown until the next scan — never stale ones.
+    // A Copy save edits blocks, not scene overlays — the surviving nodes' overlays still
+    // apply (an override for a removed node is ignored by `effective_nodes`).
     patchLibraryGraph(7, emptyGraph);
-    expect(getLibraryScan().sceneOverridesByIndex.has(7)).toBe(false);
-    expect(getLibraryScan().sceneOverridesByIndex.has(57)).toBe(true);
+    expect(getLibraryScan().sceneOverridesByIndex.get(7)).toEqual([
+      [override],
+      [],
+    ]);
   });
 });

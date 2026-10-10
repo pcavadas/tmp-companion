@@ -264,11 +264,9 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
   if (!state.ready) return;
   const next = new Map(state.graphByIndex);
   next.set(listIndex, graph);
-  // The new graph's scene overlays aren't known until the next scan — drop the stale
-  // ones so a Doctor scene sound is diagnosed on the new base graph, never old overlays.
-  const overrides = new Map(state.sceneOverridesByIndex);
-  overrides.delete(listIndex);
-  set({ graphByIndex: next, sceneOverridesByIndex: overrides });
+  // Scene overrides are kept: a Copy save edits blocks, not scene overlays, and
+  // Doctor's `effective_nodes` ignores an override whose node the save removed.
+  set({ graphByIndex: next });
 }
 
 /** Invalidate the backup-sourced SONG data after a slot-shifting song CRUD (add/remove

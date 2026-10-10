@@ -59,11 +59,11 @@ on every FULL row before assuming "blocked on every push."
 
 ## Doctor
 
-| Journey                             | Coverage                                                                                                           | Gate                                    |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
-| Select → run → results, happy path  | FULL                                                                                                               | `e2e/specs/doctor.spec.ts`              |
-| Prescription apply / save / discard | FULL (online-only; skipped offline; on-demand, not in the default online set — trade T1, ONLINE e2e consolidation) | `e2e/specs/doctor-apply.online.spec.ts` |
-| Scene-loudness consistency check    | PARTIAL (pure-rule Rust unit tests only)                                                                           | `src-tauri/src/doctor.rs` unit tests    |
+| Journey                             | Coverage                                                                                                           | Gate                                                                                                                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Select → run → results, happy path  | FULL                                                                                                               | `e2e/specs/doctor.spec.ts`                                                                                                                                                                                             |
+| Prescription apply / save / discard | FULL (online-only; skipped offline; on-demand, not in the default online set — trade T1, ONLINE e2e consolidation) | `e2e/specs/doctor-apply.online.spec.ts`                                                                                                                                                                                |
+| Scene-loudness consistency check    | PARTIAL (Rust unit tests for the rule and for which sounds enter it; Vitest for unrun/errored rendering)           | `src-tauri/src/doctor.rs` unit tests + `commands/doctor_tests.rs::{consistency_compares_only_measured_sounds, a_run_stopped_between_base_and_scenes_keeps_unrun_scenes_out_of_consistency}` + `DoctorResults.test.tsx` |
 
 ## Copy
 
