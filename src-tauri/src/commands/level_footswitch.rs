@@ -228,37 +228,14 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         // switches were never touched, so the read either delivers it or the run refuses
         // (before any device state moves).
         let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"])?;
-        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let ftsw = preset
             .get("ftsw")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        // THE LEVEL EVERY CAPTURE OF THIS BATCH MUST RENDER AT.
-        //
-        // Each capture's `recall_base` re-runs the device's own level-apply, which serves the
-        // COMMITTED `presetLevel` — and the load store commits LAZILY, so shortly after this
-        // preset's base row saved a new level the recall still applies the OLD one. This lane
-        // used to pass `None` and rely on the freshness barrier below to have already made
-        // the two equal.
-        //
-        // HW, fw 1.8.45, 2026-08-19, slot 26 "Plumes+BD2+OCD" disproved that. Base saved
-        // `presetLevel` 0.51009 and verified -23.0002 LUFS; this batch then measured switch
-        // 5's ceiling (its block pinned at max) at -24.44 LUFS, while the IDENTICAL state
-        // re-measures at -18.91 once the commit lands — and base and switch 5 agree there to
-        // four decimals, because on that preset they are the same sound. The 5.53 dB gap is
-        // exactly 20*log10(0.51009/0.2699), and 0.26999998 is the `presetLevel` the preset
-        // carried BEFORE the run. So every row was solved against a chain 5.5 dB quieter than
-        // reality and clamped at a ceiling it was nowhere near. The barrier did NOT wait: it
-        // logged neither a stale retry nor a window-elapsed exit, and its remaining exits (no
-        // registry entry, or a first-harvest match) are both silent, so which one it took is
-        // not recoverable from that run. Either way a capture must not depend on it.
-        //
-        // The field-8 read above is the fresher of the device's two stores (notes/gotchas.md's
-        // lazy-commit entry: `loadPreset` and `presetDataRequest` are independent and commit at
-        // very different latencies), so re-asserting ITS level after every recall makes a
-        // capture's rendering independent of load-commit timing rather than dependent on it.
-        // `None` (no `audioGraph.presetLevel` in the doc) keeps the old behaviour.
+        // THE LEVEL EVERY CAPTURE OF THIS BATCH MUST RENDER AT: the stored `presetLevel`,
+        // re-asserted after each capture's `recall_base` so a capture never depends on what the
+        // recall's own level-apply serves. `None` (no `audioGraph.presetLevel`) asserts nothing.
         let intended_pl = crate::audiograph::preset_level(&preset).map(|v| v as f32);
 
         // Plan bake-vs-assign for the whole batch (pure) — block-off-in-base + sole-owner + no
@@ -280,22 +257,6 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         let plans: Vec<footswitch::FsLevelPlan> =
             footswitch::plan_footswitch_jobs(&ftsw, &preset, &keys);
 
-        // Freshness barrier: a same-slot batch load starting shortly after this preset's own
-        // earlier save (base level, a prior FS batch, …) could otherwise materialize the
-        // PRE-save preset — the incident this whole fix exists for. Tell the wizard WHY
-        // nothing moves for up to ~2 min before paying the wait, since `ensure_fresh_load`
-        // gates silently otherwise.
-        if leveller::slot_save_pending_commit(slot) {
-            if let Some(first) = jobs.first() {
-                let _ = on_result.send(FootswitchLevelProgressItem {
-                    switch: first.switch,
-                    status: "active".into(),
-                    result: None,
-                    message: Some(leveller::WAITING_FOR_COMMIT_MSG.into()),
-                });
-            }
-        }
-        leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
         // Load the preset ONCE for the whole batch — `measure_footswitch`'s caller
         // contract. Every job's sweep runs against this load (its pollution is
         // self-correcting: each job's force list explicitly sets every sibling
@@ -308,7 +269,6 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 leveller::settle_after_load_ms(),
             ));
         }
-        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
         // The solved writes pending the batch's single write+save session, each
@@ -665,10 +625,6 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                     (*idx, w.lev.1.clone(), w.lev.2.clone(), w.value, is_assign)
                 })
                 .collect();
-            // Snapshot the run's own earlier base-save expectation NOW — the write below
-            // registers the batch's `Param` witness over the same slot key, after which the
-            // registry can no longer answer for the base save (`registered_preset_level`).
-            let base_expect = leveller::registered_preset_level(slot);
             let (idxs, writes): (Vec<usize>, Vec<leveller::FsPendingWrite>) =
                 pending.into_iter().unzip();
             // Re-stamp the preset's original `lastLoadedScene`: the write session's base
@@ -688,7 +644,9 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 leveller::verify_fs_persisted_writes(
                     slot,
                     &verify_specs,
-                    base_expect,
+                    // The batch writes no `presetLevel`, so its save must leave the stored one
+                    // as read above; a different value means the save reverted the base level.
+                    intended_pl,
                     &mut results,
                 );
                 // Propagate the persisted state (saved + persist_mismatch) to BakeShared

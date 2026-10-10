@@ -683,25 +683,16 @@ fn handle_scene_job(
 /// The ONE field-8 saved-preset read a leveling run gets, THE source for everything the
 /// saved document answers: the raw per-node scene overlays ([`scene_overlay`]) and
 /// [`build_scene_jobs`]'s routing-structure fallback.
-/// Read it once per preset and thread the document — never add a second read.
-///
-/// GAP CONTRACT (the HID open-lockout is real: every failed exclusive open resets it, so
-/// hammering never recovers): this function does NOT sleep before its own read — the call
-/// sites place it where nothing has just closed a session, or where the caller already slept
-/// `RECONNECT_GAP_MS`; sleeping here as well doubled the gap to 800 ms, landing at the edge of
-/// the lockout window instead of safely under it. It sleeps ONCE, AFTER the read, so whoever
-/// opens next gets a properly-spaced session boundary. A failed read returns `None` and every
-/// consumer degrades to its pre-read behaviour.
+/// Read it once per preset and thread the document — never add a second read. A failed
+/// read returns `None` and every consumer degrades to its pre-read behaviour.
 pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
-    let result = match crate::read_slot_preset_parsed(list_index) {
+    match crate::read_slot_preset_parsed(list_index) {
         Ok((preset, _, _)) => Some(preset),
         Err(e) => {
             log::warn!("scene jobs slot {list_index}: field-8 saved-preset read failed ({e})");
             None
         }
-    };
-    crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    result
+    }
 }
 
 /// [`read_saved_preset`]'s COMPLETE-OR-FAIL sibling, for the scene LEVELING planners.
@@ -717,8 +708,7 @@ pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
 ///
 /// So this routes through [`crate::read_slot_preset_complete`], which falls back to a
 /// name-guarded device backup — the only transport carrying the whole document — and
-/// refuses rather than returning a partial one. Same GAP CONTRACT as its sibling: no sleep
-/// before the read, one `RECONNECT_GAP_MS` after it.
+/// refuses rather than returning a partial one.
 pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::Value, String> {
     read_saved_preset_complete_sections(list_index, &["scenes"])
 }
@@ -726,15 +716,12 @@ pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::
 /// [`read_saved_preset_complete`] with an explicit required-sections list — A3's widened read
 /// for a batch that carries a BASE row: the base isolation derivation additionally needs
 /// `ftsw` (`doctor_force_bypass`'s own input), and a partial `ftsw` under-isolates silently
-/// rather than erroring, so it must be COMPLETE-OR-FAIL exactly like `scenes` already is. Same
-/// GAP CONTRACT as the sibling above (no sleep before the read, one `RECONNECT_GAP_MS` after).
+/// rather than erroring, so it must be COMPLETE-OR-FAIL exactly like `scenes` already is.
 pub(crate) fn read_saved_preset_complete_sections(
     list_index: u32,
     sections: &[&str],
 ) -> Result<serde_json::Value, String> {
-    let result = crate::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p);
-    crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-    result
+    crate::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p)
 }
 
 /// Un-engaged pre-pass for the app's batched scene leveling: ONE rich session
@@ -760,6 +747,7 @@ pub(crate) fn read_saved_preset_complete_sections(
 pub(crate) type SceneDocs = (Vec<(u32, Option<serde_json::Value>)>, Option<u32>);
 
 pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<SceneDocs, String> {
+    crate::leveller::make_current(slot)?;
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
@@ -993,10 +981,9 @@ pub(crate) fn scene_overlay<'a>(
     scene_overlay_for(preset, scene, (&group, &node_id, &fender_id))
 }
 
-/// One PARAM's read out of a scene overlay — [`SceneOverlay`] narrowed to a single key, so the
-/// two scene-witness comparators (`leveller::scene_overlay_witness_value`'s Fix-3 match-only
-/// read, `leveller::persisted_value`'s scene arm) collapse the same four overlay states the same
-/// way instead of each hand-rolling the `Full`/`BypassOnly` param lookup.
+/// One PARAM's read out of a scene overlay — [`SceneOverlay`] narrowed to a single key
+/// (`leveller::persisted_value`'s scene arm), so the four overlay states collapse in one place
+/// instead of a hand-rolled `Full`/`BypassOnly` param lookup.
 pub(crate) enum SceneParamRead<'a> {
     /// The overlay carries `param`.
     Value(&'a serde_json::Value),
@@ -1161,7 +1148,7 @@ pub(crate) fn scene_node_overrides(
 /// write onto) — callers must skip silently, exactly like the read side's `Absent`/`Unknown`.
 ///
 /// `#[cfg(feature = "e2e")]`: today's only writer of a scene overlay's raw JSON is the sim's own
-/// lazy-commit model (`sim_device::patch_scene_overlays`) — the real device is written over the
+/// saved-doc model (`sim_device::patch_scene_overlays`) — the real device is written over the
 /// wire (`Session::change_parameter` + `setNodeSceneEdit`), never by mutating a local JSON doc.
 #[cfg(feature = "e2e")]
 pub(crate) fn scene_overlay_entry_mut<'a>(
@@ -1622,11 +1609,6 @@ pub(crate) fn prepass_scene_docs_via(
             ),
         }
     }
-    // Freshness barrier: this is the run_batched (live-branch) prepass load — a same-slot
-    // scene-leveling run started shortly after this preset's own earlier deferred-scene save
-    // could otherwise materialize the PRE-save doc here (`leveller::ensure_fresh_load`'s own
-    // doc has the HW evidence). No-op when the slot has no pending save in the registry.
-    crate::leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     let (mut docs, restore) = prepass_scene_docs(slot, scene_slots)?;
     if let Some(preset) = saved {
         backfill_scene_docs_from_saved(slot, preset, &mut docs);

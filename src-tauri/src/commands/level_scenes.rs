@@ -414,13 +414,10 @@ fn pick_scene_level_knob(
         Some(scene)
     };
     // ONE rich session (HW-rearchitected): heartbeat warmup → loads
-    // via send_and_collect → live doc from the accumulated field-3 pushes. The
-    // old connect → load → drop → connect_for_discovery chain is broken on fw
-    // 1.8.45 twice over: a close chased by a re-open wedges the device's next
-    // exclusive open (0xe00002c5 lockout), and field-78 kills field-3 delivery
-    // for its whole session anyway. After each load the raw accumulator is
-    // cleared so the doc reflects the POST-scene live state (the pick must read
-    // the sounding graph, never stale pre-scene pushes).
+    // via send_and_collect → live doc from the accumulated field-3 pushes. After
+    // each load the raw accumulator is cleared so the doc reflects the POST-scene
+    // live state (the pick must read the sounding graph, never stale pre-scene
+    // pushes).
     let live_doc = {
         let mut s = Session::connect()?;
         for _ in 0..16 {
@@ -488,9 +485,6 @@ fn level_one_scene_legacy(
     save: bool,
 ) -> Result<leveller::LevelResult, String> {
     let (knob, lo, hi, _current) = pick_scene_level_knob(slot, scene, candidates)?;
-    // 800 ms before the leveller's first fresh connect — the empirical safe gap
-    // after a rich-session close (shorter chases trip the device's open lockout).
-    crate::settle(std::time::Duration::from_millis(800));
     let opts = leveller::LevelOptions {
         save,
         verify: true,
@@ -640,28 +634,6 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
         }
         let (anchor_only_base, base_in_plan) = base_anchor_plan(base_requested, base_anchor);
 
-        // A2: the freshness barrier belongs BEFORE the saved read, unconditionally (not
-        // anchor-gated) — the wizard's OWN `level_preset` lane may have saved this exact slot
-        // seconds ago (lazy commit T+45-100s, danger.md), and a scenes-only batch run right
-        // after it pays the identical race. Tell the wizard why nothing moves for up to ~2 min
-        // before paying the wait (mirrors `level_footswitch.rs`'s barrier caption verbatim).
-        if leveller::slot_save_pending_commit(slot) {
-            let _ = on_result.send(SceneLevelProgressItem {
-                scene_slot: jobs[0].scene_slot,
-                status: "active".to_string(),
-                result: None,
-                message: Some(leveller::WAITING_FOR_COMMIT_MSG.to_string()),
-                tail: None,
-            });
-        }
-        leveller::ensure_fresh_load(slot, &mut || SCENE_LEVEL_CANCEL.load(SeqCst))?;
-        // The slot's registered `presetLevel` witness — set by the run's OWN preceding
-        // `level_preset` base save — in PREFERENCE to the doc's parsed value: field-8 is
-        // read-your-writes and the barrier above already gates the wait, but inside the lazy
-        // commit window the device's LOAD STORE (what a later recall serves) can still lag the
-        // registry for a beat longer than the harvest above can observe.
-        let intended_preset_level_seed = leveller::registered_preset_level(slot);
-
         // THE field-8 read for this preset (one per run, before any other session — nothing
         // has just closed one here, and it leaves the validated prepass→runner boundary
         // below untouched). Feeds the raw per-node scene overlays (`scene_jobs::
@@ -702,11 +674,6 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             // (see prepass_scene_docs_via's adoption-time TODO). `false` = live prepass today.
             let (docs, restore_scene) =
                 prepass_scene_docs_via(slot, &scene_slots, false, saved.as_ref())?;
-            // Inter-session HID gap: the prepass session has just closed; the one-shot
-            // runner opens a fresh one. Reuse the leveller's HW-proven open-after-close
-            // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
-            // is pure CPU, so this is the only wait here.
-            crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
             // `build_scene_jobs` stamps a base target on every job; override each with its
             // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
             // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
@@ -840,18 +807,10 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 // takes this reading as its `measured0` and compares it against a post-apply
                 // capture, so a mismatch of 9.9 dB swamped `no_authority`'s KNOB_TOL_LU and
                 // turned an amps-at-zero scene's actionable routing clamp into a reason-less
-                // headroom one (offline fixture 403 "Clean"). "The level the preset currently
-                // holds" is the intent, and inside a save's lazy-commit window the device's
-                // load store does not hold it — hence asserting it rather than assuming it.
-                // Through the SAME seam the solve captures use, with no trade yet (`None`),
-                // so the two renderings cannot drift apart by editing one side.
-                //
-                // A2: prefer the run's OWN registered `presetLevel` witness (the preceding
-                // `level_preset` base save) over the parsed doc — the barrier above already
-                // waited out the commit window, but the device's load store can still lag the
-                // registry for a beat longer than the harvest can observe.
-                let saved_pl = intended_preset_level_seed
-                    .or_else(|| leveller::scene_capture_level(None, saved.as_ref()));
+                // headroom one (offline fixture 403 "Clean"). Through the SAME seam the solve
+                // captures use, with no trade yet (`None`), so the two renderings cannot drift
+                // apart by editing one side.
+                let saved_pl = leveller::scene_capture_level(None, saved.as_ref());
                 let prepass_result = leveller::prepass_scene_ceilings(
                     &mut scene_jobs,
                     &stim,
@@ -864,8 +823,11 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 // loop above) may have landed its forced bypasses. Nothing has been written or
                 // deferred yet at this point (PHASE 1 is read-only measurement), so the cheapest
                 // correct cleanup is a full reload, unconditionally, mirroring the unbatched
-                // path's own dirt handling. A cancel must not skip it either (danger.md) — the
-                // never-cancel closure below guarantees the barrier/reload run to completion.
+                // path's own dirt handling. A cancel must not skip it either (danger.md). A
+                // same-slot load reloads the stored preset only over a DIRTY working copy (fw
+                // 1.8.58, tmp-audit Q34(d), HW-shown for a `presetLevel` edit; that a forced
+                // bypass's `changeParameter` sets the flag is static RE only). The deleted fw
+                // 1.8.45 barrier issued this same load.
                 //
                 // A FAILED cleanup HARD-FAILS the whole command rather than warn-and-continue:
                 // on the anchor-only path base carries no wire job of its own, so nothing later
@@ -882,9 +844,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                         .find(|sj| sj.scene_slot == session::BASE_SCENE_SLOT)
                         .is_some_and(|sj| !sj.force_bypass.is_empty());
                 if base_isolated {
-                    let cleanup = leveller::ensure_fresh_load(slot, &mut || false)
-                        .and_then(|_| leveller::restore_saved_preset(slot));
-                    if let Err(e) = cleanup {
+                    if let Err(e) = leveller::restore_saved_preset(slot) {
                         return Err(format!(
                             "slot {slot}: could not clear the base isolation prepass write \
                              ({e}) — aborting the run rather than risk a later save persisting \

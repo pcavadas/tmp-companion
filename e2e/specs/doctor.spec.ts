@@ -36,13 +36,12 @@ import {
 //
 // ONLINE seeding note (kept for the file's own online-tier assertions, if any are ever
 // re-added): scripts/e2e.sh seeds the scenario via `probe --seed-scenario` BEFORE the
-// server starts (fresh-process seeding dodges the in-process 0xe00002c5 open lockout
-// that aborted in-spec seeds) and POSTs `e2e_mark_seeded`, which arms the server's
-// verified-seed flag; `ensureScenario` here always calls `e2e_seed_scenario` online,
-// which fast-no-ops on that flag and only pays the full ownership-verified in-process
-// seed on direct playwright runs (or after a clear). If the runner's seed fails all
-// attempts, check nothing else holds the device (Pro Control, a stale server/app),
-// rest a minute, rerun.
+// server starts (so the server's handshake snapshots the seeded presets) and POSTs
+// `e2e_mark_seeded`, which arms the server's verified-seed flag; `ensureScenario` here
+// always calls `e2e_seed_scenario` online, which fast-no-ops on that flag and only pays
+// the full ownership-verified in-process seed on direct playwright runs (or after a
+// clear). If the runner's seed fails all attempts, check nothing else holds the device
+// (Pro Control, a stale server/app), then rerun.
 test.describe("Doctor — select, check, results", () => {
   test.afterEach(async ({ page }) => {
     // Re-amp OFF rescue FIRST — a mid-test failure before the balance gate must not strand

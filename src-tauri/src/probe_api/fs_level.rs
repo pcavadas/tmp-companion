@@ -175,7 +175,6 @@ pub fn probe_bake_validate(
         "[probe --bake-validate] slot {} · FS{switch} · {group}/{node}.{param}\n  before: value={orig:.4} bypass={byp0} switch_fns={fns0}\n",
         slot + 1
     );
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     // Commit the bake (engaged-measured, value written onto the block).
     let r = leveller::level_footswitch(
@@ -215,7 +214,6 @@ pub fn probe_bake_validate(
     );
 
     // Restore the original value (change_parameter + save on a heartbeat-live session).
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     {
         let mut s = Session::connect()?;
         s.begin_live_edit()?;
@@ -309,7 +307,6 @@ pub fn probe_fs_sweep(
             leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let mut out = format!(
         "[probe --fs-sweep] list_index={list_index} FS{switch} {group}/{node}.{param}\n  isolation: {engaged:?}\n"
@@ -329,7 +326,6 @@ pub fn probe_fs_sweep(
             }
             Err(e) => out += &format!("  {param}={v:.3} → ERR {e}\n"),
         }
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     }
     if let Ok(mut s) = Session::connect_lean() {
         let _ = s.load_preset(list_index);
@@ -380,7 +376,6 @@ pub fn probe_amp_recipe(
             leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let measure = |engaged: &[(String, String, bool)]| -> Result<f64, String> {
         let mut s = Session::connect_lean()?;
@@ -411,7 +406,6 @@ pub fn probe_amp_recipe(
         Err(e) => out += &format!("  base (all switches off)      ERR {e}\n"),
     }
     for info in &infos {
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         // The production composition (siblings forced off PLUS this switch's own engaged
         // flip) via its one cross-module owner — never the flip alone, which would leave
         // earlier iterations' pedals audible in this switch's capture.
@@ -502,7 +496,6 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
             leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let measure = |force: Option<bool>| -> Result<f64, String> {
         let mut s = Session::connect()?;
@@ -516,9 +509,7 @@ pub fn probe_measure_forced(slot: u32, group: &str, node: &str) -> Result<String
     };
 
     let base = measure(None);
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let off = measure(Some(true)); // force bypassed
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let on = measure(Some(false)); // force active
     let _ = Session::connect().map(|mut s| s.set_reamp_mode(false));
 
@@ -646,7 +637,6 @@ pub fn probe_level_footswitch(
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
 
     let (preset, _, _) = read_slot_preset_parsed(slot)?;
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let ftsw = preset
         .get("ftsw")
         .cloned()
@@ -911,7 +901,6 @@ pub fn probe_set_param_save(
         out += &format!("  DRY \u{2014} would write {value:.4} (re-run with `save` to persist)\n");
         return Ok(out);
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     {
         let mut s = Session::connect()?;
         s.begin_live_edit()?;
@@ -927,7 +916,6 @@ pub fn probe_set_param_save(
         s.change_parameter(group, node, param, value)?;
         s.save_current_preset(list_index)?;
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (after_preset, _, _) = read_slot_preset_parsed(list_index)?;
     let after = node_param_f64(&after_preset, node, param)
         .ok_or_else(|| format!("{node}.{param} vanished after save"))?;

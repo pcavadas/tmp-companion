@@ -69,7 +69,7 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
   `level_scenes_apply_batched` yields `trade: null` unless `baseAnchor` is passed.
 - **Never `list_my_presets_strict` in a seed/sweep/write-path list read** — see `.claude/rules/e2e.md`'s "Seeding and
   list reads" for why (strict is snapshot/monitor-only).
-- **A soak/online run needs the unit rested and Pro Control closed** — same preconditions as any
+- **A soak/online run needs the unit plugged in and Pro Control closed** — same preconditions as any
   online `e2e.sh` invocation; a handshake failure reports the "close Pro Control" hint.
 - **A docs-only change gets NO automated gate**, so nothing catches a stray non-ASCII character
   landing in committed prose — a generated CJK glyph reached this public repo that way. Eyeball a

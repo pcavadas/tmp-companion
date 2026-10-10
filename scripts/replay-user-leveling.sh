@@ -27,12 +27,8 @@
 #      triple from that SAME read, never guessed;
 #   5. per preset, in the order the app used (base → scenes → footswitches), issues ONE
 #      SAVING leveling call per step (batched for scenes/footswitches — one command levels
-#      every row of that step), then WAITS OUT THE LAZY-SAVE COMMIT WINDOW (150 s) before
-#      re-measuring that preset — mandatory, not politeness, and NOT redundant with the
-#      leveling commands' own in-process `ensure_fresh_load` barrier: the measurement seam
-#      (`leveller::measure_sound_asis_strict`, behind `e2e_measure_sound`) opens its OWN
-#      fresh session with NO registry check (`.claude/rules/danger.md`'s lazy-commit entry;
-#      `src-tauri/src/leveller.rs`'s `capture_full_at_params`/`capture_fs_at`);
+#      every row of that step), then re-measures that preset straight away (fw 1.8.58: a
+#      save is durable the moment it returns — tmp-audit Q34);
 #   6. re-measures every leveled row with `e2e_measure_sound` (the strict re-measure
 #      command), which appends one expectation row + WAV to the log the server already
 #      has armed;
@@ -193,11 +189,6 @@ LIB_JSON="$OUT_DIR/library.json"
 : > "$VALIDATE_LOG"
 mkdir -p "$VALIDATE_WAV_DIR"
 
-# The lazy-save commit window, in seconds — mirrors `leveller::COMMIT_WINDOW_SECS` (150)
-# and `scripts/validate-hbe.sh`'s own constant. See the header note above for WHY this is
-# not covered by the leveling commands' in-process barrier.
-COMMIT_WINDOW_WAIT=150
-
 # The stimulus profile the real session used ("Maverick bridge") — passed through on
 # every command that accepts a profileId/topologyId/calibrationLufs triple, exactly as
 # the UI does. Treated as given (recovered from the user's app log + profiles.json).
@@ -351,9 +342,7 @@ cleanup() {
   fi
   # Release the HID (kill the server) BEFORE any probe fallback, whether or not the
   # in-band attempt above succeeded — a still-live server holding the exclusive HID seize
-  # makes probe's own open hit the lockout (0xe00002c5), and each failed open re-arms it
-  # (danger.md's HID open-lockout model). Fresh-quiet-then-open needs the seize released
-  # first.
+  # makes probe's own open fail (0xe00002c5).
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   kill_port "$PORT"
   if [ "$reamp_ok" -ne 1 ]; then
@@ -439,9 +428,6 @@ if [ "$SERVER_READY" -ne 1 ]; then
   exit 1
 fi
 ok "e2e_server ONLINE and seeded from the real device"
-
-log "resting the unit before the first device-touching call (post-handshake settle)…"
-sleep 60
 
 # ── read the whole library ONCE (non-destructive) and confirm every target slot's name ──
 log "[1] read_library_via_backup (non-destructive)…"
@@ -667,13 +653,6 @@ process_preset() {
     log "[fs] no footswitch rows for slot $slot — skipping"
   fi
 
-  # ── THE COMMIT-WINDOW WAIT — see this file's header for why it is not optional ──
-  log "[wait] waiting ${COMMIT_WINDOW_WAIT}s for slot $slot's LAZY save commit before any re-measure…"
-  log "       (this is not a hang — danger.md: a same-slot load inside T+45-100s materializes"
-  log "        the PRE-save preset, and e2e_measure_sound's capture path is not registry-guarded)"
-  sleep "$COMMIT_WINDOW_WAIT"
-  ok "[wait] commit window elapsed for slot $slot"
-
   # ── re-measure every leveled row of this slot ────────────────────────────────────
   clamped="$(jq -r '.clamped' "$OUT_DIR/level-base-$slot.json")"
   pm="$(jq -r '.persist_mismatch' "$OUT_DIR/level-base-$slot.json")"
@@ -712,13 +691,7 @@ process_preset() {
 }
 
 SLOTS="26 27 28"
-first=1
 for slot in $SLOTS; do
-  if [ "$first" -eq 0 ]; then
-    log "resting the unit between presets…"
-    sleep 10
-  fi
-  first=0
   if ! process_preset "$slot"; then
     err "preset slot $slot FAILED — stopping the replay (no further presets will be touched)"
     FAILED=1

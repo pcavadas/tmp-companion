@@ -676,8 +676,7 @@ pub fn probe_capture_input(secs: f32) -> Result<String, String> {
     // disabled) and would misdirect the very diagnosis this probe exists for.
     {
         // `connect_lean` for the same reason as `capture_dry_di`: a bare setter needs
-        // no handshake payload, and the lean shape is the narrowest open onto a device
-        // whose exclusive-open lockout every failed attempt would restart.
+        // no handshake payload.
         let mut s = Session::connect_lean()
             .map_err(|e| format!("could not reach the device to switch re-amp OFF ({e})"))?;
         s.set_reamp_mode(false)
@@ -800,39 +799,5 @@ pub fn probe_reamp_agc_test(slot: u32) -> Result<String, String> {
          marginal — inspect the sweep before building calibration"
     };
     out += &format!("  steepest −6 dB step: {max_step_drop:+.2} LU\n  {verdict}\n");
-    Ok(out)
-}
-
-/// E0: `probe --verify-fresh-load <listIdx>` — exercises `leveller::ensure_fresh_load`
-/// end-to-end against a FAKE registry entry built from the slot's OWN current field-8
-/// `presetLevel` (a non-destructive read; nothing is written). A healthy device should
-/// harvest a match on the very first load re-issue, so this doubles as a fresh-equality
-/// invariant check and a timing sample of the barrier's rich-session cost. Prints
-/// PASS/FAIL plus the witness and elapsed time; NON-DESTRUCTIVE (loads only, no set/save).
-pub fn probe_verify_fresh_load(list_index: u32) -> Result<String, String> {
-    let preset = crate::read_saved_preset(list_index)
-        .ok_or_else(|| format!("slot {list_index}: could not read the saved preset (field-8)"))?;
-    let level = crate::audiograph::preset_level(&preset)
-        .ok_or_else(|| format!("slot {list_index}: saved preset has no presetLevel"))?
-        as f32;
-    leveller::register_slot_save(list_index, leveller::SaveWitness::PresetLevel(level));
-    let t0 = std::time::Instant::now();
-    let result = leveller::ensure_fresh_load(list_index, &mut || false);
-    let elapsed = t0.elapsed();
-    let mut out = format!(
-        "--verify-fresh-load slot={list_index} witness=PresetLevel({level:.4}) elapsed={:.2}s\n",
-        elapsed.as_secs_f64()
-    );
-    match result {
-        Ok(()) => {
-            out += "PASS: ensure_fresh_load returned Ok. A sub-second elapsed means the \
-                    harvest matched on the first load (or the registry/time-gate fast path \
-                    fired — check `elapsed` against the ~1-2s a rich session normally costs \
-                    to tell which); several seconds means it retried before matching.\n";
-        }
-        Err(e) => {
-            out += &format!("FAIL: ensure_fresh_load returned Err({e})\n");
-        }
-    }
     Ok(out)
 }

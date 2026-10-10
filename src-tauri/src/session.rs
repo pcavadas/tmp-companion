@@ -2,8 +2,8 @@
 //! leveling primitives (load preset, toggle re-amp, set preset level, save).
 //!
 //! The load-bearing USB-protocol invariants (batchStatus grouping, re-amp latch
-//! rules, HID open-lockout, slot +1 addressing, the capture window) are written
-//! up in `notes/protocol.md`.
+//! rules, the HID seize, slot +1 addressing, the capture window) are written up
+//! in `notes/protocol.md`.
 //!
 //! Builds on `hid` (transport) + `proto` (wire codec). Replicates the request
 //! sequence that is known-good against a real device. The
@@ -1119,8 +1119,7 @@ impl Session {
 
     /// Rich-harvest warmup: the heartbeat/pump turns that establish this session as a live
     /// controller before a [`Session::rich_load_collect`] (the bench intel-session /
-    /// `prepass_scene_docs` shape). Shared by `discover_blocks_rich` and the
-    /// `ensure_fresh_load` freshness barrier.
+    /// `prepass_scene_docs` shape). Used by `discover_blocks_rich`.
     pub(crate) fn rich_warmup(&mut self) -> Result<(), String> {
         for _ in 0..8 {
             self.heartbeat()?;
@@ -1487,9 +1486,9 @@ impl Session {
         self.send_and_collect(&proto::current_preset_info_request(proto::BATCH_DRAIN), 120)
     }
 
-    /// Re-read the My-Presets list on this HELD session (no reopen — every failed open
-    /// resets the HID open-lockout). `raw` MUST be cleared: a stale truncated list left
-    /// in it out-weighs the fresh reply's mid-flood partials in the tolerant harvest.
+    /// Re-read the My-Presets list on this HELD session (no reopen). `raw` MUST be cleared:
+    /// a stale truncated list left in it out-weighs the fresh reply's mid-flood partials in
+    /// the tolerant harvest.
     /// Quiet sessions only — a re-arm on a live one draws a `connectionError`.
     pub fn reread_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
         self.drain_until_quiet(250, 20)?;
@@ -2117,9 +2116,9 @@ impl Session {
     }
 
     /// Prove the loaded working copy is the import before a save writes it over another
-    /// slot: a body the firmware rejects at LOAD becomes a silent EMPTY preset that keeps
-    /// the stored name (fw 1.8.58, no `presetError`), which [`Self::confirm_active`]
-    /// passes. Re-prompts the working copy (the HW-proven [`Self::live_audio_graph`] seam)
+    /// slot: a body the firmware rejects at LOAD becomes an EMPTY preset that keeps the
+    /// stored name (fw 1.8.58, tmp-audit Q35 — its `presetError` 6 is dropped by
+    /// `load_preset`'s eager transact), which [`Self::confirm_active`] passes. Re-prompts the working copy (the HW-proven [`Self::live_audio_graph`] seam)
     /// and hands `check` its block roster and the accepted document.
     pub(crate) fn confirm_loaded_body(
         &mut self,
@@ -3085,14 +3084,13 @@ fn best_factory_list_from_reports(reports: &[Vec<u8>]) -> Option<Vec<String>> {
 /// is unit-testable without a live `Session` (mirrors `best_preset_list_from_reports`). See
 /// that method's doc for the three carriers and the longest-wins rule.
 ///
-/// DANGER (`leveller::ensure_fresh_load`'s own doc restates this): carrier `(9, 3)` is the
-/// field-8 slot-read reply's own payload. If a session's accumulated reports ever carry BOTH
-/// a fresh field-3 live push and a stray field-9 reply, "longest wins" can pick the STALE
-/// field-9 content over the fresh push — a caller comparing that payload against an
-/// independently-recorded "what should this preset show now" oracle would be comparing the
-/// oracle against itself. `ensure_fresh_load`'s session never issues a field-8 read for
-/// exactly this reason; `best_json_payload_from_reports_can_prefer_a_stale_field9_reply`
-/// below proves the hazard exists at this layer.
+/// DANGER: carrier `(9, 3)` is the field-8 slot-read reply's own payload. If a session's
+/// accumulated reports ever carry BOTH a fresh field-3 live push and a stray field-9 reply,
+/// "longest wins" can pick the field-9 content over the fresh push — a caller harvesting the
+/// LOADED document must clear `raw` first and issue no field-8 read on that session
+/// ([`Session::rich_load_collect`] does the former);
+/// `best_json_payload_from_reports_can_prefer_a_stale_field9_reply` below proves the hazard
+/// exists at this layer.
 fn best_json_payload_from_reports(reports: &[Vec<u8>]) -> Vec<u8> {
     json_payloads_from_reports(reports)
         .into_iter()
@@ -5041,14 +5039,11 @@ mod tests {
         assert_eq!(best, vec!["Guitar".to_string(), "Cello".to_string()]);
     }
 
-    // The field-9-polluted rig `leveller::ensure_fresh_load` is built to never create:
-    // carrier (9, 3) is the field-8 slot-read reply's OWN payload, and `best_json_payload`
-    // picks the LONGEST of its three carriers with no other tiebreak. A session whose
-    // accumulated reports carry BOTH a fresh field-3 live push and a stray, longer field-9
-    // reply will silently prefer the STALE field-9 content — proving the compare CAN fail
-    // (a freshness check built on this payload would launder stale bytes as fresh) and why
-    // `ensure_fresh_load` clears `raw` before every harvest and never issues a field-8 read
-    // on its own session.
+    // The field-9-polluted rig a load harvest must never create: carrier (9, 3) is the
+    // field-8 slot-read reply's OWN payload, and `best_json_payload` picks the LONGEST of its
+    // three carriers with no other tiebreak. A session whose accumulated reports carry BOTH a
+    // fresh field-3 live push and a stray, longer field-9 reply will silently prefer the
+    // field-9 content — why `rich_load_collect` clears `raw` before every harvest.
     #[test]
     fn best_json_payload_from_reports_can_prefer_a_stale_field9_reply() {
         fn ld(field: u32, inner: &[u8]) -> Vec<u8> {

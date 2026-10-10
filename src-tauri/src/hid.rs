@@ -17,6 +17,7 @@
 //! pump), all on that same thread — so the receive buffer needs no locking.
 
 use crossbeam_channel::{bounded, Sender};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 use crate::proto;
@@ -100,12 +101,37 @@ pub struct Hid {
     join: Option<JoinHandle<()>>,
 }
 
+/// Live [`Hid`] handles in this process. fw 1.8.58 has no open lockout (tmp-audit Q36), so
+/// an exclusive-access failure means another handle holds the seize: Pro Control, or one of
+/// ours.
+static LIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
+
 impl Hid {
     /// Open the TMP (seizing it). Errors if no device is present or Pro Control
     /// holds it. Blocks until the worker thread has the device open.
     pub fn open() -> Result<Hid, String> {
-        imp::open()
+        let hid = imp::open().map_err(|e| match LIVE_HANDLES.load(Ordering::SeqCst) {
+            0 => e,
+            n => format!("{n} other session(s) in this app still hold the device ({e})"),
+        })?;
+        LIVE_HANDLES.fetch_add(1, Ordering::SeqCst);
+        Ok(hid)
     }
+}
+
+/// Wait, at most `timeout`, until no [`Hid`] handle in this process holds the device. A
+/// drop-then-reopen calls this rather than a blind gap: a handle another thread is still
+/// closing (the monitor, after a late pause-ack) would fail the reopen. Returns whether the
+/// device was released in time.
+pub(crate) fn wait_released(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while LIVE_HANDLES.load(Ordering::SeqCst) > 0 {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
 }
 
 /// Whether the TMP is currently attached, WITHOUT opening or seizing it — the
@@ -134,6 +160,7 @@ impl Drop for Hid {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
+        LIVE_HANDLES.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -159,8 +186,7 @@ pub trait HidTransport: Send {
     /// MAY return before `pump_ms` elapses (the sim returns instantly) — this is not a promise
     /// of wall-clock duration, only of "however long this pump took, here's what arrived". A
     /// caller that needs actual wall-clock pacing across a wait loop (spacing retries, not just
-    /// collecting) must measure elapsed time itself rather than counting nominal pump slices;
-    /// see `leveller::ensure_fresh_load_paced`'s wait loop for the pattern.
+    /// collecting) must measure elapsed time itself rather than counting nominal pump slices.
     fn pump(&self, pump_ms: u64) -> Result<Vec<Vec<u8>>, String>;
     /// Like [`Self::transact`], but returns EARLY once the response framing is complete
     /// and the line has gone quiet (`max_ms` stays the hard cap, so the worst case equals
@@ -344,15 +370,11 @@ mod imp {
     /// enumeration succeeds immediately (HW-observed: the second of
     /// two back-to-back probe sessions failed through 5 s of same-ref retries,
     /// yet a fresh process connected instantly). Genuine Pro Control contention
-    /// persists across every attempt and still surfaces the error (~5 s).
+    /// persists across every attempt and still surfaces the error (~3 s).
     unsafe fn open_device() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), String> {
-        // LONG quiet backoffs, few attempts: hammering open every ~700 ms NEVER
-        // recovered a locked-out device across hundreds of HW retries
-        // — each failed seize attempt appears to RESET the device's lockout
-        // window, so rapid retries are self-defeating. ~8 s of true quiet lets
-        // the lockout expire.
+        // Short backoff: fw 1.8.58 has no open lockout to wait out (tmp-audit Q36).
         const ENUM_RETRIES: u32 = 3;
-        const ENUM_RETRY_DELAY_MS: u64 = 8000;
+        const ENUM_RETRY_DELAY_MS: u64 = 400;
         let mut last_err = String::new();
         for attempt in 0..=ENUM_RETRIES {
             if attempt > 0 {
@@ -633,11 +655,10 @@ mod imp {
 ///
 /// There is no seize here, and none is needed. `kIOHIDOptionsTypeSeizeDevice` exists
 /// on macOS to lock Pro Control out of the device; Fender ships no Pro Control for
-/// Linux, so nothing competes for the unit. The macOS open-retry tuning (the
-/// `0xe00002c5` lockout, the 8 s quiet backoff) describes IOKit exclusive-open
-/// behaviour and is deliberately NOT copied: there is no evidence the same lockout
-/// exists here, and inventing retries for an unobserved failure mode would just make
-/// a real error slow to surface.
+/// Linux, so nothing competes for the unit. The macOS open-retry ladder rides out
+/// IOKit's seize release and is deliberately NOT copied: back-to-back sessions here
+/// reopen at once, and a retry for an unobserved failure would only make a real error
+/// slow to surface.
 ///
 /// Threading mirrors the macOS side so [`Hid`] behaves identically: one worker thread
 /// owns the fd for its whole life and other threads issue commands over a channel.

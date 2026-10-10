@@ -151,8 +151,7 @@ pub fn probe_set_master_level(level: f32) -> Result<String, String> {
 ///
 /// Prints the raw reply-stream summary FIRST (so a silent ignore is
 /// distinguishable from an error reply from a real answer) and then the decoded
-/// rows if any arrived. Both halves are printed in one device visit deliberately
-/// — every HID open risks the `0xe00002c5` lockout, and a retry re-arms it.
+/// rows if any arrived, both from one device visit.
 ///
 /// A reply with no TMS-5 stream is a genuine negative for the fw 1.7.75 schema
 /// this was built from; it is NOT proof the mixer is unreadable on the unit's

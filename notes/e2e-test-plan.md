@@ -23,8 +23,8 @@ Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,Err
 
 - **`bash scripts/e2e.sh`** — OFFLINE, all specs against the SimDevice (fast, ~1.5 min, no hardware).
 - **`bash scripts/e2e.sh online`** — ONLINE against the real unit (doctor → level → songs → copy, one
-  at a time, ~40 min on the reference unit; varies by run). Preconditions: the unit plugged in +
-  **rested**, and **Pro Control closed** (it holds the exclusive HID seize). The script pre-flights the
+  at a time, ~25 min on the reference unit; varies by run). Preconditions: the unit plugged in
+  and **Pro Control closed** (it holds the exclusive HID seize). The script pre-flights the
   handshake, runs each spec in its own invocation, and recovers the unit on every handled exit
   (`trap cleanup EXIT INT TERM` — so Ctrl-C and `kill` included): reamp-off + recall 001, plus a
   guarded clear of the scenario slots (`SCRATCH_SLOTS`, 400–409) only with `TMP_E2E_CLEAR_SCENARIO=1`.

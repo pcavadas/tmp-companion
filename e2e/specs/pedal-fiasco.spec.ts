@@ -24,7 +24,7 @@ import {
 // and the `copy_apply_one` op-order tests (never-save-on-presetError / retry-the-dropped-first-edit).
 // STALE NOTE this comment used to carry: "footswitch leveling needs a field-8 preset read the
 // SimDevice doesn't model" — it does now (`F_PRESET_DATA_REQUEST`/`saved_slot_json_body`, plus the
-// lazy-commit `SavedDoc` overlay a bake round-trips through); see `level-fs-preset24.spec.ts` for
+// `SavedDoc` overlay a bake round-trips through); see `level-fs-preset24.spec.ts` for
 // full offline footswitch-leveling coverage, including the isolation-persists shape. This spec's own
 // job is narrower and stays as-is: the silent-capture-writes-nothing half, which IS the "items
 // failing" symptom the user originally reported.

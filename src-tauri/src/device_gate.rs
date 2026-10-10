@@ -214,10 +214,6 @@ pub(crate) fn lock_device_op() -> MonitorPauseGuard {
     MonitorPauseGuard(g)
 }
 
-/// Settle gap before re-establishing the UI session, so the IOKit seize the
-/// device work just released has time to free up before we re-open it.
-pub(crate) const RECONNECT_AFTER_MS: u64 = 400;
-
 /// Run blocking device work with the app's HID seize released — the leveller and
 /// calibration open their own fresh connections, so the app must NOT hold a
 /// competing seize while they run. Re-establishes a live session for the UI
@@ -256,12 +252,11 @@ where
     // permanently block the monitor on its `is_none()` opportunism check (the
     // hero would stay stuck "Reading active preset…"). When live-sync owns the
     // device, leave the seize RELEASED and let the monitor re-take it on its
-    // next poll (the `_op` guard's Drop clears the pause that paused it) — and
-    // skip the settle sleep too: it only exists to protect OUR immediate re-open
-    // below, and the monitor's own connect path already absorbs the kernel's
-    // seize-recycle lag (hid.rs bounded open-retry + its reconnect backoff).
+    // next poll (the `_op` guard's Drop clears the pause that paused it).
     if !MONITOR_ENABLED.load(SeqCst) {
-        std::thread::sleep(std::time::Duration::from_millis(RECONNECT_AFTER_MS));
+        if !crate::hid::wait_released(std::time::Duration::from_secs(1)) {
+            log::warn!("a HID handle was still open after 1 s; the UI reconnect may fail");
+        }
         if let Ok(s) = Session::connect() {
             *lock_ok(&arc) = Some(s);
         }

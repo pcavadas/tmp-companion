@@ -94,10 +94,8 @@ pub(crate) async fn bulk_replace_live(
                 log::warn!(
                     "[bulk-replace] held-session path failed to establish ({e}); falling back to two-connection"
                 );
-                crate::settle(std::time::Duration::from_millis(400));
                 let mut out = Vec::new();
-                let total = plans.len();
-                for (i, plan) in plans.iter().enumerate() {
+                for plan in &plans {
                     if BULK_REPLACE_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
                         break; // Stop pressed — leave the remaining presets untouched.
                     }
@@ -109,9 +107,6 @@ pub(crate) async fn bulk_replace_live(
                     });
                     let _ = on_result.send(item.clone());
                     out.push(item);
-                    if i + 1 < total {
-                        crate::settle(std::time::Duration::from_millis(400));
-                    }
                 }
                 Ok(out)
             }
@@ -439,9 +434,6 @@ fn replace_one_live(
         s1.heartbeat()?;
         s1.pump_silent(500)?;
     }
-    // Quiet settle before reconnecting — avoids the HID open-lockout a rapid
-    // drop→reopen triggers.
-    crate::settle(std::time::Duration::from_millis(400));
 
     // ── conn2: fresh handshake re-attaches to the now-active preset; edit it ──
     let mut s = Session::connect()?;

@@ -77,7 +77,6 @@ pub(crate) fn read_slot_preset_sections(
             })
             .or_else(|| {
                 drop(s);
-                crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
                 // List straight off the fresh handshake's reply — a silent drain first
                 // would let the device drop the client mid-list (`list_my_presets`).
                 Session::connect()
@@ -146,7 +145,6 @@ pub(crate) fn read_slot_preset_complete(
     );
     // Its own fresh connection: the backup is a multi-second whole-library transfer and
     // the re-amp rules keep it off any held session.
-    crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let blob = {
         let mut s = Session::connect()?;
         s.device_backup(60, |_| {})?.0

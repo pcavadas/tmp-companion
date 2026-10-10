@@ -38,7 +38,6 @@ pub fn probe_level_scenes_oneshot(
     let stim = read_stimulus_calibrated(&stim_path, cal)?;
     let candidates = load_and_filter_amp_candidates(list_index)?;
     let (docs, restore_scene) = prepass_scene_docs(list_index, &scene_slots)?;
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     // THE field-8 read for this run: the routing-structure fallback AND the raw scene
     // overlays `set_knobs` needs for its Scene Edit decision.
     let saved = super::scene_jobs::read_saved_preset(list_index);
@@ -131,7 +130,6 @@ pub fn probe_knob_sweep(
             leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let mut out = format!("[probe --knob-sweep] list_index={list_index} {group}/{node}.{param}\n");
     for v in values {
         // Probe sweep of a saved preset: no run-owned `presetLevel` to assert.
@@ -140,7 +138,6 @@ pub fn probe_knob_sweep(
             "  {param}={v:.3} → integrated {:.3} LUFS  short-term-max {:.3}\n",
             l.integrated_lufs, l.short_term_max_lufs
         );
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     }
     // Discard the sweep pollution, then the guaranteed OFF.
     if let Ok(mut s) = Session::connect_lean() {
@@ -170,7 +167,6 @@ pub fn probe_measure_pair(
             leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let result = leveller::measure_pair_at(scene, preset_level, writes, &stim);
     // Discard the pair pollution, then the guaranteed OFF (bound before the `?`).
     if let Ok(mut s) = Session::connect_lean() {

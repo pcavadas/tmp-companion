@@ -58,23 +58,33 @@ Re-amp mode replays a synthetic stimulus through a preset's DSP chain and captur
 processed USB-Out — no guitar plugged in. Toggle = `SettingsMessage(3) → reampModeActive`
 (ON `1a05f201020801`, OFF `1a03f20100`), **not** a MixerMessage.
 
-Load-bearing latch rules (fw 1.8.45):
+Load-bearing latch rules (fw 1.8.45). The code keeps these shapes on fw 1.8.58, unchanged
+and conservative; the fw 1.8.58 notes cite the tmp-audit checks:
 
 - **Re-amp latches state at engage** — the captured tap reflects only the `presetLevel`
-  set _before_ engaging. Set level → then engage.
+  set _before_ engaging. Set level → then engage. On fw 1.8.58 a mid-engage
+  `setPresetLevel` reaches the audio within 100 ms on a live session (Q11).
 - **`load_preset` + engage in the SAME connection captures silence.** Load in its own
   connection, drop, settle, then fresh-connect to set + engage (the `measure_knob_at`
-  shape).
-- **Re-amp engages reliably only ONCE per connection.** Fresh-connect per engage. The
-  `ReAmpModeChanged` echo is flaky and is NOT proof of engagement — a finite captured
-  loudness is.
+  shape). On fw 1.8.58 an engage after a load on one connection was live in 11 Q34
+  captures and 7 Q11 runs. The hazard is the 750 ms session lapse: keep OUT traffic flowing
+  through the post-load wait — 1 s of host silence after a load drops the engage (Q10 C).
+- **Re-amp engages reliably only ONCE per connection.** Fresh-connect per engage. On fw
+  1.8.58 this is for accuracy only: the first capture after an engage is within 0.04 LU of
+  an isolated capture, later captures on one engage read up to 0.29 LU low, and a
+  re-engage per capture on a held connection reads 0.06–0.09 LU low (Q38). The `ReAmpModeChanged` echo is
+  flaky and is NOT proof of engagement — a finite captured loudness is.
 - **Never re-engage on a held connection** (disengage → settle → re-engage): HW-observed to
-  wedge the device's re-amp AND trigger a USB crash that rebooted the Mac. Only the
-  measurement PREPASS reconnects (one engage/scene); the leveling APPLY (set `presetLevel` +
-  per-scene `outputLevel` + save — all pure sends) runs on ONE persistent session.
+  wedge the device's re-amp AND trigger a USB crash that rebooted the Mac. On fw 1.8.58
+  held, heartbeated re-engages and toggles all applied in Q38's one attended 17-min session
+  (10 runs, 4 re-engages, 5 toggles), and the corpus rates the 1.8.45 reboot LIKELY
+  host-side. Only the measurement PREPASS reconnects (one engage/scene); the leveling APPLY
+  (set `presetLevel` + per-scene `outputLevel` + save — all pure sends) runs on ONE
+  persistent session.
 - `changeParameter` IS audible mid-engage (live knob nudges work), but `loadScene`
   mid-engage is INAUDIBLE (the active scene latches at engage). Per-scene leveling therefore
-  requires one engage per scene.
+  requires one engage per scene. On fw 1.8.58 a mid-engage `loadScene` changes the amp
+  within ~300 ms on a live session (Q11); one engage per scene stays, for accuracy (Q38).
 - **The active scene does NOT survive a reconnect** (the preset does). Any capture/measure
   path that addresses a scene must re-assert `loadScene` on the SAME connection that engages
   re-amp — loading it in a throwaway load connection (then reconnecting to capture) measures
@@ -100,11 +110,13 @@ exactly ONE seize owner at any instant. `IOHIDDeviceOpen` fails with
 `kIOReturnExclusiveAccess` (`0xe00002c5`) if Pro Control is running — surfaced as a "close
 Pro Control" error.
 
-- After a session closes the device accepts a QUICK re-open (≤~800 ms) but then **locks out
-  exclusive opens for tens of seconds**, and **every failed attempt appears to RESET the
-  lockout** — hammering retries never recovers; only a long quiet does. `hid.rs` retries at
-  two levels: a same-ref fast lane (6×80 ms) then full re-enumeration retries (3×8 s quiet
-  backoff; a stale device ref fails forever).
+- **fw 1.8.45:** after a session closed the device accepted a QUICK re-open (≤~800 ms) but
+  then **locked out exclusive opens for tens of seconds**, and every failed attempt appeared
+  to RESET the lockout. **fw 1.8.58 has no lockout** (tmp-audit Q36: 1,060 open/close
+  cycles, 200/200 at a 0 ms gap): `0xe00002c5` means another handle holds the seize — Pro
+  Control, or an overlapping `Session` in this process, which `Hid::open` names in its error.
+  `hid.rs` retries a same-ref fast lane (6×80 ms), then re-enumerates at 3×400 ms. Sessions
+  reopen with no fixed gap; the UI's drop-then-reopen waits on `hid::wait_released`.
 - The same `0xe00002c5` also fires on **concurrent** device commands. Every device
   read/write is serialized process-wide by `DEVICE_OP_LOCK` (acquired inside each command's
   `spawn_blocking`). Front-end serialization alone is insufficient — the release→work→

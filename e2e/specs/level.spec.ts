@@ -41,9 +41,8 @@ import {
 test.describe("Level — plain presets + a scenes-and-footswitches preset", () => {
   // Between tests: SAFETY only (re-amp off, so an aborted capture can't strand the
   // unit input-muted for the next test). Slot cleanup happens ONCE in afterAll —
-  // clearing between tests would force the next test's ensureScenario down the flaky
-  // in-process re-seed (the runner seeds once per spec FILE; HW-observed: test 1
-  // passed, its clear forced test 2's re-seed into the 0xe00002c5 open lockout).
+  // clearing between tests would force the next test's ensureScenario down the full
+  // in-process re-seed (the runner seeds once per spec FILE).
   test.afterEach(async ({ page }) => {
     await reampOff(page);
   });
@@ -135,10 +134,8 @@ test.describe("Level — plain presets + a scenes-and-footswitches preset", () =
     // three row kinds in Set up, the bake/assign mechanism never leaking, a terminal
     // Summary) stays proven; only the real-audio loudness outcome is untested now.
     test.skip(await isOnline(page), "trade T2 — see this file's own header");
-    // ~18-23 re-amp captures (E2E Rig base + all scenes + all footswitches) plus up to two
-    // `ensure_fresh_load` commit-window stalls (COMMIT_WINDOW_SECS = 150 s each, danger.md)
-    // if a same-slot load races a prior save — worst case ≈ 1200 s, matching the terminal
-    // wait below; the budget here adds headroom on top.
+    // ~18-23 re-amp captures (E2E Rig base + all scenes + all footswitches) — the budget
+    // matches the terminal wait below, with headroom on top.
     test.setTimeout(1_500_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);

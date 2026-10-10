@@ -40,15 +40,15 @@ scene-leveling test doc comments, and `e2e/fixtures/COVERAGE.md` rows 6/20.
 
 ## Seeding and list reads
 
-- Seed-path list reads are **TOLERANT plus a completeness floor, never `list_my_presets_strict`**. Strict decodes only terminal-frame streams and fails or garbles on back-to-back lean sessions (HW: tolerant returned 504/504 while strict returned truncated 190–236 fallbacks), and its re-arm retries themselves arm the HID open lockout.
-- Online seeding runs a **FRESH `probe --seed-scenario` process BEFORE the server starts**, dodging the in-process `0xe00002c5` open lockout that aborted in-spec seeds. The seed self-repairs by sweeping stray imports — an aborted seed strands copies at the first empty slot anywhere in the bank.
-- The eleven scenario presets live in the scratch zone at list indices 400–410 and **stay resident between runs by default** — the pristine-checking seed re-imports any drifted or stale-rev slot. Teardown unconditionally disables re-amp, sweeps strays and recalls preset 001, but clears the scenario slots **only** with `TMP_E2E_CLEAR_SCENARIO=1`, for an on-demand net-zero run. **Their shapes are deliberate and the per-use-case map is [`e2e/fixtures/COVERAGE.md`](../../e2e/fixtures/COVERAGE.md)** — read it before changing a fixture, and update it in the same commit. In brief:
+- Seed-path list reads are **TOLERANT plus a completeness floor, never `list_my_presets_strict`**. Strict decodes only terminal-frame streams and fails or garbles on back-to-back lean sessions (HW: tolerant returned 504/504 while strict returned truncated 190–236 fallbacks).
+- Online seeding runs a **FRESH `probe --seed-scenario` process BEFORE the server starts**, so the server's own handshake snapshots the seeded presets. The seed self-repairs by sweeping stray imports — an aborted seed strands copies at the first empty slot anywhere in the bank.
+- The eleven scenario presets live in the scratch zone at list indices 400–410 and **stay resident between runs by default** — the pristine-checking seed re-imports any drifted or stale-rev slot. Teardown unconditionally disables re-amp, sweeps strays and recalls preset 001 (an empty sweep leaves the server's `SCENARIO_VERIFIED` set, so the next spec's `ensureScenario` skips the re-verify unless a structural save cleared it), but clears the scenario slots **only** with `TMP_E2E_CLEAR_SCENARIO=1`, for an on-demand net-zero run. **Their shapes are deliberate and the per-use-case map is [`e2e/fixtures/COVERAGE.md`](../../e2e/fixtures/COVERAGE.md)** — read it before changing a fixture, and update it in the same commit. In brief:
   - `E2E Rig` (400) — the scene-overlay + footswitch + Doctor-damage fixture.
   - `E2E Pedalboard` (401) — the scene-free copy/import + EXP/link-group fixture.
   - `E2E Edge` (402) — the split-output 8-scene fixture; also carries the Doctor's baked 2.6 kHz EQ-ring oracle.
   - `E2E Parallel` (403) — the both-lane-amps joint-k fixture.
   - `E2E Hiwatt 3S` (404) — a **verbatim device export** backing the wipe/bake/measurement-context gates (its exact byte length is pinned — do not edit it).
-  - `E2E Preset24` (405) — the stale-load / saturated-pedal footswitch fixture (`level-fs-preset24.spec.ts`).
+  - `E2E Preset24` (405) — the preset-24 saturated-pedal footswitch fixture (`level-fs-preset24.spec.ts`).
   - `E2E Combined Level` (406) — the new-flow leveling fixture (FS-alone / scene-alone "BASE SCENE" / scene-that-enables-an-FS, parallel both-amps-active, a post-cab compressor).
   - `E2E Doctor Oracle` (407) — 14 mixed-shape footswitches, one per Doctor spectral check, all bypassed in base.
   - `E2E Preset24 Min` (408) / `E2E Hiwatt Min` (409) — the smallest presets still reproducing each incident's own bug class.
@@ -58,7 +58,7 @@ scene-leveling test doc comments, and `e2e/fixtures/COVERAGE.md` rows 6/20.
 
 ## Online preconditions — the unit's own global settings count
 
-Beyond "plugged in + rested, Pro Control closed": the device's global **Scene Change
+Beyond "plugged in, Pro Control closed": the device's global **Scene Change
 Behavior must be MAINTAIN CHANGES** for any spec set containing `level.online`. That spec
 drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
 `level_footswitches_apply`), which `level_scenes::scene_discard_guard` refuses outright
@@ -96,8 +96,8 @@ Runs the full Level + Copy happy paths against the real unit **non-destructively
 
 **What runs when:**
 
-- **`scripts/e2e.sh online …`** — exports `TMP_E2E_VALIDATE_LOG` + `TMP_E2E_VALIDATE_WAV_DIR` into the **e2e_server's** environment (that process is what runs the strict re-measures), then after the spec loop runs `level-validate.sh --expectations <log>` over the WAVs the server already dumped. There is deliberately **no post-suite re-capture loop**: re-driving `probe` afterwards opens fresh device sessions inside the 45–100 s lazy-save-commit window from a process whose `SLOT_SAVE_REGISTRY` is empty (`danger.md`), so it would read PRE-save bytes and fail correct runs. `TMP_E2E_VALIDATE_MAX_ROWS` (default 40) caps the pass and prints how many rows were dropped.
-- **`scripts/validate-hbe.sh <preset-file>`** — the attended, standalone Friedman-HBE run: import → level (base + optional scenes/footswitches) → **wait out the commit window (150 s)** → re-measure with `--target`/`--dump-wav` → **completeness check** → `level-validate.sh --expectations` → clear, with a trap-guaranteed re-amp OFF (gap, one retry after a longer quiet, then a loud `probe --reamp-off` banner) on every exit path.
+- **`scripts/e2e.sh online …`** — exports `TMP_E2E_VALIDATE_LOG` + `TMP_E2E_VALIDATE_WAV_DIR` into the **e2e_server's** environment (that process is what runs the strict re-measures), then after the spec loop runs `level-validate.sh --expectations <log>` over the WAVs the server already dumped. There is **no post-suite re-capture loop** — none is needed: the server already dumped each WAV at its strict re-measure. `TMP_E2E_VALIDATE_MAX_ROWS` (default 40) caps the pass and prints how many rows were dropped.
+- **`scripts/validate-hbe.sh <preset-file>`** — the attended, standalone Friedman-HBE run: import → level (base + optional scenes/footswitches) → re-measure with `--target`/`--dump-wav` → **completeness check** → `level-validate.sh --expectations` → clear, with a trap-guaranteed re-amp OFF (gap, one retry after a longer quiet, then a loud `probe --reamp-off` banner) on every exit path.
   The **completeness check is not optional bookkeeping**: a re-measure that dies before its capture emits NO row, and the judge can only grade rows it is handed — a shorter log is invisible to it. The script therefore records the label of every row it ASKS for and greps the log for each by identity (not by count, which a duplicate would mask) before calling the judge; a missing row is exit 1 whatever the judge said, including when the judge skipped for want of ffmpeg.
 - **`scripts/level-validate.sh`** is the shared judge both callers use. `--expectations <jsonl>` (batch, the automated path), `--wav <path>` (one file, with `--probe-log` for the FLOOR/SILENT proof), or `--live <seconds>` (bare avfoundation capture — ATTENDED ONLY: it has no engage-proof, so the caller must verify engagement by other means).
 
@@ -115,7 +115,7 @@ Footswitch rows are externally validated through `probe --measure-footswitch <sl
 - `TMP_E2E_LEVEL_TOL_LU` — validation tolerance in LU, default **1.0**. It must exceed the solver's own acceptance band of 0.3 LU plus recapture noise, or correct runs fail.
 - `TMP_E2E_AVF_DEVICE` — avfoundation device id for `--live`, default `:0`.
 
-**`level-validate.sh` exit codes, which both callers branch explicitly:** `0` every row passed (at least one actually measured) · `1` at least one row failed · `2` usage error · `3` ffmpeg absent, nothing checked · `4` **vacuous** pass — zero measured rows (every row clamped or persist-mismatched), announced in a yellow `PASS (VACUOUS)` banner. A `3` must be reported as SKIPPED, never as a target miss. A `4` is not a failure, but it must never certify: the online lane treats it as "passed but NOT stamped" — the zero-rows case is exactly the lazy-commit persist-regression shape the external judge exists to catch, so a skip is a real verdict, but it is not verification.
+**`level-validate.sh` exit codes, which both callers branch explicitly:** `0` every row passed (at least one actually measured) · `1` at least one row failed · `2` usage error · `3` ffmpeg absent, nothing checked · `4` **vacuous** pass — zero measured rows (every row clamped or persist-mismatched), announced in a yellow `PASS (VACUOUS)` banner. A `3` must be reported as SKIPPED, never as a target miss. A `4` is not a failure, but it must never certify: the online lane treats it as "passed but NOT stamped" — the zero-rows case is exactly a persist regression's shape, which the external judge exists to catch, so a skip is a real verdict, but it is not verification.
 
 ## Fixtures
 

@@ -17,7 +17,7 @@ export interface Preset {
 
 /** A leveling candidate block, as `list_level_blocks` reports it — shared by every leveling
  *  spec that reads a block back directly (the online Friedman/Plumes arcs, the Preset24
- *  lazy-commit gap test). */
+ *  persisted-Twin read). */
 export interface LevelBlock {
   group_id: string;
   node_id: string;
@@ -95,7 +95,7 @@ export async function listPresets(page: Page): Promise<Preset[]> {
  *  server's verified-seed flag is armed (the runner's `e2e_mark_seeded` POST after its
  *  fresh-process seed, or a prior verified call this run — cleared by a STRUCTURAL
  *  spec save, see `e2e_server.rs`'s `note_structural_save`) — so per-spec calls don't
- *  re-pay the multi-second, lockout-prone in-process device verify.
+ *  re-pay the multi-second in-process device verify.
  *
  *  Mode is read from the SERVER via `isOnline`, never `process.env.TMP_E2E_ONLINE` —
  *  the same trap `clearScenario` below already avoids (its own comment: "Ask the
@@ -352,16 +352,6 @@ async function simPost(
  *  inject a mid-run item failure (level-defaults.spec.ts). */
 export async function armCaptureFault(page: Page, slot: number): Promise<void> {
   await simPost(page, "/sim/fault", { slot });
-}
-
-/** Arm the offline fake's lazy-commit latency (POST /sim/commit-latency) — the bug→gate
- *  regression for the same-slot stale-load incident (`level-fs-preset24.spec.ts`'s second
- *  test). MUST be called AFTER the per-test `/sim/reset` (the `page` fixture's own
- *  beforeEach) — a fresh fake always re-arms latency back at 0. No-op online (no fake
- *  installed): `TMP_SIM_COMMIT_LATENCY_MS` is offline-only, matching the whole lazy-commit
- *  model it configures. */
-export async function armCommitLatency(page: Page, ms: number): Promise<void> {
-  await simPost(page, "/sim/commit-latency", { ms });
 }
 
 /** Hold every offline capture for `ms` (POST /sim/capture-delay), so a run is still in

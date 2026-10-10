@@ -544,9 +544,8 @@ export interface RunItem {
    *  `rowStatus` depending on whether a capture is streaming:
    *   - streaming -> it is the VERB before the live number. The ceiling prepass sends
    *     "measuring", giving `measuring · −18.9`; a message-less solve row reads `leveling · …`.
-   *   - not streaming -> it is a NOTE, shown verbatim (the freshness barrier's "waiting for
-   *     the device to commit the previous save…" — a same-slot load can land inside the TMP's
-   *     lazy `saveCurrentPreset` commit window); absent one the row reads "connecting…".
+   *   - not streaming -> it is a NOTE, shown verbatim; absent one the row reads
+   *     "connecting…".
    *  A message sent while a capture streams is therefore a verb by construction — that is the
    *  contract the backend's `leveller::PREPASS_ACTIVE_MSG` documents on its side. Scene/
    *  footswitch channel items only; cleared when the row resolves or a cancelled sweep

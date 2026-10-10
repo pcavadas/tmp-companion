@@ -1,9 +1,9 @@
-//! Online-e2e scenario seeding — sweep stray imports, then place the committed
-//! scenario presets at their slots (every entry of `scenario-presets.json`, 400-404). Shared by `probe --seed-scenario` (a FRESH process
-//! per seed, invoked by the runner BEFORE the bridge server starts — keeps the seed's
-//! many fresh connections clear of the in-process `0xe00002c5` open lockout that
-//! aborted the original in-spec seeds) and by the `e2e_seed_scenario` bridge command
-//! (the in-process fallback for specs run without the runner).
+//! Online-e2e scenario seeding — sweep stray imports, then place the committed scenario
+//! presets at their slots (every entry of `scenario-presets.json`, 400-404). Shared by
+//! `probe --seed-scenario` (a FRESH process per seed, invoked by the runner BEFORE the
+//! bridge server starts, so the server's handshake snapshots the seeded presets) and by
+//! the `e2e_seed_scenario` bridge command (the in-process fallback for specs run without
+//! the runner).
 
 use crate::backup;
 use crate::replace_inplace::replace_inplace_with;
@@ -256,9 +256,9 @@ fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
     pristine_check(body, fixture_json).is_ok()
 }
 
-/// Which of [`pristine_check`]'s three sub-checks rejected a body — kept distinct
-/// from a plain bool so the caller can log an HONEST reason. The two substantive
-/// gates (level, chain) fail independently (a level-drifted-only body still has a
+/// Which of [`pristine_check`]'s sub-checks rejected a body — kept distinct
+/// from a plain bool so the caller can log an HONEST reason. The substantive gates
+/// (level, chain, params) fail independently (a level-drifted-only body still has a
 /// matching chain, and vice versa — see `pristine_check_flags_a_structural_block_delete`),
 /// so a caller that hardcodes one reason string regardless of which check actually
 /// tripped is silently wrong half the time; that was the bug here before this type
@@ -272,10 +272,28 @@ enum PristineMiss {
     /// The base `audioGraph` block chain ([`extract_fender_chain`]) no longer
     /// matches the fixture (a structural edit — e.g. `copy_apply`'s delete/insert).
     ChainDrift,
+    /// A leveled value no longer matches the fixture ([`leveled_values_match`]).
+    ParamDrift,
 }
 
-/// Pristine = the on-device body's `presetLevel` still matches the fixture's AND its
-/// base block chain ([`extract_fender_chain`]) is IDENTICAL to the fixture's. The
+impl PristineMiss {
+    /// The honest re-import / refusal reason, shared by every log site.
+    fn reason(&self) -> &'static str {
+        match self {
+            PristineMiss::StaleRevision => "it is an older fixture revision",
+            PristineMiss::LevelDrift => "its presetLevel differs from the fixture",
+            PristineMiss::ChainDrift => "its block chain differs from the fixture",
+            PristineMiss::ParamDrift => "a leveled value differs from the fixture",
+        }
+    }
+}
+
+/// Float round-trip slack for the pristine compares, far below any real edit.
+const PRISTINE_TOL: f64 = 1e-3;
+
+/// Pristine = the on-device body's `presetLevel` still matches the fixture's, its
+/// base block chain ([`extract_fender_chain`]) is IDENTICAL to the fixture's, and so is
+/// every other value leveling writes ([`leveled_values_match`]). The
 /// presetLevel check alone catches a strict-harness LEVEL run (a strict-harness run
 /// LEVELS the fixtures with save — the ownership marker survives that, so a
 /// marker-only skip hands the NEXT run pre-leveled state; HW: the Hiwatt at 404
@@ -290,9 +308,11 @@ enum PristineMiss {
 /// matches even though presetLevel legitimately drifted (the level check is still the
 /// one that fails THAT case). Unreadable/truncated-past-the-level or mid-chain bodies
 /// count as NOT pristine either way: ownership is already proven, so the worst case is
-/// a redundant re-import. Returns the FIRST sub-check that fails (rev, then level,
-/// then chain) — a caller that wants an honest re-import reason should log the
-/// returned [`PristineMiss`] rather than assume which one fired.
+/// a redundant re-import. A footswitch BAKE save writes a block's own knob, which both
+/// miss — hence [`leveled_values_match`]. Returns the FIRST sub-check that fails (rev,
+/// level, chain, then params) — a caller that wants an
+/// honest re-import reason should log the returned [`PristineMiss`] rather than assume
+/// which one fired.
 fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     let body_str = String::from_utf8_lossy(body);
     // Rev gate first: a resident copy of an OLDER fixture revision is never pristine,
@@ -304,7 +324,7 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
         extract_preset_level(body),
         extract_preset_level(fixture_json.as_bytes()),
     ) {
-        (Some(dev), Some(fix)) => (dev - fix).abs() < 1e-3,
+        (Some(dev), Some(fix)) => (dev - fix).abs() < PRISTINE_TOL,
         _ => false,
     };
     if !level_matches {
@@ -313,31 +333,121 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     if extract_fender_chain(&body_str) != extract_fender_chain(fixture_json) {
         return Err(PristineMiss::ChainDrift);
     }
+    if !leveled_values_match(&body_str, fixture_json) {
+        return Err(PristineMiss::ParamDrift);
+    }
     Ok(())
+}
+
+/// Every value leveling can write — a leveling-class parameter (`param_class` not
+/// [`ParamClass::Other`]) in a base block, a scene overlay, or a `param` footswitch's
+/// `valueA`/`valueB` — holds the fixture's value wherever BOTH sides carry it (numbers
+/// within [`PRISTINE_TOL`]). Only shared keys and leveling-class parameters count: the
+/// device normalizes an import (parameters a model lacks dropped, its own defaults added,
+/// some values rewritten — fixture 401's TremoloBias `ratehz` 6.0 is stored as 2.0) and
+/// rewrites `info.preset_id` and each switch's `isActive` on a save (HW, fw 1.8.58). An
+/// unparseable body is not pristine.
+fn leveled_values_match(body: &str, fixture_json: &str) -> bool {
+    let (Some(device), Ok(fixture)) = (
+        session::tolerant_parse_json(body),
+        serde_json::from_str::<serde_json::Value>(fixture_json),
+    ) else {
+        return false;
+    };
+    // A tail-truncated read salvages to a body missing its later sections, whose leveled
+    // values would then go unchecked: it is not pristine.
+    if ["ftsw", "scenes"].iter().any(|&section| {
+        fixture.get(section).is_some() && !session::json_section_complete(body, section)
+    }) {
+        return false;
+    }
+    let device = leveled_values(&device);
+    leveled_values(&fixture)
+        .iter()
+        .all(|(key, want)| match device.get(key) {
+            None => true,
+            Some(got) => match (want.as_f64(), got.as_f64()) {
+                (Some(w), Some(g)) => (w - g).abs() < PRISTINE_TOL,
+                _ => want == got,
+            },
+        })
+}
+
+/// [`leveled_values_match`]'s three sources, keyed by where each value lives. A scene
+/// overlay or footswitch names its block by `nodeId`, so its class comes from the base
+/// node's `FenderId`.
+fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, serde_json::Value> {
+    use crate::param_class::{classify, ParamClass};
+    use serde_json::Value;
+    let levels =
+        |fender_id: &str, param: &str| classify(fender_id, param).class != ParamClass::Other;
+    let mut fender_ids = std::collections::HashMap::new();
+    let mut out = std::collections::HashMap::new();
+    let mut put = |key: String, fender_id: &str, params: Option<&Value>| {
+        for (k, v) in params.and_then(Value::as_object).into_iter().flatten() {
+            if levels(fender_id, k) {
+                out.insert(format!("{key}/{k}"), v.clone());
+            }
+        }
+    };
+    crate::audiograph::for_each_node(doc, |node| {
+        if let Some(id) = node.get("nodeId").and_then(Value::as_str) {
+            let fender_id = node.get("FenderId").and_then(Value::as_str).unwrap_or(id);
+            fender_ids.insert(id.to_string(), fender_id.to_string());
+            put(
+                format!("base/{id}"),
+                fender_id,
+                node.get("dspUnitParameters"),
+            );
+        }
+    });
+    let fender_id = |node: &str| {
+        fender_ids
+            .get(node)
+            .map_or(node, String::as_str)
+            .to_string()
+    };
+    for (i, scene) in doc["scenes"].as_array().into_iter().flatten().enumerate() {
+        for lane in ["guitarNodes", "micNodes"] {
+            for (group, nodes) in scene[lane].as_object().into_iter().flatten() {
+                for (node, entry) in nodes.as_object().into_iter().flatten() {
+                    put(
+                        format!("scene{i}/{group}/{node}"),
+                        &fender_id(node),
+                        entry.get("dspUnitParameters"),
+                    );
+                }
+            }
+        }
+    }
+    for (row, entries) in doc["ftsw"].as_array().into_iter().flatten().enumerate() {
+        for (i, entry) in entries.as_array().into_iter().flatten().enumerate() {
+            let node = entry["nodeId"].as_str().unwrap_or_default();
+            let param = entry["parameterId"].as_str().unwrap_or_default();
+            if entry["func"] == "param" && levels(&fender_id(node), param) {
+                for k in ["valueA", "valueB"] {
+                    if let Some(v) = entry.get(k) {
+                        out.insert(format!("ftsw{row}/{i}/{k}"), v.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 // ── Landed-verify: the import is not believed until the device says so ───────
 //
-// The firmware can silently DISCARD an imported preset at its lazy commit, substituting
-// a gutted body under the same `displayName` (see notes/gotchas.md's discard entries and
-// `DISCARD_GOTCHA` below). The seed used to trust `replace_inplace_with`'s own confirms
-// and never read the landed body back, which is why that loop stayed invisible.
-
-/// The lazy-commit window a `saveCurrentPreset` needs before a field-8 read answers
-/// with the committed bytes. A verify read fired inside it can still see PRE-commit
-/// content and pass on a body the firmware is about to replace, which is worse than not
-/// checking at all — so this MIRRORS `leveller::COMMIT_WINDOW_SECS` (the mirror roster
-/// lives on that declaration) rather than carrying a second literal that can drift
-/// below it.
-const COMMIT_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS);
+// The stored row is checked over field 8 (`presetDataRequest`), which holds an import the
+// moment it returns. A body the firmware rejects only shows at its first real LOAD (fw
+// 1.8.58, tmp-audit Q35), which `replace_inplace_with` already proves for every import
+// before it returns.
 
 /// Where the empty-body substitution is written up — quoted in the hard error so the
 /// next encounter starts at the HW bisect instead of repeating it. Section TITLE, not
 /// the anchor slug: the title is what survives a heading reflow.
-const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A dual-entry footswitch row makes \
-                              the firmware silently replace the whole imported preset \
-                              with an EMPTY body\"";
+const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A body rejected at load becomes a \
+                              silent empty preset that keeps its name\"";
 
 /// Does `body` carry the firmware's EMPTY substitute rather than the import? Two
 /// independent signatures, either conclusive on a slot we imported THIS run:
@@ -374,39 +484,16 @@ fn paced_retry_read(s: &mut Session, list_index: u32) -> Option<Vec<u8>> {
 }
 
 /// Read every slot imported THIS run back over field-8 and prove the LANDED body is
-/// the fixture — the import call's own confirms cannot see a discard that happens
-/// tens of seconds later.
+/// the fixture.
 ///
 /// `seeded` / `list_index` are 0-BASED list indices, the same space the imports above
 /// act in; the field-8 read takes +1 (device `userSlot`). Runs on ONE fresh session,
-/// drained first (a read fired mid-flood is dropped device-side).
-///
-/// `check_pristine` is the ONLINE flag: the SimDevice commits synchronously and never
-/// substitutes a body, and offline nothing is imported in the first place (the sim's
-/// scenario slots are always present, so `seeded` is empty and this returns at once).
-/// There is no other sim/real discriminator in this file — this is the SAME online-only
-/// signal the pristine self-repair rides on, reused rather than re-named here.
-fn verify_landed_imports(
-    spec: &[ScenarioPreset],
-    seeded: &[u32],
-    last_import: std::time::Instant,
-    check_pristine: bool,
-) -> Result<(), String> {
+/// drained first (a read fired mid-flood is dropped device-side). Offline nothing is
+/// imported (the sim's scenario slots are always present), so `seeded` is empty and this
+/// returns at once.
+fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), String> {
     if seeded.is_empty() {
         return Ok(());
-    }
-    if check_pristine {
-        // Wait out the REMAINDER once, not once per slot: every earlier import has
-        // been ageing through the imports that followed it.
-        let remaining = COMMIT_WINDOW.saturating_sub(last_import.elapsed());
-        if !remaining.is_zero() {
-            eprintln!(
-                "[seed] holding {} s for the device's lazy commit before reading the \
-                 imported slots back",
-                remaining.as_secs()
-            );
-            crate::settle(remaining);
-        }
     }
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
@@ -440,19 +527,15 @@ fn verify_landed_imports(
         // prevent).
         if body_was_discarded(&body, &p.preset_json) {
             return Err(format!(
-                "slot {list_index} ({:?}): the firmware DISCARDED this import at its lazy \
-                 commit and stored an EMPTY body in its place (displayName kept, every \
-                 lane at zero nodes). The fixture body itself carries the trigger — \
-                 re-running the seed will only gut it again. See {DISCARD_GOTCHA}",
+                "slot {list_index} ({:?}): the device stored an EMPTY body in place of this \
+                 import (displayName kept, every lane at zero nodes). The fixture body \
+                 itself carries the trigger — re-running the seed will only gut it again. \
+                 See {DISCARD_GOTCHA}",
                 p.name
             ));
         }
         if let Err(miss) = pristine_check(&body, &p.preset_json) {
-            let why = match miss {
-                PristineMiss::StaleRevision => "it does not carry the current fixture rev stamp",
-                PristineMiss::LevelDrift => "its presetLevel does not match the fixture",
-                PristineMiss::ChainDrift => "its block chain does not match the fixture",
-            };
+            let why = miss.reason();
             return Err(format!(
                 "slot {list_index} ({:?}) was imported this run but reads back wrong — \
                  {why}. The seed did NOT land what the spec asked for",
@@ -477,8 +560,8 @@ fn body_names(body: &[u8], name: &str) -> bool {
 /// Clear every stray on the GIVEN session — but only after a per-candidate
 /// field-8 read finds a [`FIXTURE_MARKERS`] hit (a name is not ownership; a
 /// user preset coincidentally named "E2E Reference" is skipped, fail-closed).
-/// One session for reads+clears (each extra open risks the post-close lockout);
-/// settles after the last clear (the device's list lags its own writes).
+/// One session for reads+clears; settles after the last clear (the device's list lags
+/// its own writes).
 fn sweep_on(
     s: &mut Session,
     list: &[session::PresetEntry],
@@ -519,11 +602,10 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
 }
 
 /// TOLERANT list read + an EXACT-bank-size gate. Tolerant because the strict
-/// harvest fails on interleaved back-to-back-session responses (see the
-/// .claude/rules/danger.md, HID open-lockout); the size gate is the real safety — a partial
-/// view must never drive clears or imports (truncation is tail-only, so a
-/// length check IS the completeness check), and a LARGER bank means a fw rev
-/// moved the slot layout out from under our destructive slot assumptions.
+/// harvest fails on interleaved back-to-back-session responses; the size gate is the
+/// real safety — a partial view must never drive clears or imports (truncation is
+/// tail-only, so a length check IS the completeness check), and a LARGER bank means a
+/// fw rev moved the slot layout out from under our destructive slot assumptions.
 const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45; fail-loud if a fw rev resizes the bank
 /// Held-session re-reads of a SHORT list before the size gate fails the run (online e2e
 /// 2026-10-05/06: one-off 473 / 496 / 459 reads; a read right after returned 504). A LARGER
@@ -641,11 +723,7 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
                 p.list_index, p.name
             );
         } else if let Err(miss) = pristine_check(&body, &p.preset_json) {
-            let why = match miss {
-                PristineMiss::StaleRevision => "resident copy is an older fixture revision",
-                PristineMiss::LevelDrift => "presetLevel drifted",
-                PristineMiss::ChainDrift => "block chain drifted (structural edit)",
-            };
+            let why = miss.reason();
             eprintln!(
                 "[seed] slot {} ({:?}) is fixture-owned but not pristine ({why}) — re-importing",
                 p.list_index, p.name
@@ -656,17 +734,7 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
     drop(s);
 
     let mut seeded = Vec::new();
-    // When the LAST import's save landed — the clock the lazy-commit wait below is
-    // measured against. Unused while nothing is imported (the verify pass returns on an
-    // empty `seeded`).
-    let mut last_import = std::time::Instant::now();
     for p in to_seed {
-        if !seeded.is_empty() {
-            // Quiet gap between imports: each lands via several fresh connections
-            // (import → landing read → load/confirm/save → guarded clear), and the
-            // device needs the gap for its read-after-write list propagation.
-            crate::settle(std::time::Duration::from_secs(8));
-        }
         // Re-confirm THIS target in the SAME address space as the mutation,
         // immediately before it: the classification pass above ran off one
         // snapshot, but seeding multiple presets spans many seconds and several
@@ -698,15 +766,13 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
         // rows, and the seed must conserve the device's open/close budget.
         let bytes = backup::xor_jld(p.preset_json.as_bytes());
         replace_inplace_with(p.list_index, &bytes, false)?;
-        last_import = std::time::Instant::now();
         // Record BEFORE anything can save over it — this is the ownership signal
         // teardown will need once a spec has rewritten the body.
         record_seeded(p.list_index, &p.name);
         seeded.push(p.list_index);
     }
-    // The import call cannot see a discard that happens tens of seconds later — read
-    // every slot placed this run back before reporting the seed as landed.
-    verify_landed_imports(&spec, &seeded, last_import, check_pristine)?;
+    // Read every slot placed this run back before reporting the seed as landed.
+    verify_landed_imports(&spec, &seeded)?;
     Ok(SeedOutcome { swept, seeded })
 }
 
@@ -881,6 +947,71 @@ mod tests {
         assert!(!body_names(named, "E2E Hiwatt 3S"));
     }
 
+    /// BUG→GATE (online e2e, 2026-10-10): fixture 404's UniVibe `volume` drifted from 0.49
+    /// to its 0.001 floor across runs (each run's footswitch bake lowers it 2 dB and never
+    /// touches `presetLevel`), so the seed kept it resident until its row could only clamp.
+    /// A leveled-value drift must fail the pristine check; the device's own import
+    /// normalization (parameters dropped, defaulted or rewritten, float re-rounding) must
+    /// not.
+    #[test]
+    fn pristine_check_flags_a_block_param_drift_but_not_import_normalization() {
+        let fixture = format!(
+            r#"{{"info":{{"source_id":"{FIXTURE_SOURCE_STAMP}"}},"audioGraph":{{"presetLevel":0.6,"guitarNodes":{{"G4":[{{"FenderId":"ACD_UniVibe","nodeId":"ACD_UniVibe","dspUnitParameters":{{"volume":0.49,"intensity":0.74,"noteDivision":"off","bypass":true}}}},{{"FenderId":"CabSim","nodeId":"cab1","dspUnitParameters":{{"level":0.5}}}}]}}}}}}"#
+        );
+        assert_eq!(pristine_check(fixture.as_bytes(), &fixture), Ok(()));
+
+        // What the device stores for an untouched import: `cab1.level` dropped, a default
+        // added, a float re-rounded, parameters leveling never writes rewritten (HW, fw
+        // 1.8.58: fixture 401's TremoloBias `ratehz` 6.0 is stored as 2.0) — all pristine.
+        let normalized = fixture
+            .replace(r#""level":0.5"#, r#""hpf":20.0"#)
+            .replace(r#""volume":0.49"#, r#""volume":0.489999920129776"#)
+            .replace(r#""intensity":0.74"#, r#""intensity":0.2"#)
+            .replace(r#""bypass":true"#, r#""bypass":false"#);
+        assert_eq!(pristine_check(normalized.as_bytes(), &fixture), Ok(()));
+
+        // A bake save moved a shared parameter.
+        let drifted = fixture.replace(r#""volume":0.49"#, r#""volume":0.0010000000474974513"#);
+        assert_eq!(
+            pristine_check(drifted.as_bytes(), &fixture),
+            Err(PristineMiss::ParamDrift)
+        );
+
+        // A scene-only save (an overlay's `outputLevel`) and an ASSIGN save (a `param`
+        // footswitch's `valueA`) never touch the base graph — both must still fail; a
+        // switch's saved `isActive` and a non-level footswitch value must not.
+        let with_scene_and_ftsw = fixture.replace(
+            r#"]}}}"#,
+            r#"]}},"scenes":[{"guitarNodes":{"G4":{"ACD_UniVibe":{"dspUnitParameters":{"volume":0.3}}}}}],"ftsw":[[{"func":"param","nodeId":"ACD_UniVibe","parameterId":"volume","valueA":0.7,"valueB":0.2,"isActive":true}],[{"func":"param","nodeId":"ACD_UniVibe","parameterId":"speed","valueA":3.0,"valueB":3.85}]]}"#,
+        );
+        assert_eq!(
+            pristine_check(with_scene_and_ftsw.as_bytes(), &with_scene_and_ftsw),
+            Ok(())
+        );
+        for benign in [
+            with_scene_and_ftsw.replace(r#""isActive":true"#, r#""isActive":false"#),
+            with_scene_and_ftsw.replace(r#""valueA":3.0"#, r#""valueA":6.5"#),
+        ] {
+            assert_eq!(
+                pristine_check(benign.as_bytes(), &with_scene_and_ftsw),
+                Ok(())
+            );
+        }
+        // A read cut inside `scenes` salvages to a body without the sections whose values
+        // it would have to check.
+        let cut_at = with_scene_and_ftsw.find(r#""scenes":[{"#).expect("scenes") + 12;
+        for drift in [
+            with_scene_and_ftsw.replace(r#""volume":0.3"#, r#""volume":0.1"#),
+            with_scene_and_ftsw.replace(r#""valueA":0.7"#, r#""valueA":0.5"#),
+            with_scene_and_ftsw[..cut_at].to_string(),
+        ] {
+            assert_eq!(
+                pristine_check(drift.as_bytes(), &with_scene_and_ftsw),
+                Err(PristineMiss::ParamDrift)
+            );
+        }
+    }
+
     /// Non-regression gate for the 2026-08-01 incident: `copy.spec.ts` deletes E2E
     /// Target 2's trailing `ACD_FiveBandParamEQ` block and saves; the fixture marker
     /// AND `presetLevel` both survive that save (only the block list changed), so the
@@ -953,8 +1084,8 @@ mod tests {
         );
     }
 
-    /// The gutted shape the firmware substitutes at its lazy commit — `displayName`
-    /// kept, every lane/row/scene emptied. See `DISCARD_GOTCHA`.
+    /// The gutted shape of a stored empty substitute — `displayName` kept, every
+    /// lane/row/scene emptied. See `DISCARD_GOTCHA`.
     fn discarded_body(name: &str) -> String {
         let lanes = |prefix: &str, n: usize| -> String {
             (1..=n)
