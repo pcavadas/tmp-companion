@@ -2378,6 +2378,7 @@ fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
 
 /// `json` with `audioGraph.presetLevel` set to the live `level`, when the document has one
 /// (the plain build's default graph carries none).
+#[cfg(feature = "e2e")]
 fn with_live_preset_level(json: String, level: f32) -> String {
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) else {
         return json;
