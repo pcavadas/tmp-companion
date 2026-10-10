@@ -256,9 +256,9 @@ fn body_is_pristine(body: &[u8], fixture_json: &str) -> bool {
     pristine_check(body, fixture_json).is_ok()
 }
 
-/// Which of [`pristine_check`]'s three sub-checks rejected a body — kept distinct
-/// from a plain bool so the caller can log an HONEST reason. The two substantive
-/// gates (level, chain) fail independently (a level-drifted-only body still has a
+/// Which of [`pristine_check`]'s sub-checks rejected a body — kept distinct
+/// from a plain bool so the caller can log an HONEST reason. The substantive gates
+/// (level, chain, params) fail independently (a level-drifted-only body still has a
 /// matching chain, and vice versa — see `pristine_check_flags_a_structural_block_delete`),
 /// so a caller that hardcodes one reason string regardless of which check actually
 /// tripped is silently wrong half the time; that was the bug here before this type
@@ -272,10 +272,28 @@ enum PristineMiss {
     /// The base `audioGraph` block chain ([`extract_fender_chain`]) no longer
     /// matches the fixture (a structural edit — e.g. `copy_apply`'s delete/insert).
     ChainDrift,
+    /// A leveled value no longer matches the fixture ([`leveled_values_match`]).
+    ParamDrift,
 }
 
-/// Pristine = the on-device body's `presetLevel` still matches the fixture's AND its
-/// base block chain ([`extract_fender_chain`]) is IDENTICAL to the fixture's. The
+impl PristineMiss {
+    /// The honest re-import / refusal reason, shared by every log site.
+    fn reason(&self) -> &'static str {
+        match self {
+            PristineMiss::StaleRevision => "it is an older fixture revision",
+            PristineMiss::LevelDrift => "its presetLevel differs from the fixture",
+            PristineMiss::ChainDrift => "its block chain differs from the fixture",
+            PristineMiss::ParamDrift => "a leveled value differs from the fixture",
+        }
+    }
+}
+
+/// Float round-trip slack for the pristine compares, far below any real edit.
+const PRISTINE_TOL: f64 = 1e-3;
+
+/// Pristine = the on-device body's `presetLevel` still matches the fixture's, its
+/// base block chain ([`extract_fender_chain`]) is IDENTICAL to the fixture's, and so is
+/// every other value leveling writes ([`leveled_values_match`]). The
 /// presetLevel check alone catches a strict-harness LEVEL run (a strict-harness run
 /// LEVELS the fixtures with save — the ownership marker survives that, so a
 /// marker-only skip hands the NEXT run pre-leveled state; HW: the Hiwatt at 404
@@ -290,9 +308,11 @@ enum PristineMiss {
 /// matches even though presetLevel legitimately drifted (the level check is still the
 /// one that fails THAT case). Unreadable/truncated-past-the-level or mid-chain bodies
 /// count as NOT pristine either way: ownership is already proven, so the worst case is
-/// a redundant re-import. Returns the FIRST sub-check that fails (rev, then level,
-/// then chain) — a caller that wants an honest re-import reason should log the
-/// returned [`PristineMiss`] rather than assume which one fired.
+/// a redundant re-import. A footswitch BAKE save writes a block's own knob, which both
+/// miss — hence [`leveled_values_match`]. Returns the FIRST sub-check that fails (rev,
+/// level, chain, then params) — a caller that wants an
+/// honest re-import reason should log the returned [`PristineMiss`] rather than assume
+/// which one fired.
 fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     let body_str = String::from_utf8_lossy(body);
     // Rev gate first: a resident copy of an OLDER fixture revision is never pristine,
@@ -304,7 +324,7 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
         extract_preset_level(body),
         extract_preset_level(fixture_json.as_bytes()),
     ) {
-        (Some(dev), Some(fix)) => (dev - fix).abs() < 1e-3,
+        (Some(dev), Some(fix)) => (dev - fix).abs() < PRISTINE_TOL,
         _ => false,
     };
     if !level_matches {
@@ -313,7 +333,100 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
     if extract_fender_chain(&body_str) != extract_fender_chain(fixture_json) {
         return Err(PristineMiss::ChainDrift);
     }
+    if !leveled_values_match(&body_str, fixture_json) {
+        return Err(PristineMiss::ParamDrift);
+    }
     Ok(())
+}
+
+/// Every value leveling can write — a leveling-class parameter (`param_class` not
+/// [`ParamClass::Other`]) in a base block, a scene overlay, or a `param` footswitch's
+/// `valueA`/`valueB` — holds the fixture's value wherever BOTH sides carry it (numbers
+/// within [`PRISTINE_TOL`]). Only shared keys and leveling-class parameters count: the
+/// device normalizes an import (parameters a model lacks dropped, its own defaults added,
+/// some values rewritten — fixture 401's TremoloBias `ratehz` 6.0 is stored as 2.0) and
+/// rewrites `info.preset_id` and each switch's `isActive` on a save (HW, fw 1.8.58). An
+/// unparseable body is not pristine.
+fn leveled_values_match(body: &str, fixture_json: &str) -> bool {
+    let (Some(device), Ok(fixture)) = (
+        session::tolerant_parse_json(body),
+        serde_json::from_str::<serde_json::Value>(fixture_json),
+    ) else {
+        return false;
+    };
+    let device = leveled_values(&device);
+    leveled_values(&fixture)
+        .iter()
+        .all(|(key, want)| match device.get(key) {
+            None => true,
+            Some(got) => match (want.as_f64(), got.as_f64()) {
+                (Some(w), Some(g)) => (w - g).abs() < PRISTINE_TOL,
+                _ => want == got,
+            },
+        })
+}
+
+/// [`leveled_values_match`]'s three sources, keyed by where each value lives. A scene
+/// overlay or footswitch names its block by `nodeId`, so its class comes from the base
+/// node's `FenderId`.
+fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, serde_json::Value> {
+    use crate::param_class::{classify, ParamClass};
+    use serde_json::Value;
+    let levels =
+        |fender_id: &str, param: &str| classify(fender_id, param).class != ParamClass::Other;
+    let mut fender_ids = std::collections::HashMap::new();
+    let mut out = std::collections::HashMap::new();
+    let mut put = |key: String, fender_id: &str, params: Option<&Value>| {
+        for (k, v) in params.and_then(Value::as_object).into_iter().flatten() {
+            if levels(fender_id, k) {
+                out.insert(format!("{key}/{k}"), v.clone());
+            }
+        }
+    };
+    crate::audiograph::for_each_node(doc, |node| {
+        if let Some(id) = node.get("nodeId").and_then(Value::as_str) {
+            let fender_id = node.get("FenderId").and_then(Value::as_str).unwrap_or(id);
+            fender_ids.insert(id.to_string(), fender_id.to_string());
+            put(
+                format!("base/{id}"),
+                fender_id,
+                node.get("dspUnitParameters"),
+            );
+        }
+    });
+    let fender_id = |node: &str| {
+        fender_ids
+            .get(node)
+            .map_or(node, String::as_str)
+            .to_string()
+    };
+    for (i, scene) in doc["scenes"].as_array().into_iter().flatten().enumerate() {
+        for lane in ["guitarNodes", "micNodes"] {
+            for (group, nodes) in scene[lane].as_object().into_iter().flatten() {
+                for (node, entry) in nodes.as_object().into_iter().flatten() {
+                    put(
+                        format!("scene{i}/{group}/{node}"),
+                        &fender_id(node),
+                        entry.get("dspUnitParameters"),
+                    );
+                }
+            }
+        }
+    }
+    for (row, entries) in doc["ftsw"].as_array().into_iter().flatten().enumerate() {
+        for (i, entry) in entries.as_array().into_iter().flatten().enumerate() {
+            let node = entry["nodeId"].as_str().unwrap_or_default();
+            let param = entry["parameterId"].as_str().unwrap_or_default();
+            if entry["func"] == "param" && levels(&fender_id(node), param) {
+                for k in ["valueA", "valueB"] {
+                    if let Some(v) = entry.get(k) {
+                        out.insert(format!("ftsw{row}/{i}/{k}"), v.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 // ── Landed-verify: the import is not believed until the device says so ───────
@@ -415,11 +528,7 @@ fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), 
             ));
         }
         if let Err(miss) = pristine_check(&body, &p.preset_json) {
-            let why = match miss {
-                PristineMiss::StaleRevision => "it does not carry the current fixture rev stamp",
-                PristineMiss::LevelDrift => "its presetLevel does not match the fixture",
-                PristineMiss::ChainDrift => "its block chain does not match the fixture",
-            };
+            let why = miss.reason();
             return Err(format!(
                 "slot {list_index} ({:?}) was imported this run but reads back wrong — \
                  {why}. The seed did NOT land what the spec asked for",
@@ -608,11 +717,7 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
                 p.list_index, p.name
             );
         } else if let Err(miss) = pristine_check(&body, &p.preset_json) {
-            let why = match miss {
-                PristineMiss::StaleRevision => "resident copy is an older fixture revision",
-                PristineMiss::LevelDrift => "presetLevel drifted",
-                PristineMiss::ChainDrift => "block chain drifted (structural edit)",
-            };
+            let why = miss.reason();
             eprintln!(
                 "[seed] slot {} ({:?}) is fixture-owned but not pristine ({why}) — re-importing",
                 p.list_index, p.name
@@ -840,6 +945,67 @@ mod tests {
         let named = br#"{"info":{"displayName":"E2E Target 2"}}"#;
         assert!(body_names(named, "E2E Target 2"));
         assert!(!body_names(named, "E2E Hiwatt 3S"));
+    }
+
+    /// BUG→GATE (online e2e, 2026-10-10): fixture 404's UniVibe `volume` drifted from 0.49
+    /// to its 0.001 floor across runs (each run's footswitch bake lowers it 2 dB and never
+    /// touches `presetLevel`), so the seed kept it resident until its row could only clamp.
+    /// A leveled-value drift must fail the pristine check; the device's own import
+    /// normalization (parameters dropped, defaulted or rewritten, float re-rounding) must
+    /// not.
+    #[test]
+    fn pristine_check_flags_a_block_param_drift_but_not_import_normalization() {
+        let fixture = format!(
+            r#"{{"info":{{"source_id":"{FIXTURE_SOURCE_STAMP}"}},"audioGraph":{{"presetLevel":0.6,"guitarNodes":{{"G4":[{{"FenderId":"ACD_UniVibe","nodeId":"ACD_UniVibe","dspUnitParameters":{{"volume":0.49,"intensity":0.74,"noteDivision":"off","bypass":true}}}},{{"FenderId":"CabSim","nodeId":"cab1","dspUnitParameters":{{"level":0.5}}}}]}}}}}}"#
+        );
+        assert_eq!(pristine_check(fixture.as_bytes(), &fixture), Ok(()));
+
+        // What the device stores for an untouched import: `cab1.level` dropped, a default
+        // added, a float re-rounded, parameters leveling never writes rewritten (HW, fw
+        // 1.8.58: fixture 401's TremoloBias `ratehz` 6.0 is stored as 2.0) — all pristine.
+        let normalized = fixture
+            .replace(r#""level":0.5"#, r#""hpf":20.0"#)
+            .replace(r#""volume":0.49"#, r#""volume":0.489999920129776"#)
+            .replace(r#""intensity":0.74"#, r#""intensity":0.2"#)
+            .replace(r#""bypass":true"#, r#""bypass":false"#);
+        assert_eq!(pristine_check(normalized.as_bytes(), &fixture), Ok(()));
+
+        // A bake save moved a shared parameter.
+        let drifted = fixture.replace(r#""volume":0.49"#, r#""volume":0.0010000000474974513"#);
+        assert_eq!(
+            pristine_check(drifted.as_bytes(), &fixture),
+            Err(PristineMiss::ParamDrift)
+        );
+
+        // A scene-only save (an overlay's `outputLevel`) and an ASSIGN save (a `param`
+        // footswitch's `valueA`) never touch the base graph — both must still fail; a
+        // switch's saved `isActive` and a non-level footswitch value must not.
+        let with_scene_and_ftsw = fixture.replace(
+            r#"]}}}"#,
+            r#"]}},"scenes":[{"guitarNodes":{"G4":{"ACD_UniVibe":{"dspUnitParameters":{"volume":0.3}}}}}],"ftsw":[[{"func":"param","nodeId":"ACD_UniVibe","parameterId":"volume","valueA":0.7,"valueB":0.2,"isActive":true}],[{"func":"param","nodeId":"ACD_UniVibe","parameterId":"speed","valueA":3.0,"valueB":3.85}]]}"#,
+        );
+        assert_eq!(
+            pristine_check(with_scene_and_ftsw.as_bytes(), &with_scene_and_ftsw),
+            Ok(())
+        );
+        for benign in [
+            with_scene_and_ftsw.replace(r#""isActive":true"#, r#""isActive":false"#),
+            with_scene_and_ftsw.replace(r#""valueA":3.0"#, r#""valueA":6.5"#),
+        ] {
+            assert_eq!(
+                pristine_check(benign.as_bytes(), &with_scene_and_ftsw),
+                Ok(())
+            );
+        }
+        for drift in [
+            with_scene_and_ftsw.replace(r#""volume":0.3"#, r#""volume":0.1"#),
+            with_scene_and_ftsw.replace(r#""valueA":0.7"#, r#""valueA":0.5"#),
+        ] {
+            assert_eq!(
+                pristine_check(drift.as_bytes(), &with_scene_and_ftsw),
+                Err(PristineMiss::ParamDrift)
+            );
+        }
     }
 
     /// Non-regression gate for the 2026-08-01 incident: `copy.spec.ts` deletes E2E
