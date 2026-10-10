@@ -416,12 +416,22 @@ pub const CANCELLED: &str = "cancelled";
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
 pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
-    // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
-    // the edit buffer dirty at the measurement level — the whole point of the restore.
+    make_current(slot)?;
+    log::info!("restored stored preset slot={slot} after unsaved measurement");
+    Ok(())
+}
+
+/// Load `slot` on its own lean connection so it is the device's current preset. A rich
+/// harvest (`discover_blocks_rich`, `prepass_scene_docs`) keeps the LONGEST preset push it
+/// collects, and a push of the previously-current preset can still land after its buffer
+/// clear: online e2e (2026-10-10, fw 1.8.58) slot 410's block discovery, run right after a
+/// save on another slot, returned that slot's blocks. With the target already current,
+/// every push the harvest can see is the target's. Uncancellable (`settle`, not
+/// `sleep_or_cancel`): [`restore_saved_preset`] runs it AFTER a cancel to clean up.
+pub(crate) fn make_current(slot: u32) -> Result<(), String> {
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
     crate::settle(Duration::from_millis(settle_after_load_ms()));
-    log::info!("restored stored preset slot={slot} after unsaved measurement");
     Ok(())
 }
 

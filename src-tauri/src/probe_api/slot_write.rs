@@ -459,6 +459,7 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
 /// bench intel session + `prepass_scene_docs`. Private: the primary path of
 /// `load_then_discover_blocks`, which owns the fallbacks.
 fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
+    crate::leveller::make_current(slot)?;
     let mut s = Session::connect()?;
     s.rich_warmup()?;
     s.rich_load_collect(slot)?;

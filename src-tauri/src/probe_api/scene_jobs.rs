@@ -747,6 +747,7 @@ pub(crate) fn read_saved_preset_complete_sections(
 pub(crate) type SceneDocs = (Vec<(u32, Option<serde_json::Value>)>, Option<u32>);
 
 pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<SceneDocs, String> {
+    crate::leveller::make_current(slot)?;
     let mut s = Session::connect()?;
     for _ in 0..8 {
         s.heartbeat()?;
