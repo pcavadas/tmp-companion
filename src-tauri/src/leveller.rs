@@ -415,10 +415,29 @@ pub const CANCELLED: &str = "cancelled";
 /// Reload the stored preset to discard temporary level edits made while
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
+///
+/// fw 1.8.58 skips a same-slot `loadPreset` while the working copy's dirty flag is clear
+/// (tmp-audit Q4), keeping the working copy. Every edit the callers make sets the flag
+/// (HW 2026-10-10, `probe --restore-check`), but a clear flag can still hide a stale
+/// working copy, and reading `isDirty` costs ~1.1 s. So the restore always loads a
+/// neighbour slot first, which forces the reload (+0.34 s on HW: 1.67 s vs 1.33 s).
 pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
-    make_current(slot)?;
-    log::info!("restored stored preset slot={slot} after unsaved measurement");
+    // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
+    // the edit buffer dirty at the measurement level — the whole point of the restore.
+    let mut s = Session::connect_lean()?;
+    let via = reload_stored_on(&mut s, slot)?;
+    crate::settle(Duration::from_millis(settle_after_load_ms()));
+    log::info!("restored stored preset slot={slot} after unsaved measurement (via {via})");
     Ok(())
+}
+
+/// [`restore_saved_preset`]'s loads on `s`: a neighbour slot, then the target. Returns the
+/// neighbour.
+fn reload_stored_on(s: &mut Session, slot: u32) -> Result<u32, String> {
+    let other = slot.checked_sub(1).unwrap_or(1);
+    s.load_preset(other)?;
+    s.load_preset(slot)?;
+    Ok(other)
 }
 
 /// Load `slot` on its own lean connection so it is the device's current preset. A rich
@@ -426,8 +445,8 @@ pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
 /// collects, and a push of the previously-current preset can still land after its buffer
 /// clear: online e2e (2026-10-10, fw 1.8.58) slot 410's block discovery, run right after a
 /// save on another slot, returned that slot's blocks. With the target already current,
-/// every push the harvest can see is the target's. Uncancellable (`settle`, not
-/// `sleep_or_cancel`): [`restore_saved_preset`] runs it AFTER a cancel to clean up.
+/// every push the harvest can see is the target's. A bare load on purpose: a same-slot
+/// no-op still leaves the target current, and a neighbour load would add its own pushes.
 pub(crate) fn make_current(slot: u32) -> Result<(), String> {
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
@@ -8451,6 +8470,30 @@ mod floor_guard_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto;
+
+    /// The `loadPreset` list indices `t` was sent, in order.
+    fn loads_sent(t: &crate::test_support::ScriptedTransport) -> Vec<u32> {
+        let sent = t.sent.lock().unwrap().clone();
+        sent.iter()
+            .filter_map(|b| {
+                (0..512u32).find(|&slot| *b == proto::load_preset(u64::from(slot) + 1, 1))
+            })
+            .collect()
+    }
+
+    /// BUG→GATE: fw 1.8.58 skips a same-slot `loadPreset` while the dirty flag is clear
+    /// (tmp-audit Q4), so the restore — the one "discard unsaved edits" path — must never
+    /// rely on it: it loads a neighbour first, and the target LAST.
+    #[test]
+    fn restore_loads_a_neighbour_before_the_target() {
+        for (slot, want) in [(408, vec![407, 408]), (0, vec![1, 0])] {
+            let t = crate::test_support::ScriptedTransport::default();
+            let mut s = crate::test_support::session_over(&t, Vec::new());
+            reload_stored_on(&mut s, slot).unwrap();
+            assert_eq!(loads_sent(&t), want);
+        }
+    }
 
     #[test]
     fn doctor_stim_slice_truncates_then_pads_with_leading_silence() {

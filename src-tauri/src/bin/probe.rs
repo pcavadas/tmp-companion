@@ -1182,6 +1182,25 @@ fn main() {
         }
     }
 
+    if let Some(i) = args.iter().position(|a| a == "--restore-check") {
+        // --restore-check <deviceSlot> [trials]
+        let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let trials: u32 = args.get(i + 2).and_then(|s| s.parse().ok()).unwrap_or(1);
+        if slot == 0 {
+            eprintln!("usage: probe --restore-check <deviceSlot> [trials]");
+            std::process::exit(2);
+        }
+        match tmp_companion_lib::probe_restore_check(slot, trials) {
+            Ok(report) => {
+                print!("{report}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(i) = args.iter().position(|a| a == "--reprompt-map") {
         // --reprompt-map <slot> <name> <group> (--remove <nodeId> | --insert <fenderId> [--before <id>]) [--commit]
         let slot: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
