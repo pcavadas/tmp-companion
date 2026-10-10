@@ -432,9 +432,13 @@ pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
 }
 
 /// [`restore_saved_preset`]'s loads on `s`: a neighbour slot, then the target. Returns the
-/// neighbour.
+/// neighbour, which stays inside the e2e scratch zone when the target is in it.
 fn reload_stored_on(s: &mut Session, slot: u32) -> Result<u32, String> {
-    let other = slot.checked_sub(1).unwrap_or(1);
+    let other = if slot == crate::probe_api::SCRATCH_SLOTS[0] {
+        slot + 1
+    } else {
+        slot.checked_sub(1).unwrap_or(1)
+    };
     s.load_preset(other)?;
     s.load_preset(slot)?;
     Ok(other)
@@ -8487,7 +8491,11 @@ mod tests {
     /// rely on it: it loads a neighbour first, and the target LAST.
     #[test]
     fn restore_loads_a_neighbour_before_the_target() {
-        for (slot, want) in [(408, vec![407, 408]), (0, vec![1, 0])] {
+        for (slot, want) in [
+            (408, vec![407, 408]),
+            (400, vec![401, 400]),
+            (0, vec![1, 0]),
+        ] {
             let t = crate::test_support::ScriptedTransport::default();
             let mut s = crate::test_support::session_over(&t, Vec::new());
             reload_stored_on(&mut s, slot).unwrap();
