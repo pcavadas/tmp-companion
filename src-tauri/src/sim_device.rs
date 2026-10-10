@@ -424,6 +424,10 @@ struct SimState {
     /// env var set before that process started ever reaching it.
     #[cfg(feature = "e2e")]
     commit_latency_override: Option<std::time::Duration>,
+    /// Per-capture hold, ms ([`set_capture_delay`]): the offline capture is otherwise
+    /// instant, so no spec could press Stop while a run is mid-capture.
+    #[cfg(feature = "e2e")]
+    capture_delay_ms: u64,
 }
 
 /// Lazy-commit state for ONE slot's SAVED doc (module header): `presetLevel` plus the
@@ -526,6 +530,8 @@ impl Default for SimState {
             ever_saved: std::collections::HashSet::new(),
             #[cfg(feature = "e2e")]
             commit_latency_override: None,
+            #[cfg(feature = "e2e")]
+            capture_delay_ms: 0,
         }
     }
 }
@@ -1850,6 +1856,16 @@ pub fn set_commit_latency(ms: u64) {
     }
 }
 
+/// Arm the currently-installed fake to hold every capture for `ms` (the
+/// `POST /sim/capture-delay` bridge endpoint). No-op online; `/sim/reset` installs a
+/// fresh fake with the hold back at 0.
+#[cfg(feature = "e2e")]
+pub fn set_capture_delay(ms: u64) {
+    if let Some(dev) = LIVE.lock().expect("sim live lock").as_ref() {
+        dev.state.lock().expect("sim lock").capture_delay_ms = ms;
+    }
+}
+
 /// Offline re-amp capture: read the installed fake's DSP state, compute the modeled
 /// loudness, and return a stimulus scaled to hit it. Falls back to the stimulus
 /// passthrough (the pre-physics behavior) when no fake is installed — a direct Rust
@@ -1857,14 +1873,18 @@ pub fn set_commit_latency(ms: u64) {
 /// Doctor profiles rather than measuring). The runtime online guard in
 /// `audio::reamp_capture` means this is never reached online.
 #[cfg(feature = "e2e")]
-pub fn e2e_capture(stimulus: &[f32], rate: u32) -> crate::audio::Capture {
-    match LIVE.lock().expect("sim live lock").as_ref() {
-        Some(dev) => dev.e2e_capture(stimulus, rate),
-        None => {
-            log::debug!("e2e_capture: no live SimDevice — stimulus passthrough");
-            passthrough(stimulus, rate)
-        }
+pub fn e2e_capture(stimulus: &[f32], rate: u32) -> Result<crate::audio::Capture, String> {
+    let Some(dev) = LIVE.lock().expect("sim live lock").clone() else {
+        log::debug!("e2e_capture: no live SimDevice — stimulus passthrough");
+        return Ok(passthrough(stimulus, rate));
+    };
+    // Held with no lock taken, and abortably: a Stop cancels it as it cancels a real
+    // capture. Unarmed it never reads OP_ABORT, which parallel unit tests share.
+    let hold = dev.state.lock().expect("sim lock").capture_delay_ms;
+    if hold > 0 {
+        crate::sleep_or_cancel(hold)?;
     }
+    Ok(dev.e2e_capture(stimulus, rate))
 }
 
 #[cfg(feature = "e2e")]
