@@ -94,6 +94,7 @@ pub(crate) fn replace_inplace_with(
     let file: serde_json::Value = crate::library::decode_preset_bytes(bytes)
         .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("preset JSON: {e}")))?;
     let file_roster = import_roster(&file)?;
+    let file_id = crate::library::preset_id_of(&file);
 
     // TOLERANT reads for both landing-detection lists — strict decodes only
     // terminal-frame streams and fails/garbles on the interleaved responses that
@@ -196,8 +197,9 @@ pub(crate) fn replace_inplace_with(
     save_conn
         .confirm_active(scratch_slot, Some(&scratch_name))
         .and_then(|()| {
-            save_conn
-                .confirm_loaded_body(|roster, doc| check_loaded_body(&file_roster, roster, doc))
+            save_conn.confirm_loaded_body(|roster, doc| {
+                check_loaded_body(&file_roster, file_id, roster, doc)
+            })
         })
         .map_err(kept)?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
@@ -254,16 +256,26 @@ fn import_roster(file: &serde_json::Value) -> Result<crate::blockcaps::Roster, S
 }
 
 /// The loaded working copy may be saved over the original only if it holds the file's
-/// blocks and is not the template substitute (which a block-less file's roster passes).
+/// blocks, is not the template substitute (which a block-less file's roster passes), and
+/// carries the file's `preset_id` — an import keeps it (fw 1.8.58, HW 2026-10-10) and only
+/// the save below re-mints it. Ids repeat across copies, so this proves the body loaded
+/// intact, not which slot is loaded (`confirm_active` covers that). A working copy cut
+/// before `info` has no id to compare and falls back to the block check.
 fn check_loaded_body(
     file_roster: &crate::blockcaps::Roster,
+    file_id: Option<&str>,
     live_roster: &crate::blockcaps::Roster,
     live_doc: &serde_json::Value,
 ) -> Result<(), String> {
-    crate::library::refuse_template_id(
-        crate::library::preset_id_of(live_doc),
-        "the loaded import",
-    )?;
+    let live_id = crate::library::preset_id_of(live_doc);
+    crate::library::refuse_template_id(live_id, "the loaded import")?;
+    if let (Some(want), Some(got)) = (file_id, live_id) {
+        if want != got {
+            return Err(format!(
+                "the loaded import carries preset_id {got:?}, not the file's {want:?}"
+            ));
+        }
+    }
     crate::blockcaps::check_loaded_roster(file_roster, live_roster)
 }
 
@@ -361,7 +373,8 @@ mod tests {
     fn a_template_body_on_either_side_refuses_the_in_place_save() {
         let real = body("aaaaaaaa-0000-0000-0000-000000000001");
         let roster = import_roster(&real).expect("a real file imports");
-        check_loaded_body(&roster, &roster, &real).expect("the file's own body passes");
+        let id = Some("aaaaaaaa-0000-0000-0000-000000000001");
+        check_loaded_body(&roster, id, &roster, &real).expect("the file's own body passes");
 
         let err = import_roster(&body(TEMPLATE_PRESET_ID)).expect_err("template file");
         assert!(
@@ -370,13 +383,34 @@ mod tests {
         );
 
         // The loaded side refuses even with the file's blocks in it…
-        let err =
-            check_loaded_body(&roster, &roster, &body(TEMPLATE_PRESET_ID)).expect_err("template");
+        let err = check_loaded_body(&roster, id, &roster, &body(TEMPLATE_PRESET_ID))
+            .expect_err("template");
         assert!(err.contains("loaded import"), "{err}");
         // …and catches the substitute a block-less file's roster check would pass.
         let empty_file = json!({"info": {"preset_id": "aaaaaaaa-0000-0000-0000-000000000002"}});
         let substitute = json!({"info": {"preset_id": TEMPLATE_PRESET_ID}});
         let roster = import_roster(&empty_file).expect("block-less file");
-        assert!(check_loaded_body(&roster, &Roster::new(), &substitute).is_err());
+        assert!(check_loaded_body(&roster, None, &Roster::new(), &substitute).is_err());
+    }
+
+    #[test]
+    fn the_loaded_import_must_carry_the_files_preset_id() {
+        let file = body("aaaaaaaa-0000-0000-0000-000000000001");
+        let roster = import_roster(&file).expect("a real file imports");
+        let id = Some("aaaaaaaa-0000-0000-0000-000000000001");
+
+        // Same blocks, different id: another preset (or a re-stamped body) is loaded.
+        let other = body("bbbbbbbb-0000-0000-0000-000000000002");
+        let err = check_loaded_body(&roster, id, &roster, &other).expect_err("id mismatch");
+        assert!(
+            err.contains("bbbbbbbb") && err.contains("aaaaaaaa"),
+            "{err}"
+        );
+
+        // A working copy cut before `info` has no id: the block check alone decides.
+        let cut = json!({"audioGraph": file["audioGraph"].clone()});
+        check_loaded_body(&roster, id, &roster, &cut).expect("no live id to compare");
+        // A file with no id has nothing to compare either.
+        check_loaded_body(&roster, None, &roster, &other).expect("no file id to compare");
     }
 }

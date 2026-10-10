@@ -48,8 +48,9 @@ fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Ve
         .collect()
 }
 
-/// Seed-owned ownership markers that SURVIVE a device import — `info.preset_id`
-/// cannot serve (the device stamps a fresh uuid on import, HW 2026-07-17):
+/// Seed-owned ownership markers that SURVIVE the seed's import → load → save —
+/// `info.preset_id` cannot serve (an import keeps it, but every save re-mints it;
+/// fw 1.8.58, HW 2026-10-10):
 /// the fixture's `info.source_id` stamp + the Reference's scene-uuid prefix
 /// (the latter also covers pre-stamp legacy copies).
 const FIXTURE_MARKERS: [&str; 2] = ["tmp-companion-e2e-fixture", "e2e00000-"];
