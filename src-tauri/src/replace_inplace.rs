@@ -87,11 +87,10 @@ pub(crate) fn replace_inplace_with(
     bytes: &[u8],
     verify: bool,
 ) -> Result<ReplaceOutcome, String> {
-    // The blocks the loaded scratch must hold before it may be saved over the original.
+    // What the loaded scratch must hold before it may be saved over the original.
     let file: serde_json::Value = crate::library::decode_preset_bytes(bytes)
         .and_then(|t| serde_json::from_str(&t).map_err(|e| format!("preset JSON: {e}")))?;
-    let file_roster = import_roster(&file)?;
-    let file_id = crate::library::preset_id_of(&file);
+    let proof = LoadProof::of_file(&file)?;
 
     // TOLERANT reads for both landing-detection lists — strict decodes only
     // terminal-frame streams and fails/garbles on the interleaved responses that
@@ -169,52 +168,36 @@ pub(crate) fn replace_inplace_with(
     };
     // An import lands in the LOWEST empty slot (fw 1.8.58), so an empty target can be
     // the landing slot itself: the import is already in place, and the load → save →
-    // clear below would save it over itself and then clear it. It still gets the
-    // loaded-body check: a body the firmware rejects only shows at its first real load
-    // (tmp-audit Q35 — the empty template under the imported name).
+    // clear below would save it over itself and then clear it. Nothing has loaded it yet,
+    // and only a load shows a body the firmware rejects (the stored row still reads
+    // intact), so prove it with one — and take a rejected import back off the unit.
     if scratch_slot == orig_list_index {
-        Session::connect()?.load_preset(orig_list_index)?;
-        let mut s = Session::connect()?;
-        s.confirm_active(orig_list_index, Some(&scratch_name))
-            .and_then(|()| {
-                s.confirm_loaded_body(|roster, doc| {
-                    check_loaded_body(&file_roster, file_id, roster, doc)
-                })
-            })
-            .map_err(|e| {
-                format!(
-                    "{e}. The import landed at list index {orig_list_index} \
-                     ({scratch_name:?}) but did not load as the file."
-                )
-            })?;
+        if let Err(e) = load_and_prove(scratch_slot, &scratch_name, &proof) {
+            let cleanup = match guarded_clear(scratch_slot, &scratch_name) {
+                Ok(()) => "the import was cleared".to_string(),
+                Err(c) => format!("clearing it ALSO failed ({c}) — clear it by hand"),
+            };
+            return Err(format!(
+                "the import at list index {scratch_slot} ({scratch_name:?}) did not load \
+                 intact: {e}; {cleanup}"
+            ));
+        }
         return Ok(unverified(Some(scratch_name.clone())));
     }
 
-    // 3) Land it on the original slot. The session layer translates these 0-based
-    // list indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
-    Session::connect()?.load_preset(scratch_slot)?; // scratch becomes current (persists across reconnect)
-                                                    // Fresh connection re-attaches to the now-current preset; CONFIRM it is the scratch
-                                                    // copy, holding the file's blocks, BEFORE saving it over the (real, irreplaceable)
-                                                    // original slot. A dropped load would leave a DIFFERENT preset current, and a body
-                                                    // rejected at load an EMPTY one under the scratch's name; saving either over
-                                                    // orig_list_index is silent data loss — so the guards live in the SAME connection as
-                                                    // the mutation. On failure ABORT before the save (and before the clear), leaving the
-                                                    // scratch import on the device for manual recovery.
-    let mut save_conn = Session::connect()?;
-    let kept = |e: String| {
+    // 3) Land it on the original slot: load the scratch and prove the working copy is it,
+    // holding the file's blocks, BEFORE saving it over the (real, irreplaceable) original.
+    // A dropped load leaves a DIFFERENT preset current, and a body rejected at load an EMPTY
+    // one under the scratch's name; saving either over orig_list_index is silent data loss.
+    // On failure ABORT before the save (and before the clear), leaving the scratch import on
+    // the device for manual recovery. The session layer translates these 0-based list
+    // indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
+    let mut save_conn = load_and_prove(scratch_slot, &scratch_name, &proof).map_err(|e| {
         format!(
             "{e}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
              the original slot {orig_list_index} was NOT modified."
         )
-    };
-    save_conn
-        .confirm_active(scratch_slot, Some(&scratch_name))
-        .and_then(|()| {
-            save_conn.confirm_loaded_body(|roster, doc| {
-                check_loaded_body(&file_roster, file_id, roster, doc)
-            })
-        })
-        .map_err(kept)?;
+    })?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
     drop(save_conn); // end the save's connection before guarded_clear opens the next one
     guarded_clear(scratch_slot, &scratch_name)?; // remove the scratch copy (guarded)
@@ -257,6 +240,50 @@ pub(crate) fn replace_inplace_with(
         songs_before,
         songs_after,
     })
+}
+
+/// What a loaded import must show to prove it loaded intact: the file's per-group blocks
+/// and `preset_id` ([`check_loaded_body`]). A body the firmware rejects at load keeps its
+/// stored row intact (fw 1.8.58, tmp-audit Q35), so this check on a LOADED working copy is
+/// the only proof an import landed.
+pub(crate) struct LoadProof {
+    roster: crate::blockcaps::Roster,
+    id: Option<String>,
+}
+
+impl LoadProof {
+    pub(crate) fn of_file(file: &serde_json::Value) -> Result<Self, String> {
+        Ok(Self {
+            roster: import_roster(file)?,
+            id: crate::library::preset_id_of(file).map(str::to_string),
+        })
+    }
+
+    pub(crate) fn check(
+        &self,
+        live_roster: &crate::blockcaps::Roster,
+        live_doc: &serde_json::Value,
+    ) -> Result<(), String> {
+        check_loaded_body(&self.roster, self.id.as_deref(), live_roster, live_doc)
+    }
+}
+
+/// Load `list_index` on its own connection, then on a FRESH one (its handshake re-attaches
+/// to the now-current preset) confirm it is the active preset named `name` and that its
+/// working copy passes `proof`. Returns that confirmed session, so a save can follow on
+/// the SAME connection as its guards. A load of the already-current slot is skipped
+/// device-side unless dirty; the working copy then still comes from a real load, since an
+/// import over the current slot reloads it (fw 1.8.58 static RE).
+pub(crate) fn load_and_prove(
+    list_index: u32,
+    name: &str,
+    proof: &LoadProof,
+) -> Result<Session, String> {
+    Session::connect()?.load_preset(list_index)?;
+    let mut s = Session::connect()?;
+    s.confirm_active(list_index, Some(name))?;
+    s.confirm_loaded_body(|roster, doc| proof.check(roster, doc))?;
+    Ok(s)
 }
 
 /// The blocks the loaded scratch must hold, refused up front (before the import) for a

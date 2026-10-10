@@ -368,14 +368,17 @@ Read the entry in full before changing the behaviour it governs.
 --restore`) loads the scratch import and saves it over the original. Its only pre-save guard
   was `confirm_active` (slot + name), which passes on the substitute, and the guarded clear then
   deleted the only intact copy. It now reads the working copy and refuses the save unless its
-  per-group blocks match the file's (`Session::confirm_loaded_body`, fail-closed on a short read).
+  per-group blocks match the file's (`replace_inplace::load_and_prove`, fail-closed on a short
+  read).
 - The pre-import validator (`footswitch::validate_import_body`) enforces the missing-`valueType`
   shape (the only one fw 1.8.58 rejects) and, conservatively, the dual-entry row (legal on
   1.8.58). Static RE also names a footswitch row count other than 10 or 20 and a non-integer
   `version` as load-time rejects. The unit contradicts both: it pads the 9- and 5-row `ftsw` of
   fixtures 405 and 410 to 20 rows (Q35), and every fixture carries `info.version: 5.0`.
   `replace_inplace_with` runs the same loaded-body check on an import that landed straight on
-  an empty target (the e2e seed's and `probe --import-file`'s usual case), which used to skip it.
+  an empty target (the e2e seed's and `probe --import-file`'s usual case), which used to skip it,
+  and clears a rejected one again: its stored row reads pristine over field 8, so a seed that
+  left it resident would skip it on every later run instead of failing.
 
 ## An insert with a missing anchor or over the CPU budget aborts the device server
 

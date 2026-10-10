@@ -497,12 +497,12 @@ fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), 
     }
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
-    for list_index in seeded {
+    for &list_index in seeded {
         let p = spec
             .iter()
-            .find(|p| p.list_index == *list_index)
+            .find(|p| p.list_index == list_index)
             .ok_or_else(|| format!("internal: no spec entry for seeded slot {list_index}"))?;
-        let body = paced_retry_read(&mut s, *list_index);
+        let body = paced_retry_read(&mut s, list_index);
         let Some(body) = body else {
             return Err(format!(
                 "slot {list_index} ({:?}) was imported this run but its body could not be \
@@ -511,9 +511,8 @@ fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), 
                 p.name
             ));
         };
-        // The substitute keeps the imported `displayName`, so this still identifies the
-        // slot; a body naming ANOTHER preset is a stale/wrong-slot read and must not be
-        // allowed to stand in for the verification.
+        // A body naming ANOTHER preset is a stale/wrong-slot read and must not be allowed
+        // to stand in for the verification.
         if !body_names(&body, &p.name) {
             return Err(format!(
                 "slot {list_index}: the landed-verify read answered with a body naming \
@@ -521,10 +520,9 @@ fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), 
                 p.name
             ));
         }
-        // Classified BEFORE `pristine_check`: a gutted body trips that chain's REV gate
+        // Classified BEFORE `pristine_check`: an empty body trips that chain's REV gate
         // first and would be logged as "an older fixture revision", the wrong diagnosis
-        // for a firmware discard (the honest-reason bug `PristineMiss` already exists to
-        // prevent).
+        // (the honest-reason bug `PristineMiss` already exists to prevent).
         if body_was_discarded(&body, &p.preset_json) {
             return Err(format!(
                 "slot {list_index} ({:?}): the device stored an EMPTY body in place of this \
@@ -1103,8 +1101,8 @@ mod tests {
         )
     }
 
-    /// BUG→GATE (see `DISCARD_GOTCHA`): the landed-verify classifier must call a gutted
-    /// body a DISCARD, without misfiring on a healthy import or a fixture with no blocks.
+    /// The field-8 classifier must call an empty stored body a DISCARD, without misfiring
+    /// on a healthy import or a fixture with no blocks.
     #[test]
     fn landed_verify_flags_the_firmware_empty_body_substitution() {
         let fixture = r#"{"info":{"source_id":"tmp-companion-e2e-fixture#r10","displayName":"E2E Doctor Oracle"},"audioGraph":{"presetLevel":0.32,"guitarNodes":{"G1":[{"FenderId":"ACD_TubeScreamer","nodeId":"ACD_TubeScreamer"}]}}}"#;
@@ -1142,6 +1140,56 @@ mod tests {
             br#"{"info":{"displayName":"E2E Doctor Oracle"}}"#,
             fixture
         ));
+    }
+
+    /// BUG→GATE (tmp-audit Q35, fw 1.8.58): a rejected import's stored row is the fixture
+    /// VERBATIM, so every field-8 check passes it; only its first real load shows the
+    /// substitute (template `preset_id`, zero blocks, name kept). For every committed
+    /// fixture, the load proof must pass the fixture's own working copy and refuse that
+    /// substitute — and a fixture with no blocks or no id would leave it nothing to refuse.
+    #[test]
+    fn landed_verify_load_proof_refuses_the_load_time_substitute() {
+        use crate::library::TEMPLATE_PRESET_ID;
+        let roster_of = |doc: &serde_json::Value| {
+            crate::blockcaps::group_roster_of(&session::extract_active_graph(doc, None).nodes)
+        };
+        let spec = scenario_spec().expect("committed spec parses");
+        for p in &spec {
+            let doc: serde_json::Value = serde_json::from_str(&p.preset_json).expect("json");
+            // The stored row of a rejected import: field 8 cannot tell it from a good one.
+            assert!(!body_was_discarded(
+                p.preset_json.as_bytes(),
+                &p.preset_json
+            ));
+            assert_eq!(
+                pristine_check(p.preset_json.as_bytes(), &p.preset_json),
+                Ok(())
+            );
+
+            let proof = crate::replace_inplace::LoadProof::of_file(&doc)
+                .expect("every fixture yields a load proof");
+            proof
+                .check(&roster_of(&doc), &doc)
+                .unwrap_or_else(|e| panic!("{}: its own working copy must pass: {e}", p.name));
+
+            let substitute = serde_json::from_str::<serde_json::Value>(&discarded_body(&p.name))
+                .map(|mut v| {
+                    v["info"]["preset_id"] = TEMPLATE_PRESET_ID.into();
+                    v
+                })
+                .expect("substitute json");
+            assert!(
+                proof.check(&roster_of(&substitute), &substitute).is_err(),
+                "{}: the load-time substitute must fail the proof",
+                p.name
+            );
+            // Even with the blocks intact, the template id alone refuses it…
+            assert!(proof.check(&roster_of(&doc), &substitute).is_err());
+            // …and with no id at all, the zero-block roster does.
+            let mut no_id = substitute.clone();
+            no_id["info"].as_object_mut().unwrap().remove("preset_id");
+            assert!(proof.check(&roster_of(&no_id), &no_id).is_err());
+        }
     }
 
     /// A fixture regen that drops the `source_id` stamp must fail here, not on
