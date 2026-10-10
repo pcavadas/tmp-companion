@@ -2079,6 +2079,23 @@ fn offline_batched_song_saves_open_one_connection_each() {
     assert_eq!(updated["bpm_warning"], serde_json::Value::Null, "{updated}");
     let song = sim.song(slot).unwrap();
     assert_eq!((song.name.as_str(), song.bpm), ("Soundcheck 2", 132));
+    // A duplicate name: the device accepts it, so the created song can't be told from the
+    // older one — notes, BPM and setlist are skipped and the older song stays untouched.
+    let encore_before = sim.song(2).unwrap();
+    let dup = invoke(
+        &webview,
+        "create_song_full",
+        serde_json::json!({ "name": "Encore", "notes": "x", "bpm": 150.0, "addToSetlist": 1 }),
+    )
+    .expect("create_song_full (duplicate name)");
+    assert!(
+        dup["bpm_warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("isn't unique")),
+        "{dup}"
+    );
+    assert_eq!(dup["members"], serde_json::Value::Null, "{dup}");
+    assert_eq!(sim.song(2).unwrap(), encore_before);
 }
 
 /// FIELD-8 GATE: the SimDevice answers `presetDataRequest`(8) for a scenario slot, so

@@ -183,14 +183,16 @@ pub(crate) async fn create_song_full(
             let listed = s.song_list_strict()?.ok_or_else(|| {
                 format!("song {name:?} created, but the song list didn't read back")
             })?;
-            let Some(slot) = listed.iter().find(|x| x.name == name).map(|x| x.slot) else {
-                // Created but not resolvable by name (duplicate-name edge) — return the
-                // fresh list; the optional fields are skipped, surfaced as a warning.
+            // The device accepts a duplicate name, so only a UNIQUE match is the new song:
+            // the first of several could be an older one, and the writes below would land
+            // on it. Not resolvable → return the fresh list, skip the optional fields.
+            let Ok(slot) = find_song_slot(&listed, &name) else {
                 return Ok(SongSaveOutcome {
                     songs: listed,
                     members: None,
                     bpm_warning: Some(format!(
-                        "song {name:?} created, but not resolvable by name — notes/BPM skipped"
+                        "song {name:?} created, but its name isn't unique — notes, BPM and \
+                         setlist skipped"
                     )),
                 });
             };
