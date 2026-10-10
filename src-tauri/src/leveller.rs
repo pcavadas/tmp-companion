@@ -680,7 +680,8 @@ pub(crate) enum SaveWitness {
         node: String,
         param: String,
         value: f32,
-        /// 0-based `scenes[]` wire index the write landed in; `None` = base/footswitch.
+        /// 0-based `scenes[]` wire index the write landed in; `None` = base/footswitch —
+        /// including a scene row's write the landing policy sent to the shared base value.
         scene: Option<u32>,
     },
     /// A BASE-BOOST save: `presetLevel` pinned at its ceiling AND the base amp's
@@ -2967,7 +2968,7 @@ fn set_knobs(
                     ));
                 };
                 match scene_write_verdict_for_param(sv, scene, node_id, parameter_id) {
-                    SceneWriteVerdict::WriteDirect => {}
+                    SceneWriteVerdict::WriteDirect { .. } => {}
                     SceneWriteVerdict::NeedsEnable => {
                         let node_key = (group_id.as_str(), node_id.as_str());
                         if !needs_enable.contains(&node_key) {
@@ -5579,6 +5580,7 @@ pub fn level_scenes_oneshot(
         jobs,
         save,
         restore_scene,
+        saved,
         hold,
         isolation_restore,
         on_scene,
@@ -6217,6 +6219,10 @@ fn run_scene_jobs(
     jobs: &[SceneJob],
     save: bool,
     restore_scene: Option<u32>,
+    // The run's ONE pre-run field-8 read — the same doc every solve's `set_knobs` decided its
+    // write landing from, so the post-save readers look for each value where it landed
+    // (`write_overlay`).
+    saved: Option<&serde_json::Value>,
     // `hold`: the UNSAVED base pair a headroom trade raised, if one ran. The batch's ONE save
     // recalls the preset's original scene first, and that recall runs the device's own
     // level-apply — silently reverting an unsaved `presetLevel` right before the save persists
@@ -6306,6 +6312,12 @@ fn run_scene_jobs(
                                 ..
                             } => Some(PersistedWrite {
                                 scene_slot: job.scene_slot,
+                                overlay: write_overlay(
+                                    saved,
+                                    job.scene_slot,
+                                    node_id,
+                                    parameter_id,
+                                ),
                                 node_id: node_id.clone(),
                                 parameter_id: parameter_id.clone(),
                                 value: v,
@@ -6365,14 +6377,13 @@ fn run_scene_jobs(
         // scene `outputLevel` this batch persisted — the freshness registry's anchor for a
         // NEXT run's same-slot prepass load. `written.first()` (the LOWEST-index written
         // scene) maximizes the odds a later harvest's often-truncated `scenes` tail still
-        // reaches that overlay. Base jobs also land in `written` at `BASE_SCENE_SLOT`, so the
-        // guard must be `<`, not `!=` — a base write is a `Param` witness but not a SCENE one.
+        // reaches that overlay. Keyed where the write LANDED (`overlay`), not by its row.
         let witness = hold_witness.or_else(|| {
             written.first().map(|w| SaveWitness::Param {
                 node: w.node_id.clone(),
                 param: w.parameter_id.clone(),
                 value: w.value,
-                scene: (w.scene_slot < crate::session::BASE_SCENE_SLOT).then_some(w.scene_slot),
+                scene: w.overlay,
             })
         });
         if stopped {
@@ -6466,21 +6477,42 @@ fn save_deferred_scene_writes(
 /// One solved scene write, to be checked against what the batch-end save actually persisted.
 #[derive(Debug, Clone)]
 pub(crate) struct PersistedWrite {
-    /// The scene the value was written into; `session::BASE_SCENE_SLOT` = the base graph.
+    /// The outcome row the value was solved for; `session::BASE_SCENE_SLOT` = the base row.
     pub scene_slot: u32,
+    /// Where the value LIVES in the saved document: `Some(s)` = scene `s`'s overlay, `None` =
+    /// the base graph. Not always `scene_slot`'s own overlay — see [`write_overlay`].
+    pub overlay: Option<u32>,
     pub node_id: String,
     pub parameter_id: String,
     /// The value the run SOLVED and reported.
     pub value: f32,
 }
 
+/// [`PersistedWrite::overlay`] for a write solved for row `scene_slot`: `None` (base) for the
+/// base row AND for a scene write the landing policy sent to the shared base value
+/// (`WriteDirect { lands_on_base: true }`, decided from the same pre-run `saved` doc `set_knobs`
+/// wrote under).
+fn write_overlay(
+    saved: Option<&serde_json::Value>,
+    scene_slot: u32,
+    node_id: &str,
+    parameter_id: &str,
+) -> Option<u32> {
+    if scene_slot >= crate::session::BASE_SCENE_SLOT {
+        return None;
+    }
+    match saved.map(|sv| scene_write_verdict_for_param(sv, scene_slot, node_id, parameter_id)) {
+        Some(SceneWriteVerdict::WriteDirect {
+            lands_on_base: true,
+        }) => None,
+        _ => Some(scene_slot),
+    }
+}
+
 /// Agreement band between a solved `f32` and its round-tripped JSON value. Wide enough for
 /// the float formatting, far below any real leveling step.
 const PERSIST_TOL: f64 = 1e-3;
 
-/// What the saved document holds for one solved write: the SCENE OVERLAY's value for an FS
-/// scene, the base graph node's for base (`scene_overlay` answers `Unknown` at/above
-/// `BASE_SCENE_SLOT`, so base must not go through it).
 /// What a post-save re-read can say about ONE solved write. The third state is the whole
 /// point: "the document does not carry this value" and "the document cannot speak to this
 /// location at all" are different facts, and only the first is evidence of a lost write.
@@ -6493,8 +6525,12 @@ enum PersistedRead {
     Unverifiable,
 }
 
+/// What the saved document holds for one solved write, read where it LANDED
+/// ([`PersistedWrite::overlay`]): the scene overlay's value, or the base graph node's
+/// (`scene_overlay` answers `Unknown` at/above `BASE_SCENE_SLOT`, so base must not go through
+/// it).
 fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> PersistedRead {
-    if w.scene_slot >= crate::session::BASE_SCENE_SLOT {
+    let Some(scene) = w.overlay else {
         // `audioGraph` heads the document, so a tail truncation never reaches it — but a
         // read that lost it lost everything, and must not be read as a wiped write.
         if !saved.get("audioGraph").is_some_and(|g| g.is_object()) {
@@ -6508,12 +6544,12 @@ fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> PersistedRe
             Some(v) => PersistedRead::Value(v),
             None => PersistedRead::Absent,
         };
-    }
+    };
     // CALL-SITE DECISION (three-state split): a value LOOKUP, so `Full` and `BypassOnly`
     // share one arm — read whatever the overlay holds. A `BypassOnly` overlay carries no
-    // knob keys, so the lookup misses and the write counts as a MISS, which is right: a
-    // scene write there was refused up front (`set_knobs`), so a value reported as written
-    // into one is by definition not persisted.
+    // knob keys, so the lookup misses and the write counts as a MISS, which is right: the
+    // only write the policy lets through there lands on BASE and arrives with `overlay:
+    // None` (above), so a value reported as written INTO one is by definition not persisted.
     //
     // `Unknown` is the arm that must NOT collapse into that miss (HW, 2026-08-19): it means
     // the `scenes` section never arrived, and `scenes` sits at the document tail, so it is
@@ -6523,7 +6559,7 @@ fn persisted_value(saved: &serde_json::Value, w: &PersistedWrite) -> PersistedRe
     // re-measure of the SAVED state read -22.99 LUFS against its -23 target, i.e. the write
     // had persisted perfectly. A false "did not persist" is worse than no check: it teaches
     // the user to distrust correct results, and the external judge SKIPS a good row.
-    match overlay_param(saved, w.scene_slot, &w.node_id, &w.parameter_id) {
+    match overlay_param(saved, scene, &w.node_id, &w.parameter_id) {
         SceneParamRead::Value(v) => match v.as_f64() {
             Some(v) => PersistedRead::Value(v),
             None => PersistedRead::Absent,
@@ -7924,6 +7960,7 @@ pub fn level_scenes_rebalance(
         jobs,
         save,
         restore_scene,
+        saved,
         hold,
         isolation_restore,
         on_scene,
@@ -8386,6 +8423,7 @@ mod persist_verify_tests {
     fn write(scene_slot: u32, value: f32) -> PersistedWrite {
         PersistedWrite {
             scene_slot,
+            overlay: write_overlay(None, scene_slot, "amp", "outputLevel"),
             node_id: "amp".to_string(),
             parameter_id: "outputLevel".to_string(),
             value,
@@ -8494,6 +8532,62 @@ mod persist_verify_tests {
             "a covered-but-empty overlay is still a lost write: {real:?}"
         );
         assert!(real.unverifiable.is_empty(), "{real:?}");
+    }
+
+    /// GATE for the shared-base scene write (offline profiling, 2026-10-10, slot 402 "Solo"):
+    /// a scene whose overlay is bypass-only (Scene Edit off) has no knob to land in, so the
+    /// write-landing policy sends it to the SHARED base value. Graded against the scene's
+    /// overlay, the run warned "solved 3.0000 but the saved preset holds no such value" for a
+    /// write that had persisted, and the same address fed the freshness witness, which then
+    /// blind-waited the whole commit window. The value must be read where it LANDED.
+    #[test]
+    fn a_shared_base_scene_write_is_graded_against_base_not_its_overlay() {
+        // Base amp bypassed; scene 0 pins its own `outputLevel` (Full overlay); scene 1's
+        // bypass-only overlay un-bypasses it — `shared_write_is_scene_local`'s anatomy.
+        let pre = serde_json::json!({
+            "audioGraph": { "guitarNodes": {
+                "G1": [ { "nodeId": "amp", "FenderId": "amp",
+                          "dspUnitParameters": { "bypass": true, "outputLevel": 0.40 } } ]
+            } },
+            "scenes": [
+                { "guitarNodes": { "G1": { "amp": { "dspUnitParameters": { "outputLevel": 0.72 } } } } },
+                { "guitarNodes": { "G1": { "amp": { "dspUnitParameters": { "bypass": false } } } } }
+            ]
+        });
+        assert_eq!(write_overlay(Some(&pre), 1, "amp", "outputLevel"), None);
+        // Every other landing keeps its own address.
+        assert_eq!(write_overlay(Some(&pre), 0, "amp", "outputLevel"), Some(0));
+        assert_eq!(write_overlay(None, 1, "amp", "outputLevel"), Some(1));
+        assert_eq!(
+            write_overlay(
+                Some(&pre),
+                crate::session::BASE_SCENE_SLOT,
+                "amp",
+                "outputLevel"
+            ),
+            None
+        );
+
+        // After the save: base moved to the solved value, scene 1's overlay is unchanged.
+        let mut post = pre.clone();
+        post["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["outputLevel"] =
+            serde_json::json!(0.55);
+        let landed = PersistedWrite {
+            overlay: write_overlay(Some(&pre), 1, "amp", "outputLevel"),
+            ..write(1, 0.55)
+        };
+        let check = persist_mismatches(&post, std::slice::from_ref(&landed));
+        assert!(
+            check.missed.is_empty() && check.unverifiable.is_empty(),
+            "a persisted shared-base write must grade clean: {check:?}"
+        );
+        // …and a base that did NOT move is still caught, under the scene's own row.
+        let miss = persist_mismatches(&pre, &[landed]).missed;
+        assert_eq!(miss.len(), 1, "{miss:?}");
+        assert_eq!(
+            miss[0].0, 1,
+            "the miss is reported on the row it was solved for"
+        );
     }
 
     /// GATE for the scene half of the stale-`presetLevel` fix. Unlike the FS half — which the

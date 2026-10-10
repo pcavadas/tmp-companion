@@ -897,6 +897,7 @@ test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke, BU
     clamp_kind: string | null;
     saved: boolean;
     final_level: number;
+    persist_mismatch: boolean | null;
   }
   interface SceneEditEvent {
     SceneEdit: { group: string; node: string; enable: boolean };
@@ -1019,6 +1020,12 @@ test.describe("Level — shared_write_is_scene_local (Boost/Solo, raw invoke, BU
       real.clamped,
       `the flat-response fixture must honestly clamp: ${JSON.stringify(real)}`,
     ).toBe(true);
+    // The post-save check reads the value where it LANDED (base), not scene 3's
+    // bypass-only overlay — graded there it reported a persisted write as lost.
+    expect(
+      real.persist_mismatch,
+      `a persisted shared-base write must not be reported as lost: ${JSON.stringify(real)}`,
+    ).toBe(false);
 
     // 1. No Scene Edit enable for the node this write landed on.
     const events = (await simEvents(page)).slice(from);
