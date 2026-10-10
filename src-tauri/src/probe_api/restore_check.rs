@@ -427,7 +427,8 @@ pub fn probe_restore_check(device_slot: u32, trials: u32) -> Result<String, Stri
         Ok(())
     })();
 
-    // Leave the unit as found: a real reload of the starting preset when it is known.
+    // Leave the unit as found: a real reload of the starting preset when it is known, so a
+    // trial that failed mid-edit cannot leave its unsaved edit active.
     let back = match start_list {
         Some(l) if l != list => Session::connect().and_then(|mut s| {
             s.load_preset(l)?;
@@ -438,12 +439,18 @@ pub fn probe_restore_check(device_slot: u32, trials: u32) -> Result<String, Stri
                 s.loaded_slot()
             ))
         }),
-        Some(_) => Ok("the target was the starting preset".to_string()),
+        Some(_) => t
+            .real_load()
+            .map(|_| format!("reloaded list {list} (the starting preset)")),
         None => Ok("starting preset unknown — left on the target".to_string()),
     };
+    let back = back.map_err(|e| format!("reload of the starting preset FAILED: {e}"));
     out.push_str(&format!(
         "  end: {}\n",
-        back.unwrap_or_else(|e| format!("reload of the starting preset FAILED: {e}"))
+        back.as_deref().unwrap_or_else(|e| e.as_str())
     ));
-    res.map(|()| out.clone()).map_err(|e| format!("{e}\n{out}"))
+    match (res, back) {
+        (Ok(()), Ok(_)) => Ok(out),
+        (Err(e), _) | (Ok(()), Err(e)) => Err(format!("{e}\n{out}")),
+    }
 }
