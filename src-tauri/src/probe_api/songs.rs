@@ -1,6 +1,5 @@
 //! Probe entry points: Songs CRUD + shared song-read helpers (used by the song commands).
 
-use super::slot_write::active_graph_on;
 use super::SCRATCH_SLOTS;
 use crate::proto;
 use crate::session;
@@ -204,17 +203,8 @@ pub fn probe_set_song_notes(name: &str, notes: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// The active preset's 0-based list index on a discovery session (best-effort), so the
-/// BPM write can put the amp back on it afterwards.
-fn active_slot_on(s: &mut Session) -> Option<u32> {
-    active_graph_on(s)
-        .ok()
-        .and_then(|(g, _)| g.slot)
-        .or_else(|| s.loaded_slot())
-}
-
 /// Whether a song list shows `slot` at `bpm` (±1.5).
-fn bpm_landed(songs: &[session::SongRecord], slot: u32, bpm: f32) -> bool {
+pub(crate) fn bpm_landed(songs: &[session::SongRecord], slot: u32, bpm: f32) -> bool {
     songs
         .iter()
         .any(|x| x.slot == slot && (x.bpm as f32 - bpm).abs() < 1.5)
@@ -227,7 +217,7 @@ fn bpm_landed(songs: &[session::SongRecord], slot: u32, bpm: f32) -> bool {
 /// a BPM only while it is). An existing footswitch binding is used untouched; a song with
 /// none gets row 1 → preset 001's base scene. Returns the read-back list (`None` if it
 /// didn't arrive) and whether the BPM landed.
-fn set_song_bpm_on(
+pub(crate) fn set_song_bpm_on(
     s: &mut Session,
     slot: u32,
     bpm: f32,
@@ -279,18 +269,17 @@ fn set_song_bpm_on(
     Ok((songs, landed))
 }
 
-/// Set song `slot`'s BPM over ONE connection ([`set_song_bpm_on`], which opens with a
-/// discovery handshake so the prior preset can be restored). Returns the fresh song list
-/// and whether the BPM landed; `false` is the caller's to report. `Err` only on a
-/// connection/transact failure or a refused footswitch. Shared by the `set_song_bpm`
-/// command, the batched song saves and `probe_set_song_bpm`.
+/// Set song `slot`'s BPM over ONE connection ([`set_song_bpm_on`], restoring the preset
+/// the handshake showed active). Returns the fresh song list and whether the BPM landed;
+/// `false` is the caller's to report. `Err` only on a connection/transact failure or a
+/// refused footswitch. Shared by the `set_song_bpm` command and `probe_set_song_bpm`.
 pub(crate) fn converge_song_bpm(
     slot: u32,
     bpm: f32,
 ) -> Result<(Vec<session::SongRecord>, bool), String> {
     let read = {
-        let mut s = Session::connect_for_discovery()?;
-        let prior = active_slot_on(&mut s);
+        let mut s = Session::connect()?;
+        let prior = s.active_slot_live();
         set_song_bpm_on(&mut s, slot, bpm, prior)?
     };
     match read {
@@ -302,6 +291,39 @@ pub(crate) fn converge_song_bpm(
             Ok((songs, landed))
         }
     }
+}
+
+/// `--active-slot` — read-only: what a plain handshake shows about the active preset
+/// (the `PresetLoaded` echo, the current-preset name, the strict My Presets list) and
+/// the restore target [`Session::active_slot_live`] derives from it.
+pub fn probe_active_slot() -> Result<String, String> {
+    let mut s = Session::connect()?;
+    let started = std::time::Instant::now();
+    let snapshot = |s: &Session| {
+        let name = s.active_preset_name();
+        let list = s.harvest_preset_list_strict();
+        let hits = match (&name, &list) {
+            (Some(n), Some(l)) => l.iter().filter(|x| *x == n).count().to_string(),
+            _ => "-".into(),
+        };
+        format!(
+            "loaded_slot={:?} name={name:?} strict_list_len={:?} name_hits={hits}",
+            s.loaded_slot(),
+            list.as_ref().map(Vec::len)
+        )
+    };
+    let mut out = format!(
+        "[probe --active-slot] after handshake: {}
+",
+        snapshot(&s)
+    );
+    let live = s.active_slot_live();
+    out += &format!(
+        "[probe --active-slot] active_slot_live={live:?} after {} ms: {}\n",
+        started.elapsed().as_millis(),
+        snapshot(&s)
+    );
+    Ok(out)
 }
 
 /// `--song-bpm <name> <bpm>` — set a song's numeric BPM via [`converge_song_bpm`]
