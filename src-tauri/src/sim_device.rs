@@ -749,14 +749,21 @@ impl SimState {
         if addr > 19 || index >= 5 {
             return false;
         }
-        let mut removed = false;
-        self.with_working_ftsw(addr, |switches| {
-            if (index as usize) < switches.len() {
+        // Check before `with_working_ftsw`, which would materialize missing switches.
+        let current = self
+            .ftsw_working
+            .clone()
+            .unwrap_or_else(|| self.base_ftsw());
+        let present = current
+            .get(addr as usize)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|sw| (index as usize) < sw.len());
+        if present {
+            self.with_working_ftsw(addr, |switches| {
                 switches.remove(index as usize);
-                removed = true;
-            }
-        });
-        removed
+            });
+        }
+        present
     }
 
     /// Take-or-base the working `ftsw` array, run `f` against switch `addr`'s function list,
@@ -2369,6 +2376,19 @@ fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
     truncate_scene_push(st, json.into_bytes())
 }
 
+/// `json` with `audioGraph.presetLevel` set to the live `level`, when the document has one
+/// (the plain build's default graph carries none).
+fn with_live_preset_level(json: String, level: f32) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return json;
+    };
+    match v.pointer_mut("/audioGraph/presetLevel") {
+        Some(pl) => *pl = serde_json::json!(level),
+        None => return json,
+    }
+    serde_json::to_string(&v).unwrap_or(json)
+}
+
 /// [`load_echo_json`] before any injected truncation.
 fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     let edits = if working {
@@ -2384,7 +2404,14 @@ fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
         // saved array — the field-3 push is the LIVE document, which is what makes it the
         // confirm channel for the no-echo footswitch setters.
         let ftsw = st.ftsw_working.as_ref().or(doc.ftsw.as_ref());
-        return with_working_edits(with_ftsw(&patched, ftsw), &edits);
+        let json = with_working_edits(with_ftsw(&patched, ftsw), &edits);
+        // The working copy carries the LIVE level, which differs from this slot's saved one
+        // after an unsaved `setPresetLevel` or a save to another slot.
+        return if working {
+            with_live_preset_level(json, st.preset_level)
+        } else {
+            json
+        };
     }
     let _ = slot0;
     with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits)
@@ -3917,6 +3944,33 @@ mod same_slot_load_tests {
             None,
             "the first slot is no longer the loaded one"
         );
+    }
+
+    /// The skipped load's push is the working copy, including a level saved from another
+    /// slot whose own saved doc holds a different one.
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn a_skipped_load_after_a_save_elsewhere_pushes_the_live_level() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.6).unwrap();
+        s.save_current_preset(402).unwrap();
+        s.load_preset(402).unwrap();
+        let pushed = s.live_preset_value(|_| true).unwrap()["audioGraph"]["presetLevel"]
+            .as_f64()
+            .unwrap();
+        assert!((pushed - 0.6).abs() < 1e-6, "pushed {pushed}");
+    }
+
+    /// A refused clear must not materialize empty switches in the working copy.
+    #[test]
+    fn a_refused_footswitch_clear_leaves_ftsw_untouched() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.clear_footswitch_assignment(3, 0).unwrap();
+        assert!(sim.state.lock().expect("sim lock").ftsw_working.is_none());
     }
 
     /// The Q34(d) device shape on the saved `presetLevel`, with the live value moved by a
