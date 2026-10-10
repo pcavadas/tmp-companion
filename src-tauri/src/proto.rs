@@ -1368,6 +1368,14 @@ pub fn first_varint(fields: &[(u32, Val)], field_no: u32) -> Option<u64> {
         .and_then(|(_, v)| v.as_u64())
 }
 
+/// First fixed32 field `field_no` as an `f32`.
+pub fn first_f32(fields: &[(u32, Val)], field_no: u32) -> Option<f32> {
+    fields
+        .iter()
+        .find(|(f, _)| *f == field_no)
+        .and_then(|(_, v)| v.as_f32())
+}
+
 /// Collect every length-delimited field `field_no` (a repeated message field).
 pub fn all_bytes(fields: &[(u32, Val)], field_no: u32) -> Vec<&[u8]> {
     fields

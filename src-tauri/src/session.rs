@@ -2705,7 +2705,10 @@ impl Session {
     /// `song_slot` / `song_preset_slot` / `preset_scene_slot` are song-internal
     /// positions passed through. The label and both colours are written as given
     /// (an empty/zero value stores ""/OFF), so pass the row's current ones.
-    /// Fire-and-forget; verify by re-reading the song.
+    ///
+    /// The row is read back: the device refuses a `preset_scene_slot` the preset doesn't
+    /// have (not [`BASE_SCENE_SLOT`] and ≥ its scene count) with SongError 5 and writes
+    /// nothing (fw 1.8.58, tmp-audit Q40), so a row that didn't land is an `Err`.
     #[allow(clippy::too_many_arguments)]
     pub fn assign_song_preset(
         &mut self,
@@ -2729,7 +2732,30 @@ impl Session {
             ),
             300,
         )?;
-        Ok(())
+        let rows = self.song_presets(song_slot)?;
+        if rows.is_empty() {
+            return Err(format!(
+                "assigned song {song_slot} footswitch {song_preset_slot}, but its rows \
+                 couldn't be read back to confirm it"
+            ));
+        }
+        let landed = (song_preset_slot as usize)
+            .checked_sub(1)
+            .and_then(|i| rows.get(i))
+            .is_some_and(|r| {
+                !r.is_empty
+                    && r.user_preset_slot == user_list_index + 1
+                    && r.preset_scene_slot == preset_scene_slot
+            });
+        if landed {
+            return Ok(());
+        }
+        Err(format!(
+            "the unit did not bind song {song_slot} footswitch {song_preset_slot} to preset \
+             {:03} scene slot {preset_scene_slot} (it refuses a scene the preset doesn't \
+             have; {BASE_SCENE_SLOT} = the whole preset)",
+            user_list_index + 1
+        ))
     }
 
     /// Reorder a Song row — `moveSongPreset`. Song-internal positions.
@@ -2890,6 +2916,43 @@ impl Session {
             400,
         )?;
         Ok(())
+    }
+
+    /// Request on this open session (batch 3: answered at once after the handshake) and
+    /// harvest, re-sending up to 3 times. `None` = no usable reply.
+    fn request_harvest<T>(
+        &mut self,
+        req: &[u8],
+        pumps: u32,
+        harvest: impl Fn(&Self) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        for _ in 0..3 {
+            self.clear_raw();
+            self.send_and_collect_alive(req, 250)?;
+            for _ in 0..pumps {
+                if let Some(r) = harvest(self) {
+                    return Ok(Some(r));
+                }
+                self.pump_collect_alive(250)?;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read song `song_slot`'s rows on this session. Empty Vec = no usable reply (an
+    /// empty song still returns its all-empty rows).
+    pub(crate) fn song_presets(&mut self, song_slot: u32) -> Result<Vec<SongPresetRecord>, String> {
+        let req = proto::song_preset_list_request(song_slot as u64, Some(proto::BATCH_DRAIN));
+        let rows = self.request_harvest(&req, 6, |s| {
+            Some(s.harvest_song_presets(song_slot)).filter(|r| !r.is_empty())
+        })?;
+        Ok(rows.unwrap_or_default())
+    }
+
+    /// Read the whole song list on this session, strict (complete replies only).
+    pub(crate) fn song_list_strict(&mut self) -> Result<Option<Vec<SongRecord>>, String> {
+        let req = proto::song_list_request(Some(proto::BATCH_DRAIN));
+        self.request_harvest(&req, 8, Self::harvest_songs_strict)
     }
 
     /// Decode `song_slot`'s Song-preset reply from the accumulated streams. Largest

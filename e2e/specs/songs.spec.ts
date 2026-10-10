@@ -1,13 +1,18 @@
 import { test, expect } from "../fixtures/test";
 import { clearScenario } from "../fixtures/scenario";
 
-// Songs scenario — full CRUD, runs identically offline (SimDevice models the song/setlist
+// Songs scenario — full CRUD plus BPM, runs identically offline (SimDevice models the song/setlist
 // protocol) and online (real device). Self-cleaning: the song and setlist it creates are
 // both deleted, so the unit's song DB is net-zero. Every mutation is verified by the
 // read-after-write the Songs tab performs.
 const SONG = "E2E Song";
 const SONG2 = "E2E Song Renamed";
 const SETLIST = "E2E Setlist";
+// BPM has no setter: it is the tap tempo, which lands in the active song only once its
+// BPM flag is on (fw 1.8.58). A new song has no footswitch and its flag off, so the
+// create exercises the fresh-assign path; the edit, the existing-binding path.
+const BPM = "97";
+const BPM2 = "132";
 
 const songRow = (page: import("@playwright/test").Page, name: string) =>
   page
@@ -28,22 +33,32 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
     await page.getByRole("button", { name: /backed up/i }).click(); // startup disclaimer
     await page.getByRole("button", { name: "Songs", exact: true }).click();
 
-    // CREATE song → read-back.
+    // CREATE song with a BPM → read-back shows the BPM, with no "didn't stick" warning.
     await page.getByRole("button", { name: "New song" }).click();
     await page.getByPlaceholder("Song name").fill(SONG);
+    await page.getByPlaceholder("—", { exact: true }).fill(BPM);
     await page.getByTitle("Save").click();
     await expect(page.getByText(SONG, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
+    await expect(
+      songRow(page, SONG).getByText(BPM, { exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/BPM didn't stick/)).toHaveCount(0);
 
-    // UPDATE (rename) → read-back shows the new name, old name gone.
+    // UPDATE (rename + BPM) → read-back shows the new name and BPM, old name gone.
     await songRow(page, SONG).getByTitle("More").click();
     await page.getByText("Edit song…").click();
     await page.getByPlaceholder("Song name").fill(SONG2);
+    await page.getByPlaceholder("—", { exact: true }).fill(BPM2);
     await page.getByTitle("Save").click();
     await expect(page.getByText(SONG2, { exact: true })).toBeVisible({
       timeout: 30_000,
     });
+    await expect(
+      songRow(page, SONG2).getByText(BPM2, { exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/BPM didn't stick/)).toHaveCount(0);
     // …and the old name is GONE — a rename that appended instead of replacing would leave
     // both visible (and break net-zero), yet pass a new-name-visible check alone.
     await expect(page.getByText(SONG, { exact: true })).toHaveCount(0, {

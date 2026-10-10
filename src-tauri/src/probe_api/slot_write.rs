@@ -359,6 +359,30 @@ pub fn probe_firmware_version() -> Result<String, String> {
         .ok_or_else(|| "handshake carried no currentFwResponse".to_string())
 }
 
+/// Up to 4 reads of the active graph on one discovery session, resolving a missing slot
+/// by unique name. Returns the graph and its diagnostics; `Err` carries every attempt's.
+pub(crate) fn active_graph_on(s: &mut Session) -> Result<(session::ActiveGraph, String), String> {
+    let mut errors = Vec::new();
+    for _ in 0..4 {
+        let diagnostics = format!(
+            "{}\n{}",
+            s.slot_read_diagnostics(),
+            s.active_graph_diagnostics()
+        );
+        match s.current_audio_graph() {
+            Ok(mut graph) => {
+                if graph.slot.is_none() {
+                    graph.slot = s.resolve_unique_my_preset_slot(graph.name.as_deref());
+                }
+                return Ok((graph, diagnostics));
+            }
+            Err(e) => errors.push(format!("{e}\n{diagnostics}")),
+        }
+        s.pump_collect_alive(250)?;
+    }
+    Err(errors.join("\n--- retry ---\n"))
+}
+
 /// Retry active-graph discovery because the TMP's field-3 stream length varies
 /// slightly between handshakes. A graph is usable only after its routing
 /// template arrives; otherwise a parallel path can be rendered as series.
@@ -366,25 +390,10 @@ pub(crate) fn discover_active_graph() -> Result<(session::ActiveGraph, String), 
     let mut errors = Vec::new();
     for _ in 0..3 {
         match Session::connect_for_discovery() {
-            Ok(mut s) => {
-                for _ in 0..4 {
-                    let diagnostics = format!(
-                        "{}\n{}",
-                        s.slot_read_diagnostics(),
-                        s.active_graph_diagnostics()
-                    );
-                    match s.current_audio_graph() {
-                        Ok(mut graph) => {
-                            if graph.slot.is_none() {
-                                graph.slot = s.resolve_unique_my_preset_slot(graph.name.as_deref());
-                            }
-                            return Ok((graph, diagnostics));
-                        }
-                        Err(e) => errors.push(format!("{e}\n{diagnostics}")),
-                    }
-                    s.pump_collect_alive(250)?;
-                }
-            }
+            Ok(mut s) => match active_graph_on(&mut s) {
+                Ok(found) => return Ok(found),
+                Err(e) => errors.push(e),
+            },
             Err(e) => errors.push(e),
         }
         std::thread::sleep(std::time::Duration::from_millis(150));

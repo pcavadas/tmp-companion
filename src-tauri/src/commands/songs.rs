@@ -93,13 +93,9 @@ pub(crate) async fn set_song_notes(
     .await
 }
 
-/// Set a song's numeric BPM by slot via the RE'd mechanism (there is NO dedicated
-/// BPM setter): ensure the song has a footswitch (`assignSongPreset`), activate it
-/// (`loadPreset tabEnum=5`), send the global `tapTempoBpm` (which the device stores
-/// as the ACTIVE song's BPM — so this mutates active-song state as a side effect),
-/// enable BPM display, verify by re-read. Retries the activate+tempo (the first load
-/// after a fresh assign often doesn't settle). Non-convergence → Err. Returns the
-/// fresh song list on success.
+/// Set a song's numeric BPM by slot over one connection ([`converge_song_bpm`]: activate
+/// the song through a footswitch, enable its BPM, then `tapTempoBpm`, read back once).
+/// A BPM that didn't land → Err. Returns the fresh song list on success.
 #[tauri::command]
 pub(crate) async fn set_song_bpm(
     state: State<'_, AppState>,
@@ -117,7 +113,7 @@ pub(crate) async fn set_song_bpm(
             .map(|x| x.bpm)
             .unwrap_or(0);
         Err(format!(
-            "BPM for song slot {slot} did not converge to {bpm} after retries (read-back={got}); \
+            "BPM for song slot {slot} did not land at {bpm} (read-back={got}); \
              tempo applies to the active song and this slot may not have activated"
         ))
     })
@@ -134,8 +130,8 @@ pub(crate) async fn set_song_bpm(
 
 /// Result of a batched song save: the fresh authoritative song list, the fresh
 /// membership of `add_to_setlist` (when requested), and the best-effort BPM
-/// warning (BPM is the active-song tap tempo on the unit and can fail to settle —
-/// the song itself is kept, mirroring the UI's previous per-call behavior).
+/// warning (BPM is the active-song tap tempo on the unit; when it doesn't land the
+/// song itself is kept, mirroring the UI's previous per-call behavior).
 #[derive(serde::Serialize)]
 pub(crate) struct SongSaveOutcome {
     songs: Vec<session::SongRecord>,
@@ -163,7 +159,7 @@ fn apply_song_bpm_best_effort(
                 .unwrap_or(0);
             (
                 Some(after),
-                Some(format!("BPM didn't converge to {bpm} (read-back={got})")),
+                Some(format!("BPM didn't land at {bpm} (read-back={got})")),
             )
         }
         Err(e) => (None, Some(e)),
@@ -280,7 +276,8 @@ pub(crate) async fn update_song_full(
 
 /// Bind a user preset (+ scene) to a Song row on the device — `assignSongPreset`.
 /// `user_list_index` is 0-based (session applies the device +1). The label and both
-/// colours overwrite the row's, so pass its current ones. DEVICE WRITE.
+/// colours overwrite the row's, so pass its current ones. The row is read back, so a
+/// refused scene is an Err (see `Session::assign_song_preset`). DEVICE WRITE.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn song_assign(
