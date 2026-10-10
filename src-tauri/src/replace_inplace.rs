@@ -269,6 +269,13 @@ fn check_loaded_body(
 ) -> Result<(), String> {
     let live_id = crate::library::preset_id_of(live_doc);
     crate::library::refuse_template_id(live_id, "the loaded import")?;
+    // With no blocks to compare, the id is the only proof the body loaded.
+    if file_roster.is_empty() && live_id.is_none() {
+        return Err(
+            "the loaded import of a block-less file carries no preset_id to prove it loaded"
+                .to_string(),
+        );
+    }
     if let (Some(want), Some(got)) = (file_id, live_id) {
         if want != got {
             return Err(format!(
@@ -412,5 +419,12 @@ mod tests {
         check_loaded_body(&roster, id, &roster, &cut).expect("no live id to compare");
         // A file with no id has nothing to compare either.
         check_loaded_body(&roster, None, &roster, &other).expect("no file id to compare");
+
+        // A block-less file has no roster to fall back on: an id-less copy refuses.
+        let empty_file = json!({"info": {"preset_id": "aaaaaaaa-0000-0000-0000-000000000001"}});
+        let empty = import_roster(&empty_file).expect("block-less file");
+        let err = check_loaded_body(&empty, id, &Roster::new(), &json!({})).expect_err("no id");
+        assert!(err.contains("block-less"), "{err}");
+        check_loaded_body(&empty, id, &Roster::new(), &empty_file).expect("its own id passes");
     }
 }
