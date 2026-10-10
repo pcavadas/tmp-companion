@@ -120,7 +120,7 @@ p.17 documents a **per-preset** on/off for hearing delay and reverb tails when c
 
 **Where the flag lives, and its value across a real library:** spillover is a field in the preset's own audioGraph, `audioGraph.spillover` (boolean), readable **offline** from the device backup (`UserPresets.presetJson`). Across all **38 non-empty presets** on this unit it is `true` on **38/38** — so on this library it cannot vary row-to-row, though the field is per-preset and could in principle.
 
-**Tail duration — measured: seconds, not milliseconds.** `probe --tail-decay` (opt-in `TMP_ALLOW_NONSCRATCH_TAIL_DECAY=1` + a `scene` parameter, 0-based `scenes[]` index) run against device slot 1 ("Guitar"), scene `Reverb`: a 0.5 s white-noise burst decayed from −46.2 dBFS at the burst's end to −91.8 dBFS by +3950 ms, an average **~11.5 dB/s** slope (ranging 9.4–15.2 dB/s across four 1 s segments — not perfectly steady) that **had not yet reached the noise floor** at the 4 s tail captured. On a real wet preset, the tail is measured in **seconds**, dwarfing the ~1.3–2.5 s inter-connection floor this repo's own capture shape imposes between a `loadPreset` and its first sample. Verified safe: the stored preset's `audioGraph.presetLevel` (the working-copy field this tool writes) read bit-identical in backups taken before and after this capture.
+**Tail duration — measured: seconds, not milliseconds.** `probe --tail-decay` (opt-in `TMP_ALLOW_NONSCRATCH_TAIL_DECAY=1` + a `scene` parameter, 0-based `scenes[]` index) run against device slot 1 ("Guitar"), scene `Reverb`: a 0.5 s white-noise burst decayed from −46.2 dBFS at the burst's end to −91.8 dBFS by +3950 ms, an average **~11.5 dB/s** slope (ranging 9.4–15.2 dB/s across four 1 s segments — not perfectly steady) that **had not yet reached the noise floor** at the 4 s tail captured. On a real wet preset, the tail is measured in **seconds**, dwarfing the ~0.9–2.1 s inter-connection floor this repo's own capture shape imposes between a `loadPreset` and its first sample. Verified safe: the stored preset's `audioGraph.presetLevel` (the working-copy field this tool writes) read bit-identical in backups taken before and after this capture.
 
 **Scene-change applicability — settled by the manual's own scope for the SETTING, not for audio bleed.** p.17 (physical PDF p.19) defines the setting exactly as _"On/off control (per preset) for hearing delay/reverb tails when **changing presets**"_ — preset changes only; scenes are never mentioned. This settles whether the setting's own on/off toggle is meant to apply to a scene recall (it isn't). It does **not** settle whether audio can bleed across a scene recall in practice — a scene recall (per C1/C2, a live re-scene that never calls `loadPreset`) disturbs a wet block's live state even less than a full preset reload, so there's no basis to assume it's cleaner; that remains untested.
 
@@ -140,12 +140,11 @@ The floor between `loadPreset` and the first captured sample breaks down as:
 | source                     | ms          | whose constraint                                                                                  |
 | -------------------------- | ----------- | ------------------------------------------------------------------------------------------------- |
 | `SETTLE_AFTER_LOAD_MS`     | 400         | **ours** (`leveller.rs`)                                                                          |
-| `RECONNECT_GAP_MS`         | 400         | **ours**                                                                                          |
 | `SETTLE_AFTER_REAMP_MS`    | 500         | **ours**                                                                                          |
 | full handshake             | few hundred | device-driven                                                                                     |
 | needing a reconnect at all | —           | **device** — re-amp engages once per connection; load + engage on one connection captures silence |
 
-Only the last row is genuinely imposed by the device. The 1300 ms is **our own settle padding**, picked for reliability in the leveller rather than measured as a minimum.
+Only the last row is genuinely imposed by the device. The 900 ms is **our own settle padding**, picked for reliability in the leveller rather than measured as a minimum.
 
 ### A4. What reaches the USB 1/2 output on Split templates? — **RESOLVED: BOTH LANES REACH IT (HW-derived, fw 1.8.45)**
 

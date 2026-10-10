@@ -66,10 +66,11 @@ item 5 and no longer holds.
 Working-copy edits survive HID disconnect/reconnect: after a session forced
 `bypass=false` and dropped, a fresh zero-write connection measured the forced state
 exactly (−25.285 vs base −23.78, `probe --measure-forced` + `--measure-current`).
-Only a `loadPreset` DISCARDS them (a save COMMITS them — it persists the accumulated
-edits, incl. unsaved scene overlays, and merely clears the dirty state; see
-`notes/leveling.md`) — **and a `loadScene` re-asserts the params that scene
-overlays**: a recall re-applies the recalled scene's own bypass/param state, which is why
+Only a `loadPreset` DISCARDS them, and a same-slot one only over a DIRTY working copy
+(fw 1.8.58, tmp-audit Q34(d); that `changeParameter`, which a forced bypass sends, sets
+the flag is static RE only). A save COMMITS them: it persists the accumulated edits, incl.
+unsaved scene overlays, and merely clears the dirty state (see `notes/leveling.md`).
+**And a `loadScene` re-asserts the params that scene overlays**: a recall re-applies the recalled scene's own bypass/param state, which is why
 persistence alone does NOT let a measurement loop force isolation just once (see item 5).
 
 ## Refuted / dead ends — do NOT re-attempt as drop-ins

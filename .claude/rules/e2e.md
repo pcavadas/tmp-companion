@@ -40,9 +40,9 @@ scene-leveling test doc comments, and `e2e/fixtures/COVERAGE.md` rows 6/20.
 
 ## Seeding and list reads
 
-- Seed-path list reads are **TOLERANT plus a completeness floor, never `list_my_presets_strict`**. Strict decodes only terminal-frame streams and fails or garbles on back-to-back lean sessions (HW: tolerant returned 504/504 while strict returned truncated 190–236 fallbacks), and its re-arm retries themselves arm the HID open lockout.
-- Online seeding runs a **FRESH `probe --seed-scenario` process BEFORE the server starts**, dodging the in-process `0xe00002c5` open lockout that aborted in-spec seeds. The seed self-repairs by sweeping stray imports — an aborted seed strands copies at the first empty slot anywhere in the bank.
-- The eleven scenario presets live in the scratch zone at list indices 400–410 and **stay resident between runs by default** — the pristine-checking seed re-imports any drifted or stale-rev slot. Teardown unconditionally disables re-amp, sweeps strays and recalls preset 001, but clears the scenario slots **only** with `TMP_E2E_CLEAR_SCENARIO=1`, for an on-demand net-zero run. **Their shapes are deliberate and the per-use-case map is [`e2e/fixtures/COVERAGE.md`](../../e2e/fixtures/COVERAGE.md)** — read it before changing a fixture, and update it in the same commit. In brief:
+- Seed-path list reads are **TOLERANT plus a completeness floor, never `list_my_presets_strict`**. Strict decodes only terminal-frame streams and fails or garbles on back-to-back lean sessions (HW: tolerant returned 504/504 while strict returned truncated 190–236 fallbacks).
+- Online seeding runs a **FRESH `probe --seed-scenario` process BEFORE the server starts**, so the server's own handshake snapshots the seeded presets. The seed self-repairs by sweeping stray imports — an aborted seed strands copies at the first empty slot anywhere in the bank.
+- The eleven scenario presets live in the scratch zone at list indices 400–410 and **stay resident between runs by default** — the pristine-checking seed re-imports any drifted or stale-rev slot. Teardown unconditionally disables re-amp, sweeps strays and recalls preset 001 (an empty sweep leaves the server's `SCENARIO_VERIFIED` set, so the next spec's `ensureScenario` skips the re-verify unless a structural save cleared it), but clears the scenario slots **only** with `TMP_E2E_CLEAR_SCENARIO=1`, for an on-demand net-zero run. **Their shapes are deliberate and the per-use-case map is [`e2e/fixtures/COVERAGE.md`](../../e2e/fixtures/COVERAGE.md)** — read it before changing a fixture, and update it in the same commit. In brief:
   - `E2E Rig` (400) — the scene-overlay + footswitch + Doctor-damage fixture.
   - `E2E Pedalboard` (401) — the scene-free copy/import + EXP/link-group fixture.
   - `E2E Edge` (402) — the split-output 8-scene fixture; also carries the Doctor's baked 2.6 kHz EQ-ring oracle.
@@ -58,7 +58,7 @@ scene-leveling test doc comments, and `e2e/fixtures/COVERAGE.md` rows 6/20.
 
 ## Online preconditions — the unit's own global settings count
 
-Beyond "plugged in + rested, Pro Control closed": the device's global **Scene Change
+Beyond "plugged in, Pro Control closed": the device's global **Scene Change
 Behavior must be MAINTAIN CHANGES** for any spec set containing `level.online`. That spec
 drives the DEFERRED-WRITE leveling lanes (`level_scenes_apply_batched`,
 `level_footswitches_apply`), which `level_scenes::scene_discard_guard` refuses outright

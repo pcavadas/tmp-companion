@@ -75,7 +75,7 @@ cargo run --bin probe                         # headless HW re-validation (devic
 
 ## How leveling works
 
-`presetLevel` is a **linear amplitude** control: `captured_LUFS = 20·log10(presetLevel) + C`. So `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply), forced by the re-amp rules in `danger.md`.
+`presetLevel` is a **linear amplitude** control: `captured_LUFS = 20·log10(presetLevel) + C`. So `leveller::level_preset` measures once at a reference level, solves `C`, and sets the exact value — over **three fresh connections** (load / measure / apply), forced by the fw 1.8.45 re-amp rules in `danger.md` and kept, unchanged and conservative, on fw 1.8.58.
 
 `C` is each preset's **max reachable** loudness. A louder target clamps, and the ceiling is preset- and model-specific — there is no hard `−17 LUFS` rule (a maxed 65 Twin reached `−11 LUFS` comfortably; convention-adjusted +3 from the mono-era `−20`/`−14` — see `notes/leveling.md`'s metering-convention section). For relative leveling, pick a target below the quietest preset's measured max.
 
