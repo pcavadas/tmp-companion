@@ -168,12 +168,9 @@ pub fn probe_doctor_window_ab(
     let mut skipped: Vec<u32> = Vec::new();
 
     for &slot in slots {
-        // Each capture sleeps the reconnect gap BEFORE its result is matched, so
-        // a failed capture (which has already churned the device) paces the next
-        // connection exactly like a successful one instead of cascading failures
-        // across the remaining slots. One shape for all three variants.
+        // A failed capture skips its slot rather than failing the run. One shape for
+        // all three variants.
         let mut settle_or_skip = |label: &str, res: Result<Capture, String>| -> Option<Capture> {
-            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
             match res {
                 Ok(c) => Some(c),
                 Err(e) => {

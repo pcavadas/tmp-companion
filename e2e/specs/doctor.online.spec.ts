@@ -117,7 +117,7 @@ test.describe("Doctor online — spectral oracle (407) + Edge EQ-ring UI (402)",
     //     18 s each, leveller.rs) = 69 s.
     //   + ONE live field-8 isolation read for the whole run (nodes/footswitches
     //     are sent empty below, so every sound falls to the cached-per-list-index
-    //     legacy read) + its RECONNECT_GAP_MS settle = ~5 s.
+    //     legacy read) = ~5 s.
     //   + a cold `ensureScenario` seed, worst case (its own 240_000 ms request
     //     timeout) = 240 s.
     //   + the run-end restore-active-preset reload = ~5 s.

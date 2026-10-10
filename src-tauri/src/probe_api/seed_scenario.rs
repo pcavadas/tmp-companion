@@ -1,9 +1,9 @@
-//! Online-e2e scenario seeding — sweep stray imports, then place the committed
-//! scenario presets at their slots (every entry of `scenario-presets.json`, 400-404). Shared by `probe --seed-scenario` (a FRESH process
-//! per seed, invoked by the runner BEFORE the bridge server starts — keeps the seed's
-//! many fresh connections clear of the in-process `0xe00002c5` open lockout that
-//! aborted the original in-spec seeds) and by the `e2e_seed_scenario` bridge command
-//! (the in-process fallback for specs run without the runner).
+//! Online-e2e scenario seeding — sweep stray imports, then place the committed scenario
+//! presets at their slots (every entry of `scenario-presets.json`, 400-404). Shared by
+//! `probe --seed-scenario` (a FRESH process per seed, invoked by the runner BEFORE the
+//! bridge server starts, so the server's handshake snapshots the seeded presets) and by
+//! the `e2e_seed_scenario` bridge command (the in-process fallback for specs run without
+//! the runner).
 
 use crate::backup;
 use crate::replace_inplace::replace_inplace_with;
@@ -553,8 +553,8 @@ fn body_names(body: &[u8], name: &str) -> bool {
 /// Clear every stray on the GIVEN session — but only after a per-candidate
 /// field-8 read finds a [`FIXTURE_MARKERS`] hit (a name is not ownership; a
 /// user preset coincidentally named "E2E Reference" is skipped, fail-closed).
-/// One session for reads+clears (each extra open risks the post-close lockout);
-/// settles after the last clear (the device's list lags its own writes).
+/// One session for reads+clears; settles after the last clear (the device's list lags
+/// its own writes).
 fn sweep_on(
     s: &mut Session,
     list: &[session::PresetEntry],
@@ -595,11 +595,10 @@ pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
 }
 
 /// TOLERANT list read + an EXACT-bank-size gate. Tolerant because the strict
-/// harvest fails on interleaved back-to-back-session responses (see the
-/// .claude/rules/danger.md, HID open-lockout); the size gate is the real safety — a partial
-/// view must never drive clears or imports (truncation is tail-only, so a
-/// length check IS the completeness check), and a LARGER bank means a fw rev
-/// moved the slot layout out from under our destructive slot assumptions.
+/// harvest fails on interleaved back-to-back-session responses; the size gate is the
+/// real safety — a partial view must never drive clears or imports (truncation is
+/// tail-only, so a length check IS the completeness check), and a LARGER bank means a
+/// fw rev moved the slot layout out from under our destructive slot assumptions.
 const MY_PRESETS_BANK_SIZE: usize = 504; // fw 1.8.45; fail-loud if a fw rev resizes the bank
 /// Held-session re-reads of a SHORT list before the size gate fails the run (online e2e
 /// 2026-10-05/06: one-off 473 / 496 / 459 reads; a read right after returned 504). A LARGER
@@ -729,12 +728,6 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
 
     let mut seeded = Vec::new();
     for p in to_seed {
-        if !seeded.is_empty() {
-            // Quiet gap between imports: each lands via several fresh connections
-            // (import → landing read → load/confirm/save → guarded clear), and the
-            // device needs the gap for its read-after-write list propagation.
-            crate::settle(std::time::Duration::from_secs(8));
-        }
         // Re-confirm THIS target in the SAME address space as the mutation,
         // immediately before it: the classification pass above ran off one
         // snapshot, but seeding multiple presets spans many seconds and several

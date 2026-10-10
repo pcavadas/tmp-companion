@@ -342,9 +342,7 @@ cleanup() {
   fi
   # Release the HID (kill the server) BEFORE any probe fallback, whether or not the
   # in-band attempt above succeeded — a still-live server holding the exclusive HID seize
-  # makes probe's own open hit the lockout (0xe00002c5), and each failed open re-arms it
-  # (danger.md's HID open-lockout model). Fresh-quiet-then-open needs the seize released
-  # first.
+  # makes probe's own open fail (0xe00002c5).
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
   kill_port "$PORT"
   if [ "$reamp_ok" -ne 1 ]; then
@@ -430,9 +428,6 @@ if [ "$SERVER_READY" -ne 1 ]; then
   exit 1
 fi
 ok "e2e_server ONLINE and seeded from the real device"
-
-log "resting the unit before the first device-touching call (post-handshake settle)…"
-sleep 60
 
 # ── read the whole library ONCE (non-destructive) and confirm every target slot's name ──
 log "[1] read_library_via_backup (non-destructive)…"
@@ -696,13 +691,7 @@ process_preset() {
 }
 
 SLOTS="26 27 28"
-first=1
 for slot in $SLOTS; do
-  if [ "$first" -eq 0 ]; then
-    log "resting the unit between presets…"
-    sleep 10
-  fi
-  first=0
   if ! process_preset "$slot"; then
     err "preset slot $slot FAILED — stopping the replay (no further presets will be touched)"
     FAILED=1

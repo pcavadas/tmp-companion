@@ -414,13 +414,10 @@ fn pick_scene_level_knob(
         Some(scene)
     };
     // ONE rich session (HW-rearchitected): heartbeat warmup → loads
-    // via send_and_collect → live doc from the accumulated field-3 pushes. The
-    // old connect → load → drop → connect_for_discovery chain is broken on fw
-    // 1.8.45 twice over: a close chased by a re-open wedges the device's next
-    // exclusive open (0xe00002c5 lockout), and field-78 kills field-3 delivery
-    // for its whole session anyway. After each load the raw accumulator is
-    // cleared so the doc reflects the POST-scene live state (the pick must read
-    // the sounding graph, never stale pre-scene pushes).
+    // via send_and_collect → live doc from the accumulated field-3 pushes. After
+    // each load the raw accumulator is cleared so the doc reflects the POST-scene
+    // live state (the pick must read the sounding graph, never stale pre-scene
+    // pushes).
     let live_doc = {
         let mut s = Session::connect()?;
         for _ in 0..16 {
@@ -488,9 +485,6 @@ fn level_one_scene_legacy(
     save: bool,
 ) -> Result<leveller::LevelResult, String> {
     let (knob, lo, hi, _current) = pick_scene_level_knob(slot, scene, candidates)?;
-    // 800 ms before the leveller's first fresh connect — the empirical safe gap
-    // after a rich-session close (shorter chases trip the device's open lockout).
-    crate::settle(std::time::Duration::from_millis(800));
     let opts = leveller::LevelOptions {
         save,
         verify: true,
@@ -680,11 +674,6 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             // (see prepass_scene_docs_via's adoption-time TODO). `false` = live prepass today.
             let (docs, restore_scene) =
                 prepass_scene_docs_via(slot, &scene_slots, false, saved.as_ref())?;
-            // Inter-session HID gap: the prepass session has just closed; the one-shot
-            // runner opens a fresh one. Reuse the leveller's HW-proven open-after-close
-            // gap (was a hard-coded 800, copied from the bench). build_scene_jobs below
-            // is pure CPU, so this is the only wait here.
-            crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
             // `build_scene_jobs` stamps a base target on every job; override each with its
             // OWN wire job's offset-adjusted target (match by scene slot) so a mixed-target
             // preset levels in this ONE batch. `jobs` is non-empty (guarded above).
@@ -834,9 +823,11 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 // loop above) may have landed its forced bypasses. Nothing has been written or
                 // deferred yet at this point (PHASE 1 is read-only measurement), so the cheapest
                 // correct cleanup is a full reload, unconditionally, mirroring the unbatched
-                // path's own dirt handling. A cancel must not skip it either (danger.md). The
-                // forced bypasses mark the working copy dirty, so this same-slot load is a real
-                // reload of the stored preset (fw 1.8.58, tmp-audit Q34(d)).
+                // path's own dirt handling. A cancel must not skip it either (danger.md). A
+                // same-slot load reloads the stored preset only over a DIRTY working copy (fw
+                // 1.8.58, tmp-audit Q34(d), HW-shown for a `presetLevel` edit; that a forced
+                // bypass's `changeParameter` sets the flag is static RE only). The deleted fw
+                // 1.8.45 barrier issued this same load.
                 //
                 // A FAILED cleanup HARD-FAILS the whole command rather than warn-and-continue:
                 // on the anchor-only path base carries no wire job of its own, so nothing later

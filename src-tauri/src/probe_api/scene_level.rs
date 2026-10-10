@@ -204,7 +204,6 @@ pub fn probe_level_preset_scenes(
     // it as `build_scene_jobs`' fallback template source.
     let all_slots: Vec<u32> = (0..scenes.scenes.len() as u32).collect();
     let (docs, _) = prepass_scene_docs(list_index, &all_slots)?;
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let saved = super::scene_jobs::read_saved_preset_complete(list_index)?;
 
     // 3c) ONE-SHOT open-loop per scene on the active amp `outputLevel`. HW-verified:
@@ -620,9 +619,7 @@ pub fn probe_jointk_scenes(
         }
     }
     for (target, slots) in groups {
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let saved = super::scene_jobs::read_saved_preset(list_index);
         let jobs = match build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref()) {
             Ok(j) => j,
@@ -684,7 +681,6 @@ pub fn probe_redistribute(
     topology_id: String,
     worst_deficit_db: f64,
 ) -> Result<String, String> {
-    use std::time::Duration;
     if !target.is_finite() || !worst_deficit_db.is_finite() {
         return Err("target + worst-deficit must be finite".to_string());
     }
@@ -694,9 +690,7 @@ pub fn probe_redistribute(
     // Base (wire slot 8) + every FS scene (0..N).
     let mut slots: Vec<u32> = vec![session::BASE_SCENE_SLOT];
     slots.extend(0..scenes.scenes.len() as u32);
-    std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (docs, restore_scene) = prepass_scene_docs(list_index, &slots)?;
-    std::thread::sleep(Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let saved = super::scene_jobs::read_saved_preset(list_index);
     let jobs = build_scene_jobs(&slots, &candidates, &docs, target, saved.as_ref())?;
     let pl = docs

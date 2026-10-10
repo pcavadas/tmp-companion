@@ -104,15 +104,10 @@ pub(crate) fn base_isolation_or_refuse(
     Ok((preset, force, restore_scene))
 }
 
-/// [`base_isolation_or_refuse`] with the read it needs and the HID gap that read owes — the
-/// whole "isolate base before levelling" step, for every base leveling arm (production's
-/// `commands::level_preset` and both probe arms). Returns the preset body, the read's own
-/// fail-safe `has_fs_scenes` flag (`read_slot_preset_sections`' doc), the force-bypass list and
-/// `restore_scene`.
-///
-/// The gap is part of the seam, not the caller's bookkeeping: the read opens and closes its OWN
-/// session before the leveller's first connect, so a back-to-back re-open risks the exclusive-open
-/// lockout (`0xe00002c5` — `danger.md`'s "HID open-lockout model").
+/// [`base_isolation_or_refuse`] with the read it needs — the whole "isolate base before
+/// levelling" step, for every base leveling arm (production's `commands::level_preset` and both
+/// probe arms). Returns the preset body, the read's own fail-safe `has_fs_scenes` flag
+/// (`read_slot_preset_sections`' doc), the force-bypass list and `restore_scene`.
 pub(crate) fn read_base_isolation(
     slot: u32,
 ) -> Result<(serde_json::Value, bool, ForceBypass, Option<u32>), String> {
@@ -122,9 +117,6 @@ pub(crate) fn read_base_isolation(
         .is_ok_and(|(_, has_fs_scenes, _)| *has_fs_scenes);
     let (preset, force, restore_scene) =
         base_isolation_or_refuse(read.map(|(preset, _, _)| preset), slot)?;
-    crate::settle(std::time::Duration::from_millis(
-        crate::leveller::RECONNECT_GAP_MS,
-    ));
     Ok((preset, has_fs_scenes, force, restore_scene))
 }
 
@@ -256,10 +248,6 @@ fn isolation_writes(
                 }
             };
             e.insert(preset);
-            // The read opened (or tried to open) its own session — gap before
-            // the capture reconnects, else the quick reopen risks the HID
-            // open-lockout (0xe00002c5).
-            crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         }
         let preset = &preset_cache[&list_index];
         let ftsw = preset.get("ftsw").unwrap_or(&serde_json::Value::Null);
@@ -863,10 +851,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     });
                 }
             }
-            // Abortable: a Stop landing in this exact window (after the last item's own
-            // success, with no further loop-header check ahead of it) would otherwise
-            // finish the run silently instead of reporting it stopped.
-            if crate::settle_abortable(leveller::RECONNECT_GAP_MS) {
+            // A Stop landing after the last item's own success, with no further loop-header
+            // check ahead of it, would otherwise finish the run silently instead of
+            // reporting it stopped.
+            if crate::op_aborted() {
                 stopped = true;
                 break;
             }
@@ -1267,9 +1255,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
         if let Some(scene) = job.scene {
             if job.ops.iter().any(|op| matches!(op, doctor::DoctorOp::Param { .. })) {
                 let (preset, _, _) = read_slot_preset_parsed(job.list_index)?;
-                crate::settle(std::time::Duration::from_millis(
-                    leveller::RECONNECT_GAP_MS,
-                ));
                 if let Some(reason) = bypass_only_conflict(&preset, scene, &job.ops) {
                     return Err(reason);
                 }
@@ -1330,9 +1315,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             let before_clip = match before_cache_get(&key) {
                 Some(clip) => {
                     leveller::restore_saved_preset(job.list_index)?;
-                    crate::settle(std::time::Duration::from_millis(
-                        leveller::RECONNECT_GAP_MS,
-                    ));
                     clip
                 }
                 None => {
@@ -1351,12 +1333,6 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
                         base64_encode(&wav_bytes(&before, rate)?)
                     );
                     before_cache_put(key, clip.clone());
-                    // Same inter-session gap the cache-hit branch takes after its
-                    // own restore: the BEFORE capture's session just closed, and
-                    // `ops_session` opens a fresh one next — let the seize release.
-                    crate::settle(std::time::Duration::from_millis(
-                        leveller::RECONNECT_GAP_MS,
-                    ));
                     clip
                 }
             };
@@ -1439,7 +1415,6 @@ pub(crate) async fn doctor_save(
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         leveller::restore_saved_preset(list_index)?;
-        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let mut s = ops_session(list_index, &expect_name, scene, &ops, "save")?;
         s.save_current_preset(list_index)?;
         Ok(())

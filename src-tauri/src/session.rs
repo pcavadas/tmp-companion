@@ -2,8 +2,8 @@
 //! leveling primitives (load preset, toggle re-amp, set preset level, save).
 //!
 //! The load-bearing USB-protocol invariants (batchStatus grouping, re-amp latch
-//! rules, HID open-lockout, slot +1 addressing, the capture window) are written
-//! up in `notes/protocol.md`.
+//! rules, the HID seize, slot +1 addressing, the capture window) are written up
+//! in `notes/protocol.md`.
 //!
 //! Builds on `hid` (transport) + `proto` (wire codec). Replicates the request
 //! sequence that is known-good against a real device. The
@@ -1486,9 +1486,9 @@ impl Session {
         self.send_and_collect(&proto::current_preset_info_request(proto::BATCH_DRAIN), 120)
     }
 
-    /// Re-read the My-Presets list on this HELD session (no reopen — every failed open
-    /// resets the HID open-lockout). `raw` MUST be cleared: a stale truncated list left
-    /// in it out-weighs the fresh reply's mid-flood partials in the tolerant harvest.
+    /// Re-read the My-Presets list on this HELD session (no reopen). `raw` MUST be cleared:
+    /// a stale truncated list left in it out-weighs the fresh reply's mid-flood partials in
+    /// the tolerant harvest.
     /// Quiet sessions only — a re-arm on a live one draws a `connectionError`.
     pub fn reread_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
         self.drain_until_quiet(250, 20)?;

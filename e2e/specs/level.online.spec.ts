@@ -663,7 +663,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     const pUp = preview.constant_c - asIsRaw;
     const BOOST_MARGIN_DB = 2.0; // slack over the bare G > P_up boundary (secant/capture noise)
     let fCalibrated = twinCandidatePre.value;
-    // Skip calibration (no write, no 150 s wait) when BOOST is already guaranteed (G > P_up) —
+    // Skip calibration (no write) when BOOST is already guaranteed (G > P_up) —
     // the cheap, common path (a prior run's own leveling, or a naturally quiet fixture).
     if (BASE_TARGET_405 - asIsRaw <= pUp) {
       // Aim the closed loop at the raw LUFS value that makes the new G exceed P_up by the

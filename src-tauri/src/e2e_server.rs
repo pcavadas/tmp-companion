@@ -48,15 +48,13 @@ pub(crate) fn e2e_offline_fake() -> bool {
 
 /// The scenario presets are known seeded-and-OWNERSHIP-VERIFIED for this server process:
 /// set by a successful seed (in-process `e2e_seed_scenario`, or the runner's fresh-process
-/// `probe --seed-scenario` via its `e2e_mark_seeded` POST) and invalidated by any scenario
-/// clear. Lets every `ensureScenario` call after the first skip the multi-second (and
-/// lockout-prone — the reason `scripts/e2e.sh` seeds out-of-process) in-process re-verify:
-/// nothing between specs can change scenario ownership without going through a clear.
-///
-/// Also invalidated by [`note_structural_save`] — a same-run STRUCTURAL save (copy,
-/// doctor-save) over a resident fixture slot changes what's actually on the device
-/// without going through a clear, so the fast path above would otherwise assert on
-/// mutilated fixture content for every spec after the one that saved.
+/// `probe --seed-scenario` via its `e2e_mark_seeded` POST) and invalidated only through
+/// [`invalidate_scenario`]: by a scenario slot clear, or by [`note_structural_save`] — a
+/// same-run STRUCTURAL save (copy, doctor-save) over a resident fixture slot changes what's
+/// on the device without going through a clear. Lets every `ensureScenario` call after the
+/// first skip the in-process re-verify (11 field-8 reads plus a re-import of every fixture a
+/// spec leveled). A stray sweep never touches it: a stray sits at a non-scenario slot, so
+/// removing one changes no verified slot.
 #[cfg(feature = "e2e")]
 static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -75,13 +73,6 @@ static SCENARIO_VERIFIED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 #[cfg(feature = "e2e")]
 const STRUCTURAL_SAVE_CMDS: [&str; 2] = ["copy_apply", "doctor_save"];
 
-/// Clear [`SCENARIO_VERIFIED`] when `cmd` is a [`STRUCTURAL_SAVE_CMDS`] member. Call
-/// ONLY after a command's invoke SUCCEEDED — an `Err` means the command aborted before
-/// its save (e.g. `copy_apply` bailing before `copy_apply_one` reaches the save), so
-/// nothing persisted and there is nothing to invalidate. Value-only leveling saves are
-/// deliberately excluded from the set: adding them would cost a device re-verify per
-/// spec inside the HID open-lockout danger window (`.claude/rules/danger.md`), and
-/// within-run value drift is already handled by ordering doctor.online before level.online.
 #[cfg(feature = "e2e")]
 /// The origin Tauri treats as the app's OWN webview for ACL purposes. It is
 /// platform-specific: `tauri://localhost` on macOS/Linux, `http://tauri.localhost`
@@ -96,10 +87,22 @@ pub(crate) fn local_app_url() -> tauri::Url {
     origin.parse().expect("static origin parses")
 }
 
+/// Invalidate [`SCENARIO_VERIFIED`] when `cmd` is a [`STRUCTURAL_SAVE_CMDS`] member. Call
+/// ONLY after a command's invoke SUCCEEDED — an `Err` means the command aborted before
+/// its save (e.g. `copy_apply` bailing before `copy_apply_one` reaches the save), so
+/// nothing persisted and there is nothing to invalidate. Value-only leveling saves are
+/// deliberately excluded from the set: adding them would cost a device re-verify (and a
+/// re-import of every leveled fixture) per spec, and within-run value drift is already
+/// handled by ordering doctor.online before level.online.
 fn note_structural_save(cmd: &str) {
     if STRUCTURAL_SAVE_CMDS.contains(&cmd) {
-        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+        invalidate_scenario();
     }
+}
+
+/// The one way [`SCENARIO_VERIFIED`] goes false: the next `ensureScenario` re-verifies.
+fn invalidate_scenario() {
+    SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// SHOWCASE mode (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): serves the curated
@@ -505,9 +508,9 @@ fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
 /// presetJsons baked into the offline backup fixture) at its list index
 /// (400-409; the spec drives the slot set, nothing here hardcodes it). The heavy lifting lives in `probe_api::seed_scenario` — shared with
 /// `probe --seed-scenario`, which the RUNNER prefers (a fresh process per seed, run
-/// before the server starts, dodges the in-process `0xe00002c5` open lockout that
-/// aborted in-spec seeds). This command is the fallback for specs run without the
-/// runner, and the offline no-op (SimDevice presets already present → per-preset skip).
+/// before the server starts, so the server's handshake snapshots the seeded presets).
+/// This command is the fallback for specs run without the runner, and the offline no-op
+/// (SimDevice presets already present → per-preset skip).
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
@@ -576,7 +579,6 @@ async fn e2e_mark_seeded() -> Result<(), String> {
 #[tauri::command]
 async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
     with_released_seize(state.session.clone(), move || {
-        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
         let swept = probe_api::seed_scenario::sweep_strays_core()?;
         e2e_patch_swept(&swept);
         Ok(swept.len())
@@ -625,7 +627,7 @@ async fn e2e_clear_preset(
                 ));
             }
         }
-        SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+        invalidate_scenario();
         s.clear_user_preset(slot)?;
         // Verify before releasing: `clear_user_preset` returning Ok is not proof the slot
         // is actually empty — HW-observed (2026-07-27) a preset with scene+footswitch

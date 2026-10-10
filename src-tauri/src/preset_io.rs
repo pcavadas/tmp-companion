@@ -174,12 +174,11 @@ impl PresetIo for LiveIo {
         }
         // conn1: load the target (makes it current — persists across reconnect). Loading
         // and editing in ONE connection is unsafe (a load's own apply can override an
-        // immediate set), so load, drop, settle, then reconnect (the leveller/AC7 rule).
+        // immediate set), so load, drop, then reconnect (the leveller/AC7 rule).
         {
             let mut s = Session::connect()?;
             s.load_preset(target.list_index)?;
         }
-        crate::settle(std::time::Duration::from_millis(400));
         // conn2: fresh handshake re-attaches to the now-current preset. CONFIRM it is the
         // target before mutating+saving (a dropped load = wrong-preset save = data loss),
         // then heartbeat-warm the line so fw 1.8.45 accepts the edits from a live

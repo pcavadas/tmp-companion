@@ -209,7 +209,6 @@ fn run_recipe(
         );
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let mut ops_s =
         crate::commands::doctor::ops_session(slot, preset_name, None, &recipe.ops, "inject")?;
     let _ = ops_s.pump_collect_alive(700);
@@ -217,7 +216,6 @@ fn run_recipe(
         .current_preset_value()
         .map_or(before_tail_ms, |doc| u64::from(tail_ms_for_doc(&doc)));
     drop(ops_s);
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let after_res = measure(
         stim,
@@ -307,7 +305,6 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
     let _reamp_off = super::ReampOffGuard;
     let (group_id, name, before_tail) = last_guitar_group_anchor(slot)?;
     let before_tail = u64::from(before_tail);
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let mut out = format!("doctor-defects slot {slot} ({name})\n");
     let mut rows: Vec<serde_json::Value> = Vec::new();
@@ -337,7 +334,6 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
                 rows.push(serde_json::json!({ "recipe": recipe.name, "error": e }));
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     }
 
     // Belt-and-braces: whatever the last recipe left behind (a failed
@@ -402,7 +398,6 @@ pub fn probe_doctor_fs(slot: u32, switch: u32) -> Result<String, String> {
             .collect();
     let tail_ms = tail_ms_for_doc(&preset);
     let tail = u64::from(tail_ms);
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (read, line) = measure(
         &stim,
         &format!("FS{switch}"),

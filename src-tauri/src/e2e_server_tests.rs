@@ -293,7 +293,7 @@ fn offline_level_preset_runs_against_the_fake_audio() {
 /// `ensureScenario` hit the fast path, skipped the device re-verify, and asserted on the
 /// mutilated fixture. Value-only leveling saves are deliberately excluded from the set
 /// (within-run value drift is handled by spec ORDERING — doctor.online before level.online —
-/// not by paying a device re-verify per spec inside the HID open-lockout window).
+/// not by paying a device re-verify per spec).
 #[test]
 fn note_structural_save_flags_structural_saves_only() {
     use std::sync::atomic::Ordering::SeqCst;
@@ -321,6 +321,44 @@ fn note_structural_save_flags_structural_saves_only() {
     assert!(
         super::SCENARIO_VERIFIED.load(SeqCst),
         "a value-only leveling save must NOT invalidate the verified flag"
+    );
+}
+
+/// GATE: a stray sweep keeps the [`super::SCENARIO_VERIFIED`] fast path. Every spec's
+/// teardown sweeps, and clearing the flag there re-verified the scenario (and re-imported
+/// every fixture a spec had leveled) before every spec of the online lane.
+#[test]
+fn a_stray_sweep_keeps_the_verified_fast_path() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let _serial = serial();
+    struct FlagReset;
+    impl Drop for FlagReset {
+        fn drop(&mut self) {
+            super::SCENARIO_VERIFIED.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _reset = FlagReset;
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    crate::sim_device::set_live(&sim);
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![super::e2e_clear_strays])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+
+    super::SCENARIO_VERIFIED.store(true, SeqCst);
+    // The sim serves no full 504-entry list, so the sweep itself errors here; the flag must
+    // survive either way (the old command cleared it before sweeping).
+    let _ = invoke(&webview, "e2e_clear_strays", serde_json::json!({}));
+    assert!(
+        super::SCENARIO_VERIFIED.load(SeqCst),
+        "a stray sweep must NOT invalidate the verified flag"
     );
 }
 

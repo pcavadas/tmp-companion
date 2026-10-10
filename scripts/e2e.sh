@@ -23,8 +23,8 @@
 # SimDevice — a false-green pass — or vice-versa), and pre-build the binary so the cold compile
 # is out of the timed path (it would otherwise blow the config's 180 s webServer timeout).
 #
-# Preconditions for ONLINE: the unit plugged in + RESTED, and Pro Control CLOSED (it holds the
-# exclusive HID seize). A handshake failure is reported with that hint.
+# Preconditions for ONLINE: the unit plugged in, and Pro Control CLOSED (it holds the exclusive
+# HID seize). A handshake failure is reported with that hint.
 #
 # Written to run under macOS system /bin/bash (3.2) — note the empty-array `set -u` guards.
 set -euo pipefail
@@ -270,7 +270,6 @@ recover_device() {
   # timeout: N strays × clear can exceed the default 60 s cap.
   post '{"cmd":"e2e_clear_strays","args":{}}' 300
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
-  touch "${TMPDIR:-/tmp/}tmp-companion-device.lastop"  # feed the idle-aware pre-seed rest
 }
 
 # shellcheck disable=SC2329  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
@@ -401,79 +400,40 @@ done
 # (~90–150 s) + retries, and the seed self-repairs (sweeps stray imports from any
 # earlier aborted run) so retrying is pollution-safe.
 #
-# ORDER: the FIRST seed runs BEFORE the server starts, so its many fresh connections
-# stay clear of the in-process open lockout (`0xe00002c5`) that aborted the original
-# in-spec seeds mid-import (stranding stray copies in the user's bank). The server's
-# own handshake then snapshots the already-seeded presets; later (inter-spec) seeds
-# POST `e2e_mark_seeded` (a no-HID snapshot patch) so the specs' `ensureScenario`
-# fallback finds the presets present.
+# ORDER: the FIRST seed runs BEFORE the server starts, so the server's own handshake
+# snapshots the already-seeded presets; later (inter-spec) seeds POST `e2e_mark_seeded`
+# (a no-HID snapshot patch) so the specs' `ensureScenario` fallback finds the presets
+# present.
 seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mid"
   "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 || return 1
   [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
 }
 
+# Only a short pause between attempts: fw 1.8.58 has no HID open lockout (tmp-audit Q36).
 seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed attempts
   local attempt
   for attempt in 1 2 3 4; do
     log "seeding the scenario presets (attempt $attempt)…"
-    if seed_scenario "$1"; then touch "${TMPDIR:-/tmp/}tmp-companion-device.lastop"; return 0; fi
-    touch "${TMPDIR:-/tmp/}tmp-companion-device.lastop"
+    if seed_scenario "$1"; then return 0; fi
     if [ "$attempt" -lt 4 ]; then
-      log "seed attempt $attempt failed — resting 120 s (open lockout) before retry"
-      sleep 120
+      log "seed attempt $attempt failed — retrying"
+      sleep 2
     fi
   done
   return 1
 }
 
-# Portable mtime-as-epoch-seconds: BSD `stat -f %m` (macOS) vs GNU `stat -c %Y` (Linux) take
-# INCOMPATIBLE flag meanings for `-f` (BSD: format string; GNU: filesystem status, not file
-# status) — `stat -f %m <file>` on GNU treats `%m` as a SECOND target, fails on it, and its
-# multi-line `-f` fallback output ("  File: ...") gets captured into the idle-rest arithmetic
-# below, which then dies under `set -u` trying to evaluate the bare word `File` as a variable
-# (HW-reproduced on Linux: worked on a fresh stamp file, broke once one already existed).
-# Reports the mtime on stdout and SUCCEEDS, or fails with no output when the timestamp
-# cannot be read — the caller must fail CLOSED on that (see start_online_server), since an
-# unreadable/vanished stamp could mean the device was JUST touched, not that it's very old.
-stamp_mtime() {
-  case "$(uname -s)" in
-    Darwin) stat -f %m "$1" ;;
-    *) stat -c %Y "$1" ;;
-  esac 2>/dev/null
-}
-
-# Rest → seed (pre-server) → settle → start the handshake-verified e2e_server → patch in the
-# seeded presets. Shared by the ordered online spec loop below AND `soak` — this exact
-# device-open-rest-window + seed-race + fail-loud mark-seeded sequence must not drift between
-# the two callers. Sets SERVER_PID; exits 1 (recoverable via the trap) on a seed/handshake failure.
+# Seed (pre-server) → start the handshake-verified e2e_server → patch in the seeded presets.
+# Shared by the ordered online spec loop below AND `soak` — this seed-race + fail-loud
+# mark-seeded sequence must not drift between the two callers. No rests: fw 1.8.58 has no HID
+# open lockout (tmp-audit Q36).
+# Sets SERVER_PID; exits 1 (recoverable via the trap) on a seed/handshake failure.
 start_online_server() {
-  # Initial quiet rest, IDLE-AWARE: the lockout only threatens when the device was
-  # touched recently (a run that just ended / an aborted seed) — an attended start
-  # minutes later needs no rest at all. The stamp file records the last device op
-  # (written by the recovery trap + after each seed); rest only the REMAINDER.
-  local stamp="${TMPDIR:-/tmp/}tmp-companion-device.lastop" idle=999 rest=60 mtime=""
-  if [ -f "$stamp" ]; then
-    mtime=$(stamp_mtime "$stamp") || mtime=""
-    case "$mtime" in
-      '' | *[!0-9]*) idle=0 ;; # unreadable/vanished stamp → assume the device was JUST touched
-      *) idle=$(( $(date +%s) - mtime )) ;;
-    esac
-  fi
-  if [ "$idle" -lt "$rest" ]; then
-    log "resting the unit before the first seed ($(( rest - idle )) s — device idle only ${idle}s)…"
-    sleep $(( rest - idle ))
-  else
-    log "device idle ${idle}s ≥ ${rest}s — skipping the pre-seed rest"
-  fi
   if ! seed_with_retry pre; then
     err "scenario seed failed after 4 attempts — aborting (nothing to recover: no server ran)"
-    err "  → check nothing else holds the device (Pro Control, a stale server/app), rest a minute, rerun"
+    err "  → check nothing else holds the device (Pro Control, a stale server/app), then rerun"
     exit 1
   fi
-
-  # Settle before the server's handshake: the device's list read lags its own writes,
-  # and the handshake list feeds the startup snapshot.
-  sleep 10
 
   log "starting handshake-verified server on :$PORT"
   : > "$SERVER_LOG"
@@ -497,10 +457,10 @@ start_online_server() {
   SERVER_PID=$!
   disown "$SERVER_PID" 2>/dev/null || true  # silence the shell's "Terminated" notice when cleanup kills it
   wait_server_ready
-  # The presets are verifiably placed (the pre-server probe seed exited 0); patch the
-  # snapshot in case the handshake's list read lagged the fresh writes. FAIL-LOUD:
-  # a silently-failed patch would send the specs' ensureScenario fallback into the
-  # lockout-prone in-process reseed this runner exists to avoid.
+  # The presets are verifiably placed (the pre-server probe seed exited 0). The POST arms
+  # the server's SCENARIO_VERIFIED fast path and confirms the snapshot covers the seeded
+  # slots. FAIL-LOUD: a silent failure would send the specs' ensureScenario fallback into
+  # the slower in-process reseed.
   if ! bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'; then
     err "failed to patch the seeded presets into the startup snapshot — aborting"
     exit 1
@@ -530,16 +490,12 @@ if [ "$MODE" = soak ]; then
   start_online_server
 
   pass=0; fail_seed=0; fail_spec=0
-  log "resting the unit before run 1 (post-handshake settle)…"
-  sleep 60
 
   run=1
   while [ "$run" -le "$N" ]; do
     if [ "$run" -gt 1 ]; then
       # Each run's own afterAll clears the scenario slots — reseed before every
       # run after the first (mirrors the online spec-loop's inter-spec reseed).
-      log "resting the unit between runs…"
-      sleep 60
       if ! seed_with_retry mid; then
         printf 'soak run %d/%s: FAIL (seed)  wall=0s\n' "$run" "$N"
         fail_seed=$((fail_seed + 1))
@@ -633,32 +589,20 @@ fi
 KEY_START="$(bash "$REPO/scripts/gates.sh" --key)"
 
 fail=0
-first=1
 # Set only inside the vrc==0 arm of the external-validation case below — a real PASS
 # under the independent ffmpeg meter, never the exit-3 "ffmpeg vanished" skip or the
 # no-ffmpeg-at-all path (both leave a leveled sound unchecked, not confirmed correct).
 validated=0
 for s in "${SPECS[@]}"; do
-  if [ "$first" -eq 1 ]; then
-    # Rest between the server-start handshake and the first spec's own device work
-    # (the post-handshake line needs quiet before it serves reads reliably).
-    log "resting the unit before the first spec (post-handshake settle)…"
-    sleep 60
-  else
-    # ONE pristine-checking seed per run serves every spec: teardowns no longer clear
-    # the scenario (fixtures stay RESIDENT; TMP_E2E_CLEAR_SCENARIO=1 for net-zero). A
-    # spec that persists a STRUCTURAL edit over a fixture slot (copy, doctor-save)
-    # clears the server's SCENARIO_VERIFIED flag on success, so the NEXT spec's
-    # ensureScenario re-verifies the device and re-imports only what drifted — it does
-    # not trust a fixture that's since been mutilated. Value-only drift (leveling
-    # saves) is NOT in that set and is still handled by ORDERING: doctor.online must run
-    # BEFORE level.online — leveling equalizes the relative scene loudness the
-    # doctor's consistency check keys on. The rest stays: spec teardown/startup
-    # device ops sit right in the lockout's danger window.
-    log "resting the unit between specs…"
-    sleep 60
-  fi
-  first=0
+  # ONE pristine-checking seed per run serves every spec: teardowns no longer clear the
+  # scenario (fixtures stay RESIDENT; TMP_E2E_CLEAR_SCENARIO=1 for net-zero). A spec that
+  # persists a STRUCTURAL edit over a fixture slot (copy, doctor-save) clears the server's
+  # SCENARIO_VERIFIED flag on success, so the NEXT spec's ensureScenario re-verifies the
+  # device and re-imports only what drifted — it does not trust a fixture that's since been
+  # mutilated. Value-only drift (leveling saves) is NOT in that set and is still handled by
+  # ORDERING: doctor.online must run BEFORE level.online — leveling equalizes the relative
+  # scene loudness the doctor's consistency check keys on. No rest between specs: fw 1.8.58
+  # has no HID open lockout (tmp-audit Q36).
   log "running specs/$s.spec.ts (online)"
   # No outer timeout: Playwright's own 300 s/test governs, except the two heaviest online
   # specs (doctor.online.spec.ts, level.online.spec.ts) which override to multi-minute
@@ -689,7 +633,7 @@ if [ "$fail" -eq 0 ]; then
   # No re-capture here: the WAVs and expectation rows were already written BY THE
   # SERVER, at the moment each sound was strict-re-measured (see the TMP_E2E_VALIDATE_*
   # block at the top of this file for the gate semantics and for why re-driving `probe`
-  # afterwards would read PRE-save bytes). All that is left is to judge them with a
+  # afterwards would only repeat device work). All that is left is to judge them with a
   # meter this repo did not write.
   if [ "$HAVE_FFMPEG" -eq 0 ]; then
     log "############################################################"

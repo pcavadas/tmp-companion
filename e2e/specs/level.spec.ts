@@ -41,9 +41,8 @@ import {
 test.describe("Level — plain presets + a scenes-and-footswitches preset", () => {
   // Between tests: SAFETY only (re-amp off, so an aborted capture can't strand the
   // unit input-muted for the next test). Slot cleanup happens ONCE in afterAll —
-  // clearing between tests would force the next test's ensureScenario down the flaky
-  // in-process re-seed (the runner seeds once per spec FILE; HW-observed: test 1
-  // passed, its clear forced test 2's re-seed into the 0xe00002c5 open lockout).
+  // clearing between tests would force the next test's ensureScenario down the full
+  // in-process re-seed (the runner seeds once per spec FILE).
   test.afterEach(async ({ page }) => {
     await reampOff(page);
   });

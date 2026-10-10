@@ -547,12 +547,8 @@ pub fn probe_clear_preset(slot: u32, expect_name: &str) -> Result<String, String
         ));
     }
     // Deliberately NOT `confirm_slot_name`: this path reports a refusal as an `Ok`
-    // message so `probe --clear` exits 0 on a mismatch. Only the recycle gaps are
-    // shared — three back-to-back `connect()`s with no gap is the shape that lands in
-    // the exclusive-open lockout (`0xe00002c5`).
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
+    // message so `probe --clear` exits 0 on a mismatch.
     Session::connect()?.clear_user_preset(slot)?;
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let after = Session::connect()?.list_my_presets()?;
     let now = after
         .iter()
@@ -767,9 +763,6 @@ pub fn probe_save_load_test(
             crate::leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(
-        crate::leveller::RECONNECT_GAP_MS,
-    ));
     let mut s = Session::connect()?;
     let ack = s.set_preset_level(level)?;
     if ack.is_none() {
@@ -1100,9 +1093,6 @@ fn restore_scratch(
     scene_ol: f32,
 ) -> Result<(), String> {
     guard_slot_name(slot, expected_name)?;
-    std::thread::sleep(std::time::Duration::from_millis(
-        crate::leveller::RECONNECT_GAP_MS,
-    ));
     write_three_and_save(
         slot,
         group_id,
@@ -1114,18 +1104,13 @@ fn restore_scratch(
     )
 }
 
-/// Confirm `slot` still holds `expect_name` before a destructive write, then wait the
-/// device's session-recycle gap.
+/// Confirm `slot` still holds `expect_name` before a destructive write.
 ///
 /// Shared by every slot-keyed destructive probe path so the guard cannot drift between
 /// copies — the same consolidation `SCRATCH_SLOTS` got. The read is non-destructive and
 /// happens in the SAME address space as the mutation it protects, which is the whole
 /// point: a `clear` once deleted a real preset because its guard checked list-index
 /// space while the op acted in device-slot space.
-///
-/// The trailing sleep is part of the contract, not a caller's concern: the guard session
-/// is dropped at the end of the read, and re-opening immediately after a close is the
-/// shape that lands in the exclusive-open lockout (`0xe00002c5`).
 pub(crate) fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), String> {
     let before = Session::connect()?.list_my_presets()?;
     let cur = before
@@ -1137,7 +1122,6 @@ pub(crate) fn confirm_slot_name(slot: u32, expect_name: &str) -> Result<(), Stri
             "slot {slot} reads {cur:?}, not {expect_name:?} — refused (no change)"
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     Ok(())
 }
 
@@ -1227,8 +1211,7 @@ pub fn probe_set_scene_param(
     // A SCENE write refuses without the saved document (it decides per node whether Scene
     // Edit must be enabled — both write shapes corrupt the overlay when guessed), so the
     // field-8 read is mandatory there; a base write never consults it, so it is skipped
-    // rather than paying ~4 s on this arm. `confirm_slot_name` already slept the reconnect
-    // gap, which is the read's own gap contract.
+    // rather than paying ~4 s on this arm.
     let saved_doc = scene.and_then(|_| crate::read_saved_preset(slot));
     let opts = leveller::LevelOptions {
         save: true,
@@ -1296,7 +1279,6 @@ pub fn probe_scene_write_cell(
             leveller::settle_after_load_ms(),
         ));
     }
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
     let mut s = Session::connect()?;
     if let Some(sc) = scene {

@@ -228,7 +228,6 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
         // switches were never touched, so the read either delivers it or the run refuses
         // (before any device state moves).
         let (preset, _, _) = read_slot_preset_complete(slot, &["ftsw"])?;
-        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         let ftsw = preset
             .get("ftsw")
             .cloned()
@@ -270,7 +269,6 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
                 leveller::settle_after_load_ms(),
             ));
         }
-        crate::settle(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
 
         let mut results: Vec<Option<leveller::FootswitchLevelResult>> = vec![None; jobs.len()];
         // The solved writes pending the batch's single write+save session, each

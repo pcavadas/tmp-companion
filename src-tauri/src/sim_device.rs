@@ -20,12 +20,13 @@
 //! exactly as the confirm loop expects.
 //!
 //! **Saved doc (e2e only):** a save is tracked per slot ([`SimState::saved_levels`]) and a
-//! later load of that slot materializes it, exactly as the real device does on fw 1.8.58 (a
-//! save is durable when its handler returns — tmp-audit Q34). The doc is `presetLevel` PLUS a
-//! footswitch bake's own baked param PLUS a scene deferred save's own overlay param PLUS the
-//! `ftsw` array (`SavedDoc`) — narrower than a full merged presetJson still (the CAPTURE MODEL
-//! doesn't reseed a scene overlay's write on load, only its TEXT round-trips; `SavedDoc`'s doc
-//! comment has the residual deviation).
+//! later load of that slot materializes it, as the real device does on fw 1.8.58 (a save is
+//! durable when its handler returns — tmp-audit Q34). NOT modelled: the device's same-slot load
+//! is a NO-OP over a clean working copy (Q4), while every sim load re-reads the saved doc. The
+//! doc is `presetLevel` PLUS a footswitch bake's own baked param PLUS a scene deferred save's
+//! own overlay param PLUS the `ftsw` array (`SavedDoc`) — narrower than a full merged
+//! presetJson still (the CAPTURE MODEL doesn't reseed a scene overlay's write on load, only its
+//! TEXT round-trips; `SavedDoc`'s doc comment has the residual deviation).
 //!
 //! **Footswitch assignment writes (HW semantics, no dedicated echo):**
 //! `setFootswitchAssignment`(54) and `clearFootswitchAssignment`(55) edit the WORKING-COPY
@@ -3186,23 +3187,6 @@ mod physics_tests {
         assert!(
             (level - 0.81).abs() < 1e-3,
             "field-8 must read-your-writes immediately, got {level}"
-        );
-    }
-
-    /// The preset-24 incident shape (base save, then the footswitch batch's same-slot load
-    /// 2 s later) with NO wait: on fw 1.8.58 the load materializes the just-saved value.
-    #[test]
-    fn a_load_right_after_a_save_materializes_the_saved_value() {
-        let sim = SimDevice::new();
-        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(401).unwrap();
-        s.set_preset_level(0.81).unwrap();
-        s.save_current_preset(401).unwrap();
-        s.load_preset(401).unwrap();
-        assert!(
-            (sim.preset_level() - 0.81).abs() < 1e-3,
-            "a load right after the save must materialize the saved value, got {}",
-            sim.preset_level()
         );
     }
 

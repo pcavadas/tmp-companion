@@ -78,10 +78,7 @@ pub(crate) fn replace_inplace_core(
 
 /// `verify` = read the Song-1 bindings (before/after) + the post-save settle/re-read
 /// that fill the outcome's report fields. The e2e seed passes `false`: scratch slots
-/// carry no Song rows, and each verification read costs 1–4 fresh connections —
-/// every open is one more chance to land in the device's post-close open LOCKOUT
-/// (`0xe00002c5`, armed by aborted sessions and re-armed by each failed attempt),
-/// so the seed keeps its open count minimal.
+/// carry no Song rows, and each verification read costs 1–4 fresh connections.
 /// The write-safety chain (floored landing lists → `confirm_active` → loaded-body check →
 /// guarded clear) is identical in both modes. An import that landed ON the (empty)
 /// target needs no save or clear, but is still loaded and body-checked.
@@ -109,10 +106,10 @@ pub(crate) fn replace_inplace_with(
     // COMMON case rather than a rare tail: several fresh connects in quick succession
     // (this function's own multi-step sequence, on top of the caller's own reads) can
     // reliably chop the tolerant read well short of a high index (HW-observed 2026-07-27:
-    // ~310-350/504 across many back-to-back attempts, independent of rest time — this
-    // is the documented interleave/pump-window chop, not the open lockout, so waiting
-    // doesn't help but a bounded reconnect-retry does). Retry a few times before giving
-    // up, rather than erroring on the first short read.
+    // ~310-350/504 across many back-to-back attempts, independent of the gap between
+    // them — the documented interleave/pump-window chop, so waiting doesn't help but a
+    // bounded reconnect-retry does). Retry a few times before giving up, rather than
+    // erroring on the first short read.
     let before = read_list_reaching(orig_list_index)?;
     let orig_name_before = before
         .iter()

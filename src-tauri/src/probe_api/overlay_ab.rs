@@ -14,7 +14,6 @@
 //! via the prepass) are the only live-state changes.
 
 use super::scene_jobs::{is_amp_model_id, prepass_scene_docs, scene_docs_from_saved};
-use crate::leveller;
 use crate::read_slot_preset_parsed;
 use crate::scenes;
 use crate::session;
@@ -160,13 +159,11 @@ fn compare_preset(list_index: u32, contexts: u32, out: &mut String) -> Result<Ta
     scene_slots.push(session::BASE_SCENE_SLOT);
 
     // The live prepass (its own session; recalls every scene once).
-    std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
     let (docs, _) = prepass_scene_docs(list_index, &scene_slots)?;
 
     // Remaining contexts: field-8 reads AFTER the prepass (each its own session + gap).
     let mut ctx_read_failures = 0u32;
     for _ in 1..contexts.max(1) {
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         match read_slot_preset_parsed(list_index) {
             Ok((p, _, _)) => ctx_presets.push(p),
             Err(e) => {
@@ -276,10 +273,7 @@ pub fn probe_overlay_ab(target: &str, contexts: u32) -> Result<String, String> {
         list_indices.len()
     );
     let mut total = Tally::default();
-    for (i, &list_index) in list_indices.iter().enumerate() {
-        if i > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
-        }
+    for &list_index in &list_indices {
         match compare_preset(list_index, contexts, &mut out) {
             Ok(t) => {
                 total.pairs += t.pairs;

@@ -532,7 +532,6 @@ pub fn probe_doctor(slots: &[(u32, Option<u32>)], topology_id: &str) -> Result<S
                 "[probe] slot {slot}: preset read failed ({e}) — no graph facts, no isolation"
             ),
         }
-        std::thread::sleep(std::time::Duration::from_millis(leveller::RECONNECT_GAP_MS));
         // Calibration sweep: always the full tail (this is the reference recipe
         // R4/R5 re-baseline against, not the app's per-sound dry-tail shortcut).
         match leveller::doctor_capture(
@@ -807,8 +806,7 @@ pub(crate) fn capture_dry_di(
     // reads as "no instrument signal" with the real cause invisible (a real run:
     // the monitor's pause-ack came late, this connect raced the still-seized
     // device, and the swallowed failure left a silent take). A failed connect is
-    // reported, NOT retried — hammering re-opens resets the HID lockout
-    // (`danger.md`), so the message must not invite a fast retry.
+    // reported, NOT retried: another handle holds the seize, and a retry cannot free it.
     //
     // `connect_lean` (not `connect`): the OFF is a single setter needing no handshake
     // payload, and the lean shape is the narrowest window onto a device this call is
@@ -820,10 +818,8 @@ pub(crate) fn capture_dry_di(
         let mut s = session::Session::connect_lean().map_err(|e| {
             format!(
                 "could not reach the device to switch re-amp OFF before the capture \
-                 ({e}) — close Pro Control if it is running; otherwise the device is \
-                 in its post-session open lockout, which every retry RESTARTS: wait \
-                 ~30 s without clicking Calibrate, or unplug and replug the unit \
-                 (a replug also refreshes the mixer snapshot)"
+                 ({e}) — another app (Pro Control) or another session holds the \
+                 device: close it, then retry"
             )
         })?;
         s.set_reamp_mode(false)
