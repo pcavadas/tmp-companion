@@ -796,10 +796,12 @@ mod fixture_gates {
                     "ACD_Boost",
                     "gain",
                 ),
-                crate::probe_api::scene_jobs::SceneWriteVerdict::WriteDirect
+                crate::probe_api::scene_jobs::SceneWriteVerdict::WriteDirect {
+                    lands_on_base: true
+                }
             ),
             "scene 3 'Solo': a scene-scoped write of ACD_Boost.gain must be allowed through \
-             as a scene-local base write, not refused as shared_with_base"
+             as a scene-local base write (landing on BASE), not refused as shared_with_base"
         );
 
         // NEGATIVE CONTROL / over-widening tripwire: the policy must still REFUSE where it

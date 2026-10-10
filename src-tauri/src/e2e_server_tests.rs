@@ -3355,6 +3355,86 @@ fn fresh_load_barrier_scene_witness_passes_on_first_harvest() {
     );
 }
 
+/// GATE (offline profiling, 2026-10-10): a scene save whose write landed on the SHARED base
+/// value must release the next same-slot load on its first harvest. 402's scene 3 "Solo"
+/// un-bypasses `ACD_Boost` through a bypass-only overlay (Scene Edit off), so the landing
+/// policy writes `gain` to BASE (`WriteDirect { lands_on_base: true }`). The batch registered
+/// its witness on scene 3's overlay instead, which never carries `gain`: the next load
+/// blind-waited the whole `COMMIT_WINDOW_SECS` (~150 s per `level-setup.spec.ts` run, and
+/// ~2.5 min for a user re-opening the preset), and the post-save check flagged the persisted
+/// write as lost. Driven through the real batched command with the spec's exact job.
+#[test]
+fn a_shared_base_scene_save_releases_the_next_load_on_first_harvest() {
+    let _serial = serial();
+    let _reset = RegistryReset;
+    let _cancel_reset = SceneCancelReset;
+    scenario_env();
+    let sim = install_barrier_sim(0); // commits immediately: any retry is a witness miss
+    crate::sim_device::set_live(&sim);
+    let (_app, webview) = batched_scene_app();
+    const SLOT: u32 = 402;
+
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": SLOT,
+            "jobs": [{
+                "sceneSlot": 3, "targetLufs": -20.0,
+                "handle": {"groupId": "G1", "nodeId": "ACD_Boost", "parameterId": "gain"}
+            }],
+            "candidates": [], "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    let rows = res.as_array().expect("results array").clone();
+    let row = scene_row(&rows, Some(3))
+        .unwrap_or_else(|| panic!("a Solo row: {rows:?}"))
+        .clone();
+    let solved = row["final_level"].as_f64().expect("final_level");
+    // PREMISE: the write really landed on base and the save kept it there — otherwise a
+    // witness match below would prove nothing about this shape.
+    let saved = crate::read_saved_preset(SLOT).expect("re-read 402");
+    let base = crate::commands::level_footswitch::node_param_f64(&saved, "ACD_Boost", "gain")
+        .expect("base ACD_Boost.gain");
+    assert!(
+        (base - solved).abs() < 1e-3,
+        "PREMISE: the Solo write lands on the shared base value ({base} vs solved {solved})"
+    );
+    assert_eq!(
+        row["persist_mismatch"],
+        serde_json::json!(false),
+        "a persisted shared-base write must not be reported as lost: {row}"
+    );
+
+    // Cancel-bounded like the scene-witness gate above: the RED form issues a second load
+    // and stops there instead of blind-waiting the window.
+    let baseline = loaded_count(&sim);
+    let sim_for_cancel = sim.clone();
+    let start = std::time::Instant::now();
+    let result = crate::leveller::ensure_fresh_load_paced(
+        SLOT,
+        &mut || loads_since(&sim_for_cancel, baseline) >= 2,
+        200,
+    );
+    assert!(
+        result.is_ok(),
+        "the barrier must release on the base-landed witness, not spin: {result:?}"
+    );
+    assert_eq!(
+        loads_since(&sim, baseline),
+        1,
+        "the witness must match on the FIRST harvest — no stale retry load"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "first-harvest pass must not have blind-waited, took {:?}",
+        start.elapsed()
+    );
+}
+
 /// Anti-stampede gate (post-review amendment 1): an UNHARVESTABLE witness (a `Param` naming a
 /// node no doc the sim renders ever carries) backdated to ~1 s BEFORE the commit-window edge —
 /// not past it, unlike the time-gate test above — so the barrier must genuinely retry a

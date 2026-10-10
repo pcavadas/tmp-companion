@@ -1217,15 +1217,18 @@ pub(crate) enum RefusedScope {
 /// (`leveller::set_knobs`, the Doctor's prescription apply) reads it here, so the four
 /// [`SceneOverlay`] states can never be answered two ways.
 pub(crate) enum SceneWriteVerdict {
-    /// Safe to write with the Scene Edit enable DROPPED. Two cases reach here:
-    /// * [`SceneOverlay::Full`], the node's Scene Edit flag is already ON. The flag
-    ///   state alone decides the landing, so the write lands on the overlay even for a param
-    ///   the overlay does not yet carry, and re-enabling would RESEED the overlay from base
-    ///   (HW 3-cell matrix, fw 1.8.45).
+    /// Safe to write with the Scene Edit enable DROPPED. Two cases reach here, and
+    /// `lands_on_base` says which — the post-save readers (`leveller::run_scene_jobs`'
+    /// persist check and freshness witness) must look for the value where it LANDED:
+    /// * [`SceneOverlay::Full`] (`lands_on_base: false`), the node's Scene Edit flag is
+    ///   already ON. The flag state alone decides the landing, so the write lands on the
+    ///   overlay even for a param the overlay does not yet carry, and re-enabling would
+    ///   RESEED the overlay from base (HW 3-cell matrix, fw 1.8.45).
     /// * A [`SceneOverlay::BypassOnly`] node whose [`shared_write_is_scene_local`]
-    ///   reads `true`: the write DELIBERATELY lands on the shared BASE value, not an overlay
-    ///   (there is none to land in), because the leak is confirmed audible ONLY in this scene.
-    WriteDirect,
+    ///   reads `true` (`lands_on_base: true`): the write DELIBERATELY lands on the shared
+    ///   BASE value, not an overlay (there is none to land in), because the leak is confirmed
+    ///   audible ONLY in this scene.
+    WriteDirect { lands_on_base: bool },
     /// No overlay for this node in this scene ([`SceneOverlay::Absent`]) — the enable is what
     /// MATERIALISES one, so `set_node_scene_edit(node, true)` is REQUIRED before the write;
     /// without it the write leaks to base. Nothing to reseed away here.
@@ -1295,11 +1298,15 @@ pub(crate) fn scene_write_verdict_for_param(
     param: &str,
 ) -> SceneWriteVerdict {
     match scene_overlay(preset, scene, node) {
-        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect,
+        SceneOverlay::Full(_) => SceneWriteVerdict::WriteDirect {
+            lands_on_base: false,
+        },
         SceneOverlay::Absent => SceneWriteVerdict::NeedsEnable,
         SceneOverlay::BypassOnly(_) => {
             if shared_write_is_scene_local(preset, scene, node, param) {
-                SceneWriteVerdict::WriteDirect
+                SceneWriteVerdict::WriteDirect {
+                    lands_on_base: true,
+                }
             } else {
                 SceneWriteVerdict::Refuse {
                     scope: RefusedScope::SharedWithBase,
@@ -2062,9 +2069,8 @@ pub(crate) fn scene_handle_rows_scanned(
                     let scope = overlay_kind_scope.unwrap_or_else(|| {
                         match scene_write_verdict_for_param(preset, scene, node_id, &c.parameter_id)
                         {
-                            SceneWriteVerdict::WriteDirect | SceneWriteVerdict::NeedsEnable => {
-                                "isolated"
-                            }
+                            SceneWriteVerdict::WriteDirect { .. }
+                            | SceneWriteVerdict::NeedsEnable => "isolated",
                             SceneWriteVerdict::Refuse {
                                 scope: RefusedScope::SharedWithBase,
                                 ..

@@ -1296,6 +1296,7 @@ fn trade_hold_writes(
                 ..
             } => Some(leveller::PersistedWrite {
                 scene_slot: session::BASE_SCENE_SLOT,
+                overlay: None,
                 node_id: node_id.clone(),
                 parameter_id: parameter_id.clone(),
                 value: v,
