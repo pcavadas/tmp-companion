@@ -186,7 +186,9 @@ pub(crate) async fn stop_live_sync(state: State<'_, AppState>) -> Result<Option<
         *lock_ok(&arc) = None;
         // With live-sync off `lock_device_op` skips the pause-ack, so the monitor may still
         // be closing its handle.
-        crate::hid::wait_released(std::time::Duration::from_secs(1));
+        if !crate::hid::wait_released(std::time::Duration::from_secs(1)) {
+            log::warn!("stop_live_sync: a HID handle was still open after 1 s; reconnect may fail");
+        }
         let fw = match Session::connect_with_firmware() {
             Ok(s) => {
                 let fw = s.firmware_version();

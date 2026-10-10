@@ -254,7 +254,9 @@ where
     // device, leave the seize RELEASED and let the monitor re-take it on its
     // next poll (the `_op` guard's Drop clears the pause that paused it).
     if !MONITOR_ENABLED.load(SeqCst) {
-        crate::hid::wait_released(std::time::Duration::from_secs(1));
+        if !crate::hid::wait_released(std::time::Duration::from_secs(1)) {
+            log::warn!("a HID handle was still open after 1 s; the UI reconnect may fail");
+        }
         if let Ok(s) = Session::connect() {
             *lock_ok(&arc) = Some(s);
         }

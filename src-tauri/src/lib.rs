@@ -1619,9 +1619,8 @@ mod fixture_gates {
             assert!(
                 missing.is_empty(),
                 "{name} ({idx}): param-func footswitches missing a numeric valueType: \
-                 {missing:?} — fw 1.8.45 silently replaces the WHOLE imported preset with \
-                 the factory-default body when a param-func switch lacks valueType (HW \
-                 bisect 2026-08-09)"
+                 {missing:?} — the device rejects such a preset at its first load and \
+                 substitutes an empty one under the imported name (presetError 6)"
             );
         }
         assert!(

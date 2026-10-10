@@ -354,6 +354,13 @@ fn leveled_values_match(body: &str, fixture_json: &str) -> bool {
     ) else {
         return false;
     };
+    // A tail-truncated read salvages to a body missing its later sections, whose leveled
+    // values would then go unchecked: it is not pristine.
+    if ["ftsw", "scenes"].iter().any(|&section| {
+        fixture.get(section).is_some() && !session::json_section_complete(body, section)
+    }) {
+        return false;
+    }
     let device = leveled_values(&device);
     leveled_values(&fixture)
         .iter()
@@ -990,9 +997,13 @@ mod tests {
                 Ok(())
             );
         }
+        // A read cut inside `scenes` salvages to a body without the sections whose values
+        // it would have to check.
+        let cut_at = with_scene_and_ftsw.find(r#""scenes":[{"#).expect("scenes") + 12;
         for drift in [
             with_scene_and_ftsw.replace(r#""volume":0.3"#, r#""volume":0.1"#),
             with_scene_and_ftsw.replace(r#""valueA":0.7"#, r#""valueA":0.5"#),
+            with_scene_and_ftsw[..cut_at].to_string(),
         ] {
             assert_eq!(
                 pristine_check(drift.as_bytes(), &with_scene_and_ftsw),
