@@ -123,6 +123,15 @@ synthetic all-off baseline). One `resolve_sound_isolation` policy is shared
 by `doctor_check` AND `doctor_apply`, so the A/B can never observe a
 different bypass state than the diagnosis.
 
+**One graph per sound.** The tail policy (diagnosis AND A/B captures), the
+diagnosis and the prescriptions' current values all read the graph the sound
+was CAPTURED in (`SoundIsolation::graph`), never the saved base graph:
+`doctor::effective_nodes` applies the sound's isolation writes
+(base/footswitch: `SoundIsolation::overrides`, the exact lists the capture
+sends) or its saved scene overlay (`BackupPresetRow.scene_overrides`, from
+`scene_jobs::scene_node_overrides`) onto `DoctorInput.nodes`. A
+switch-enabled reverb that is saved bypassed is therefore diagnosed wet.
+
 Window: a **3 s stimulus slice + 200 ms silent preamble pad**
 (`doctor_stim_slice`) + a **graph-aware tail** — 1.5 s when the chain carries
 a time-based block (the wash rule needs the decay), 0.3 s dry
@@ -264,6 +273,10 @@ Level-tab leveling targets an absolute LUFS), so every branch (louder scene,
 quieter scene, block-acting footswitch, the scene-0 USB anomaly) advises leveling
 it from the Level tab rather than promising a one-click. `DoctorOp` carries no
 `SceneTrim` variant.
+
+Only MEASURED sounds enter consistency. A Stop returns the sounds the run never
+reached with `status: "unrun"` and `integratedLufs: null` — never a placeholder
+reading — and the results never claim "All clear" while one is unrun or errored.
 
 ## Playback level (Fletcher–Munson, PROVISIONAL)
 

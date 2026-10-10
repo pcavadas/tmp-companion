@@ -1096,6 +1096,61 @@ fn overlay_bypass(overlay: &SceneOverlay) -> Option<bool> {
     }
 }
 
+/// Every FS scene's saved overlay as Doctor node overrides, indexed by scene wire index. A
+/// `Full`/`BypassOnly` overlay contributes the bypass and Doctor-allowlisted params
+/// (`session::doctor_params`) that DIFFER from the base node — an entry that changes nothing
+/// is dropped, keeping the backup-scan payload to real changes. `Absent` nodes contribute
+/// nothing; an `Unknown` scene (a cut body) contributes an empty list (diagnosed on base).
+pub(crate) fn scene_node_overrides_scanned(
+    preset: &serde_json::Value,
+    scan: &NodeGraphScan,
+) -> Vec<Vec<crate::doctor::NodeOverride>> {
+    let scene_count = preset
+        .get("scenes")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    (0..scene_count)
+        .map(|scene| {
+            let scene = u32::try_from(scene).unwrap_or(u32::MAX);
+            scan.full_roster
+                .iter()
+                .filter_map(|(group, node_id, fender_id)| {
+                    let overlay = scene_overlay_for(preset, scene, (group, node_id, fender_id));
+                    let (SceneOverlay::Full(params) | SceneOverlay::BypassOnly(params)) = &overlay
+                    else {
+                        return None;
+                    };
+                    let base = scan.params.get(node_id);
+                    let base_bypass = base
+                        .and_then(|b| b.get("bypass"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let base_params = session::doctor_params(base);
+                    let bypassed = overlay_bypass(&overlay).filter(|b| *b != base_bypass);
+                    let mut changed = session::doctor_params(Some(params));
+                    changed.retain(|k, v| base_params.get(k) != Some(v));
+                    (bypassed.is_some() || !changed.is_empty()).then(|| {
+                        crate::doctor::NodeOverride {
+                            group_id: group.clone(),
+                            node_id: node_id.clone(),
+                            bypassed,
+                            params: changed,
+                        }
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// [`scene_node_overrides_scanned`] with its own graph scan.
+#[cfg(test)]
+pub(crate) fn scene_node_overrides(
+    preset: &serde_json::Value,
+) -> Vec<Vec<crate::doctor::NodeOverride>> {
+    scene_node_overrides_scanned(preset, &scan_node_graph(preset))
+}
+
 /// The MUTABLE counterpart to [`scene_overlay_for`] — the write-side key resolver, so a scene
 /// overlay write can never key a node differently than [`scene_overlay_for`] would read it back.
 /// Locates `scenes[scene].{guitarNodes,micNodes}.<group>` (group ids are disjoint across the two

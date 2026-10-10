@@ -88,6 +88,10 @@ pub struct BackupPresetRow {
     /// a real empty preset renders an empty picker and does not re-fire `list_level_blocks`'s
     /// live device read (mirroring `scene_handles`'s own discriminator).
     pub base_handles: Vec<SceneHandleCandidate>,
+    /// Per FS scene (wire index), that scene's saved overlay as Doctor node overrides
+    /// ([`crate::probe_api::scene_jobs::scene_node_overrides`]) — what a Doctor scene sound
+    /// is diagnosed on top of the base graph. Empty for a scene-less/unparseable row.
+    pub scene_overrides: Vec<Vec<crate::doctor::NodeOverride>>,
 }
 
 /// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
@@ -769,15 +773,16 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
         // roster on this SAME preset, back-to-back; the scan is shared and passed by
         // reference into both `*_scanned` cores instead.
         let handle_start = std::time::Instant::now();
-        let (scene_handles, base_handles) = match parsed_graph.as_ref() {
+        let (scene_handles, base_handles, scene_overrides) = match parsed_graph.as_ref() {
             Some(g) => {
                 let scan = scan_node_graph(g);
                 (
                     scene_handle_rows_scanned(g, &scan),
                     base_handle_candidates_scanned(&scan),
+                    crate::probe_api::scene_jobs::scene_node_overrides_scanned(g, &scan),
                 )
             }
-            None => (Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         };
         handle_derivation_time += handle_start.elapsed();
 
@@ -798,6 +803,7 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             silence_hint: parsed_graph.as_ref().and_then(silence_hint),
             scene_handles,
             base_handles,
+            scene_overrides,
         });
     }
     log::info!(

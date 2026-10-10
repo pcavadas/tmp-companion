@@ -19,6 +19,7 @@ import type {
   Store,
   ActiveGraph,
   FootswitchInfo,
+  NodeOverride,
 } from "../../lib/types";
 
 /** The Doctor wizard's 3-step rail, shared by the full-page Set up (current 0)
@@ -68,6 +69,9 @@ export interface UseDoctorFlowDeps {
    *  by 0-based list index — the source of each sound's `footswitches` (drives
    *  the backend's OFFLINE force-bypass isolation derivation, no device read). */
   footswitchesByIndex: Map<number, FootswitchInfo[]>;
+  /** Per-preset scene overlays (indexed by scene wire index) from the SAME startup
+   *  backup, keyed by 0-based list index — a scene sound's diagnosed graph. */
+  sceneOverridesByIndex: Map<number, NodeOverride[][]>;
 }
 
 function countTerminal(
@@ -80,10 +84,23 @@ function countTerminal(
   }, 0);
 }
 
+/** One scene's overrides out of a preset's per-scene list — empty for a base or
+ *  footswitch sound, and for a scene the scan has no overlay for. */
+function sceneOverridesFor(
+  perScene: NodeOverride[][] | undefined,
+  sceneSlot: number | null,
+): NodeOverride[] {
+  if (perScene == null || sceneSlot == null || sceneSlot >= perScene.length) {
+    return [];
+  }
+  return perScene[sceneSlot];
+}
+
 export function useDoctorFlow({
   store,
   graphByIndex,
   footswitchesByIndex,
+  sceneOverridesByIndex,
 }: UseDoctorFlowDeps) {
   const [run, setRun] = useState<DoctorRunState>(EMPTY_RUN);
   const [result, setResult] = useState<DoctorCheckResult | null>(null);
@@ -128,9 +145,13 @@ export function useDoctorFlow({
           profileId: profile?.id ?? null,
           nodes: graphByIndex.get(o.slot)?.nodes ?? [],
           footswitches: footswitchesByIndex.get(o.slot) ?? [],
+          sceneOverrides: sceneOverridesFor(
+            sceneOverridesByIndex.get(o.slot),
+            o.sceneSlot,
+          ),
         };
       }),
-    [store, graphByIndex, footswitchesByIndex],
+    [store, graphByIndex, footswitchesByIndex, sceneOverridesByIndex],
   );
 
   // Unmounting mid-run (a tab switch) would orphan the backend check — fire the

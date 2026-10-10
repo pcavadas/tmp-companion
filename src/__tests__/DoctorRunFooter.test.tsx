@@ -26,6 +26,7 @@ const item: DoctorInputArg = {
   profileId: null,
   nodes: [],
   footswitches: [],
+  sceneOverrides: [],
 };
 
 function doctorRun(overrides: Partial<Parameters<typeof DoctorRun>[0]> = {}) {

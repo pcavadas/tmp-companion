@@ -6,7 +6,7 @@
 // commands (apply/save/discard) are mocked.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -58,6 +58,8 @@ function fixture(): DoctorCheckResult {
             label: "Clean Base",
             tag: null,
             diags: [],
+            sceneOverrides: [],
+            status: "measured",
             integratedLufs: -20,
             tailRatioDb: 0,
             balanceDb: [],
@@ -124,6 +126,8 @@ function fixture(): DoctorCheckResult {
                 ],
               },
             ],
+            sceneOverrides: [],
+            status: "measured",
             integratedLufs: -18,
             tailRatioDb: 0,
             balanceDb: [-6, 4, -2, -8, -12, -18],
@@ -175,6 +179,10 @@ function fixture(): DoctorCheckResult {
                 ],
               },
             ],
+            sceneOverrides: [
+              { group_id: "g", node_id: "verb", bypassed: false, params: {} },
+            ],
+            status: "measured",
             integratedLufs: -19,
             tailRatioDb: 6,
             balanceDb: [-4, -2, 0, -3, -5, -7],
@@ -222,8 +230,10 @@ function fixture(): DoctorCheckResult {
             label: "Broken Base",
             tag: null,
             diags: [],
-            integratedLufs: 0,
-            tailRatioDb: 0,
+            sceneOverrides: [],
+            status: "error",
+            integratedLufs: null,
+            tailRatioDb: null,
             balanceDb: [],
             bandLabels: [
               "Lows",
@@ -313,6 +323,8 @@ describe("DoctorResults — summary + cards", () => {
               label: "Clean Base",
               tag: null,
               diags: [],
+              sceneOverrides: [],
+              status: "measured",
               integratedLufs: -20,
               tailRatioDb: 0,
               balanceDb: [],
@@ -366,6 +378,8 @@ describe("DoctorResults — summary + cards", () => {
               label: "Clean Base",
               tag: null,
               diags: [],
+              sceneOverrides: [],
+              status: "measured",
               integratedLufs: -20,
               tailRatioDb: 0,
               balanceDb: [],
@@ -409,10 +423,12 @@ describe("DoctorResults — summary + cards", () => {
     // The high preset: 2 diagnoses + 1 scene finding = 3 things.
     expect(screen.getByText("3 to look at")).toBeInTheDocument();
     // Default filter hides the fully-clean preset; the errored preset stays and
-    // reads "All clear" (no diagnoses). Reveal the clean one via "Everything".
-    expect(screen.getAllByText("All clear")).toHaveLength(1);
+    // reads "Not fully checked" — its only sound was never heard, so it is not
+    // "All clear" (#190). Reveal the clean one via "Everything".
+    expect(screen.queryByText("All clear")).not.toBeInTheDocument();
+    expect(screen.getByText("Not fully checked")).toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: "Everything" }));
-    expect(screen.getAllByText("All clear")).toHaveLength(2);
+    expect(screen.getAllByText("All clear")).toHaveLength(1);
   });
 
   it("orders the cards worst-first, ties broken by slot", async () => {
@@ -554,6 +570,8 @@ describe("DoctorResults — healthy collapse", () => {
               label: "Rhythm Crunch",
               tag: "BASE",
               diags: [muddy],
+              sceneOverrides: [],
+              status: "measured",
               integratedLufs: -18,
               tailRatioDb: 0,
               balanceDb: [-6, 4, -2, -8, -12, -18],
@@ -577,6 +595,8 @@ describe("DoctorResults — healthy collapse", () => {
               label: "Clean Lead",
               tag: "FS1",
               diags: [],
+              sceneOverrides: [],
+              status: "measured",
               integratedLufs: -19,
               tailRatioDb: 0,
               balanceDb: [-4, -2, 0, -3, -5, -7],
@@ -650,6 +670,8 @@ function baseSound(
     label: "Test Sound",
     tag: null,
     diags: [],
+    sceneOverrides: [],
+    status: "measured",
     integratedLufs: -20,
     tailRatioDb: 0,
     balanceDb: [0, 0, 0, 0, 0, 0],
@@ -683,7 +705,13 @@ describe("DoctorResults — silence-hint refines a silent-capture error (P3-3)",
 
   function silentFixture(errorText: string): DoctorCheckResult {
     return singlePresetResult(
-      baseSound({ label: "Broken Base", error: errorText }),
+      baseSound({
+        label: "Broken Base",
+        sceneOverrides: [],
+        status: "error",
+        integratedLufs: null,
+        error: errorText,
+      }),
     );
   }
 
@@ -839,6 +867,10 @@ describe("DoctorResults — prescription lifecycle", () => {
         name: "Muddy Rhythm",
         scene: 0,
         footswitch: null,
+        // The scene's overlay rides along so the A/B captures in the diagnosed graph.
+        sceneOverrides: [
+          { group_id: "g", node_id: "verb", bypassed: false, params: {} },
+        ],
       }),
     );
 
@@ -1070,6 +1102,8 @@ describe("DoctorResults — shared-block caption", () => {
       label: "Overdrive",
       tag: footswitch == null ? null : "FS4",
       diags,
+      sceneOverrides: [],
+      status: "measured",
       integratedLufs: -18,
       tailRatioDb: 0,
       balanceDb: [-6, 4, -2, -8, -12, -18],
@@ -1255,6 +1289,8 @@ describe("DoctorResults — spiky (time-domain chain rx)", () => {
                   ],
                 },
               ],
+              sceneOverrides: [],
+              status: "measured",
               integratedLufs: -20,
               tailRatioDb: 0,
               balanceDb: [0, 0, 0, 0, 0, 0],
@@ -1342,6 +1378,8 @@ describe("DoctorResults — severity (possible verdicts)", () => {
               // Deliberately possible-first in the source array — the UI must
               // REORDER it below the confident one.
               diags: [mk("fizzy", "Fizzy", 0.4), mk("harsh", "Harsh", 3.0)],
+              sceneOverrides: [],
+              status: "measured",
               integratedLufs: -18,
               tailRatioDb: 0,
               balanceDb: [0, 0, 0, 0, 0, 0],
@@ -1381,5 +1419,71 @@ describe("DoctorResults — severity (possible verdicts)", () => {
     // Confident (Harsh) renders before possible (Fizzy) despite the source order.
     expect(text.indexOf("Harsh")).toBeGreaterThanOrEqual(0);
     expect(text.indexOf("Harsh")).toBeLessThan(text.indexOf("Possible Fizzy"));
+  });
+});
+
+// BUG→GATE #190: a stopped run returns the sounds it never reached as `unrun` with no
+// loudness. They must read as unchecked — never as a measured "0.0 LUFS" or "All clear".
+describe("DoctorResults — sounds a stopped run never reached (#190)", () => {
+  beforeEach(resetMocks);
+
+  function soundRow(label: string): HTMLElement {
+    const row = screen
+      .getByText(label)
+      .closest<HTMLElement>("[data-sound-row]");
+    if (row == null) throw new Error(`no sound row for ${label}`);
+    return row;
+  }
+
+  function stoppedRun(): DoctorCheckResult {
+    return {
+      presets: [
+        {
+          listIndex: 0,
+          sounds: [
+            baseSound({ key: "p0", label: "Measured Base" }),
+            baseSound({
+              key: "s0:0",
+              scene: 0,
+              label: "Never Reached",
+              sceneOverrides: [],
+              status: "unrun",
+              integratedLufs: null,
+              tailRatioDb: null,
+              balanceDb: [],
+            }),
+          ],
+          sceneConsistency: null,
+          levelingDamage: [],
+        },
+      ],
+      stopped: true,
+    };
+  }
+
+  it("labels the unrun sound as not checked, with no loudness", () => {
+    renderResults(stoppedRun());
+    const row = soundRow("Never Reached");
+    expect(
+      within(row).getByText("Not checked — the run was stopped"),
+    ).toBeInTheDocument();
+    expect(within(row).queryByText(/LUFS/)).not.toBeInTheDocument();
+    expect(within(row).queryByText("Sounds good")).not.toBeInTheDocument();
+  });
+
+  it("never claims all clear while a sound went unchecked", () => {
+    renderResults(stoppedRun());
+    expect(screen.queryByText(/sounds? good$/)).not.toBeInTheDocument();
+    expect(screen.queryByText("All clear")).not.toBeInTheDocument();
+    expect(screen.getByText("Not fully checked")).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 not checked \(the run was stopped\)/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the measured sound's own reading", () => {
+    renderResults(stoppedRun());
+    const row = soundRow("Measured Base");
+    expect(within(row).getByText("-20.0")).toBeInTheDocument();
   });
 });

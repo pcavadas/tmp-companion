@@ -840,6 +840,19 @@ export interface BackupPresetRow {
    * `list_level_blocks`'s live device read (mirroring `scene_handles`'s own discriminator —
    * see `useLevelBlocks.ts`). */
   base_handles: SceneHandleCandidate[];
+  /** Per FS scene (wire index), that scene's saved overlay as Doctor node overrides
+   * (`lib::backup_read::BackupPresetRow.scene_overrides`). Empty for a scene-less or
+   * unparseable row. */
+  scene_overrides: NodeOverride[][];
+}
+
+/** One node's state change for one diagnosed sound, relative to the saved base graph
+ * (`doctor::NodeOverride`) — a scene overlay's bypass and Doctor-allowlisted params. */
+export interface NodeOverride {
+  group_id: string;
+  node_id: string;
+  bypassed: boolean | null;
+  params: Record<string, number>;
 }
 
 /** A [`BackupPresetRow.silence_hint`] value. */
@@ -1018,6 +1031,9 @@ export interface DoctorInputArg {
    *  same backup-scan data as `nodes` — drives the backend's OFFLINE force-bypass
    *  isolation derivation (no live preset read per sound). */
   footswitches: FootswitchInfo[];
+  /** A SCENE sound's saved overlay (`BackupPresetRow.scene_overrides[scene]`), so the
+   *  diagnosis reads the graph the scene recall actually captured. Empty otherwise. */
+  sceneOverrides: NodeOverride[];
 }
 
 /** Streamed per-sound progress row (`lib::DoctorProgressItem`). Diagnoses ride
@@ -1097,6 +1113,8 @@ export interface CutThrough {
   advisory: boolean;
 }
 
+export type DoctorSoundStatus = "measured" | "error" | "unrun";
+
 export interface DoctorSoundResult {
   key: string;
   listIndex: number;
@@ -1104,11 +1122,17 @@ export interface DoctorSoundResult {
   /** 0-based `ftsw` array index for a block-acting footswitch sound; null for
    *  Base/scene sounds. */
   footswitch: number | null;
+  /** The scene sound's saved overlay, echoed from its input like `scene` — sent back
+   *  on `DoctorApplyJob.sceneOverrides` so the A/B captures in the diagnosed graph. */
+  sceneOverrides: NodeOverride[];
   label: string;
   tag: string | null;
   diags: DoctorDiag[];
-  integratedLufs: number;
-  tailRatioDb: number;
+  /** `unrun` = the run was stopped before this sound was captured. */
+  status: DoctorSoundStatus;
+  /** Null unless `status` is `measured` — never a placeholder number. */
+  integratedLufs: number | null;
+  tailRatioDb: number | null;
   balanceDb: number[];
   /** Display labels for this sound's band layout — 6 for guitar/bass ("Lows" …
    *  "Air") or 7 for bass-vi ("Sub" + the same six). `balanceDb.length` and
@@ -1202,6 +1226,8 @@ export interface DoctorApplyJob {
   /** The preset's block-acting footswitches, paired with `nodes` for the
    *  same isolation derivation. */
   footswitches: FootswitchInfo[];
+  /** The diagnosed scene's saved overlay (`DoctorSoundResult.sceneOverrides`). */
+  sceneOverrides: NodeOverride[];
 }
 
 /** Result of a live (unsaved) prescription apply: before/after audition clips

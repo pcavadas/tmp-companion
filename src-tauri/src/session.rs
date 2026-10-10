@@ -3758,6 +3758,32 @@ pub(crate) fn extract_level_candidates(v: &serde_json::Value) -> Vec<LevelBlock>
     out
 }
 
+/// Doctor's param allowlist (see the [`GraphNode::params`] doc): the reverb wet/dry mix
+/// names, the cab low/high cut, and the EQ-10 band gains. The ONE definition — the base
+/// graph and every per-sound override (`doctor::NodeOverride`) filter through it, so a
+/// sound's effective graph can never carry a param its base graph would have dropped.
+pub(crate) fn doctor_param_kept(k: &str) -> bool {
+    k == "mix"
+        || k == "wetdrymix"
+        || k == "hpf"
+        || k == "lpf"
+        || (k.starts_with("gain") && k.ends_with("hz"))
+}
+
+/// A `dspUnitParameters` object narrowed to [`doctor_param_kept`] keys with numeric values.
+pub(crate) fn doctor_params(
+    params: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> std::collections::HashMap<String, f64> {
+    params
+        .map(|o| {
+            o.iter()
+                .filter(|(k, _)| doctor_param_kept(k))
+                .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Walk decoded preset JSON into an [`ActiveGraph`] for the active-preset signal chain strip: every
 /// node under `audioGraph.{guitarNodes,micNodes}.<group>[]` (model id + bypass),
 /// in stable sorted-group then array order, plus `audioGraph.template` for
@@ -3815,25 +3841,7 @@ pub(crate) fn extract_active_graph(
                 let cab_sim2_enabled = dual
                     .and_then(|p| p.get("cabsim2enabled"))
                     .and_then(|b| b.as_bool());
-                // Doctor's allowlist: reverb mix names + cab low/high cut
-                // (hpf/lpf) + EQ-10 band gains (see the GraphNode.params doc) —
-                // numeric values only.
-                let keep = |k: &str| {
-                    k == "mix"
-                        || k == "wetdrymix"
-                        || k == "hpf"
-                        || k == "lpf"
-                        || (k.starts_with("gain") && k.ends_with("hz"))
-                };
-                let node_params: std::collections::HashMap<String, f64> = params
-                    .and_then(|p| p.as_object())
-                    .map(|o| {
-                        o.iter()
-                            .filter(|(k, _)| keep(k))
-                            .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let node_params = doctor_params(params.and_then(|p| p.as_object()));
                 blocks.push(GraphNode {
                     group_id: group_id.clone(),
                     node_id: node_id.to_string(),

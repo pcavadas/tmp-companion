@@ -41,9 +41,11 @@ import type {
 type Filter = "look" | "all";
 
 /** A preset the "Needs a look" filter should keep visible: it has a diagnosis /
- *  scene finding, or an errored sound the player needs to see. */
+ *  scene finding, or a sound that errored or was never checked (a stopped run). */
 function hasIssue(p: DoctorPresetResult): boolean {
-  return presetLookCount(p) > 0 || p.sounds.some((s) => s.error != null);
+  return (
+    presetLookCount(p) > 0 || p.sounds.some((s) => s.status !== "measured")
+  );
 }
 
 export interface DoctorResultsProps {
@@ -170,10 +172,14 @@ export function DoctorResults({
   const totalSounds = result.presets.reduce((a, p) => a + p.sounds.length, 0);
   const totalPresets = result.presets.length;
   const flagged = result.presets.filter((p) => presetLookCount(p) > 0).length;
-  const anyError = result.presets.some((p) =>
-    p.sounds.some((s) => s.error != null),
+  const unrunCount = result.presets.reduce(
+    (a, p) => a + p.sounds.filter((s) => s.status === "unrun").length,
+    0,
   );
-  const allClear = flagged === 0 && !anyError;
+  // "All good" claims every sound was heard — an errored or unrun one wasn't.
+  const allClear =
+    flagged === 0 &&
+    result.presets.every((p) => p.sounds.every((s) => s.status === "measured"));
   const soundsFlagged = result.presets.reduce(
     (a, p) => a + p.sounds.filter((s) => s.diags.length > 0).length,
     0,
@@ -218,13 +224,18 @@ export function DoctorResults({
   } else {
     subtitle = "Worst first";
     if (soundsFlagged > 0) {
-      subtitle += ` · ${String(soundsFlagged)} of ${String(totalSounds)} sound${totalSounds === 1 ? "" : "s"} flagged`;
+      // "of M" counts only the sounds the run reached — an unrun one wasn't checked.
+      const checked = totalSounds - unrunCount;
+      subtitle += ` · ${String(soundsFlagged)} of ${String(checked)} sound${checked === 1 ? "" : "s"} flagged`;
     }
     if (sceneFlagged > 0) {
       subtitle += ` · level jumps in ${String(sceneFlagged)} preset${sceneFlagged === 1 ? "" : "s"}`;
     }
     if (needAttention > 0) {
       subtitle += ` · ${String(needAttention)} need${needAttention === 1 ? "s" : ""} attention`;
+    }
+    if (unrunCount > 0) {
+      subtitle += ` · ${String(unrunCount)} not checked (the run was stopped)`;
     }
     subtitle += ". Open a row to see what it means and fix it.";
   }

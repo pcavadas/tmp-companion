@@ -33,6 +33,8 @@ function sound(balanceDb: number[]): DoctorSoundResult {
     label: "This sound",
     tag: null,
     diags: [],
+    sceneOverrides: [],
+    status: "measured",
     integratedLufs: -20,
     tailRatioDb: 0,
     balanceDb,

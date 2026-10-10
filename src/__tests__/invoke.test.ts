@@ -272,6 +272,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
         profileId: null,
         nodes: [],
         footswitches: [],
+        sceneOverrides: [],
       },
     ];
     const onResult = vi.fn(() => {
@@ -317,6 +318,7 @@ describe("camelCase top-level arg keys (Tauri auto-converts to snake_case)", () 
       footswitch: null,
       nodes: [],
       footswitches: [],
+      sceneOverrides: [],
     };
     await doctorApply(job);
     expectCall("doctor_apply", { job });

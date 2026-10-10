@@ -16,6 +16,7 @@ import type {
   ActiveGraph,
   AmpCandidate,
   FootswitchInfo,
+  NodeOverride,
   SceneHandleCandidate,
   SceneHandleRow,
   SceneInfo,
@@ -78,6 +79,9 @@ export interface LibraryScan {
    *  entry (possibly `[]`); `useLevelBlocks` falls back to the device command only when
    *  this MAP has no entry for the slot at all. */
   baseHandlesByIndex: Map<number, SceneHandleCandidate[]>;
+  /** Per-preset scene overlays as Doctor node overrides (indexed by scene wire index)
+   *  keyed by 0-based LIST INDEX — what a Doctor scene sound is diagnosed on. */
+  sceneOverridesByIndex: Map<number, NodeOverride[][]>;
   /** The unit's presets — `{ slot: 0-based LIST INDEX, name }` — for the Songs tab's
    *  Presets axis rail. Read from the same backup, so the axis needs no device call. */
   presets: { slot: number; name: string }[];
@@ -108,6 +112,7 @@ const emptyScan = (): LibraryScan => ({
   silenceHintByIndex: new Map(),
   sceneHandlesByIndex: new Map(),
   baseHandlesByIndex: new Map(),
+  sceneOverridesByIndex: new Map(),
   presets: [],
   songPresetSlots: new Map(),
   songs: [],
@@ -173,6 +178,7 @@ export async function ensureLibraryScan(): Promise<void> {
     const silence = new Map<number, SilenceHint>();
     const sceneHandles = new Map<number, SceneHandleRow[]>();
     const baseHandles = new Map<number, SceneHandleCandidate[]>();
+    const sceneOverrides = new Map<number, NodeOverride[][]>();
     // backup slot is the 1-based device slot; the list is 0-based → −1.
     const presets: { slot: number; name: string }[] = [];
     res.presets.forEach((p) => {
@@ -193,6 +199,7 @@ export async function ensureLibraryScan(): Promise<void> {
       if (p.silence_hint != null) silence.set(p.slot - 1, p.silence_hint);
       sceneHandles.set(p.slot - 1, p.scene_handles);
       baseHandles.set(p.slot - 1, p.base_handles);
+      sceneOverrides.set(p.slot - 1, p.scene_overrides);
       presets.push({ slot: p.slot - 1, name: p.name });
     });
     // Song slot → preset LIST INDICES (preset device slot − 1), deduped per song.
@@ -224,6 +231,7 @@ export async function ensureLibraryScan(): Promise<void> {
       silenceHintByIndex: silence,
       sceneHandlesByIndex: sceneHandles,
       baseHandlesByIndex: baseHandles,
+      sceneOverridesByIndex: sceneOverrides,
       presets,
       songPresetSlots,
       songs,
@@ -256,6 +264,8 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
   if (!state.ready) return;
   const next = new Map(state.graphByIndex);
   next.set(listIndex, graph);
+  // Scene overrides are kept: a Copy save edits blocks, not scene overlays, and
+  // Doctor's `effective_nodes` ignores an override whose node the save removed.
   set({ graphByIndex: next });
 }
 
