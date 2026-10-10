@@ -1224,3 +1224,43 @@ fn repair_scene_docs_leaves_docs_untouched_when_the_saved_preset_cannot_answer()
     assert!(!repair_scene_docs_from(&mut docs, &truncated, &needy));
     assert!(docs[0].1.is_none(), "no doc was invented");
 }
+
+// `scene_node_overrides` — the Doctor's per-scene graph source. Full and BypassOnly overlays
+// contribute the bypass and allowlisted params that differ from base; Absent nodes contribute
+// nothing; a cut scene body contributes an empty list (diagnosed on base).
+#[test]
+fn scene_node_overrides_map_every_overlay_state() {
+    // Full: a knob plus an allowlisted `mix` — only `mix` survives the Doctor allowlist.
+    let full =
+        with_scene0_overlay(serde_json::json!({ "bypass": false, "outputLevel": 0.4, "mix": 0.6 }));
+    let o = &super::scene_node_overrides(&full)[0];
+    assert_eq!(o.len(), 1, "{o:?}");
+    assert_eq!(
+        (o[0].group_id.as_str(), o[0].node_id.as_str()),
+        ("G1", "ampA")
+    );
+    assert_eq!(o[0].bypassed, Some(false));
+    assert_eq!(
+        o[0].params,
+        std::collections::HashMap::from([("mix".to_string(), 0.6)])
+    );
+
+    // BypassOnly: the bypass alone (base is bypassed, the scene turns it on).
+    let bypass_only = with_scene0_overlay(serde_json::json!({ "bypass": false }));
+    let o = &super::scene_node_overrides(&bypass_only)[0];
+    assert_eq!(o[0].bypassed, Some(false));
+    assert!(o[0].params.is_empty());
+
+    // An overlay that repeats the base state changes nothing and is dropped.
+    let no_op = with_scene0_overlay(serde_json::json!({ "bypass": true, "outputLevel": 0.4 }));
+    assert!(super::scene_node_overrides(&no_op)[0].is_empty());
+
+    // Absent: scene 1 carries no entry for the node.
+    let p = saved_preset();
+    assert!(super::scene_node_overrides(&p)[1].is_empty());
+
+    // Unknown: a scene body that is not an object.
+    let mut cut = saved_preset();
+    cut["scenes"][0] = serde_json::Value::Null;
+    assert!(super::scene_node_overrides(&cut)[0].is_empty());
+}

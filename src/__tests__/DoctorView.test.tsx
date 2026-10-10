@@ -172,6 +172,8 @@ function mockOnePreset(
                 label: it.key,
                 tag: it.tag,
                 diags: [],
+                sceneOverrides: [],
+                status: "measured",
                 integratedLufs: -20,
                 tailRatioDb: 0,
                 balanceDb: [],

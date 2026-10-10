@@ -31,6 +31,7 @@ import type {
   DoctorRxKind,
   FootswitchInfo,
   GraphNode,
+  NodeOverride,
 } from "../../lib/types";
 
 const KIND_ICON: Record<DoctorRxKind, IconName> = {
@@ -79,6 +80,7 @@ export interface PrescriptionCardProps {
    *  never applicable and so never call `doctorApply`/`doctorSave`. */
   soundScene?: number | null;
   soundFootswitch?: number | null;
+  soundSceneOverrides?: NodeOverride[];
   nodes?: GraphNode[];
   footswitches?: FootswitchInfo[];
   /** The diagnosed sound's stimulus identity (instrument profile pick at
@@ -108,6 +110,7 @@ export function PrescriptionCard({
   scene = false,
   soundScene = null,
   soundFootswitch = null,
+  soundSceneOverrides = [],
   nodes = [],
   footswitches = [],
   stimulus = DEFAULT_STIMULUS,
@@ -194,6 +197,7 @@ export function PrescriptionCard({
         footswitch: soundFootswitch,
         nodes,
         footswitches,
+        sceneOverrides: soundSceneOverrides,
       });
       // If we unmounted while this was in flight (row collapsed, or the
       // Match reference swapped away), the unmount cleanup above already

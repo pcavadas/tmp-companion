@@ -66,6 +66,7 @@ function backupRow(
     silence_hint: null,
     scene_handles: [],
     base_handles: baseHandles,
+    scene_overrides: [],
   };
 }
 

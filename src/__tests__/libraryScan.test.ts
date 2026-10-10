@@ -15,6 +15,7 @@ import {
   ensureLibraryScan,
   getLibraryScan,
   invalidateLibrarySongs,
+  patchLibraryGraph,
   resetLibraryScan,
 } from "../views/level/libraryScan";
 
@@ -45,6 +46,7 @@ const row = (slot: number, name: string) => ({
   silence_hint: null,
   scene_handles: [],
   base_handles: [],
+  scene_overrides: [],
 });
 
 // device slots 8 / 58 → list indices 7 / 57; three song→preset bindings.
@@ -330,5 +332,44 @@ describe("libraryScan — detach mid-scan (generation guard)", () => {
       { slot: 7, name: "Plexi Crunch" },
       { slot: 57, name: "Stadium Lead" },
     ]);
+  });
+});
+
+describe("libraryScan — Doctor scene overrides", () => {
+  beforeEach(() => {
+    resetLibraryScan();
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("keys scene overrides by list index and drops them when a Copy save patches the graph", async () => {
+    const override = {
+      group_id: "G1",
+      node_id: "plate1",
+      bypassed: false,
+      params: { wetdrymix: 0.7 },
+    };
+    const backup: BackupReadResult = {
+      ...BACKUP,
+      presets: [
+        { ...row(8, "Plexi Crunch"), scene_overrides: [[override], []] },
+        row(58, "Stadium Lead"),
+      ],
+    };
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(backup)
+        : Promise.resolve(null),
+    );
+
+    await ensureLibraryScan();
+    expect(getLibraryScan().sceneOverridesByIndex.get(7)).toEqual([
+      [override],
+      [],
+    ]);
+
+    // The patched graph's overlays are unknown until the next scan — never stale ones.
+    patchLibraryGraph(7, emptyGraph);
+    expect(getLibraryScan().sceneOverridesByIndex.has(7)).toBe(false);
+    expect(getLibraryScan().sceneOverridesByIndex.has(57)).toBe(true);
   });
 });

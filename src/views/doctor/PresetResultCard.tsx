@@ -86,18 +86,19 @@ export function PresetResultCard({
   const tinted = sevRank(worst) > 0;
   const [showHealthy, setShowHealthy] = useState(count === 0);
 
-  // Problems worst-first, then errored rows (visible, non-expandable), then the
-  // healthy rows (collapsed by default unless the whole group is clear).
+  // Problems worst-first, then errored and unrun rows (visible, non-expandable),
+  // then the healthy rows (collapsed by default unless the whole group is clear).
+  // Only a MEASURED sound with no findings is healthy — an unrun one was never heard.
   const problems = preset.sounds
     .filter((s) => s.diags.length > 0)
     .sort((a, b) => sevRank(soundSev(b)) - sevRank(soundSev(a)));
-  const errored = preset.sounds.filter(
-    (s) => s.diags.length === 0 && s.error != null,
-  );
+  const notMeasured = preset.sounds.filter((s) => s.status !== "measured");
   const healthy = preset.sounds.filter(
-    (s) => s.diags.length === 0 && s.error == null,
+    (s) => s.status === "measured" && s.diags.length === 0,
   );
-  const visibleProblemRows = [...problems, ...errored];
+  const visibleProblemRows = [...problems, ...notMeasured];
+  // "All clear" is a claim about EVERY sound — never made while one wasn't heard.
+  const fullyChecked = notMeasured.length === 0;
 
   const presetFootswitches = footswitchInfo.get(preset.listIndex);
   const presetNodes = graphByIndex.get(preset.listIndex)?.nodes ?? [];
@@ -169,7 +170,18 @@ export function PresetResultCard({
         >
           {presetName}
         </span>
-        {count === 0 ? (
+        {count === 0 && !fullyChecked ? (
+          <span
+            style={{
+              fontFamily: t.sans,
+              fontSize: t.fsLabel,
+              color: t.mutedInk,
+              flexShrink: 0,
+            }}
+          >
+            Not fully checked
+          </span>
+        ) : count === 0 ? (
           <span
             style={{
               display: "inline-flex",

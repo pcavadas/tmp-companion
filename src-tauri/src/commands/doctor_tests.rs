@@ -19,7 +19,7 @@ fn an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound() {
         // What the fallback read leaves behind when the body could not be read or its
         // `ftsw` tail never arrived.
         cache.insert(7u32, serde_json::Value::Null);
-        resolve_sound_isolation(&[], &[], None, footswitch, 7, &mut cache)
+        resolve_sound_isolation(&[], &[], &[], None, footswitch, 7, &mut cache)
     };
     let fs = unreadable(Some(2));
     let msg = fs.unresolved.expect("a footswitch sound must be skipped");
@@ -36,7 +36,7 @@ fn an_unreadable_ftsw_skips_a_footswitch_sound_but_not_a_base_sound() {
     let mut cache = std::collections::HashMap::new();
     cache.insert(7u32, serde_json::json!({ "ftsw": [[], [], []] }));
     assert!(
-        resolve_sound_isolation(&[], &[], None, Some(2), 7, &mut cache)
+        resolve_sound_isolation(&[], &[], &[], None, Some(2), 7, &mut cache)
             .unresolved
             .is_none()
     );
@@ -112,22 +112,11 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
     let fs = r#"{ "key": "f4:0", "listIndex": 4, "footswitch": 0, "label": "FS1" }"#;
     let input: DoctorInput = serde_json::from_str(fs).expect("DoctorInput deserializes");
     assert_eq!(input.footswitch, Some(0));
-    let row = DoctorSoundResult {
-        key: input.key,
-        list_index: input.list_index,
-        scene: input.scene,
-        footswitch: input.footswitch,
-        label: input.label,
-        tag: input.tag,
-        diags: Vec::new(),
-        integrated_lufs: 0.0,
-        tail_ratio_db: 0.0,
-        balance_db: Vec::new(),
-        band_labels: Vec::new(),
-        cut_through: None,
-        error: None,
-        skipped_band_count: 0,
-    };
+    let row = sound_result(
+        &input,
+        doctor::StimulusKind::Synthetic,
+        &SoundOutcome::Unrun,
+    );
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["footswitch"], 0);
     // cutThrough serializes as an explicit null (never an omitted key) when
@@ -139,26 +128,14 @@ fn doctor_footswitch_is_optional_and_echoes_to_result() {
 /// verbatim, camelCase, when present.
 #[test]
 fn doctor_sound_result_cut_through_serializes_camel_case() {
-    let row = DoctorSoundResult {
-        key: "p4".to_string(),
-        list_index: 4,
-        scene: None,
-        footswitch: None,
-        label: "Base".to_string(),
-        tag: None,
-        diags: Vec::new(),
-        integrated_lufs: 0.0,
-        tail_ratio_db: 0.0,
-        balance_db: Vec::new(),
-        band_labels: Vec::new(),
-        cut_through: Some(doctor::CutThrough {
-            contrast_db: 12.5,
-            factory_percentile: Some(63.2),
-            advisory: false,
-        }),
-        error: None,
-        skipped_band_count: 0,
-    };
+    let base: DoctorInput =
+        serde_json::from_str(r#"{ "key": "p4", "listIndex": 4, "label": "Base" }"#).unwrap();
+    let mut row = sound_result(&base, doctor::StimulusKind::Synthetic, &SoundOutcome::Unrun);
+    row.cut_through = Some(doctor::CutThrough {
+        contrast_db: 12.5,
+        factory_percentile: Some(63.2),
+        advisory: false,
+    });
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["cutThrough"]["contrastDb"], 12.5);
     assert_eq!(v["cutThrough"]["factoryPercentile"], 63.2);
@@ -459,10 +436,10 @@ fn resolve_sound_isolation_never_writes_for_a_scene_sound() {
     let (preset, infos) = iso_ab_fixture();
     let nodes = nodes_from(&preset);
     let mut cache = std::collections::HashMap::new();
-    let iso = resolve_sound_isolation(&nodes, &infos, Some(0), None, 5, &mut cache);
+    let iso = resolve_sound_isolation(&nodes, &infos, &[], Some(0), None, 5, &mut cache);
     assert!(iso.bypass.is_empty() && iso.params.is_empty());
     // Graph absent too — the pre-existing empty-nodes behavior for scenes.
-    let iso = resolve_sound_isolation(&[], &infos, Some(0), None, 5, &mut cache);
+    let iso = resolve_sound_isolation(&[], &infos, &[], Some(0), None, 5, &mut cache);
     assert!(iso.bypass.is_empty() && iso.params.is_empty());
 }
 
@@ -507,7 +484,7 @@ fn resolve_sound_isolation_carries_param_writes_for_a_param_only_switch() {
     let (preset, infos) = iso_ab_fixture();
     let nodes = nodes_from(&preset);
     let mut cache = std::collections::HashMap::new();
-    let iso = resolve_sound_isolation(&nodes, &infos, None, Some(2), 5, &mut cache);
+    let iso = resolve_sound_isolation(&nodes, &infos, &[], None, Some(2), 5, &mut cache);
     assert_eq!(
         iso.params,
         vec![("G1".into(), "MOD".into(), "gain".into(), 0.9_f32)]
@@ -860,4 +837,338 @@ fn doctor_refuses_inserts_on_a_read_cut_inside_the_audio_graph() {
         .filter(|e| matches!(e, SimEvent::Insert { .. }))
         .count();
     assert_eq!(inserts, 0, "inserted on a cut read");
+}
+
+// --- #190: a stopped run never fabricates a measurement ---
+
+fn item(
+    key: &str,
+    scene: Option<u32>,
+    footswitch: Option<u32>,
+) -> (DoctorInput, String, doctor::StimulusKind) {
+    let input = DoctorInput {
+        key: key.to_string(),
+        list_index: 4,
+        scene,
+        footswitch,
+        label: key.to_string(),
+        tag: None,
+        topology_id: None,
+        calibration_lufs: None,
+        profile_id: None,
+        nodes: Vec::new(),
+        footswitches: Vec::new(),
+        scene_overrides: Vec::new(),
+    };
+    (input, String::new(), doctor::StimulusKind::Synthetic)
+}
+
+/// A capture at `lufs` with a dry tail and target-curve bands (no findings of its own).
+fn measured(lufs: f64, tail_ratio_db: f64, nodes: Vec<doctor::DoctorNode>) -> SoundOutcome {
+    SoundOutcome::Measured {
+        profile: doctor::SoundProfile {
+            bands: doctor::target_curve(doctor::Family::Guitar)
+                .iter()
+                .map(|d| 10f64.powf(d / 10.0))
+                .collect(),
+            integrated_lufs: lufs,
+            spread_lu: 0.0,
+            tail_ratio_db,
+            air_flatness: 0.5,
+            peaks: Vec::new(),
+            stim_bands: None,
+        },
+        coverage: None,
+        nodes,
+    }
+}
+
+fn base_and_scenes() -> Vec<(DoctorInput, String, doctor::StimulusKind)> {
+    vec![
+        item("base", None, None),
+        item("s0", Some(0), None),
+        item("s1", Some(1), None),
+    ]
+}
+
+/// BUG→GATE #190: Stop before the first capture. Every sound is `unrun` with no loudness —
+/// before the fix each one read 0.0 LUFS with no error and rendered as "All clear".
+#[test]
+fn a_run_stopped_before_its_first_capture_reports_every_sound_unrun() {
+    let items = base_and_scenes();
+    let outcomes = vec![SoundOutcome::Unrun; items.len()];
+    let presets = assemble_results(&items, &outcomes);
+    assert_eq!(presets.len(), 1);
+    for s in &presets[0].sounds {
+        assert_eq!(s.status, SoundStatus::Unrun, "{}", s.key);
+        assert_eq!(s.integrated_lufs, None, "{}", s.key);
+        assert_eq!(s.tail_ratio_db, None, "{}", s.key);
+        assert!(s.diags.is_empty() && s.error.is_none(), "{}", s.key);
+    }
+    assert!(presets[0].scene_consistency.is_none());
+    let v = serde_json::to_value(&presets[0].sounds[0]).unwrap();
+    assert_eq!(v["status"], "unrun");
+    assert_eq!(v["integratedLufs"], serde_json::Value::Null);
+}
+
+/// BUG→GATE #190: Stop between the base and its scenes. The base is measured at −20 LUFS;
+/// the scenes were never captured. Before the fix they entered scene consistency as 0 LUFS
+/// readings — a fabricated +20 dB jump.
+#[test]
+fn a_run_stopped_between_base_and_scenes_keeps_unrun_scenes_out_of_consistency() {
+    let items = base_and_scenes();
+    let outcomes = vec![
+        measured(-20.0, -40.0, Vec::new()),
+        SoundOutcome::Unrun,
+        SoundOutcome::Unrun,
+    ];
+    let p = &assemble_results(&items, &outcomes)[0];
+    assert_eq!(p.sounds[0].status, SoundStatus::Measured);
+    assert_eq!(p.sounds[0].integrated_lufs, Some(-20.0));
+    assert_eq!(p.sounds[1].status, SoundStatus::Unrun);
+    assert_eq!(p.sounds[2].status, SoundStatus::Unrun);
+    assert!(
+        p.scene_consistency.is_none(),
+        "no scene was measured, so there is nothing to compare: {:?}",
+        p.scene_consistency
+    );
+}
+
+#[test]
+fn consistency_compares_only_measured_sounds() {
+    let items = base_and_scenes();
+    // A real +8 dB scene jump, plus a failed scene that must not enter the table.
+    let outcomes = vec![
+        measured(-20.0, -40.0, Vec::new()),
+        measured(-12.0, -40.0, Vec::new()),
+        SoundOutcome::Failed("no signal captured".to_string()),
+    ];
+    let p = &assemble_results(&items, &outcomes)[0];
+    assert_eq!(p.sounds[2].status, SoundStatus::Error);
+    assert_eq!(p.sounds[2].integrated_lufs, None);
+    let rows = &p
+        .scene_consistency
+        .as_ref()
+        .expect("an 8 dB jump is flagged")
+        .rows;
+    assert!(
+        rows.iter().all(|r| r.name != "s1"),
+        "the failed scene stays out: {rows:?}"
+    );
+    assert!(rows.iter().any(|r| r.name == "s0"));
+}
+
+// --- #191: one effective graph per sound ---
+
+/// A preset whose plate reverb is SAVED BYPASSED (its `level` makes its switches offer a
+/// level param — the UI's selectable gate; Mix alone is never offered): footswitch 1 turns it on, footswitch 2
+/// jumps its `wetdrymix` (a parameter function), footswitch 3 jumps the amp's
+/// non-allowlisted `gain`. Scene 0's overlay turns the plate on; scene 1 has no overlay.
+fn wet_by_switch_fixture() -> serde_json::Value {
+    serde_json::json!({
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "amp", "FenderId": "ACD_TweedDeluxe",
+              "dspUnitParameters": { "bypass": false, "gain": 0.5 } },
+            { "nodeId": "cab1", "FenderId": "ACD_CabSimTMS",
+              "dspUnitParameters": { "bypass": false, "cabsimid": "Some412" } },
+            { "nodeId": "plate1", "FenderId": "ACD_TMLargePlate",
+              "dspUnitParameters": { "bypass": true, "wetdrymix": 0.3, "level": 0.5 } }
+        ]}, "micNodes": {} },
+        "ftsw": [
+            [{ "func": "on-off", "nodes": [{ "groupId": "G1", "nodeId": "plate1" }], "isActive": false }],
+            [{ "func": "param", "groupId": "G1", "nodeId": "plate1", "parameterId": "wetdrymix",
+               "valueA": 0.8, "valueB": 0.3, "valueType": 0, "isActive": false }],
+            [{ "func": "param", "groupId": "G1", "nodeId": "amp", "parameterId": "gain",
+               "valueA": 0.9, "valueB": 0.5, "valueType": 0, "isActive": false }],
+        ],
+        "scenes": [
+            { "guitarNodes": { "G1": { "ACD_TMLargePlate": {
+                "dspUnitParameters": { "bypass": false, "wetdrymix": 0.7 } } } } },
+            { "guitarNodes": {} }
+        ]
+    })
+}
+
+/// The fixture's sound as `doctor_check` builds it: the backup scan's graph, footswitch
+/// roster and scene overrides — the same derivations the frontend receives.
+fn fixture_sound(
+    scene: Option<u32>,
+    footswitch: Option<u32>,
+) -> (DoctorInput, Vec<doctor::DoctorNode>) {
+    let preset = wet_by_switch_fixture();
+    let nodes: Vec<doctor::DoctorNode> = crate::session::extract_active_graph(&preset, None)
+        .nodes
+        .iter()
+        .map(doctor::DoctorNode::from_graph_node)
+        .collect();
+    let infos = footswitch::enumerate_block_footswitches(&preset["ftsw"], &preset);
+    let scene_overrides = scene
+        .map(|s| crate::probe_api::scene_jobs::scene_node_overrides(&preset)[s as usize].clone())
+        .unwrap_or_default();
+    let (mut input, _, _) = item("fx", scene, footswitch);
+    input.nodes = nodes;
+    input.footswitches = infos;
+    input.scene_overrides = scene_overrides;
+    let mut cache = std::collections::HashMap::new();
+    let iso = resolve_sound_isolation(
+        &input.nodes,
+        &input.footswitches,
+        &input.scene_overrides,
+        scene,
+        footswitch,
+        4,
+        &mut cache,
+    );
+    (input, iso.graph)
+}
+
+fn plate(graph: &[doctor::DoctorNode]) -> &doctor::DoctorNode {
+    graph
+        .iter()
+        .find(|n| n.node_id == "plate1")
+        .expect("plate in graph")
+}
+
+/// Diagnose a hot-tailed capture of `graph` through the command's own assembly.
+fn diag_keys_on(input: DoctorInput, graph: Vec<doctor::DoctorNode>) -> Vec<&'static str> {
+    let items = vec![(input, String::new(), doctor::StimulusKind::Synthetic)];
+    let outcomes = vec![measured(-20.0, 0.0, graph)];
+    assemble_results(&items, &outcomes)[0].sounds[0]
+        .diags
+        .iter()
+        .map(|d| d.diag.key)
+        .collect()
+}
+
+#[test]
+fn the_fixture_switches_are_selectable_in_the_ui() {
+    // The Doctor's select list only offers a footswitch sound whose switch has
+    // `level_params` — the fixture must exercise sounds a player can actually pick.
+    let preset = wet_by_switch_fixture();
+    let infos = footswitch::enumerate_block_footswitches(&preset["ftsw"], &preset);
+    for sw in [0, 1] {
+        let fi = infos
+            .iter()
+            .find(|f| f.switch == sw)
+            .expect("switch enumerated");
+        assert!(
+            !fi.level_params.is_empty(),
+            "switch {sw} has no level_params"
+        );
+    }
+}
+
+/// BUG→GATE #191: a footswitch that turns on a saved-bypassed reverb is captured WET, so it
+/// gets the full wash tail and can be diagnosed `washed`. Before the fix the tail and the
+/// diagnosis read the base graph (reverb bypassed): a short tail and `washed` gated off.
+#[test]
+fn a_footswitch_enabling_a_bypassed_reverb_is_diagnosed_wet() {
+    let (input, graph) = fixture_sound(None, Some(0));
+    assert!(!plate(&graph).bypassed);
+    assert_eq!(
+        doctor::doctor_tail_ms(&graph),
+        crate::leveller::DOCTOR_TAIL_MS
+    );
+    assert!(diag_keys_on(input, graph).contains(&"washed"));
+}
+
+/// The opposing case: the base sound is captured with every switched block forced OFF, so
+/// it is dry — short tail, and a hot tail reading never earns `washed`.
+#[test]
+fn the_base_sound_is_diagnosed_with_switched_blocks_forced_off() {
+    let (input, graph) = fixture_sound(None, None);
+    assert!(plate(&graph).bypassed);
+    assert_eq!(
+        doctor::doctor_tail_ms(&graph),
+        crate::leveller::DOCTOR_TAIL_DRY_MS
+    );
+    assert!(!diag_keys_on(input, graph).contains(&"washed"));
+}
+
+/// A wet block that base isolation forces OFF must not reach a prescription either: a
+/// saved-ON switched reverb on the base sound is captured off, so it is not "active".
+#[test]
+fn base_isolation_turns_off_a_saved_on_switched_reverb() {
+    let mut preset = wet_by_switch_fixture();
+    preset["audioGraph"]["guitarNodes"]["G1"][2]["dspUnitParameters"]["bypass"] = false.into();
+    let nodes: Vec<doctor::DoctorNode> = crate::session::extract_active_graph(&preset, None)
+        .nodes
+        .iter()
+        .map(doctor::DoctorNode::from_graph_node)
+        .collect();
+    assert!(!plate(&nodes).bypassed, "saved ON in base");
+    let infos = footswitch::enumerate_block_footswitches(&preset["ftsw"], &preset);
+    let (mut input, _, _) = item("fx", None, None);
+    input.nodes = nodes;
+    input.footswitches = infos;
+    let iso = resolve_sound_isolation(
+        &input.nodes,
+        &input.footswitches,
+        &[],
+        None,
+        None,
+        4,
+        &mut Default::default(),
+    );
+    let graph = iso.graph;
+    assert!(plate(&graph).bypassed, "the capture forced it off");
+    assert_eq!(
+        doctor::doctor_tail_ms(&graph),
+        crate::leveller::DOCTOR_TAIL_DRY_MS
+    );
+}
+
+/// A parameter-function switch jumps the plate's `wetdrymix` to its `valueA` for the
+/// capture — the diagnosed graph carries that value, not the saved one.
+#[test]
+fn a_param_function_jump_reaches_the_diagnosed_graph() {
+    let (_, graph) = fixture_sound(None, Some(1));
+    let mix = plate(&graph).params.get("wetdrymix").copied();
+    assert!(
+        mix.is_some_and(|m| (m - 0.8).abs() < 1e-6),
+        "wetdrymix = {mix:?}"
+    );
+}
+
+/// A param jump outside the Doctor allowlist never enters the graph's params.
+#[test]
+fn a_non_allowlisted_param_jump_does_not_leak_into_params() {
+    let (_, graph) = fixture_sound(None, Some(2));
+    let amp = graph.iter().find(|n| n.node_id == "amp").unwrap();
+    assert!(!amp.params.contains_key("gain"), "{:?}", amp.params);
+}
+
+/// BUG→GATE #191 (scene half): scene 0's saved overlay turns the plate on and sets its
+/// mix, so the scene sound is diagnosed wet with the overlay's mix. Scene 1 has no overlay
+/// and stays on the base graph.
+#[test]
+fn a_scene_overlay_reaches_the_diagnosed_graph() {
+    let (input, graph) = fixture_sound(Some(0), None);
+    assert!(!plate(&graph).bypassed);
+    assert_eq!(plate(&graph).params.get("wetdrymix"), Some(&0.7));
+    assert_eq!(
+        doctor::doctor_tail_ms(&graph),
+        crate::leveller::DOCTOR_TAIL_MS
+    );
+    assert!(diag_keys_on(input, graph).contains(&"washed"));
+
+    let (_, graph) = fixture_sound(Some(1), None);
+    assert!(plate(&graph).bypassed);
+    assert_eq!(plate(&graph).params.get("wetdrymix"), Some(&0.3));
+}
+
+#[test]
+fn effective_nodes_ignores_unknown_nodes_and_keeps_an_unknown_graph_unknown() {
+    let stray = doctor::NodeOverride {
+        group_id: "G9".into(),
+        node_id: "nope".into(),
+        bypassed: Some(false),
+        params: std::collections::HashMap::new(),
+    };
+    assert!(doctor::effective_nodes(&[], std::slice::from_ref(&stray)).is_empty());
+    let (_, base) = fixture_sound(None, None);
+    assert_eq!(
+        format!("{:?}", doctor::effective_nodes(&base, &[stray])),
+        format!("{base:?}")
+    );
 }

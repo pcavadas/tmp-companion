@@ -315,6 +315,8 @@ export function usePresetData(
     /** Per-preset signal graph from the startup backup, keyed by 0-based list index —
      *  the source for each row's real CPU readout. */
     graphByIndex: lib.graphByIndex,
+    /** Per-preset scene overlays as node overrides — Doctor's per-scene graph source. */
+    sceneOverridesByIndex: lib.sceneOverridesByIndex,
     scan,
     togglePreset,
     toggleKey,

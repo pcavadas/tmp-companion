@@ -4,7 +4,7 @@
 // (open state threaded from the results page); the expanded region holds the
 // shared-block caption, then per-diagnosis: the explainer, the full BandMeter, and
 // the prescription card(s), then the cut-through estimate + the Match-reference
-// picker/card. Only errored rows (no usable capture) are not expandable — a clean
+// picker/card. Only errored or unrun rows (no usable capture) are not expandable — a clean
 // row still expands (to pick it as a reference / show its cut-through read).
 
 import { useTheme } from "../../theme/ThemeContext";
@@ -45,6 +45,9 @@ const NO_SIGNAL_CAPTURED = "no signal captured";
 
 const SHARED_CAPTION =
   "This block is shared — the change affects all sounds of this preset.";
+
+/** The row text for a sound a stopped run never reached. */
+const NOT_CHECKED = "Not checked — the run was stopped";
 
 /** Diagnosis-row header min-height (SevDot + serif label baseline) — off the
  *  t.spaceN scale, so it's a role-named const shared with SceneConsistency's
@@ -175,7 +178,11 @@ export function SoundRow({
 }: SoundRowProps) {
   const { t } = useTheme();
   const hasDiags = sound.diags.length > 0;
-  const isError = sound.error != null;
+  const isError = sound.status === "error";
+  // Never captured — the run was stopped first. No loudness, no spectrum.
+  const isUnrun = sound.status === "unrun";
+  // A row with no usable capture: flat, no metrics, not expandable.
+  const flat = isError || isUnrun;
   // A silent-inject capture refines to the SAME offbranch status text the
   // Level tab shows for the identical failure — never the raw backend string.
   // Any other error (a real device/connection failure) is shown verbatim.
@@ -190,11 +197,14 @@ export function SoundRow({
   const diags = sortedDiags(sound.diags);
   const hotBands = [...new Set(diags.flatMap((d) => d.bands))];
   const shared = hasDiags && affectsSharedBlock(sound.diags, ownNodeIds);
-  const lufsOk = Number.isFinite(sound.integratedLufs);
+  const lufs =
+    sound.integratedLufs != null && Number.isFinite(sound.integratedLufs)
+      ? sound.integratedLufs
+      : null;
   // A clean sound still expands — to show its cut-through read or let the
   // player pick it as the Match reference. Only an errored capture (no
-  // usable balanceDb) stays flat/non-interactive.
-  const expandable = !isError;
+  // usable balanceDb) or an unrun one stays flat/non-interactive.
+  const expandable = !flat;
   const isReference = id === referenceId;
   // A null cutThrough on a non-errored row marks a DEGENERATE capture (the
   // presence/low contrast came out non-finite) — such a spectrum must neither
@@ -266,18 +276,18 @@ export function SoundRow({
             overflow: "hidden",
           }}
         >
-          {isError ? (
+          {flat ? (
             <span
               style={{
                 fontFamily: t.sans,
                 fontSize: t.fsLabel,
-                color: t.warn,
+                color: isError ? t.warn : t.mutedInk,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
               }}
             >
-              {errorText}
+              {isError ? errorText : NOT_CHECKED}
             </span>
           ) : hasDiags ? (
             diags.map((d) => (
@@ -323,7 +333,7 @@ export function SoundRow({
               />
             </span>
           )}
-          {!isError && coverageGated && (
+          {!flat && coverageGated && (
             <span
               title={`Some checks skipped — signal too quiet on ${String(sound.skippedBandCount)} band${sound.skippedBandCount === 1 ? "" : "s"}`}
               style={{ display: "inline-flex", flexShrink: 0, opacity: 0.7 }}
@@ -332,8 +342,8 @@ export function SoundRow({
             </span>
           )}
         </span>
-        {/* metrics: sparkline + LUFS (suppressed on error rows) */}
-        {!isError && (
+        {/* metrics: sparkline + LUFS (suppressed on error and unrun rows) */}
+        {!flat && (
           <>
             <BandSpark
               balanceDb={sound.balanceDb}
@@ -353,9 +363,9 @@ export function SoundRow({
                 flexShrink: 0,
               }}
             >
-              {lufsOk ? (
+              {lufs != null ? (
                 <>
-                  {sound.integratedLufs.toFixed(1)}
+                  {lufs.toFixed(1)}
                   <span style={{ color: t.faint }}> LUFS</span>
                 </>
               ) : (
@@ -528,6 +538,7 @@ export function SoundRow({
                       presetName={presetName}
                       soundScene={sound.scene}
                       soundFootswitch={sound.footswitch}
+                      soundSceneOverrides={sound.sceneOverrides}
                       nodes={nodes}
                       footswitches={footswitches}
                       stimulus={stimulus}

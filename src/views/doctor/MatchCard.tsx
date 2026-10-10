@@ -159,6 +159,7 @@ export function MatchCard({
         presetName={presetName}
         soundScene={sound.scene}
         soundFootswitch={sound.footswitch}
+        soundSceneOverrides={sound.sceneOverrides}
         nodes={nodes}
         footswitches={footswitches}
         stimulus={stimulus}

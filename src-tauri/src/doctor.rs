@@ -1451,6 +1451,47 @@ impl DoctorNode {
     }
 }
 
+/// One node's state change for ONE diagnosed sound, relative to the saved base graph:
+/// a footswitch flip or base isolation (`bypassed`), a footswitch `param` jump, or a
+/// saved scene overlay. [`effective_nodes`] applies only [`crate::session::doctor_param_kept`]
+/// params, the same allowlist the base graph's `DoctorNode.params` is filtered by.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeOverride {
+    pub group_id: String,
+    pub node_id: String,
+    #[serde(default)]
+    pub bypassed: Option<bool>,
+    #[serde(default)]
+    pub params: HashMap<String, f64>,
+}
+
+/// The graph a sound was actually CAPTURED in: the saved base `nodes` with that sound's
+/// overrides applied, later ones winning. The capture's tail policy, the diagnosis and
+/// the prescriptions' current values must all read this one graph — reading the base
+/// graph instead diagnoses a footswitch-enabled reverb as a dry chain. Overrides match
+/// on `(group_id, node_id)`; one naming no node is ignored. An empty `base` (graph
+/// unknown) stays empty, so the conservative wet-or-unknown policy is unchanged.
+pub fn effective_nodes(base: &[DoctorNode], overrides: &[NodeOverride]) -> Vec<DoctorNode> {
+    let mut nodes = base.to_vec();
+    for o in overrides {
+        let Some(n) = nodes
+            .iter_mut()
+            .find(|n| n.group_id == o.group_id && n.node_id == o.node_id)
+        else {
+            continue;
+        };
+        if let Some(b) = o.bypassed {
+            n.bypassed = b;
+        }
+        for (k, v) in &o.params {
+            if crate::session::doctor_param_kept(k) {
+                n.params.insert(k.clone(), *v);
+            }
+        }
+    }
+    nodes
+}
+
 /// What `generate_rx` needs to know about the preset's chain, gathered in one
 /// walk. Bypassed blocks are never carriers (a param write to a bypassed
 /// block is inaudible), so the hierarchy falls through to an insert instead.

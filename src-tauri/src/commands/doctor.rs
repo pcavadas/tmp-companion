@@ -37,6 +37,12 @@ pub struct DoctorInput {
     /// absent (pre-scan, or a preset the scan couldn't parse).
     #[serde(default)]
     pub footswitches: Vec<footswitch::FootswitchInfo>,
+    /// A SCENE sound's saved overlay relative to `nodes` (`BackupPresetRow.scene_overrides`
+    /// at this sound's scene index) — what the scene recall puts on the unit, so the
+    /// diagnosis reads the graph that was captured. Empty for base/footswitch sounds and
+    /// for a scene whose overlay the scan could not read (diagnosed on base, as before).
+    #[serde(default)]
+    pub scene_overrides: Vec<doctor::NodeOverride>,
 }
 
 /// `(group_id, node_id, bypass_to_write)` — the force-bypass isolation list
@@ -150,6 +156,30 @@ pub(crate) struct SoundIsolation {
     /// switch's name. Base sounds stay best-effort: their isolation only silences other
     /// switches, so a missing one degrades the baseline rather than misnaming it.
     pub(crate) unresolved: Option<String>,
+    /// The graph this sound is captured in (`doctor::effective_nodes`): the saved base
+    /// graph plus these writes, or plus the scene's saved overlay for a scene sound. The
+    /// capture tail, the diagnosis and the prescriptions all read it, never the base graph.
+    pub(crate) graph: Vec<doctor::DoctorNode>,
+}
+
+impl SoundIsolation {
+    /// These writes as graph overrides — built from the SAME lists the capture sends, so
+    /// the diagnosed graph can never drift from the written one.
+    fn overrides(&self) -> Vec<doctor::NodeOverride> {
+        let bypass = self.bypass.iter().map(|(g, n, b)| doctor::NodeOverride {
+            group_id: g.clone(),
+            node_id: n.clone(),
+            bypassed: Some(*b),
+            params: std::collections::HashMap::new(),
+        });
+        let params = self.params.iter().map(|(g, n, p, v)| doctor::NodeOverride {
+            group_id: g.clone(),
+            node_id: n.clone(),
+            bypassed: None,
+            params: std::collections::HashMap::from([(p.clone(), f64::from(*v))]),
+        });
+        bypass.chain(params).collect()
+    }
 }
 
 /// Resolve the pre-engage writes for a diagnosed sound — one policy for
@@ -161,10 +191,13 @@ pub(crate) struct SoundIsolation {
 /// player never actually hears. Base/footswitch sounds keep the baseline
 /// isolation: graph present → offline derivation (`derived_force_bypass` +
 /// `derived_param_writes`); graph absent → ONE cached live field-8 read per
-/// preset (`doctor_force_bypass` + `param_fn_values`).
+/// preset (`doctor_force_bypass` + `param_fn_values`). The sound's captured graph
+/// ([`SoundIsolation::graph`]) is the base `nodes` plus those writes — or, for a scene
+/// sound, plus `scene_overrides` (its saved overlay, which its recall puts on the unit).
 fn resolve_sound_isolation(
     nodes: &[doctor::DoctorNode],
     footswitches: &[footswitch::FootswitchInfo],
+    scene_overrides: &[doctor::NodeOverride],
     scene: Option<u32>,
     footswitch: Option<u32>,
     list_index: u32,
@@ -175,8 +208,22 @@ fn resolve_sound_isolation(
             bypass: Vec::new(),
             params: Vec::new(),
             unresolved: None,
+            graph: doctor::effective_nodes(nodes, scene_overrides),
         };
     }
+    let mut iso = isolation_writes(nodes, footswitches, footswitch, list_index, preset_cache);
+    iso.graph = doctor::effective_nodes(nodes, &iso.overrides());
+    iso
+}
+
+/// [`resolve_sound_isolation`]'s base/footswitch writes (its `graph` left empty).
+fn isolation_writes(
+    nodes: &[doctor::DoctorNode],
+    footswitches: &[footswitch::FootswitchInfo],
+    footswitch: Option<u32>,
+    list_index: u32,
+    preset_cache: &mut std::collections::HashMap<u32, serde_json::Value>,
+) -> SoundIsolation {
     if !nodes.is_empty() {
         SoundIsolation {
             bypass: footswitch::derived_force_bypass(
@@ -186,6 +233,7 @@ fn resolve_sound_isolation(
             ),
             params: footswitch::derived_param_writes(footswitches, footswitch),
             unresolved: None,
+            graph: Vec::new(),
         }
     } else {
         // Base/footswitch sounds fall back to the legacy live field-8 read
@@ -238,6 +286,7 @@ fn resolve_sound_isolation(
                     list_index + 1
                 )
             }),
+            graph: Vec::new(),
         }
     }
 }
@@ -277,7 +326,7 @@ fn floor_error_for(profile_spread_lu: f64, stimulus_spread_lu: f64) -> Option<&'
 }
 
 /// How many bands a coverage vector (`doctor::output_coverage_with_body`'s
-/// output) marks NOT covered — the count `sound_of` stamps onto
+/// output) marks NOT covered — the count `sound_result` stamps onto
 /// `DoctorSoundResult.skippedBandCount` (D4, SNR-gate transparency; `> 0` IS
 /// "gated", no separate bool). `None` (no coverage computed at all — an
 /// errored or showcase sound) reads as 0, same as an all-covered vector: this
@@ -311,6 +360,16 @@ pub struct DoctorProgressItem {
     pub message: Option<String>,
 }
 
+/// A sound's run outcome on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SoundStatus {
+    Measured,
+    Error,
+    /// The run was stopped before this sound was captured.
+    Unrun,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorSoundResult {
@@ -318,6 +377,9 @@ pub struct DoctorSoundResult {
     pub list_index: u32,
     pub scene: Option<u32>,
     pub footswitch: Option<u32>,
+    /// The scene sound's saved overlay, echoed from its `DoctorInput` like `scene` and
+    /// `footswitch` — the apply job sends it back so the A/B captures in the same graph.
+    pub scene_overrides: Vec<doctor::NodeOverride>,
     pub label: String,
     pub tag: Option<String>,
     /// Findings for this sound, each tagged with the quietest playback level it
@@ -325,8 +387,12 @@ pub struct DoctorSoundResult {
     /// levels). `fromLevel: "quiet"` = a problem at any volume; `rehearsal`/
     /// `stage` = only appears at that volume and louder.
     pub diags: Vec<doctor::LeveledDiag>,
-    pub integrated_lufs: f64,
-    pub tail_ratio_db: f64,
+    /// Whether this sound was captured, failed, or never reached (a Stop).
+    pub status: SoundStatus,
+    /// `None` unless `status` is `measured` — an unrun or failed sound has no loudness,
+    /// and a placeholder number would enter scene consistency as a real reading.
+    pub integrated_lufs: Option<f64>,
+    pub tail_ratio_db: Option<f64>,
     pub balance_db: Vec<f64>,
     /// The display labels of THIS sound's family band layout, in lockstep with
     /// `balance_db` and the `Diag.bands` indices (6 for guitar/bass, 7 for
@@ -367,6 +433,128 @@ pub struct DoctorPresetResult {
 pub struct DoctorCheckResult {
     pub presets: Vec<DoctorPresetResult>,
     pub stopped: bool,
+}
+
+/// One sound's run outcome, before diagnosis. `nodes` is the graph the sound was
+/// captured in ([`SoundIsolation::graph`]) — what its diagnosis must read.
+#[derive(Clone)]
+enum SoundOutcome {
+    Unrun,
+    Failed(String),
+    Measured {
+        profile: doctor::SoundProfile,
+        /// The captured output's band coverage; `None` on the showcase's curated profiles.
+        coverage: Option<Vec<bool>>,
+        nodes: Vec<doctor::DoctorNode>,
+    },
+}
+
+/// Diagnose one sound on its OWN measurements (the deterministic target-deviation
+/// metric) — no run-cohort, so a verdict never depends on which other sounds ran.
+fn sound_result(
+    item: &DoctorInput,
+    kind: doctor::StimulusKind,
+    outcome: &SoundOutcome,
+) -> DoctorSoundResult {
+    let instrument = instrument_of(item);
+    let mut r = DoctorSoundResult {
+        key: item.key.clone(),
+        list_index: item.list_index,
+        scene: item.scene,
+        footswitch: item.footswitch,
+        scene_overrides: item.scene_overrides.clone(),
+        label: item.label.clone(),
+        tag: item.tag.clone(),
+        diags: Vec::new(),
+        status: SoundStatus::Unrun,
+        integrated_lufs: None,
+        tail_ratio_db: None,
+        balance_db: Vec::new(),
+        band_labels: instrument.labels_owned(),
+        cut_through: None,
+        error: None,
+        skipped_band_count: 0,
+    };
+    match outcome {
+        SoundOutcome::Unrun => {}
+        SoundOutcome::Failed(e) => {
+            r.status = SoundStatus::Error;
+            r.error = Some(e.clone());
+        }
+        SoundOutcome::Measured {
+            profile: p,
+            coverage,
+            nodes,
+        } => {
+            r.status = SoundStatus::Measured;
+            // Diagnosed at ALL three playback levels (each finding tagged with its
+            // quietest firing level) — the capture is level-independent, so this is
+            // three pure passes over one profile.
+            r.diags = doctor::diagnose_levels(
+                p,
+                (!nodes.is_empty()).then_some(nodes.as_slice()),
+                instrument,
+                kind,
+                coverage.as_deref(),
+            );
+            r.integrated_lufs = Some(p.integrated_lufs);
+            r.tail_ratio_db = Some(p.tail_ratio_db);
+            r.balance_db = doctor::balance(&p.bands);
+            r.cut_through = doctor::cut_through(p, instrument);
+            // SNR-gate transparency (D4) — see `skipped_band_count`'s doc.
+            r.skipped_band_count = skipped_band_count(coverage.as_deref());
+        }
+    }
+    r
+}
+
+/// Group the run's sounds per preset in first-seen item order, then add each preset's
+/// backup-scan advisories and its scene consistency. Only MEASURED sounds enter
+/// consistency — an unrun or failed sound has no loudness to compare.
+fn assemble_results(
+    resolved: &[(DoctorInput, String, doctor::StimulusKind)],
+    outcomes: &[SoundOutcome],
+) -> Vec<DoctorPresetResult> {
+    let mut presets: Vec<DoctorPresetResult> = Vec::new();
+    // Each preset's first measured base sound — scene consistency's reference.
+    let mut bases: std::collections::HashMap<u32, (String, f64, doctor::Instrument)> =
+        std::collections::HashMap::new();
+    for ((item, _, kind), outcome) in resolved.iter().zip(outcomes) {
+        let sound = sound_result(item, *kind, outcome);
+        if let (None, None, Some(lufs)) = (sound.scene, sound.footswitch, sound.integrated_lufs) {
+            bases
+                .entry(item.list_index)
+                .or_insert_with(|| (sound.label.clone(), lufs, instrument_of(item)));
+        }
+        match presets.iter_mut().find(|p| p.list_index == item.list_index) {
+            Some(p) => p.sounds.push(sound),
+            None => presets.push(DoctorPresetResult {
+                list_index: item.list_index,
+                sounds: vec![sound],
+                scene_consistency: None,
+                // Leveling-damage advisories (fix P3-5): pure backup-scan data, so this
+                // runs regardless of whether any sound's capture succeeded. Every item of
+                // a preset carries the SAME `footswitches`, so its first item's serve.
+                leveling_damage: doctor::leveling_damage_hints(&item.footswitches),
+            }),
+        }
+    }
+    for p in &mut presets {
+        let Some((label, lufs, instrument)) = bases.get(&p.list_index) else {
+            continue;
+        };
+        // Scene sounds carry Some(wire index); footswitch sounds carry None — both are
+        // stomp destinations. Only a MEASURED sound has a loudness, so the `?` admits
+        // exactly those.
+        let others: Vec<(String, Option<String>, f64, Option<u32>)> = p
+            .sounds
+            .iter()
+            .filter(|s| s.scene.is_some() || s.footswitch.is_some())
+            .filter_map(|s| Some((s.label.clone(), s.tag.clone(), s.integrated_lufs?, s.scene)))
+            .collect();
+        p.scene_consistency = doctor::scene_consistency(label, *lufs, &others, *instrument);
+    }
+    presets
 }
 
 /// Cooperative cancel for [`doctor_check`] — stops before the next sound;
@@ -429,12 +617,9 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         // computed once here rather than per capture).
         let mut stims: std::collections::HashMap<(String, Option<u32>), (Vec<f32>, f64)> =
             std::collections::HashMap::new();
-        let mut measured: Vec<(usize, doctor::SoundProfile)> = Vec::new();
-        // Per-measured-item band coverage of its stimulus (family layout) — the
-        // Doctor skips a rule whose primary band the stimulus never excited.
-        let mut coverage_by_item: std::collections::HashMap<usize, Vec<bool>> =
-            std::collections::HashMap::new();
-        let mut errors: Vec<(usize, String)> = Vec::new();
+        // One outcome per item, `Unrun` until the loop reaches it — a Stop leaves the
+        // rest `Unrun`, never a measured-looking placeholder.
+        let mut outcomes: Vec<SoundOutcome> = vec![SoundOutcome::Unrun; resolved.len()];
         // One field-8 preset read per list index, reused across that preset's base
         // + footswitch sounds — the source for each sound's force-bypass isolation.
         let mut preset_cache: std::collections::HashMap<u32, serde_json::Value> =
@@ -455,7 +640,28 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             // Skips the device reads + reconnect sleeps for this item entirely.
             #[cfg(feature = "e2e")]
             if crate::e2e_showcase() {
-                measured.push((i, doctor::showcase_profile(item.list_index)));
+                // The captured graph is derived offline when the scan has the preset's
+                // graph; an empty one would need the live fallback read, so it stays empty
+                // (diagnosed as an unknown graph, as production does).
+                let nodes = if item.nodes.is_empty() {
+                    Vec::new()
+                } else {
+                    resolve_sound_isolation(
+                        &item.nodes,
+                        &item.footswitches,
+                        &item.scene_overrides,
+                        item.scene,
+                        item.footswitch,
+                        item.list_index,
+                        &mut preset_cache,
+                    )
+                    .graph
+                };
+                outcomes[i] = SoundOutcome::Measured {
+                    profile: doctor::showcase_profile(item.list_index),
+                    coverage: None,
+                    nodes,
+                };
                 let _ = on_result.send(DoctorProgressItem {
                     key: item.key.clone(),
                     status: "done".to_string(),
@@ -498,6 +704,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let iso = resolve_sound_isolation(
                 &item.nodes,
                 &item.footswitches,
+                &item.scene_overrides,
                 item.scene,
                 item.footswitch,
                 item.list_index,
@@ -512,7 +719,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             };
             let family = instrument_of(item);
             let skip_load = doctor_skip_load(prev.as_ref(), item.list_index, item.scene.is_some());
-            let tail_ms_u32 = doctor::doctor_tail_ms(&item.nodes);
+            let tail_ms_u32 = doctor::doctor_tail_ms(&iso.graph);
             let tail_ms = u64::from(tail_ms_u32);
             // One capture + profile attempt, `skip_load` threaded through (the retry
             // below forces a fresh preset recall — a floor read means the inject
@@ -622,8 +829,11 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             });
             match result {
                 Ok((profile, cov)) => {
-                    measured.push((i, profile));
-                    coverage_by_item.insert(i, cov);
+                    outcomes[i] = SoundOutcome::Measured {
+                        profile,
+                        coverage: Some(cov),
+                        nodes: iso.graph.clone(),
+                    };
                     prev = Some(PrevSound {
                         list_index: item.list_index,
                         wrote: !iso.bypass.is_empty() || !iso.params.is_empty(),
@@ -642,7 +852,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     break;
                 }
                 Err(e) => {
-                    errors.push((i, e.clone()));
+                    outcomes[i] = SoundOutcome::Failed(e.clone());
                     // A failed sound may have left the unit on ANY preset (e.g. its
                     // load connection never opened) — the next sound must reload.
                     prev = None;
@@ -662,133 +872,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             }
         }
 
-        // Group results per preset, in first-seen item order. Each sound is
-        // diagnosed on its OWN measurements (the deterministic target-deviation
-        // metric) — no run-cohort, so a verdict never depends on which other
-        // sounds ran.
-        let mut presets: Vec<DoctorPresetResult> = Vec::new();
-        let sound_of = |i: usize,
-                        profile: Option<&doctor::SoundProfile>,
-                        err: Option<&String>| {
-            let (item, _, kind) = &resolved[i];
-            let instrument = instrument_of(item);
-            let band_labels = instrument.labels_owned();
-            let cov = coverage_by_item.get(&i);
-            let (diags, lufs_v, tail, bal) = match profile {
-                Some(p) => (
-                    // Diagnosed at ALL three playback levels (each finding tagged
-                    // with its quietest firing level) — the capture is level-
-                    // independent, so this is three pure passes over one profile.
-                    // The localized resonant/boxy rules read `p.peaks` (measured
-                    // by the capture; empty on the showcase's curated profiles).
-                    doctor::diagnose_levels(
-                        p,
-                        (!item.nodes.is_empty()).then_some(item.nodes.as_slice()),
-                        instrument,
-                        *kind,
-                        cov.map(Vec::as_slice),
-                    ),
-                    p.integrated_lufs,
-                    p.tail_ratio_db,
-                    doctor::balance(&p.bands),
-                ),
-                None => (Vec::new(), 0.0, 0.0, Vec::new()),
-            };
-            let cut_through = profile.and_then(|p| doctor::cut_through(p, instrument));
-            // SNR-gate transparency (D4): how many bands the coverage gate
-            // dropped for THIS capture — absent (errored/showcase sound) reads
-            // as 0, never as "gated" (see `skipped_band_count`'s doc).
-            let skipped = skipped_band_count(cov.map(Vec::as_slice));
-            DoctorSoundResult {
-                key: item.key.clone(),
-                list_index: item.list_index,
-                scene: item.scene,
-                footswitch: item.footswitch,
-                label: item.label.clone(),
-                tag: item.tag.clone(),
-                diags,
-                integrated_lufs: lufs_v,
-                tail_ratio_db: tail,
-                balance_db: bal,
-                band_labels,
-                cut_through,
-                error: err.cloned(),
-                skipped_band_count: skipped,
-            }
-        };
-        // Preserve the original sound/preset order: merge by index into
-        // `resolved` rather than measured-then-errors, which pushed every
-        // failure (and any preset whose only sound failed) behind every
-        // success. Every index landed in exactly one of the two Vecs above.
-        let mut profile_by_i: Vec<Option<&doctor::SoundProfile>> = vec![None; resolved.len()];
-        for (i, p) in &measured {
-            profile_by_i[*i] = Some(p);
-        }
-        let mut error_by_i: Vec<Option<&String>> = vec![None; resolved.len()];
-        for (i, e) in &errors {
-            error_by_i[*i] = Some(e);
-        }
-        let all = (0..resolved.len()).map(|i| sound_of(i, profile_by_i[i], error_by_i[i]));
-        for sound in all {
-            match presets
-                .iter_mut()
-                .find(|p| p.list_index == sound.list_index)
-            {
-                Some(p) => p.sounds.push(sound),
-                None => presets.push(DoctorPresetResult {
-                    list_index: sound.list_index,
-                    sounds: vec![sound],
-                    scene_consistency: None,
-                    leveling_damage: Vec::new(),
-                }),
-            }
-        }
-        // list_index → footswitches, ONE pass over `resolved` (first-occurrence-wins,
-        // same semantics the old per-preset `.find()` had — every item of a preset
-        // carries the SAME `footswitches`) — an O(P) `.find()` scan of `resolved`
-        // repeated per preset was quadratic-shaped on a full library run.
-        let mut footswitches_by_list_index: std::collections::HashMap<u32, &[footswitch::FootswitchInfo]> =
-            std::collections::HashMap::new();
-        for (it, _, _) in &resolved {
-            footswitches_by_list_index
-                .entry(it.list_index)
-                .or_insert_with(|| it.footswitches.as_slice());
-        }
-        // Sound consistency per preset — needs the base sound as the reference.
-        for p in &mut presets {
-            // Leveling-damage advisories (fix P3-5): pure backup-scan data, so
-            // this runs regardless of whether any sound's capture succeeded.
-            let footswitches = footswitches_by_list_index
-                .get(&p.list_index)
-                .copied()
-                .unwrap_or(&[]);
-            p.leveling_damage = doctor::leveling_damage_hints(footswitches);
-            let base = p
-                .sounds
-                .iter()
-                .find(|s| s.scene.is_none() && s.footswitch.is_none() && s.error.is_none());
-            // Scene sounds carry Some(wire index); footswitch sounds carry
-            // None — both are stomp destinations, so both enter the table.
-            let others: Vec<(String, Option<String>, f64, Option<u32>)> = p
-                .sounds
-                .iter()
-                .filter(|s| s.error.is_none() && (s.scene.is_some() || s.footswitch.is_some()))
-                .map(|s| (s.label.clone(), s.tag.clone(), s.integrated_lufs, s.scene))
-                .collect();
-            if let Some(base) = base {
-                let instrument = resolved
-                    .iter()
-                    .find(|(it, _, _)| it.key == base.key)
-                    .map(|(it, _, _)| instrument_of(it))
-                    .unwrap_or(doctor::Instrument::Guitar);
-                p.scene_consistency = doctor::scene_consistency(
-                    &base.label,
-                    base.integrated_lufs,
-                    &others,
-                    instrument,
-                );
-            }
-        }
+        let presets = assemble_results(&resolved, &outcomes);
         // Belt-and-braces: never leave the unit in re-amp after a run, and put
         // it back on the pre-run active preset (fallback: the last-scanned
         // slot) — the reload also clears the 0.5 reference presetLevel from
@@ -847,6 +931,10 @@ pub struct DoctorApplyJob {
     /// isolation derivation.
     #[serde(default)]
     pub footswitches: Vec<footswitch::FootswitchInfo>,
+    /// The diagnosed scene's saved overlay (`DoctorInput.scene_overrides`), so the A/B
+    /// captures with the same tail the diagnosis used.
+    #[serde(default)]
+    pub scene_overrides: Vec<doctor::NodeOverride>,
 }
 
 /// Result of a live (unsaved) prescription apply: the before/after audition clips
@@ -1207,6 +1295,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             let iso = resolve_sound_isolation(
                 &job.nodes,
                 &job.footswitches,
+                &job.scene_overrides,
                 job.scene,
                 job.footswitch,
                 job.list_index,
@@ -1217,10 +1306,10 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             if let Some(e) = &iso.unresolved {
                 return Err(e.clone());
             }
-            // The Doctor capture tail for this chain — the ONE home of the policy
-            // (`doctor::doctor_tail_ms`); empty `nodes` conservatively keeps the
-            // full wash-analysis tail, same default as before this fix.
-            let tail_ms = u64::from(doctor::doctor_tail_ms(&job.nodes));
+            // The Doctor capture tail for the graph the diagnosis was captured in — the
+            // ONE home of the policy (`doctor::doctor_tail_ms`); empty `nodes`
+            // conservatively keeps the full wash-analysis tail.
+            let tail_ms = u64::from(doctor::doctor_tail_ms(&iso.graph));
 
             // (a) BEFORE: capture the stored preset (reamp off at the end). This LOADS
             //     the slot, so (b) below confirms the already-current preset — no reload.
