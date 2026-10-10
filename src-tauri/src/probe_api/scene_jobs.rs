@@ -993,10 +993,9 @@ pub(crate) fn scene_overlay<'a>(
     scene_overlay_for(preset, scene, (&group, &node_id, &fender_id))
 }
 
-/// One PARAM's read out of a scene overlay — [`SceneOverlay`] narrowed to a single key, so the
-/// two scene-witness comparators (`leveller::scene_overlay_witness_value`'s Fix-3 match-only
-/// read, `leveller::persisted_value`'s scene arm) collapse the same four overlay states the same
-/// way instead of each hand-rolling the `Full`/`BypassOnly` param lookup.
+/// One PARAM's read out of a scene overlay — [`SceneOverlay`] narrowed to a single key
+/// (`leveller::persisted_value`'s scene arm), so the four overlay states collapse in one place
+/// instead of a hand-rolled `Full`/`BypassOnly` param lookup.
 pub(crate) enum SceneParamRead<'a> {
     /// The overlay carries `param`.
     Value(&'a serde_json::Value),
@@ -1161,7 +1160,7 @@ pub(crate) fn scene_node_overrides(
 /// write onto) — callers must skip silently, exactly like the read side's `Absent`/`Unknown`.
 ///
 /// `#[cfg(feature = "e2e")]`: today's only writer of a scene overlay's raw JSON is the sim's own
-/// lazy-commit model (`sim_device::patch_scene_overlays`) — the real device is written over the
+/// saved-doc model (`sim_device::patch_scene_overlays`) — the real device is written over the
 /// wire (`Session::change_parameter` + `setNodeSceneEdit`), never by mutating a local JSON doc.
 #[cfg(feature = "e2e")]
 pub(crate) fn scene_overlay_entry_mut<'a>(
@@ -1622,11 +1621,6 @@ pub(crate) fn prepass_scene_docs_via(
             ),
         }
     }
-    // Freshness barrier: this is the run_batched (live-branch) prepass load — a same-slot
-    // scene-leveling run started shortly after this preset's own earlier deferred-scene save
-    // could otherwise materialize the PRE-save doc here (`leveller::ensure_fresh_load`'s own
-    // doc has the HW evidence). No-op when the slot has no pending save in the registry.
-    crate::leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     let (mut docs, restore) = prepass_scene_docs(slot, scene_slots)?;
     if let Some(preset) = saved {
         backfill_scene_docs_from_saved(slot, preset, &mut docs);

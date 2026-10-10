@@ -104,7 +104,7 @@ describe("RunPage live measuring strip", () => {
   // The other half of the caption contract: a message sent while NOTHING streams is a note,
   // not a verb, and must never be composed with a number.
   it("renders a caption verbatim when nothing is streaming", () => {
-    const note = "waiting for the device to commit the previous save…";
+    const note = "saving preset…";
     render(runPage(null, [{ ...activeItem, activeMessage: note }]));
     expect(screen.getByText(note)).toBeInTheDocument();
     expect(screen.queryByText("connecting…")).not.toBeInTheDocument();

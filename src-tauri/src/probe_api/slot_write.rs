@@ -416,19 +416,8 @@ pub fn probe_reamp_off() -> Result<(), String> {
 /// (`connect_for_discovery`) is the fallback: it failed on 1.8.45 while its window was
 /// silent, and delivers kept-alive on 1.8.58. Without this, FS-scene leveling found zero
 /// amp candidates and silently skipped every scene (the device never switched scenes).
-///
-/// DANGER — every path below LOADS `slot`, so this is a stale-load site (`danger.md`'s
-/// lazy-commit clause): a discovery load inside a same-slot save's commit window
-/// materializes the PRE-save doc and its own commit reverts that save (the preset-24
-/// class). The barrier lives HERE so EVERY caller of the block-discovery seam is guarded,
-/// present and future — which imposes the seam's contract: a caller MUST NOT hold a device
-/// session when it calls (the barrier and the discovery each open their own), and `slot`
-/// is the 0-based list index, the registry's own key space. Probe processes never save
-/// through the registry, so there the barrier is a zero-cost no-op. `op_aborted` is the
-/// right cancel hook: the UI path enters through `with_released_seize`, whose
-/// `lock_device_op` clears the flag.
+/// `slot` is the 0-based list index; every path opens its own session.
 pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
-    crate::leveller::ensure_fresh_load(slot, &mut || crate::op_aborted())?;
     match discover_blocks_rich(slot) {
         Ok(blocks) if !blocks.is_empty() => return Ok(blocks),
         Ok(_) => log::info!("rich block discovery for slot={slot}: loaded but no level blocks"),
@@ -467,9 +456,8 @@ pub(crate) fn load_then_discover_blocks(slot: u32) -> Result<Vec<session::LevelB
 /// 1.8.45-safe block discovery: a single rich lean session loads the preset via
 /// `send_and_collect` (NOT `load_preset`, which discards the reports the field-3 push
 /// rides on) and reads the level blocks from the accumulated push bodies. Mirrors the
-/// bench intel session + `prepass_scene_docs`. Private on purpose: this is the
-/// deliberately-UNBARRIERED inner half of `load_then_discover_blocks` — every outside
-/// caller must come through the wrapper and its commit-window barrier.
+/// bench intel session + `prepass_scene_docs`. Private: the primary path of
+/// `load_then_discover_blocks`, which owns the fallbacks.
 fn discover_blocks_rich(slot: u32) -> Result<Vec<session::LevelBlock>, String> {
     let mut s = Session::connect()?;
     s.rich_warmup()?;

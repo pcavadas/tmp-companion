@@ -735,28 +735,6 @@ fn main() {
         }
     }
 
-    if let Some(i) = args.iter().position(|a| a == "--verify-fresh-load") {
-        // E0: fresh-equality invariant for `leveller::ensure_fresh_load` (the stale-load
-        // freshness barrier). NON-DESTRUCTIVE — loads only, no set/save.
-        let slot: u32 = match args.get(i + 1).and_then(|s| s.parse().ok()) {
-            Some(v) => v,
-            None => {
-                eprintln!("usage: probe --verify-fresh-load <listIdx>   (0-based list index)");
-                std::process::exit(2);
-            }
-        };
-        match tmp_companion_lib::probe_verify_fresh_load(slot) {
-            Ok(report) => {
-                print!("{report}");
-                return;
-            }
-            Err(e) => {
-                eprintln!("[probe] FAILED: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-
     if let Some(i) = args.iter().position(|a| a == "--replace-held") {
         // E1: --replace-held FROM TO SLOTS [--commit]   (held-session decider)
         let from = args.get(i + 1).cloned().unwrap_or_default();

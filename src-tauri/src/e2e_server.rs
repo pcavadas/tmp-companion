@@ -305,10 +305,6 @@ fn e2e_install_offline_fake() {
     // any device work can run: from this point every "device" op is an in-process SimDevice
     // call, so hardware settles and the monitor pause-ack have nothing to wait for.
     OFFLINE_FAKE.store(true, std::sync::atomic::Ordering::SeqCst);
-    // A fresh sim device gets a fresh save registry: a witness left over from a previous
-    // spec's save would make the next spec's first leveling load wait out the whole commit
-    // window against a doc that can never match it (`/sim/reset` is the between-spec seam).
-    crate::leveller::clear_slot_save_registry();
     // SHOWCASE (`TMP_E2E_SHOWCASE=1`, the marketing-screenshot tour): drive the whole app
     // from the curated, non-personal `e2e/fixtures/showcase/` library instead of the
     // 3-preset test scenario. The committed `.bin` (built from `showcase.json` by the
@@ -949,13 +945,6 @@ fn e2e_route(
         ("POST", "/sim/fault") => sim_u64_arg(body, "slot", |n| {
             crate::sim_device::arm_capture_fault(n as u32)
         }),
-        // Lazy-commit latency override (stale-load incident spec): arm the ALREADY-running
-        // offline fake's commit latency, since a per-test env var can't reach a server
-        // process that started before the test did (`sim_device::set_commit_latency`'s
-        // doc). Body: {"ms": N}. No-op online (no fake installed).
-        ("POST", "/sim/commit-latency") => {
-            sim_u64_arg(body, "ms", crate::sim_device::set_commit_latency)
-        }
         // Mid-run Stop specs: hold every offline capture. Body: {"ms": N}.
         ("POST", "/sim/capture-delay") => {
             sim_u64_arg(body, "ms", crate::sim_device::set_capture_delay)

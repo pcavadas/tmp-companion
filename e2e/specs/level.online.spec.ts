@@ -24,8 +24,8 @@ import {
 // as-is reading or solved `constant_c`, never a fixture constant — a sim-model magnitude (e.g.
 // a `scenario-loudness.json` ceiling) is a sim-model truth, not a device one, and asserting it
 // directly has already failed against real hardware once.
-// Measured real-device run lands the file ~26-27 min against the ~25 min ratified online cap —
-// 1-2 min over on two legitimate fixed T5 stalls, a scope decision, not a cleanup target.
+// Measured real-device run: ~26-27 min, ~5 min of it two fixed 150 s T5 stalls for a lazy save
+// commit that fw 1.8.58 does not have (tmp-audit Q34) — both are gone.
 // Rows this file emits per run: T1′'s 1 base + `SCENES_410.length`, T5's 1 base +
 // `SWITCH_SPECS_405.length` — `scripts/e2e.sh` greps the line below and compares by EQUALITY.
 // STRICT_VALIDATE_ROWS=6
@@ -169,8 +169,7 @@ test.describe
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
     // Base (3 conns/1 engage) + 3 scenes (one batch) + 2 footswitch batches + 4 strict
-    // ffmpeg re-measures, checked against `ensure_fresh_load`'s worst case (danger.md:
-    // COMMIT_WINDOW_SECS = 150 s) — generous headroom over the plan's own ~8 min estimate.
+    // ffmpeg re-measures — generous headroom over the plan's own ~8 min estimate.
     test.setTimeout(900_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
@@ -586,12 +585,9 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     page,
   }) => {
     test.skip(!(await isOnline(page)), "online-only: needs real audio");
-    // Identity-verified preview read (which pays a 150 s retry whenever T1′'s 410 save is
-    // still in its commit window) + conditional fader calibration (up to ~4 engages) + the
-    // 150 s lazy-commit wait that calibration's own save has no witness for + base UI drive
-    // (3 conns/1 engage via the wizard) + a same-target confirm read + a 2-switch footswitch
-    // batch + 3 strict ffmpeg re-measures. Measured at ~17 min of work; the 1800 s cap is
-    // headroom for one of those stalls to recur, not padding. File header carries the sums.
+    // Identity-verified preview read + conditional fader calibration (up to ~4 engages) +
+    // base UI drive (3 conns/1 engage via the wizard) + a same-target confirm read + a
+    // 2-switch footswitch batch + 3 strict ffmpeg re-measures.
     test.setTimeout(1_800_000);
     await ensureScenario(page);
     const reampBase = await reampCounters(page);
@@ -601,10 +597,9 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
     // pedals-off ceiling and, if short, lowering the Twin's fader (never `presetLevel`) via
     // `level_preset`'s BLOCK-KNOB arm, the only seam here that can write+persist a block
     // parameter (a closed-loop TARGET solve, so the change is a raw LUFS target, not a value).
-    // `list_level_blocks` can answer with a cross-slot preset's graph while another slot's save
-    // is still committing (this runs right after 410's arc) — verify by IDENTITY (the Twin) and
-    // re-read once after a settle.
-    let blocksPre = (await invoke(
+    // Verify by IDENTITY (the Twin): a discovery that answered with another preset's graph
+    // must fail loudly here.
+    const blocksPre = (await invoke(
       page,
       "list_level_blocks",
       { slot: PRESET24.slot },
@@ -616,17 +611,7 @@ test.describe("Level online — Plumes-shape first-run journey (405)", () => {
           b.node_id === "ACD_TwinReverb65NoFx" &&
           b.parameter_id === "outputLevel",
       );
-    let twinCandidatePre = findTwin(blocksPre);
-    if (!twinCandidatePre) {
-      await page.waitForTimeout(150_000); // danger.md's COMMIT_WINDOW_SECS
-      blocksPre = (await invoke(
-        page,
-        "list_level_blocks",
-        { slot: PRESET24.slot },
-        T,
-      )) as LevelBlock[];
-      twinCandidatePre = findTwin(blocksPre);
-    }
+    const twinCandidatePre = findTwin(blocksPre);
     expect(
       twinCandidatePre,
       `the Twin's outputLevel candidate must be discoverable before calibration — \
@@ -710,11 +695,6 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
       ).toBe(false);
       expect(calibration.saved, "the calibration write must save").toBe(true);
       fCalibrated = calibration.final_level;
-
-      // The block-knob arm's save carries no `PresetLevel` reassert, so it registers no
-      // `ensure_fresh_load` witness (danger.md) — wait out the lazy-commit window ourselves
-      // before any same-slot 405 touch below.
-      await page.waitForTimeout(150_000);
     }
 
     // The guaranteed minimum excess of `G` over `P_up` the run below will see: the engineered
@@ -747,7 +727,7 @@ preset's graph if the Twin is absent (a cross-slot load that did not take)`,
     // `base_boost: null` (the solve is skipped entirely), a hairline re-measure can flip
     // `clamped: true`, and a within-tolerance re-plan that doesn't re-enter BOOST also reports
     // `base_boost: null` (`leveller::level_preset_impl`'s routing). `list_level_blocks` reads
-    // the SAVED state instead — same seam as level-fs-preset24.spec.ts's own lazy-commit-gap
+    // the SAVED state instead — same seam as level-fs-preset24.spec.ts's own persisted-Twin
     // read on the SAME fixture (405).
     const blocks = (await invoke(
       page,

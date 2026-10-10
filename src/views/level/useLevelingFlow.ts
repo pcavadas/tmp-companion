@@ -435,9 +435,8 @@ export function useLevelingFlow({
           if (status === "active") {
             setSoleActive(entry.item);
             // The row's caption: the ceiling prepass's "measuring" (rendered as the verb
-            // before the live number, since a capture IS streaming), or the freshness
-            // barrier's "waiting for the device to commit the previous save…" (shown
-            // verbatim, since nothing is). See RunPage's rowStatus. Cleared once the row
+            // before the live number, since a capture IS streaming), or a note shown
+            // verbatim when nothing is. See RunPage's rowStatus. Cleared once the row
             // resolves — or when a cancelled sweep reverts it — so a later re-run's default
             // "connecting…" isn't shadowed by a stale message.
             entry.item.activeMessage = message ?? null;

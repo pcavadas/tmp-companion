@@ -51,7 +51,7 @@
 #      worse than a red failure.
 #   4  VACUOUS — every row was SKIPped (clamped / persist_mismatch), so ZERO rows were
 #      independently measured. Distinct from 0 on purpose: this is precisely the shape a
-#      lazy-commit regression takes (every row persist-mismatches, none FAILs), so a
+#      persist regression takes (every row persist-mismatches, none FAILs), so a
 #      caller that treats it as a plain pass would certify a run that verified nothing.
 #
 # TOLERANCE defaults to 1.0 LU, NOT the solve's own acceptance band. `level.online.spec.
@@ -328,7 +328,7 @@ if [ "$ROW_FAILED" -eq 0 ]; then
   # A pass over zero measured rows is vacuous — every row skipped (clamped / persist
   # mismatch) means ffmpeg graded NOTHING. Legitimate (a skip is a real verdict, not an
   # error) but it must never read — or exit — as "the levels were verified": this is
-  # exactly the shape a lazy-commit regression takes (every row persist-mismatches), so
+  # exactly the shape a persist regression takes (every row persist-mismatches), so
   # it gets its OWN exit code rather than folding into the plain-pass 0.
   if [ "$ROWS_SEEN" -eq 0 ]; then
     warn "VACUOUS (exit 4) — no row was measurable, so NOTHING was independently verified"

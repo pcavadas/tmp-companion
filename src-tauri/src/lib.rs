@@ -1354,9 +1354,9 @@ mod fixture_gates {
     /// read_budget`) rather than compared against its original here.
     #[test]
     fn fx_minimal_incident_repros_pin_their_incident_shape() {
-        // 408 "E2E Preset24 Min" — the lazy-save (stale-load) TIMING bug class needs
-        // only ONE BAKE-eligible drive pedal, not 405's four (the incident is about
-        // base-save -> FS-batch-load ordering, not pedal count).
+        // 408 "E2E Preset24 Min" — the stale-load (base save -> FS batch load) bug class
+        // needs only ONE BAKE-eligible drive pedal, not 405's four (the incident is about
+        // ordering, not pedal count).
         let (name, _, _p405) = fixture(405);
         assert_eq!(name, "E2E Preset24");
         let (name, _, p408) = fixture(408);
@@ -1605,11 +1605,11 @@ mod fixture_gates {
         }
     }
 
-    /// NON-REGRESSION GATE (HW bisect 2026-08-09, fw 1.8.45): importing a preset whose
-    /// `ftsw` array carries a `func: "param"` entry with NO `valueType` field makes the
-    /// device silently DISCARD the whole imported preset at its lazy commit and
-    /// substitute the factory-default "Guitar" body. Every param-func footswitch entry in
-    /// every committed fixture must therefore carry a NUMERIC `valueType`.
+    /// NON-REGRESSION GATE (HW bisect 2026-08-09; fw 1.8.58 tmp-audit Q35): a preset whose
+    /// `ftsw` array carries a `func: "param"` entry with NO `valueType` field is rejected
+    /// at its first load — the device substitutes an empty preset under the imported name
+    /// (`presetError` 6). Every param-func footswitch entry in every committed fixture must
+    /// therefore carry a NUMERIC `valueType`.
     #[test]
     fn every_param_footswitch_in_every_fixture_carries_a_numeric_value_type() {
         let mut checked = 0usize;

@@ -318,26 +318,16 @@ fn pristine_check(body: &[u8], fixture_json: &str) -> Result<(), PristineMiss> {
 
 // ── Landed-verify: the import is not believed until the device says so ───────
 //
-// The firmware can silently DISCARD an imported preset at its lazy commit, substituting
-// a gutted body under the same `displayName` (see notes/gotchas.md's discard entries and
-// `DISCARD_GOTCHA` below). The seed used to trust `replace_inplace_with`'s own confirms
-// and never read the landed body back, which is why that loop stayed invisible.
-
-/// The lazy-commit window a `saveCurrentPreset` needs before a field-8 read answers
-/// with the committed bytes. A verify read fired inside it can still see PRE-commit
-/// content and pass on a body the firmware is about to replace, which is worse than not
-/// checking at all — so this MIRRORS `leveller::COMMIT_WINDOW_SECS` (the mirror roster
-/// lives on that declaration) rather than carrying a second literal that can drift
-/// below it.
-const COMMIT_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS);
+// The stored row is checked over field 8 (`presetDataRequest`), which holds an import the
+// moment it returns. A body the firmware rejects only shows at its first real LOAD (fw
+// 1.8.58, tmp-audit Q35), which `replace_inplace_with` already proves for every import
+// before it returns.
 
 /// Where the empty-body substitution is written up — quoted in the hard error so the
 /// next encounter starts at the HW bisect instead of repeating it. Section TITLE, not
 /// the anchor slug: the title is what survives a heading reflow.
-const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A dual-entry footswitch row makes \
-                              the firmware silently replace the whole imported preset \
-                              with an EMPTY body\"";
+const DISCARD_GOTCHA: &str = "notes/gotchas.md — \"A body rejected at load becomes a \
+                              silent empty preset that keeps its name\"";
 
 /// Does `body` carry the firmware's EMPTY substitute rather than the import? Two
 /// independent signatures, either conclusive on a slot we imported THIS run:
@@ -374,39 +364,16 @@ fn paced_retry_read(s: &mut Session, list_index: u32) -> Option<Vec<u8>> {
 }
 
 /// Read every slot imported THIS run back over field-8 and prove the LANDED body is
-/// the fixture — the import call's own confirms cannot see a discard that happens
-/// tens of seconds later.
+/// the fixture.
 ///
 /// `seeded` / `list_index` are 0-BASED list indices, the same space the imports above
 /// act in; the field-8 read takes +1 (device `userSlot`). Runs on ONE fresh session,
-/// drained first (a read fired mid-flood is dropped device-side).
-///
-/// `check_pristine` is the ONLINE flag: the SimDevice commits synchronously and never
-/// substitutes a body, and offline nothing is imported in the first place (the sim's
-/// scenario slots are always present, so `seeded` is empty and this returns at once).
-/// There is no other sim/real discriminator in this file — this is the SAME online-only
-/// signal the pristine self-repair rides on, reused rather than re-named here.
-fn verify_landed_imports(
-    spec: &[ScenarioPreset],
-    seeded: &[u32],
-    last_import: std::time::Instant,
-    check_pristine: bool,
-) -> Result<(), String> {
+/// drained first (a read fired mid-flood is dropped device-side). Offline nothing is
+/// imported (the sim's scenario slots are always present), so `seeded` is empty and this
+/// returns at once.
+fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), String> {
     if seeded.is_empty() {
         return Ok(());
-    }
-    if check_pristine {
-        // Wait out the REMAINDER once, not once per slot: every earlier import has
-        // been ageing through the imports that followed it.
-        let remaining = COMMIT_WINDOW.saturating_sub(last_import.elapsed());
-        if !remaining.is_zero() {
-            eprintln!(
-                "[seed] holding {} s for the device's lazy commit before reading the \
-                 imported slots back",
-                remaining.as_secs()
-            );
-            crate::settle(remaining);
-        }
     }
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
@@ -440,10 +407,10 @@ fn verify_landed_imports(
         // prevent).
         if body_was_discarded(&body, &p.preset_json) {
             return Err(format!(
-                "slot {list_index} ({:?}): the firmware DISCARDED this import at its lazy \
-                 commit and stored an EMPTY body in its place (displayName kept, every \
-                 lane at zero nodes). The fixture body itself carries the trigger — \
-                 re-running the seed will only gut it again. See {DISCARD_GOTCHA}",
+                "slot {list_index} ({:?}): the device stored an EMPTY body in place of this \
+                 import (displayName kept, every lane at zero nodes). The fixture body \
+                 itself carries the trigger — re-running the seed will only gut it again. \
+                 See {DISCARD_GOTCHA}",
                 p.name
             ));
         }
@@ -656,10 +623,6 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
     drop(s);
 
     let mut seeded = Vec::new();
-    // When the LAST import's save landed — the clock the lazy-commit wait below is
-    // measured against. Unused while nothing is imported (the verify pass returns on an
-    // empty `seeded`).
-    let mut last_import = std::time::Instant::now();
     for p in to_seed {
         if !seeded.is_empty() {
             // Quiet gap between imports: each lands via several fresh connections
@@ -698,15 +661,13 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
         // rows, and the seed must conserve the device's open/close budget.
         let bytes = backup::xor_jld(p.preset_json.as_bytes());
         replace_inplace_with(p.list_index, &bytes, false)?;
-        last_import = std::time::Instant::now();
         // Record BEFORE anything can save over it — this is the ownership signal
         // teardown will need once a spec has rewritten the body.
         record_seeded(p.list_index, &p.name);
         seeded.push(p.list_index);
     }
-    // The import call cannot see a discard that happens tens of seconds later — read
-    // every slot placed this run back before reporting the seed as landed.
-    verify_landed_imports(&spec, &seeded, last_import, check_pristine)?;
+    // Read every slot placed this run back before reporting the seed as landed.
+    verify_landed_imports(&spec, &seeded)?;
     Ok(SeedOutcome { swept, seeded })
 }
 
@@ -953,8 +914,8 @@ mod tests {
         );
     }
 
-    /// The gutted shape the firmware substitutes at its lazy commit — `displayName`
-    /// kept, every lane/row/scene emptied. See `DISCARD_GOTCHA`.
+    /// The gutted shape of a stored empty substitute — `displayName` kept, every
+    /// lane/row/scene emptied. See `DISCARD_GOTCHA`.
     fn discarded_body(name: &str) -> String {
         let lanes = |prefix: &str, n: usize| -> String {
             (1..=n)

@@ -27,12 +27,8 @@
 #      triple from that SAME read, never guessed;
 #   5. per preset, in the order the app used (base → scenes → footswitches), issues ONE
 #      SAVING leveling call per step (batched for scenes/footswitches — one command levels
-#      every row of that step), then WAITS OUT THE LAZY-SAVE COMMIT WINDOW (150 s) before
-#      re-measuring that preset — mandatory, not politeness, and NOT redundant with the
-#      leveling commands' own in-process `ensure_fresh_load` barrier: the measurement seam
-#      (`leveller::measure_sound_asis_strict`, behind `e2e_measure_sound`) opens its OWN
-#      fresh session with NO registry check (`.claude/rules/danger.md`'s lazy-commit entry;
-#      `src-tauri/src/leveller.rs`'s `capture_full_at_params`/`capture_fs_at`);
+#      every row of that step), then re-measures that preset straight away (fw 1.8.58: a
+#      save is durable the moment it returns — tmp-audit Q34);
 #   6. re-measures every leveled row with `e2e_measure_sound` (the strict re-measure
 #      command), which appends one expectation row + WAV to the log the server already
 #      has armed;
@@ -192,11 +188,6 @@ VALIDATE_WAV_DIR="$OUT_DIR/wavs"
 LIB_JSON="$OUT_DIR/library.json"
 : > "$VALIDATE_LOG"
 mkdir -p "$VALIDATE_WAV_DIR"
-
-# The lazy-save commit window, in seconds — mirrors `leveller::COMMIT_WINDOW_SECS` (150)
-# and `scripts/validate-hbe.sh`'s own constant. See the header note above for WHY this is
-# not covered by the leveling commands' in-process barrier.
-COMMIT_WINDOW_WAIT=150
 
 # The stimulus profile the real session used ("Maverick bridge") — passed through on
 # every command that accepts a profileId/topologyId/calibrationLufs triple, exactly as
@@ -666,13 +657,6 @@ process_preset() {
   else
     log "[fs] no footswitch rows for slot $slot — skipping"
   fi
-
-  # ── THE COMMIT-WINDOW WAIT — see this file's header for why it is not optional ──
-  log "[wait] waiting ${COMMIT_WINDOW_WAIT}s for slot $slot's LAZY save commit before any re-measure…"
-  log "       (this is not a hang — danger.md: a same-slot load inside T+45-100s materializes"
-  log "        the PRE-save preset, and e2e_measure_sound's capture path is not registry-guarded)"
-  sleep "$COMMIT_WINDOW_WAIT"
-  ok "[wait] commit window elapsed for slot $slot"
 
   # ── re-measure every leveled row of this slot ────────────────────────────────────
   clamped="$(jq -r '.clamped' "$OUT_DIR/level-base-$slot.json")"

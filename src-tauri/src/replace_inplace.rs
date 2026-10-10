@@ -84,7 +84,7 @@ pub(crate) fn replace_inplace_core(
 /// so the seed keeps its open count minimal.
 /// The write-safety chain (floored landing lists → `confirm_active` → loaded-body check →
 /// guarded clear) is identical in both modes. An import that landed ON the (empty)
-/// target needs none of it and returns at once.
+/// target needs no save or clear, but is still loaded and body-checked.
 pub(crate) fn replace_inplace_with(
     orig_list_index: u32,
     bytes: &[u8],
@@ -172,8 +172,24 @@ pub(crate) fn replace_inplace_with(
     };
     // An import lands in the LOWEST empty slot (fw 1.8.58), so an empty target can be
     // the landing slot itself: the import is already in place, and the load → save →
-    // clear below would save it over itself and then clear it.
+    // clear below would save it over itself and then clear it. It still gets the
+    // loaded-body check: a body the firmware rejects only shows at its first real load
+    // (tmp-audit Q35 — the empty template under the imported name).
     if scratch_slot == orig_list_index {
+        Session::connect()?.load_preset(orig_list_index)?;
+        let mut s = Session::connect()?;
+        s.confirm_active(orig_list_index, Some(&scratch_name))
+            .and_then(|()| {
+                s.confirm_loaded_body(|roster, doc| {
+                    check_loaded_body(&file_roster, file_id, roster, doc)
+                })
+            })
+            .map_err(|e| {
+                format!(
+                    "{e}. The import landed at list index {orig_list_index} \
+                     ({scratch_name:?}) but did not load as the file."
+                )
+            })?;
         return Ok(unverified(Some(scratch_name.clone())));
     }
 

@@ -99,9 +99,8 @@ SERVER_LOG="$LOG_DIR/e2e_server.log"
 # `leveller::measure_sound_asis_strict`), so these vars are exported into ITS
 # environment: the same capture that produced the run's own number also writes the WAV
 # and appends one identity-carrying line here (`src-tauri/src/validate_log.rs`). There is
-# deliberately NO post-suite re-capture loop — re-driving `probe` afterwards would open
-# fresh device sessions inside the 45–100 s lazy-save-commit window from a process whose
-# save registry is empty (danger.md), reading PRE-save bytes and failing correct runs.
+# deliberately NO post-suite re-capture loop — the server already dumped every WAV at the
+# strict re-measure, so re-driving `probe` afterwards would only repeat device work.
 VALIDATE_LOG="$LOG_DIR/level-validate-expectations.jsonl"
 VALIDATE_WAV_DIR="$LOG_DIR/level-validate-wavs"
 # Budget cap. Each row costs one ffmpeg pass over a ~7 s WAV (fast) plus the disk the
@@ -734,7 +733,7 @@ if [ "$fail" -eq 0 ]; then
       set -e
       # Branch all four codes explicitly: a mid-run SKIP (3) must never be reported as a
       # target miss and must never quietly pass either; a VACUOUS pass (4 — every row
-      # clamped/persist-mismatched, exactly the shape a lazy-commit regression takes)
+      # clamped/persist-mismatched, exactly the shape a persist regression takes)
       # must never certify a stamp, but it is also not a suite FAILURE — the specs
       # themselves passed, only the independent check verified nothing. `validated`
       # deliberately stays 0 here (its init value) rather than being set explicitly.

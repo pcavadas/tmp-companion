@@ -511,9 +511,7 @@ fn the_fs_prepass_announces_every_row_before_any_row_finishes() {
             })
         })
         .collect();
-    // `save: false` — this gate owns the run's REPORTING, not its writes, and a save would
-    // drag in the lazy-commit barrier (whose own message is the other half of the caption
-    // contract: a note, sent when nothing is streaming).
+    // `save: false` — this gate owns the run's REPORTING, not its writes.
     invoke(
         &webview,
         "level_footswitches_apply",
@@ -707,8 +705,8 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
     // NOT `saturated_pedal_lufs(hi) + 20*log10(presetLevel)`, even though the curve DOES fold
     // in `preset_term` in general (`sim_device::model_lufs`'s `Contribution::Absolute` arm).
     // `SimState::load_preset` only overwrites the ambient `preset_level` from the fixture's own
-    // committed value once this run has SAVED that slot at least once (`ever_saved` — the
-    // lazy-commit corruption model, `sim_device.rs`'s own doc). This test's plain load never
+    // saved value once this run has SAVED that slot at least once (`ever_saved`,
+    // `sim_device.rs`'s own doc). This test's plain load never
     // saves 405 first, so the sim's ambient `preset_level` stays at its process-default 1.0
     // regardless of 405's authored 0.27 — confirmed empirically (measured -14.00, exactly
     // `saturated_pedal_lufs(1.0)` with a ZERO preset term) after the Plumes-regression
@@ -751,7 +749,6 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
 #[test]
 fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     let _serial = serial();
-    let _reset = RegistryReset;
     set_e2e_env(&[
         (
             "TMP_E2E_SCENARIO_PRESETS",
@@ -762,7 +759,6 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
             "/../e2e/fixtures/scenario-loudness.json",
         ),
     ]);
-    crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -925,29 +921,6 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
         "the saved preset must hold the bake's value on the block: {:?}",
         results[0]
     );
-
-    // (5) the STALE-LOAD barrier can see it. The write session registered a
-    // `SaveWitness::Param` carrying the solved value, and for a Bake
-    // `leveller::witness_value_in_doc` matches it against the block's own `dspUnitParameters`
-    // (the `ftsw` row never changed and never could witness this write). A bake that doesn't
-    // survive the save would leave the witness unharvestable, and the barrier would silently
-    // fall out through its ~2-minute time gate on every offline Bake — so the elapsed bound,
-    // not just the `Ok`, is the assertion.
-    assert!(
-        crate::leveller::slot_save_pending_commit(400),
-        "the write session must have REGISTERED a witness — without an entry the barrier \
-         below is a no-op and asserts nothing"
-    );
-    let start = std::time::Instant::now();
-    assert!(
-        crate::leveller::ensure_fresh_load(400, &mut || false).is_ok(),
-        "the barrier must clear on the bake's own witness"
-    );
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
-        "the witness must harvest on the FIRST load, not via the time gate: {:?}",
-        start.elapsed()
-    );
 }
 
 /// THE BAKE-ARM IDEMPOTENCY GATE (this PR): before the fix, `level_footswitches_apply`'s Bake
@@ -988,7 +961,6 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
 #[test]
 fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
     let _serial = serial();
-    let _reset = RegistryReset;
     set_e2e_env(&[
         (
             "TMP_E2E_SCENARIO_PRESETS",
@@ -1003,7 +975,6 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
             "/resources/samples/guitar-humbucker.wav",
         ),
     ]);
-    crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -1188,7 +1159,6 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
 #[test]
 fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persists_its_value_a() {
     let _serial = serial();
-    let _reset = RegistryReset;
     set_e2e_env(&[
         (
             "TMP_E2E_SCENARIO_PRESETS",
@@ -1199,7 +1169,6 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
             "/../e2e/fixtures/scenario-loudness.json",
         ),
     ]);
-    crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -1403,23 +1372,6 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
         "the saved preset must hold the assign's valueA: {:?}",
         results[0]
     );
-
-    // (5) the STALE-LOAD barrier can see it, same contract as the Bake gate above.
-    assert!(
-        crate::leveller::slot_save_pending_commit(407),
-        "the write session must have REGISTERED a witness — without an entry the barrier \
-         below is a no-op and asserts nothing"
-    );
-    let start = std::time::Instant::now();
-    assert!(
-        crate::leveller::ensure_fresh_load(407, &mut || false).is_ok(),
-        "the barrier must clear on the assign's own witness"
-    );
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
-        "the witness must harvest on the FIRST load, not via the time gate: {:?}",
-        start.elapsed()
-    );
 }
 
 /// COVERAGE row 18 — the WET-FLOOR outcome, end to end offline. 400's SPRING switch (3) is a
@@ -1455,7 +1407,6 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
 #[test]
 fn wet_mix_footswitch_bakes_and_pins_at_the_wet_floor_on_an_unreachable_target() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let (r, param) = solve_400_spring(-70.0);
     assert_eq!(r.method, "baked");
     assert!(r.clamped, "an unreachable target must clamp: {r:?}");
@@ -1493,7 +1444,6 @@ fn wet_mix_footswitch_bakes_and_pins_at_the_wet_floor_on_an_unreachable_target()
 #[test]
 fn wet_mix_footswitch_bakes_and_converges_and_stays_off_the_floor_on_a_reachable_target() {
     let _serial = serial();
-    let _reset = RegistryReset;
     const TARGET: f64 = -16.0;
     let (r, param) = solve_400_spring(TARGET);
     assert_eq!(r.method, "baked");
@@ -1539,7 +1489,6 @@ fn solve_400_spring(
             "/../e2e/fixtures/scenario-loudness.json",
         ),
     ]);
-    crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -1780,10 +1729,8 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
 #[test]
 fn a_truncated_swap_scene_levels_its_own_amp_not_the_base_one() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _cancel_reset = SceneCancelReset;
     scenario_env();
-    crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new().with_truncated_scene_push(SWAP_SCENE, BASE_AMP);
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -2611,13 +2558,12 @@ fn a_healthy_base_row_never_moves_the_amp_fader() {
 /// BUG→GATE (Phase 2 save-path guards, `notes/leveling.md`'s Phase 2 section): the pre-save
 /// base recall must re-assert BOTH the raised `presetLevel` and the solved fader, and the save
 /// must persist both together — no same-slot load may ever see a half-old, half-new pair. Seeds
-/// `ever_saved` with a plain unedited save first (`sim_device.rs`'s lazy-commit doc), so the
+/// `ever_saved` with a plain unedited save first (`sim_device.rs`'s saved-doc model), so the
 /// boost's own save is the slot's SECOND save this run — the shape a broken guard would leave
 /// stale bytes behind on.
 #[test]
 fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _sim = hiwatt_sim();
 
     {
@@ -2631,12 +2577,6 @@ fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
     let r = run_base_level(&webview, PLUMES, -23.0, true);
     assert_eq!(r["base_boost"]["applied"], true, "{r}");
     assert_eq!(r["saved"], true, "{r}");
-
-    // The save's own witness registered — the stale-load barrier a same-slot load waits on.
-    assert!(
-        crate::leveller::slot_save_pending_commit(PLUMES),
-        "the boost's save must register a witness for the stale-load barrier: {r}"
-    );
 
     // POST-SAVE FIELD-8 RE-READ: both halves of the pair actually landed TOGETHER.
     let (pl, fader) = saved_pl_and_output_level(PLUMES, PLUMES_TWIN);
@@ -2747,7 +2687,6 @@ fn base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta() {
 #[test]
 fn the_footswitch_rows_still_converge_after_a_base_boost() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _sim = hiwatt_sim();
 
     // ── The base boost (mirrors E1) ──
@@ -2893,7 +2832,6 @@ fn an_infeasible_base_target_reports_todays_honest_clamp_with_no_partial_boost()
 #[test]
 fn a_second_base_run_on_a_boosted_preset_writes_nothing_new_to_the_fader() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let sim = hiwatt_sim();
     let (_app, webview) = level_preset_app();
 
@@ -3123,426 +3061,30 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
     }
 }
 
-// ─── ensure_fresh_load barrier, end-to-end against the sim lazy-commit model ─────────────
-//
-// These are the tests `leveller::fresh_load_registry_tests` points at: the barrier owns its
-// own `Session::connect()`, so the only way to put a sim behind it is the process-global
-// transport factory — which this module's serial harness already owns.
-
-/// Clear the save registry when the test ends — INCLUDING on a panicking assert. A leaked
-/// witness would send any later serial test that levels the same slot into the barrier's
-/// full commit-window wait against a doc that can never match.
-struct RegistryReset;
-impl Drop for RegistryReset {
-    fn drop(&mut self) {
-        crate::leveller::clear_slot_save_registry();
-    }
-}
-
-/// Route every `Session::connect()` at one shared sim with the given commit latency, and
-/// start from a clean save registry.
-fn install_barrier_sim(latency_ms: u64) -> crate::sim_device::SimDevice {
-    let sim = crate::sim_device::SimDevice::new().with_commit_latency(latency_ms);
+/// GATE: a footswitch capture renders at the level the RUN intends, not at whatever a scene
+/// recall's level-apply serves. Every capture's `recall_base` re-runs the device's own
+/// level-apply, which reverts an unsaved working-copy `presetLevel` to the SAVED one
+/// (`leveller::recall_reassert_save`'s doc has the HW evidence) — so a capture re-asserts the
+/// run's own level itself rather than trusting what the recall left in place. (History: on fw
+/// 1.8.45 the recall served a pre-save level for 45-100 s after a save, and a whole batch
+/// measured 5.53 dB quiet — HW 2026-08-19, "Plumes+BD2+OCD".) The sim models the revert: a
+/// recall restores the slot's saved `presetLevel` once the slot has been saved this run.
+#[test]
+fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
+    let _serial = serial();
+    set_e2e_env(&[
+        (
+            "TMP_E2E_SCENARIO_PRESETS",
+            "/../e2e/fixtures/scenario-presets.json",
+        ),
+        (
+            "TMP_E2E_LOUDNESS_SIDECAR",
+            "/../e2e/fixtures/scenario-loudness.json",
+        ),
+    ]);
+    let sim = crate::sim_device::SimDevice::new();
     let sf = sim.clone();
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
-    crate::leveller::clear_slot_save_registry();
-    sim
-}
-
-/// How many `Loaded` events the sim has recorded so far — the barrier tests' shared probe for
-/// "has `ensure_fresh_load_paced` issued another `LoadPreset`".
-fn loaded_count(sim: &crate::sim_device::SimDevice) -> usize {
-    sim.events()
-        .iter()
-        .filter(|e| matches!(e, crate::sim_device::SimEvent::Loaded(_)))
-        .count()
-}
-
-/// [`loaded_count`] taken relative to an earlier reading — the retry count a barrier call has
-/// issued since `baseline`.
-fn loads_since(sim: &crate::sim_device::SimDevice, baseline: usize) -> usize {
-    loaded_count(sim) - baseline
-}
-
-/// Save `level` to slot 401 through the real session wire path (the sim's F_SAVE handler
-/// records it as the slot's pending lazy-commit doc).
-fn save_level_401(sim: &crate::sim_device::SimDevice, level: f32) {
-    let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(401).unwrap();
-    s.set_preset_level(level).unwrap();
-    s.save_current_preset(401).unwrap();
-}
-
-#[test]
-fn fresh_load_barrier_passes_on_a_committed_witness_match() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let sim = install_barrier_sim(0); // 0 ms: the save commits immediately
-    save_level_401(&sim, 0.81);
-    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.81));
-    let start = std::time::Instant::now();
-    let result = crate::leveller::ensure_fresh_load(401, &mut || false);
-    assert!(result.is_ok(), "{result:?}");
-    // First-harvest pass: the sim's pumps are instant, so anything near the production
-    // retry cadence (10 s) means the loop waited against an already-fresh doc.
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
-        "a matching committed witness must pass on the FIRST harvest, took {:?}",
-        start.elapsed()
-    );
-}
-
-#[test]
-fn fresh_load_barrier_waits_out_a_pending_commit_then_passes() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let sim = install_barrier_sim(1_500);
-    save_level_401(&sim, 0.81);
-    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.81));
-    let start = std::time::Instant::now();
-    // The sim's pumps return instantly, so pace the loop from the cancel hook (50 ms per
-    // probe) — otherwise the retry wait is a busy spin and the log drowns in warns.
-    let result = crate::leveller::ensure_fresh_load_paced(
-        401,
-        &mut || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            false
-        },
-        200,
-    );
-    assert!(result.is_ok(), "{result:?}");
-    assert!(
-        start.elapsed() >= std::time::Duration::from_millis(1_200),
-        "the barrier must have genuinely waited for the sim's 1.5 s commit, took {:?}",
-        start.elapsed()
-    );
-    // The barrier's final load materialized the COMMITTED doc — the caller's own load now
-    // sees the saved value, which is the entire point of the wait.
-    assert!(
-        (sim.preset_level() - 0.81).abs() < 1e-3,
-        "post-barrier the sim must hold the committed level, got {}",
-        sim.preset_level()
-    );
-}
-
-#[test]
-fn fresh_load_barrier_cancel_mid_wait_returns_cancelled() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let sim = install_barrier_sim(600_000); // never commits during this test
-    save_level_401(&sim, 0.9);
-    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.9));
-    let mut calls = 0u32;
-    let result = crate::leveller::ensure_fresh_load_paced(
-        401,
-        &mut || {
-            calls += 1;
-            calls > 1 // first probe (loop top) proceeds; the wait-loop probe cancels
-        },
-        600_000,
-    );
-    assert_eq!(
-        result,
-        Err(crate::leveller::CANCELLED.to_string()),
-        "a Stop during the stale wait must surface as the CANCELLED sentinel"
-    );
-}
-
-#[test]
-fn fresh_load_barrier_time_gate_proceeds_on_an_unharvestable_witness() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let sim = install_barrier_sim(600_000); // the pending save never commits
-    save_level_401(&sim, 0.9);
-    // Backdate the registration to the commit-window edge: the barrier engages (elapsed is
-    // not yet PAST the window) but the witness can never match — the time-gate must let the
-    // run proceed within ~a second rather than hard-erroring or hanging.
-    crate::leveller::register_slot_save_at(
-        401,
-        crate::leveller::SaveWitness::PresetLevel(0.9),
-        std::time::Instant::now()
-            - std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS),
-    );
-    let result = crate::leveller::ensure_fresh_load_paced(
-        401,
-        &mut || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            false
-        },
-        200,
-    );
-    assert!(
-        result.is_ok(),
-        "time-gate must proceed, not error: {result:?}"
-    );
-    // Proof it exited via the TIME-GATE, not a witness match: the sim still materializes
-    // the pre-save committed level (the fixture's own 0.32).
-    assert!(
-        (sim.preset_level() - 0.32).abs() < 1e-3,
-        "the pending save must still be uncommitted, got {}",
-        sim.preset_level()
-    );
-}
-
-/// Scene-witness first-harvest gate (Fix 3 + Fix 2): a scene deferred save, driven through
-/// the sim exactly like `save_deferred_scene_writes` would, must be visible to the VERY
-/// FIRST harvest — no stale retry — because (a) the witness now carries a scene
-/// discriminator and consults that scene's overlay, and (b) the sim's lazy-commit doc now
-/// actually persists a scene-scoped write into the rendered TEXT the harvest reads (Fix 2;
-/// without it the harvest keeps seeing the pre-save overlay value forever). Slot 402/scene 0
-/// is Full-shaped for `ACD_JC120` in the committed fixture (module doc,
-/// `scene_jobs::SceneOverlay::Full`), so the write lands on the overlay with no
-/// `setNodeSceneEdit` needed (post-review amendment 8).
-#[test]
-fn fresh_load_barrier_scene_witness_passes_on_first_harvest() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-    ]);
-    let sim = install_barrier_sim(0); // commits immediately
-    const SLOT: u32 = 402;
-    const SCENE: u32 = 0;
-    const GROUP: &str = "G1";
-    const NODE: &str = "ACD_JC120";
-    const PARAM: &str = "outputLevel";
-    const VALUE: f32 = 0.77;
-    {
-        let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(SLOT).expect("load 402");
-        s.load_scene(SCENE).expect("recall scene 0");
-        s.change_parameter(GROUP, NODE, PARAM, VALUE)
-            .expect("write outputLevel");
-        s.save_current_preset(SLOT).expect("save");
-    }
-    let baseline = loaded_count(&sim);
-    crate::leveller::register_slot_save(
-        SLOT,
-        crate::leveller::SaveWitness::Param {
-            node: NODE.to_string(),
-            param: PARAM.to_string(),
-            value: VALUE,
-            scene: Some(SCENE),
-        },
-    );
-    // Cancel bound (not `&mut || false`): the RED form of this gate must never blind-wait
-    // the full 150 s commit window — it terminates via the cancel hook right after a SECOND
-    // load is observed, which only a still-spinning (unmatched) witness would ever issue.
-    let sim_for_cancel = sim.clone();
-    let start = std::time::Instant::now();
-    let result = crate::leveller::ensure_fresh_load_paced(
-        SLOT,
-        &mut || loads_since(&sim_for_cancel, baseline) >= 2,
-        200,
-    );
-    let loads = loads_since(&sim, baseline);
-    assert!(result.is_ok(), "{result:?}");
-    assert_eq!(
-        loads, 1,
-        "a matching scene witness must pass on the FIRST harvest — no stale retry load"
-    );
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
-        "first-harvest pass must not have blind-waited, took {:?}",
-        start.elapsed()
-    );
-}
-
-/// GATE (offline profiling, 2026-10-10): a scene save whose write landed on the SHARED base
-/// value must release the next same-slot load on its first harvest. 402's scene 3 "Solo"
-/// un-bypasses `ACD_Boost` through a bypass-only overlay (Scene Edit off), so the landing
-/// policy writes `gain` to BASE (`WriteDirect { lands_on_base: true }`). The batch registered
-/// its witness on scene 3's overlay instead, which never carries `gain`: the next load
-/// blind-waited the whole `COMMIT_WINDOW_SECS` (~150 s per `level-setup.spec.ts` run, and
-/// ~2.5 min for a user re-opening the preset), and the post-save check flagged the persisted
-/// write as lost. Driven through the real batched command with the spec's exact job.
-#[test]
-fn a_shared_base_scene_save_releases_the_next_load_on_first_harvest() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let _cancel_reset = SceneCancelReset;
-    scenario_env();
-    let sim = install_barrier_sim(0); // commits immediately: any retry is a witness miss
-    crate::sim_device::set_live(&sim);
-    let (_app, webview) = batched_scene_app();
-    const SLOT: u32 = 402;
-
-    let res = invoke(
-        &webview,
-        "level_scenes_apply_batched",
-        serde_json::json!({
-            "slot": SLOT,
-            "jobs": [{
-                "sceneSlot": 3, "targetLufs": -20.0,
-                "handle": {"groupId": "G1", "nodeId": "ACD_Boost", "parameterId": "gain"}
-            }],
-            "candidates": [], "save": true, "rebalance": false,
-            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
-            "onResult": "__CHANNEL__:0"
-        }),
-    )
-    .expect("level_scenes_apply_batched");
-    let rows = res.as_array().expect("results array").clone();
-    let row = scene_row(&rows, Some(3))
-        .unwrap_or_else(|| panic!("a Solo row: {rows:?}"))
-        .clone();
-    let solved = row["final_level"].as_f64().expect("final_level");
-    // PREMISE: the write really landed on base and the save kept it there — otherwise a
-    // witness match below would prove nothing about this shape.
-    let saved = crate::read_saved_preset(SLOT).expect("re-read 402");
-    let base = crate::commands::level_footswitch::node_param_f64(&saved, "ACD_Boost", "gain")
-        .expect("base ACD_Boost.gain");
-    assert!(
-        (base - solved).abs() < 1e-3,
-        "PREMISE: the Solo write lands on the shared base value ({base} vs solved {solved})"
-    );
-    assert_eq!(
-        row["persist_mismatch"],
-        serde_json::json!(false),
-        "a persisted shared-base write must not be reported as lost: {row}"
-    );
-
-    // Cancel-bounded like the scene-witness gate above: the RED form issues a second load
-    // and stops there instead of blind-waiting the window.
-    let baseline = loaded_count(&sim);
-    let sim_for_cancel = sim.clone();
-    let start = std::time::Instant::now();
-    let result = crate::leveller::ensure_fresh_load_paced(
-        SLOT,
-        &mut || loads_since(&sim_for_cancel, baseline) >= 2,
-        200,
-    );
-    assert!(
-        result.is_ok(),
-        "the barrier must release on the base-landed witness, not spin: {result:?}"
-    );
-    assert_eq!(
-        loads_since(&sim, baseline),
-        1,
-        "the witness must match on the FIRST harvest — no stale retry load"
-    );
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(5),
-        "first-harvest pass must not have blind-waited, took {:?}",
-        start.elapsed()
-    );
-}
-
-/// Anti-stampede gate (post-review amendment 1): an UNHARVESTABLE witness (a `Param` naming a
-/// node no doc the sim renders ever carries) backdated to ~1 s BEFORE the commit-window edge —
-/// not past it, unlike the time-gate test above — so the barrier must genuinely retry a
-/// handful of times (the elapsed-since-save crosses `COMMIT_WINDOW_SECS` only after real
-/// wall-clock time passes) before the time-gate finally fires. Wall-clock pacing
-/// (`ensure_fresh_load_paced`'s inner wait loop) bounds that retrying to roughly
-/// `elapsed / retry_wait_ms` loads; the pre-fix busy-spin — the sim's `pump` returns instantly,
-/// so an unpaced inner loop burns through the same ~1 s wall-clock budget in hundreds of
-/// iterations — does not.
-#[test]
-fn fresh_load_barrier_paces_retries_near_the_commit_window_edge() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let sim = install_barrier_sim(600_000); // the pending save never commits
-    save_level_401(&sim, 0.9);
-    let baseline = loaded_count(&sim);
-    crate::leveller::register_slot_save_at(
-        401,
-        crate::leveller::SaveWitness::Param {
-            node: "no-such-node".into(),
-            param: "outputLevel".into(),
-            value: 0.9,
-            scene: None,
-        },
-        std::time::Instant::now()
-            - std::time::Duration::from_secs(crate::leveller::COMMIT_WINDOW_SECS - 1),
-    );
-    let start = std::time::Instant::now();
-    // Not the 50 ms-sleeping closure this used to pace itself with: that sleep was a test-side
-    // busy-spin damper from before `ensure_fresh_load_paced`'s own wait loop measured wall-clock
-    // time (Fix 6's `HidTransport::pump` doc). Production pacing now owns the retry cadence on
-    // its own, and dropping the sleep here makes the gate decisive — the pre-fix (unpaced) red
-    // form burns hundreds of loads in the same wall-clock budget, while the paced form still
-    // stays near the ~5 the assertion below expects.
-    let result = crate::leveller::ensure_fresh_load_paced(401, &mut || false, 200);
-    assert!(result.is_ok(), "{result:?}");
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(3),
-        "the time-gate must still fire near the window edge, took {:?}",
-        start.elapsed()
-    );
-    let loads = loads_since(&sim, baseline);
-    assert!(
-        loads <= 10,
-        "wall-clock-paced retries near the window edge must issue at most ~elapsed/cadence \
-         LoadPreset events (paced, ~200 ms cadence over ~1 s), not a busy-spin hundreds — got \
-         {loads}"
-    );
-}
-
-/// Block DISCOVERY is a same-slot device load like any other, and the Level wizard's Base
-/// handle picker (`list_level_blocks`) fires it seconds after a run's own save. Ungated, its
-/// load materializes the PRE-save doc inside the commit window — the preset-24 corruption
-/// class (`danger.md`). The barrier belongs at the shared load seam, so this drives
-/// `load_then_discover_blocks` directly rather than the Tauri command wrapper.
-#[test]
-fn load_then_discover_blocks_gates_on_a_pending_same_slot_save() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    let sim = install_barrier_sim(1_500);
-    save_level_401(&sim, 0.81);
-    crate::leveller::register_slot_save(401, crate::leveller::SaveWitness::PresetLevel(0.81));
-    let _ = crate::load_then_discover_blocks(401);
-    // The discovery load must have landed on the COMMITTED doc. `0.32` (the fixture's
-    // pre-save level) means the load raced the commit and re-materialized stale bytes —
-    // the load whose lazy commit silently reverts the save that preceded it.
-    assert!(
-        (sim.preset_level() - 0.81).abs() < 1e-3,
-        "block discovery materialized the PRE-save doc inside the commit window \
-         (preset-24 class), got {}",
-        sim.preset_level()
-    );
-}
-
-/// GATE for the stale-`presetLevel` capture incident (HW, 2026-08-19, "Plumes+BD2+OCD").
-///
-/// The barrier above is the FIRST line of defence, and it is not enough. Every capture's
-/// `recall_base` re-runs the device's OWN level-apply, which serves the COMMITTED
-/// `presetLevel` — and that store commits lazily (T+45-100 s, `danger.md`). A preset with no
-/// scenes has its base save and its footswitch batch seconds apart, squarely inside that
-/// window, so the whole batch measured a chain **5.53 dB** quieter than the one the user had
-/// just leveled: base saved 0.51009 and verified -23.0002, while the batch read switch 5's
-/// ceiling at -24.44 for a state that truly measures -18.91 — exactly
-/// `20·log10(0.51009 / 0.26999998)` against the file's ORIGINAL level. Every row then failed
-/// `fs_target_beyond_ceiling` and clamped a target it was comfortably within.
-///
-/// So a capture must not DEPEND on the barrier having waited (two of its four exits are
-/// silent, so which one a run took is not even recoverable from the log): it re-asserts the
-/// preset's own saved level itself. The sim models the device's revert faithfully — a recall
-/// restores `committed_doc(slot).preset_level` once the slot has been saved this run — so
-/// this reproduces the incident offline, without hardware.
-#[test]
-fn a_capture_renders_at_the_saved_preset_level_not_the_stale_committed_one() {
-    let _serial = serial();
-    let _reset = RegistryReset;
-    set_e2e_env(&[
-        (
-            "TMP_E2E_SCENARIO_PRESETS",
-            "/../e2e/fixtures/scenario-presets.json",
-        ),
-        (
-            "TMP_E2E_LOUDNESS_SIDECAR",
-            "/../e2e/fixtures/scenario-loudness.json",
-        ),
-    ]);
-    // 600 s: the base save NEVER commits during the test, i.e. the whole run happens inside
-    // the commit window — the worst case, and the one the incident hit.
-    let sim = install_barrier_sim(600_000);
     crate::sim_device::set_live(&sim);
     let stim = test_stim();
 
@@ -3557,13 +3099,17 @@ fn a_capture_renders_at_the_saved_preset_level_not_the_stale_committed_one() {
     const SWITCH: u32 = 2; // the Boost switch, as in the Bake gate above
     const NODE: &str = "ACD_Boost";
     const PARAM: &str = "gain";
-    // The level base leveling just solved and saved — pending, not yet committed.
+    // The SAVED level, and a different one the run holds UNSAVED in the working copy (a
+    // headroom trade's raise, say) — the level every capture of this run must render at.
     const SAVED_PL: f32 = 0.51;
+    const RUN_PL: f32 = 0.8;
     {
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
         s.load_preset(400).expect("load 400");
         s.set_preset_level(SAVED_PL).expect("set");
         s.save_current_preset(400).expect("save");
+        s.set_preset_level(RUN_PL)
+            .expect("set the unsaved run level");
     }
 
     let states = crate::footswitch::switch_states(&ftsw, &preset, SWITCH);
@@ -3579,41 +3125,41 @@ fn a_capture_renders_at_the_saved_preset_level_not_the_stale_committed_one() {
         ),
     };
 
-    // THE PRE-FIX SHAPE — assert nothing and let the recall's level-apply decide. It serves
-    // the pre-save committed level, which is the entire defect.
+    // Assert nothing and let the recall's level-apply decide: it reverts the unsaved run level
+    // to the saved one, which is the defect the re-assert exists for.
     let stale = crate::leveller::measure_fs_ceiling(&probe, &stim, None).expect("stale ceiling");
     let stale_pl = sim.preset_level();
     assert!(
-        (stale_pl - SAVED_PL).abs() > 0.05,
-        "PREMISE: inside the commit window the recall must serve the PRE-save level, not the \
-         saved {SAVED_PL} — got {stale_pl}. Without this the test proves nothing."
+        (stale_pl - SAVED_PL).abs() < 1e-3,
+        "PREMISE: with no re-assert the recall must serve the SAVED {SAVED_PL}, not the run's \
+         {RUN_PL} — got {stale_pl}. Without this the test proves nothing."
     );
 
-    // THE SHIPPED SHAPE — the run re-asserts its own saved level on the capture.
+    // THE SHIPPED SHAPE — the capture re-asserts the run's own level after the recall.
+    let before = sim.events().len();
     let fresh =
-        crate::leveller::measure_fs_ceiling(&probe, &stim, Some(SAVED_PL)).expect("fresh ceiling");
+        crate::leveller::measure_fs_ceiling(&probe, &stim, Some(RUN_PL)).expect("fresh ceiling");
     assert!(
-        (sim.preset_level() - SAVED_PL).abs() < 1e-3,
-        "the capture must render at the SAVED level {SAVED_PL}, got {}",
+        (sim.preset_level() - RUN_PL).abs() < 1e-3,
+        "the capture must render at the run level {RUN_PL}, got {}",
         sim.preset_level()
     );
     assert!(
-        sim.events().iter().any(|e| matches!(
+        sim.events()[before..].iter().any(|e| matches!(
             e,
-            crate::sim_device::SimEvent::PresetLevel(v) if (v - SAVED_PL).abs() < 1e-3
+            crate::sim_device::SimEvent::PresetLevel(v) if (v - RUN_PL).abs() < 1e-3
         )),
         "the capture must SEND setPresetLevel — the recall is what reverted it, so nothing \
          upstream can be trusted to have left the right value in place"
     );
 
-    // And the reading actually moves by the level difference: this is the ceiling error that
-    // made every row of the user's batch clamp.
-    let expected = 20.0 * (f64::from(SAVED_PL) / f64::from(stale_pl)).log10();
+    // And the reading moves by exactly the level difference.
+    let expected = 20.0 * (f64::from(RUN_PL) / f64::from(SAVED_PL)).log10();
     let got = fresh.integrated_lufs - stale.integrated_lufs;
     assert!(
         (got - expected).abs() < 0.5,
-        "the stale capture must be off by exactly the level ratio: expected {expected:.2} dB, \
-         got {got:.2} dB ({:.2} → {:.2} LUFS)",
+        "the unasserted capture must be off by exactly the level ratio: expected \
+         {expected:.2} dB, got {got:.2} dB ({:.2} → {:.2} LUFS)",
         stale.integrated_lufs,
         fresh.integrated_lufs
     );
@@ -3718,8 +3264,8 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
 
 /// The rebalance flow renders EVERY capture at the run's own `presetLevel` — a headroom
 /// trade's held raise, else the preset's SAVED level (`scene_capture_level`, the level the
-/// prepass rendered at). Each capture recalls the scene, and a recall reverts an unsaved level
-/// (and inside a lazy-commit window renders a stale one), so the level must be re-asserted after
+/// prepass rendered at). Each capture recalls the scene, and a recall reverts an unsaved level,
+/// so the level must be re-asserted after
 /// the LAST recall before each engage. On the regression only `correct_iter` did, and only with
 /// a trade: the lane solos, mute floor, combined point and first verified apply rendered at the
 /// device's load-store level, skewing the secant by the difference. Structural (event order), so
@@ -3727,7 +3273,6 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
 #[test]
 fn every_rebalance_capture_asserts_the_run_preset_level() {
     let _serial = serial();
-    let _reset = RegistryReset;
     scenario_env();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
@@ -4021,7 +3566,6 @@ impl Drop for SceneCancelReset {
 /// saves, and a `Saved` count has to be able to exclude it.
 fn trade_sim() -> (crate::sim_device::SimDevice, usize) {
     scenario_env();
-    crate::leveller::clear_slot_save_registry();
     let sim = crate::sim_device::SimDevice::new();
     crate::sim_device::set_live(&sim);
     let sf = sim.clone();
@@ -4126,6 +3670,59 @@ fn scene_row(rows: &[serde_json::Value], scene: Option<u64>) -> Option<&serde_js
     })
 }
 
+/// GATE (offline profiling, 2026-10-10): a scene save whose write landed on the SHARED base
+/// value is graded where it landed. 402's scene 3 "Solo" un-bypasses `ACD_Boost` through a
+/// bypass-only overlay (Scene Edit off), so the landing policy writes `gain` to BASE
+/// (`WriteDirect { lands_on_base: true }`); graded against scene 3's overlay, which never
+/// carries `gain`, the post-save check flagged the persisted write as lost. Driven through the
+/// real batched command with `level-setup.spec.ts`'s exact job.
+#[test]
+fn a_shared_base_scene_save_is_not_reported_lost() {
+    let _serial = serial();
+    let _cancel_reset = SceneCancelReset;
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    crate::sim_device::set_live(&sim);
+    let (_app, webview) = batched_scene_app();
+    const SLOT: u32 = 402;
+
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": SLOT,
+            "jobs": [{
+                "sceneSlot": 3, "targetLufs": -20.0,
+                "handle": {"groupId": "G1", "nodeId": "ACD_Boost", "parameterId": "gain"}
+            }],
+            "candidates": [], "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    let rows = res.as_array().expect("results array").clone();
+    let row = scene_row(&rows, Some(3))
+        .unwrap_or_else(|| panic!("a Solo row: {rows:?}"))
+        .clone();
+    let solved = row["final_level"].as_f64().expect("final_level");
+    // PREMISE: the write really landed on base and the save kept it there.
+    let saved = crate::read_saved_preset(SLOT).expect("re-read 402");
+    let base = crate::commands::level_footswitch::node_param_f64(&saved, "ACD_Boost", "gain")
+        .expect("base ACD_Boost.gain");
+    assert!(
+        (base - solved).abs() < 1e-3,
+        "PREMISE: the Solo write lands on the shared base value ({base} vs solved {solved})"
+    );
+    assert_eq!(
+        row["persist_mismatch"],
+        serde_json::json!(false),
+        "a persisted shared-base write must not be reported as lost: {row}"
+    );
+}
+
 /// ⟦F1⟧ THE TRADE, LANDED AND PERSISTED, through the real batched command. At the shipped −21
 /// default 404's scene 3 is 11 LU short with its own knob already at the top, and it BENEFITS
 /// (a Full overlay pins that knob independently of base) — the one shape that justifies
@@ -4151,7 +3748,6 @@ fn scene_row(rows: &[serde_json::Value], scene: Option<u64>) -> Option<&serde_js
 #[test]
 fn a_batched_scene_run_persists_both_halves_of_a_landed_headroom_trade() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _cancel_reset = SceneCancelReset;
     let (sim, from) = trade_sim();
     let (_app, webview) = batched_scene_app();
@@ -4377,7 +3973,6 @@ impl crate::hid::HidTransport for CancelAtSceneWrite {
 #[test]
 fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _cancel_reset = SceneCancelReset;
     let (sim, from) = trade_sim();
     let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -4489,7 +4084,6 @@ fn a_cancel_after_a_landed_trade_returns_its_outcomes_with_the_trade_disclosed()
 #[test]
 fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _cancel_reset = SceneCancelReset;
     let (sim, from) = trade_sim();
     let (_app, webview, captured) = batched_scene_app_capturing_channel();
@@ -4620,10 +4214,8 @@ fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
 #[test]
 fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
     let _serial = serial();
-    let _reset = RegistryReset;
     let _cancel_reset = SceneCancelReset;
     scenario_env();
-    crate::leveller::clear_slot_save_registry();
     const RIG: u32 = 400;
     const TUBE_SCREAMER: &str = "ACD_TubeScreamer";
 
