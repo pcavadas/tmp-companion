@@ -4732,3 +4732,36 @@ fn online_from_is_strict() {
         );
     }
 }
+
+/// The side lane: every `cancel_*` invoke and the counter read skip the serial queue, and
+/// a run command does not. Queued, a Stop only lands after the run it targets returned.
+#[test]
+fn side_lane_takes_cancels_and_counters_only() {
+    let req = |method: &str, path: &str, cmd: &str| super::E2eRequest {
+        method: method.into(),
+        path: path.into(),
+        body: serde_json::to_vec(&serde_json::json!({ "cmd": cmd, "args": {} })).unwrap(),
+    };
+    for cmd in [
+        "cancel_doctor_check",
+        "cancel_preset_leveling",
+        "cancel_scene_leveling",
+        "cancel_footswitch_leveling",
+    ] {
+        assert!(
+            super::e2e_is_side_lane(&req("POST", "/invoke", cmd)),
+            "{cmd}"
+        );
+    }
+    assert!(super::e2e_is_side_lane(&req("GET", "/reamp/counters", "")));
+    assert!(!super::e2e_is_side_lane(&req(
+        "POST",
+        "/invoke",
+        "doctor_check"
+    )));
+    assert!(!super::e2e_is_side_lane(&req(
+        "POST",
+        "/sim/reset",
+        "cancel_doctor_check"
+    )));
+}

@@ -225,6 +225,20 @@ export async function runBaseLevel(
   });
 }
 
+/** Select each preset in `presets` on the Level tab by name (filter → "Select preset to
+ *  level" → clear filter) — the Level twin of `selectPresetsForCheck`. */
+export async function selectPresetsForLevel(
+  page: Page,
+  presets: Preset[],
+): Promise<void> {
+  const filter = page.getByPlaceholder(/Filter by name or slot/i);
+  for (const p of presets) {
+    await filter.fill(p.name);
+    await page.getByTitle("Select preset to level").first().click();
+  }
+  await filter.fill("");
+}
+
 /** Open Doctor and select each preset in `presets` by name (filter → click "Select preset
  *  to check" → clear filter). Shared by every doctor spec's selection step (was a
  *  byte-identical loop in doctor.spec.ts and doctor.online.spec.ts). */
@@ -323,14 +337,21 @@ export async function simEvents(page: Page): Promise<unknown[]> {
   return (await res.json()) as unknown[];
 }
 
+/** POST a `/sim/*` knob on the offline fake (each is a no-op online). */
+async function simPost(
+  page: Page,
+  path: string,
+  data: Record<string, number>,
+): Promise<void> {
+  const res = await page.request.post(`${SERVER}${path}`, { data });
+  expect(res.ok(), `POST ${path}`).toBeTruthy();
+}
+
 /** Arm slot `slot`'s NEXT offline capture to return silence once (POST /sim/fault) — the
  *  leveller's no-signal path. Offline only (no-op online, no fake installed). Used to
  *  inject a mid-run item failure (level-defaults.spec.ts). */
 export async function armCaptureFault(page: Page, slot: number): Promise<void> {
-  const res = await page.request.post(`${SERVER}/sim/fault`, {
-    data: { slot },
-  });
-  expect(res.ok(), "POST /sim/fault").toBeTruthy();
+  await simPost(page, "/sim/fault", { slot });
 }
 
 /** Arm the offline fake's lazy-commit latency (POST /sim/commit-latency) — the bug→gate
@@ -340,10 +361,25 @@ export async function armCaptureFault(page: Page, slot: number): Promise<void> {
  *  installed): `TMP_SIM_COMMIT_LATENCY_MS` is offline-only, matching the whole lazy-commit
  *  model it configures. */
 export async function armCommitLatency(page: Page, ms: number): Promise<void> {
-  const res = await page.request.post(`${SERVER}/sim/commit-latency`, {
-    data: { ms },
-  });
-  expect(res.ok(), "POST /sim/commit-latency").toBeTruthy();
+  await simPost(page, "/sim/commit-latency", { ms });
+}
+
+/** Hold every offline capture for `ms` (POST /sim/capture-delay), so a run is still in
+ *  flight when a spec presses Stop. Call AFTER the per-test `/sim/reset`, which clears it. */
+export async function armCaptureDelay(page: Page, ms: number): Promise<void> {
+  await simPost(page, "/sim/capture-delay", { ms });
+}
+
+/** Wait until the run has engaged re-amp past `baseline` — i.e. a capture is in flight
+ *  (held by `armCaptureDelay`), so a Stop pressed now lands MID-capture, not before the
+ *  run command reached the device (where its own start-of-run reset would eat it). */
+export async function waitForCaptureInFlight(
+  page: Page,
+  baseline: { on: number; off: number },
+): Promise<void> {
+  await expect
+    .poll(async () => (await reampCounters(page)).on, { timeout: 30_000 })
+    .toBeGreaterThan(baseline.on);
 }
 
 /** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE;

@@ -201,10 +201,12 @@ pub fn run_e2e_server() {
             set_auto_install_updates,
             level_preset,
             list_level_blocks,
+            cancel_preset_leveling,
             level_scenes_apply_batched,
             list_scene_level_handles,
             cancel_scene_leveling,
             level_footswitches_apply,
+            cancel_footswitch_leveling,
             list_footswitch_scene_contexts,
             doctor_check,
             cancel_doctor_check,
@@ -250,12 +252,47 @@ pub fn run_e2e_server() {
         "offline / SimDevice"
     };
     eprintln!("e2e_server: listening on http://127.0.0.1:{port} ({mode})");
-    // Single-threaded serial accept: the webview handle stays on this one thread. Offline
-    // runs N of these PROCESSES (one per Playwright worker, `e2e/fixtures/port.ts`); the
-    // parallelism is across processes, never inside one server.
-    for stream in listener.incoming() {
-        let Ok(mut stream) = stream else { continue };
-        e2e_handle_conn(&webview, &mut stream);
+    // Requests RUN serially on this thread, in arrival order. Offline runs N of these
+    // PROCESSES (one per Playwright worker, `e2e/fixtures/port.ts`); that parallelism is
+    // across processes. Each connection is READ on its own thread, though, so a request
+    // that must land while a run is in flight skips the queue ([`e2e_is_side_lane`]).
+    let (tx, rx) = std::sync::mpsc::channel::<(E2eRequest, std::net::TcpStream)>();
+    let side_webview = webview.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let (tx, webview) = (tx.clone(), side_webview.clone());
+            std::thread::spawn(move || {
+                let Some(req) = e2e_read_request(&stream) else {
+                    return;
+                };
+                if e2e_is_side_lane(&req) {
+                    let (status, payload) = e2e_route(&webview, &req.method, &req.path, &req.body);
+                    e2e_write_response(stream, status, &payload);
+                } else {
+                    let _ = tx.send((req, stream));
+                }
+            });
+        }
+    });
+    for (req, stream) in rx {
+        let (status, payload) = e2e_route(&webview, &req.method, &req.path, &req.body);
+        e2e_write_response(stream, status, &payload);
+    }
+}
+
+/// Served off the serial queue, through the same [`e2e_route`]: every `cancel_*` invoke
+/// (each only flips its run's cancel atomic + `request_op_abort`) and the
+/// `/reamp/counters` read. Queued, a Stop would land only AFTER the run it targets returned.
+#[cfg(feature = "e2e")]
+fn e2e_is_side_lane(req: &E2eRequest) -> bool {
+    match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/reamp/counters") => true,
+        ("POST", "/invoke") => serde_json::from_slice::<serde_json::Value>(&req.body)
+            .ok()
+            .and_then(|v| v.get("cmd")?.as_str().map(|c| c.starts_with("cancel_")))
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -801,32 +838,29 @@ async fn e2e_measure_sound(
     .await
 }
 
-/// Parse one HTTP/1.1 request and reply. Routes: `POST /invoke` (the command bridge),
-/// `POST /sim/reset` (fresh device state), `GET /health`, `OPTIONS` (CORS preflight).
+/// One parsed HTTP/1.1 request.
 #[cfg(feature = "e2e")]
-fn e2e_handle_conn(
-    webview: &tauri::WebviewWindow<tauri::test::MockRuntime>,
-    stream: &mut std::net::TcpStream,
-) {
-    use std::io::{BufRead, BufReader, Read, Write};
+struct E2eRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
 
-    let Ok(clone) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(clone);
+/// Read one request off `stream`; `None` on any malformed or truncated read.
+#[cfg(feature = "e2e")]
+fn e2e_read_request(stream: &std::net::TcpStream) -> Option<E2eRequest> {
+    use std::io::{BufRead, BufReader, Read};
+
+    let mut reader = BufReader::new(stream.try_clone().ok()?);
     let mut req_line = String::new();
-    if reader.read_line(&mut req_line).is_err() {
-        return;
-    }
+    reader.read_line(&mut req_line).ok()?;
     let mut it = req_line.split_whitespace();
     let method = it.next().unwrap_or("").to_string();
     let path = it.next().unwrap_or("").to_string();
     let mut content_len = 0usize;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).is_err() {
-            return;
-        }
+        reader.read_line(&mut line).ok()?;
         let t = line.trim_end();
         if t.is_empty() {
             break;
@@ -839,18 +873,41 @@ fn e2e_handle_conn(
         }
     }
     let mut body = vec![0u8; content_len];
-    if content_len > 0 && reader.read_exact(&mut body).is_err() {
-        return;
+    if content_len > 0 {
+        reader.read_exact(&mut body).ok()?;
     }
+    Some(E2eRequest { method, path, body })
+}
 
-    let (status, payload) = e2e_route(webview, &method, &path, &body);
+#[cfg(feature = "e2e")]
+fn e2e_write_response(mut stream: std::net::TcpStream, status: &str, payload: &[u8]) {
+    use std::io::Write;
+
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: POST,GET,OPTIONS\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
         payload.len()
     );
     let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(&payload);
+    let _ = stream.write_all(payload);
     let _ = stream.flush();
+}
+
+/// A `/sim/*` knob: apply `body[key]` (a u64) or answer 400 naming the missing key.
+#[cfg(feature = "e2e")]
+fn sim_u64_arg(body: &[u8], key: &str, apply: impl FnOnce(u64)) -> (&'static str, Vec<u8>) {
+    match serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get(key).and_then(serde_json::Value::as_u64))
+    {
+        Some(n) => {
+            apply(n);
+            ("200 OK", b"{\"ok\":true}".to_vec())
+        }
+        None => (
+            "400 Bad Request",
+            format!("{{\"ok\":false,\"error\":\"missing {key}\"}}").into_bytes(),
+        ),
+    }
 }
 
 /// Map a request to `(status, json body)`. `/invoke` wraps the command result in an
@@ -873,8 +930,6 @@ fn e2e_route(
             "200 OK",
             serde_json::to_vec(&json!({ "ok": true, "online": e2e_online() })).unwrap_or_default(),
         ),
-        // Verification-harness read endpoints (see e2e/specs/level.spec.ts's and
-        // e2e/specs/level.online.spec.ts's idempotency tests).
         ("GET", "/reamp/counters") => {
             use std::sync::atomic::Ordering;
             let on = crate::session::REAMP_ON_COUNT.load(Ordering::Relaxed);
@@ -891,39 +946,19 @@ fn e2e_route(
         // Capture-fault injection (PR3 spec 4): arm slot N's NEXT offline capture to
         // return silence once (→ the leveller's no-signal path). Body: {"slot": N}.
         // No-op online (no fake installed).
-        ("POST", "/sim/fault") => {
-            let slot = serde_json::from_slice::<serde_json::Value>(body)
-                .ok()
-                .and_then(|v| v.get("slot").and_then(serde_json::Value::as_u64));
-            match slot {
-                Some(n) => {
-                    crate::sim_device::arm_capture_fault(n as u32);
-                    ("200 OK", b"{\"ok\":true}".to_vec())
-                }
-                None => (
-                    "400 Bad Request",
-                    b"{\"ok\":false,\"error\":\"missing slot\"}".to_vec(),
-                ),
-            }
-        }
+        ("POST", "/sim/fault") => sim_u64_arg(body, "slot", |n| {
+            crate::sim_device::arm_capture_fault(n as u32)
+        }),
         // Lazy-commit latency override (stale-load incident spec): arm the ALREADY-running
         // offline fake's commit latency, since a per-test env var can't reach a server
         // process that started before the test did (`sim_device::set_commit_latency`'s
         // doc). Body: {"ms": N}. No-op online (no fake installed).
         ("POST", "/sim/commit-latency") => {
-            let ms = serde_json::from_slice::<serde_json::Value>(body)
-                .ok()
-                .and_then(|v| v.get("ms").and_then(serde_json::Value::as_u64));
-            match ms {
-                Some(n) => {
-                    crate::sim_device::set_commit_latency(n);
-                    ("200 OK", b"{\"ok\":true}".to_vec())
-                }
-                None => (
-                    "400 Bad Request",
-                    b"{\"ok\":false,\"error\":\"missing ms\"}".to_vec(),
-                ),
-            }
+            sim_u64_arg(body, "ms", crate::sim_device::set_commit_latency)
+        }
+        // Mid-run Stop specs: hold every offline capture. Body: {"ms": N}.
+        ("POST", "/sim/capture-delay") => {
+            sim_u64_arg(body, "ms", crate::sim_device::set_capture_delay)
         }
         ("POST", "/sim/reset") => {
             // ONLINE: the real device IS the state — re-installing the offline fake (a

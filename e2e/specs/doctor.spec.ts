@@ -1,6 +1,7 @@
 import { test, expect } from "../fixtures/test";
 import {
   SCENARIO,
+  armCaptureDelay,
   clearScenario,
   ensureScenario,
   expectReampBalanced,
@@ -10,6 +11,7 @@ import {
   reampOff,
   runDoctorCheck,
   selectPresetsForCheck,
+  waitForCaptureInFlight,
 } from "../fixtures/scenario";
 
 // Doctor journey — runs identically offline (fake re-amp: the sim's physics model
@@ -183,6 +185,48 @@ test.describe("Doctor — select, check, results", () => {
     await expect(
       page.getByText(/isn.t a level control — engaging it changes tone/),
     ).toBeVisible();
+
+    await expectReampBalanced(page, reampBase);
+  });
+
+  // COVERAGE row 47 — a mid-run Stop (#190). Every capture is held for a minute, so the
+  // only way to reach "Check stopped" inside the 15 s below is a cancel served WHILE
+  // `doctor_check` is still running — the bridge's side lane (`e2e_server.rs`
+  // `e2e_is_side_lane`); queued behind the run it would land minutes later. The sounds
+  // the run never reached must then read as unrun, never as a 0.0 LUFS measurement.
+  test("a mid-run Stop reports the unreached sounds as not checked (#190)", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: /sim/capture-delay is a SimDevice injection",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await armCaptureDelay(page, 60_000);
+
+    await openLevel(page);
+    await selectPresetsForCheck(page, [SCENARIO[0]]); // E2E Rig: base + scenes + switches
+    await runDoctorCheck(page);
+    await waitForCaptureInFlight(page, reampBase);
+
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    await page.getByRole("button", { name: "Stop", exact: true }).click(); // confirm
+    await expect(page.getByText("Check stopped")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByRole("button", { name: "See results" }).click();
+
+    const everything = page.getByRole("radio", { name: "Everything" });
+    if (await everything.isVisible().catch(() => false)) {
+      await everything.click();
+    }
+    const card = page.locator(`[data-preset-card="${SCENARIO[0].name}"]`);
+    await expect(
+      card.getByText("Not checked — the run was stopped").first(),
+    ).toBeVisible();
+    await expect(card).not.toContainText(/(^|[^\d.])-?0\.0\s*LUFS/);
+    await expect(page.getByText("All clear")).toHaveCount(0);
 
     await expectReampBalanced(page, reampBase);
   });

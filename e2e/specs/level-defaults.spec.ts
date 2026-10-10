@@ -1,6 +1,7 @@
 import { test, expect } from "../fixtures/test";
 import {
   SCENARIO,
+  armCaptureDelay,
   armCaptureFault,
   clearScenario,
   ensureScenario,
@@ -11,6 +12,8 @@ import {
   reampCounters,
   reampOff,
   selectBaseOnly,
+  selectPresetsForLevel,
+  waitForCaptureInFlight,
 } from "../fixtures/scenario";
 
 // First-session DEFAULTS + the physics-outcome gates (the real user's complaint set), driven
@@ -185,12 +188,7 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     const reampBase = await reampCounters(page);
     await openLevel(page);
 
-    const filter = page.getByPlaceholder(/Filter by name or slot/i);
-    for (const p of [SCENARIO[1], SCENARIO[2]]) {
-      await filter.fill(p.name);
-      await page.getByTitle("Select preset to level").first().click();
-    }
-    await filter.fill("");
+    await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
 
     await armCaptureFault(page, SCENARIO[2].slot); // silence 402's next capture (one-shot)
 
@@ -216,6 +214,42 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     // 401 still leveled — its displayed final LUFS near the default target (−23). No "LUFS"
     // suffix on Summary (that's a RunPage-only unit label) — just the bare reading.
     await expect(page.getByText(/[−-]2[234]\.\d/).first()).toBeVisible();
+
+    await expectReampBalanced(page, reampBase);
+  });
+
+  // COVERAGE row 46 — a 60 s capture hold makes "Leveling stopped" inside 15 s reachable
+  // only by a cancel served mid-run (`e2e_server.rs` `e2e_is_side_lane`).
+  test("a mid-run Stop aborts the in-flight item and leaves the rest not run", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: /sim/capture-delay is a SimDevice injection",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await armCaptureDelay(page, 60_000);
+    await openLevel(page);
+
+    await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
+
+    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
+    await waitForCaptureInFlight(page, reampBase);
+
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    await page.getByRole("button", { name: "Stop", exact: true }).click(); // confirm
+    await expect(page.getByText("Leveling stopped")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.getByText("Stopped — 0 sounds match")).toBeVisible();
+    await expect(
+      page.getByText("Stopped before this one was reached.").first(),
+    ).toBeVisible();
 
     await expectReampBalanced(page, reampBase);
   });

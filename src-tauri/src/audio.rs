@@ -1043,7 +1043,7 @@ pub fn reamp_capture(
         // a scene-relative outputLevel term), reading the installed SimDevice's DSP
         // state, so the offline suite is a genuine loudness oracle. `tail_ms` unused
         // (the model is deterministic, no decay tail to integrate).
-        return Ok(crate::sim_device::e2e_capture(stimulus_mono, sample_rate));
+        return crate::sim_device::e2e_capture(stimulus_mono, sample_rate);
     }
     reamp_capture_real(stimulus_mono, sample_rate, tail_ms)
 }
