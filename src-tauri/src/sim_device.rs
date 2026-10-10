@@ -19,14 +19,20 @@
 //! (the reports land in `Session::raw`); the subsequent heartbeat `pump`s return empty,
 //! exactly as the confirm loop expects.
 //!
+//! **Same-slot load (fw 1.8.58, tmp-audit Q4/Q34):** a `loadPreset` of the loaded slot
+//! ([`SimState::loaded_slot`]: the last real load, or the last save's target) over a clean
+//! working copy, in its stored `lastLoadedScene`, is a NO-OP that keeps the working copy and
+//! still pushes it. Every working-copy edit, `loadScene` included, sets
+//! [`SimState::dirty`], which makes that load a real reload; a real load and a save clear it.
+//! See `same_slot_load_tests`.
+//!
 //! **Saved doc (e2e only):** a save is tracked per slot ([`SimState::saved_levels`]) and a
-//! later load of that slot materializes it, as the real device does on fw 1.8.58 (a save is
-//! durable when its handler returns — tmp-audit Q34). NOT modelled: the device's same-slot load
-//! is a NO-OP over a clean working copy (Q4), while every sim load re-reads the saved doc. The
-//! doc is `presetLevel` PLUS a footswitch bake's own baked param PLUS a scene deferred save's
-//! own overlay param PLUS the `ftsw` array (`SavedDoc`) — narrower than a full merged
-//! presetJson still (the CAPTURE MODEL doesn't reseed a scene overlay's write on load, only its
-//! TEXT round-trips; `SavedDoc`'s doc comment has the residual deviation).
+//! later REAL load of that slot materializes it, as the real device does on fw 1.8.58 (a
+//! save is durable when its handler returns — tmp-audit Q34). The doc is `presetLevel` PLUS a
+//! footswitch bake's own baked param PLUS a scene deferred save's own overlay param PLUS the
+//! `ftsw` array (`SavedDoc`) — narrower than a full merged presetJson still (the CAPTURE MODEL
+//! doesn't reseed a scene overlay's write on load, only its TEXT round-trips; `SavedDoc`'s doc
+//! comment has the residual deviation).
 //!
 //! **Footswitch assignment writes (HW semantics, no dedicated echo):**
 //! `setFootswitchAssignment`(54) and `clearFootswitchAssignment`(55) edit the WORKING-COPY
@@ -324,8 +330,17 @@ struct SimState {
     // Pure state writes updated by the wire setters below; the setters echo nothing
     // (they match the real device, which acks these fire-and-forget). Read only by the
     // offline `--features e2e` capture model, so they carry no reply framing.
-    /// The 0-based list index of the last `loadPreset` (the sidecar / stored-knob key).
+    /// The 0-based list index of the last REAL `loadPreset` (the sidecar / stored-knob key).
+    /// A skipped same-slot load leaves it alone, and so does a save to another slot.
     current_slot: u32,
+    /// The device's load identity (fw 1.8.58 `isPresetLoaded`, tmp-audit Q4): the slot a
+    /// same-slot `loadPreset` is compared against. Set by a real load AND by a save, which
+    /// moves it to the slot it saved to. `None` until the first load.
+    loaded_slot: Option<u32>,
+    /// The working copy's dirty flag (`CurrentPresetModel +0x686`, tmp-audit Q4/Q34): set by
+    /// every working-copy edit, cleared by a real load and by a save. While it is clear, a
+    /// `loadPreset` of [`SimState::loaded_slot`] is a NO-OP that keeps the working copy.
+    dirty: bool,
     /// The active scene: `None` = base, else the 0-based `scenes[]` wire index from the
     /// last `loadScene`. Restored on `loadPreset` from [`saved_scene`](SimState::saved_scene)
     /// (a fresh load activates the preset's saved `lastLoadedScene`, not base — HW-confirmed).
@@ -484,6 +499,8 @@ impl Default for SimState {
                 .to_string(),
             parsed_preset_cache: None,
             current_slot: 0,
+            loaded_slot: None,
+            dirty: false,
             current_scene: None,
             saved_scene: HashMap::new(),
             #[cfg(all(test, feature = "e2e"))]
@@ -726,12 +743,20 @@ impl SimState {
     /// a switch's LAST-resolved `param` function (`FsWrite::Bake`'s `clear_stale`), and both
     /// confirm paths (`footswitch::existing_param_fn_index` returning `None`) read the same
     /// whether or not siblings shifted.
-    fn ftsw_clear(&mut self, addr: u32, index: u32) {
+    /// Returns whether a function was removed. The device refuses an address above 19, an
+    /// index of 5 or more, or an index past the switch's last function (tmp-audit Q4a).
+    fn ftsw_clear(&mut self, addr: u32, index: u32) -> bool {
+        if addr > 19 || index >= 5 {
+            return false;
+        }
+        let mut removed = false;
         self.with_working_ftsw(addr, |switches| {
             if (index as usize) < switches.len() {
                 switches.remove(index as usize);
+                removed = true;
             }
         });
+        removed
     }
 
     /// Take-or-base the working `ftsw` array, run `f` against switch `addr`'s function list,
@@ -1200,12 +1225,29 @@ impl SimDevice {
         let mut st = self.state.lock().expect("sim lock");
 
         if let Some(lp) = proto::first_bytes(&f, F_LOAD_PRESET) {
-            // A load re-instantiates the stored preset: the working copy starts clean.
-            st.working_edits.clear();
-            st.string_params.clear();
             let dev_slot = proto::first_varint(&proto::parse(lp), 6).unwrap_or(0);
             let slot0 = dev_slot.saturating_sub(1) as u32;
             st.events.push(SimEvent::Loaded(slot0));
+            // fw 1.8.58 `CurrentPresetModel::load` (tmp-audit Q4, device-shown in Q34): a load
+            // of the loaded slot, over a clean working copy, in the scene it was stored in,
+            // is skipped. The working copy and DSP stay exactly as they are, but the load
+            // pushes still go out, now rendering that working copy.
+            let stored_scene = match st.saved_scene.get(&slot0).copied() {
+                Some(scene) => scene,
+                None => fixture_last_loaded_scene(slot0),
+            };
+            if !st.dirty && st.loaded_slot == Some(slot0) && st.current_scene == stored_scene {
+                let current_slot = st.current_slot;
+                let json = load_echo_json(&mut st, current_slot, true);
+                let mut reports = vec![frame(&preset_loaded(dev_slot))];
+                reports.extend(frame_multi(&current_preset_data_changed(&json)));
+                return reports;
+            }
+            st.loaded_slot = Some(slot0);
+            st.dirty = false;
+            // A real load re-instantiates the stored preset: the working copy starts clean.
+            st.working_edits.clear();
+            st.string_params.clear();
             // A load activates the preset's saved `lastLoadedScene` (HW-confirmed — a bare
             // load does NOT reset to base) and discards the edit buffer (the scene-scoped
             // knob writes + forced bypasses) — reseeded from the slot's own SAVED doc
@@ -1214,13 +1256,10 @@ impl SimDevice {
             // A different slot resolves to a different `scene_render_json_source` (e2e:
             // its own scenario doc) — drop the stale cached parse.
             st.parsed_preset_cache = None;
-            st.current_scene = match st.saved_scene.get(&slot0).copied() {
-                Some(scene) => scene,
-                // No recorded save this run → the FIXTURE's own `lastLoadedScene`, so a
-                // scenario preset saved in a scene (404) activates it offline exactly as the
-                // unit does, with no per-test setup.
-                None => fixture_last_loaded_scene(slot0),
-            };
+            // No recorded save this run → the FIXTURE's own `lastLoadedScene` (above), so a
+            // scenario preset saved in a scene (404) activates it offline exactly as the unit
+            // does, with no per-test setup.
+            st.current_scene = stored_scene;
             st.param_writes.clear();
             st.bypass_writes.clear();
             st.scene_edit_enabled.clear();
@@ -1342,6 +1381,8 @@ impl SimDevice {
                 group: group.clone(),
                 node_id: node_id.clone(),
             });
+            // Marks dirty on every request, even for an unknown node id (tmp-audit Q4a).
+            st.dirty = true;
             return confirm_structural(
                 &mut st,
                 F_NODE_REMOVED,
@@ -1352,6 +1393,7 @@ impl SimDevice {
         if let Some(rename) = proto::first_bytes(&f, F_RENAME) {
             st.events
                 .push(SimEvent::Renamed(str_field(&proto::parse(rename), 1)));
+            st.dirty = true;
             return Vec::new();
         }
         if let Some(save) = proto::first_bytes(&f, F_SAVE) {
@@ -1360,6 +1402,10 @@ impl SimDevice {
             let scene = st.current_scene;
             st.saved_scene.insert(slot0, scene);
             st.events.push(SimEvent::Saved(slot0));
+            // `saveTo` clears the dirty flag and makes the saved slot the load identity, even
+            // when it is not the slot that was loaded (tmp-audit Q4).
+            st.dirty = false;
+            st.loaded_slot = Some(slot0);
             if st.stale_push_after_save {
                 // The PRE-edit (load-time) document — exactly what the real unit handed the
                 // Copy post-save buffer scrape (HW 2026-09-02, fw 1.8.45). A read taken
@@ -1381,6 +1427,7 @@ impl SimDevice {
                 .unwrap_or(0.0);
             st.events.push(SimEvent::PresetLevel(level));
             st.preset_level = level;
+            st.dirty = true;
             return vec![frame(&preset_level_changed(level))];
         }
         if let Some(ls) = proto::first_bytes(&f, F_LOAD_SCENE) {
@@ -1394,6 +1441,9 @@ impl SimDevice {
                 Some(wire_slot)
             };
             st.events.push(SimEvent::LoadScene(wire_slot));
+            // The loadScene handler sets the dirty flag unconditionally (fw 1.8.58 static RE,
+            // tmp-audit `companion-load_scene_handler.c`), so the next same-slot load is real.
+            st.dirty = true;
             // A recall runs the device's own level-apply — base included — silently
             // reverting an unsaved working-copy `presetLevel` to the currently-SAVED
             // value (HW: `probe --levelpreset 400 -24 save` solved 0.3096 and the saved
@@ -1418,6 +1468,9 @@ impl SimDevice {
         if let Some(cp) = proto::first_bytes(&f, F_CHANGE_PARAMETER) {
             // changeParameter{ group(1), node(2), param(3), floatVal(5) | boolVal(7) }.
             let inner = proto::parse(cp);
+            // Every write the fake applies counts as a non-empty change list, which is when
+            // the device sets the dirty flag (static RE, `companion-change_parameter_handler.c`).
+            st.dirty = true;
             let (group, node, param) = (
                 str_field(&inner, 1),
                 str_field(&inner, 2),
@@ -1492,6 +1545,11 @@ impl SimDevice {
                 node: node.clone(),
                 enable,
             });
+            // Marks dirty in any real scene, for enable and disable alike; refused on base
+            // (tmp-audit Q4a).
+            if st.current_scene.is_some() {
+                st.dirty = true;
+            }
             // Fact 4's gate (F_CHANGE_PARAMETER, above): track which (scene, group, node)
             // triples have had Scene Edit enabled THIS session, since the last load.
             if let Some(sc) = st.current_scene {
@@ -1553,6 +1611,8 @@ impl SimDevice {
             });
             if let Ok(func) = serde_json::from_str::<serde_json::Value>(&function_json) {
                 st.ftsw_set(addr, index, func);
+                // Sets the dirty flag on success (static RE, `companion-set_footswitch_assignment.c`).
+                st.dirty = true;
             }
             return Vec::new();
         }
@@ -1564,7 +1624,10 @@ impl SimDevice {
             let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
             st.events
                 .push(SimEvent::ClearFootswitchAssignment { addr, index });
-            st.ftsw_clear(addr, index);
+            // Marks dirty only when the clear succeeds (tmp-audit Q4a).
+            if st.ftsw_clear(addr, index) {
+                st.dirty = true;
+            }
             return Vec::new();
         }
         if let Some(nj) = proto::first_bytes(&f, F_NODE_JSON_REQUEST) {
@@ -2547,7 +2610,9 @@ fn confirm_structural(
 ) -> Vec<Vec<u8>> {
     let (reply, lands) = structural_reply(st, confirm_field, &payload);
     if lands {
+        // insert/replace set the dirty flag (static RE, `companion-cpm_*`).
         st.working_edits.push(edit);
+        st.dirty = true;
     }
     reply
 }
@@ -3714,5 +3779,170 @@ mod batch_model_tests {
             .filter(|e| matches!(e, SimEvent::BatchDropped(_)))
             .collect();
         assert_eq!(dropped.len(), 3);
+    }
+}
+
+/// fw 1.8.58's same-slot load (tmp-audit Q4/Q34): a no-op over a clean working copy, a real
+/// reload once an edit has set the dirty flag (which commands set it: Q4a).
+#[cfg(test)]
+mod same_slot_load_tests {
+    use super::*;
+    use crate::session::Session;
+
+    fn session(sim: &SimDevice) -> Session {
+        Session::from_transport(Box::new(sim.clone()))
+    }
+
+    fn knob(sim: &SimDevice) -> Option<f32> {
+        sim.param_write(SCENE_BASE, "G1", "n1", "outputLevel")
+    }
+
+    /// A live knob value the stored row lacks, set with no wire op so the dirty flag stays
+    /// clear: only a real reload can discard it.
+    fn poke_knob(sim: &SimDevice) {
+        let key = (SCENE_BASE, "G1".into(), "n1".into(), "outputLevel".into());
+        sim.state
+            .lock()
+            .expect("sim lock")
+            .param_writes
+            .insert(key, 0.7);
+    }
+
+    #[test]
+    fn a_clean_same_slot_load_keeps_the_working_copy() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        poke_knob(&sim);
+        s.load_preset(3).unwrap();
+        assert_eq!(
+            knob(&sim),
+            Some(0.7),
+            "a clean same-slot load must be a no-op"
+        );
+    }
+
+    #[test]
+    fn an_edit_makes_the_same_slot_load_a_real_reload() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        poke_knob(&sim);
+        s.change_parameter("G1", "n2", "mix", 0.1).unwrap();
+        s.load_preset(3).unwrap();
+        assert_eq!(knob(&sim), None, "a dirty same-slot load must reload");
+    }
+
+    #[test]
+    fn a_scene_recall_makes_the_same_slot_load_a_real_reload() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        poke_knob(&sim);
+        s.load_scene(crate::session::BASE_SCENE_SLOT).unwrap();
+        s.load_preset(3).unwrap();
+        assert_eq!(knob(&sim), None);
+    }
+
+    #[test]
+    fn a_remove_of_an_unknown_node_still_makes_the_load_real() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        poke_knob(&sim);
+        let _ = s.remove_node("G1", "no-such-node");
+        s.load_preset(3).unwrap();
+        assert_eq!(knob(&sim), None);
+    }
+
+    /// Refused on base, so the flag stays clear and the load is still skipped.
+    #[test]
+    fn a_scene_edit_on_base_leaves_the_load_skipped() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        poke_knob(&sim);
+        s.set_node_scene_edit("G1", "n1", true).unwrap();
+        s.load_preset(3).unwrap();
+        assert_eq!(knob(&sim), Some(0.7));
+    }
+
+    /// A refused clear (no function at that index) leaves the flag clear.
+    #[test]
+    fn a_refused_footswitch_clear_leaves_the_load_skipped() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        poke_knob(&sim);
+        s.clear_footswitch_assignment(0, 4).unwrap();
+        s.load_preset(3).unwrap();
+        assert_eq!(knob(&sim), Some(0.7));
+    }
+
+    #[test]
+    fn loading_another_slot_first_forces_the_real_reload() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(3).unwrap();
+        s.load_preset(4).unwrap();
+        poke_knob(&sim);
+        s.load_preset(3).unwrap();
+        assert_eq!(knob(&sim), None);
+    }
+
+    /// A save makes its target the load identity, even when another slot was loaded.
+    #[test]
+    fn a_save_to_another_slot_moves_the_load_identity() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(3).unwrap();
+        s.save_current_preset(5).unwrap();
+        poke_knob(&sim);
+        s.load_preset(5).unwrap();
+        assert_eq!(
+            knob(&sim),
+            Some(0.7),
+            "the saved-to slot is now the loaded one"
+        );
+        s.load_preset(3).unwrap();
+        assert_eq!(
+            knob(&sim),
+            None,
+            "the first slot is no longer the loaded one"
+        );
+    }
+
+    /// The Q34(d) device shape on the saved `presetLevel`, with the live value moved by a
+    /// poke as in [`poke_knob`]: the clean load keeps it, and after `setPresetLevel` the
+    /// load restores the saved 0.81.
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn the_saved_preset_level_comes_back_only_on_a_real_reload() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(401).unwrap();
+        s.set_preset_level(0.81).unwrap();
+        s.save_current_preset(401).unwrap();
+        sim.state.lock().expect("sim lock").preset_level = 0.5;
+        s.load_preset(401).unwrap();
+        assert!(
+            (sim.preset_level() - 0.5).abs() < 1e-6,
+            "a clean same-slot load must keep the live level, got {}",
+            sim.preset_level()
+        );
+        s.set_preset_level(0.3).unwrap();
+        s.load_preset(401).unwrap();
+        assert!(
+            (sim.preset_level() - 0.81).abs() < 1e-6,
+            "a dirty same-slot load must restore the saved level, got {}",
+            sim.preset_level()
+        );
     }
 }
