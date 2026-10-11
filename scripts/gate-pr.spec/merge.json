@@ -1,0 +1,5 @@
+{
+  "tool_name": "Bash",
+  "cwd": "__CWD__",
+  "tool_input": { "command": "gh --repo owner/repo pr merge 1 --squash" }
+}

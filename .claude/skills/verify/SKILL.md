@@ -24,18 +24,19 @@ mapping — this skill would drift from it.
 What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on top of a green
 `gates.sh` (each row is cumulative):
 
-| Change class                                                                            | Escalate to                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Leveling-math / device-behavior change (solver, capture model, clamp/idempotency logic) | attended **online**: `scripts/e2e.sh online` — the runner stamps the online tier itself, and only when the full default spec set ran, the ffmpeg validation passed, and the tree key was unchanged across the run. A pass ending `NOT stamped` means re-run on the final tree; recording by hand certifies exactly what the runner declined to |
-| Release-risk change to the solve/save/idempotency path                                  | + `scripts/e2e.sh soak <N>` (N ≥ 5) — the attended repeat lane for drift/engage-drop/stochastic device-state bugs a single online run won't catch                                                                                                                                                                                              |
+| Change class                                                                            | Escalate to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Leveling-math / device-behavior change (solver, capture model, clamp/idempotency logic) | attended **online**: `scripts/pre-pr.sh` (offline gates and `scripts/e2e.sh online auto` side by side), or `scripts/e2e.sh online auto` alone — `auto` runs exactly the specs `scripts/gates.sh --required-online` names for this diff. Any passing run merges the specs it ran into the tree's online stamp, so a failed spec re-runs alone; it stamps only when every spec passed, the tree key held, level.online (if it ran) passed the ffmpeg validation, and the unit presents its stock USB interfaces. A pass ending `NOT stamped` means re-run on the final tree; recording by hand certifies exactly what the runner declined to |
+| Release-risk change to the solve/save/idempotency path                                  | + `scripts/e2e.sh soak <N>` (N ≥ 5) — the attended repeat lane for drift/engage-drop/stochastic device-state bugs a single online run won't catch                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## 2. Enforcement reality (why "looks green" isn't optional to prove)
 
 - `scripts/gates.sh --check` gates `.husky/pre-push` — a stale/missing stamp re-runs the gates;
   a red gate aborts the push with the failing gate's own output.
 - `scripts/claude-hooks/gate-pr.sh` (a `PreToolUse(Bash)` hook) blocks `gh pr create`/`gh pr merge`
-  on a stale/missing green stamp, and additionally requires a fresh **online** stamp
-  (`--check-online`) when the diff touches a device-facing path (`gate-pr.sh`'s `device_re` is the list).
+  on a stale/missing green stamp, and additionally requires a fresh **online** stamp covering the
+  specs the diff reaches (`gates.sh --check-online-diff`; the class map is `scripts/gate-map.tsv`,
+  the per-class specs `scripts/gate-policy.tsv`, and a Rust gate fails on any unmapped backend file).
 - `scripts/claude-hooks/block-bypass.sh` blocks `--no-verify`/`HUSKY=0`/`core.hooksPath` on any
   `git commit`/`git push` — there is no sanctioned bypass; fix the red gate instead.
 - CI (`ci.yml`) stays the remote authority; these are the local/agent layer that keeps a red tree
@@ -47,7 +48,7 @@ What `gates.sh` **cannot** do for you — attended, hardware-gated, layered on t
   `scripts/e2e.sh` kills the port before every run, but a direct `bunx playwright test` invocation
   can hit a leftover WRONG-mode server via `reuseExistingServer: true`. Kill the REAL port first,
   always — in a worktree that's the per-worktree DERIVED port. Offline claims an 8-port stride
-  based at 7800 (`scripts/e2e.sh`'s `PORT_BASE`), never a fixed 7600; check `$TMP_E2E_PORT` or
+  based at 7800 (online: 9400; `scripts/e2e.sh`'s `PORT_BASE`), never a fixed 7600; check `$TMP_E2E_PORT` or
   the e2e.sh log line before killing a hardcoded port, and prefer letting `scripts/e2e.sh` sweep
   the range itself.
 - **Fresh worktree needs deps before checks, not just before dev** (CLAUDE.md's "Fresh clone or worktree"

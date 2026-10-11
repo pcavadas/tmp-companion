@@ -400,7 +400,18 @@ impl TrackedHid {
     /// About to write `body`: reopen a client the device may have dropped, then reset
     /// the silence clock.
     fn wrote(&self, body: &[u8]) -> Result<(), String> {
-        if self.auto_reopen && self.maybe_lapsed() {
+        let gap_ms = self.last_write.get().elapsed().as_millis() as u64;
+        let reopening = self.auto_reopen && self.maybe_lapsed();
+        // Headroom accounting for the online e2e lane (`scripts/e2e.sh` counts these lines):
+        // every reopen, and every OUT gap that ate into the last 250 ms before the drop.
+        if reopening || gap_ms > HEADROOM_WARN_MS {
+            log::warn!(
+                "hid-headroom: OUT gap {gap_ms} ms (silent {} ms) before a write{}",
+                self.silent_ms(),
+                if reopening { ", auto-reopen" } else { "" }
+            );
+        }
+        if reopening {
             let reopen = proto::connection_request();
             if body != reopen {
                 let reports = self.inner.transact(&reopen, 100)?;
@@ -499,6 +510,9 @@ const IMPORT_ECHO_WAIT_MS: u64 = 1500;
 /// drop the device's timer and ours may disagree, so callers treat it as lapsed: a
 /// re-arm on a still-live client costs one `connectionError`, a skipped one costs the read.
 const CLEARLY_LIVE_MS: u64 = HID_INACTIVITY_DROP_MS - 150;
+/// An OUT gap above this leaves under 250 ms of headroom to [`HID_INACTIVITY_DROP_MS`];
+/// `TrackedHid` logs each one (`hid-headroom:`) so a load-induced lapse is a named event.
+const HEADROOM_WARN_MS: u64 = 500;
 
 /// The handshake's base pump windows `[connect, per-request, final]` (full or lean).
 fn handshake_base_windows(lean: bool) -> [u64; 3] {

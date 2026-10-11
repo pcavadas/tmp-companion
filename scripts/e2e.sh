@@ -4,7 +4,9 @@
 #
 #   scripts/e2e.sh                  # OFFLINE (SimDevice) — fast, default, no hardware (~1.5 min)
 #   scripts/e2e.sh offline copy     # OFFLINE, only the copy spec
-#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy in turn (~40 min)
+#   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy in turn (~25 min)
+#   scripts/e2e.sh online auto      # ONLINE, exactly the specs this diff requires
+#                                   # (`scripts/gates.sh --required-online`; nothing → exit 0)
 #   scripts/e2e.sh online level.online   # ONLINE, only the level arc
 #   scripts/e2e.sh online all       # ONLINE, the full set (= the default online set)
 #   scripts/e2e.sh soak <N>         # ONLINE, attended: loop level.online.spec.ts N times —
@@ -14,8 +16,15 @@
 # SimDevice e2e_server + vite). ONLINE is fully managed: it pre-flights the device via a
 # handshake-verified server start, runs each heavy spec in its own invocation (the device is
 # exclusive-seize and the level spec is two ~3-min tests), and ALWAYS recovers the unit on
-# exit — reamp-off + guarded scratch-clear (400-409) + recall 001 — even on Ctrl-C or a
-# failed/killed run (a killed level run otherwise strands the unit re-amp-engaged / input-muted).
+# exit — reamp-off + stray sweep + recall 001 (+ a guarded scratch-zone clear with
+# TMP_E2E_CLEAR_SCENARIO=1) — even on Ctrl-C or a failed/killed run (a killed level run
+# otherwise strands the unit re-amp-engaged / input-muted).
+#
+# STAMPING: any passing ONLINE run merges the specs it ran into this tree's online stamp
+# (`scripts/gates.sh --record-online`), so a failed spec re-runs alone. It stamps only when
+# every spec passed, the tree key held, the mode is not soak, level.online (if it ran) was
+# externally validated, and the unit presents its stock USB interfaces
+# (`lane_stamp_verdict` in scripts/lib/e2e-lane.sh).
 #
 # Both modes first kill any stale e2e_server across this worktree's whole port stride (filtered
 # to e2e_server processes, so a sibling worktree's run is never touched), so neither can reuse a
@@ -25,6 +34,8 @@
 #
 # Preconditions for ONLINE: the unit plugged in, and Pro Control CLOSED (it holds the exclusive
 # HID seize). A handshake failure is reported with that hint.
+#
+# Per-spec wall times are appended to $LOG_DIR/online-timings.tsv.
 #
 # Written to run under macOS system /bin/bash (3.2) — note the empty-array `set -u` guards.
 set -euo pipefail
@@ -51,14 +62,25 @@ cd "$REPO"
 # worktree's range is stable, and the stale-kill below always covers all of it.
 # Vite stays one port per worktree (a single shared asset server).
 #
-# PORT_BASE is 7800, ABOVE the 7600-7799 window the previous single-port scheme could occupy
-# (7600 + cksum%200). Two concurrent offline runs must never interfere, and during the window
-# where some worktrees still run the OLD script that is only true if the two schemes cannot
-# overlap at all: a strided range based at 7600 would have put THIS worktree at 7704-7711,
-# squarely inside the legacy band, so a run here could kill a sibling's live server and vice
-# versa. Disjoint bands make that structurally impossible rather than merely unlikely.
+# OFFLINE's PORT_BASE is 7800, ABOVE the 7600-7799 window the previous single-port scheme
+# could occupy (7600 + cksum%200). Two concurrent offline runs must never interfere, and during
+# the window where some worktrees still run the OLD script that is only true if the two schemes
+# cannot overlap at all: a strided range based at 7600 would have put THIS worktree at
+# 7704-7711, squarely inside the legacy band, so a run here could kill a sibling's live server
+# and vice versa. Disjoint bands make that structurally impossible rather than merely unlikely.
+#
+# ONLINE (and soak) get their OWN bands — bridge 9400 + offset*8 (9400-10999), Vite 1621 +
+# offset (1621-1820) — disjoint from offline's 7800-9399 / 1421-1620 and from the legacy
+# 7600-7799. So the two lanes can run side by side in ONE worktree (scripts/pre-pr.sh): each
+# lane's stale-server sweep covers only its own band, and each lane starts and owns its own
+# Vite, so an offline run that finishes first cannot take the online run's Vite down with it.
+# The mode is pre-scanned here because the full argument parse comes later.
 PORT_STRIDE=8
 PORT_BASE=7800
+VITE_BASE=1421
+for a in "$@"; do
+  case "$a" in online|soak) PORT_BASE=9400; VITE_BASE=1621 ;; esac
+done
 WORKERS="${TMP_E2E_WORKERS:-3}"
 # NB printf, not err() — the helpers are defined further down and this runs before them.
 # The `case` rejects a non-numeric value FIRST: `[ x -gt y ]` on a non-integer errors out
@@ -75,10 +97,12 @@ if [ "$WORKERS" -lt 1 ] || [ "$WORKERS" -gt "$PORT_STRIDE" ]; then
 fi
 PORT_OFFSET=$(( $(printf '%s' "$REPO" | cksum | cut -d' ' -f1) % 200 ))
 PORT="${TMP_E2E_PORT:-$((PORT_BASE + PORT_OFFSET * PORT_STRIDE))}"
-VITE_PORT="${TMP_E2E_VITE_PORT:-$((1421 + PORT_OFFSET))}"
+VITE_PORT="${TMP_E2E_VITE_PORT:-$((VITE_BASE + PORT_OFFSET))}"
 export TMP_E2E_PORT="$PORT" TMP_E2E_VITE_PORT="$VITE_PORT" TMP_E2E_WORKERS="$WORKERS"
 # shellcheck source=scripts/device-lock.sh disable=SC1091
 . "$REPO/scripts/device-lock.sh"
+# shellcheck source=scripts/lib/e2e-lane.sh disable=SC1091
+. "$REPO/scripts/lib/e2e-lane.sh"
 
 OFFLINE_CFG="e2e/playwright.config.ts"
 ONLINE_CFG="e2e/playwright.online.config.ts"
@@ -144,24 +168,27 @@ mkdir -p "$LOG_DIR"
 # ── parse args: a mode token (online|offline) + zero or more spec names (copy|level|songs|all) ──
 MODE="offline"
 SPECS=()
-# Set ONLY by the default/`all` spec-set arm below — certifies that THIS run covers the
-# full online tier, the precondition (alongside a passing external-validation pass) for
-# `scripts/gates.sh --record-online` at the very end. An explicit spec list (even one that
-# happens to name all four specs) and soak mode both leave this at 0 on purpose.
+# Set ONLY by the default/`all` spec-set arm below. It no longer gates stamping (any passing
+# run stamps the specs it ran); it is recorded as `set=full|partial` on the stamp's #run line.
 FULL_SET=0
 for a in "$@"; do
   case "$a" in
     online|offline|soak) MODE="$a" ;;
     -h|--help)
       cat >&2 <<'USAGE'
-Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|level.online|all ...]
+Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|level.online|all|auto ...]
        scripts/e2e.sh soak <N>
   (no args)             OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy          OFFLINE — only the copy spec
-  online                ONLINE  — doctor, level, songs, copy vs the real unit (~40 min;
+  online                ONLINE  — doctor, level, songs, copy vs the real unit (~25 min;
                         Pro Control closed). doctor-apply.online is on-demand only — pass
                         it explicitly: `scripts/e2e.sh online doctor-apply.online`
+  online auto           ONLINE  — exactly the specs this diff requires
+                        (`scripts/gates.sh --required-online`): ANY runs songs, nothing
+                        required exits 0 without touching the unit
   online level.online   ONLINE  — only the level arc
+  Any passing online run merges the specs it ran into this tree's online stamp; soak
+  never stamps, and neither does a unit without its stock USB interfaces.
   soak <N>              ONLINE  — attended: loop level.online.spec.ts N times, print a
                         per-run ledger + end tally (drift / engage-drop / stochastic
                         device-state class)
@@ -170,6 +197,32 @@ USAGE
     *) SPECS+=("$a") ;;
   esac
 done
+
+# ── `online auto`: resolve the spec set from the diff BEFORE anything builds, locks or seeds,
+#    so a diff that needs nothing exits 0 without touching the unit. `ANY` (a file every
+#    online run exercises, such as probe.rs's seed arm) runs songs, the cheapest spec. The
+#    resolved names replace `auto`; everything below sees an ordinary explicit spec list. ──
+case " ${SPECS[*]:-} " in
+  *" auto "*)
+    if [ "$MODE" != online ] || [ "${#SPECS[@]}" -ne 1 ]; then
+      printf '\033[31m✗ %s\033[0m\n' 'auto is an online spec set on its own: scripts/e2e.sh online auto' >&2
+      exit 2
+    fi
+    if ! AUTO_REQ="$(bash "$REPO/scripts/gates.sh" --required-online)"; then
+      printf '\033[31m✗ scripts/gates.sh --required-online failed\033[0m\n' >&2
+      exit 2
+    fi
+    SPECS=()
+    case "$AUTO_REQ" in
+      '')
+        printf '\033[36m▸ online auto: this diff requires no online spec — nothing to run\033[0m\n'
+        exit 0 ;;
+      ANY) SPECS+=(songs) ;;
+      *) for s in $AUTO_REQ; do SPECS+=("$s"); done ;;
+    esac
+    printf '\033[36m▸ online auto: this diff requires %s\033[0m\n' "${SPECS[*]}"
+    ;;
+esac
 
 SERVER_PID=""
 
@@ -212,6 +265,8 @@ kill_port() {
 # versa. Sweeping the full stride rather than just $WORKERS also cleans up after a run that
 # used MORE workers than this one.
 kill_port_range() {
+  log "sweeping stale e2e_servers on :$PORT-$(( PORT + PORT_STRIDE - 1 )) (this lane's band)"
+  if [ "${TMP_E2E_SWEEP_DRY_RUN:-}" = 1 ]; then exit 0; fi
   i=0
   while [ "$i" -lt "$PORT_STRIDE" ]; do
     kill_port $(( PORT + i ))
@@ -224,12 +279,12 @@ bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the respo
     -H 'content-type: application/json' -d "$1" 2>/dev/null
 }
 
-# shellcheck disable=SC2329  # invoked transitively from the trap handler (cleanup → recover_device → post), which shellcheck doesn't statically trace
+# shellcheck disable=SC2329,SC2317  # invoked transitively from the trap handler (cleanup → recover_device → post), which shellcheck doesn't statically trace
 post() { # POST one /invoke command, best-effort (recovery must never fail the script)
   bridge_post "$1" "${2:-60}" >/dev/null 2>&1 || true
 }
 
-# shellcheck disable=SC2329  # invoked from the trap handler (cleanup), not statically traced
+# shellcheck disable=SC2329,SC2317  # invoked from the trap handler (cleanup), not statically traced
 recover_device() {
   curl -fsS -m 5 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 || return 0  # server gone, nothing to do
   log "recovering device — reamp-off + stray sweep + recall 001"
@@ -272,12 +327,12 @@ recover_device() {
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
 }
 
-# shellcheck disable=SC2329  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
+# shellcheck disable=SC2329,SC2317  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
 cleanup() { # ONLINE only (offline execs Playwright, which owns teardown + has no device)
   local code=$?
   trap - EXIT INT TERM
   recover_device                          # guarded-clear is fail-closed: never touches a real preset
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
   kill_port "$PORT"                       # cargo run spawns the binary as a child — kill by port too
   device_lock_release                     # release the machine-global device lock (online only)
   exit "$code"
@@ -320,6 +375,21 @@ if [ "$MODE" = offline ]; then
 fi
 
 # ── ONLINE: managed — seed-first, handshake-verified start, per-spec runs, recovery ──
+
+# The unit must present its stock USB interfaces for a run to stamp. Checked before the lock
+# and the seed, from the host's own USB listing (no HID access). A non-stock or unknown unit
+# still runs, unstamped, unless TMP_E2E_REQUIRE_STOCK=1 (scripts/pre-pr.sh) refuses it here.
+UNIT="$(lane_unit_state)"
+if [ "$UNIT" = stock ]; then
+  log "unit=stock — the unit presents its stock USB interfaces"
+else
+  err "unit=$UNIT — the unit must present its stock USB interfaces; this run will NOT stamp"
+  if [ "${TMP_E2E_REQUIRE_STOCK:-}" = 1 ]; then
+    err "TMP_E2E_REQUIRE_STOCK=1 — refusing before anything is seeded"
+    exit 1
+  fi
+fi
+
 trap cleanup EXIT INT TERM
 
 # Serialize the ONE device across sessions/worktrees before any device work (seed/handshake).
@@ -330,7 +400,7 @@ if ! device_lock_acquire "$REPO"; then
 fi
 
 # Resolve the spec set: empty (→ "  ") OR `all` → the full ordered set (light → heavy).
-# ONLINE e2e consolidation (8 files/~60-75 min → 4 files/~40 min): doctor.online absorbs
+# ONLINE e2e consolidation (8 files/~60-75 min → 4 files, ~25 min today): doctor.online absorbs
 # doctor.spec.ts's online half + doctor-oracle.online.spec.ts (both deleted/retired);
 # level.online absorbs level.spec.ts's online half + level-strict.spec.ts (deleted) +
 # level-rerun.spec.ts's online half (retired; level-rerun.spec.ts is now DELETED entirely
@@ -581,7 +651,7 @@ if [ "$needs_scene_preflight" -eq 1 ]; then
   scene_change_preflight || exit 1
 fi
 
-# Snapshot the tree KEY now, covering the whole ~40-min spec + validation window below
+# Snapshot the tree KEY now, covering the whole ~25-min spec + validation window below
 # (seeding/server start are device work, not tracked-file work, so starting the window
 # here rather than earlier is deliberate, not a gap). The record block re-reads this at
 # the end and refuses to stamp on a mismatch — a MID-RUN EDIT means the tree this run's
@@ -615,9 +685,12 @@ for s in "${SPECS[@]}"; do
   # runtime condition) exits 0 having exercised nothing; that used to log PASSED and
   # could certify a stamp for a run that proved nothing about the spec it named.
   spec_log="$LOG_DIR/online-spec-$s.log"
+  spec_start=$(date +%s)
+  spec_verdict=fail
   if bun x playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts" | tee "$spec_log"; then
     if grep -Eq '[1-9][0-9]* passed' "$spec_log"; then
       log "specs/$s.spec.ts PASSED"
+      spec_verdict=pass
     else
       err "specs/$s.spec.ts ran 0 tests online (all skipped) — false-green guard"
       fail=1
@@ -625,7 +698,30 @@ for s in "${SPECS[@]}"; do
   else
     err "specs/$s.spec.ts FAILED"; fail=1
   fi
+  # Per-spec wall time, so per-diff spec selection's saving is measured, not guessed.
+  spec_secs=$(( $(date +%s) - spec_start ))
+  log "specs/$s.spec.ts wall time: ${spec_secs}s"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$s" "$spec_secs" "$spec_verdict" \
+    "$KEY_START" >> "$LOG_DIR/online-timings.tsv"
 done
+
+# ── host-silence headroom ──────────────────────────────────────────────────────────
+# The device drops a client after ~750 ms of host OUT silence (danger.md). The e2e_server
+# logs one `hid-headroom:` line for every OUT gap above 500 ms and every TrackedHid
+# auto-reopen (session.rs), so a load-induced lapse is a named event, not a mystery red.
+# Counted from THIS run's server log (truncated at server start). Informational by
+# default; TMP_E2E_HEADROOM_STRICT=1 (scripts/pre-pr.sh, which loads the host with the
+# offline lane) turns any event into a failure naming the gaps.
+headroom_events="$(grep -c 'hid-headroom:' "$SERVER_LOG" 2>/dev/null || true)"
+headroom_events="${headroom_events:-0}"
+log "headroom: $headroom_events host-silence event(s) (OUT gap > 500 ms or auto-reopen) in the online lane"
+if [ "$headroom_events" -gt 0 ]; then
+  grep 'hid-headroom:' "$SERVER_LOG" | head -10 >&2 || true
+  if [ "${TMP_E2E_HEADROOM_STRICT:-}" = 1 ]; then
+    err "TMP_E2E_HEADROOM_STRICT=1 and the online lane went silent past 500 ms (lines above) — failing the run"
+    fail=1
+  fi
+fi
 
 if [ "$fail" -eq 0 ]; then
   log "all online specs passed"
@@ -698,34 +794,35 @@ fi
 
 # ── online-stamp recording ──────────────────────────────────────────────────────
 # Deliberately OUTSIDE cleanup() (which fires on every exit, including a failed/killed
-# run) — this only ever runs once, here, on the genuine full-suite success path. It also
-# runs BEFORE the EXIT trap's recover_device (trap handlers fire only once this script
-# actually exits, after this point): a failed device recovery does not invalidate the
-# results this run already measured, so that failure mode is an ACCEPTED RESIDUAL here —
-# it is not this block's job to gate on it.
+# run) — this only ever runs once, here. It also runs BEFORE the EXIT trap's
+# recover_device (trap handlers fire only once this script actually exits, after this
+# point): a failed device recovery does not invalidate the results this run already
+# measured, so that failure mode is an ACCEPTED RESIDUAL here — it is not this block's job
+# to gate on it.
 #
-# Three independent gates, all required: FULL_SET (only the default/`all` spec-set arm
-# sets it — an explicit partial/full spec list and soak mode never do, so neither can
-# reach this), `validated` (only a real vrc==0 PASS under the ffmpeg meter sets it — the
-# exit-3 skip, the exit-4 vacuous pass, and the no-ffmpeg-at-all path all leave it 0,
-# since none of them actually confirmed anything), and a STABLE tree key: a MID-RUN EDIT
-# landing anywhere in the ~40-min window between KEY_START and here means this run's
-# result no longer describes the tree that would be stamped.
-if [ "$fail" -eq 0 ] && [ "$FULL_SET" -eq 1 ]; then
-  if [ "$validated" -ne 1 ]; then
-    # Covers three distinct reasons (ffmpeg absent, exit-3 mid-run skip, exit-4 vacuous
-    # pass) — each already logged its own specific banner/line above, so this is
-    # deliberately generic rather than re-guessing which one applied.
-    log "online lane passed but NOT stamped — external validation did not confirm anything"
-  else
-    KEY_END="$(bash "$REPO/scripts/gates.sh" --key)"
-    if [ "$KEY_END" != "$KEY_START" ]; then
-      err "NOT stamped — the tree changed during the run (key $KEY_START -> $KEY_END); re-run the lane on the final tree"
-    else
-      log "recording the online stamp for the full tier (${SPECS[*]}) — externally validated"
-      bash "$REPO/scripts/gates.sh" --record-online "${SPECS[@]}"
-    fi
-  fi
+# The decision is `lane_stamp_verdict` (scripts/lib/e2e-lane.sh), a pure function proven
+# offline by scripts/e2e-lane.spec.sh: no failure, not soak, a stock unit, `validated` when
+# level.online ran (only a real vrc==0 PASS under the ffmpeg meter sets it — the exit-3
+# skip, the exit-4 vacuous pass and the no-ffmpeg path all leave it 0), and a STABLE tree
+# key (a MID-RUN EDIT means this result no longer describes the tree that would be
+# stamped). The stamp MERGES: specs from separate passing runs on one tree add up.
+ran_level=0
+for s in "${SPECS[@]:-}"; do
+  [ "$s" = "level.online" ] && ran_level=1
+done
+KEY_END="$(bash "$REPO/scripts/gates.sh" --key)"
+verdict="$(lane_stamp_verdict "$fail" "$KEY_START" "$KEY_END" "$MODE" "$ran_level" "$validated" "$UNIT")"
+if [ "$verdict" = stamp ]; then
+  if [ "$FULL_SET" -eq 1 ]; then run_set=full; else run_set=partial; fi
+  if [ "$ran_level" -eq 1 ]; then run_validated="$validated"; else run_validated=na; fi
+  run_os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  run_fw="$(lane_fw_from_log < "$SERVER_LOG")"
+  log "recording the online stamp (${SPECS[*]})"
+  bash "$REPO/scripts/gates.sh" --record-online \
+    --run "os=${run_os:-unknown} fw=$run_fw unit=$UNIT validated=$run_validated set=$run_set" \
+    "${SPECS[@]}"
+elif [ "$fail" -eq 0 ]; then
+  log "online lane passed but NOT stamped — ${verdict#no-stamp: }"
 fi
 
 exit "$fail"

@@ -132,4 +132,6 @@ Footswitch rows are externally validated through `probe --measure-footswitch <sl
 - **The base is 7800, above the 7600-7799 window the old single-port scheme used.** Disjoint bands mean a worktree still running the old script cannot collide with a strided one during the migration. Two concurrent offline runs must never interfere.
 - **`kill_port` filters by process name** (`ps -o comm=` matching `e2e_server`) before killing. `lsof -i tcp:N` matches either endpoint and cannot tell whose server it found; sweeping 8 ports unfiltered could kill a sibling worktree's live run or an unrelated dev server.
 
+**The online lane has its own bands** — bridge `9400 + offset*8` (9400–10999) and Vite `1621 + offset` (1621–1820) — disjoint from offline's 7800–9399 / 1421–1620 and from the legacy 7600–7799. Each lane sweeps only its own band and starts and owns its own Vite, which is what lets `scripts/pre-pr.sh` run `gates.sh` and `scripts/e2e.sh online auto` side by side in one worktree: an offline run that finishes first cannot take the online run's Vite down. `TMP_E2E_SWEEP_DRY_RUN=1` prints a lane's swept range and exits.
+
 Still a `% 200` hash with no occupied-port retry, so two worktree paths can collide — it reduces contention, it does not guarantee isolation. The one real device is serialized by a machine-global `mkdir` lock (`scripts/device-lock.sh`).

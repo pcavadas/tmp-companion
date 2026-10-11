@@ -27,10 +27,18 @@ Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,Err
   and **Pro Control closed** (it holds the exclusive HID seize). The script pre-flights the
   handshake, runs each spec in its own invocation, and recovers the unit on every handled exit
   (`trap cleanup EXIT INT TERM` — so Ctrl-C and `kill` included): reamp-off + recall 001, plus a
-  guarded clear of the scenario slots (`SCRATCH_SLOTS`, 400–409) only with `TMP_E2E_CLEAR_SCENARIO=1`.
+  guarded clear of the scenario slots (`SCRATCH_SLOTS`, 400–410) only with `TMP_E2E_CLEAR_SCENARIO=1`.
   A SIGKILL or host crash skips the traps — recover manually with `cargo run --bin probe -- --reamp-off`.
+- **`bash scripts/e2e.sh online auto`** — ONLINE, exactly the specs this diff requires
+  (`scripts/gates.sh --required-online`, from `scripts/gate-map.tsv` and `scripts/gate-policy.tsv`);
+  a diff that requires none exits 0 without touching the unit.
+- **`bash scripts/pre-pr.sh`** — the offline gates and `online auto` side by side, on disjoint port bands.
 
 Add a spec name — `copy` / `songs` / `doctor.online` / `level.online` — to run a single spec (e.g. `bash scripts/e2e.sh online level.online`).
+Any passing online run merges the specs it ran into the tree's online stamp (one `#run` line per run, with
+`os=`, `fw=` and `unit=`), so a failed spec re-runs alone. Soak never stamps, a level.online run stamps only
+when the ffmpeg validation passed, and no run stamps unless the unit presents its stock USB interfaces.
+Per-spec wall times land in `$TMPDIR/tmp-companion-e2e/online-timings.tsv`.
 
 The rest of this doc is the **coverage map** — the per-tab scenario inventory + the still-un-automated
 backlog (§9), independent of how the suite is launched. Markers below: **⌨️** = the scenario needs

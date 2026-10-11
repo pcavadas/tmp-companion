@@ -180,7 +180,11 @@ pub fn run_e2e_server() {
     // serving either way (a device-absent online run surfaces the error to the spec).
     if online {
         match e2e_seed_online_snapshot() {
-            Ok(()) => eprintln!("e2e_server: ONLINE — seeded snapshot from the real device"),
+            // `scripts/e2e.sh` greps the phrase (ready gate) and reads `fw=` (stamp run line).
+            Ok(fw) => eprintln!(
+                "e2e_server: ONLINE — seeded snapshot from the real device fw={}",
+                fw.as_deref().unwrap_or("unknown")
+            ),
             Err(e) => eprintln!("e2e_server: ONLINE — device handshake failed: {e}"),
         }
     } else {
@@ -475,14 +479,14 @@ fn e2e_install_showcase() {
 /// graph stays `None` (the hero just won't paint a live chain); the journeys don't need
 /// it. Requires the device plugged in + Pro Control closed.
 #[cfg(feature = "e2e")]
-fn e2e_seed_online_snapshot() -> Result<(), String> {
+fn e2e_seed_online_snapshot() -> Result<Option<String>, String> {
     let mut s = session::Session::connect_with_firmware()?;
     let fw = s.firmware_version();
     let presets = s.list_my_presets()?;
     drop(s); // release the seize; commands reopen via with_released_seize
     MONITOR_ENABLED.store(true, SeqCst);
-    monitor::e2e_install_snapshot(fw, presets, None);
-    Ok(())
+    monitor::e2e_install_snapshot(fw.clone(), presets, None);
+    Ok(fw)
 }
 
 /// Patch ONE slot's name in the startup snapshot's preset list so the UI's snapshot-backed

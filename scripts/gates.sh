@@ -14,11 +14,21 @@
 #   scripts/gates.sh --check-online  exit 0 iff an ONLINE stamp matches this tree
 #                                    AND covers every spec in the canonical online
 #                                    set (see --online-spec-set)
-#   scripts/gates.sh --record-online <spec>...
-#                                    write an ONLINE stamp for this tree naming the
-#                                    specs that passed (called by the online e2e
-#                                    runner AFTER it passes — this script never
-#                                    runs the device itself)
+#   scripts/gates.sh --check-online <spec>...
+#                                    the same, for the named specs only
+#   scripts/gates.sh --required-online
+#                                    print the online specs THIS diff requires, in
+#                                    canonical order (or `ANY`, or nothing), from
+#                                    scripts/gate-map.tsv + scripts/gate-policy.tsv;
+#                                    advisory lines go to stderr (read-only)
+#   scripts/gates.sh --check-online-diff
+#                                    exit 0 iff the ONLINE stamp covers what
+#                                    --required-online prints (the PR hook's check)
+#   scripts/gates.sh --record-online [--run <fields>] <spec>...
+#                                    MERGE the specs that passed into this tree's
+#                                    ONLINE stamp, plus one `#run <time> <fields>`
+#                                    line (called by the online e2e runner AFTER it
+#                                    passes — this script never runs the device)
 #   scripts/gates.sh --online-spec-set  print the canonical online spec set, one
 #                                    name per line (read-only; the single source
 #                                    of truth for the full online tier)
@@ -35,8 +45,9 @@
 #   rust      (src-tauri/)              → cargo clippy (e2e feat) + fmt + test --lib
 #   e2e-relev (any code side, e2e/,      → offline e2e (bun run e2e)
 #              scripts/e2e.sh)
-#   *.sh touched                        → shellcheck (only if installed) +
-#                                          tauri-dev-env.spec.sh
+#   *.sh / gate TSVs touched            → shellcheck (only if installed) +
+#                                          the shell specs (tauri-dev-env,
+#                                          gate-pr, e2e-lane)
 #
 # ── Stamp model ────────────────────────────────────────────────────────────
 # The stamp KEY is the git tree-object id of the whole working tree (tracked +
@@ -132,6 +143,90 @@ write_stamp() { # <stamp-path> <prefix> [content]  — one stamp per tree; orpha
   fi
 }
 
+# Union of changed files: everything in the working tree that differs from base, plus
+# untracked non-ignored files. Shared by the run mode's scope and --required-online.
+changed_files() {
+  {
+    if [ -n "$base" ]; then git diff --name-only "$base"; fi
+    git ls-files --others --exclude-standard
+  } | LC_ALL=C sort -u
+}
+
+# ── per-diff online spec selection (scripts/gate-map.tsv + scripts/gate-policy.tsv) ──
+GATE_MAP="$REPO/scripts/gate-map.tsv"
+GATE_POLICY="$REPO/scripts/gate-policy.tsv"
+TAB="$(printf '\t')"
+
+# <path> — print its gate-map class: the first row whose glob matches (bash `case`
+# semantics, so `*` crosses `/`), else `unclassified` under a gated root, else `none`.
+classify_path() {
+  local glob class
+  while IFS="$TAB" read -r glob class; do
+    case "$glob" in '' | '#'*) continue ;; esac
+    # shellcheck disable=SC2254  # the glob is the point: it comes from the map unquoted
+    case "$1" in $glob) printf '%s\n' "$class"; return 0 ;; esac
+  done < "$GATE_MAP"
+  case "$1" in
+    src-tauri/src/* | src-tauri/resources/samples/* | e2e/specs/* | e2e/fixtures/*)
+      printf 'unclassified\n' ;;
+    *) printf 'none\n' ;;
+  esac
+}
+
+# <class> — print its policy row's tokens (ALL for an unknown class: fail closed).
+policy_tokens() {
+  local class tokens advisory
+  while IFS="$TAB" read -r class tokens advisory; do
+    case "$class" in '' | '#'*) continue ;; esac
+    if [ "$class" = "$1" ]; then printf '%s\n' "$tokens"; return 0; fi
+  done < "$GATE_POLICY"
+  printf 'ALL\n'
+}
+
+# <class> — print its policy row's advisory, if any.
+policy_advisory() {
+  local class tokens advisory
+  while IFS="$TAB" read -r class tokens advisory; do
+    case "$class" in '' | '#'*) continue ;; esac
+    if [ "$class" = "$1" ]; then printf '%s' "${advisory:-}"; return 0; fi
+  done < "$GATE_POLICY"
+}
+
+# Print the online specs the current diff requires, in canonical order, one per line; or
+# `ANY` (at least one online spec, the cheapest); or nothing. Advisory lines go to stderr.
+required_online() {
+  local f class tok adv need_any=0 need="" spec
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    class="$(classify_path "$f")"
+    if [ "$class" = unclassified ]; then
+      printf 'gates: unclassified: %s — add a scripts/gate-map.tsv row; requiring every online spec\n' "$f" >&2
+      need="$need $ONLINE_SPEC_SET"
+      continue
+    fi
+    adv="$(policy_advisory "$class")"
+    if [ -n "$adv" ]; then printf 'gates: advisory (%s): %s — %s\n' "$class" "$f" "$adv" >&2; fi
+    if [ "$f" = src-tauri/src/commands/doctor.rs ]; then
+      printf 'gates: advisory: %s — if doctor_apply, doctor_save or doctor_discard changed, also run scripts/e2e.sh online doctor-apply.online\n' "$f" >&2
+    fi
+    for tok in $(policy_tokens "$class"); do
+      case "$tok" in
+        ALL) need="$need $ONLINE_SPEC_SET" ;;
+        ANY) need_any=1 ;;
+        -) ;;
+        *) need="$need $tok" ;;
+      esac
+    done
+  done <<EOF
+$(changed_files)
+EOF
+  local printed=0
+  for spec in $ONLINE_SPEC_SET; do
+    case " $need " in *" $spec "*) printf '%s\n' "$spec"; printed=1 ;; esac
+  done
+  if [ "$printed" -eq 0 ] && [ "$need_any" -eq 1 ]; then printf 'ANY\n'; fi
+}
+
 case "$MODE" in
   --check)
     if [ -f "$green_stamp" ]; then exit 0; fi
@@ -139,32 +234,91 @@ case "$MODE" in
     exit 1
     ;;
   --check-online)
+    shift
     if [ ! -f "$online_stamp" ]; then
       printf 'gates: no fresh ONLINE stamp for this tree — run the online e2e lane\n' >&2
       exit 1
     fi
-    covered=1
-    while IFS= read -r spec; do
-      [ -z "$spec" ] && continue
-      grep -qxF "$spec" "$online_stamp" || covered=0
-    done < <(online_spec_set)
-    if [ "$covered" -eq 1 ]; then exit 0; fi
-    printf 'gates: ONLINE stamp does not cover the full online tier (found: %s)\n' \
-      "$(tr '\n' ' ' < "$online_stamp")" >&2
+    if [ "$#" -eq 0 ]; then
+      # shellcheck disable=SC2086  # deliberate word-split: the canonical set
+      set -- $ONLINE_SPEC_SET
+    fi
+    missing=""
+    for spec in "$@"; do
+      grep -qxF "$spec" "$online_stamp" || missing="$missing $spec"
+    done
+    if [ -z "$missing" ]; then exit 0; fi
+    printf 'gates: ONLINE stamp lacks:%s (found: %s)\n' "$missing" \
+      "$(grep -v '^#' "$online_stamp" | tr '\n' ' ')" >&2
     exit 1
+    ;;
+  --required-online)
+    required_online
+    exit 0
+    ;;
+  --check-online-diff)
+    req="$(required_online)"
+    if [ -z "$req" ]; then exit 0; fi
+    printf 'gates: this diff requires online specs: %s\n' "$(printf '%s' "$req" | tr '\n' ' ')" >&2
+    if [ "$req" = ANY ]; then
+      # Any online spec that passed on this tree will do.
+      if [ -f "$online_stamp" ] && grep -qv '^#' "$online_stamp"; then exit 0; fi
+      printf 'gates: no fresh ONLINE stamp for this tree — run scripts/e2e.sh online auto\n' >&2
+      exit 1
+    fi
+    # shellcheck disable=SC2086  # deliberate word-split: one spec per word
+    exec /bin/bash "$0" --check-online $req
     ;;
   --record-online)
     shift
+    run_fields=""
+    if [ "${1:-}" = --run ]; then
+      run_fields="${2:-}"
+      shift 2 || shift $#
+    fi
     if [ "$#" -eq 0 ]; then
       printf 'gates: --record-online requires the spec names that passed, e.g.\n' >&2
       printf '  gates.sh --record-online doctor.online level.online songs copy\n' >&2
-      printf 'the runner records this automatically on a full passing lane — manual\n' >&2
+      printf 'the runner records this automatically on a passing lane — manual\n' >&2
       printf 'recording must name the specs that actually passed.\n' >&2
       exit 1
     fi
-    online_content="$(printf '%s\n' "$@")"
+    # MERGE with this key's existing stamp (write_stamp deletes every online-* file, so
+    # read it first): runs of different specs on one tree add up. Spec lines stay bare,
+    # one per line (--check-online greps them whole), canonical specs first in canonical
+    # order, then any other spec in first-seen order; `#run` lines follow, oldest first.
+    old_specs=""
+    old_runs=""
+    if [ -f "$online_stamp" ]; then
+      old_specs="$(grep -v '^#' "$online_stamp" || true)"
+      old_runs="$(grep '^#run ' "$online_stamp" || true)"
+    fi
+    all_specs="$(printf '%s\n' "$old_specs" "$@" | grep . || true)"
+    online_content=""
+    for spec in $ONLINE_SPEC_SET; do
+      if printf '%s\n' "$all_specs" | grep -qxF "$spec"; then
+        online_content="$online_content$spec
+"
+      fi
+    done
+    while IFS= read -r spec; do
+      [ -n "$spec" ] || continue
+      case " $ONLINE_SPEC_SET " in *" $spec "*) continue ;; esac
+      case "
+$online_content" in *"
+$spec
+"*) continue ;; esac
+      online_content="$online_content$spec
+"
+    done <<SPECS
+$all_specs
+SPECS
+    if [ -n "$old_runs" ]; then online_content="$online_content$old_runs
+"; fi
+    online_content="$online_content#run $(date -u +%Y-%m-%dT%H:%M:%SZ) specs=$(printf '%s' "$*" | tr ' ' ',')${run_fields:+ $run_fields}"
     write_stamp "$online_stamp" online "$online_content"
-    printf 'gates: online stamp recorded for this tree (%s)\n' "$*"
+    printf 'gates: online stamp recorded for this tree (%s; now covers: %s)\n' "$*" \
+      "$(printf '%s' "$online_content" | grep -v '^#' | tr '\n' ' ')"
     exit 0
     ;;
   --online-spec-set)
@@ -177,7 +331,7 @@ case "$MODE" in
     ;;
   run) ;;
   *)
-    printf 'gates: unknown mode %s (use: --check | --check-online | --record-online <spec>... | --online-spec-set | --key | no arg)\n' "$MODE" >&2
+    printf 'gates: unknown mode %s (use: --check | --check-online [spec...] | --required-online | --check-online-diff | --record-online [--run <fields>] <spec>... | --online-spec-set | --key | no arg)\n' "$MODE" >&2
     exit 2
     ;;
 esac
@@ -190,12 +344,7 @@ fi
 
 # Union of changed files: everything in the working tree that differs from base,
 # plus untracked non-ignored files.
-changed="$(
-  {
-    if [ -n "$base" ]; then git diff --name-only "$base"; fi
-    git ls-files --others --exclude-standard
-  } | LC_ALL=C sort -u
-)"
+changed="$(changed_files)"
 
 if [ -z "$changed" ]; then
   printf 'gates: no changes vs origin/main — nothing to check\n'
@@ -225,7 +374,7 @@ while IFS= read -r f; do
                                  want_frontend=1; want_e2e=1 ;;
   esac
   case "$f" in
-    *.sh) want_shell=1 ;;
+    *.sh | scripts/gate-*.tsv | scripts/gate-pr.spec/*) want_shell=1 ;;
   esac
 done <<EOF
 $changed
@@ -282,6 +431,11 @@ fi
 
 if [ "$want_shell" -eq 1 ] && [ -f scripts/tauri-dev-env.spec.sh ]; then
   run_gate "tauri-dev-env spec" /bin/bash scripts/tauri-dev-env.spec.sh
+fi
+
+if [ "$want_shell" -eq 1 ]; then
+  run_gate "gate-pr spec" /bin/bash scripts/gate-pr.spec.sh
+  run_gate "e2e-lane spec" /bin/bash scripts/e2e-lane.spec.sh
 fi
 
 if [ "$want_frontend" -eq 1 ]; then

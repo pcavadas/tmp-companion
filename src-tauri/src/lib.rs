@@ -2230,6 +2230,210 @@ mod fixture_gates {
         );
     }
 
+    /// `*` and `?` with bash `case` semantics: `*` matches any run of characters, `/`
+    /// included, and `?` any one character. `scripts/gate-map.tsv` uses nothing else (the
+    /// gate below refuses `[`), so this is the whole of `gates.sh`'s matcher.
+    fn gate_glob_match(glob: &[u8], path: &[u8]) -> bool {
+        match glob.split_first() {
+            None => path.is_empty(),
+            Some((b'*', rest)) => (0..=path.len()).any(|i| gate_glob_match(rest, &path[i..])),
+            Some((b'?', rest)) => !path.is_empty() && gate_glob_match(rest, &path[1..]),
+            Some((c, rest)) => path.first() == Some(c) && gate_glob_match(rest, &path[1..]),
+        }
+    }
+
+    /// The non-comment rows of a gate TSV, split on tabs.
+    fn gate_tsv_rows(text: &str) -> Vec<Vec<&str>> {
+        text.lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split('\t').collect())
+            .collect()
+    }
+
+    /// `scripts/gate-map.tsv`'s rows as (glob, class), in file order.
+    fn gate_map_rows(text: &str) -> Vec<(&str, &str)> {
+        gate_tsv_rows(text)
+            .into_iter()
+            .map(|r| {
+                assert_eq!(
+                    r.len(),
+                    2,
+                    "gate-map.tsv row {r:?} is not <glob> TAB <class>"
+                );
+                (r[0], r[1])
+            })
+            .collect()
+    }
+
+    /// The class of `path` under the map: the first matching row wins, as in `gates.sh`.
+    fn gate_class_of<'a>(rows: &[(&str, &'a str)], path: &str) -> Option<&'a str> {
+        rows.iter()
+            .find(|(g, _)| gate_glob_match(g.as_bytes(), path.as_bytes()))
+            .map(|(_, c)| *c)
+    }
+
+    /// The canonical online spec set, parsed from `gates.sh`'s ONLINE_SPEC_SET line.
+    fn gates_online_spec_set(gates: &str) -> Vec<&str> {
+        gates
+            .lines()
+            .find(|l| l.starts_with("ONLINE_SPEC_SET="))
+            .expect("scripts/gates.sh: the ONLINE_SPEC_SET=\"…\" line is gone")
+            .trim_start_matches("ONLINE_SPEC_SET=")
+            .trim_matches('"')
+            .split_whitespace()
+            .collect()
+    }
+
+    #[test]
+    fn gate_glob_match_follows_bash_case_semantics() {
+        let m = |g: &str, p: &str| gate_glob_match(g.as_bytes(), p.as_bytes());
+        assert!(m(
+            "src-tauri/src/*_tests.rs",
+            "src-tauri/src/commands/doctor_tests.rs"
+        ));
+        assert!(m(
+            "src-tauri/src/hid/*",
+            "src-tauri/src/hid/write_completion.rs"
+        ));
+        assert!(m("e2e/specs/*.spec.ts", "e2e/specs/level.spec.ts"));
+        assert!(m("a?c", "abc"));
+        assert!(!m("src-tauri/src/hid.rs", "src-tauri/src/hid.rs.bak"));
+        assert!(!m("src-tauri/src/hid/*", "src-tauri/src/hid.rs"));
+        assert!(!m("a?c", "ac"));
+    }
+
+    /// Every file under a gated root matches a `scripts/gate-map.tsv` row, so per-diff
+    /// online spec selection never silently drops a device-facing file to "none".
+    /// (`gates.sh --required-online` also fails closed on an unmatched file; this gate
+    /// makes the row part of the same commit as the file.)
+    #[test]
+    fn every_gated_file_matches_a_gate_map_row() {
+        const GATED_ROOTS: &[&str] = &[
+            "src-tauri/src",
+            "src-tauri/resources/samples",
+            "e2e/specs",
+            "e2e/fixtures",
+        ];
+        let map = std::fs::read_to_string("../scripts/gate-map.tsv").expect("read gate-map.tsv");
+        let rows = gate_map_rows(&map);
+        for (glob, _) in &rows {
+            assert!(
+                !glob.contains('[') && !glob.contains('{'),
+                "gate-map.tsv glob {glob} uses [ or {{ — use one row per path with * and ? only"
+            );
+        }
+        // Tracked plus untracked-not-ignored files, the same set `gates.sh` diffs — so an
+        // editor's or Finder's ignored droppings never fail this gate.
+        let out = std::process::Command::new("git")
+            .current_dir("..")
+            .args([
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+            ])
+            .args(GATED_ROOTS)
+            .output()
+            .expect("run git ls-files");
+        assert!(out.status.success(), "git ls-files failed");
+        let listing = String::from_utf8(out.stdout).expect("utf-8 paths");
+        let files: Vec<&str> = listing.lines().filter(|l| !l.is_empty()).collect();
+        assert!(
+            files.len() >= 100,
+            "only {} files listed under the gated roots — the listing is broken",
+            files.len()
+        );
+        let unclassified: Vec<&str> = files
+            .iter()
+            .copied()
+            .filter(|f| std::path::Path::new("..").join(f).exists())
+            .filter(|f| gate_class_of(&rows, f).is_none())
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "these files match no scripts/gate-map.tsv row: {unclassified:?} — add a row \
+             (specific rows above the catch-alls) naming the class whose online specs reach it"
+        );
+    }
+
+    /// No row is dead: a row whose own glob, read as a path, an EARLIER row already
+    /// matches can never win (first match wins). That is how a catch-all placed above a
+    /// specific row silently reclassifies it.
+    #[test]
+    fn no_gate_map_row_is_shadowed_by_an_earlier_row() {
+        let map = std::fs::read_to_string("../scripts/gate-map.tsv").expect("read gate-map.tsv");
+        let rows = gate_map_rows(&map);
+        for (i, (glob, class)) in rows.iter().enumerate() {
+            if let Some((earlier, eclass)) = rows[..i]
+                .iter()
+                .find(|(g, _)| gate_glob_match(g.as_bytes(), glob.as_bytes()))
+            {
+                panic!(
+                    "gate-map.tsv row `{glob}` ({class}) can never match: the earlier row \
+                     `{earlier}` ({eclass}) already does — move the specific row above it"
+                );
+            }
+        }
+    }
+
+    /// Every class the map names has a policy row; every policy token is a canonical
+    /// online spec, ALL, ANY or -; and each canonical spec's own file maps to a class
+    /// that requires that spec.
+    #[test]
+    fn gate_policy_covers_every_class_and_names_only_known_specs() {
+        let map = std::fs::read_to_string("../scripts/gate-map.tsv").expect("read gate-map.tsv");
+        let policy =
+            std::fs::read_to_string("../scripts/gate-policy.tsv").expect("read gate-policy.tsv");
+        let gates = std::fs::read_to_string("../scripts/gates.sh").expect("read gates.sh");
+        let rows = gate_map_rows(&map);
+        let specs = gates_online_spec_set(&gates);
+        let policy_rows = gate_tsv_rows(&policy);
+        let tokens_of = |class: &str| -> Option<Vec<&str>> {
+            policy_rows
+                .iter()
+                .find(|r| r[0] == class)
+                .map(|r| r.get(1).copied().unwrap_or("").split_whitespace().collect())
+        };
+        for r in &policy_rows {
+            assert!(
+                (2..=3).contains(&r.len()),
+                "gate-policy.tsv row {r:?} is not <class> TAB <tokens> [TAB <advisory>]"
+            );
+            let toks: Vec<&str> = r[1].split_whitespace().collect();
+            assert!(
+                !toks.is_empty(),
+                "gate-policy.tsv class {} has no tokens",
+                r[0]
+            );
+            for t in toks {
+                assert!(
+                    specs.contains(&t) || ["ALL", "ANY", "-"].contains(&t),
+                    "gate-policy.tsv class {} names `{t}`, which is not a canonical online \
+                     spec ({specs:?}), ALL, ANY or -",
+                    r[0]
+                );
+            }
+        }
+        for (glob, class) in &rows {
+            assert!(
+                tokens_of(class).is_some(),
+                "gate-map.tsv row `{glob}` names class `{class}`, which gate-policy.tsv lacks"
+            );
+        }
+        for spec in &specs {
+            let file = format!("e2e/specs/{spec}.spec.ts");
+            let class = gate_class_of(&rows, &file)
+                .unwrap_or_else(|| panic!("{file} matches no gate-map.tsv row"));
+            let toks = tokens_of(class).unwrap_or_default();
+            assert!(
+                toks.contains(spec) || toks.contains(&"ALL"),
+                "{file} is class `{class}`, whose policy ({toks:?}) does not require `{spec}` \
+                 — an edit to the spec would not re-run it"
+            );
+        }
+    }
+
     /// `scripts/validate-hbe.sh` carries an executable SHELL MIRROR of
     /// [`probe_api::SCRATCH_SLOTS`] (its own guard refuses slots outside it). Its comment
     /// says "update this line in the SAME commit" — this gate enforces that instead of

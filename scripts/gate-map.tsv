@@ -1,0 +1,177 @@
+# gate-map.tsv — which class each repo path belongs to, for per-diff online spec selection.
+#
+# Format: <glob> TAB <class>. One glob per row; `#` starts a comment line. Globs use bash
+# `case` semantics, so `*` also crosses `/` and there is no brace alternation. FIRST MATCH
+# WINS: specific rows first, the catch-alls (`session/*`, `probe_api/*`, `e2e/specs/*`) last.
+# Each class's required online specs live in scripts/gate-policy.tsv.
+#
+# Gated roots: src-tauri/src, src-tauri/resources/samples, e2e/specs, e2e/fixtures. A file
+# under a gated root that matches no row is UNCLASSIFIED: `gates.sh --required-online`
+# requires all four specs for it (fail closed), and the Rust gate
+# `every_gated_file_matches_a_gate_map_row` (lib.rs) fails naming it. A file elsewhere that
+# matches no row is class none. A row that matches no file yet is legal.
+
+# ── offline-oracle: unit tests and offline-only fixtures (before every catch-all) ──
+src-tauri/src/*_tests.rs	offline-oracle
+src-tauri/src/sim_device.rs	offline-oracle
+src-tauri/src/sim_device/*	offline-oracle
+src-tauri/src/test_support.rs	offline-oracle
+src-tauri/src/fixtures/*	offline-oracle
+e2e/fixtures/scenario-loudness.json	offline-oracle
+e2e/fixtures/backup-fixture.bin	offline-oracle
+e2e/fixtures/COVERAGE.md	offline-oracle
+e2e/fixtures/showcase/*	offline-oracle
+
+# ── transport ──
+src-tauri/src/session.rs	transport
+src-tauri/src/hid.rs	transport
+src-tauri/src/hid/*	transport
+src-tauri/src/audio.rs	transport
+src-tauri/src/audio/*	transport
+src-tauri/src/device_gate.rs	transport
+src-tauri/src/trace/*	transport
+
+# ── protocol ──
+src-tauri/src/proto.rs	protocol
+src-tauri/src/commands/device.rs	protocol
+src-tauri/src/monitor.rs	protocol
+
+# ── scan: the startup backup scan runs in every UI spec ──
+src-tauri/src/backup.rs	scan
+src-tauri/src/backup_read.rs	scan
+src-tauri/src/audiograph.rs	scan
+src-tauri/src/scenes.rs	scan
+src-tauri/src/slot_read.rs	scan
+src-tauri/src/footswitch.rs	scan
+src-tauri/src/commands/presets.rs	scan
+# read_song_list feeds the scan (backup_read.rs, commands/presets.rs) and read_song_presets
+# the seed's import path (replace_inplace.rs), so this is wider than the songs class.
+src-tauri/src/probe_api/songs.rs	scan
+
+# ── write: the seed's import path and every save ──
+src-tauri/src/replace_inplace.rs	write
+src-tauri/src/preset_io.rs	write
+src-tauri/src/blockcaps.rs	write
+src-tauri/src/probe_api/slot_write.rs	write
+src-tauri/src/probe_api/mod.rs	write
+
+# ── lane: the online lane's own runner, oracle, lock and seed ──
+scripts/e2e.sh	lane
+scripts/level-validate.sh	lane
+scripts/device-lock.sh	lane
+scripts/lib/e2e-lane.sh	lane
+e2e/playwright.online.config.ts	lane
+e2e/bridge-client.js	lane
+e2e/fixtures/scenario.ts	lane
+e2e/fixtures/assert-mode.ts	lane
+e2e/fixtures/test.ts	lane
+e2e/fixtures/port.ts	lane
+e2e/fixtures/scenario-presets.json	lane
+src-tauri/src/e2e_server.rs	lane
+src-tauri/src/validate_log.rs	lane
+src-tauri/src/bin/e2e_server.rs	lane
+src-tauri/src/probe_api/seed_scenario.rs	lane
+
+# ── probe-entry: online runs only its --seed-scenario arm ──
+src-tauri/src/bin/probe.rs	probe-entry
+
+# ── level: Doctor and leveling share captures, so both specs run ──
+src-tauri/src/leveller.rs	level
+src-tauri/src/doctor.rs	level
+src-tauri/src/headroom_trade.rs	level
+src-tauri/src/lufs.rs	level
+src-tauri/src/psd.rs	level
+src-tauri/src/param_class.rs	level
+src-tauri/src/profiles.rs	level
+src-tauri/src/topologies.rs	level
+src-tauri/src/commands/doctor.rs	level
+src-tauri/src/commands/level_preset.rs	level
+src-tauri/src/commands/level_scenes.rs	level
+src-tauri/src/commands/level_footswitch.rs	level
+src-tauri/src/probe_api/level.rs	level
+src-tauri/src/probe_api/stimulus.rs	level
+src-tauri/src/probe_api/scene_bench.rs	level
+src-tauri/src/probe_api/scene_jobs.rs	level
+src-tauri/resources/samples/*	level
+e2e/specs/doctor.online.spec.ts	level
+e2e/specs/level.online.spec.ts	level
+
+# ── copy ──
+src-tauri/src/commands/copy_apply.rs	copy
+src-tauri/src/commands/held_edit.rs	copy
+e2e/specs/copy.spec.ts	copy
+
+# ── songs ──
+src-tauri/src/commands/songs.rs	songs
+src-tauri/src/commands/setlists.rs	songs
+src-tauri/src/probe_api/setlists.rs	songs
+e2e/specs/songs.spec.ts	songs
+
+# ── unexercised: device-facing, but no online spec reaches it ──
+src-tauri/src/commands/bulk_replace.rs	unexercised
+src-tauri/src/commands/edit_tools.rs	unexercised
+src-tauri/src/commands/library.rs	unexercised
+src-tauri/src/commands/migration.rs	unexercised
+src-tauri/src/commands/media.rs	unexercised
+src-tauri/src/watcher.rs	unexercised
+src-tauri/src/watcher/*	unexercised
+src-tauri/src/bootstrap.rs	unexercised
+
+# ── on-demand: run it explicitly ──
+e2e/specs/doctor-apply.online.spec.ts	on-demand
+scripts/hw-e2e.sh	on-demand
+scripts/validate-hbe.sh	on-demand
+scripts/replay-user-leveling.sh	on-demand
+scripts/calibrate.sh	on-demand
+src-tauri/src/probe_api/harvest.rs	on-demand
+
+# ── none, made explicit: the side-by-side runner only orchestrates the two lanes ──
+scripts/pre-pr.sh	none
+
+# ── offline-oracle files added by later workstreams (rows ahead of the files) ──
+src-tauri/src/sim_clock.rs	offline-oracle
+src-tauri/src/sim_link.rs	offline-oracle
+src-tauri/src/sim_calibrated.rs	offline-oracle
+src-tauri/src/twin_hid.rs	offline-oracle
+src-tauri/src/conformance/*	offline-oracle
+e2e/conformance/*	offline-oracle
+e2e/fixtures/device-timing.json	offline-oracle
+e2e/fixtures/capture-noise.json	offline-oracle
+e2e/fixtures/smoke-anchors.json	offline-oracle
+e2e/fixtures/calibration/*	offline-oracle
+# WS2 enables this row in the PR that adds the file, with a Rust test that every /sim
+# route no-ops when e2e_online().
+# src-tauri/src/e2e_sim_routes.rs	offline-oracle
+
+# ── none: offline backend modules (their //! headers say offline; no device call) ──
+src-tauri/src/audition.rs	none
+src-tauri/src/dock.rs	none
+src-tauri/src/lint.rs	none
+src-tauri/src/rename.rs	none
+src-tauri/src/presetmeta.rs	none
+src-tauri/src/variants.rs	none
+src-tauri/src/ir.rs	none
+src-tauri/src/spectrum.rs	none
+src-tauri/src/blocklib.rs	none
+src-tauri/src/saved_blocks.rs	none
+src-tauri/src/migration.rs	none
+src-tauri/src/bulk_cmd.rs	none
+src-tauri/src/bulkrun.rs	none
+src-tauri/src/paramedit.rs	none
+src-tauri/src/search.rs	none
+src-tauri/src/library.rs	none
+src-tauri/src/lib.rs	none
+src-tauri/src/main.rs	none
+src-tauri/src/commands/mod.rs	none
+src-tauri/src/commands/support.rs	none
+src-tauri/src/commands/settings.rs	none
+src-tauri/src/bin/gen_samples.rs	none
+
+# ── catch-alls (keep LAST: a catch-all above a specific row silently reclassifies it) ──
+src-tauri/src/session/*	transport
+# Every other probe_api module has no product caller (checked by making the modules
+# private and running `cargo check --lib`, with and without --features e2e).
+src-tauri/src/probe_api/*	probe-only
+# Every remaining spec is offline-only (the online config runs *.online.spec.ts, plus
+# copy.spec.ts and songs.spec.ts above).
+e2e/specs/*.spec.ts	offline-oracle
