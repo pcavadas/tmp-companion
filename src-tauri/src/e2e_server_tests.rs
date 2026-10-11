@@ -2052,13 +2052,15 @@ fn offline_batched_song_saves_open_one_connection_each() {
         "create: one connection for the work: {created}"
     );
     assert_eq!(created["bpm_warning"], serde_json::Value::Null, "{created}");
-    assert!(created["members"].is_array(), "{created}");
     let slot = sim
         .song_names()
         .iter()
         .position(|n| n == "Soundcheck")
         .unwrap() as u32
         + 1;
+    // The membership read-back carries the new song: a create that skips
+    // `add_setlist_song` returns the setlist without it.
+    assert_eq!(created["members"], serde_json::json!([slot]), "{created}");
     let song = sim.song(slot).unwrap();
     assert_eq!(
         (song.notes.as_str(), song.bpm, song.bpm_active),

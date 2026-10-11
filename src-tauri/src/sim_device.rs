@@ -98,10 +98,13 @@ const F_LIST_REMOVE: u32 = 6;
 const F_LIST_RENAME: u32 = 7;
 const F_LIST_RESPONSE: u32 = 3;
 // A setlist's song MEMBERSHIP: request = setlistMessage(12).setlistSongListRequest(12),
-// response = setlistSongListResponse(13). The sim models no membership, but must answer
-// (an empty, complete response) so selecting a setlist doesn't hang on the read.
+// response = setlistSongListResponse(13) with records `{songSlot=1}`; edited by
+// `addSetlistSong`(14), `moveSetlistSong`(15) and `removeSetlistSong`(16).
 const F_SETLIST_SONGS_REQUEST: u32 = 12;
 const F_SETLIST_SONGS_RESPONSE: u32 = 13;
+const F_SETLIST_SONG_ADD: u32 = 14;
+const F_SETLIST_SONG_MOVE: u32 = 15;
+const F_SETLIST_SONG_REMOVE: u32 = 16;
 // SongMessage-only fields: a song's row read (request 12 → response 13), the row setter
 // `assignSongPreset`(14), `setSongNotes`(22) and `setSongBpmActive`(23).
 const F_SONG_PRESET_LIST_REQUEST: u32 = 12;
@@ -293,6 +296,22 @@ impl SimSong {
     }
 }
 
+/// A setlist: its name and members, as 1-based global song slots in setlist order.
+#[derive(Clone, Debug, PartialEq)]
+struct SimSetlist {
+    name: String,
+    members: Vec<u32>,
+}
+
+impl SimSetlist {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            members: Vec::new(),
+        }
+    }
+}
+
 /// One bound song footswitch. `user_preset_slot` is the 1-based device slot.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SimSongRow {
@@ -365,7 +384,7 @@ struct SimState {
     /// Songs (slot = index + 1) and setlist names, mutated by the CRUD setters so a
     /// read-back-after-write reflects the change — the Songs tab's contract.
     songs: Vec<SimSong>,
-    setlists: Vec<String>,
+    setlists: Vec<SimSetlist>,
     /// The 1-based song slot a `loadPreset{tabEnum=5}` made active; any other load clears
     /// it. `tapTempoBpm` writes this song's BPM — see [`SimSong`].
     active_song: Option<u32>,
@@ -555,7 +574,7 @@ impl Default for SimState {
             string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
             songs: vec![SimSong::new("Opening Set"), SimSong::new("Encore")],
-            setlists: vec!["Saturday Night".into()],
+            setlists: vec![SimSetlist::new("Saturday Night")],
             active_song: None,
             preset_scenes: HashMap::new(),
             // A recognized amp (with an `outputLevel` control) + one effect, under a known
@@ -1190,7 +1209,7 @@ impl SimDevice {
         {
             let mut st = self.state.lock().expect("sim lock");
             st.songs = songs.iter().map(|n| SimSong::new(n)).collect();
-            st.setlists = setlists;
+            st.setlists = setlists.iter().map(|n| SimSetlist::new(n)).collect();
         }
         self
     }
@@ -1805,47 +1824,87 @@ impl SimDevice {
 
     /// Handle a `SetlistMessage`(12): a list request replies with the current names (single
     /// frame); add/remove/rename mutate them so the app's read-back-after-write sees the
-    /// change. Membership setters are accepted and ignored.
+    /// change. Membership is modeled too: the add/move/remove setters edit
+    /// [`SimSetlist::members`] and the membership request reads it back.
     fn handle_setlist_msg(&self, inner_bytes: &[u8]) -> Vec<Vec<u8>> {
         let f = proto::parse(inner_bytes);
         let mut st = self.state.lock().expect("sim lock");
+        let lists = &mut st.setlists;
         if let Some(req) = proto::first_bytes(&f, F_SETLIST_SONGS_REQUEST) {
-            // Empty but COMPLETE membership response so the read resolves (no modeled
-            // songs), echoing `setlistSlot` like the firmware's reply.
+            // A COMPLETE membership response (records `{songSlot=1}`), echoing
+            // `setlistSlot` like the firmware's reply; an unknown setlist reads empty.
+            let req = proto::parse(req);
             let mut inner = Vec::new();
-            if let Some(slot) = proto::first_varint(&proto::parse(req), 1) {
+            if let Some(slot) = proto::first_varint(&req, 1) {
                 proto::field_varint(&mut inner, 1, slot);
+            }
+            if let Some(i) = slot_index(&req, 1, lists.len()) {
+                for &song in &lists[i].members {
+                    let mut rec = Vec::new();
+                    proto::field_varint(&mut rec, 1, u64::from(song));
+                    inner.extend(proto::len_delimited(2, &rec));
+                }
             }
             let resp = proto::len_delimited(
                 TMS_SETLIST,
                 &proto::len_delimited(F_SETLIST_SONGS_RESPONSE, &inner),
             );
-            return vec![frame(&resp)];
+            return frame_multi(&resp);
         }
-        let list = &mut st.setlists;
+        if let Some(add) = proto::first_bytes(&f, F_SETLIST_SONG_ADD) {
+            // {setlistSlot=1, songSlot=2}: append the global song slot.
+            let inner = proto::parse(add);
+            if let Some(members) = members_of(lists, &inner) {
+                members.push(proto::first_varint(&inner, 2).unwrap_or(0) as u32);
+            }
+            return Vec::new();
+        }
+        if let Some(rm) = proto::first_bytes(&f, F_SETLIST_SONG_REMOVE) {
+            // {setlistSlot=1, setlistSongSlot=2}: a 1-based POSITION within the setlist.
+            let inner = proto::parse(rm);
+            if let Some(members) = members_of(lists, &inner) {
+                if let Some(pos) = slot_index(&inner, 2, members.len()) {
+                    members.remove(pos);
+                }
+            }
+            return Vec::new();
+        }
+        if let Some(mv) = proto::first_bytes(&f, F_SETLIST_SONG_MOVE) {
+            // {setlistSlot=1, oldSetlistSongSlot=2, newSetlistSongSlot=3}: array splice
+            // (remove at old, insert at new), both 1-based positions.
+            let inner = proto::parse(mv);
+            if let Some(members) = members_of(lists, &inner) {
+                let len = members.len();
+                if let (Some(old), Some(new)) =
+                    (slot_index(&inner, 2, len), slot_index(&inner, 3, len))
+                {
+                    let song = members.remove(old);
+                    members.insert(new, song);
+                }
+            }
+            return Vec::new();
+        }
         if proto::first_bytes(&f, F_LIST_REQUEST).is_some() {
-            let records: Vec<Vec<u8>> = list
+            let records: Vec<Vec<u8>> = lists
                 .iter()
-                .map(|n| proto::len_delimited(1, n.as_bytes()))
+                .map(|l| proto::len_delimited(1, l.name.as_bytes()))
                 .collect();
             return frame_multi(&list_response(TMS_SETLIST, &records));
         }
         if let Some(add) = proto::first_bytes(&f, F_LIST_ADD) {
-            list.push(str_field(&proto::parse(add), 1));
+            lists.push(SimSetlist::new(&str_field(&proto::parse(add), 1)));
             return Vec::new();
         }
         if let Some(rm) = proto::first_bytes(&f, F_LIST_REMOVE) {
-            let slot = proto::first_varint(&proto::parse(rm), 1).unwrap_or(0) as usize;
-            if slot >= 1 && slot <= list.len() {
-                list.remove(slot - 1);
+            if let Some(i) = slot_index(&proto::parse(rm), 1, lists.len()) {
+                lists.remove(i);
             }
             return Vec::new();
         }
         if let Some(rn) = proto::first_bytes(&f, F_LIST_RENAME) {
             let inner = proto::parse(rn);
-            let slot = proto::first_varint(&inner, 1).unwrap_or(0) as usize;
-            if slot >= 1 && slot <= list.len() {
-                list[slot - 1] = str_field(&inner, 2);
+            if let Some(i) = slot_index(&inner, 1, lists.len()) {
+                lists[i].name = str_field(&inner, 2);
             }
         }
         Vec::new()
@@ -1894,6 +1953,17 @@ impl SimDevice {
                     Some(a) if a > removed => Some(a - 1),
                     other => other,
                 };
+                // Setlist members drop the removed song and follow the shift (fw 1.8.58
+                // static RE, tmp-audit Q51; not HW-checked): `removeSong` is a plain
+                // `DELETE FROM Songs`, `SetlistSongs` cascades on the song id, a trigger
+                // closes the position gap, and the membership read reports the
+                // renumbered `Songs.slot`.
+                for members in st.setlists.iter_mut().map(|l| &mut l.members) {
+                    members.retain(|&m| m != removed);
+                    for m in members.iter_mut().filter(|m| **m > removed) {
+                        *m -= 1;
+                    }
+                }
             }
             return Vec::new();
         }
@@ -2881,6 +2951,22 @@ fn scenario_json_for(slot0: u32) -> Option<&'static str> {
     })
     .get(&slot0)
     .map(String::as_str)
+}
+
+/// The 0-based index for the 1-based slot/position varint in `field`, if it is inside
+/// a list of `len`.
+fn slot_index(fields: &[(u32, proto::Val)], field: u32, len: usize) -> Option<usize> {
+    (proto::first_varint(fields, field).unwrap_or(0) as usize)
+        .checked_sub(1)
+        .filter(|&i| i < len)
+}
+
+/// The members of the setlist a membership setter addresses by `setlistSlot` (field 1).
+fn members_of<'a>(
+    lists: &'a mut [SimSetlist],
+    inner: &[(u32, proto::Val)],
+) -> Option<&'a mut Vec<u32>> {
+    slot_index(inner, 1, lists.len()).map(|i| &mut lists[i].members)
 }
 
 /// Build a `songListResponse`(11→3) / `setlistListResponse`(12→3): records (field 2) each
@@ -4389,5 +4475,41 @@ mod same_slot_load_tests {
             "a dirty same-slot load must restore the saved level, got {}",
             sim.preset_level()
         );
+    }
+}
+
+#[cfg(test)]
+mod setlist_membership_tests {
+    use super::*;
+    use crate::session::Session;
+
+    /// Members are global song slots: add appends, move splices and remove takes a
+    /// POSITION; removing a song drops it from every setlist and shifts those below it.
+    #[test]
+    fn membership_setters_edit_what_the_read_returns() {
+        let sim = SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        for name in ["c", "d", "e", "f"] {
+            s.add_song(name).unwrap(); // slots 3..=6 after the two defaults
+        }
+        let read = |s: &mut Session| s.setlist_songs_strict(1).unwrap().unwrap();
+        assert_eq!(read(&mut s), Vec::<u32>::new());
+        for song in [1, 3, 6] {
+            s.add_setlist_song(1, song).unwrap();
+        }
+        assert_eq!(read(&mut s), [1, 3, 6]);
+        s.remove_setlist_song(1, 2).unwrap();
+        assert_eq!(read(&mut s), [1, 6]);
+        s.add_setlist_song(1, 5).unwrap();
+        s.move_setlist_song(1, 3, 1).unwrap();
+        assert_eq!(read(&mut s), [5, 1, 6]);
+        s.remove_song(5).unwrap();
+        assert_eq!(read(&mut s), [1, 5]);
+        // A second setlist starts empty and is independent of the first.
+        s.add_setlist("Sunday").unwrap();
+        s.add_setlist_song(2, 2).unwrap();
+        assert_eq!(s.setlist_songs_strict(2).unwrap().unwrap(), [2]);
+        s.remove_setlist(1).unwrap();
+        assert_eq!(read(&mut s), [2]);
     }
 }
