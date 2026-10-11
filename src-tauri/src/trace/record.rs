@@ -11,9 +11,12 @@
 //!
 //! The writer assigns `seq` (gap-free per process), keeps the nominal clock `t_nom_ms`
 //! (pump windows, nominal settles and nominal capture lengths), decodes kinds, writes
-//! the lines and flushes at least every 250 ms. A transport drop (`close`) waits up to
-//! a second for the writer to catch up, so a short-lived probe that exits right after
-//! its last session still leaves a complete trace.
+//! the lines and flushes at least every 250 ms. A capture's metering, hashing and WAV
+//! run on a second thread, so a capture line is written when that work finishes (its
+//! `t_us` and `t_nom_ms` are still the capture's own) and nothing else waits behind it.
+//! A transport drop (`close`) waits briefly for the writer to catch up on the cheap
+//! lines, so a short-lived probe that exits right after its last session still leaves a
+//! complete trace, and a reopen mid-session is never held up by capture work.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -23,9 +26,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
+use crossbeam_channel::{bounded, never, select, Receiver, Sender, TrySendError};
 
-use super::capture::{self, CaptureJob};
+use super::capture::{self, CaptureJob, CaptureStats};
 use super::format::{self, Line};
 use crate::hid::HidTransport;
 
@@ -35,8 +38,10 @@ const QUEUE_CAP: usize = 16_384;
 const MAX_CAPTURES_IN_FLIGHT: usize = 3;
 /// The writer flushes at least this often.
 const FLUSH_EVERY: Duration = Duration::from_millis(250);
-/// How long a transport drop waits for the writer to catch up.
-const CLOSE_FLUSH_WAIT: Duration = Duration::from_secs(1);
+/// How long a transport drop waits for the writer to catch up. The writer never does
+/// capture work on its own thread, so catching up takes well under a millisecond; the
+/// bound only caps a stalled disk.
+const CLOSE_FLUSH_WAIT: Duration = Duration::from_millis(50);
 
 /// Where a transport came from: the real device, or the e2e factory's in-memory fake.
 /// Set from the branch that ran, never inferred from the environment.
@@ -107,6 +112,9 @@ impl Config {
             .join(format!("{}-{}.tct.jsonl", self.process, std::process::id()))
     }
 }
+
+/// A capture on its way to the metering thread, with what the writer knew at hand-over.
+type CaptureHandoff = (Box<CaptureJob>, CaptureMeta);
 
 /// Messages from callers to the writer.
 pub(crate) enum Msg {
@@ -199,6 +207,8 @@ impl Recorder {
         let t0 = Instant::now();
         let drops = Arc::new(Drops::default());
         let captures_in_flight = Arc::new(AtomicUsize::new(0));
+        let (cap_tx, cap_rx) = bounded(MAX_CAPTURES_IN_FLIGHT);
+        let (done_tx, done_rx) = bounded(MAX_CAPTURES_IN_FLIGHT);
         let rec = Arc::new(Recorder {
             tx,
             t0,
@@ -223,6 +233,9 @@ impl Recorder {
             reamp_off: crate::proto::set_reamp_mode(false),
             captures_in_flight,
             drops,
+            cap_tx: Some(cap_tx),
+            done_rx,
+            worker: Some((cap_rx, done_tx)),
         };
         writer.header();
         Ok((rec, writer))
@@ -294,13 +307,22 @@ impl Recorder {
         );
     }
 
-    /// Wait (up to `wait`) until the writer has written everything queued before this
-    /// call. Never called on a timing-sensitive path.
+    /// Wait (up to `wait`) until the writer has written every line queued before this
+    /// call. A capture still being metered is not waited for (see [`Recorder::drain`]).
     pub(crate) fn flush(&self, wait: Duration) {
         let (tx, rx) = bounded(1);
         if self.tx.send_timeout(Msg::Flush(tx), wait).is_ok() {
             let _ = rx.recv_timeout(wait);
         }
+    }
+
+    /// Wait (up to `wait`) for every handed-over capture to be written, then flush.
+    pub(crate) fn drain(&self, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        while self.captures_in_flight.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.flush(deadline.saturating_duration_since(Instant::now()));
     }
 
     /// Open a transport through `f` and wrap it. The `open` event records the attempt,
@@ -448,10 +470,78 @@ pub(crate) struct Writer {
     reamp_off: Vec<u8>,
     captures_in_flight: Arc<AtomicUsize>,
     drops: Arc<Drops>,
+    /// Captures handed to the metering thread, with what the writer knew at hand-over.
+    cap_tx: Option<Sender<CaptureHandoff>>,
+    /// Finished captures back from the metering thread.
+    done_rx: Receiver<CaptureDone>,
+    /// The metering thread's ends, until [`Writer::spawn`] starts it.
+    worker: Option<(Receiver<CaptureHandoff>, Sender<CaptureDone>)>,
+}
+
+/// What the writer knew about a capture when it was handed over: its place in the
+/// event order, kept so the line reads as if written then.
+pub(crate) struct CaptureMeta {
+    cap_id: String,
+    sid: Option<u64>,
+    t_nom_ms: u64,
+    engage: String,
+    ctx: String,
+    /// Where to write the pair WAV (the run directory), when asked to.
+    wav_dir: Option<PathBuf>,
+}
+
+/// A capture after the metering thread's work.
+pub(crate) struct CaptureDone {
+    job: Box<CaptureJob>,
+    meta: CaptureMeta,
+    stim_sha: String,
+    stats: Option<CaptureStats>,
+    wav: Option<String>,
+}
+
+/// The metering thread's work for one capture: the stimulus hash, the stats and the
+/// optional pair WAV. Pure apart from the WAV file.
+fn measure_capture(job: Box<CaptureJob>, meta: CaptureMeta) -> CaptureDone {
+    let stim_bytes: Vec<u8> = job.stimulus.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let stim_sha = sha256_hex(&stim_bytes);
+    let mut wav = None;
+    let stats = job.result.as_ref().ok().map(|cap| {
+        if let Some(run_dir) = &meta.wav_dir {
+            let rel = format!("wav/{}.wav", meta.cap_id);
+            let path = run_dir.join(&rel);
+            match std::fs::create_dir_all(run_dir.join("wav"))
+                .map_err(|e| e.to_string())
+                .and_then(|()| capture::write_pair_wav(&path.to_string_lossy(), cap))
+            {
+                Ok(()) => wav = Some(rel),
+                Err(e) => log::warn!("trace: capture WAV {}: {e}", path.display()),
+            }
+        }
+        capture::stats(cap)
+    });
+    CaptureDone {
+        job,
+        meta,
+        stim_sha,
+        stats,
+        wav,
+    }
 }
 
 impl Writer {
     pub(crate) fn spawn(mut self) -> Result<(), String> {
+        if let Some((cap_rx, done_tx)) = self.worker.take() {
+            std::thread::Builder::new()
+                .name("tct-capture".into())
+                .spawn(move || {
+                    for (job, meta) in cap_rx {
+                        if done_tx.send(measure_capture(job, meta)).is_err() {
+                            return;
+                        }
+                    }
+                })
+                .map_err(|e| format!("trace capture thread: {e}"))?;
+        }
         std::thread::Builder::new()
             .name("tct-writer".into())
             .spawn(move || self.run())
@@ -461,22 +551,38 @@ impl Writer {
 
     fn run(&mut self) {
         loop {
-            match self.rx.recv_timeout(FLUSH_EVERY) {
-                Ok(msg) => {
-                    self.handle(msg);
-                    if self.rx.is_empty() {
+            let done_rx = self.done_rx.clone();
+            select! {
+                recv(self.rx) -> msg => match msg {
+                    Ok(msg) => {
+                        self.handle(msg);
+                        if self.rx.is_empty() {
+                            self.report_drops();
+                            let _ = self.out.flush();
+                        }
+                    }
+                    Err(_) => {
+                        // Every recorder handle is gone: finish the captures in hand.
+                        self.cap_tx = None;
+                        while let Ok(done) = done_rx.recv() {
+                            self.capture_done(done);
+                        }
                         self.report_drops();
                         let _ = self.out.flush();
+                        return;
                     }
-                }
-                Err(RecvTimeoutError::Timeout) => {
+                },
+                recv(done_rx) -> done => match done {
+                    Ok(done) => {
+                        self.capture_done(done);
+                        let _ = self.out.flush();
+                    }
+                    // The metering thread is gone; nothing more comes back.
+                    Err(_) => self.done_rx = never(),
+                },
+                default(FLUSH_EVERY) => {
                     self.report_drops();
                     let _ = self.out.flush();
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.report_drops();
-                    let _ = self.out.flush();
-                    return;
                 }
             }
         }
@@ -487,9 +593,13 @@ impl Writer {
     }
 
     fn line(&mut self, sid: Option<u64>, t: Instant, ev: &str) -> Line {
+        self.line_at(sid, t, self.t_nom_ms, ev)
+    }
+
+    fn line_at(&mut self, sid: Option<u64>, t: Instant, t_nom_ms: u64, ev: &str) -> Line {
         let seq = self.seq;
         self.seq += 1;
-        Line::event(seq, sid, self.us(t), self.t_nom_ms, ev)
+        Line::event(seq, sid, self.us(t), t_nom_ms, ev)
     }
 
     fn write(&mut self, line: Line) {
@@ -621,10 +731,7 @@ impl Writer {
                 self.write(l);
                 self.t_nom_ms += nominal_ms;
             }
-            Msg::Capture(job, n) => {
-                self.capture(&job, n);
-                self.captures_in_flight.fetch_sub(1, Ordering::AcqRel);
-            }
+            Msg::Capture(job, n) => self.capture_received(job, n),
             Msg::Cmd {
                 name,
                 args,
@@ -699,25 +806,65 @@ impl Writer {
         }
     }
 
-    fn capture(&mut self, job: &CaptureJob, n: u64) {
+    /// Snapshot what the line needs from the event order (session, nominal clock,
+    /// re-amp state) and hand the heavy work to the metering thread.
+    fn capture_received(&mut self, job: Box<CaptureJob>, n: u64) {
         let cap_id = format!("{}-{}-c{n}", self.cfg.process, std::process::id());
-        let stim_bytes: Vec<u8> = job.stimulus.iter().flat_map(|s| s.to_le_bytes()).collect();
-        let stim_sha = sha256_hex(&stim_bytes);
+        let engage = self.reamp.as_ref().map_or_else(
+            || "null".to_string(),
+            |r| format!("{{\"on\":{},\"seq\":{},\"echo\":{}}}", r.on, r.seq, r.echo),
+        );
+        let ctx = job.ctx.as_ref().map_or_else(
+            || "null".to_string(),
+            |c| {
+                Line::object()
+                    .str("label", &c.label)
+                    .opt_u64("slot", c.slot.map(u64::from))
+                    .opt_u64("scene_slot", c.scene_slot.map(u64::from))
+                    .opt_u64("switch", c.switch.map(u64::from))
+                    .close()
+            },
+        );
+        let meta = CaptureMeta {
+            cap_id,
+            sid: self.current_sid,
+            t_nom_ms: self.t_nom_ms,
+            engage,
+            ctx,
+            wav_dir: self.cfg.wav_pair.then(|| self.cfg.run_dir()),
+        };
         let stim_frames = job.stimulus.len() as u64;
+        self.t_nom_ms += stim_frames * 1000 / u64::from(job.rate.max(1)) + job.tail_ms;
+        let unsent = match &self.cap_tx {
+            Some(tx) => tx.send((job, meta)).err().map(|e| e.into_inner()),
+            None => Some((job, meta)),
+        };
+        // No metering thread (a writer that was never spawned): do the work here.
+        if let Some((job, meta)) = unsent {
+            self.capture_done(measure_capture(job, meta));
+        }
+    }
+
+    fn capture_done(&mut self, done: CaptureDone) {
+        let CaptureDone {
+            job,
+            meta,
+            stim_sha,
+            stats,
+            wav,
+        } = done;
         let mut l = self
-            .line(self.current_sid, job.t_start, "capture")
-            .str("cap_id", &cap_id)
+            .line_at(meta.sid, job.t_start, meta.t_nom_ms, "capture")
+            .str("cap_id", &meta.cap_id)
             .str("backend", job.backend)
             .u64("t_start_us", self.us(job.t_start))
             .u64("t_end_us", self.us(job.t_end))
             .str("stim_sha256", &stim_sha)
-            .u64("stim_frames", stim_frames)
+            .u64("stim_frames", job.stimulus.len() as u64)
             .u64("rate", u64::from(job.rate))
             .u64("tail_ms", job.tail_ms);
-        let mut wav = None;
-        let err = match &job.result {
-            Ok(cap) => {
-                let st = capture::stats(cap);
+        let err = match (&job.result, stats) {
+            (Ok(_), Some(st)) => {
                 l = l
                     .u64("channels", st.channels as u64)
                     .u64("frames", st.frames as u64)
@@ -736,21 +883,9 @@ impl Writer {
                     )
                     .raw("peak", &format::f64_array(&st.peak))
                     .raw("rms", &format::f64_array(&st.rms));
-                if self.cfg.wav_pair {
-                    let rel = format!("wav/{cap_id}.wav");
-                    let dir = self.cfg.run_dir().join("wav");
-                    let path = self.cfg.run_dir().join(&rel);
-                    match std::fs::create_dir_all(&dir)
-                        .map_err(|e| e.to_string())
-                        .and_then(|()| capture::write_pair_wav(&path.to_string_lossy(), cap))
-                    {
-                        Ok(()) => wav = Some(rel),
-                        Err(e) => log::warn!("trace: capture WAV {}: {e}", path.display()),
-                    }
-                }
                 st.lufs_err.map(|e| format!("lufs: {e}"))
             }
-            Err(e) => {
+            (result, _) => {
                 l = l
                     .raw("channels", "null")
                     .raw("frames", "null")
@@ -759,32 +894,16 @@ impl Writer {
                     .raw("spread_lu", "null")
                     .raw("peak", "[]")
                     .raw("rms", "[]");
-                Some(e.clone())
+                Some(result.as_ref().err().cloned().unwrap_or_default())
             }
         };
-        let engage = self.reamp.as_ref().map_or_else(
-            || "null".to_string(),
-            |r| format!("{{\"on\":{},\"seq\":{},\"echo\":{}}}", r.on, r.seq, r.echo),
-        );
-        let ctx = job.ctx.as_ref().map_or_else(
-            || "null".to_string(),
-            |c| {
-                Line::object()
-                    .str("label", &c.label)
-                    .opt_u64("slot", c.slot.map(u64::from))
-                    .opt_u64("scene_slot", c.scene_slot.map(u64::from))
-                    .opt_u64("switch", c.switch.map(u64::from))
-                    .close()
-            },
-        );
         l = l
-            .raw("engage", &engage)
-            .raw("ctx", &ctx)
+            .raw("engage", &meta.engage)
+            .raw("ctx", &meta.ctx)
             .opt_str("wav", wav.as_deref())
             .opt_str("err", err.as_deref());
         self.write(l);
-        let nominal = stim_frames * 1000 / u64::from(job.rate.max(1)) + job.tail_ms;
-        self.t_nom_ms += nominal;
+        self.captures_in_flight.fetch_sub(1, Ordering::AcqRel);
     }
 
     fn state(&mut self, slot: u32, body: &[u8], pristine: Option<&str>, t: Instant) {

@@ -424,7 +424,7 @@ Per-report arrival times are not recorded; reports arrive at one per 2.143 ms (f
 
 **Canonical field-8 bodies** (`trace::canonical_json`, shared with any replay normalizer): keys sorted at every depth, arrays in order, every non-integer number through `f32` and then six significant digits (the device's own re-rounding moves a value by a few `f32` steps: an imported `0.49` reads back as `0.489999920129776`), integers and strings, node ids included, verbatim.
 
-**Timing.** The caller's thread only clones bytes and hands them to a bounded queue; one writer thread per process does the hex, hashing, metering and file work and flushes at least every 250 ms. A full queue drops and counts, never blocks, so the recorder cannot move an OUT write toward the 750 ms lapse.
+**Timing.** The caller's thread only clones bytes and hands them to a bounded queue; one writer thread per process does the hex and file work and flushes at least every 250 ms, and a second thread does each capture's hashing, metering and WAV, so a capture line lands when that finishes (with its own `t_us` and `t_nom_ms`) and nothing waits behind it. A transport drop waits at most 50 ms for the writer to catch up on the cheap lines, so a short-lived probe still leaves a complete trace and a mid-session reopen is not held up. A full queue drops and counts, never blocks, so the recorder cannot move an OUT write toward the 750 ms lapse.
 
 ### Privacy
 

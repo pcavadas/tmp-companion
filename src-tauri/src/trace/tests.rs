@@ -42,7 +42,7 @@ impl Run {
     }
 
     fn lines(&self, rec: &Recorder) -> Vec<serde_json::Value> {
-        rec.flush(Duration::from_secs(5));
+        rec.drain(Duration::from_secs(30));
         let path = self
             .cfg
             .dir
@@ -244,6 +244,56 @@ fn a_capture_record_carries_backend_identity_engage_and_its_wav() {
     assert!(run.root.join(wav).is_file());
     assert!(c["err"].is_null());
     drop(hid);
+}
+
+#[test]
+fn a_transport_drop_never_waits_behind_capture_work() {
+    // The online lane's captures are ~10 s of 4-channel audio, metered and written as a
+    // WAV in a debug build: a close (and a mid-session reopen) must not queue behind it.
+    let run = Run::new("capwait");
+    let rec = run.start();
+    let frames = 48_000 * 30;
+    let mut interleaved = Vec::with_capacity(frames * 4);
+    for i in 0..frames {
+        let s = ((i as f32) * 0.05).sin();
+        interleaved.extend_from_slice(&[0.5 * s, 0.4 * s, 0.9 * s, 0.1 * s]);
+    }
+    let now = Instant::now();
+    rec.capture(CaptureJob {
+        backend: Backend::Device.as_str(),
+        t_start: now,
+        t_end: now,
+        stimulus: vec![0.1; 48_000],
+        rate: 48_000,
+        tail_ms: 800,
+        result: Ok(crate::audio::Capture {
+            interleaved,
+            channels: 4,
+            sample_rate: 48_000,
+        }),
+        ctx: None,
+    });
+    let t = ScriptedTransport::device();
+    let hid = wrap(&rec, &t);
+    let started = Instant::now();
+    drop(hid);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "close waited {:?} behind a capture",
+        started.elapsed()
+    );
+    let lines = run.lines(&rec);
+    let cap = Run::events(&lines, "capture")[0];
+    assert_eq!(
+        cap["t_nom_ms"], 0,
+        "the capture keeps its place on the nominal clock"
+    );
+    assert_eq!(cap["frames"], frames);
+    let close = Run::events(&lines, "close")[0];
+    assert_eq!(
+        close["t_nom_ms"], 1800,
+        "later lines follow the capture's nominal length"
+    );
 }
 
 #[test]
