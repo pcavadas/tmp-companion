@@ -23,9 +23,19 @@ e2e/fixtures/COVERAGE.md	offline-oracle
 e2e/fixtures/showcase/*	offline-oracle
 # Read-only, so naming it in an online run is safe; it proves the refusal offline.
 e2e/specs/doctor-apply-refusal.spec.ts	offline-oracle
+src-tauri/src/session/tests.rs	offline-oracle
+src-tauri/src/session/wire_golden*	offline-oracle
 
 # ── transport ──
-src-tauri/src/session.rs	transport
+# The session's transport set: only these files touch `self.hid`, the clock or a literal
+# pump window (`session/boundary_tests.rs` enforces it). A diff in any other session file
+# that touches a wait primitive or a window const escalates to transport (`gates.sh`).
+src-tauri/src/session/mod.rs	transport
+src-tauri/src/session/link.rs	transport
+src-tauri/src/session/timing.rs	transport
+src-tauri/src/session/handshake.rs	transport
+src-tauri/src/session/backup_stream.rs	transport
+src-tauri/src/session/diag.rs	transport
 src-tauri/src/hid.rs	transport
 src-tauri/src/hid/*	transport
 src-tauri/src/audio.rs	transport
@@ -35,11 +45,17 @@ src-tauri/src/trace/*	transport
 
 # ── protocol ──
 src-tauri/src/proto.rs	protocol
+src-tauri/src/session/decode.rs	protocol
+src-tauri/src/session/scene.rs	protocol
+src-tauri/src/session/types.rs	protocol
 src-tauri/src/commands/device.rs	protocol
 src-tauri/src/monitor.rs	protocol
 
 # ── scan: the startup backup scan runs in every UI spec ──
 src-tauri/src/backup.rs	scan
+src-tauri/src/session/lists.rs	scan
+src-tauri/src/session/reads.rs	scan
+src-tauri/src/session/graph.rs	scan
 src-tauri/src/backup_read.rs	scan
 src-tauri/src/audiograph.rs	scan
 src-tauri/src/scenes.rs	scan
@@ -49,9 +65,14 @@ src-tauri/src/commands/presets.rs	scan
 # read_song_list feeds the scan (backup_read.rs, commands/presets.rs) and read_song_presets
 # the seed's import path (replace_inplace.rs), so this is wider than the songs class.
 src-tauri/src/probe_api/songs.rs	scan
+# Its strict song-list harvests serve that same read_song_list, so it is scan too.
+src-tauri/src/session/songs.rs	scan
 
 # ── write: the seed's import path and every save ──
 src-tauri/src/replace_inplace.rs	write
+# live_preset_value/live_audio_graph run on the seed's import path before every online spec.
+src-tauri/src/session/preset.rs	write
+src-tauri/src/session/reamp.rs	write
 src-tauri/src/preset_io.rs	write
 src-tauri/src/blockcaps.rs	write
 src-tauri/src/probe_api/slot_write.rs	write
@@ -90,6 +111,7 @@ src-tauri/src/profiles.rs	level
 src-tauri/src/topologies.rs	level
 src-tauri/src/commands/doctor.rs	level
 src-tauri/src/commands/level_preset.rs	level
+src-tauri/src/session/ftsw.rs	level
 src-tauri/src/commands/level_scenes.rs	level
 src-tauri/src/commands/level_footswitch.rs	level
 src-tauri/src/probe_api/level.rs	level
@@ -103,6 +125,7 @@ e2e/specs/level.online.spec.ts	level
 # ── copy ──
 src-tauri/src/commands/copy_apply.rs	copy
 src-tauri/src/commands/held_edit.rs	copy
+src-tauri/src/session/structural.rs	copy
 e2e/specs/copy.spec.ts	copy
 
 # ── songs ──

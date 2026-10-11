@@ -70,10 +70,24 @@ for f in src-tauri/src/leveller.rs src-tauri/src/commands/doctor.rs src-tauri/sr
   diff_of "$f"
   check "$f → doctor.online level.online" "doctor.online level.online" "$(required)"
 done
-for f in src-tauri/src/session.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \
+for f in src-tauri/src/session/mod.rs src-tauri/src/session/link.rs src-tauri/src/session/timing.rs \
+  src-tauri/src/session/preset.rs src-tauri/src/session/songs.rs src-tauri/src/blockcaps.rs src-tauri/src/hid/write_completion.rs \
   e2e/fixtures/scenario.ts scripts/e2e.sh scripts/lib/e2e-lane.sh; do
   diff_of "$f"
   check "$f → all four" "$ALL4" "$(required)"
+done
+diff_of src-tauri/src/session/structural.rs
+check "session/structural.rs → copy" "copy" "$(required)"
+diff_of src-tauri/src/session/ftsw.rs
+check "session/ftsw.rs → doctor.online level.online" "doctor.online level.online" "$(required)"
+# A session command module that touches a wait primitive or a window const is transport.
+diff_of src-tauri/src/session/ftsw.rs
+printf '        self.pump_silent(LIVE_BEAT_MS)?;\n' >> "$r/src-tauri/src/session/ftsw.rs"
+check "session/ftsw.rs touching a pump → all four" "$ALL4" "$(required)"
+check "the timing escalation names the file" 1 "$(required_err | grep -c 'advisory: src-tauri/src/session/ftsw.rs touches session timing')"
+for f in src-tauri/src/session/tests.rs src-tauri/src/session/boundary_tests.rs src-tauri/src/session/wire_golden.txt; do
+  diff_of "$f"
+  check "$f → nothing" "" "$(required)"
 done
 diff_of src-tauri/src/bin/probe.rs
 check "bin/probe.rs → ANY" "ANY" "$(required)"
@@ -112,12 +126,12 @@ check "hook: green, docs-only → allowed" 0 "$(hook create)"
 
 # PRs run the offline gates only: a device-facing diff still needs its green stamp, and
 # nothing more. The online suite runs at release (scripts/pre-release.sh).
-diff_of src-tauri/src/session.rs
+diff_of src-tauri/src/session/link.rs
 check "hook: device-facing diff, no green stamp → blocked" 2 "$(hook create)"
 green
 check "hook: device-facing diff, green → allowed" 0 "$(hook create)"
 check "hook: merge command, same tree → allowed" 0 "$(hook merge)"
-printf 'x\n' >> "$r/src-tauri/src/session.rs"
+printf 'x\n' >> "$r/src-tauri/src/session/link.rs"
 check "hook: an edit after the green run → blocked" 2 "$(hook create)"
 
 # ── the release report: everything since the last release tag ─────────────────────

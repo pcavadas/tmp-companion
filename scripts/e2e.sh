@@ -795,7 +795,7 @@ done
 # ── host-silence headroom ──────────────────────────────────────────────────────────
 # The device drops a client after ~750 ms of host OUT silence (danger.md). The e2e_server
 # logs one `hid-headroom:` line for every OUT gap above 500 ms and every TrackedHid
-# auto-reopen (session.rs), so a load-induced lapse is a named event, not a mystery red.
+# auto-reopen (session/link.rs), so a load-induced lapse is a named event, not a mystery red.
 # Counted from THIS run's server log (truncated at server start) and recorded on the stamp's
 # #run line as `headroom=<events>/<reopens>`. INFORMATIONAL, never a failure: an unloaded
 # level.online run on the reference unit logged 224 events, 141 of them auto-reopens

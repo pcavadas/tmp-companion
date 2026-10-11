@@ -201,6 +201,32 @@ policy_advisory() {
   done < "$GATE_POLICY"
 }
 
+# Session timing escalation: a command module outside the session's transport set can
+# still change timing by choosing a wait primitive or a window const. A changed line in
+# such a file that names one makes the file transport (with an advisory naming the line).
+SESSION_TIMING_RE='pump_|send_and_collect|transact|heartbeat|keepalive|drain_until_quiet|timing::|_MS([^A-Za-z0-9_]|$)|_WINDOWS([^A-Za-z0-9_]|$)'
+
+# <path> <class> — print the class, or `transport` when a session command module's diff
+# touches timing.
+escalate_session_timing() {
+  local hit
+  case "$1" in
+    src-tauri/src/session/*.rs) ;;
+    *) printf '%s\n' "$2"; return 0 ;;
+  esac
+  case "$2" in transport | offline-oracle) printf '%s\n' "$2"; return 0 ;; esac
+  hit="$({
+    if [ -n "${since:-$base}" ]; then git diff -U0 "${since:-$base}" -- "$1"; fi
+    if [ -z "$(git ls-files -- "$1")" ] && [ -f "$1" ]; then sed 's/^/+/' "$1"; fi
+  } 2>/dev/null | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' | grep -E "$SESSION_TIMING_RE" | head -n 1 || true)"
+  if [ -n "$hit" ]; then
+    printf 'gates: advisory: %s touches session timing (%s) — treating it as transport\n' "$1" "$hit" >&2
+    printf 'transport\n'
+  else
+    printf '%s\n' "$2"
+  fi
+}
+
 # Print the online specs the current diff requires, in canonical order, one per line; or
 # `ANY` (at least one online spec, the cheapest); or nothing. Advisory lines go to stderr.
 required_online() {
@@ -213,6 +239,7 @@ required_online() {
       need="$need $ONLINE_SPEC_SET"
       continue
     fi
+    class="$(escalate_session_timing "$f" "$class")"
     adv="$(policy_advisory "$class")"
     if [ -n "$adv" ]; then printf 'gates: advisory (%s): %s — %s\n' "$class" "$f" "$adv" >&2; fi
     if [ "$f" = src-tauri/src/commands/doctor.rs ]; then
