@@ -21,6 +21,8 @@ e2e/fixtures/scenario-loudness.json	offline-oracle
 e2e/fixtures/backup-fixture.bin	offline-oracle
 e2e/fixtures/COVERAGE.md	offline-oracle
 e2e/fixtures/showcase/*	offline-oracle
+# Read-only, so naming it in an online run is safe; it proves the refusal offline.
+e2e/specs/doctor-apply-refusal.spec.ts	offline-oracle
 
 # ── transport ──
 src-tauri/src/session.rs	transport
@@ -69,6 +71,7 @@ e2e/fixtures/test.ts	lane
 e2e/fixtures/port.ts	lane
 e2e/fixtures/scenario-presets.json	lane
 src-tauri/src/e2e_server.rs	lane
+src-tauri/src/e2e_ui_bridge.rs	lane
 src-tauri/src/validate_log.rs	lane
 src-tauri/src/bin/e2e_server.rs	lane
 src-tauri/src/probe_api/seed_scenario.rs	lane

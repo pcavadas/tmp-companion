@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #
-# meter-parity.sh — DEV-ONLY, OPTIONAL. Ground-truths this repo's own BS.1770
+# meter-parity.sh — DEV-ONLY. Ground-truths this repo's own BS.1770
 # loudness meter (`src-tauri/src/lufs.rs`) against an independent BS.1770
 # implementation (ffmpeg's `ebur128` filter) on deterministic synthetic
 # fixtures generated PER-RUN via ffmpeg lavfi — nothing binary is committed.
 #
-# NOT part of `scripts/gates.sh` and NOT a CI dependency: ffmpeg is never
-# linked into or invoked by the shipped app, only by this developer tool. If
-# ffmpeg is not on PATH, this script prints a skip notice and exits 0.
+# Run by `scripts/gates.sh`'s Rust lane when ffmpeg is on PATH. Still NOT a CI
+# dependency: ffmpeg is never linked into or invoked by the shipped app, only by
+# this developer tool. If ffmpeg is not on PATH, this script prints a skip notice
+# and exits 0.
 #
 # Usage:
 #   bash scripts/meter-parity.sh                 # generate fixtures + compare

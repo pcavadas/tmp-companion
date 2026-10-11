@@ -506,6 +506,13 @@ if [ "$want_rust" -eq 1 ]; then
   # compiles the identity path) and the offline suite stays green (it wants zeros). Without
   # this lane the guard exists but nothing ever executes it.
   run_gate "rust tests (e2e feature)" sh -c 'cd src-tauri && cargo test --lib --features e2e'
+  # The meter's ground truth: `lufs.rs` against ffmpeg's independent BS.1770 at 0.02 LU.
+  # ffmpeg is never a build or CI dependency, so the gate runs only where it is on PATH.
+  if command -v ffmpeg >/dev/null 2>&1; then
+    run_gate "meter parity (ffmpeg)" /bin/bash scripts/meter-parity.sh
+  else
+    printf 'gates: meter parity (ffmpeg) skipped — ffmpeg is not on PATH\n'
+  fi
 fi
 
 if [ "$want_e2e" -eq 1 ]; then
