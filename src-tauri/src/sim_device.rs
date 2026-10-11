@@ -485,8 +485,9 @@ pub(crate) struct SimSongRow {
 /// `replaceNodeWithBlock` / `insertNode` / `removeNode`), applied in order when the fake
 /// renders a field-2 re-prompt (`load_echo_json` with `working = true`): the device's
 /// working copy shows a confirmed edit (HW 6/6 re-prompts, fw 1.8.45, 2026-09-03), and Copy
-/// reads it there BEFORE saving. Cleared by the next `loadPreset`; a save does NOT bake it
-/// into the scenario doc (as before — the stored doc stays the fixture).
+/// reads it there BEFORE saving. Cleared by the next `loadPreset`. A save bakes the
+/// working copy's edits into the target slot's stored roster ([`SimState::saved_edits`]), so a
+/// later load of that slot shows the node ids the device minted, as the unit does.
 #[derive(Clone, Debug)]
 enum WorkingEdit {
     Replace {
@@ -537,6 +538,11 @@ struct SimState {
     stale_push_after_save: bool,
     /// Confirmed structural edits since the last load — see [`WorkingEdit`].
     working_edits: Vec<WorkingEdit>,
+    /// Per slot, the structural edits its saves have persisted, applied on top of the slot's
+    /// own document before [`SimState::working_edits`]. Without it a re-opened Copy edit
+    /// would name a node id the stored document never got, which the fake answers with a
+    /// [`SimEvent::ServerAbort`].
+    saved_edits: HashMap<u32, Vec<WorkingEdit>>,
     /// String `changeParameter` writes (`(group, node, param) → value`) since the last load,
     /// served back by `nodeJsonRequest`(119) so a string-param verify read (the IR `file`
     /// link in `Session::replace_node_with_ir`) sees what it wrote.
@@ -747,6 +753,7 @@ impl Default for SimState {
             reject_at: None,
             stale_push_after_save: false,
             working_edits: Vec::new(),
+            saved_edits: HashMap::new(),
             string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
             songs: vec![SimSong::new("Opening Set"), SimSong::new("Encore")],
@@ -1874,6 +1881,15 @@ impl SimDevice {
                 let push = frame_multi(&current_preset_data_changed(&json));
                 st.pending_pushes.extend(push);
             }
+            // The working copy's structural edits become slot0's stored roster.
+            let current = st.current_slot;
+            let mut stored = st.saved_edits.get(&current).cloned().unwrap_or_default();
+            if slot0 == current {
+                stored.append(&mut st.working_edits);
+            } else {
+                stored.extend(st.working_edits.iter().cloned());
+            }
+            st.saved_edits.insert(slot0, stored);
             // This becomes slot0's saved doc (presetLevel + baked params; module header).
             #[cfg(feature = "e2e")]
             st.record_save(slot0);
@@ -3124,11 +3140,10 @@ fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     if working && st.template_substituted {
         return template_json(&render_json_stored_name(st, slot0));
     }
-    let edits = if working {
-        st.working_edits.clone()
-    } else {
-        Vec::new()
-    };
+    let mut edits = st.saved_edits.get(&slot0).cloned().unwrap_or_default();
+    if working {
+        edits.extend(st.working_edits.iter().cloned());
+    }
     #[cfg(feature = "e2e")]
     if let Some(j) = scenario_json_for(slot0) {
         // A working-copy render is the LIVE document: unsaved edits included, and after a save
@@ -3348,7 +3363,11 @@ fn saved_slot_json_body(
         // NO working copy here: field-8 is the SAVED document, so an unsaved `ftsw` edit must
         // be invisible to it (that asymmetry against the field-3 render above is the point —
         // `verify_fs_persisted_writes` reads this to decide whether the assign PERSISTED).
-        saved_slot_json(slot0).map(|j| with_ftsw(&with_patched_doc(j, &doc), doc.ftsw.as_ref()))
+        let edits = st.saved_edits.get(&slot0).cloned().unwrap_or_default();
+        saved_slot_json(slot0).map(|j| {
+            let graph = with_working_edits(j.to_string(), &edits);
+            with_ftsw(&with_patched_doc(&graph, &doc), doc.ftsw.as_ref())
+        })
     }
     #[cfg(not(feature = "e2e"))]
     {
@@ -5257,6 +5276,24 @@ mod oracle_and_census_tests {
             .iter()
             .any(|e| matches!(e, SimEvent::ServerAbort { .. })));
         assert!(sim.transact(&level, 0).is_ok());
+    }
+
+    #[test]
+    fn a_saved_replace_persists_its_minted_id_across_a_reload() {
+        let sim = SimDevice::new();
+        sim.receive(&proto::replace_node("G1", "n2", "ACD_Fuzz", None));
+        sim.receive(&proto::save_current_preset(1));
+        // Load another slot, then this one: a real reload of the stored document.
+        sim.receive(&proto::load_preset(2, 1));
+        sim.receive(&proto::load_preset(1, 1));
+        sim.receive(&proto::replace_node("G1", "ACD_Fuzz", "ACD_Boost", None));
+        assert!(
+            !sim.events()
+                .iter()
+                .any(|e| matches!(e, SimEvent::ServerAbort { .. })),
+            "the stored roster holds the id the save persisted: {:?}",
+            sim.events()
+        );
     }
 
     #[test]

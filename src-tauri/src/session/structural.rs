@@ -273,8 +273,8 @@ impl Session {
     }
 
     /// True if the device REJECTED the last edit with `presetError` (53) — lets a caller
-    /// distinguish a rejection (never retry, never save) from a silent drop (retry the
-    /// cold first edit once).
+    /// distinguish a rejection (never retry, never save) from a missing confirm (read the
+    /// working copy back, and re-send only an edit that visibly did not land).
     pub fn saw_preset_error(&self) -> bool {
         self.saw_preset_field(PRESET_ERROR)
     }
