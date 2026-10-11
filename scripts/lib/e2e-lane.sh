@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 #
 # scripts/lib/e2e-lane.sh — pure helpers for the ONLINE e2e lane, sourced by scripts/e2e.sh
-# and scripts/pre-pr.sh, and tested offline by scripts/e2e-lane.spec.sh. Nothing here
+# and scripts/pre-release.sh, and tested offline by scripts/e2e-lane.spec.sh. Nothing here
 # touches the device: each function reads text (or a listing it is pointed at) and prints a
 # verdict, so every rule that decides whether a run may stamp is provable without a unit.
 #

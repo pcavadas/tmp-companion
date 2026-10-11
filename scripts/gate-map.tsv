@@ -127,7 +127,7 @@ scripts/calibrate.sh	on-demand
 src-tauri/src/probe_api/harvest.rs	on-demand
 
 # ── none, made explicit: the side-by-side runner only orchestrates the two lanes ──
-scripts/pre-pr.sh	none
+scripts/pre-release.sh	none
 
 # ── offline-oracle files planned for later PRs (rows ahead of the files) ──
 src-tauri/src/sim_clock.rs	offline-oracle

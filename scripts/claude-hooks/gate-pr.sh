@@ -4,8 +4,9 @@
 #
 # On `gh pr create` / `gh pr merge`:
 #   - require scripts/gates.sh --check green (fresh green stamp for this tree)
-#   - require scripts/gates.sh --check-online-diff: an ONLINE stamp covering the
-#     online specs this diff reaches (scripts/gate-map.tsv + gate-policy.tsv)
+# PRs run the offline gates only. The online suite runs at release, on the unit
+# (scripts/pre-release.sh), over every device-facing change merged since the last
+# release — so no PR waits on the device.
 # Exit 2 = block + show stderr to Claude.
 #
 # Reads the tool-call JSON on stdin. bash 3.2-safe. Resolves the repo from the
@@ -57,15 +58,6 @@ fi
 
 if ! /bin/bash "$gates" --check >/dev/null 2>&1; then
   printf 'BLOCKED: gates are red/stale — run scripts/gates.sh; a PR must never open red.\n' >&2
-  exit 2
-fi
-
-# Device-facing diff → also require an online stamp covering the specs this diff reaches.
-# gates.sh owns the whole decision (its diff, scripts/gate-map.tsv, scripts/gate-policy.tsv),
-# so this hook and the gate can never disagree about which files are device-facing.
-# Advisory lines (unexercised / probe-only / on-demand files) come back on stderr either way.
-if ! /bin/bash "$gates" --check-online-diff; then
-  printf 'BLOCKED: device-facing change — run scripts/e2e.sh online auto (it runs exactly the specs above and records the online stamp).\n' >&2
   exit 2
 fi
 

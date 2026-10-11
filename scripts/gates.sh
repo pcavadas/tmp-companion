@@ -16,14 +16,23 @@
 #                                    set (see --online-spec-set)
 #   scripts/gates.sh --check-online <spec>...
 #                                    the same, for the named specs only
-#   scripts/gates.sh --required-online
-#                                    print the online specs THIS diff requires, in
-#                                    canonical order (or `ANY`, or nothing), from
-#                                    scripts/gate-map.tsv + scripts/gate-policy.tsv;
-#                                    advisory lines go to stderr (read-only)
-#   scripts/gates.sh --check-online-diff
-#                                    exit 0 iff the ONLINE stamp covers what
-#                                    --required-online prints (the PR hook's check)
+#   scripts/gates.sh --required-online [--since <ref>]
+#                                    print the online specs THIS diff (or everything
+#                                    since <ref>) requires, in canonical order (or
+#                                    `ANY`, or nothing), from scripts/gate-map.tsv +
+#                                    scripts/gate-policy.tsv; advisory lines go to
+#                                    stderr (read-only)
+#   scripts/gates.sh --release-base  print the last release tag (v*) behind HEAD
+#   scripts/gates.sh --device-changes [--since <ref>]
+#                                    list each commit since <ref> (default: the last
+#                                    release tag) that touched device-facing code,
+#                                    with its files and their classes, then the
+#                                    online specs that range requires (read-only;
+#                                    the release run's report)
+#
+# PRs run the OFFLINE gates only: the PR hook checks the green stamp alone. The
+# online suite runs at release, on the unit (scripts/pre-release.sh), over every
+# device-facing change merged since the last release.
 #   scripts/gates.sh --record-online [--run <fields>] <spec>...
 #                                    MERGE the specs that passed into this tree's
 #                                    ONLINE stamp, plus one `#run <time> <fields>`
@@ -147,7 +156,7 @@ write_stamp() { # <stamp-path> <prefix> [content]  — one stamp per tree; orpha
 # untracked non-ignored files. Shared by the run mode's scope and --required-online.
 changed_files() {
   {
-    if [ -n "$base" ]; then git diff --name-only "$base"; fi
+    if [ -n "${since:-$base}" ]; then git diff --name-only "${since:-$base}"; fi
     git ls-files --others --exclude-standard
   } | LC_ALL=C sort -u
 }
@@ -227,6 +236,43 @@ EOF
   if [ "$printed" -eq 0 ] && [ "$need_any" -eq 1 ]; then printf 'ANY\n'; fi
 }
 
+# The last release tag behind HEAD, or nothing.
+release_base() { git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true; }
+
+# [--since <ref>] → $since (empty: the merge base, as for the run mode's scope).
+since=""
+if [ "${2:-}" = --since ]; then
+  since="${3:-}"
+  if [ -z "$since" ] || ! git rev-parse --verify --quiet "$since^{commit}" >/dev/null; then
+    printf 'gates: --since needs a commit, tag or branch (got [%s])\n' "$since" >&2
+    exit 2
+  fi
+fi
+
+# <ref> — each first-parent commit in <ref>..HEAD whose files reach device-facing code
+# (any gate-map class but none and offline-oracle), oldest first, with those files.
+device_changes() {
+  local sha f class files n=0
+  for sha in $(git rev-list --reverse --first-parent "$1..HEAD"); do
+    files=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      class="$(classify_path "$f")"
+      case "$class" in none | offline-oracle) continue ;; esac
+      files="$files    $class	$f
+"
+    done <<EOF
+$(git diff-tree --no-commit-id --name-only -r -m --first-parent "$sha")
+EOF
+    if [ -n "$files" ]; then
+      git log -1 --format='%h %s' "$sha"
+      printf '%s' "$files"
+      n=$((n + 1))
+    fi
+  done
+  printf '%s device-facing change(s) since %s\n' "$n" "$1"
+}
+
 case "$MODE" in
   --check)
     if [ -f "$green_stamp" ]; then exit 0; fi
@@ -256,18 +302,21 @@ case "$MODE" in
     required_online
     exit 0
     ;;
-  --check-online-diff)
-    req="$(required_online)"
-    if [ -z "$req" ]; then exit 0; fi
-    printf 'gates: this diff requires online specs: %s\n' "$(printf '%s' "$req" | tr '\n' ' ')" >&2
-    if [ "$req" = ANY ]; then
-      # Any online spec that passed on this tree will do.
-      if [ -f "$online_stamp" ] && grep -qv '^#' "$online_stamp"; then exit 0; fi
-      printf 'gates: no fresh ONLINE stamp for this tree — run scripts/e2e.sh online auto\n' >&2
-      exit 1
+  --release-base)
+    rb="$(release_base)"
+    if [ -z "$rb" ]; then printf 'gates: no release tag (v*) behind HEAD\n' >&2; exit 1; fi
+    printf '%s\n' "$rb"
+    exit 0
+    ;;
+  --device-changes)
+    if [ -z "$since" ]; then
+      since="$(release_base)"
+      if [ -z "$since" ]; then printf 'gates: no release tag (v*) behind HEAD — pass --since <ref>\n' >&2; exit 1; fi
     fi
-    # shellcheck disable=SC2086  # deliberate word-split: one spec per word
-    exec /bin/bash "$0" --check-online $req
+    device_changes "$since"
+    req="$(required_online 2>/dev/null)"
+    printf 'online specs this range requires: %s\n' "$(printf '%s' "${req:-none}" | tr '\n' ' ' | sed 's/ $//')"
+    exit 0
     ;;
   --record-online)
     shift
@@ -331,7 +380,7 @@ SPECS
     ;;
   run) ;;
   *)
-    printf 'gates: unknown mode %s (use: --check | --check-online [spec...] | --required-online | --check-online-diff | --record-online [--run <fields>] <spec>... | --online-spec-set | --key | no arg)\n' "$MODE" >&2
+    printf 'gates: unknown mode %s (use: --check | --check-online [spec...] | --required-online [--since <ref>] | --release-base | --device-changes [--since <ref>] | --record-online [--run <fields>] <spec>... | --online-spec-set | --key | no arg)\n' "$MODE" >&2
     exit 2
     ;;
 esac

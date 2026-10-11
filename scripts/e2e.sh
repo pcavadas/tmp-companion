@@ -7,6 +7,8 @@
 #   scripts/e2e.sh online           # ONLINE (real device) — doctor, level, songs, copy in turn (~25 min)
 #   scripts/e2e.sh online auto      # ONLINE, exactly the specs this diff requires
 #                                   # (`scripts/gates.sh --required-online`; nothing → exit 0)
+#   scripts/e2e.sh online release   # ONLINE, the specs everything since the last release tag
+#                                   # requires (scripts/pre-release.sh; nothing → exit 0)
 #   scripts/e2e.sh online level.online   # ONLINE, only the level arc
 #   scripts/e2e.sh online all       # ONLINE, the full set (= the default online set)
 #   scripts/e2e.sh soak <N>         # ONLINE, attended: loop level.online.spec.ts N times —
@@ -71,7 +73,7 @@ cd "$REPO"
 #
 # ONLINE (and soak) get their OWN bands — bridge 9400 + offset*8 (9400-10999), Vite 1621 +
 # offset (1621-1820) — disjoint from offline's 7800-9399 / 1421-1620 and from the legacy
-# 7600-7799. So the two lanes can run side by side in ONE worktree (scripts/pre-pr.sh): each
+# 7600-7799. So the two lanes can run side by side in ONE worktree: each
 # lane's stale-server sweep covers only its own band, and each lane starts and owns its own
 # Vite, so an offline run that finishes first cannot take the online run's Vite down with it.
 # The mode is pre-scanned here because the full argument parse comes later.
@@ -184,7 +186,7 @@ for a in "$@"; do
     online|offline|soak) MODE="$a" ;;
     -h|--help)
       cat >&2 <<'USAGE'
-Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|level.online|all|auto ...]
+Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|level.online|all|auto|release ...]
        scripts/e2e.sh soak <N>
   (no args)             OFFLINE — all specs vs SimDevice (fast, ~1.5 min, no hardware)
   offline copy          OFFLINE — only the copy spec
@@ -194,6 +196,8 @@ Usage: scripts/e2e.sh [online|offline] [copy|level|songs|doctor|doctor.online|le
   online auto           ONLINE  — exactly the specs this diff requires
                         (`scripts/gates.sh --required-online`): ANY runs songs, nothing
                         required exits 0 without touching the unit
+  online release        ONLINE  — the same, over everything since the last release tag
+                        (`scripts/pre-release.sh` runs it at release time)
   online level.online   ONLINE  — only the level arc
   Any passing online run merges the specs it ran into this tree's online stamp; soak
   never stamps, and neither does a unit without its stock USB interfaces.
@@ -206,29 +210,39 @@ USAGE
   esac
 done
 
-# ── `online auto`: resolve the spec set from the diff BEFORE anything builds, locks or seeds,
-#    so a diff that needs nothing exits 0 without touching the unit. `ANY` (a file every
+# ── `online auto` / `online release`: resolve the spec set from the diff (auto) or from
+#    everything since the last release tag (release) BEFORE anything builds, locks or seeds,
+#    so a range that needs nothing exits 0 without touching the unit. `ANY` (a file every
 #    online run exercises, such as probe.rs's seed arm) runs songs, the cheapest spec. The
-#    resolved names replace `auto`; everything below sees an ordinary explicit spec list. ──
+#    resolved names replace the word; everything below sees an ordinary explicit spec list. ──
 case " ${SPECS[*]:-} " in
-  *" auto "*)
+  *" auto "* | *" release "*)
+    AUTO_WORD="${SPECS[0]}"
     if [ "$MODE" != online ] || [ "${#SPECS[@]}" -ne 1 ]; then
-      printf '\033[31m✗ %s\033[0m\n' 'auto is an online spec set on its own: scripts/e2e.sh online auto' >&2
+      printf '\033[31m✗ %s\033[0m\n' "auto and release are online spec sets on their own: scripts/e2e.sh online auto|release" >&2
       exit 2
     fi
-    if ! AUTO_REQ="$(bash "$REPO/scripts/gates.sh" --required-online)"; then
+    AUTO_SINCE=()
+    if [ "$AUTO_WORD" = release ]; then
+      if ! REL_BASE="$(bash "$REPO/scripts/gates.sh" --release-base)"; then
+        printf '\033[31m✗ %s\033[0m\n' 'online release: no release tag behind HEAD' >&2
+        exit 2
+      fi
+      AUTO_SINCE=(--since "$REL_BASE")
+    fi
+    if ! AUTO_REQ="$(bash "$REPO/scripts/gates.sh" --required-online "${AUTO_SINCE[@]:-}")"; then
       printf '\033[31m✗ scripts/gates.sh --required-online failed\033[0m\n' >&2
       exit 2
     fi
     SPECS=()
     case "$AUTO_REQ" in
       '')
-        printf '\033[36m▸ online auto: this diff requires no online spec — nothing to run\033[0m\n'
+        printf '\033[36m▸ online %s: requires no online spec — nothing to run\033[0m\n' "$AUTO_WORD"
         exit 0 ;;
       ANY) SPECS+=(songs) ;;
       *) for s in $AUTO_REQ; do SPECS+=("$s"); done ;;
     esac
-    printf '\033[36m▸ online auto: this diff requires %s\033[0m\n' "${SPECS[*]}"
+    printf '\033[36m▸ online %s: requires %s\033[0m\n' "$AUTO_WORD" "${SPECS[*]}"
     ;;
 esac
 
@@ -417,7 +431,7 @@ fi
 
 # The unit must present its stock USB interfaces for a run to stamp. Checked before the lock
 # and the seed, from the host's own USB listing (no HID access). A non-stock or unknown unit
-# still runs, unstamped, unless TMP_E2E_REQUIRE_STOCK=1 (scripts/pre-pr.sh) refuses it here.
+# still runs, unstamped, unless TMP_E2E_REQUIRE_STOCK=1 (scripts/pre-release.sh) refuses it here.
 UNIT="$(lane_unit_state)"
 if [ "$UNIT" = stock ]; then
   log "unit=stock — the unit presents its stock USB interfaces"
@@ -787,7 +801,7 @@ done
 # level.online run on the reference unit logged 224 events, 141 of them auto-reopens
 # (2026-10-11) — idle gaps the reopen already covers by design — so "no gap above 500 ms"
 # cannot be a pass criterion. Each line carries `at=<unix ms>`, so a loaded run
-# (scripts/pre-pr.sh) can be compared window by window with a quiet one.
+# (offline gates alongside) can be compared window by window with a quiet one.
 headroom_events="$(grep -c 'hid-headroom:' "$SERVER_LOG" 2>/dev/null || true)"
 headroom_events="${headroom_events:-0}"
 headroom_reopens="$(grep 'hid-headroom:' "$SERVER_LOG" 2>/dev/null | grep -c 'auto-reopen' || true)"

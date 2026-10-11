@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Offline spec for per-diff online spec selection: `gates.sh --required-online` on fixed
-# diffs, and the PR hook (scripts/claude-hooks/gate-pr.sh) fed real hook payloads.
+# Offline spec for online spec selection: `gates.sh --required-online` on fixed diffs, the
+# release report (`--release-base`, `--device-changes`, `--required-online --since`), and the
+# PR hook (scripts/claude-hooks/gate-pr.sh) fed real hook payloads: it checks the green
+# stamp alone, since PRs run the offline gates only.
 #
 # Fixture: a scratch git repo holding this checkout's gates.sh, gate TSVs and hook, with a
 # `main` branch as the merge base. Each case checks out a fresh branch, adds or edits the
@@ -95,7 +97,6 @@ check "on-demand spec → nothing, with an advisory" "|1" "$(required)|$(require
 stamp_dir() { (cd "$r" && printf '%s/tmp-gates' "$(git rev-parse --absolute-git-dir)"); }
 key() { (cd "$r" && /bin/bash scripts/gates.sh --key); }
 green() { mkdir -p "$(stamp_dir)"; : > "$(stamp_dir)/green-$(key)"; }
-online() { (cd "$r" && /bin/bash scripts/gates.sh --record-online "$@" >/dev/null); }
 hook() { # <payload> — print the hook's exit code
   sed "s|__CWD__|$r|" "$payloads/$1.json" > "$work/payload.json"
   rc=0
@@ -109,27 +110,56 @@ check "hook: no green stamp → blocked" 2 "$(hook create)"
 green
 check "hook: green, docs-only → allowed" 0 "$(hook create)"
 
-diff_of src-tauri/src/commands/songs.rs
-green
-check "hook: green, songs.rs, no online stamp → blocked" 2 "$(hook create)"
-online copy
-check "hook: online stamp lacks songs → blocked" 2 "$(hook create)"
-online songs
-check "hook: merged stamp covers songs → allowed" 0 "$(hook create)"
-check "hook: merge command, same tree → allowed" 0 "$(hook merge)"
-
+# PRs run the offline gates only: a device-facing diff still needs its green stamp, and
+# nothing more. The online suite runs at release (scripts/pre-release.sh).
 diff_of src-tauri/src/session.rs
+check "hook: device-facing diff, no green stamp → blocked" 2 "$(hook create)"
 green
-online songs copy
-check "hook: session.rs with a partial stamp → blocked" 2 "$(hook create)"
-online doctor.online level.online
-check "hook: session.rs with all four merged → allowed" 0 "$(hook create)"
+check "hook: device-facing diff, green → allowed" 0 "$(hook create)"
+check "hook: merge command, same tree → allowed" 0 "$(hook merge)"
+printf 'x\n' >> "$r/src-tauri/src/session.rs"
+check "hook: an edit after the green run → blocked" 2 "$(hook create)"
 
-diff_of src-tauri/src/bin/probe.rs
-green
-check "hook: probe.rs (ANY) with no online stamp → blocked" 2 "$(hook create)"
-online songs
-check "hook: probe.rs (ANY) with any spec stamped → allowed" 0 "$(hook create)"
+# ── the release report: everything since the last release tag ─────────────────────
+rel() { (cd "$r" && /bin/bash scripts/gates.sh "$@" 2>/dev/null); }
+commit_paths() { # <subject> <paths...>
+  (
+    cd "$r"
+    msg="$1"
+    shift
+    for p in "$@"; do
+      mkdir -p "$(dirname "$p")"
+      printf 'release %s\n' "$msg" >> "$p"
+    done
+    git add -A
+    git commit -qm "$msg"
+  ) >/dev/null
+}
+(
+  cd "$r"
+  git checkout -q -f main
+  git clean -qfdx
+  git checkout -q -b release
+) >/dev/null
+check "no release tag → --release-base fails" 1 "$(rel --release-base >/dev/null; echo $?)"
+check "no release tag → --device-changes fails" 1 "$(rel --device-changes >/dev/null; echo $?)"
+(cd "$r" && git tag v1.0.0) >/dev/null
+commit_paths "docs only" notes/x.md
+commit_paths "songs change" src-tauri/src/commands/songs.rs notes/y.md
+commit_paths "fake change" src-tauri/src/sim_device.rs
+check "--release-base names the tag" "v1.0.0" "$(rel --release-base)"
+dc="$(rel --device-changes)"
+check "--device-changes lists the device-facing commit" 1 "$(printf '%s\n' "$dc" | grep -c ' songs change$')"
+check "--device-changes names its file and class" 1 "$(printf '%s\n' "$dc" | grep -c 'songs.src-tauri/src/commands/songs.rs$')"
+check "--device-changes skips prose and offline-oracle commits" 0 "$(printf '%s\n' "$dc" | grep -c -e ' docs only$' -e ' fake change$')"
+check "--device-changes counts one change" 1 "$(printf '%s\n' "$dc" | grep -c '^1 device-facing change(s) since v1.0.0$')"
+check "--device-changes ends with the specs the range requires" 1 "$(printf '%s\n' "$dc" | grep -c '^online specs this range requires: songs$')"
+check "--required-online --since the tag → songs" "songs" "$(rel --required-online --since v1.0.0 | tr '\n' ' ' | sed 's/ $//')"
+check "--since with no ref → exit 2" 2 "$(rel --required-online --since >/dev/null; echo $?)"
+check "--since an unknown ref → exit 2" 2 "$(rel --required-online --since nope >/dev/null; echo $?)"
+(cd "$r" && git tag v1.1.0) >/dev/null
+check "a newer tag moves the base" "v1.1.0" "$(rel --release-base)"
+check "nothing since the newer tag" 1 "$(rel --device-changes | grep -c '^0 device-facing change(s) since v1.1.0$')"
 
 if [ "$fail" -ne 0 ]; then
   printf 'gate-pr spec: FAILED\n' >&2

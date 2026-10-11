@@ -59,6 +59,19 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # PRs run the offline gates only; the online suite runs before a release, on the
+      # unit, through scripts/pre-release.sh. This lists the same report on the run's
+      # summary: every merged change since the last tag that touched device-facing code.
+      - name: List device-facing changes since the last release
+        run: |
+          {
+            echo '## Device-facing changes since the last release'
+            echo
+            echo '```'
+            bash scripts/gates.sh --device-changes
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Resolve next release version (dry run)
         id: version
         env:

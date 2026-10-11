@@ -195,6 +195,24 @@ check "online auto says nothing is required" 1 "$(printf '%s\n' "$auto_out" | gr
 check "online auto never seeded" no "$([ -e "$work/tmpdir/tmp-companion-e2e/seed.log" ] && echo yes || echo no)"
 check "online auto never took the device lock" no "$([ -e "$work/lock" ] && echo yes || echo no)"
 
+# ── `e2e.sh online release`: no tag → refused; prose-only since the tag → exit 0, untouched ──
+rel_rc=0
+(cd "$a" && TMPDIR="$work/tmpdir" TMP_DEVICE_LOCK_DIR="$work/lock" \
+  /bin/bash scripts/e2e.sh online release >/dev/null 2>&1) || rel_rc=$?
+check "online release with no release tag → exit 2" 2 "$rel_rc"
+(
+  cd "$a"
+  git tag v0.0.1 main
+  git add -A
+  git commit -qm prose
+) >/dev/null
+rel_rc=0
+rel_out="$(cd "$a" && TMPDIR="$work/tmpdir" TMP_DEVICE_LOCK_DIR="$work/lock" \
+  /bin/bash scripts/e2e.sh online release 2>&1)" || rel_rc=$?
+check "online release, prose since the tag → exit 0" 0 "$rel_rc"
+check "online release says nothing is required" 1 "$(printf '%s\n' "$rel_out" | grep -c 'online release: requires no online spec')"
+check "online release never took the device lock" no "$([ -e "$work/lock" ] && echo yes || echo no)"
+
 if [ "$fail" -ne 0 ]; then
   printf 'e2e-lane spec: FAILED\n' >&2
   exit 1

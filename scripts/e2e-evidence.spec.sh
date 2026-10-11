@@ -130,7 +130,7 @@ printf 'ready\n' > "$work/ready"
 while :; do sleep 1; done
 LANE
 # Job control on, so the background lane keeps SIGINT (a non-interactive shell starts
-# its background jobs with SIGINT ignored), exactly as scripts/pre-pr.sh starts it.
+# its background jobs with SIGINT ignored), as a caller that backgrounds the lane must.
 set -m
 /bin/bash "$work/lane.sh" &
 lane_pid=$!

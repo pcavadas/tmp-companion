@@ -32,7 +32,11 @@ Sources: a full read of `src/views/**`, `src/App.tsx`, `src/ui/{DeviceStatus,Err
 - **`bash scripts/e2e.sh online auto`** — ONLINE, exactly the specs this diff requires
   (`scripts/gates.sh --required-online`, from `scripts/gate-map.tsv` and `scripts/gate-policy.tsv`);
   a diff that requires none exits 0 without touching the unit.
-- **`bash scripts/pre-pr.sh`** — the offline gates and `online auto` side by side, on disjoint port bands.
+- **`bash scripts/e2e.sh online release`** — the same, over everything merged since the last release tag.
+- **`bash scripts/pre-release.sh`** — the release-time run: prints every merged change since the last
+  release tag that touched device-facing code (`scripts/gates.sh --device-changes`), then runs
+  `online release` (`pre-release.sh all` runs the full set). PRs run the offline gates only; this is
+  where the online suite runs, once per release, with the unit plugged in by hand.
 
 Add a spec name — `copy` / `songs` / `doctor.online` / `level.online` — to run a single spec (e.g. `bash scripts/e2e.sh online level.online`).
 Any passing online run merges the specs it ran into the tree's online stamp (one `#run` line per run, with
