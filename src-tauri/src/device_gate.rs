@@ -58,7 +58,15 @@ pub(crate) fn op_aborted() -> bool {
 /// thread yield, so if an offline spec ever turns flaky, re-run it with this set — flaky
 /// with it, a real product race; green with it, the yield mattered and this function is the
 /// single place to reintroduce a small non-zero floor.
+///
+/// Each call is a trace `settle` event (requested and applied ms) when the recorder is on.
 pub(crate) fn settle_ms(ms: u64) -> u64 {
+    let applied = applied_settle_ms(ms);
+    crate::trace::settle(ms, applied);
+    applied
+}
+
+fn applied_settle_ms(ms: u64) -> u64 {
     #[cfg(feature = "e2e")]
     if crate::e2e_offline_fake() && std::env::var_os("TMP_E2E_KEEP_SETTLES").is_none() {
         return 0;

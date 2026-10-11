@@ -117,6 +117,10 @@ Footswitch rows are externally validated through `probe --measure-footswitch <sl
 
 **`level-validate.sh` exit codes, which both callers branch explicitly:** `0` every row passed (at least one actually measured) · `1` at least one row failed · `2` usage error · `3` ffmpeg absent, nothing checked · `4` **vacuous** pass — zero measured rows (every row clamped or persist-mismatched), announced in a yellow `PASS (VACUOUS)` banner. A `3` must be reported as SKIPPED, never as a target miss. A `4` is not a failure, but it must never certify: the online lane treats it as "passed but NOT stamped" — the zero-rows case is exactly a persist regression's shape, which the external judge exists to catch, so a skip is a real verdict, but it is not verification.
 
+## Run evidence and traces
+
+Online and soak runs archive into dated run folders under the git common dir, and the seed probe and e2e server write wire traces there: layout, the TCT v1 event table, the env vars and the privacy rules are in `notes/e2e-test-plan.md` ("Recording"). Never write lane output under the worktree (it re-keys the stamps), and never commit or upload raw evidence.
+
 ## Fixtures
 
 - The offline `backup-fixture.bin` and `scenario-presets.json` **must stay in sync** — regenerate both from one script.

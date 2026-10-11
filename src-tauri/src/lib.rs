@@ -75,6 +75,10 @@ pub(crate) mod test_support;
 // `pub` so the `gen_samples` bin (a separate crate) can reach the shared
 // catalog as `tmp_companion_lib::topologies`.
 pub mod topologies;
+// Lossless device traces for online e2e runs; inert unless `TMP_TRACE_DIR` is set.
+// Most of it is reached only from the e2e server and the seed, so default builds see it unused.
+#[allow(dead_code)]
+mod trace;
 // P5 external validation: the JSON-lines expectation log the measurement seams append
 // to when `TMP_E2E_VALIDATE_LOG` is set. Inert (and unallocating) otherwise.
 #[allow(dead_code)]

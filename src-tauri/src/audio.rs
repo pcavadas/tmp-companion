@@ -1037,15 +1037,29 @@ pub fn reamp_capture(
     sample_rate: u32,
     tail_ms: u64,
 ) -> Result<Capture, String> {
+    // Both branches are recorded (`crate::trace`, inert unless armed) with the backend
+    // that actually ran.
     #[cfg(feature = "e2e")]
     if !crate::e2e_online() {
         // Offline: drive the physics-faithful capture model (the real loudness law +
         // a scene-relative outputLevel term), reading the installed SimDevice's DSP
         // state, so the offline suite is a genuine loudness oracle. `tail_ms` unused
         // (the model is deterministic, no decay tail to integrate).
-        return crate::sim_device::e2e_capture(stimulus_mono, sample_rate);
+        return crate::trace::capture(
+            crate::trace::Backend::Sim,
+            stimulus_mono,
+            sample_rate,
+            tail_ms,
+            || crate::sim_device::e2e_capture(stimulus_mono, sample_rate),
+        );
     }
-    reamp_capture_real(stimulus_mono, sample_rate, tail_ms)
+    crate::trace::capture(
+        crate::trace::Backend::Device,
+        stimulus_mono,
+        sample_rate,
+        tail_ms,
+        || reamp_capture_real(stimulus_mono, sample_rate, tail_ms),
+    )
 }
 
 /// Real re-amp capture over the device's USB audio I/O (the production path; also used by

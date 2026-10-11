@@ -65,13 +65,14 @@ pub mod e2e_transport {
 
 /// Open the device transport: the e2e fake when a factory is installed (`--features e2e`,
 /// offline UI tests), else the real seized [`Hid`]. Single chokepoint for both the command
-/// lane and the monitor lane.
+/// lane and the monitor lane, and so the one place the trace recorder (`crate::trace`)
+/// hooks in, below `TrackedHid`; each branch names its own backend.
 fn open_transport() -> Result<Box<dyn HidTransport>, String> {
     #[cfg(feature = "e2e")]
     if let Some(t) = e2e_transport::take() {
-        return Ok(t);
+        return crate::trace::open(crate::trace::Backend::Sim, || Ok(t));
     }
-    Ok(Box::new(Hid::open()?))
+    crate::trace::open(crate::trace::Backend::Device, || Ok(Box::new(Hid::open()?)))
 }
 
 /// One entry in the device's "My Presets" list. `slot` is the **0-based list
@@ -3267,7 +3268,7 @@ fn json_payloads_from_reports(reports: &[Vec<u8>]) -> Vec<(u32, Vec<u8>)> {
 /// (e.g. "1.7.75"). The device sends this in reply to a `currentFwRequest`
 /// issued in-burst with no batchStatus (see [`Session::connect_with_firmware`]);
 /// a standalone request after the burst is rejected with ConnectionError.
-fn extract_fw_version(body: &[u8]) -> Option<String> {
+pub(crate) fn extract_fw_version(body: &[u8]) -> Option<String> {
     dig(body, TMS_SETTINGS, SETTINGS_CURRENT_FW).and_then(|fields| {
         field1(&fields)
             .and_then(Val::as_bytes)

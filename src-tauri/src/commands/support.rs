@@ -316,7 +316,7 @@ fn tail_cap(bytes: &[u8], cap: usize) -> &[u8] {
 
 /// UTC calendar date `(year, month, day)` for a count of days since 1970-01-01.
 /// Howard Hinnant's `civil_from_days` (public-domain), avoiding a chrono dep.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = (z - era * 146_097) as u64; // [0, 146096]
