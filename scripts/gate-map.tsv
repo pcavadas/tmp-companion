@@ -128,7 +128,7 @@ src-tauri/src/probe_api/harvest.rs	on-demand
 # ── none, made explicit: the side-by-side runner only orchestrates the two lanes ──
 scripts/pre-pr.sh	none
 
-# ── offline-oracle files added by later workstreams (rows ahead of the files) ──
+# ── offline-oracle files planned for later PRs (rows ahead of the files) ──
 src-tauri/src/sim_clock.rs	offline-oracle
 src-tauri/src/sim_link.rs	offline-oracle
 src-tauri/src/sim_calibrated.rs	offline-oracle
@@ -139,7 +139,7 @@ e2e/fixtures/device-timing.json	offline-oracle
 e2e/fixtures/capture-noise.json	offline-oracle
 e2e/fixtures/smoke-anchors.json	offline-oracle
 e2e/fixtures/calibration/*	offline-oracle
-# WS2 enables this row in the PR that adds the file, with a Rust test that every /sim
+# The PR that adds this file enables this row, with a Rust test that every /sim
 # route no-ops when e2e_online().
 # src-tauri/src/e2e_sim_routes.rs	offline-oracle
 

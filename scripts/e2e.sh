@@ -717,8 +717,8 @@ done
 # auto-reopen (session.rs), so a load-induced lapse is a named event, not a mystery red.
 # Counted from THIS run's server log (truncated at server start) and recorded on the stamp's
 # #run line as `headroom=<events>/<reopens>`. INFORMATIONAL, never a failure: an unloaded
-# level.online run on the reference unit logged 224 events, 141 of them auto-reopens (S1,
-# 2026-10-11) — idle gaps the reopen already covers by design — so "no gap above 500 ms"
+# level.online run on the reference unit logged 224 events, 141 of them auto-reopens
+# (2026-10-11) — idle gaps the reopen already covers by design — so "no gap above 500 ms"
 # cannot be a pass criterion. Each line carries `at=<unix ms>`, so a loaded run
 # (scripts/pre-pr.sh) can be compared window by window with a quiet one.
 headroom_events="$(grep -c 'hid-headroom:' "$SERVER_LOG" 2>/dev/null || true)"

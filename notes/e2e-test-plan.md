@@ -363,16 +363,16 @@ Non-destructive first, destructive last (single backup-restore rollback at the e
 
 ## Decision log (2026-10-11)
 
-Decisions taken for the offline e2e fidelity work. Later entries amend earlier ones; none is rewritten in place.
+Decisions taken for making the offline e2e simulator match the device. Later entries amend earlier ones; none is rewritten in place.
 
-- **Delivery.** A0 (WS0 and WS0b, plus fixes so tests run as root, an injectable test browser and a manual-only release trigger) lands before PR A. Each PR budgets two reviews and two online runs.
+- **Delivery.** Per-diff online spec selection and the side-by-side lanes land first, with fixes so tests run as root, an injectable test browser and a manual-only release trigger. Each later PR budgets two reviews and two online runs.
 - **`/sim` routes.** The `/sim/*` handlers stay in `e2e_server.rs`.
 - **Event bridge.** The UI event and Channel bridge replaces the stub. If Channels cannot be captured, it carries events only, and the gap is recorded in COVERAGE.md.
 - **Attended tooling checks.** Two unstamped attended device sessions verify the checks that need the unit at intermediate trees.
 - **Showcase firmware.** `showcase.json` reports firmware 1.8.58.
-- **Runner.** No self-hosted runner is registered on this public repository. `device-gate` becomes a required status when PR B lands. A hosted job that reads only the base branch posts it when no device check is needed; otherwise the maintainer posts it after the required lanes pass locally. `smoke` means `smoke:darwin`.
-- **Releases.** Releases are batched and started manually. From PR B, a batch with device-facing changes publishes only after the maintainer posts a `device-release` status from a full local device run on that commit.
+- **Runner.** No self-hosted runner is registered on this public repository. `device-gate` becomes a required status once the job that posts it lands. A hosted job that reads only the base branch posts it when no device check is needed; otherwise the maintainer posts it after the required lanes pass locally. `smoke` means `smoke:darwin`.
+- **Releases.** Releases are batched and started manually. Once `device-gate` is required, a batch with device-facing changes publishes only after the maintainer posts a `device-release` status from a full local device run on that commit.
 - **Reference unit.** Device evidence that stamps, records or calibrates comes only from a unit presenting its stock USB interfaces. The lane checks this and does not stamp otherwise. No second unit is planned.
-- **Licence review.** WS11 work beyond its local Stage 0 check needs the maintainer's licence review first. Record: review not yet done as of 2026-10-11, Stage 0 not run in M1, verdict pending. Stages 1–4 are not approved.
-- **Derived data.** The CPU table (`model-cpu.json`) and the Empty template's observable fields are public. The message table and conformance cases stay local until a follow-up decision at PR C, and would then be published only under allow-list redaction. No descriptor files, factory preset bodies, default parameters, IRs or user content are committed.
+- **Licence review.** Firmware analysis beyond a local first check needs the maintainer's licence review first. As of 2026-10-11 the review is not done and the local check has not run; nothing beyond it is approved.
+- **Derived data.** The CPU table (`model-cpu.json`) and the Empty template's observable fields are public. The message table and conformance cases stay local until a follow-up decision, and would then be published only under allow-list redaction. No descriptor files, factory preset bodies, default parameters, IRs or user content are committed.
 - **Real backups.** No real device backup is committed. A private check compares the simulator's archive with a real one locally.
