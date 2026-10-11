@@ -59,9 +59,10 @@ evidence_new_run() {
   printf '%s/runs/%s\n' "$root" "$name"
 }
 
-# A JSON string literal for $1 (quotes, backslashes and control characters escaped).
+# A JSON string literal for $1: quotes and backslashes escaped, tab/CR/LF folded to spaces,
+# and every other control byte (and DEL) dropped, so no value can make MANIFEST.json invalid.
 evidence_json_str() {
-  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\t\r\n' '   ')"
+  printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\t\r\n' '   ' | LC_ALL=C tr -d '\000-\037\177')"
 }
 
 # $1 = value. A JSON string, or null when empty.

@@ -151,6 +151,12 @@ if command -v python3 >/dev/null 2>&1; then
     "$(python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$int_run/MANIFEST.json" >/dev/null 2>&1; echo $?)"
 fi
 
+if command -v python3 >/dev/null 2>&1; then
+  ctl="$(printf 'a\033[31mb\tc\001d"e\\f')"
+  check "a value with control bytes stays a valid JSON string" 'a[31mb cd"e\f' \
+    "$(evidence_json_str "$ctl" | python3 -c 'import json,sys; print(json.load(sys.stdin))' 2>&1)"
+fi
+
 # ── retention: WAVs only for the newest N runs, everything else kept ────────────
 rr="$work/ret"
 mkdir -p "$rr/runs"
