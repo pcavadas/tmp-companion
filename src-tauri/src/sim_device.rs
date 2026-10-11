@@ -1829,6 +1829,7 @@ impl SimDevice {
     fn handle_setlist_msg(&self, inner_bytes: &[u8]) -> Vec<Vec<u8>> {
         let f = proto::parse(inner_bytes);
         let mut st = self.state.lock().expect("sim lock");
+        let song_count = st.songs.len();
         let lists = &mut st.setlists;
         if let Some(req) = proto::first_bytes(&f, F_SETLIST_SONGS_REQUEST) {
             // A COMPLETE membership response (records `{songSlot=1}`), echoing
@@ -1852,10 +1853,14 @@ impl SimDevice {
             return frame_multi(&resp);
         }
         if let Some(add) = proto::first_bytes(&f, F_SETLIST_SONG_ADD) {
-            // {setlistSlot=1, songSlot=2}: append the global song slot.
+            // {setlistSlot=1, songSlot=2}: append the global song slot. The firmware
+            // resolves the slot to a song id first and adds nothing when none exists
+            // (tmp-audit Q51's `SELECT id FROM Songs WHERE slot = ?`).
             let inner = proto::parse(add);
-            if let Some(members) = members_of(lists, &inner) {
-                members.push(proto::first_varint(&inner, 2).unwrap_or(0) as u32);
+            if let (Some(members), Some(song)) =
+                (members_of(lists, &inner), slot_index(&inner, 2, song_count))
+            {
+                members.push(song as u32 + 1);
             }
             return Vec::new();
         }
@@ -4492,24 +4497,29 @@ mod setlist_membership_tests {
         for name in ["c", "d", "e", "f"] {
             s.add_song(name).unwrap(); // slots 3..=6 after the two defaults
         }
-        let read = |s: &mut Session| s.setlist_songs_strict(1).unwrap().unwrap();
-        assert_eq!(read(&mut s), Vec::<u32>::new());
-        for song in [1, 3, 6] {
+        let read = |s: &mut Session, list| s.setlist_songs_strict(list).unwrap().unwrap();
+        assert_eq!(read(&mut s, 1), Vec::<u32>::new());
+        // Slots with no song (0, past the end) add nothing.
+        for song in [1, 0, 3, 7, 6] {
             s.add_setlist_song(1, song).unwrap();
         }
-        assert_eq!(read(&mut s), [1, 3, 6]);
+        assert_eq!(read(&mut s, 1), [1, 3, 6]);
         s.remove_setlist_song(1, 2).unwrap();
-        assert_eq!(read(&mut s), [1, 6]);
+        assert_eq!(read(&mut s, 1), [1, 6]);
         s.add_setlist_song(1, 5).unwrap();
         s.move_setlist_song(1, 3, 1).unwrap();
-        assert_eq!(read(&mut s), [5, 1, 6]);
-        s.remove_song(5).unwrap();
-        assert_eq!(read(&mut s), [1, 5]);
+        assert_eq!(read(&mut s, 1), [5, 1, 6]);
         // A second setlist starts empty and is independent of the first.
         s.add_setlist("Sunday").unwrap();
-        s.add_setlist_song(2, 2).unwrap();
-        assert_eq!(s.setlist_songs_strict(2).unwrap().unwrap(), [2]);
+        assert_eq!(read(&mut s, 2), Vec::<u32>::new());
+        for song in [2, 5, 6] {
+            s.add_setlist_song(2, song).unwrap();
+        }
+        // Removing song 5 drops it from BOTH setlists and shifts 6 down.
+        s.remove_song(5).unwrap();
+        assert_eq!(read(&mut s, 1), [1, 5]);
+        assert_eq!(read(&mut s, 2), [2, 5]);
         s.remove_setlist(1).unwrap();
-        assert_eq!(read(&mut s), [2]);
+        assert_eq!(read(&mut s, 1), [2, 5]);
     }
 }
