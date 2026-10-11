@@ -555,6 +555,38 @@ const PRESET_LEVEL_CHANGED: u32 = 77;
 const SETTINGS_CURRENT_FW: u32 = 2; // SettingsMessage.currentFwResponse (reply to in-burst currentFwRequest)
 const REAMP_SETTING: u32 = 30; // SettingsMessage.reampModeActive (echo of the setter)
 const USB_SETTINGS_RESPONSE: u32 = 56; // SettingsMessage.usbSettingsResponse (UsbSettings)
+const USB_SETTINGS_REQUEST: u32 = 55; // SettingsMessage.usbSettingsRequest (EmptyRequestMessage)
+const USB_REAMP_ACTIVE: u32 = 1; // UsbSettings.reampModeActive (ReampModeActive{ value = 1 })
+/// FenderMessageTMS.mixerMessage and its re-amp read pair.
+const TMS_MIXER: u32 = 5;
+const MIXER_REAMP_REQUEST: u32 = 4; // MixerMessage.reAmpModeRequest
+const MIXER_REAMP_RESPONSE: u32 = 9; // MixerMessage.reAmpModeResponse{ isActive = 1 }
+/// How long [`Session::read_reamp_state`] waits for each store's reply.
+const REAMP_STATE_WAIT_MS: u64 = 1_500;
+
+/// The device's re-amp state as [`Session::read_reamp_state`] read it: `None` = that store
+/// gave no reply, `Some(on)` = it answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ReampState {
+    /// The Mixer store — the audio path's real state.
+    pub mixer: Option<bool>,
+    /// The Settings flag a Settings engage checks.
+    pub settings: Option<bool>,
+}
+
+/// A `MixerMessage.reAmpModeResponse` body → its flag (field 9 without field 1 = OFF).
+fn decode_mixer_reamp(body: &[u8]) -> Option<bool> {
+    let resp = dig(body, TMS_MIXER, MIXER_REAMP_RESPONSE)?;
+    Some(proto::first_varint(&resp, 1).unwrap_or(0) != 0)
+}
+
+/// A `SettingsMessage.usbSettingsResponse` body → its re-amp flag (absent = OFF).
+fn decode_usb_reamp(body: &[u8]) -> Option<bool> {
+    let usb = dig(body, TMS_SETTINGS, USB_SETTINGS_RESPONSE)?;
+    let flag = proto::first_bytes(&usb, USB_REAMP_ACTIVE)
+        .and_then(|b| proto::first_varint(&proto::parse(b), 1));
+    Some(flag.unwrap_or(0) != 0)
+}
 
 impl Session {
     /// Open the device (seizing it) and run the full first-connect handshake
@@ -1954,6 +1986,12 @@ impl Session {
 
     /// Set re-amp mode via the Global Settings path. Returns the echoed
     /// `SettingsMessage.reampModeActive` value if the device reports it.
+    ///
+    /// That return is NOT a confirmation. The OFF echo is the empty `ReampModeActive{}`
+    /// (proto3 omits a false field), so OFF always returns `None`, and a late ON echo
+    /// queued behind the ~1.2 s handshake drain can land in the OFF window as
+    /// `Some(true)` (fw 1.8.58, device trace). Read the real state with
+    /// [`Self::read_reamp_state`].
     pub fn set_reamp_mode(&mut self, active: bool) -> Result<Option<bool>, String> {
         if active {
             REAMP_ON_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1967,6 +2005,48 @@ impl Session {
                 .and_then(|f| field1(&f).and_then(|v| v.as_u64()))
                 .map(|v| v != 0)
         }))
+    }
+
+    /// Read the re-amp state back from BOTH device stores — read-only, it never sends a
+    /// re-amp write. The Mixer store (`MixerMessage.reAmpModeRequest`(4) → field 9) is the
+    /// audio path; the Settings flag (`usbSettingsRequest`(55) → field 56 → field 1) is what
+    /// a Settings engage checks. They can disagree (a stale Settings flag): a Settings engage
+    /// is then acknowledged and does nothing (fw 1.8.58, device-confirmed). A store that never
+    /// answered within [`REAMP_STATE_WAIT_MS`] reads `None` — never treat a missing reply as
+    /// OFF. A present reply with its flag omitted is OFF (proto3 elides a false field).
+    pub fn read_reamp_state(&mut self) -> Result<ReampState, String> {
+        let mixer = self.await_reply(
+            &proto::mixer_request(MIXER_REAMP_REQUEST),
+            decode_mixer_reamp,
+        )?;
+        let settings = self.await_reply(
+            &proto::settings_request(USB_SETTINGS_REQUEST),
+            decode_usb_reamp,
+        )?;
+        Ok(ReampState { mixer, settings })
+    }
+
+    /// Send one request (no `batchStatus`) and wait, kept alive, up to
+    /// [`REAMP_STATE_WAIT_MS`] for the first inbound stream `decode` accepts. The reply can
+    /// queue behind the ~1.2 s handshake drain (device-confirmed), so a short window misses it.
+    fn await_reply<T>(
+        &mut self,
+        body: &[u8],
+        decode: impl Fn(&[u8]) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        self.raw.clear();
+        self.send_and_collect(body, KEEPALIVE_WINDOW_MS)?;
+        let mut waited = KEEPALIVE_WINDOW_MS;
+        loop {
+            if let Some(v) = self.streams().iter().find_map(|s| decode(&s.body)) {
+                return Ok(Some(v));
+            }
+            if waited >= REAMP_STATE_WAIT_MS {
+                return Ok(None);
+            }
+            self.keepalive_pump()?;
+            waited += KEEPALIVE_WINDOW_MS;
+        }
     }
 
     /// Set the whole-preset level (0.0..=1.0). Returns the echoed
@@ -4240,6 +4320,37 @@ fn warn_unmapped_groups(
 
 #[cfg(test)]
 mod tests {
+    /// Device-shaped re-amp replies: proto3 omits a false flag, so a present reply without it
+    /// is OFF, and a missing reply is no reading at all.
+    #[test]
+    fn reamp_replies_decode_an_omitted_flag_as_off() {
+        // TMS 5 { reAmpModeResponse(9) {} } and { 9 { isActive: true } }.
+        assert_eq!(
+            super::decode_mixer_reamp(&[0x2a, 0x02, 0x4a, 0x00]),
+            Some(false)
+        );
+        assert_eq!(
+            super::decode_mixer_reamp(&[0x2a, 0x04, 0x4a, 0x02, 0x08, 0x01]),
+            Some(true)
+        );
+        // TMS 3 { usbSettingsResponse(56) { reampModeActive(1) {} } } and the ON shape.
+        assert_eq!(
+            super::decode_usb_reamp(&[0x1a, 0x05, 0xc2, 0x03, 0x02, 0x0a, 0x00]),
+            Some(false)
+        );
+        assert_eq!(
+            super::decode_usb_reamp(&[0x1a, 0x07, 0xc2, 0x03, 0x04, 0x0a, 0x02, 0x08, 0x01]),
+            Some(true)
+        );
+        // A different message carries no reading.
+        assert_eq!(super::decode_mixer_reamp(&proto_heartbeat()), None);
+        assert_eq!(super::decode_usb_reamp(&proto_heartbeat()), None);
+    }
+
+    fn proto_heartbeat() -> Vec<u8> {
+        crate::proto::heartbeat()
+    }
+
     use super::*;
 
     /// The model ids of a series stage, in order. Panics on a non-series stage
