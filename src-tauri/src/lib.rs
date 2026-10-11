@@ -111,7 +111,10 @@ pub(crate) use probe_api::scene_jobs::{
 pub use probe_api::scene_jobs::{SceneHandleCandidate, SceneHandleRow};
 pub(crate) use probe_api::setlists::{read_setlist_list, read_setlist_songs};
 pub(crate) use probe_api::slot_write::{discover_active_graph, load_then_discover_blocks};
-pub(crate) use probe_api::songs::{converge_song_bpm, read_song_list, read_song_presets};
+pub(crate) use probe_api::songs::{
+    bpm_landed, converge_song_bpm, find_song_slot, read_song_list, read_song_presets,
+    set_song_bpm_on,
+};
 pub(crate) use probe_api::stimulus::{
     read_stimulus_calibrated, read_stimulus_calibrated_with_shortfall,
 };

@@ -1,6 +1,5 @@
 //! Probe entry points: Songs CRUD + shared song-read helpers (used by the song commands).
 
-use super::slot_write::discover_active_graph;
 use super::SCRATCH_SLOTS;
 use crate::proto;
 use crate::session;
@@ -204,88 +203,127 @@ pub fn probe_set_song_notes(name: &str, notes: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// The RE'd per-song BPM ritual (there is NO dedicated BPM setter — BPM is the global
-/// `tapTempoBpm` applied to the ACTIVE song, so the song must be activated via a
-/// footswitch). **Non-destructive:** if the song already has a footswitch binding we
-/// activate THAT one and never overwrite it; we only `assignSongPreset` (purely
-/// additively — nothing to clobber) when the song has no footswitch at all. (The
-/// device does not echo a binding's footswitch label/color on read, so re-asserting
-/// an existing binding could only blank them — hence we never re-write it.) Then
-/// retry ≤5× { `load_song` + `tapTempoBpm` + enable BPM display + read-back-verify
-/// within ±1.5 } — the first load often doesn't settle. Finally **restore the prior
-/// active preset** so editing BPM doesn't leave the amp on the song's footswitch
-/// preset. Returns `(fresh_song_list, converged)`; `converged == false` means the
-/// retries were exhausted (the caller decides whether that's an error). `Err` only on
-/// an actual connection/transact failure. Shared by the `set_song_bpm` command and
-/// `probe_set_song_bpm` so this fragile, HW-derived flow lives once.
+/// Whether a song list shows `slot` at `bpm` (±1.5).
+pub(crate) fn bpm_landed(songs: &[session::SongRecord], slot: u32, bpm: f32) -> bool {
+    songs
+        .iter()
+        .any(|x| x.slot == slot && (x.bpm as f32 - bpm).abs() < 1.5)
+}
+
+/// Set song `slot`'s BPM on ONE open session, then load `restore` (0-based list index).
+/// Order matters: `tapTempoBpm` writes the ACTIVE song's BPM only once that song's
+/// `bpmActive` is already on (fw 1.8.58, tmp-audit Q40), so load the song (tab 5), enable,
+/// THEN tap, and read back once; no wait or retry. The flag stays on (the Songs tab shows
+/// a BPM only while it is). An existing footswitch binding is used untouched; a song with
+/// none gets row 1 → preset 001's base scene. Returns the read-back list (`None` if it
+/// didn't arrive) and whether the BPM landed.
+pub(crate) fn set_song_bpm_on(
+    s: &mut Session,
+    slot: u32,
+    bpm: f32,
+    restore: Option<u32>,
+) -> Result<(Option<Vec<session::SongRecord>>, bool), String> {
+    // FAIL-CLOSED: an empty read means no usable reply (a footswitch-less song still
+    // returns its all-empty rows), so refuse rather than assign over a binding we
+    // couldn't see. A truncated record defaults `is_empty=false`, so a partial read errs
+    // toward activating a binding, never toward clobbering one.
+    let rows = s.song_presets(slot)?;
+    if rows.is_empty() {
+        return Err(
+            "could not read this song's footswitch bindings — refusing to set \
+             BPM to avoid overwriting a footswitch preset (load the song on the \
+             unit and retry)"
+                .into(),
+        );
+    }
+    // `user_preset_slot` is the 1-based device slot `load_song.presetSlot` wants.
+    let (fs_pos, fs_preset_slot) = match rows.iter().position(|r| !r.is_empty) {
+        Some(i) => ((i + 1) as u32, rows[i].user_preset_slot),
+        None => {
+            // An all-empty song: no label or colours to keep.
+            s.assign_song_preset(slot, 1, 0, "", 0, session::BASE_SCENE_SLOT, 0)
+                .map_err(|e| {
+                    format!(
+                        "could not give this song a footswitch, which setting its BPM \
+                         needs — assign a preset to it on the unit and retry ({e})"
+                    )
+                })?;
+            (1, 1)
+        }
+    };
+
+    let songs = (|| {
+        s.load_song(slot, fs_pos, fs_preset_slot)?;
+        s.set_song_bpm_active(slot, true)?;
+        s.set_tap_tempo_bpm(bpm)?;
+        s.song_list_strict()
+    })();
+
+    // Put the amp back on the preset that was active (best-effort), even after a failed
+    // write: the song load above already left song mode active.
+    if let Some(prior) = restore {
+        let _ = s.load_preset(prior);
+    }
+    let songs = songs?;
+    let landed = songs.as_deref().is_some_and(|l| bpm_landed(l, slot, bpm));
+    Ok((songs, landed))
+}
+
+/// Set song `slot`'s BPM over ONE connection ([`set_song_bpm_on`], restoring the preset
+/// the handshake showed active). Returns the fresh song list and whether the BPM landed;
+/// `false` is the caller's to report. `Err` only on a connection/transact failure or a
+/// refused footswitch. Shared by the `set_song_bpm` command and `probe_set_song_bpm`.
 pub(crate) fn converge_song_bpm(
     slot: u32,
     bpm: f32,
 ) -> Result<(Vec<session::SongRecord>, bool), String> {
-    // Read the currently-active preset (to restore afterward) + the song's existing
-    // footswitch bindings (to avoid clobbering one). Both best-effort reads.
-    let prior_active = discover_active_graph().ok().and_then(|(g, _)| g.slot);
-
-    // FAIL-CLOSED read of the footswitch bindings. `read_song_presets` returns an
-    // EMPTY Vec only when it got NO usable response (a genuinely footswitch-less song
-    // still returns its all-empty row set), so an empty result = we couldn't read the
-    // bindings authoritatively → refuse rather than additively assign over a binding
-    // we just failed to see. (A truncated record defaults `is_empty=false`, so a
-    // partial read can never FALSELY report a bound position as empty — it errs
-    // toward "activate the existing binding", never toward clobbering.)
-    let rows = read_song_presets(slot)?;
-    if rows.is_empty() {
-        return Err(
-            "could not read this song's footswitch bindings — refusing to set \
-                    BPM to avoid overwriting a footswitch preset (load the song on the \
-                    unit and retry)"
-                .into(),
-        );
-    }
-    let existing = rows.iter().enumerate().find(|(_, r)| !r.is_empty);
-
-    // 1) Resolve the footswitch to activate. Existing binding → use it untouched;
-    //    authoritatively none → assign position 1 additively (the original behavior,
-    //    only when there's nothing to overwrite). `user_preset_slot` is the device
-    //    1-based slot already stored in the binding, which `load_song.presetSlot` wants.
-    let (fs_pos, fs_preset_slot) = match existing {
-        Some((i, r)) => ((i + 1) as u32, r.user_preset_slot),
-        None => {
-            let mut s = Session::connect()?;
-            // An all-empty song: no label or colours to keep.
-            s.assign_song_preset(slot, 1, 0, "", 0, 1, 0)?;
-            (1u32, 1u32)
-        }
+    let read = {
+        let mut s = Session::connect()?;
+        let prior = s.active_slot_live();
+        set_song_bpm_on(&mut s, slot, bpm, prior)?
     };
-
-    // 2) Activate + set tempo, retry until the read-back lands within ±1.5.
-    let mut last = Vec::new();
-    let mut converged = false;
-    for _ in 0..5 {
-        {
-            let mut s = Session::connect()?;
-            s.load_song(slot, fs_pos, fs_preset_slot)?;
-            s.set_tap_tempo_bpm(bpm)?;
-            s.set_song_bpm_active(slot, true)?;
-        }
-        last = read_song_list()?;
-        if let Some(r) = last.iter().find(|x| x.slot == slot) {
-            if (r.bpm as f32 - bpm).abs() < 1.5 {
-                converged = true;
-                break;
-            }
+    match read {
+        (Some(songs), landed) => Ok((songs, landed)),
+        // The read-back never arrived on the session: one fresh strict read decides.
+        (None, _) => {
+            let songs = read_song_list()?;
+            let landed = bpm_landed(&songs, slot, bpm);
+            Ok((songs, landed))
         }
     }
+}
 
-    // 3) Restore the prior active preset so the live tone returns to what it was
-    //    (best-effort — only if we could read it).
-    if let Some(prior) = prior_active {
-        if let Ok(mut s) = Session::connect() {
-            let _ = s.load_preset(prior);
-        }
-    }
-
-    Ok((last, converged))
+/// `--active-slot` — read-only: what a plain handshake shows about the active preset
+/// (the `PresetLoaded` echo, the current-preset name, the strict My Presets list) and
+/// the restore target [`Session::active_slot_live`] derives from it.
+pub fn probe_active_slot() -> Result<String, String> {
+    let mut s = Session::connect()?;
+    let started = std::time::Instant::now();
+    let snapshot = |s: &Session| {
+        let name = s.active_preset_name();
+        let list = s.harvest_preset_list_strict();
+        let hits = match (&name, &list) {
+            (Some(n), Some(l)) => l.iter().filter(|x| *x == n).count().to_string(),
+            _ => "-".into(),
+        };
+        format!(
+            "loaded_slot={:?} name={name:?} strict_list_len={:?} name_hits={hits}",
+            s.loaded_slot(),
+            list.as_ref().map(Vec::len)
+        )
+    };
+    let mut out = format!(
+        "[probe --active-slot] after handshake: {}
+",
+        snapshot(&s)
+    );
+    let live = s.active_slot_live();
+    out += &format!(
+        "[probe --active-slot] active_slot_live={live:?} after {} ms: {}\n",
+        started.elapsed().as_millis(),
+        snapshot(&s)
+    );
+    Ok(out)
 }
 
 /// `--song-bpm <name> <bpm>` — set a song's numeric BPM via [`converge_song_bpm`]
@@ -303,17 +341,15 @@ pub fn probe_set_song_bpm(name: &str, bpm: f32) -> Result<String, String> {
         ))
     } else {
         Ok(format!(
-            "[probe --song-bpm] {name:?} BPM → {bpm}: read-back={got} — did NOT converge after retries \
-             (active-song targeting may differ for this slot)\n"
+            "[probe --song-bpm] {name:?} BPM → {bpm}: read-back={got} — did NOT land\n"
         ))
     }
 }
 
 /// `--remove-song <name>` — DELETE a song resolved by exact name (guard: refuses on
 /// no-match / ambiguity, so the slot used for deletion is the one that reads as `name`).
-/// HW PROBE (DEVICE WRITE): bind a user preset to a Song row (`assignSongPreset`),
-/// then read the Song's rows back so the binding is confirmed by the DEVICE rather
-/// than by the setter's own optimism (`assign_song_preset` is fire-and-forget).
+/// HW PROBE (DEVICE WRITE): bind a user preset to a Song row (`assignSongPreset`, which
+/// confirms the row by reading it back), then print the Song's rows either way.
 ///
 /// `list_index` is the 0-based preset list index — **scratch zone only**, because
 /// the point of this probe is to then reorder that preset and see whether the
@@ -330,17 +366,27 @@ pub fn probe_assign_song_preset(
     }
     let songs = read_song_list()?;
     let slot = find_song_slot(&songs, song_name)?;
-    {
-        let mut s = Session::connect()?;
-        // label/colour are cosmetic footswitch fields; scene 0 = base.
-        s.assign_song_preset(slot, row, list_index, "PROBE", 1, 0, 1)?;
-        std::thread::sleep(std::time::Duration::from_millis(600));
-    }
-    let rows = read_song_presets(slot)?;
+    let mut s = Session::connect()?;
+    // Label/colour are cosmetic; base scene, since 0 is the FIRST scene and the device
+    // refuses one the preset doesn't have.
+    let assigned = s.assign_song_preset(
+        slot,
+        row,
+        list_index,
+        "PROBE",
+        1,
+        session::BASE_SCENE_SLOT,
+        1,
+    );
+    let rows = s.song_presets(slot)?;
     let mut out = format!(
         "[probe --assign-song-preset] {song_name:?} (songSlot {slot}) row {row} \
-         → list idx {list_index} (device userPresetSlot {})\n",
-        list_index + 1
+         → list idx {list_index} (device userPresetSlot {}): {}\n",
+        list_index + 1,
+        match &assigned {
+            Ok(()) => "landed ✓".to_string(),
+            Err(e) => format!("REFUSED ✗ — {e}"),
+        }
     );
     for (i, r) in rows.iter().enumerate() {
         out += &format!(
@@ -369,4 +415,131 @@ pub fn probe_remove_song(name: &str) -> Result<String, String> {
         },
         after.len()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim_device::{SimDevice, SimEvent, SimSongRow};
+
+    /// A bound song row on 1-based device slot `dev_slot`, base scene.
+    fn row(dev_slot: u32, label: &str) -> SimSongRow {
+        SimSongRow {
+            user_preset_slot: dev_slot,
+            scene_slot: session::BASE_SCENE_SLOT,
+            label: label.into(),
+            color: 3,
+            color_inactive: 19,
+        }
+    }
+
+    fn sim_session(sim: &SimDevice) -> Session {
+        Session::from_transport(Box::new(sim.clone()))
+    }
+
+    /// The device events a BPM write produced, minus keep-alives.
+    fn song_events(sim: &SimDevice) -> Vec<SimEvent> {
+        sim.events()
+            .into_iter()
+            .filter(|e| !matches!(e, SimEvent::Heartbeat))
+            .collect()
+    }
+
+    // tmp-audit Q40 (fw 1.8.58): a tap reaches the active song only once its flag is on,
+    // and enabling the flag re-applies the STORED BPM rather than the one just tapped.
+    #[test]
+    fn sim_tap_lands_only_when_the_song_bpm_flag_is_already_on() {
+        let sim = SimDevice::new().with_song(1, |song| song.rows[0] = Some(row(1, "")));
+        let mut s = sim_session(&sim);
+        s.load_song(1, 1, 1).unwrap();
+        // The companion's old order: tap, then enable → the song keeps 120.
+        s.set_tap_tempo_bpm(140.0).unwrap();
+        s.set_song_bpm_active(1, true).unwrap();
+        assert_eq!(sim.song(1).unwrap().bpm, 120);
+        // Flag on: the next tap lands.
+        s.set_tap_tempo_bpm(141.0).unwrap();
+        assert_eq!(sim.song(1).unwrap().bpm, 141);
+        // A tab-1 load leaves song mode: a tap no longer reaches any song.
+        s.load_preset(0).unwrap();
+        s.set_tap_tempo_bpm(90.0).unwrap();
+        assert_eq!(sim.song(1).unwrap().bpm, 141);
+    }
+
+    // tmp-audit Q40: `assignSongPreset` with a scene index the preset doesn't have is
+    // refused with SongError 5 and writes no row (the read-back makes it an Err); base
+    // (8) is always accepted.
+    #[test]
+    fn a_song_scene_the_preset_does_not_have_is_refused_and_reported() {
+        let sim = SimDevice::new().with_preset_scenes(1, 2);
+        let mut s = sim_session(&sim);
+        let err = s.assign_song_preset(1, 1, 0, "", 0, 1, 0).unwrap_err(); // 001: no scenes
+        assert!(err.contains("did not bind"), "{err}");
+        assert_eq!(sim.song(1).unwrap().rows[0], None);
+        assert!(sim.events().contains(&SimEvent::SongError(5)));
+        s.assign_song_preset(1, 2, 1, "", 0, 1, 0).unwrap(); // 002: 2 scenes
+        s.assign_song_preset(1, 3, 0, "", 0, session::BASE_SCENE_SLOT, 0)
+            .unwrap();
+        let rows = sim.song(1).unwrap().rows;
+        assert_eq!(rows[1].as_ref().map(|r| r.scene_slot), Some(1));
+        assert_eq!(
+            rows[2].as_ref().map(|r| r.scene_slot),
+            Some(session::BASE_SCENE_SLOT)
+        );
+    }
+
+    // The two Q40 bugs together: a new song (no footswitch, flag off, 120 BPM) on a preset
+    // with no scenes. One pass on one session must land the BPM — no retry.
+    #[test]
+    fn a_new_song_bpm_lands_on_the_first_pass_on_one_session() {
+        let sim = SimDevice::new();
+        let mut s = sim_session(&sim);
+        let (songs, landed) = set_song_bpm_on(&mut s, 1, 97.0, Some(5)).unwrap();
+        assert!(landed);
+        let rec = songs.unwrap().into_iter().find(|r| r.slot == 1).unwrap();
+        assert_eq!((rec.bpm, rec.bpm_active), (97, true));
+        assert_eq!(
+            song_events(&sim),
+            vec![
+                SimEvent::SongAssign {
+                    song: 1,
+                    row: 1,
+                    list_index: 0,
+                    scene: session::BASE_SCENE_SLOT,
+                },
+                SimEvent::Loaded(0),
+                SimEvent::SongLoaded { song: 1, row: 1 },
+                SimEvent::SongBpmActive { song: 1, on: true },
+                SimEvent::TapTempo(97.0),
+                SimEvent::Loaded(5), // the prior preset, restored
+            ]
+        );
+    }
+
+    #[test]
+    fn an_existing_footswitch_is_activated_untouched() {
+        let sim = SimDevice::new().with_song(2, |song| {
+            song.bpm = 88;
+            song.bpm_active = true;
+            song.rows[2] = Some(row(5, "VERSE"));
+        });
+        let mut s = sim_session(&sim);
+        let (_, landed) = set_song_bpm_on(&mut s, 2, 132.0, None).unwrap();
+        assert!(landed);
+        assert_eq!(sim.song(2).unwrap().bpm, 132);
+        assert_eq!(
+            sim.song(2).unwrap().rows[2]
+                .as_ref()
+                .map(|r| r.label.as_str()),
+            Some("VERSE")
+        );
+        assert_eq!(
+            song_events(&sim),
+            vec![
+                SimEvent::Loaded(4),
+                SimEvent::SongLoaded { song: 2, row: 3 },
+                SimEvent::SongBpmActive { song: 2, on: true },
+                SimEvent::TapTempo(132.0),
+            ]
+        );
+    }
 }

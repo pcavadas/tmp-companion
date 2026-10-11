@@ -146,6 +146,19 @@ pub fn is_empty_slot_name(name: &str) -> bool {
     n.is_empty() || n == "--" || n == "\u{2014}" || n.eq_ignore_ascii_case("empty")
 }
 
+/// The one My Presets position `name` occupies; `None` for a duplicated, absent or
+/// empty-slot name (it can't prove which preset is active).
+pub(crate) fn unique_list_index(names: &[String], name: &str) -> Option<u32> {
+    if is_empty_slot_name(name) {
+        return None;
+    }
+    let mut hits = names.iter().enumerate().filter(|(_, n)| *n == name);
+    match (hits.next(), hits.next()) {
+        (Some((i, _)), None) => Some(i as u32),
+        _ => None,
+    }
+}
+
 /// True iff `name` appears at EXACTLY ONE position in the My Presets `names` list and
 /// that position is `list_index`. The uniqueness proof the [`Session::active_matches`]
 /// name fallback needs before it may confirm a save target: a duplicated display name
@@ -2705,7 +2718,10 @@ impl Session {
     /// `song_slot` / `song_preset_slot` / `preset_scene_slot` are song-internal
     /// positions passed through. The label and both colours are written as given
     /// (an empty/zero value stores ""/OFF), so pass the row's current ones.
-    /// Fire-and-forget; verify by re-reading the song.
+    ///
+    /// The row is read back: the device refuses a `preset_scene_slot` the preset doesn't
+    /// have (not [`BASE_SCENE_SLOT`] and ≥ its scene count) with SongError 5 and writes
+    /// nothing (fw 1.8.58, tmp-audit Q40), so a row that didn't land is an `Err`.
     #[allow(clippy::too_many_arguments)]
     pub fn assign_song_preset(
         &mut self,
@@ -2729,7 +2745,30 @@ impl Session {
             ),
             300,
         )?;
-        Ok(())
+        let rows = self.song_presets(song_slot)?;
+        if rows.is_empty() {
+            return Err(format!(
+                "assigned song {song_slot} footswitch {song_preset_slot}, but its rows \
+                 couldn't be read back to confirm it"
+            ));
+        }
+        let landed = (song_preset_slot as usize)
+            .checked_sub(1)
+            .and_then(|i| rows.get(i))
+            .is_some_and(|r| {
+                !r.is_empty
+                    && r.user_preset_slot == user_list_index + 1
+                    && r.preset_scene_slot == preset_scene_slot
+            });
+        if landed {
+            return Ok(());
+        }
+        Err(format!(
+            "the unit did not bind song {song_slot} footswitch {song_preset_slot} to preset \
+             {:03} scene slot {preset_scene_slot} (it refuses a scene the preset doesn't \
+             have; {BASE_SCENE_SLOT} = the whole preset)",
+            user_list_index + 1
+        ))
     }
 
     /// Reorder a Song row — `moveSongPreset`. Song-internal positions.
@@ -2890,6 +2929,82 @@ impl Session {
             400,
         )?;
         Ok(())
+    }
+
+    /// Request on this open session (batch 3: answered at once after the handshake) and
+    /// harvest, re-sending up to 3 times. `None` = no usable reply.
+    fn request_harvest<T>(
+        &mut self,
+        req: &[u8],
+        pumps: u32,
+        harvest: impl Fn(&Self) -> Option<T>,
+    ) -> Result<Option<T>, String> {
+        for _ in 0..3 {
+            self.clear_raw();
+            self.send_and_collect_alive(req, 250)?;
+            for _ in 0..pumps {
+                if let Some(r) = harvest(self) {
+                    return Ok(Some(r));
+                }
+                self.pump_collect_alive(250)?;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read song `song_slot`'s rows on this session. Empty Vec = no usable reply (an
+    /// empty song still returns its all-empty rows).
+    pub(crate) fn song_presets(&mut self, song_slot: u32) -> Result<Vec<SongPresetRecord>, String> {
+        let req = proto::song_preset_list_request(song_slot as u64, Some(proto::BATCH_DRAIN));
+        let rows = self.request_harvest(&req, 6, |s| {
+            Some(s.harvest_song_presets(song_slot)).filter(|r| !r.is_empty())
+        })?;
+        Ok(rows.unwrap_or_default())
+    }
+
+    /// Read the whole song list on this session, strict (complete replies only).
+    pub(crate) fn song_list_strict(&mut self) -> Result<Option<Vec<SongRecord>>, String> {
+        let req = proto::song_list_request(Some(proto::BATCH_DRAIN));
+        self.request_harvest(&req, 8, Self::harvest_songs_strict)
+    }
+
+    /// Read setlist `setlist_slot`'s member song slots on this session, dense (the
+    /// `songSlot == 0` padding dropped), strict (complete replies only).
+    pub(crate) fn setlist_songs_strict(
+        &mut self,
+        setlist_slot: u32,
+    ) -> Result<Option<Vec<u32>>, String> {
+        let req = proto::setlist_song_list_request(setlist_slot as u64, Some(proto::BATCH_DRAIN));
+        let members =
+            self.request_harvest(&req, 8, |s| s.harvest_setlist_songs_strict(setlist_slot))?;
+        Ok(members.map(|m| m.into_iter().filter(|&x| x != 0).collect()))
+    }
+
+    /// The active preset's 0-based list index from this session's handshake replies,
+    /// waiting up to 2 s (kept alive) for the drain to deliver them — HW (fw 1.8.58):
+    /// they land ~1 s after a plain handshake returns. The `PresetLoaded` echo, else the
+    /// current preset's name when it maps to exactly ONE slot of the strict My Presets
+    /// list. `None` = not provable (duplicate or empty-slot name, no reply). Read it
+    /// before anything that clears the accumulator.
+    pub(crate) fn active_slot_live(&mut self) -> Option<u32> {
+        const WINDOW_MS: u64 = 250;
+        const MAX_WAIT_MS: u64 = 2000;
+        let mut waited = 0;
+        loop {
+            if let Some(i) = self.loaded_slot() {
+                return Some(i);
+            }
+            if let (Some(name), Some(names)) =
+                (self.active_preset_name(), self.harvest_preset_list_strict())
+            {
+                return unique_list_index(&names, &name);
+            }
+            if waited >= MAX_WAIT_MS {
+                return None;
+            }
+            self.pump_collect_alive(WINDOW_MS).ok()?;
+            waited += WINDOW_MS;
+        }
     }
 
     /// Decode `song_slot`'s Song-preset reply from the accumulated streams. Largest
@@ -4251,6 +4366,46 @@ mod tests {
         ));
         // Name absent ⇒ fail closed.
         assert!(!name_maps_uniquely(&names(&["Cliff", "Lead"]), "Target", 0));
+    }
+
+    // HW (fw 1.8.58): a plain handshake's `PresetLoaded` echo lands ~1 s after it returns.
+    // The wait must check the window that delivers it, including the last one.
+    #[test]
+    fn active_slot_live_reads_an_echo_that_lands_a_second_after_the_handshake() {
+        let mut echo = Vec::new();
+        proto::field_varint(&mut echo, 1, 1); // tabEnum = My Presets
+        proto::field_varint(&mut echo, 6, 402); // device slot = list index 401
+        let late = crate::sim_device::frame_multi(&crate::sim_device::preset_message(11, &echo));
+        let t = crate::test_support::ScriptedTransport::default().with_pending(vec![
+            vec![],
+            vec![],
+            vec![],
+            late,
+        ]);
+        let mut s = crate::test_support::session_over(&t, Vec::new());
+        assert_eq!(s.active_slot_live(), Some(401));
+    }
+
+    // The song-BPM restore target: only a name at exactly one My Presets position.
+    #[test]
+    fn active_slot_by_name_needs_a_unique_non_empty_name() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            unique_list_index(&names(&["Cliff", "Guitar", "Lead"]), "Guitar"),
+            Some(1)
+        );
+        assert_eq!(
+            unique_list_index(&names(&["Guitar", "Lead", "Guitar"]), "Guitar"),
+            None
+        );
+        assert_eq!(
+            unique_list_index(&names(&["Cliff", "Lead"]), "Guitar"),
+            None
+        );
+        assert_eq!(
+            unique_list_index(&names(&["Empty", "Empty"]), "Empty"),
+            None
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@
 //! exactly as the confirm loop expects.
 //!
 //! **Same-slot load (fw 1.8.58, tmp-audit Q4/Q34):** a `loadPreset` of the loaded slot
-//! ([`SimState::loaded_slot`]: the last real load, or the last save's target) over a clean
+//! ([`SimState::loaded_identity`]: the last real load, or the last save's target) over a clean
 //! working copy, in its stored `lastLoadedScene`, is a NO-OP that keeps the working copy and
 //! still pushes it. Every working-copy edit, `loadScene` included, sets
 //! [`SimState::dirty`], which makes that load a real reload; a real load and a save clear it.
@@ -102,6 +102,13 @@ const F_LIST_RESPONSE: u32 = 3;
 // (an empty, complete response) so selecting a setlist doesn't hang on the read.
 const F_SETLIST_SONGS_REQUEST: u32 = 12;
 const F_SETLIST_SONGS_RESPONSE: u32 = 13;
+// SongMessage-only fields: a song's row read (request 12 → response 13), the row setter
+// `assignSongPreset`(14), `setSongNotes`(22) and `setSongBpmActive`(23).
+const F_SONG_PRESET_LIST_REQUEST: u32 = 12;
+const F_SONG_PRESET_LIST_RESPONSE: u32 = 13;
+const F_ASSIGN_SONG_PRESET: u32 = 14;
+const F_SET_SONG_NOTES: u32 = 22;
+const F_SET_SONG_BPM_ACTIVE: u32 = 23;
 // PresetMessage inner field numbers (mirror `proto`'s encoders + `session.rs`).
 const F_LOAD_PRESET: u32 = 10;
 const F_REPLACE_NODE: u32 = 39;
@@ -134,6 +141,8 @@ const F_PRESET_DATA_CHANGED: u32 = 9;
 const TMS_SETTINGS: u32 = 3;
 /// `SettingsMessage.reampModeActive` (30) → `{ value(1) }`.
 const F_REAMP_SETTING: u32 = 30;
+/// `SettingsMessage.tapTempoBpm` (12) → `{ value(1)=float, originatorId(2) }`.
+const F_TAP_TEMPO_BPM: u32 = 12;
 // Device confirmation / echo field numbers.
 const F_PRESET_LOADED: u32 = 11;
 const F_NODE_INSERTED: u32 = 33;
@@ -237,6 +246,61 @@ pub enum SimEvent {
     /// landed between the last write and the engage — the structural fact `danger.md`'s
     /// naked-gap rule rests on.
     Heartbeat,
+    /// `loadPreset{tabEnum=5}` — song `song` (1-based) made active through its row `row`.
+    SongLoaded { song: u32, row: u32 },
+    /// `setSongBpmActive`(Song 23).
+    SongBpmActive { song: u32, on: bool },
+    /// `SettingsMessage.tapTempoBpm`(12) — the value sent, whether or not it landed.
+    TapTempo(f32),
+    /// `assignSongPreset`(Song 14) that wrote its row; `list_index` is 0-based.
+    SongAssign {
+        song: u32,
+        row: u32,
+        list_index: u32,
+        scene: u32,
+    },
+    /// A song setter refused with `SongError{code}` and no write (recorded, not encoded:
+    /// the companion detects a refusal by reading the row back).
+    SongError(u64),
+}
+
+/// Rows per song: the six assignable song footswitches.
+const SIM_SONG_ROWS: usize = 6;
+
+/// One song, modeled on the fw 1.8.58 static RE (tmp-audit Q40). Its BPM changes only
+/// through `tapTempoBpm`, which writes the ACTIVE song's BPM iff that song's `bpm_active`
+/// is ALREADY on; with the flag off the tap goes to the global tempo and the song keeps
+/// its BPM. `setSongBpmActive(true)` sets the flag and re-applies the STORED BPM — it never
+/// copies a tempo tapped before it. A new song starts at 120 BPM, flag off.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SimSong {
+    pub(crate) name: String,
+    pub(crate) notes: String,
+    pub(crate) bpm: u32,
+    pub(crate) bpm_active: bool,
+    pub(crate) rows: Vec<Option<SimSongRow>>,
+}
+
+impl SimSong {
+    fn new(name: &str) -> SimSong {
+        SimSong {
+            name: name.to_string(),
+            notes: String::new(),
+            bpm: 120,
+            bpm_active: false,
+            rows: vec![None; SIM_SONG_ROWS],
+        }
+    }
+}
+
+/// One bound song footswitch. `user_preset_slot` is the 1-based device slot.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SimSongRow {
+    pub(crate) user_preset_slot: u32,
+    pub(crate) scene_slot: u32,
+    pub(crate) label: String,
+    pub(crate) color: u32,
+    pub(crate) color_inactive: u32,
 }
 
 /// A CONFIRMED structural edit on the current working copy (`replaceNode` /
@@ -298,10 +362,16 @@ struct SimState {
     /// Device-initiated pushes waiting for the next `pump` (replies to a send are delivered
     /// synchronously from the send instead).
     pending_pushes: Vec<Vec<u8>>,
-    /// Song / Setlist names (slot = index + 1), mutated by the CRUD setters so a
+    /// Songs (slot = index + 1) and setlist names, mutated by the CRUD setters so a
     /// read-back-after-write reflects the change — the Songs tab's contract.
-    songs: Vec<String>,
+    songs: Vec<SimSong>,
     setlists: Vec<String>,
+    /// The 1-based song slot a `loadPreset{tabEnum=5}` made active; any other load clears
+    /// it. `tapTempoBpm` writes this song's BPM — see [`SimSong`].
+    active_song: Option<u32>,
+    /// Scene count per 0-based list index, for `assignSongPreset`'s scene check. Unset →
+    /// the scenario fixture's own `scenes[]` (e2e), else 0.
+    preset_scenes: HashMap<u32, u32>,
     /// The preset JSON `currentPresetDataChanged`(3) echoes right after a `loadPreset` —
     /// the pre-edit roster the `blockcaps` guard reads before its first structural
     /// edit. Defaults to a plausible two-node `G1` graph (both ids uncapped by any of
@@ -333,13 +403,13 @@ struct SimState {
     /// The 0-based list index of the last REAL `loadPreset` (the sidecar / stored-knob key).
     /// A skipped same-slot load leaves it alone, and so does a save to another slot.
     current_slot: u32,
-    /// The device's load identity (fw 1.8.58 `isPresetLoaded`, tmp-audit Q4): the slot a
-    /// same-slot `loadPreset` is compared against. Set by a real load AND by a save, which
-    /// moves it to the slot it saved to. `None` until the first load.
-    loaded_slot: Option<u32>,
+    /// The device's load identity (fw 1.8.58 `isPresetLoaded`, tmp-audit Q4): `(tab, song,
+    /// song row, slot)`, what a `loadPreset` is compared against. Set by a real load AND by a
+    /// save, which moves it to `(1, 0, 0, saved slot)`. `None` until the first load.
+    loaded_identity: Option<(u64, u32, u32, u32)>,
     /// The working copy's dirty flag (`CurrentPresetModel +0x686`, tmp-audit Q4/Q34): set by
     /// every working-copy edit, cleared by a real load and by a save. While it is clear, a
-    /// `loadPreset` of [`SimState::loaded_slot`] is a NO-OP that keeps the working copy.
+    /// `loadPreset` of [`SimState::loaded_identity`] is a NO-OP that keeps the working copy.
     dirty: bool,
     /// The active scene: `None` = base, else the 0-based `scenes[]` wire index from the
     /// last `loadScene`. Restored on `loadPreset` from [`saved_scene`](SimState::saved_scene)
@@ -484,8 +554,10 @@ impl Default for SimState {
             working_edits: Vec::new(),
             string_params: std::collections::BTreeMap::new(),
             pending_pushes: Vec::new(),
-            songs: vec!["Opening Set".into(), "Encore".into()],
+            songs: vec![SimSong::new("Opening Set"), SimSong::new("Encore")],
             setlists: vec!["Saturday Night".into()],
+            active_song: None,
+            preset_scenes: HashMap::new(),
             // A recognized amp (with an `outputLevel` control) + one effect, under a known
             // routing template — so offline scene-leveling's `list_level_blocks` discovery
             // finds a levelable amp candidate. The physics model reads the WRITTEN outputLevel
@@ -499,7 +571,7 @@ impl Default for SimState {
                 .to_string(),
             parsed_preset_cache: None,
             current_slot: 0,
-            loaded_slot: None,
+            loaded_identity: None,
             dirty: false,
             current_scene: None,
             saved_scene: HashMap::new(),
@@ -524,6 +596,17 @@ impl Default for SimState {
 }
 
 impl SimState {
+    /// How many scenes the preset at 0-based `slot0` has: a test override, else the
+    /// scenario fixture's own `scenes[]` (e2e), else 0.
+    fn scene_count(&self, slot0: u32) -> u32 {
+        self.preset_scenes.get(&slot0).copied().unwrap_or_else(|| {
+            saved_slot_json(slot0)
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .and_then(|v| v.get("scenes")?.as_array().map(Vec::len))
+                .unwrap_or(0) as u32
+        })
+    }
+
     /// The active scene as the [`param_writes`](SimState::param_writes) `i64` key.
     fn scene_key(&self) -> i64 {
         self.current_scene.map_or(SCENE_BASE, i64::from)
@@ -1107,7 +1190,7 @@ impl SimDevice {
     pub fn with_songs(self, songs: Vec<String>, setlists: Vec<String>) -> SimDevice {
         {
             let mut st = self.state.lock().expect("sim lock");
-            st.songs = songs;
+            st.songs = songs.iter().map(|n| SimSong::new(n)).collect();
             st.setlists = setlists;
         }
         self
@@ -1122,7 +1205,39 @@ impl SimDevice {
     /// The current song names (read-back-after-write CRUD mutates them).
     #[cfg(all(test, feature = "e2e"))]
     pub fn song_names(&self) -> Vec<String> {
-        self.state.lock().expect("sim lock").songs.clone()
+        self.state
+            .lock()
+            .expect("sim lock")
+            .songs
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
+    }
+
+    /// A song by 1-based slot — test-only introspection of the BPM model.
+    #[cfg(test)]
+    pub(crate) fn song(&self, slot: u32) -> Option<SimSong> {
+        let st = self.state.lock().expect("sim lock");
+        st.songs.get((slot as usize).checked_sub(1)?).cloned()
+    }
+
+    /// Give the preset at 0-based `list_index` `n` scenes (the `assignSongPreset` scene check).
+    #[cfg(test)]
+    pub(crate) fn with_preset_scenes(self, list_index: u32, n: u32) -> SimDevice {
+        self.state
+            .lock()
+            .expect("sim lock")
+            .preset_scenes
+            .insert(list_index, n);
+        self
+    }
+
+    /// Edit song `song_slot` (1-based) directly — test setup, e.g. a song that already
+    /// has a footswitch, as one made on the unit would.
+    #[cfg(test)]
+    pub(crate) fn with_song(self, song_slot: u32, edit: impl FnOnce(&mut SimSong)) -> SimDevice {
+        edit(&mut self.state.lock().expect("sim lock").songs[song_slot as usize - 1]);
+        self
     }
 
     /// The value last written to `node`'s `bypass` via `changeParameter`'s BOOL path
@@ -1210,20 +1325,33 @@ impl SimDevice {
         let Some(pm) = proto::first_bytes(&top, TMS_PRESET) else {
             // Song (11) / Setlist (12) CRUD; else heartbeat / connection / settings (ignored).
             if let Some(sm) = proto::first_bytes(&top, TMS_SONG) {
-                return self.handle_list_msg(sm, true);
+                return self.handle_song_msg(sm);
             }
             if let Some(slm) = proto::first_bytes(&top, TMS_SETLIST) {
-                return self.handle_list_msg(slm, false);
+                return self.handle_setlist_msg(slm);
             }
             // SettingsMessage(3) → reampModeActive(30) → { value(1) } — the re-amp toggle
             // (ON=`1a05f201020801`, OFF=`1a03f20100`). Latched for the capture model; the
             // real device acks nothing, so no reply.
             if let Some(sm) = proto::first_bytes(&top, TMS_SETTINGS) {
-                if let Some(re) = proto::first_bytes(&proto::parse(sm), F_REAMP_SETTING) {
+                let settings = proto::parse(sm);
+                if let Some(re) = proto::first_bytes(&settings, F_REAMP_SETTING) {
                     let on = proto::first_varint(&proto::parse(re), 1).unwrap_or(0) != 0;
                     let mut st = self.state.lock().expect("sim lock");
                     st.reamp_on = on;
                     st.events.push(SimEvent::ReAmp(on));
+                }
+                if let Some(tap) = proto::first_bytes(&settings, F_TAP_TEMPO_BPM) {
+                    let bpm = proto::first_f32(&proto::parse(tap), 1).unwrap_or(0.0);
+                    let mut st = self.state.lock().expect("sim lock");
+                    st.events.push(SimEvent::TapTempo(bpm));
+                    // Lands in the active song only when its flag is ALREADY on (Q40).
+                    let active = st.active_song.and_then(|a| (a as usize).checked_sub(1));
+                    if let Some(song) = active.and_then(|i| st.songs.get_mut(i)) {
+                        if song.bpm_active {
+                            song.bpm = bpm.clamp(20.0, 600.0).round() as u32;
+                        }
+                    }
                 }
             }
             return Vec::new();
@@ -1232,29 +1360,50 @@ impl SimDevice {
         let mut st = self.state.lock().expect("sim lock");
 
         if let Some(lp) = proto::first_bytes(&f, F_LOAD_PRESET) {
-            let dev_slot = proto::first_varint(&proto::parse(lp), 6).unwrap_or(0);
+            let load = proto::parse(lp);
+            let dev_slot = proto::first_varint(&load, 6).unwrap_or(0);
             let slot0 = dev_slot.saturating_sub(1) as u32;
             st.events.push(SimEvent::Loaded(slot0));
+            let tab = proto::first_varint(&load, 1).unwrap_or(1);
+            let song = proto::first_varint(&load, 4).unwrap_or(0) as u32;
+            let row = proto::first_varint(&load, 5).unwrap_or(0) as u32;
+            let identity = (tab, song, row, slot0);
             // fw 1.8.58 `CurrentPresetModel::load` (tmp-audit Q4, device-shown in Q34): a load
-            // of the loaded slot, over a clean working copy, in the scene it was stored in,
-            // is skipped. The working copy and DSP stay exactly as they are, but the load
+            // with the loaded identity, over a clean working copy, in the scene it was stored
+            // in, is skipped. The working copy and DSP stay exactly as they are, but the load
             // pushes still go out, now rendering that working copy.
             let stored_scene = match st.saved_scene.get(&slot0).copied() {
                 Some(scene) => scene,
                 None => fixture_last_loaded_scene(slot0),
             };
-            if !st.dirty && st.loaded_slot == Some(slot0) && st.current_scene == stored_scene {
+            if !st.dirty && st.loaded_identity == Some(identity) && st.current_scene == stored_scene
+            {
                 let current_slot = st.current_slot;
                 let json = load_echo_json(&mut st, current_slot, true);
                 let mut reports = vec![frame(&preset_loaded(dev_slot))];
                 reports.extend(frame_multi(&current_preset_data_changed(&json)));
                 return reports;
             }
-            st.loaded_slot = Some(slot0);
+            st.loaded_identity = Some(identity);
             st.dirty = false;
             // A real load re-instantiates the stored preset: the working copy starts clean.
             st.working_edits.clear();
             st.string_params.clear();
+            // A tab-5 load makes its song active when the row it names is bound to this
+            // preset (a mismatch clears it: presetError 6 on the unit); any other load
+            // leaves song mode.
+            st.active_song = None;
+            if tab == 5 {
+                let bound = (song as usize)
+                    .checked_sub(1)
+                    .and_then(|i| st.songs.get(i))
+                    .and_then(|s| s.rows.get((row as usize).checked_sub(1)?)?.as_ref())
+                    .is_some_and(|r| u64::from(r.user_preset_slot) == dev_slot);
+                if bound {
+                    st.active_song = Some(song);
+                    st.events.push(SimEvent::SongLoaded { song, row });
+                }
+            }
             // A load activates the preset's saved `lastLoadedScene` (HW-confirmed — a bare
             // load does NOT reset to base) and discards the edit buffer (the scene-scoped
             // knob writes + forced bypasses) — reseeded from the slot's own SAVED doc
@@ -1412,7 +1561,7 @@ impl SimDevice {
             // `saveTo` clears the dirty flag and makes the saved slot the load identity, even
             // when it is not the slot that was loaded (tmp-audit Q4).
             st.dirty = false;
-            st.loaded_slot = Some(slot0);
+            st.loaded_identity = Some((1, 0, 0, slot0));
             if st.stale_push_after_save {
                 // The PRE-edit (load-time) document — exactly what the real unit handed the
                 // Copy post-save buffer scrape (HW 2026-09-02, fw 1.8.45). A read taken
@@ -1427,11 +1576,7 @@ impl SimDevice {
             return Vec::new();
         }
         if let Some(spl) = proto::first_bytes(&f, F_SET_PRESET_LEVEL) {
-            let level = proto::parse(spl)
-                .iter()
-                .find(|(n, _)| *n == 1)
-                .and_then(|(_, v)| v.as_f32())
-                .unwrap_or(0.0);
+            let level = proto::first_f32(&proto::parse(spl), 1).unwrap_or(0.0);
             st.events.push(SimEvent::PresetLevel(level));
             st.preset_level = level;
             st.dirty = true;
@@ -1491,10 +1636,7 @@ impl SimDevice {
                 );
             }
             let scene = st.scene_key();
-            let float_val = inner
-                .iter()
-                .find(|(n, _)| *n == 5)
-                .and_then(|(_, val)| val.as_f32());
+            let float_val = proto::first_f32(&inner, 5);
             if let Some(v) = float_val {
                 st.events.push(SimEvent::ChangeParameter {
                     // The event records the ACTIVE-SCENE CONTEXT the write was sent
@@ -1662,36 +1804,32 @@ impl SimDevice {
         Vec::new()
     }
 
-    /// Handle a `SongMessage`(11) / `SetlistMessage`(12): a list request replies with the
-    /// current list (single frame); add/remove/rename mutate the in-memory state so the
-    /// app's read-back-after-write sees the change. `notes`/`bpm`/membership setters are
-    /// accepted and ignored (they don't affect the name-list the CRUD spec asserts).
-    fn handle_list_msg(&self, inner_bytes: &[u8], is_song: bool) -> Vec<Vec<u8>> {
+    /// Handle a `SetlistMessage`(12): a list request replies with the current names (single
+    /// frame); add/remove/rename mutate them so the app's read-back-after-write sees the
+    /// change. Membership setters are accepted and ignored.
+    fn handle_setlist_msg(&self, inner_bytes: &[u8]) -> Vec<Vec<u8>> {
         let f = proto::parse(inner_bytes);
-        let tms = if is_song { TMS_SONG } else { TMS_SETLIST };
         let mut st = self.state.lock().expect("sim lock");
-        let list = if is_song {
-            &mut st.songs
-        } else {
-            &mut st.setlists
-        };
-        if !is_song {
-            if let Some(req) = proto::first_bytes(&f, F_SETLIST_SONGS_REQUEST) {
-                // Empty but COMPLETE membership response so the read resolves (no modeled
-                // songs), echoing `setlistSlot` like the firmware's reply.
-                let mut inner = Vec::new();
-                if let Some(slot) = proto::first_varint(&proto::parse(req), 1) {
-                    proto::field_varint(&mut inner, 1, slot);
-                }
-                let resp = proto::len_delimited(
-                    TMS_SETLIST,
-                    &proto::len_delimited(F_SETLIST_SONGS_RESPONSE, &inner),
-                );
-                return vec![frame(&resp)];
+        if let Some(req) = proto::first_bytes(&f, F_SETLIST_SONGS_REQUEST) {
+            // Empty but COMPLETE membership response so the read resolves (no modeled
+            // songs), echoing `setlistSlot` like the firmware's reply.
+            let mut inner = Vec::new();
+            if let Some(slot) = proto::first_varint(&proto::parse(req), 1) {
+                proto::field_varint(&mut inner, 1, slot);
             }
+            let resp = proto::len_delimited(
+                TMS_SETLIST,
+                &proto::len_delimited(F_SETLIST_SONGS_RESPONSE, &inner),
+            );
+            return vec![frame(&resp)];
         }
+        let list = &mut st.setlists;
         if proto::first_bytes(&f, F_LIST_REQUEST).is_some() {
-            return frame_multi(&list_response(tms, list));
+            let records: Vec<Vec<u8>> = list
+                .iter()
+                .map(|n| proto::len_delimited(1, n.as_bytes()))
+                .collect();
+            return frame_multi(&list_response(TMS_SETLIST, &records));
         }
         if let Some(add) = proto::first_bytes(&f, F_LIST_ADD) {
             list.push(str_field(&proto::parse(add), 1));
@@ -1707,11 +1845,115 @@ impl SimDevice {
         if let Some(rn) = proto::first_bytes(&f, F_LIST_RENAME) {
             let inner = proto::parse(rn);
             let slot = proto::first_varint(&inner, 1).unwrap_or(0) as usize;
-            let name = str_field(&inner, 2);
             if slot >= 1 && slot <= list.len() {
-                list[slot - 1] = name;
+                list[slot - 1] = str_field(&inner, 2);
+            }
+        }
+        Vec::new()
+    }
+
+    /// Handle a `SongMessage`(11): the list and per-song row reads, song CRUD, notes, the
+    /// `bpmActive` flag and `assignSongPreset` (see [`SimSong`] for the BPM model).
+    fn handle_song_msg(&self, inner_bytes: &[u8]) -> Vec<Vec<u8>> {
+        let f = proto::parse(inner_bytes);
+        let mut st = self.state.lock().expect("sim lock");
+        let song_at = |fields: &[(u32, proto::Val)]| {
+            (proto::first_varint(fields, 1).unwrap_or(0) as usize).checked_sub(1)
+        };
+        if proto::first_bytes(&f, F_LIST_REQUEST).is_some() {
+            let records: Vec<Vec<u8>> = st.songs.iter().map(song_record).collect();
+            return frame_multi(&list_response(TMS_SONG, &records));
+        }
+        if let Some(req) = proto::first_bytes(&f, F_SONG_PRESET_LIST_REQUEST) {
+            let slot = proto::first_varint(&proto::parse(req), 1).unwrap_or(0);
+            let Some(song) = st.songs.get((slot as usize).wrapping_sub(1)) else {
+                return Vec::new();
+            };
+            let mut inner = Vec::new();
+            proto::field_varint(&mut inner, 1, slot);
+            for row in &song.rows {
+                inner.extend(proto::len_delimited(2, &song_row_record(row.as_ref())));
+            }
+            let resp = proto::len_delimited(
+                TMS_SONG,
+                &proto::len_delimited(F_SONG_PRESET_LIST_RESPONSE, &inner),
+            );
+            return frame_multi(&resp);
+        }
+        if let Some(add) = proto::first_bytes(&f, F_LIST_ADD) {
+            let name = str_field(&proto::parse(add), 1);
+            st.songs.push(SimSong::new(&name));
+            return Vec::new();
+        }
+        if let Some(rm) = proto::first_bytes(&f, F_LIST_REMOVE) {
+            if let Some(i) = song_at(&proto::parse(rm)).filter(|&i| i < st.songs.len()) {
+                st.songs.remove(i);
+                // The firmware detaches a removed active song and shifts one below it.
+                let removed = i as u32 + 1;
+                st.active_song = match st.active_song {
+                    Some(a) if a == removed => None,
+                    Some(a) if a > removed => Some(a - 1),
+                    other => other,
+                };
             }
             return Vec::new();
+        }
+        if let Some(rn) = proto::first_bytes(&f, F_LIST_RENAME) {
+            let inner = proto::parse(rn);
+            if let Some(song) = song_at(&inner).and_then(|i| st.songs.get_mut(i)) {
+                song.name = str_field(&inner, 2);
+            }
+            return Vec::new();
+        }
+        if let Some(n) = proto::first_bytes(&f, F_SET_SONG_NOTES) {
+            let inner = proto::parse(n);
+            if let Some(song) = song_at(&inner).and_then(|i| st.songs.get_mut(i)) {
+                song.notes = str_field(&inner, 2);
+            }
+            return Vec::new();
+        }
+        if let Some(b) = proto::first_bytes(&f, F_SET_SONG_BPM_ACTIVE) {
+            let inner = proto::parse(b);
+            let on = proto::first_varint(&inner, 2).unwrap_or(0) != 0;
+            if let Some(i) = song_at(&inner).filter(|&i| i < st.songs.len()) {
+                st.songs[i].bpm_active = on;
+                st.events.push(SimEvent::SongBpmActive {
+                    song: i as u32 + 1,
+                    on,
+                });
+            }
+            return Vec::new();
+        }
+        if let Some(a) = proto::first_bytes(&f, F_ASSIGN_SONG_PRESET) {
+            let inner = proto::parse(a);
+            let row = proto::first_varint(&inner, 2).unwrap_or(0) as usize;
+            let dev_slot = proto::first_varint(&inner, 3).unwrap_or(0) as u32;
+            let scene = proto::first_varint(&inner, 6).unwrap_or(0) as u32;
+            let Some(i) = song_at(&inner).filter(|&i| i < st.songs.len()) else {
+                return Vec::new();
+            };
+            if !(1..=SIM_SONG_ROWS).contains(&row) || dev_slot == 0 {
+                return Vec::new();
+            }
+            // fw 1.8.58: a scene index the preset doesn't have → SongError 5, no row.
+            let scenes = st.scene_count(dev_slot - 1);
+            if scene != crate::session::BASE_SCENE_SLOT && scene >= scenes {
+                st.events.push(SimEvent::SongError(5));
+                return Vec::new();
+            }
+            st.songs[i].rows[row - 1] = Some(SimSongRow {
+                user_preset_slot: dev_slot,
+                scene_slot: scene,
+                label: str_field(&inner, 4),
+                color: proto::first_varint(&inner, 5).unwrap_or(0) as u32,
+                color_inactive: proto::first_varint(&inner, 7).unwrap_or(0) as u32,
+            });
+            st.events.push(SimEvent::SongAssign {
+                song: i as u32 + 1,
+                row: row as u32,
+                list_index: dev_slot - 1,
+                scene,
+            });
         }
         Vec::new()
     }
@@ -2618,14 +2860,41 @@ fn scenario_json_for(slot0: u32) -> Option<&'static str> {
 
 /// Build a `songListResponse`(11→3) / `setlistListResponse`(12→3): records (field 2) each
 /// carrying `name` (field 1). Small lists fit one inbound frame.
-fn list_response(tms: u32, names: &[String]) -> Vec<u8> {
+fn list_response(tms: u32, records: &[Vec<u8>]) -> Vec<u8> {
     const F_RECORD: u32 = 2; // repeated record field inside the list response
-    let mut records = Vec::new();
-    for name in names {
-        let rec = proto::len_delimited(1, name.as_bytes());
-        records.extend_from_slice(&proto::len_delimited(F_RECORD, &rec));
+    let mut body = Vec::new();
+    for rec in records {
+        body.extend_from_slice(&proto::len_delimited(F_RECORD, rec));
     }
-    proto::len_delimited(tms, &proto::len_delimited(F_LIST_RESPONSE, &records))
+    proto::len_delimited(tms, &proto::len_delimited(F_LIST_RESPONSE, &body))
+}
+
+/// A `songListResponse` record: `name`(1), `notes`(2), `bpmActive`(3), `bpm`(4).
+fn song_record(song: &SimSong) -> Vec<u8> {
+    let mut rec = proto::len_delimited(1, song.name.as_bytes());
+    if !song.notes.is_empty() {
+        rec.extend(proto::len_delimited(2, song.notes.as_bytes()));
+    }
+    proto::field_varint(&mut rec, 3, u64::from(song.bpm_active));
+    proto::field_varint(&mut rec, 4, u64::from(song.bpm));
+    rec
+}
+
+/// A `songPresetListResponse` row: `isEmpty`(1), `userPresetSlot`(2), `label`(3),
+/// `color`(4), `presetSceneSlot`(5), `colorInactive`(7).
+fn song_row_record(row: Option<&SimSongRow>) -> Vec<u8> {
+    let mut rec = Vec::new();
+    let Some(r) = row else {
+        proto::field_varint(&mut rec, 1, 1);
+        return rec;
+    };
+    proto::field_varint(&mut rec, 1, 0);
+    proto::field_varint(&mut rec, 2, u64::from(r.user_preset_slot));
+    rec.extend(proto::len_delimited(3, r.label.as_bytes()));
+    proto::field_varint(&mut rec, 4, u64::from(r.color));
+    proto::field_varint(&mut rec, 5, u64::from(r.scene_slot));
+    proto::field_varint(&mut rec, 7, u64::from(r.color_inactive));
+    rec
 }
 
 /// Reply to a structural edit AND land it in the working copy iff it lands — a dropped

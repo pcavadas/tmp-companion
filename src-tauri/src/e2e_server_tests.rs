@@ -2013,6 +2013,91 @@ fn offline_songs_crud_through_real_backend() {
     assert!(!sim.song_names().iter().any(|n| n == "Opening Set"));
 }
 
+/// The batched song saves run on ONE device connection (tmp-audit Q40 follow-up): a
+/// create with notes + BPM + a setlist, then an edit with a rename + BPM, each open the
+/// device once, land the BPM (no "didn't land" warning) and return the fresh list.
+#[test]
+fn offline_batched_song_saves_open_one_connection_each() {
+    let _serial = serial();
+    let sim = crate::sim_device::SimDevice::new();
+    let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (sim_for_factory, opens_in) = (sim.clone(), opens.clone());
+    crate::session::e2e_transport::set_factory(Box::new(move || {
+        opens_in.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::new(sim_for_factory.clone())
+    }));
+    let opened = || opens.swap(0, std::sync::atomic::Ordering::SeqCst);
+    // `with_released_seize` re-seizes the UI session after every command.
+    const BOOKEND: usize = 1;
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![create_song_full, update_song_full])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build mock app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("build webview");
+    opened();
+
+    let created = invoke(
+        &webview,
+        "create_song_full",
+        serde_json::json!({ "name": "Soundcheck", "notes": "capo 2", "bpm": 97.0, "addToSetlist": 1 }),
+    )
+    .expect("create_song_full");
+    assert_eq!(
+        opened(),
+        1 + BOOKEND,
+        "create: one connection for the work: {created}"
+    );
+    assert_eq!(created["bpm_warning"], serde_json::Value::Null, "{created}");
+    assert!(created["members"].is_array(), "{created}");
+    let slot = sim
+        .song_names()
+        .iter()
+        .position(|n| n == "Soundcheck")
+        .unwrap() as u32
+        + 1;
+    let song = sim.song(slot).unwrap();
+    assert_eq!(
+        (song.notes.as_str(), song.bpm, song.bpm_active),
+        ("capo 2", 97, true)
+    );
+
+    let updated = invoke(
+        &webview,
+        "update_song_full",
+        serde_json::json!({ "slot": slot, "name": "Soundcheck 2", "bpm": 132.0 }),
+    )
+    .expect("update_song_full");
+    assert_eq!(
+        opened(),
+        1 + BOOKEND,
+        "update: one connection for the work: {updated}"
+    );
+    assert_eq!(updated["bpm_warning"], serde_json::Value::Null, "{updated}");
+    let song = sim.song(slot).unwrap();
+    assert_eq!((song.name.as_str(), song.bpm), ("Soundcheck 2", 132));
+    // A duplicate name: the device accepts it, so the created song can't be told from the
+    // older one — notes, BPM and setlist are skipped and the older song stays untouched.
+    let encore_before = sim.song(2).unwrap();
+    let dup = invoke(
+        &webview,
+        "create_song_full",
+        serde_json::json!({ "name": "Encore", "notes": "x", "bpm": 150.0, "addToSetlist": 1 }),
+    )
+    .expect("create_song_full (duplicate name)");
+    assert!(
+        dup["bpm_warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("isn't unique")),
+        "{dup}"
+    );
+    assert_eq!(dup["members"], serde_json::Value::Null, "{dup}");
+    assert_eq!(sim.song(2).unwrap(), encore_before);
+}
+
 /// FIELD-8 GATE: the SimDevice answers `presetDataRequest`(8) for a scenario slot, so
 /// `read_saved_preset` — THE saved document behind `set_knobs`' overlay classification and the
 /// footswitch bake gate — resolves offline. Without it every scene/footswitch write is refused

@@ -505,6 +505,20 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--active-slot") {
+        // Read-only: the active preset as a plain handshake shows it (song BPM restore).
+        match tmp_companion_lib::probe_active_slot() {
+            Ok(r) => {
+                print!("{r}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[probe] FAILED: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if args.iter().any(|a| a == "--fw") {
         // Read-only: the firmware version the device pushed in the handshake.
         match tmp_companion_lib::probe_firmware_version() {
