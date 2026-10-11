@@ -199,7 +199,7 @@ FAILED=0
 # reamp-off FIRST (the danger.md guarantee — never let a slower step delay it), then the
 # name-guarded clear (best-effort: skip if we never got a confirmed name), then release
 # the device lock LAST (other waiters should not start until recovery is done). ──
-# shellcheck disable=SC2329  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
+# shellcheck disable=SC2329,SC2317  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
 cleanup() {
   local code=$?
   trap - EXIT INT TERM

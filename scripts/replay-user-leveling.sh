@@ -146,7 +146,7 @@ cd "$REPO"
 log()  { printf '\033[36m▸ %s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m✓ %s\033[0m\n' "$*"; }
 err()  { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; }
-# shellcheck disable=SC2329  # only called from cleanup(), itself invoked via `trap`
+# shellcheck disable=SC2329,SC2317  # only called from cleanup(), itself invoked via `trap`
 warn() { printf '\033[33m⚠ %s\033[0m\n' "$*"; }
 gap()  { sleep 5; }  # HID open-lockout hygiene between device-touching calls — danger.md
 
@@ -330,7 +330,7 @@ SCRIPT_LABEL="$REPO (replay-user-leveling: slots 26/27/28)"
 # ── ONE cleanup path for every exit — success, a failed step, or Ctrl-C. Order: re-amp
 # OFF first (danger.md's guarantee, never delayed by a slower step), then kill the server,
 # then release the device lock LAST. ──
-# shellcheck disable=SC2329  # invoked via `trap cleanup EXIT INT TERM`
+# shellcheck disable=SC2329,SC2317  # invoked via `trap cleanup EXIT INT TERM`
 cleanup() {
   local code=$? reamp_ok=0
   trap - EXIT INT TERM
@@ -343,7 +343,7 @@ cleanup() {
   # Release the HID (kill the server) BEFORE any probe fallback, whether or not the
   # in-band attempt above succeeded — a still-live server holding the exclusive HID seize
   # makes probe's own open fail (0xe00002c5).
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
   kill_port "$PORT"
   if [ "$reamp_ok" -ne 1 ]; then
     warn "in-band reamp-off unavailable or failed — falling back to a fresh probe process"
