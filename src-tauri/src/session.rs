@@ -993,9 +993,11 @@ impl Session {
     /// request) since it doesn't need it.
     ///
     /// The request rides the batch-2 group, BEFORE `current_preset_data_request`
-    /// — sending it after that batch-3 request makes the device drop the fw
-    /// reply (HW-confirmed), so it can't reuse the generic
-    /// `extra_burst` slot (which fires last).
+    /// — sent after that batch-3 request, its reply queues behind the ~1.2 s
+    /// handshake drain and a short window misses it, so it can't reuse the generic
+    /// `extra_burst` slot (which fires last). INFERRED from the same queueing
+    /// measured on a delayed `currentPresetInfoRequest`; `currentFwRequest` itself
+    /// was not measured.
     pub fn connect_with_firmware() -> Result<Session, String> {
         let mut s = Self::connect_inner(false, None, true, false)?;
         s.fw_version = s
@@ -1103,8 +1105,10 @@ impl Session {
         self.send_and_collect(&proto::settings_field66(2), hs(base[1]))?;
         self.send_and_collect(&proto::userir_field2(2), hs(base[1]))?;
         // Firmware read rides the batch-2 group (no batchStatus), BEFORE the
-        // batch-3 current_preset_data_request — sending it after that makes the
-        // device drop the `currentFwResponse` reply (HW-confirmed).
+        // batch-3 current_preset_data_request — sent after that, the
+        // `currentFwResponse` reply queues behind the ~1.2 s handshake drain and
+        // this short pump misses it (INFERRED: only a delayed
+        // `currentPresetInfoRequest` was measured, not `currentFwRequest`).
         // The reply is a tiny single 0x35 frame, so a short pump suffices.
         if request_firmware {
             self.send_and_collect(&proto::current_fw_request(), 200)?;
