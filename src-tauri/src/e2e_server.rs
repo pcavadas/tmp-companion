@@ -4,8 +4,9 @@
 //! makes the app appear connected (no monitor thread), and the bulk backup is served
 //! from the built fixture blob — so the real React UI in Chromium drives the real Rust
 //! backend down to the (faked) unit. No window, no HTTP-framework dependency: a localhost
-//! `std::net` server wrapping `tauri::test::get_ipc_response`. Request/response only —
-//! the V1 Copy/Level journeys complete on the command's return value, not on Channels.
+//! `std::net` server wrapping `tauri::test::get_ipc_response`. Commands answer on their
+//! return value; their `tmp://` events and `Channel` sends reach the page through the
+//! UI bridge (`e2e_ui_bridge`, polled at `GET /ui/events`), in both tiers.
 //! The one source of truth for the e2e mode: `TMP_E2E_ONLINE=1` ⇒ drive the REAL device
 //! (no SimDevice factory, real re-amp, real device backup); anything else ⇒ the
 //! offline fake. Read by `run_e2e_server`, the `/sim/reset` guard, and `audio::reamp_capture`.
@@ -193,6 +194,8 @@ pub fn run_e2e_server() {
 
     let app = tauri::test::mock_builder()
         .manage(AppState::default())
+        // Every Channel send a command makes reaches the UI bridge's ring.
+        .channel_interceptor(crate::e2e_ui_bridge::intercept_channel)
         .invoke_handler(tauri::generate_handler![
             app_info,
             connect_device,
@@ -240,10 +243,12 @@ pub fn run_e2e_server() {
             e2e_clear_preset,
             e2e_load_preset,
             e2e_reamp_off,
+            e2e_reamp_state,
             e2e_measure_sound
         ])
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build e2e mock app");
+    crate::e2e_ui_bridge::listen_events(&app);
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
         .build()
         .expect("build e2e webview");
@@ -289,12 +294,15 @@ pub fn run_e2e_server() {
 }
 
 /// Served off the serial queue, through the same [`e2e_route`]: every `cancel_*` invoke
-/// (each only flips its run's cancel atomic + `request_op_abort`) and the
-/// `/reamp/counters` read. Queued, a Stop would land only AFTER the run it targets returned.
+/// (each only flips its run's cancel atomic + `request_op_abort`), the `/reamp/counters`
+/// read and the `/ui/events` poll (memory reads only). Queued, a Stop would land only AFTER
+/// the run it targets returned, and a run's streamed rows only after it finished. Nothing
+/// that opens the device belongs here.
 #[cfg(feature = "e2e")]
 fn e2e_is_side_lane(req: &E2eRequest) -> bool {
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/reamp/counters") => true,
+        ("GET", p) if p == "/ui/events" || p.starts_with("/ui/events?") => true,
         ("POST", "/invoke") => serde_json::from_slice::<serde_json::Value>(&req.body)
             .ok()
             .and_then(|v| v.get("cmd")?.as_str().map(|c| c.starts_with("cancel_")))
@@ -392,7 +400,7 @@ fn e2e_install_offline_fake() {
         .and_then(|b| read_backup_archive(&b).ok())
         .and_then(|res| res.presets.first().map(|r| r.graph.clone()));
     MONITOR_ENABLED.store(true, SeqCst);
-    monitor::e2e_install_snapshot(Some("1.8.45".into()), presets, graph);
+    monitor::e2e_install_snapshot(Some("1.8.58".into()), presets, graph);
 }
 
 /// Install the SHOWCASE offline fake (marketing screenshots). Points the backup-fixture
@@ -468,7 +476,7 @@ fn e2e_install_showcase() {
         None => (Vec::new(), None),
     };
 
-    let firmware = spec["firmware"].as_str().unwrap_or("1.8.45").to_string();
+    let firmware = spec["firmware"].as_str().unwrap_or("1.8.58").to_string();
     MONITOR_ENABLED.store(true, SeqCst);
     monitor::e2e_install_snapshot(Some(firmware), presets, graph);
 }
@@ -680,20 +688,37 @@ async fn e2e_load_preset(state: State<'_, AppState>, slot: u32) -> Result<(), St
     .await
 }
 
-/// ONLINE-e2e safety teardown: disengage re-amp on a fresh connection. The re-amp latch is
-/// device-side and survives the HID release, so a Level run KILLED mid-capture (a Playwright
-/// timeout tearing down the server) would otherwise leave the unit input-muted. The Level
-/// flow's own in-session `set_reamp_mode(false)` doesn't run on an abrupt kill — this is the
-/// belt-and-braces OFF the scenario teardown calls. No-op offline (the fake never engages
-/// re-amp), so it's harmless on the offline path.
+/// e2e safety teardown: disengage re-amp. ONLINE it sends OFF on a fresh connection: the
+/// re-amp latch is device-side and survives the HID release, so a Level run KILLED
+/// mid-capture (a Playwright timeout tearing down the server) would otherwise leave the unit
+/// input-muted, and the Level flow's own in-session `set_reamp_mode(false)` doesn't run on an
+/// abrupt kill. OFFLINE it clears the SimDevice re-amp latch without a wire send, so the
+/// re-amp counters and `/sim/events` stay unchanged, and logs when the latch was ON. The
+/// per-test `/sim/reset` (`e2e/fixtures/test.ts`) also rebuilds the fake, so a stranded
+/// latch cannot leak into the next test.
 #[cfg(feature = "e2e")]
 #[tauri::command]
 async fn e2e_reamp_off(state: State<'_, AppState>) -> Result<(), String> {
     if !e2e_online() {
+        if crate::sim_device::clear_live_reamp() == Some(true) {
+            eprintln!("e2e_reamp_off: the SimDevice re-amp latch was ON — cleared");
+        }
         return Ok(());
     }
     with_released_seize(state.session.clone(), move || {
         Session::connect()?.set_reamp_mode(false).map(|_| ())
+    })
+    .await
+}
+
+/// The device's re-amp state, read back from both stores (`Session::read_reamp_state`) on a
+/// fresh connection — the re-amp oracle `expectReampBalanced` asserts. Read-only. Offline the
+/// SimDevice answers from its latch. Opens the device, so it runs on the serial queue.
+#[cfg(feature = "e2e")]
+#[tauri::command]
+async fn e2e_reamp_state(state: State<'_, AppState>) -> Result<session::ReampState, String> {
+    with_released_seize(state.session.clone(), move || {
+        Session::connect()?.read_reamp_state()
     })
     .await
 }
@@ -945,24 +970,65 @@ fn e2e_route(
             "200 OK",
             serde_json::to_vec(&crate::sim_device::live_events()).unwrap_or_default(),
         ),
-        // Capture-fault injection (PR3 spec 4): arm slot N's NEXT offline capture to
-        // return silence once (→ the leveller's no-signal path). Body: {"slot": N}.
+        // The fake's state in one object (`sim_device::live_state`); later fields join this
+        // object, never a new route. Online: `{online: true}` (no fake installed).
+        ("GET", "/sim/state") => {
+            let mut v =
+                crate::sim_device::live_state().unwrap_or_else(|| json!({ "online": true }));
+            if let Some(o) = v.as_object_mut() {
+                o.insert("ui_dropped".into(), json!(crate::e2e_ui_bridge::dropped()));
+            }
+            ("200 OK", serde_json::to_vec(&v).unwrap_or_default())
+        }
+        // Arm one protocol fault on the fake: `{kind, …}` → `{ok, tag}`, the tag saying
+        // whether fw 1.8.58 can produce it (`sim_device::Injection::tag`). 400 on an unknown
+        // kind or a missing argument. No fake online: `{ok: false}`.
+        ("POST", "/sim/inject") => {
+            let req: serde_json::Value = serde_json::from_slice(body).unwrap_or(json!({}));
+            match crate::sim_device::Injection::from_request(&req) {
+                Ok(inj) => match crate::sim_device::live_inject(inj) {
+                    Some(tag) => (
+                        "200 OK",
+                        serde_json::to_vec(&json!({ "ok": true, "tag": tag })).unwrap_or_default(),
+                    ),
+                    None => (
+                        "200 OK",
+                        serde_json::to_vec(&json!({ "ok": false, "error": "no fake installed" }))
+                            .unwrap_or_default(),
+                    ),
+                },
+                Err(e) => (
+                    "400 Bad Request",
+                    serde_json::to_vec(&json!({ "ok": false, "error": e })).unwrap_or_default(),
+                ),
+            }
+        }
+        // Capture-fault injection, tagged `approximate`: slot N's NEXT offline capture
+        // returns digital silence once (→ the leveller's no-signal path), where a failed
+        // device inject reads the stationary output floor instead. Body: {"slot": N}.
         // No-op online (no fake installed).
         ("POST", "/sim/fault") => sim_u64_arg(body, "slot", |n| {
             crate::sim_device::arm_capture_fault(n as u32)
         }),
-        // Mid-run Stop specs: hold every offline capture. Body: {"ms": N}.
+        // Mid-run Stop specs: hold every offline capture. Body: {"ms": N}. Tagged
+        // `harness`: harness timing only, no device shape.
         ("POST", "/sim/capture-delay") => {
             sim_u64_arg(body, "ms", crate::sim_device::set_capture_delay)
         }
         ("POST", "/sim/reset") => {
             // ONLINE: the real device IS the state — re-installing the offline fake (a
-            // SimDevice factory) would clobber it, so the reset is a no-op online.
+            // SimDevice factory) would clobber it, so the reset is a no-op online, and so
+            // is the UI ring's clear (the page skips older entries by reading the head).
             if !e2e_online() {
                 e2e_install_offline_fake();
+                crate::e2e_ui_bridge::clear();
             }
             ("200 OK", b"{\"ok\":true}".to_vec())
         }
+        ("GET", p) if p == "/ui/events" || p.starts_with("/ui/events?") => (
+            "200 OK",
+            crate::e2e_ui_bridge::route(p.split_once('?').map_or("", |(_, q)| q)),
+        ),
         ("POST", "/invoke") => {
             let req: serde_json::Value = serde_json::from_slice(body).unwrap_or(json!({}));
             let cmd = req

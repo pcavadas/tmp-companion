@@ -33,6 +33,8 @@ mod dock;
 mod doctor;
 #[cfg(feature = "e2e")]
 mod e2e_server;
+#[cfg(feature = "e2e")]
+mod e2e_ui_bridge;
 mod footswitch;
 // Benefit-aware headroom trade + the clamp-error taxonomy (pure; the device half is in
 // `leveller.rs`).
