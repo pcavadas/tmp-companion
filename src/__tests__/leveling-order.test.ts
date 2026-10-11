@@ -14,6 +14,7 @@ import {
   fswKey,
   runRank,
   sceneKeyOf,
+  sortRunItems,
   targetFromCandidate,
 } from "../views/level/leveling";
 import type { RunItem } from "../views/level/leveling";
@@ -371,15 +372,16 @@ describe("chosenFrom run-order", () => {
 });
 
 // `chosenFrom` emitting the right order is not enough on its own: `useLevelingFlow` sorts
-// its work list by `runRank` so the run holds however the items were assembled (a resumed
-// run, a re-ordered selection, a future caller that builds items itself). These pin the
-// rank the sort reads — the same BUG→GATE as the emission test above.
-describe("runRank — the run's dependency order", () => {
-  const base = { isBase: true };
-  const footswitch = { isBase: false, footswitch: { switchIndex: 4 } };
-  const scene = { isBase: false };
+// its work list through `sortRunItems` so the run holds however the items were assembled
+// (a resumed run, a re-ordered selection, a future caller that builds items itself). These
+// pin that sort and the rank it reads — the same BUG→GATE as the emission test above.
+describe("runRank / sortRunItems — the run's dependency order", () => {
+  const base = { slot: 1, isBase: true };
+  const footswitch = { slot: 1, isBase: false, footswitch: { switchIndex: 4 } };
+  const scene = { slot: 1, isBase: false };
 
   const sceneFootswitch = {
+    slot: 1,
     isBase: false,
     footswitch: { switchIndex: 2, sceneContext: 1 },
   };
@@ -395,8 +397,9 @@ describe("runRank — the run's dependency order", () => {
     // The shape that produced the HW miss: scenes ahead of the base-context footswitch
     // whose base-ON handle every one of them renders through.
     const work = [scene, footswitch, base];
-    const sorted = [...work].sort((a, b) => runRank(a) - runRank(b));
-    expect(sorted).toEqual([base, footswitch, scene]);
+    expect(sortRunItems(work)).toEqual([base, footswitch, scene]);
+    // A new array: the caller's input is left in its original order.
+    expect(work).toEqual([scene, footswitch, base]);
   });
 
   // BUG→GATE, and the split is PER-ROW because each half is separately HW-measured.
@@ -408,8 +411,30 @@ describe("runRank — the run's dependency order", () => {
   // made a real preset's overdrive report an unreachable ceiling.
   it("splits footswitches by context: base-context before scenes, scene-context after", () => {
     const work = [sceneFootswitch, scene, footswitch, base];
-    const sorted = [...work].sort((a, b) => runRank(a) - runRank(b));
-    expect(sorted).toEqual([base, footswitch, scene, sceneFootswitch]);
+    expect(sortRunItems(work)).toEqual([
+      base,
+      footswitch,
+      scene,
+      sceneFootswitch,
+    ]);
+  });
+
+  it("keeps two presets in their input order", () => {
+    const base2 = { slot: 2, isBase: true };
+    const scene2 = { slot: 2, isBase: false };
+    expect(sortRunItems([base2, scene2, base, scene])).toEqual([
+      base2,
+      scene2,
+      base,
+      scene,
+    ]);
+  });
+
+  // BUG→GATE: the old inline comparator returned 0 across slots, which is not a consistent
+  // order — on this input it left slot 1's scene running before slot 1's base.
+  it("runs a preset's base before its scene when another preset sits between them", () => {
+    const base2 = { slot: 2, isBase: true };
+    expect(sortRunItems([scene, base2, base])).toEqual([base, scene, base2]);
   });
 
   // `sceneContext` reaches the sort as `undefined` on rows the setup page has not resolved.

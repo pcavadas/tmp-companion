@@ -44,7 +44,7 @@ import {
   optionToRunItem,
   resolvedTargetLufs,
   runItemToOption,
-  runRank,
+  sortRunItems,
   type RunItem,
   type SetupOption,
   type SetupChoice,
@@ -324,10 +324,9 @@ export function useLevelingFlow({
       // last-assigned literal across awaits — the cancel handler flips it meanwhile.
       const isCancelled = () => cancelRef.current;
       const candCache = new Map<number, Candidate[]>();
-      const work = items.map((it) => ({ ...it }));
-      // Dependency order documented on `runRank`. Stable sort (0 for differing slots ⇒
-      // input order preserved) guarantees it regardless of how `items` was assembled.
-      work.sort((a, b) => (a.slot === b.slot ? runRank(a) - runRank(b) : 0));
+      // Presets in first-appearance order, each preset's rows in `runRank` dependency
+      // order (base first) — `sortRunItems` enforces it whatever order `items` arrived in.
+      const work = sortRunItems(items).map((it) => ({ ...it }));
       const total = work.length;
 
       // `work` is mutated in place between publishes; pass a fresh ARRAY each time

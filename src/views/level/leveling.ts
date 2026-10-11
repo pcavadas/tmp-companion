@@ -406,8 +406,10 @@ export interface SetupChoice {
  *  (the online 410 arc) is in `notes/gotchas.md`'s "A scene renders the base chain's ON
  *  blocks" entry.
  *
- *  `chosenFrom` emits this order; `useLevelingFlow` sorts by it so the run holds
- *  regardless of how its items were assembled. */
+ *  The rank only orders rows WITHIN one preset; `sortRunItems` below is the whole run
+ *  order (presets in first-appearance order, then this rank). `chosenFrom` emits that
+ *  order, and `useLevelingFlow` re-sorts its items through `sortRunItems` so the run
+ *  holds however they were assembled. */
 export function runRank(it: {
   isBase: boolean;
   footswitch?: unknown;
@@ -423,6 +425,29 @@ export function runRank(it: {
   const ctx =
     typeof fs === "object" && "sceneContext" in fs ? fs.sceneContext : null;
   return typeof ctx === "number" ? 3 : 1;
+}
+
+/** The run order: presets in the order their FIRST row appears in `items`, and within each
+ *  preset `runRank` order (ties keep input order). A comparator on `runRank` alone that
+ *  returns 0 across slots is NOT a consistent order — `[scene@1, base@2, base@1]` can come
+ *  back unchanged, running slot 1's scene before its base — so the slot's first index is
+ *  the primary key. Returns a new array; `items` is left untouched. */
+export function sortRunItems<
+  T extends { slot: number; isBase: boolean; footswitch?: unknown },
+>(items: readonly T[]): T[] {
+  const firstIndex = new Map<number, number>();
+  items.forEach((it, i) => {
+    if (!firstIndex.has(it.slot)) firstIndex.set(it.slot, i);
+  });
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      group: firstIndex.get(item.slot) ?? index,
+      rank: runRank(item),
+    }))
+    .sort((a, b) => a.group - b.group || a.rank - b.rank || a.index - b.index)
+    .map((d) => d.item);
 }
 
 /** Resolve the scene keys SELECTED in the list into the setup rows to configure.
