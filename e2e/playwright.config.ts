@@ -71,6 +71,10 @@ export default defineConfig({
   use: {
     baseURL: `http://localhost:${VITE}`,
     trace: "on-first-retry",
+    // An environment that ships its own Chromium (e.g. a cloud image whose browser build
+    // differs from the one this Playwright pins, with the download hosts blocked) points
+    // TMP_E2E_CHROMIUM at it. Unset, Playwright uses its own browser as before.
+    launchOptions: { executablePath: process.env.TMP_E2E_CHROMIUM },
   },
   projects: [{ name: "offline", use: { ...devices["Desktop Chrome"] } }],
   // Vite serves the real frontend (ONE instance — it is a static asset server, workers just
