@@ -14,7 +14,7 @@ The leveller and the Doctor both measure **USB 1/2**. Per the manual (p.36) that
 
 **Measured (fw 1.8.45):**
 
-- **Readable, but only from a device backup.** `settingsBackup.mixerSaveData` carries the full per-channel strip. The live path (`MixerMessage`, TMS 5) reads as unserved and no write route has been confirmed either. `probe --mixer` implements the read sweep.
+- **Readable from a device backup, and live on fw 1.8.58.** `settingsBackup.mixerSaveData` carries the full per-channel strip. The live path (`MixerMessage`, TMS 5) read as unserved on fw 1.8.45; on fw 1.8.58 TMS-5 reads are served on a kept-alive session (`notes/gotchas.md`'s 0.75 s client-drop entry, HW A/B 2026-10-06), and Mixer `reAmpModeRequest(4)` is the device-confirmed re-amp state oracle. No write route has been confirmed. `probe --mixer` implements the read sweep.
 - **The USB 1/2 fader (not the master knob) is in the measurement path, and routing is per-preset** — full figures and the per-preset-recheck requirement are in `notes/gotchas.md#output-assign-is-per-preset-and-is-applied-to-the-global-mixer-on-every-preset-load`.
 - **Mute, solo-elsewhere and AUX** all measured: muting or having another channel soloed (with `usb12` itself not soloed) both produce `no signal captured`; also-soloing `usb12` restores the reading (solo is additive, p.36); AUX with nothing physically connected is silent. **Solo-elsewhere does NOT flip `usb12`'s own `soloActive` flag** — a pre-flight must check "is any _other_ channel's `soloActive` true", not just `usb12`'s own booleans. BT injection is untested but schema-identical to AUX.
 

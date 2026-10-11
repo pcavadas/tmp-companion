@@ -85,11 +85,15 @@ and conservative; the fw 1.8.58 notes cite the tmp-audit checks:
   mid-engage is INAUDIBLE (the active scene latches at engage). Per-scene leveling therefore
   requires one engage per scene. On fw 1.8.58 a mid-engage `loadScene` changes the amp
   within ~300 ms on a live session (Q11); one engage per scene stays, for accuracy (Q38).
-- **The active scene does NOT survive a reconnect** (the preset does). Any capture/measure
-  path that addresses a scene must re-assert `loadScene` on the SAME connection that engages
-  re-amp — loading it in a throwaway load connection (then reconnecting to capture) measures
-  whatever scene the unit was already on. Bit the Doctor capture (`capture_full_at`); the
-  leveling `set_knob` re-asserts scene + scene-edit per connection for the same reason.
+- **Re-assert the scene on the connection that engages re-amp.** The fw 1.8.45 reading was
+  that the active scene and the Scene-Edit enables do not survive a reconnect. On fw 1.8.58
+  both survive (static): only the HID open flag and the MessageManager send
+  queue reset. The 1.8.45 symptom fits a same-slot `loadPreset` being a real reload into
+  `lastLoadedScene`, or a lapse-dropped `loadScene` (INFERRED). Any capture/measure path
+  that addresses a scene still re-asserts `loadScene` on the SAME connection that engages
+  re-amp (the Doctor capture, `capture_full_at`; the leveling `set_knob` re-asserts scene +
+  scene-edit per connection). That stays safe, but a repeated enable on an overlay that is
+  already Full reseeds it from base.
 - **`outputLevel = 0` is deep digital silence**; the leveling measurement errors ("no signal
   captured") on a silent capture — treat that error as a sentinel deep floor, never
   propagate it (else it aborts the scene).
@@ -101,20 +105,23 @@ and conservative; the fw 1.8.58 notes cite the tmp-audit checks:
   early-exit / tail-drop / preroll-skip each shift the measured loudness preset-dependently
   (≤0.3 LU). Validate any measurement change against the full-capture oracle
   (`probe --measure-adaptive`), never a level→verify round-trip (self-consistent, hides the
-  offset). 48 kHz stimulus required to match the device clock.
+  offset). 48 kHz stimulus required by the host and app convention, not by the device clock (see `danger.md`).
 
-## HID seize + the open-lockout model
+## HID seize, and why there is no open lockout
 
 The TMP is single-connection exclusive-HID (`kIOHIDOptionsTypeSeizeDevice`); there is
 exactly ONE seize owner at any instant. `IOHIDDeviceOpen` fails with
 `kIOReturnExclusiveAccess` (`0xe00002c5`) if Pro Control is running — surfaced as a "close
 Pro Control" error.
 
-- **fw 1.8.45:** after a session closed the device accepted a QUICK re-open (≤~800 ms) but
-  then **locked out exclusive opens for tens of seconds**, and every failed attempt appeared
-  to RESET the lockout. **fw 1.8.58 has no lockout** (tmp-audit Q36: 1,060 open/close
-  cycles, 200/200 at a 0 ms gap): `0xe00002c5` means another handle holds the seize — Pro
-  Control, or an overlapping `Session` in this process, which `Hid::open` names in its error.
+- **There is no device-side open lockout.** The old "open-lockout model" (a quick re-open,
+  then tens of seconds locked out, every failed attempt resetting it) was a host-side
+  misdiagnosis, not fw 1.8.45 behaviour: nothing on the device produces such a lockout
+  (the likely cause is macOS releasing its exclusive-open handle late), and
+  1,060 open/close cycles ran with none, 200/200 at a 0 ms gap (fw 1.8.58; the evidence
+  indicates the same on older firmware). `0xe00002c5` means another handle holds the seize —
+  Pro Control, or an overlapping `Session` in this process (the source of the past in-process
+  "lockouts"), which `Hid::open` names in its error.
   `hid.rs` retries a same-ref fast lane (6×80 ms), then re-enumerates at 3×400 ms. Sessions
   reopen with no fixed gap; the UI's drop-then-reopen waits on `hid::wait_released`.
 - The same `0xe00002c5` also fires on **concurrent** device commands. Every device
