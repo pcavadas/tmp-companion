@@ -18,7 +18,7 @@ So the **canonical full-preset source is the OFFLINE `.preset` file**. The USB p
 
 ## Slot addressing
 
-`list_my_presets` is 0-based; the device userSlot is **list index + 1**. `session.rs` owns this translation — callers pass a 0-based list index and the slot-addressed setters (`loadPreset`, `saveCurrentPreset`, `clearUserPreset`, `moveUserPreset`) send `+1`. Before any destructive op keyed on a slot mapping, confirm the mapping with a non-destructive read first, and put the guard in the same address space as the mutation.
+`list_my_presets` is 0-based; the device userSlot is **list index + 1**. `session/preset.rs` owns this translation — callers pass a 0-based list index and the slot-addressed setters (`loadPreset`, `saveCurrentPreset`, `clearUserPreset`, `moveUserPreset`) send `+1`. Before any destructive op keyed on a slot mapping, confirm the mapping with a non-destructive read first, and put the guard in the same address space as the mutation.
 
 ## Identity safety (song links)
 

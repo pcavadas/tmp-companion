@@ -73,7 +73,7 @@ const SKELETON_GRAPH: StripGraph = {
 // tiles; a head-with-baked-cab / half-stack amp becomes a head-over-cab tile; a
 // COMBO amp (form-driven `isComboBid`) stays a single combo tile — its built-in
 // speaker is a cab_sim_id too, so without the flag it would wrongly stack.
-// `cab_sim_id2`/`cab_sim2_enabled` are nulled backend-side (session.rs `is_cab_block`
+// `cab_sim_id2`/`cab_sim2_enabled` are nulled backend-side (session/graph.rs `is_cab_block`
 // filter) for any non-CabSim node, so a combo never carries a second cab to split.
 function toStripBlock(n: GraphNode): StripBlock {
   return {

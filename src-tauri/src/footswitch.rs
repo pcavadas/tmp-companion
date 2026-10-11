@@ -1861,7 +1861,7 @@ mod tests {
 
     /// A preset graph with one guitar block `N` and an optional sibling `M`, each with a
     /// `bypass` flag; `ftsw` is supplied by the caller per case. `scenes: []` is the DEVICE
-    /// shape for a scene-less preset (`session.rs`'s `{"scenes":[]}` case) — a MISSING key
+    /// shape for a scene-less preset (`session/tests.rs`'s `{"scenes":[]}` case) — a MISSING key
     /// means a truncated read, which the bake gate must treat as unknown.
     fn preset_with(n_bypass: bool, m: Option<bool>, ftsw: Value) -> Value {
         let mut nodes = vec![serde_json::json!({

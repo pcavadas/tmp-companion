@@ -63,7 +63,7 @@ reviews:
         (3) ftsw[i][].nodes[].nodeId (footswitch assignments, by EXACT nodeId).
         Flag a remove/replace/insert/create-variant that updates the roster but not the scene overrides (drop_scene_overrides) or the ftsw map (retarget_ftsw).
         The backend matches by EXACT FenderId — a frontend suffix-normalized id (resolveDeviceId strips CabIR/ConvRvb/…) reaching a backend OpSpec silently fail-matches. Flag it.
-    - path: "src-tauri/src/session.rs"
+    - path: "src-tauri/src/session/*.rs"
       instructions: |
         Setters/commands and the heartbeat MUST omit batchStatus (only *requests* carry it) — a setter sent WITH a batchStatus is silently ignored by the device.
         Slot translation is owned here: callers pass a 0-based list index; slot-addressed setters (loadPreset/saveCurrentPreset/clearUserPreset/moveUserPreset) send index+1.

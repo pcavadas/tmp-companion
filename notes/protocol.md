@@ -5,7 +5,7 @@ Facts about driving the Fender Tone Master Pro over exclusive-seize USB HID that
 goes silent, strands itself input-muted, mis-levels a preset, or (worst case) wedges the
 USB stack. Golden-tested where possible (`proto.rs` vectors); the rest are HW-validated.
 
-Cross-references: `src-tauri/src/session.rs` (handshake + commands), `hid.rs` (the seize +
+Cross-references: `src-tauri/src/session/` (`handshake.rs` + the command modules; `link.rs`/`timing.rs` hold the transport and every wait), `hid.rs` (the seize +
 open-retry), `leveller.rs` / `audio.rs` (re-amp measurement), `monitor.rs` (the live
 session), and `notes/write-safety.md` (the write/read-back story).
 
@@ -43,7 +43,7 @@ after `userir_field2` and BEFORE `current_preset_data_request(batch=3)`. Sent af
 
 `list_my_presets` is **0-based**. The slot-addressed setters — `loadPreset.presetSlot`,
 `saveCurrentPreset.userSlot`, `clearUserPreset`, `moveUserPreset` — and the Song read's
-`userPresetSlot` are all **1-based**. `session.rs` owns the translation
+`userPresetSlot` are all **1-based**. `session/preset.rs` owns the translation
 (`load_preset`/`save_current_preset`/`clear_user_preset`/`move_user_preset` take a 0-based
 list index and send `+1`); every caller passes list indices. A guard on a destructive op
 (clear / move / save-over) **must live in the same address space as the mutation** — an

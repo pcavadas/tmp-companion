@@ -112,7 +112,7 @@ const F_SONG_PRESET_LIST_RESPONSE: u32 = 13;
 const F_ASSIGN_SONG_PRESET: u32 = 14;
 const F_SET_SONG_NOTES: u32 = 22;
 const F_SET_SONG_BPM_ACTIVE: u32 = 23;
-// PresetMessage inner field numbers (mirror `proto`'s encoders + `session.rs`).
+// PresetMessage inner field numbers (mirror `proto`'s encoders + `session/mod.rs`).
 const F_LOAD_PRESET: u32 = 10;
 const F_REPLACE_NODE: u32 = 39;
 const F_REPLACE_WITH_BLOCK: u32 = 100;
@@ -3431,7 +3431,7 @@ fn preset_loaded(dev_slot: u64) -> Vec<u8> {
 }
 
 /// `currentPresetDataChanged`(3) — `presetJson`(1) = LZ4("stored"/uncompressed-block)
-/// of the preset JSON. Mirrors the wire shape `session.rs`'s own fixtures build
+/// of the preset JSON. Mirrors the wire shape `session/tests.rs`'s own fixtures build
 /// (`decode_current_preset_data_yields_active_graph_with_known_template`) and what
 /// `Session::current_preset_value` (`best_json_payload`'s `(3, 1)` carrier) reads back.
 const F_CURRENT_PRESET_DATA_CHANGED: u32 = 3;

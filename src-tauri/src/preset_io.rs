@@ -184,7 +184,7 @@ impl PresetIo for LiveIo {
         // then heartbeat-warm the line so fw 1.8.45 accepts the edits from a live
         // controller. changeParameter is fire-and-forget (no ack), so there is no
         // per-edit confirm to gate on — the pre-edit confirm + the identity guard are the
-        // safety net. session.rs translates the 0-based list index to the 1-based userSlot.
+        // safety net. session/preset.rs translates the 0-based list index to the 1-based userSlot.
         let mut s = Session::connect()?;
         s.confirm_active(target.list_index, Some(&target.display_name))?;
         s.begin_live_edit()?;

@@ -44,7 +44,7 @@ pub fn probe_replace_inplace(orig_list_index: u32, path: &str) -> Result<String,
 /// (`requestNextEmptyPresetSlot` is dead, so we OBSERVE where it landed) →
 /// `load_preset(scratch)` → `save_current_preset(orig)` to overwrite the original
 /// slot in place → **guarded** `clear_user_preset(scratch)`. All addresses are
-/// 0-based list indices; `session.rs` translates each to the 1-based device
+/// 0-based list indices; `session/preset.rs` translates each to the 1-based device
 /// userSlot. The Song-1 link is read before/after to confirm the binding survives.
 /// Structured result of the in-place edit core — what landed where, whether the
 /// edit took, and whether the Song binding survived. Consumed by the `--replace-inplace`
@@ -68,7 +68,7 @@ pub(crate) struct ReplaceOutcome {
 /// file's blocks → `save_current_preset(orig)` to overwrite the original slot →
 /// **guarded** `clear(scratch)` → re-read to confirm
 /// the edit landed and the Song-1 binding survived. All addresses are 0-based list
-/// indices; `session.rs` translates each to the 1-based device userSlot.
+/// indices; `session/preset.rs` translates each to the 1-based device userSlot.
 pub(crate) fn replace_inplace_core(
     orig_list_index: u32,
     bytes: &[u8],

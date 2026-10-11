@@ -18,7 +18,7 @@ Trailing detail for `SKILL.md`'s "When you're handed a Claude-Design handoff" nu
 
 ## Wiring a Tauri command: when the command doesn't exist yet
 
-If a command you need doesn't exist yet, that's a backend change (Rust `lib.rs` `generate_handler!` + an engine function) — coordinate it; don't fake the data on the frontend. Conversely, before _assuming_ a backend command is missing, grep the existing seams first — `src-tauri/src/session.rs` (e.g. `replace_node`/`insert_node`/`remove_node`/`extract_active_graph`), `proto.rs` (often already golden-tested), and the `probe` subcommands. The Copy feature's whole save path was a thin Tauri wrapper because the live structural-edit primitives were already RE'd + present (`probe --insert-active`); per-preset data was likewise already on the one `read_library_via_backup`/`BackupPresetRow` backup (one added field, no new device read).
+If a command you need doesn't exist yet, that's a backend change (Rust `lib.rs` `generate_handler!` + an engine function) — coordinate it; don't fake the data on the frontend. Conversely, before _assuming_ a backend command is missing, grep the existing seams first — `src-tauri/src/session/` (e.g. `structural.rs`'s `replace_node`/`insert_node`/`remove_node`, `graph.rs`'s `extract_active_graph`), `proto.rs` (often already golden-tested), and the `probe` subcommands. The Copy feature's whole save path was a thin Tauri wrapper because the live structural-edit primitives were already RE'd + present (`probe --insert-active`); per-preset data was likewise already on the one `read_library_via_backup`/`BackupPresetRow` backup (one added field, no new device read).
 
 ## The `libraryScan` store: full contents + extending it
 

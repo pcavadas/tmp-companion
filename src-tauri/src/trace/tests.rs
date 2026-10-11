@@ -70,7 +70,7 @@ fn wrap(rec: &Arc<Recorder>, t: &ScriptedTransport) -> Box<dyn HidTransport> {
     .unwrap()
 }
 
-/// The reopen scenario `session.rs` tests (a write after a long wait reopens the client
+/// The reopen scenario `session/tests.rs` tests (a write after a long wait reopens the client
 /// first), run once bare and once recorded.
 fn reopen_scenario(hid: Box<dyn HidTransport>) -> Vec<Vec<u8>> {
     let mut s = Session::from_transport(hid);

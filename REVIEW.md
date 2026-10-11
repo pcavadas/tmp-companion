@@ -52,7 +52,7 @@ Consult that table rather than trusting CI.
 ## 3. Destructive and in-flight actions
 
 The unit holds irreplaceable user presets and a save is permanent. `.coderabbit.yaml`'s
-`path_instructions` enforce the destructive-slot-mapping guard (scoped to `session.rs`) and the
+`path_instructions` enforce the destructive-slot-mapping guard (scoped to `session/*.rs`) and the
 in-flight-abort guard (scoped to `src/**/*.{ts,tsx}`); `notes/write-safety.md` and
 `.claude/rules/danger.md` carry the full rule.
 

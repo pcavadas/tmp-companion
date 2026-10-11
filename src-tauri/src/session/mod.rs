@@ -10,6 +10,15 @@
 //! handshake REUSES `batchStatus` in the device's exact groups (1; 2×7; 3; 4) —
 //! NOT a per-request counter: incrementing per request makes the device go silent
 //! after the preset lists. Setters and heartbeats omit `batchStatus` entirely.
+//!
+//! Layout. The TRANSPORT SET owns the wire and the clock: `link` (the transport seam,
+//! `TrackedHid`, the send/pump/collect primitives), `timing` (every window, by name),
+//! `handshake` (connect + burst), `backup_stream` and `diag`. The command and read
+//! modules (`lists`, `reads`, `preset`, `reamp`, `scene`, `structural`, `ftsw`, `songs`)
+//! call link primitives with `timing` consts only, and `decode`, `graph` and `types` are
+//! pure. `boundary_tests` enforces the split and `wire_golden` pins every command's
+//! requests and windows. This file keeps the `Session` struct and the shared field
+//! numbers; every item keeps its `crate::session::X` path through the re-exports below.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

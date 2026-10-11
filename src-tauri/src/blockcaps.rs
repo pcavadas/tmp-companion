@@ -212,7 +212,7 @@ pub(crate) fn check_loaded_roster(file: &Roster, live: &Roster) -> Result<(), St
 /// sourced from `session::extract_active_graph`, the ONE place that owns the node walk
 /// AND the load-bearing dual-cab discriminator (`cabsim2enabled` is a real second cab
 /// ONLY on the standalone `ACD_CabSimTMS`; on an amp the same key means a dual MIC on
-/// one cab — see `session.rs`'s `extract_active_graph_amp_half_stack…` test). A single
+/// one cab — see `session/tests.rs`'s `extract_active_graph_amp_half_stack…` test). A single
 /// source means the cabinet weighting here can never drift from what the strip renders.
 pub fn roster_from_preset(preset: &Value) -> Vec<RosterEntry> {
     crate::session::extract_active_graph(preset, None)
