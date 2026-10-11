@@ -95,6 +95,8 @@ const MIXER_REAMP_REQUEST: u32 = 4; // MixerMessage.reAmpModeRequest
 const MIXER_REAMP_RESPONSE: u32 = 9; // MixerMessage.reAmpModeResponse{ isActive = 1 }
 
 #[cfg(test)]
+mod boundary_tests;
+#[cfg(test)]
 mod wire_golden;
 
 #[cfg(test)]
