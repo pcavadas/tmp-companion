@@ -68,7 +68,12 @@ jobs:
             echo '## Device-facing changes since the last release'
             echo
             echo '```'
-            bash scripts/gates.sh --device-changes || echo '(report unavailable: no release tag behind HEAD)'
+            # Only a missing tag falls back; any other failure fails the step.
+            if bash scripts/gates.sh --release-base >/dev/null; then
+              bash scripts/gates.sh --device-changes
+            else
+              echo '(report unavailable: no release tag behind HEAD)'
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
