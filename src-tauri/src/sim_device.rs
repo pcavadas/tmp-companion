@@ -2617,6 +2617,42 @@ fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
     truncate_scene_push(st, json.into_bytes())
 }
 
+/// `json` with each node named in `writes` set to that `bypass` (node-keyed, like
+/// [`SimState::bypass_writes`]).
+#[cfg(feature = "e2e")]
+fn with_bypass_writes(json: String, writes: &HashMap<String, bool>) -> String {
+    if writes.is_empty() {
+        return json;
+    }
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) else {
+        return json;
+    };
+    let changed = audiograph::for_each_node_mut(&mut v, |node| {
+        let Some(on) = node
+            .get("nodeId")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|id| writes.get(id))
+            .copied()
+        else {
+            return false;
+        };
+        match node
+            .get_mut("dspUnitParameters")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            Some(dsp) => {
+                dsp.insert("bypass".into(), serde_json::json!(on));
+                true
+            }
+            None => false,
+        }
+    });
+    if changed == 0 {
+        return json;
+    }
+    serde_json::to_string(&v).unwrap_or(json)
+}
+
 /// [`load_echo_json`] before any injected truncation.
 fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     let edits = if working {
@@ -2635,7 +2671,14 @@ fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
             st.saved_doc(slot0).clone()
         };
         let patched = with_patched_doc(j, &doc);
-        return with_working_edits(with_ftsw(&patched, doc.ftsw.as_ref()), &edits);
+        let json = with_working_edits(with_ftsw(&patched, doc.ftsw.as_ref()), &edits);
+        // Forced bypasses are live but never saved (`SavedDoc` has no bypass), so only the
+        // working copy shows them — the state the capture model sounds.
+        return if working {
+            with_bypass_writes(json, &st.bypass_writes)
+        } else {
+            json
+        };
     }
     let _ = slot0;
     with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits)
@@ -4248,6 +4291,37 @@ mod same_slot_load_tests {
             .and_then(|n| n["dspUnitParameters"][&param].as_f64())
             .unwrap();
         assert!((value - 0.123).abs() < 1e-6, "pushed {value}");
+    }
+
+    /// A bypass forced before a save survives the skipped load in the working copy, so the
+    /// push must show it — it is what the capture model sounds.
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn a_skipped_load_pushes_the_live_bypass() {
+        let doc: serde_json::Value = serde_json::from_str(scenario_json_for(401).unwrap()).unwrap();
+        let (group, node, bypassed) = audiograph::roster(&doc)
+            .into_iter()
+            .find_map(|(g, id, _)| {
+                let n = doc["audioGraph"]["guitarNodes"][&g]
+                    .as_array()?
+                    .iter()
+                    .find(|n| n["nodeId"] == id.as_str())?;
+                Some((g, id, n["dspUnitParameters"]["bypass"].as_bool()?))
+            })
+            .expect("fixture 401 has a node with a bypass");
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(401).unwrap();
+        s.change_parameter_bool(&group, &node, "bypass", !bypassed)
+            .unwrap();
+        s.save_current_preset(401).unwrap();
+        s.load_preset(401).unwrap();
+        let pushed = s.live_preset_value(|_| true).unwrap();
+        let shown = pushed["audioGraph"]["guitarNodes"][&group]
+            .as_array()
+            .and_then(|ns| ns.iter().find(|n| n["nodeId"] == node.as_str()))
+            .and_then(|n| n["dspUnitParameters"]["bypass"].as_bool());
+        assert_eq!(shown, Some(!bypassed));
     }
 
     /// A refused clear must not materialize empty switches in the working copy.
