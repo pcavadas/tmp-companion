@@ -53,7 +53,7 @@ impl Session {
             REAMP_OFF_COUNT.fetch_add(1, Ordering::Relaxed);
         }
         self.raw.clear();
-        self.send_and_collect(&proto::set_reamp_mode(active), 400)?;
+        self.send_and_collect(&proto::set_reamp_mode(active), REAMP_ECHO_MS)?;
         Ok(self.streams().iter().find_map(|s| {
             dig(&s.body, TMS_SETTINGS, REAMP_SETTING)
                 .and_then(|f| field1(&f).and_then(|v| v.as_u64()))

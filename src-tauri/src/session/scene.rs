@@ -29,8 +29,7 @@ impl Session {
     /// re-amp capture. Load a preset first, then drive scenes.
     pub fn load_scene(&mut self, scene_slot: u32) -> Result<(), String> {
         // Eager pump — same fire-and-forget rationale as `load_preset`.
-        self.hid
-            .transact_eager(&proto::load_scene(scene_slot as u64), 300)?;
+        self.transact_eager(&proto::load_scene(scene_slot as u64), LOAD_ECHO_MS)?;
         Ok(())
     }
 
@@ -44,8 +43,10 @@ impl Session {
         node_id: &str,
         enable: bool,
     ) -> Result<(), String> {
-        self.hid
-            .transact(&proto::set_node_scene_edit(group_id, node_id, enable), 300)?;
+        self.transact(
+            &proto::set_node_scene_edit(group_id, node_id, enable),
+            SCENE_EDIT_ECHO_MS,
+        )?;
         Ok(())
     }
 }

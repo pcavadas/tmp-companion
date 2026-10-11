@@ -26,8 +26,11 @@ impl Session {
     /// answered on this session (a 1/2 would only queue, and a later session's
     /// handshake would replay it). Callers then [`Self::await_active_preset`].
     pub(crate) fn rearm_active_info(&mut self) -> Result<(), String> {
-        self.send_and_collect(&proto::connection_request(), 80)?;
-        self.send_and_collect(&proto::current_preset_info_request(proto::BATCH_DRAIN), 120)
+        self.send_and_collect(&proto::connection_request(), REARM_CONNECT_MS)?;
+        self.send_and_collect(
+            &proto::current_preset_info_request(proto::BATCH_DRAIN),
+            REARM_INFO_REQUEST_MS,
+        )
     }
 
     /// LoadPreset on the My Presets tab (tabEnum = 1). `slot` is the **0-based
@@ -38,8 +41,7 @@ impl Session {
     pub fn load_preset(&mut self, slot: u32) -> Result<(), String> {
         // Eager pump: the reports are discarded (fire-and-forget), so exit as
         // soon as the echo burst completes instead of burning the full window.
-        self.hid
-            .transact_eager(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+        self.transact_eager(&proto::load_preset((slot + 1) as u64, 1), LOAD_ECHO_MS)?;
         Ok(())
     }
 
@@ -56,8 +58,7 @@ impl Session {
         preset_slot: u64,
         tab_enum: u64,
     ) -> Result<(), String> {
-        self.hid
-            .transact_eager(&proto::load_preset(preset_slot, tab_enum), 300)?;
+        self.transact_eager(&proto::load_preset(preset_slot, tab_enum), LOAD_ECHO_MS)?;
         Ok(())
     }
 
@@ -72,7 +73,7 @@ impl Session {
     /// `PresetLevelChanged.presetLevel` if reported (the device's confirmation).
     pub fn set_preset_level(&mut self, level: f32) -> Result<Option<f32>, String> {
         self.raw.clear();
-        self.send_and_collect(&proto::set_preset_level(level), 250)?;
+        self.send_and_collect(&proto::set_preset_level(level), SET_LEVEL_ECHO_MS)?;
         Ok(self.streams().iter().find_map(|s| {
             dig(&s.body, TMS_PRESET, PRESET_LEVEL_CHANGED)
                 .and_then(|f| field1(&f).and_then(|v| v.as_f32()))
@@ -92,9 +93,9 @@ impl Session {
         parameter_id: &str,
         value: f32,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::change_parameter(group_id, node_id, parameter_id, value),
-            250,
+            CHANGE_PARAMETER_MS,
         )?;
         Ok(())
     }
@@ -110,9 +111,9 @@ impl Session {
         parameter_id: &str,
         value: bool,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::change_parameter_bool(group_id, node_id, parameter_id, value),
-            250,
+            CHANGE_PARAMETER_MS,
         )?;
         Ok(())
     }
@@ -135,7 +136,7 @@ impl Session {
             .clamp(1, 32);
         for _ in 0..n {
             self.heartbeat()?;
-            self.pump_silent(200)?;
+            self.pump_silent(LIVE_BEAT_MS)?;
         }
         Ok(())
     }
@@ -151,7 +152,7 @@ impl Session {
                 return true;
             }
             let _ = self.heartbeat();
-            let _ = self.pump_silent(150);
+            let _ = self.pump_silent(ACTIVE_PRESET_BEAT_MS);
         }
         self.active_preset_name().as_deref() == Some(name)
     }
@@ -262,8 +263,10 @@ impl Session {
     /// so we send `list_index + 1` (see [`Self::load_preset`] for the HW evidence).
     /// The device sends no save ACK; persistence is verified by reload.
     pub fn save_current_preset(&mut self, list_index: u32) -> Result<(), String> {
-        self.hid
-            .transact(&proto::save_current_preset((list_index + 1) as u64), 300)?;
+        self.transact(
+            &proto::save_current_preset((list_index + 1) as u64),
+            PRESET_WRITE_ECHO_MS,
+        )?;
         // Stored-preset mutation choke point: EVERY save routes through here, so this
         // one call keeps the Doctor's cached BEFORE clip correct-by-construction
         // (per-command clears were forgotten on ~7 mutating paths). Over-clearing is
@@ -277,8 +280,10 @@ impl Session {
     /// `clearUserPreset` (field 15). Sends the **1-based** device userSlot
     /// (`list_index + 1`). Fire-and-forget; verify by re-listing.
     pub fn clear_user_preset(&mut self, list_index: u32) -> Result<(), String> {
-        self.hid
-            .transact(&proto::clear_user_preset((list_index + 1) as u64), 300)?;
+        self.transact(
+            &proto::clear_user_preset((list_index + 1) as u64),
+            PRESET_WRITE_ECHO_MS,
+        )?;
         // Stored-preset mutation — see save_current_preset's choke-point note.
         crate::commands::doctor::clear_doctor_before_cache();
         Ok(())
@@ -289,8 +294,7 @@ impl Session {
     /// this with `save_current_preset(slot)` to persist.
     /// Fire-and-forget; verify by reload.
     pub fn rename_current_preset(&mut self, name: &str) -> Result<(), String> {
-        self.hid
-            .transact(&proto::rename_current_preset(name), 300)?;
+        self.transact(&proto::rename_current_preset(name), PRESET_WRITE_ECHO_MS)?;
         Ok(())
     }
 
@@ -307,11 +311,14 @@ impl Session {
         done: impl Fn(&serde_json::Value) -> bool,
     ) -> Result<serde_json::Value, String> {
         self.clear_raw();
-        let _ = self.send_and_collect_alive(&proto::current_preset_data_request(3), 300);
+        let _ = self.send_and_collect_alive(
+            &proto::current_preset_data_request(3),
+            LIVE_VALUE_REQUEST_MS,
+        );
         let mut last = String::new();
         for _ in 0..8 {
             let _ = self.heartbeat();
-            let _ = self.pump_collect_alive(200);
+            let _ = self.pump_collect_alive(LIVE_VALUE_POLL_MS);
             match self.current_preset_value() {
                 Ok(v) if done(&v) => return Ok(v),
                 Ok(_) => last = "a reply parsed but was not accepted".to_string(),
@@ -339,7 +346,7 @@ impl Session {
         let (mut last, mut stable) = (self.raw.len(), 0u32);
         for _ in 0..6 {
             let _ = self.heartbeat();
-            let _ = self.pump_silent(200);
+            let _ = self.pump_silent(LIVE_BEAT_MS);
             let len = self.raw.len();
             if len == last {
                 stable += 1;
@@ -411,9 +418,9 @@ impl Session {
     /// `moveUserPreset` (field 16). Sends the **1-based** device userSlots
     /// (`old + 1`, `new + 1`). Fire-and-forget; verify by re-listing.
     pub fn move_user_preset(&mut self, old: u32, new: u32) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::move_user_preset((old + 1) as u64, (new + 1) as u64),
-            300,
+            PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation — see save_current_preset's choke-point note.
         crate::commands::doctor::clear_doctor_before_cache();

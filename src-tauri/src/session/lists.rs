@@ -95,7 +95,10 @@ impl Session {
         // send window — the keepalive windows below collect the reply).
         let mut names = self.best_preset_list();
         if names.is_none() {
-            self.send_and_collect(&proto::preset_list_request(1, proto::BATCH_DRAIN), 200)?;
+            self.send_and_collect(
+                &proto::preset_list_request(1, proto::BATCH_DRAIN),
+                LIST_REQUEST_MS,
+            )?;
         }
         // Growth metric = record count + total content bytes, not count alone:
         // the tolerant decode's final-frame tail case can GROW IN CONTENT at a
@@ -114,7 +117,7 @@ impl Session {
                 self.keepalive_pump()?;
                 self.keepalive_pump()?;
             } else {
-                self.pump_silent(700)?;
+                self.pump_silent(LIST_QUIET_WINDOW_MS)?;
             }
             if let Some(found) = self.best_preset_list() {
                 names = Some(found);
@@ -175,7 +178,10 @@ impl Session {
     /// [`Self::reread_my_presets`]. A lapsed client is reopened by the write itself
     /// (`TrackedHid`); a live one is not re-armed (that only draws a `connectionError`).
     pub(super) fn rearm_my_presets_request(&mut self) -> Result<(), String> {
-        self.send_and_collect(&proto::preset_list_request(1, proto::BATCH_DRAIN), 200)
+        self.send_and_collect(
+            &proto::preset_list_request(1, proto::BATCH_DRAIN),
+            LIST_REQUEST_MS,
+        )
     }
 
     /// Re-read the My-Presets list on this HELD session (no reopen). `raw` MUST be cleared:
@@ -183,7 +189,7 @@ impl Session {
     /// the tolerant harvest.
     /// Quiet sessions only — a re-arm on a live one draws a `connectionError`.
     pub fn reread_my_presets(&mut self) -> Result<Vec<PresetEntry>, String> {
-        self.drain_until_quiet(250, 20)?;
+        self.drain_until_quiet(DRAIN_QUIET_WINDOW_MS, DRAIN_MAX_WINDOWS)?;
         self.raw.clear();
         self.rearm_my_presets_request()?;
         self.list_my_presets()
@@ -200,7 +206,7 @@ impl Session {
             )?;
         }
         // A decodable list is not a complete one (the My-Presets truncation class).
-        self.pump_until_stable(20, KEEPALIVE_WINDOW_MS, |s| {
+        self.pump_until_stable(FACTORY_LIST_MAX_WINDOWS, KEEPALIVE_WINDOW_MS, |s| {
             best_factory_list_from_reports(&s.raw).map_or(0, |n| n.len())
         })?;
         let names = best_factory_list_from_reports(&self.raw);
@@ -235,7 +241,7 @@ impl Session {
             if names.is_some() {
                 break;
             }
-            self.drain_until_quiet(250, 20)?;
+            self.drain_until_quiet(DRAIN_QUIET_WINDOW_MS, DRAIN_MAX_WINDOWS)?;
             self.rearm_my_presets_request()?;
             names = self.await_strict_list()?;
         }

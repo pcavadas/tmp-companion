@@ -103,7 +103,7 @@ impl TrackedHid {
         if reopening {
             let reopen = proto::connection_request();
             if body != reopen {
-                let reports = self.inner.transact(&reopen, 100)?;
+                let reports = self.inner.transact(&reopen, REOPEN_MS)?;
                 self.reopened.borrow_mut().extend(reports);
             }
         }
@@ -168,6 +168,23 @@ impl HidTransport for TrackedHid {
 }
 
 impl Session {
+    /// One write and its pump window through `TrackedHid`, the reports handed back to
+    /// the caller (not collected into `raw`). Command modules use this, never `self.hid`.
+    pub(super) fn transact(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.hid.transact(body, ms)
+    }
+
+    /// [`Self::transact`] that returns early once the reply framing is complete and the
+    /// line is quiet (`ms` stays the cap): only for sends whose reports nobody parses.
+    pub(super) fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        self.hid.transact_eager(body, ms)
+    }
+
+    /// Whether the device may have dropped this client (see `TrackedHid::maybe_lapsed`).
+    pub(super) fn maybe_lapsed(&self) -> bool {
+        self.hid.maybe_lapsed()
+    }
+
     /// Pump until the inbound stream goes quiet (`max_windows` windows of
     /// `window_ms` with no new reports, or stop growing). Used by the passive
     /// scene scan to drain the handshake flood before the first re-armed

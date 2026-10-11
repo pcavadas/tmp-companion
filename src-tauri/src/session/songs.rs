@@ -64,7 +64,7 @@ impl Session {
         preset_scene_slot: u32,
         footswitch_color_inactive: u32,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::assign_song_preset(
                 song_slot as u64,
                 song_preset_slot as u64,
@@ -74,7 +74,7 @@ impl Session {
                 preset_scene_slot as u64,
                 footswitch_color_inactive as u64,
             ),
-            300,
+            SONG_SETTER_ECHO_MS,
         )?;
         let rows = self.song_presets(song_slot)?;
         if rows.is_empty() {
@@ -104,18 +104,18 @@ impl Session {
 
     /// Reorder a Song row — `moveSongPreset`. Song-internal positions.
     pub fn move_song_preset(&mut self, song_slot: u32, old: u32, new: u32) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::move_song_preset(song_slot as u64, old as u64, new as u64),
-            300,
+            SONG_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
 
     /// Swap two Song rows — `swapSongPreset`.
     pub fn swap_song_preset(&mut self, song_slot: u32, a: u32, b: u32) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::swap_song_preset(song_slot as u64, a as u64, b as u64),
-            300,
+            SONG_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
@@ -126,9 +126,9 @@ impl Session {
         song_slot: u32,
         song_preset_slot: u32,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::clear_song_preset(song_slot as u64, song_preset_slot as u64),
-            300,
+            SONG_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
@@ -142,13 +142,13 @@ impl Session {
         song_preset_slot: u32,
         preset_slot: u32,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::load_song(
                 song_slot as u64,
                 song_preset_slot as u64,
                 preset_slot as u64,
             ),
-            400,
+            SONG_LIST_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
@@ -157,62 +157,74 @@ impl Session {
     /// which the device stores as the **active song's** BPM. Load the target song
     /// first (`load_song`). Fire-and-forget.
     pub fn set_tap_tempo_bpm(&mut self, bpm: f32) -> Result<(), String> {
-        self.hid.transact(&proto::set_tap_tempo_bpm(bpm, 1), 300)?;
+        self.transact(&proto::set_tap_tempo_bpm(bpm, 1), SONG_SETTER_ECHO_MS)?;
         Ok(())
     }
 
     // ─── Song CRUD (fire-and-forget setters; verify by re-reading the list) ──
     pub fn add_song(&mut self, name: &str) -> Result<(), String> {
-        self.hid.transact(&proto::add_song(name), 400)?;
+        self.transact(&proto::add_song(name), SONG_LIST_SETTER_ECHO_MS)?;
         Ok(())
     }
 
     pub fn rename_song(&mut self, song_slot: u32, name: &str) -> Result<(), String> {
-        self.hid
-            .transact(&proto::rename_song(song_slot as u64, name), 400)?;
+        self.transact(
+            &proto::rename_song(song_slot as u64, name),
+            SONG_LIST_SETTER_ECHO_MS,
+        )?;
         Ok(())
     }
 
     pub fn remove_song(&mut self, song_slot: u32) -> Result<(), String> {
-        self.hid
-            .transact(&proto::remove_song(song_slot as u64), 400)?;
+        self.transact(
+            &proto::remove_song(song_slot as u64),
+            SONG_LIST_SETTER_ECHO_MS,
+        )?;
         Ok(())
     }
 
     pub fn set_song_notes(&mut self, song_slot: u32, notes: &str) -> Result<(), String> {
-        self.hid
-            .transact(&proto::set_song_notes(song_slot as u64, notes), 400)?;
+        self.transact(
+            &proto::set_song_notes(song_slot as u64, notes),
+            SONG_LIST_SETTER_ECHO_MS,
+        )?;
         Ok(())
     }
 
     pub fn set_song_bpm_active(&mut self, song_slot: u32, active: bool) -> Result<(), String> {
-        self.hid
-            .transact(&proto::set_song_bpm_active(song_slot as u64, active), 300)?;
+        self.transact(
+            &proto::set_song_bpm_active(song_slot as u64, active),
+            SONG_SETTER_ECHO_MS,
+        )?;
         Ok(())
     }
 
     // ─── Setlist CRUD (fire-and-forget setters) ─────────────────────────────
     pub fn add_setlist(&mut self, name: &str) -> Result<(), String> {
-        self.hid.transact(&proto::add_setlist(name), 400)?;
+        self.transact(&proto::add_setlist(name), SONG_LIST_SETTER_ECHO_MS)?;
         Ok(())
     }
 
     pub fn rename_setlist(&mut self, setlist_slot: u32, name: &str) -> Result<(), String> {
-        self.hid
-            .transact(&proto::rename_setlist(setlist_slot as u64, name), 400)?;
+        self.transact(
+            &proto::rename_setlist(setlist_slot as u64, name),
+            SONG_LIST_SETTER_ECHO_MS,
+        )?;
         Ok(())
     }
 
     pub fn remove_setlist(&mut self, setlist_slot: u32) -> Result<(), String> {
-        self.hid
-            .transact(&proto::remove_setlist(setlist_slot as u64), 400)?;
+        self.transact(
+            &proto::remove_setlist(setlist_slot as u64),
+            SONG_LIST_SETTER_ECHO_MS,
+        )?;
         Ok(())
     }
 
     pub fn add_setlist_song(&mut self, setlist_slot: u32, song_slot: u32) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::add_setlist_song(setlist_slot as u64, song_slot as u64),
-            400,
+            SONG_LIST_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
@@ -224,9 +236,9 @@ impl Session {
         setlist_slot: u32,
         setlist_song_slot: u32,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::remove_setlist_song(setlist_slot as u64, setlist_song_slot as u64),
-            400,
+            SONG_LIST_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
@@ -239,9 +251,9 @@ impl Session {
         old_pos: u32,
         new_pos: u32,
     ) -> Result<(), String> {
-        self.hid.transact(
+        self.transact(
             &proto::move_setlist_song(setlist_slot as u64, old_pos as u64, new_pos as u64),
-            400,
+            SONG_LIST_SETTER_ECHO_MS,
         )?;
         Ok(())
     }
@@ -256,12 +268,12 @@ impl Session {
     ) -> Result<Option<T>, String> {
         for _ in 0..3 {
             self.clear_raw();
-            self.send_and_collect_alive(req, 250)?;
+            self.send_and_collect_alive(req, HARVEST_REQUEST_MS)?;
             for _ in 0..pumps {
                 if let Some(r) = harvest(self) {
                     return Ok(Some(r));
                 }
-                self.pump_collect_alive(250)?;
+                self.pump_collect_alive(HARVEST_POLL_MS)?;
             }
         }
         Ok(None)

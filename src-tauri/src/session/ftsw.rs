@@ -28,10 +28,10 @@ impl Session {
                 swap,
                 batch,
             ),
-            250,
+            FTSW_EDIT_ECHO_MS,
         )?;
         self.heartbeat()?;
-        self.pump_silent(200)?;
+        self.pump_silent(LIVE_BEAT_MS)?;
         Ok(())
     }
 
@@ -41,10 +41,10 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::clear_footswitch_assignment(addr as u64, index as u64),
-            250,
+            FTSW_EDIT_ECHO_MS,
         )?;
         self.heartbeat()?;
-        self.pump_silent(200)?;
+        self.pump_silent(LIVE_BEAT_MS)?;
         Ok(())
     }
 

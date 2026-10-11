@@ -136,16 +136,21 @@ impl Session {
         self.raw.clear();
         // Re-arm a lapsed quiet session (see the doc): the write reopens the client
         // first (`TrackedHid`). A small batch-3 request, so nothing is left queued.
-        if !on_live_session && self.hid.maybe_lapsed() {
-            self.send_and_collect(&proto::current_preset_info_request(proto::BATCH_DRAIN), 20)?;
+        if !on_live_session && self.maybe_lapsed() {
+            self.send_and_collect(
+                &proto::current_preset_info_request(proto::BATCH_DRAIN),
+                SLOT_READ_REARM_MS,
+            )?;
         }
         self.send_and_collect(
             &proto::preset_data_request(list_enum, device_slot as u64, None),
-            200,
+            SLOT_READ_REQUEST_MS,
         )?;
         // Growth-stability harvest: a 17 KB reply is ~290 frames, ~1 s end-to-end; small
         // presets land in the first slice.
-        self.pump_until_stable(24, 150, |s| s.try_preset_data_json().map_or(0, |b| b.len()))?;
+        self.pump_until_stable(SLOT_READ_MAX_WINDOWS, SLOT_READ_WINDOW_MS, |s| {
+            s.try_preset_data_json().map_or(0, |b| b.len())
+        })?;
         Ok(self.try_preset_data_json())
     }
 
@@ -155,7 +160,7 @@ impl Session {
     pub(crate) fn rich_warmup(&mut self) -> Result<(), String> {
         for _ in 0..8 {
             self.heartbeat()?;
-            self.pump_silent(120)?;
+            self.pump_silent(RICH_WARMUP_BEAT_MS)?;
         }
         Ok(())
     }
@@ -168,10 +173,10 @@ impl Session {
     /// past the 125 hit so the multi-packet push finishes arriving.
     pub(crate) fn rich_load_collect(&mut self, slot: u32) -> Result<(), String> {
         self.raw.clear();
-        self.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+        self.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), LOAD_ECHO_MS)?;
         for _ in 0..10 {
             self.heartbeat()?;
-            self.pump_silent(200)?;
+            self.pump_silent(LIVE_BEAT_MS)?;
         }
         Ok(())
     }
@@ -221,10 +226,10 @@ impl Session {
         if let Some(idx) = slot {
             self.load_preset(idx)?;
         }
-        let steps = (settle_ms / 250).max(1);
+        let steps = (settle_ms / CAPTURE_SETTLE_STEP_MS).max(1);
         for _ in 0..steps {
             self.heartbeat()?;
-            self.pump_silent(250)?;
+            self.pump_silent(CAPTURE_SETTLE_STEP_MS)?;
         }
         let payload = self.best_json_payload();
         if payload.is_empty() {
@@ -347,7 +352,9 @@ impl Session {
         let best = |s: &Self| s.try_preset_data_json().or_else(|| s.try_export_json());
         // Kept alive: the old "device stops at the same byte count" baseline was measured on
         // SILENT windows, whose stop the inactivity drop also produces.
-        self.pump_until_stable(28, KEEPALIVE_WINDOW_MS, |s| best(s).map_or(0, |b| b.len()))?;
+        self.pump_until_stable(SLOT_HARVEST_MAX_WINDOWS, KEEPALIVE_WINDOW_MS, |s| {
+            best(s).map_or(0, |b| b.len())
+        })?;
         best(self).ok_or_else(|| {
             format!(
                 "no slot-read reply (field 9/116). Streams seen: {}",

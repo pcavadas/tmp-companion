@@ -104,7 +104,7 @@ impl Session {
         self.raw.clear();
         let _ = self.hid.send(&proto::heartbeat());
         let start = Instant::now();
-        self.send_and_collect(&proto::backup_request(), 120)?;
+        self.send_and_collect(&proto::backup_request(), BACKUP_REQUEST_MS)?;
         // Inline reassembler (mirrors proto::reassemble_streams_final, but decodes
         // each completed stream as it closes so we never hold the whole frame set).
         let mut current: Option<Vec<u8>> = None;

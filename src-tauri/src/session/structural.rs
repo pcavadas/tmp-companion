@@ -10,9 +10,12 @@ impl Session {
     /// `nodeJsonResponse`, 120). Without it fw 1.8.45 drops the following `replaceNode`.
     /// Rides the live heartbeat cadence.
     pub(super) fn node_json_request(&mut self, group: &str, node_id: &str) -> Result<(), String> {
-        self.send_chunked_collect(&proto::node_json_request(group, node_id), 200)?;
+        self.send_chunked_collect(
+            &proto::node_json_request(group, node_id),
+            STRUCTURAL_EDIT_ECHO_MS,
+        )?;
         self.heartbeat()?;
-        self.pump_silent(200)?;
+        self.pump_silent(LIVE_BEAT_MS)?;
         Ok(())
     }
 
@@ -41,7 +44,7 @@ impl Session {
     pub(super) fn confirm_structural_edit(&mut self, success_field: u32) -> Result<bool, String> {
         for _ in 0..10 {
             self.heartbeat()?;
-            self.pump_silent(200)?;
+            self.pump_silent(LIVE_BEAT_MS)?;
             if self.saw_preset_field(success_field) {
                 return Ok(true);
             }
@@ -69,7 +72,7 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::replace_node(dest_group, node_id, fender_id, None),
-            200,
+            STRUCTURAL_EDIT_ECHO_MS,
         )?;
         self.confirm_structural_edit(NODE_REPLACED)
     }
@@ -89,7 +92,7 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::replace_node_with_block(dest_group, node_id, fender_id, index, None),
-            200,
+            STRUCTURAL_EDIT_ECHO_MS,
         )?;
         self.confirm_structural_edit(NODE_REPLACED)
     }
@@ -103,7 +106,10 @@ impl Session {
     pub fn remove_node(&mut self, dest_group: &str, node_id: &str) -> Result<bool, String> {
         self.node_json_request(dest_group, node_id)?;
         self.clear_raw();
-        self.send_chunked_collect(&proto::remove_node(dest_group, node_id, None), 200)?;
+        self.send_chunked_collect(
+            &proto::remove_node(dest_group, node_id, None),
+            STRUCTURAL_EDIT_ECHO_MS,
+        )?;
         self.confirm_structural_edit(NODE_REMOVED)
     }
 
@@ -126,7 +132,7 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::insert_node(dest_group, before, fender_id, None),
-            200,
+            STRUCTURAL_EDIT_ECHO_MS,
         )?;
         let confirmed = self.confirm_structural_edit(NODE_INSERTED)?;
         // HW evidence for whether `nodeInserted` carries the minted id (never decoded).
@@ -154,7 +160,7 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::insert_node_at_block_index(dest_group, index as u64, fender_id, None),
-            200,
+            STRUCTURAL_EDIT_ECHO_MS,
         )?;
         self.confirm_structural_edit(NODE_INSERTED)
     }
@@ -312,9 +318,12 @@ impl Session {
         param: &str,
     ) -> Result<Option<String>, String> {
         self.clear_raw();
-        self.send_chunked_collect(&proto::node_json_request(dest_group, node_id), 200)?;
+        self.send_chunked_collect(
+            &proto::node_json_request(dest_group, node_id),
+            STRUCTURAL_EDIT_ECHO_MS,
+        )?;
         self.heartbeat()?;
-        self.pump_silent(200)?;
+        self.pump_silent(LIVE_BEAT_MS)?;
         Ok(self.push_bodies().iter().rev().find_map(|b| {
             let pm_fields = proto::parse(b);
             let pm = proto::first_bytes(&pm_fields, TMS_PRESET)?;
@@ -349,7 +358,7 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::replace_node(dest_group, node_id, "ACD_UserIRTMS", None),
-            200,
+            STRUCTURAL_EDIT_ECHO_MS,
         )?;
         if !self.confirm_structural_edit(NODE_REPLACED)? {
             return Ok(false);
@@ -362,10 +371,10 @@ impl Session {
         self.clear_raw();
         self.send_chunked_collect(
             &proto::change_parameter_str(dest_group, &new_id, "file", ir_file),
-            200,
+            STRUCTURAL_EDIT_ECHO_MS,
         )?;
         self.heartbeat()?;
-        self.pump_silent(150)?;
+        self.pump_silent(IR_SETTLE_MS)?;
         Ok(self
             .read_node_param_str(dest_group, &new_id, "file")?
             .as_deref()

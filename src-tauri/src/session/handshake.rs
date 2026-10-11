@@ -71,22 +71,25 @@ impl Session {
             fw_version: None,
             handshake_done: false,
         };
-        s.send_and_collect(&proto::connection_request(), 200)?;
-        s.send_and_collect(&proto::preset_list_request(1, 1), 20)?; // My Presets
-                                                                    // The read fires here — before favorites/factory/cloud/ProductProfile
-                                                                    // can flood the unkeyed framing.
-        s.send_and_collect_alive(extra, 1500)?;
+        s.send_and_collect(&proto::connection_request(), SLOTREAD_CONNECT_MS)?;
+        s.send_and_collect(&proto::preset_list_request(1, 1), SLOTREAD_BURST_STEP_MS)?; // My Presets
+                                                                                        // The read fires here — before favorites/factory/cloud/ProductProfile
+                                                                                        // can flood the unkeyed framing.
+        s.send_and_collect_alive(extra, SLOTREAD_READ_MS)?;
         if matches!(variant, SlotReadBurst::Early) {
             // Complete the standard burst so the device sees the full
             // load-bearing sequence (tests placement, not burst trimming).
-            s.send_and_collect(&proto::favorite_list_request(2), 20)?;
-            s.send_and_collect(&proto::preset_list_request(4, 2), 20)?;
-            s.send_and_collect(&proto::preset_list_request(3, 2), 20)?;
-            s.send_and_collect(&proto::product_profile_request(2), 20)?;
-            s.send_and_collect(&proto::current_preset_info_request(2), 20)?;
-            s.send_and_collect(&proto::settings_field66(2), 20)?;
-            s.send_and_collect(&proto::userir_field2(2), 20)?;
-            s.send_and_collect(&proto::current_preset_data_request(3), 300)?;
+            s.send_and_collect(&proto::favorite_list_request(2), SLOTREAD_BURST_STEP_MS)?;
+            s.send_and_collect(&proto::preset_list_request(4, 2), SLOTREAD_BURST_STEP_MS)?;
+            s.send_and_collect(&proto::preset_list_request(3, 2), SLOTREAD_BURST_STEP_MS)?;
+            s.send_and_collect(&proto::product_profile_request(2), SLOTREAD_BURST_STEP_MS)?;
+            s.send_and_collect(
+                &proto::current_preset_info_request(2),
+                SLOTREAD_BURST_STEP_MS,
+            )?;
+            s.send_and_collect(&proto::settings_field66(2), SLOTREAD_BURST_STEP_MS)?;
+            s.send_and_collect(&proto::userir_field2(2), SLOTREAD_BURST_STEP_MS)?;
+            s.send_and_collect(&proto::current_preset_data_request(3), SLOTREAD_DRAIN_MS)?;
         }
         Ok(s)
     }
@@ -200,7 +203,7 @@ impl Session {
         // `currentPresetInfoRequest` was measured, not `currentFwRequest`).
         // The reply is a tiny single 0x35 frame, so a short pump suffices.
         if request_firmware {
-            self.send_and_collect(&proto::current_fw_request(), 200)?;
+            self.send_and_collect(&proto::current_fw_request(), FW_READ_MS)?;
         }
         self.send_and_collect(&proto::current_preset_data_request(3), hs(base[2]))?;
         self.handshake_done = true;
@@ -208,14 +211,14 @@ impl Session {
         // preset's JSON: a multi-packet blob (~2 s). Only a discovery connect waits
         // it out.
         if fetch_preset_json {
-            self.pump_collect_alive(1800)?;
+            self.pump_collect_alive(HANDSHAKE_PRESET_JSON_MS)?;
         }
         // AC1 spike: inject a slot-addressed read inside the burst window. The
         // device only answers data requests while actively streaming this burst
         // (a drain drops it to the silent standalone state), so we send WITHOUT
         // draining and tolerate concurrent handshake streams in reassembly.
         if let Some(extra) = extra_burst {
-            self.send_and_collect_alive(&extra, 2000)?;
+            self.send_and_collect_alive(&extra, EXTRA_BURST_MS)?;
         }
         Ok(())
     }
