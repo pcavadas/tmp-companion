@@ -107,9 +107,9 @@ fn channels_in(body: &[u8]) -> Vec<ChannelState> {
 /// WITHOUT a hand on the physical knob. Set the level over USB, re-capture USB
 /// 1/2, compare against a null control.
 ///
-/// **This cannot confirm its own write.** TMS-5 reads are unserved on fw 1.8.45
-/// (`probe_mixer_state` got silence from all five requests), so
-/// there is no reply and no notification to wait for. Verify OUT OF BAND: take a
+/// **This does not confirm its own write.** TMS-5 reads went unanswered on fw 1.8.45
+/// (`probe_mixer_state` got silence from all five requests); on fw 1.8.58 they are served
+/// on a kept-alive session, but this probe still waits for nothing. Verify OUT OF BAND: take a
 /// `--device-backup` and read `settingsBackup.mixerSaveData.masterVolume`.
 /// Treating "no error" as "it landed" is exactly the false positive this
 /// experiment exists to avoid.

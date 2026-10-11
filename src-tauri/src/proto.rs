@@ -604,11 +604,9 @@ pub fn mixer_state_request() -> Vec<u8> {
 /// `reAmpModeRequest` (4), `masterLevelInfoRequest` (5) — are the same
 /// `{ bool dummy = 1 }` shape, so one builder covers the sweep.
 ///
-/// `reAmpModeRequest` is itself one of these five TMS-5 requests, not an
-/// independent control on a different, known-working branch — re-amp state being
-/// provably real (the `SettingsMessage` path drives it every leveling run) says
-/// nothing about whether *this* message type is served. A silent reply to it is
-/// one more untested instance of the same branch, not proof TMS 5 is unserved.
+/// On fw 1.8.45 `probe --mixer` got silence from all five. On fw 1.8.58 they are served
+/// on a kept-alive session, and `reAmpModeRequest` (4) → field 9 is the device-confirmed
+/// re-amp oracle (`Session::read_reamp_state`).
 pub fn mixer_request(request_field: u32) -> Vec<u8> {
     let mut inner = Vec::new();
     field_varint(&mut inner, 1, 1); // dummy=true
@@ -617,13 +615,11 @@ pub fn mixer_request(request_field: u32) -> Vec<u8> {
 
 /// `MixerMessage{ SetMasterLevel{ masterLevel: float } }` — field **16** on TMS 5.
 ///
-/// A WRITE, not a read. TMS 5 *reads* are unserved on fw 1.8.45 — `probe --mixer`
-/// got silence from all five requests — but a write can still land on a path
-/// whose notification side is dead, so the two have to be tested separately.
+/// A WRITE, not a read. On fw 1.8.45 TMS 5 *reads* went unanswered (`probe --mixer` got
+/// silence from all five requests); on fw 1.8.58 they are served on a kept-alive session.
 ///
-/// Consequently this write is NEVER verified by a reply. It is verified out of
-/// band by re-reading `settingsBackup.mixerSaveData.masterVolume` from a fresh
-/// `--device-backup`, which does not touch the dead TMS-5 notify path at all.
+/// This write is still never verified by a reply here. It is verified out of band by
+/// re-reading `settingsBackup.mixerSaveData.masterVolume` from a fresh `--device-backup`.
 ///
 /// `masterLevel` is `float` (wire type 5 / fixed32 LE), not a varint — the mixer
 /// schema uses floats for every level, and a varint here would encode a silently
