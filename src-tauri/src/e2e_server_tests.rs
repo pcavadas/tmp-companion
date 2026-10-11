@@ -2027,7 +2027,11 @@ fn offline_batched_song_saves_open_one_connection_each() {
         Box::new(sim_for_factory.clone())
     }));
     let opened = || opens.swap(0, std::sync::atomic::Ordering::SeqCst);
-    // `with_released_seize` re-seizes the UI session after every command.
+    // `with_released_seize` re-seizes the UI session after every command — but only while
+    // live-sync is off. Earlier tests in this process (the copy journey, every offline
+    // install) leave `MONITOR_ENABLED` set, which skips the re-seize and made this count
+    // depend on test order.
+    MONITOR_ENABLED.store(false, std::sync::atomic::Ordering::SeqCst);
     const BOOKEND: usize = 1;
 
     let app = tauri::test::mock_builder()
