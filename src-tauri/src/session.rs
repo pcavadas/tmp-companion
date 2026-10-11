@@ -4311,6 +4311,9 @@ fn warn_unmapped_groups(
 }
 
 #[cfg(test)]
+mod wire_golden;
+
+#[cfg(test)]
 mod tests {
     /// Device-shaped re-amp replies: proto3 omits a false flag, so a present reply without it
     /// is OFF, and a missing reply is no reading at all.

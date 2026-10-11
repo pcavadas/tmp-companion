@@ -1,0 +1,655 @@
+transact 200 22040a020801
+transact 20 1204220208015001
+transact 20 1204320208015002
+transact 20 1204220208045002
+transact 20 1204220208035002
+transact 20 1205ca020208015002
+transact 20 12040a0208015002
+transact 20 1a0592040208015002
+transact 20 6a04120208015002
+transact 200 1a040a020801
+transact 300 1204120208015003
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+pump 50 
+# handshake -> ok
+transact 200 1204220208015003
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+pump 500 
+# list_my_presets -> err
+pump 250 
+transact 100 22040a020801
+transact 200 1204220208015003
+transact 200 1204220208015003
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+pump 500 
+# reread_my_presets -> err
+transact 100 22040a020801
+transact 350 1204220208045003
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+# list_factory_presets -> err
+pump 250 
+transact 100 22040a020801
+transact 200 1204220208015003
+pump 350 
+pump 250 
+transact 100 22040a020801
+transact 200 1204220208015003
+pump 350 
+# list_my_presets_strict -> err
+transact 350 1205f207020801
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+# request_scene_list -> err
+send 0 220422020801
+# heartbeat -> ok
+eager 300 120752050801309103
+# load_preset -> ok
+eager 300 120752050801309103
+# load_preset_raw -> ok
+eager 300 1206520408043004
+# load_factory_preset -> ok
+eager 300 120752050801309103
+# load_preset again -> ok
+transact 80 22040a020801
+transact 120 12040a0208015003
+# confirm_active -> err
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+# begin_live_edit -> ok
+transact 400 1a05f201020801
+# set_reamp_mode on -> ok
+transact 350 2a0422020801
+transact 350 1a05ba03020801
+# read_reamp_state -> ok
+transact 400 1a03f20100
+# set_reamp_mode off -> ok
+transact 250 1208e204050d0000003f
+# set_preset_level -> ok
+transact 250 122362210a02473112094143445f4a433132301a0b6f75747075744c6576656c2d0000003f
+# change_parameter -> ok
+transact 250 122262200a02473112104143445f5475626553637265616d65721a066279706173733801
+# change_parameter_bool -> ok
+eager 300 1205aa06020800
+# load_scene -> ok
+transact 300 1214da06110a094143445f4a43313230120247311801
+# set_node_scene_edit -> ok
+eager 300 1205aa06020808
+# load_scene base -> ok
+transact 300 1204120208015003
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+# live_complete_value -> err
+transact 300 1204120208015003
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+# live_audio_graph -> err
+transact 300 1204120208015003
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+# live_ftsw -> false
+chunked 200 1219ba07160a02473112104143445f5475626553637265616d6572
+send 0 220422020801
+pump 200 
+chunked 200 1224ba02210a02473112104143445f5475626553637265616d65721a094143445f426f6f7374
+send 0 220422020801
+pump 200 
+# replace_node -> ok
+chunked 200 12179202140a0247311a0e4143445f4b696e674f66546f6e65
+send 0 220422020801
+pump 200 
+# insert_node -> ok
+chunked 200 12199a06160a0247311a0e4143445f544d537072696e6736332000
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+send 0 220422020801
+pump 200 
+# insert_node_at_index -> ok
+chunked 200 1217ba07140a024731120e4143445f544d537072696e673633
+send 0 220422020801
+pump 200 
+chunked 200 12179a02140a024731120e4143445f544d537072696e673633
+send 0 220422020801
+pump 200 
+# remove_node -> ok
+chunked 200 1212ba070f0a02473112094143445f426f6f7374
+send 0 220422020801
+pump 200 
+chunked 200 121fa2061c0a02473112094143445f426f6f73741a094143445f426f6f73742000
+send 0 220422020801
+pump 200 
+# replace_node_with_block -> ok
+chunked 200 1212ba070f0a02473112094143445f4a43313230
+send 0 220422020801
+pump 200 
+# read_node_param_str -> ok
+chunked 250 122eb2032b080110011a257b2266756e63223a226f6e4f6666222c226e6f64654964223a224143445f4a43313230227d
+send 0 220422020801
+pump 200 
+# set_footswitch_assignment -> ok
+chunked 250 1207ba030408011001
+send 0 220422020801
+pump 200 
+# clear_footswitch_assignment -> ok
+transact 300 120a6a080a06476f6c64656e
+# rename_current_preset -> ok
+transact 300 12057203089103
+# save_current_preset -> ok
+transact 200 120742050801109103
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+# read_slot_preset_json -> ok
+transact 200 120742050801109103
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+pump 150 
+pump 150 
+send 0 220422020801
+pump 150 
+# read_slot_preset_json_live -> ok
+eager 300 120752050801309103
+send 0 220422020801
+pump 250 
+# capture_full_preset_json -> err
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+# harvest_slot_read -> err
+chunked 350 1218aa07150a13f0026e6f7420612070726573657420626f6479
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+# import_preset -> ok
+transact 300 1209820106089a03109b03
+# move_user_preset -> ok
+transact 300 12057a03089b03
+# clear_user_preset -> ok
+transact 400 5a0f220d0a0b476f6c64656e20536f6e67
+# add_song -> ok
+transact 400 5a113a0f120d476f6c64656e20536f6e672032
+# rename_song -> ok
+transact 400 5a0ab2010712056e6f746573
+# set_song_notes -> ok
+transact 300 5a05ba01021001
+# set_song_bpm_active -> ok
+transact 250 5a0262005003
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+transact 250 5a0262005003
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+transact 250 5a0262005003
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+# song_presets -> ok
+transact 300 5a0e720c189103220141280130003802
+transact 250 5a0262005003
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+transact 250 5a0262005003
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+transact 250 5a0262005003
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+# assign_song_preset -> err
+transact 300 5a047a021801
+# move_song_preset -> ok
+transact 300 5a058201021801
+# swap_song_preset -> ok
+transact 300 5a038a0100
+# clear_song_preset -> ok
+transact 400 120752050805309003
+# load_song -> ok
+transact 300 1a0962070d0000f0421001
+# set_tap_tempo_bpm -> ok
+transact 250 5a04120208015003
+# song_list_strict -> ok
+transact 400 620e220c0a0a476f6c64656e20536574
+# add_setlist -> ok
+transact 400 62103a0e120c476f6c64656e205365742032
+# rename_setlist -> ok
+transact 400 62027200
+# add_setlist_song -> ok
+transact 400 62027a00
+# move_setlist_song -> ok
+transact 250 620262005003
+# setlist_songs_strict -> ok
+transact 400 6203820100
+# remove_setlist_song -> ok
+transact 400 62023200
+# remove_setlist -> ok
+transact 400 5a023200
+# remove_song -> ok
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+send 0 220422020801
+pump 250 
+pump 250 
+# active_slot_live -> None
+transact 200 1204220208015003
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+send 0 220422020801
+pump 350 
+pump 500 
+# resolve_unique_my_preset_slot -> None
+transact 80 22040a020801
+transact 120 12040a0208015003
+# rearm_active_info -> ok
+pump 350 
+send 0 220422020801
+pump 350 
+# pump_collect_alive -> ok
+transact 350 220422020801
+pump 50 
+# send_and_collect_alive -> ok
+pump 100 
+# drain_until_quiet -> ok
