@@ -4902,6 +4902,73 @@ mod oracle_and_census_tests {
         );
     }
 
+    /// A [`SimDevice`] whose Mixer re-amp reply lands `delay_ms` (nominal) after the
+    /// request — behind another session's preset-dump continuation frames, as on HW.
+    struct LateMixer {
+        sim: SimDevice,
+        delay_ms: u64,
+        held: Mutex<Option<(u64, Vec<Vec<u8>>)>>,
+    }
+    impl LateMixer {
+        fn pass(&self, body: &[u8], frames: Vec<Vec<u8>>, ms: u64) -> Vec<Vec<u8>> {
+            let mut held = self.held.lock().unwrap();
+            if body == proto::mixer_request(4) {
+                *held = Some((0, frames));
+                return Vec::new();
+            }
+            let mut out = frames;
+            if let Some((waited, late)) = held.as_mut() {
+                *waited += ms;
+                if *waited >= self.delay_ms {
+                    out.append(late);
+                    *held = None;
+                }
+            }
+            out
+        }
+    }
+    impl HidTransport for LateMixer {
+        fn send(&self, body: &[u8]) -> Result<(), String> {
+            self.sim.send(body)
+        }
+        fn transact(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            let f = self.sim.transact(body, ms)?;
+            Ok(self.pass(body, f, ms))
+        }
+        fn transact_chunked(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            let f = self.sim.transact_chunked(body, ms)?;
+            Ok(self.pass(body, f, ms))
+        }
+        fn pump(&self, ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            let f = self.sim.pump(ms)?;
+            Ok(self.pass(&[], f, ms))
+        }
+        fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            let f = self.sim.transact_eager(body, ms)?;
+            Ok(self.pass(body, f, ms))
+        }
+    }
+
+    /// A Mixer reply that arrives after the Settings request went out is still read. The
+    /// online idempotency run read it as missing when it came ~2.4 s late.
+    #[test]
+    fn a_mixer_reply_that_lands_after_the_settings_request_still_reads() {
+        let sim = SimDevice::new();
+        session(&sim).set_reamp_mode(false).expect("disengage");
+        let mut s = Session::from_transport(Box::new(LateMixer {
+            sim: sim.clone(),
+            delay_ms: 2_450,
+            held: Mutex::new(None),
+        }));
+        assert_eq!(
+            s.read_reamp_state().expect("read"),
+            ReampState {
+                mixer: Some(false),
+                settings: Some(false)
+            }
+        );
+    }
+
     #[test]
     fn an_unanswered_request_is_recorded_apart_from_events_with_its_kind_and_batch() {
         let sim = SimDevice::new();

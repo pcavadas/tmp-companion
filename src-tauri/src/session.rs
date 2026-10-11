@@ -561,8 +561,11 @@ const USB_REAMP_ACTIVE: u32 = 1; // UsbSettings.reampModeActive (ReampModeActive
 const TMS_MIXER: u32 = 5;
 const MIXER_REAMP_REQUEST: u32 = 4; // MixerMessage.reAmpModeRequest
 const MIXER_REAMP_RESPONSE: u32 = 9; // MixerMessage.reAmpModeResponse{ isActive = 1 }
-/// How long [`Session::read_reamp_state`] waits for each store's reply.
-const REAMP_STATE_WAIT_MS: u64 = 1_500;
+/// How long [`Session::read_reamp_state`] collects, kept alive, for both stores' replies.
+/// A read opened right after a session that requested a preset dump gets that dump's
+/// continuation frames first, and the Mixer reply arrived ~2.4 s late behind them (fw
+/// 1.8.58, device-confirmed), so the window covers that with room to spare.
+const REAMP_STATE_WAIT_MS: u64 = 5_000;
 
 /// The device's re-amp state as [`Session::read_reamp_state`] read it: `None` = that store
 /// gave no reply, `Some(on)` = it answered.
@@ -2013,36 +2016,25 @@ impl Session {
     /// a Settings engage checks. They can disagree (a stale Settings flag): a Settings engage
     /// is then acknowledged and does nothing (fw 1.8.58, device-confirmed). A store that never
     /// answered within [`REAMP_STATE_WAIT_MS`] reads `None` — never treat a missing reply as
-    /// OFF. A present reply with its flag omitted is OFF (proto3 elides a false field).
+    /// OFF. Both requests go out first and one buffer collects both replies, so a late Mixer
+    /// reply that arrives after the Settings request is still read. A present reply with its flag omitted is OFF (proto3 elides a false field).
     pub fn read_reamp_state(&mut self) -> Result<ReampState, String> {
-        let mixer = self.await_reply(
-            &proto::mixer_request(MIXER_REAMP_REQUEST),
-            decode_mixer_reamp,
-        )?;
-        let settings = self.await_reply(
-            &proto::settings_request(USB_SETTINGS_REQUEST),
-            decode_usb_reamp,
-        )?;
-        Ok(ReampState { mixer, settings })
-    }
-
-    /// Send one request (no `batchStatus`) and wait, kept alive, up to
-    /// [`REAMP_STATE_WAIT_MS`] for the first inbound stream `decode` accepts. The reply can
-    /// queue behind the ~1.2 s handshake drain (device-confirmed), so a short window misses it.
-    fn await_reply<T>(
-        &mut self,
-        body: &[u8],
-        decode: impl Fn(&[u8]) -> Option<T>,
-    ) -> Result<Option<T>, String> {
         self.raw.clear();
-        self.send_and_collect(body, KEEPALIVE_WINDOW_MS)?;
-        let mut waited = KEEPALIVE_WINDOW_MS;
+        self.send_and_collect(
+            &proto::mixer_request(MIXER_REAMP_REQUEST),
+            KEEPALIVE_WINDOW_MS,
+        )?;
+        self.send_and_collect(
+            &proto::settings_request(USB_SETTINGS_REQUEST),
+            KEEPALIVE_WINDOW_MS,
+        )?;
+        let mut waited = 2 * KEEPALIVE_WINDOW_MS;
         loop {
-            if let Some(v) = self.streams().iter().find_map(|s| decode(&s.body)) {
-                return Ok(Some(v));
-            }
-            if waited >= REAMP_STATE_WAIT_MS {
-                return Ok(None);
+            let streams = self.streams();
+            let mixer = streams.iter().find_map(|s| decode_mixer_reamp(&s.body));
+            let settings = streams.iter().find_map(|s| decode_usb_reamp(&s.body));
+            if (mixer.is_some() && settings.is_some()) || waited >= REAMP_STATE_WAIT_MS {
+                return Ok(ReampState { mixer, settings });
             }
             self.keepalive_pump()?;
             waited += KEEPALIVE_WINDOW_MS;
