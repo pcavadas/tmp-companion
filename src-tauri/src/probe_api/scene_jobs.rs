@@ -1451,11 +1451,28 @@ fn base_node_matches(
 /// the value every save path must re-stamp via a pre-save recall (`LevelOptions::
 /// restore_scene` / the footswitch writer's restore param). One helper because the
 /// extraction now has a call site per save-capable entry point.
+///
+/// A scene index on a preset whose `scenes` is present and EMPTY reads as `None` with a
+/// warning: recalling it would swap in the unit's empty template (presetError 6, static
+/// RE), so the save skips the re-stamp instead. Only an empty list proves it: a cut
+/// field-8 read shortens `scenes`, and the device wrote `lastLoadedScene` itself.
 pub(crate) fn last_loaded_scene(preset: &serde_json::Value) -> Option<u32> {
-    preset
+    let scene = preset
         .get("lastLoadedScene")
         .and_then(serde_json::Value::as_u64)
-        .map(|v| v as u32)
+        .map(|v| v as u32)?;
+    let scene_less = preset
+        .get("scenes")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(Vec::is_empty);
+    if scene == crate::session::BASE_SCENE_SLOT || !scene_less {
+        Some(scene)
+    } else {
+        log::warn!(
+            "lastLoadedScene {scene} names no scene of this preset; the save skips its re-stamp"
+        );
+        None
+    }
 }
 
 /// Trace when a save path's `lastLoadedScene` re-stamp is silently disarmed: `restore`

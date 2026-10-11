@@ -475,6 +475,9 @@ pub(crate) async fn load_scene_on_amp(
         // and a scene-recall in the SAME connection have the load override the
         // scene (see the doc above), and that hazard is untested on the monitor's
         // long-lived session.
+        // No `session::scene_index_ok` check here: the UI offers only the scenes of the
+        // live graph it shows, and a recall alone saves nothing (`save_current_preset`
+        // refuses after a template substitution).
         if list_index.is_none() {
             if let Some(r) = monitor::try_live_op(monitor::LiveOp::LoadScene(scene_slot)) {
                 return r;

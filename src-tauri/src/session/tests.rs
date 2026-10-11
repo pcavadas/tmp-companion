@@ -1882,3 +1882,34 @@ fn a_scene_index_past_the_scenes_aborts_the_server() {
         .iter()
         .any(|e| matches!(e, crate::sim_device::SimEvent::ServerAbort { .. })));
 }
+
+#[test]
+fn scene_index_ok_takes_base_always_and_a_scene_only_when_the_document_has_it() {
+    let two = serde_json::json!({"scenes": [{"sceneName": "A"}, {"sceneName": "B"}]});
+    let none = serde_json::json!({"scenes": []});
+    let absent = serde_json::json!({"audioGraph": {}});
+    assert!(scene_index_ok(&two, BASE_SCENE_SLOT));
+    assert!(scene_index_ok(&none, BASE_SCENE_SLOT));
+    assert!(scene_index_ok(&two, 0) && scene_index_ok(&two, 1));
+    assert!(!scene_index_ok(&two, 2));
+    assert!(!scene_index_ok(&none, 0));
+    assert!(!scene_index_ok(&absent, 0));
+}
+
+/// A stored `lastLoadedScene` on a scene-less preset is no re-stamp target: recalling it
+/// would swap in the empty template. A cut (short) list never drops it.
+#[test]
+fn a_scene_less_preset_has_no_scene_to_restore() {
+    use crate::probe_api::scene_jobs::last_loaded_scene;
+    let doc = |scenes: serde_json::Value, last: u32| serde_json::json!({"scenes": scenes, "lastLoadedScene": last});
+    assert_eq!(last_loaded_scene(&doc(serde_json::json!([]), 3)), None);
+    assert_eq!(
+        last_loaded_scene(&doc(serde_json::json!([]), BASE_SCENE_SLOT)),
+        Some(BASE_SCENE_SLOT)
+    );
+    assert_eq!(
+        last_loaded_scene(&doc(serde_json::json!([{"sceneName": "A"}]), 3)),
+        Some(3),
+        "a short list may be a cut read; the device wrote the index itself"
+    );
+}
