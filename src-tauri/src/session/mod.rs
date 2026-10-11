@@ -35,6 +35,7 @@ mod preset;
 mod reamp;
 mod scene;
 mod structural;
+mod ftsw;
 #[allow(unused_imports)] // the counters and the state type are read by tests and the e2e build
 pub use reamp::*;
 pub(crate) use reads::*;
@@ -125,60 +126,6 @@ const MIXER_REAMP_REQUEST: u32 = 4; // MixerMessage.reAmpModeRequest
 const MIXER_REAMP_RESPONSE: u32 = 9; // MixerMessage.reAmpModeResponse{ isActive = 1 }
 
 impl Session {
-
-    /// Send `setFootswitchAssignment` (PresetMessage field 54): set ONE function
-    /// (`index`, 0-based) on footswitch `addr` to `function_json` (the same JSON shape as
-    /// a preset's `ftsw[switch][func]` object). The schema has NO dedicated confirm echo
-    /// (unlike `nodeInserted`), so the caller confirms by re-reading the working-copy
-    /// `ftsw` ([`Self::live_ftsw`]) or inspecting [`Self::seen_preset_fields`]. Sent
-    /// chunked (a `param` functionJson exceeds the 60 B single-report limit), on the live
-    /// heartbeat established by [`Self::begin_live_edit`]. `batch=None` = setter framing.
-    pub fn set_footswitch_assignment(
-        &mut self,
-        addr: u32,
-        index: u32,
-        function_json: &str,
-        swap: bool,
-        batch: Option<u64>,
-    ) -> Result<(), String> {
-        self.clear_raw();
-        self.send_chunked_collect(
-            &proto::set_footswitch_assignment(
-                addr as u64,
-                index as u64,
-                function_json,
-                swap,
-                batch,
-            ),
-            250,
-        )?;
-        self.heartbeat()?;
-        self.pump_silent(200)?;
-        Ok(())
-    }
-
-    /// Send `clearFootswitchAssignment` (PresetMessage field 55): remove function `index`
-    /// from footswitch `addr`. Same confirm model as [`Self::set_footswitch_assignment`].
-    pub fn clear_footswitch_assignment(&mut self, addr: u32, index: u32) -> Result<(), String> {
-        self.clear_raw();
-        self.send_chunked_collect(
-            &proto::clear_footswitch_assignment(addr as u64, index as u64),
-            250,
-        )?;
-        self.heartbeat()?;
-        self.pump_silent(200)?;
-        Ok(())
-    }
-
-    /// Re-prompt and read the live WORKING-COPY `ftsw` array (`currentPresetDataRequest`
-    /// → fresh field-3 push). Reflects UNSAVED edits, so it's how a footswitch set/clear is
-    /// confirmed (no dedicated echo). `ftsw` sits at byte ~4330 of field-3, before the
-    /// scene-tail truncation, so it survives the partial. `None` if no field-3 lands.
-    pub fn live_ftsw(&mut self) -> Option<serde_json::Value> {
-        self.live_preset_value(|v| v.get("ftsw").is_some())
-            .ok()
-            .and_then(|v| v.get("ftsw").cloned())
-    }
 
     /// Assign a user preset (+ its scene) to a Song row — `assignSongPreset`.
     /// `user_list_index` is a **0-based list index**; the device `userPresetSlot` is
