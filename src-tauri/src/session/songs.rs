@@ -324,6 +324,16 @@ impl Session {
             .unwrap_or_default()
     }
 
+    // ─── Strict, completeness-validated harvests ────────────────────────────
+    // (The non-strict `harvest_songs`/`harvest_setlists`/`harvest_setlist_songs`
+    // were removed once every read path moved to the fail-closed strict variants —
+    // a tolerant decode can return a tail-truncated list, which these reads must
+    // never do. The strict harvests + `*_records_strict` decoders are the only tier.)
+    // Return `Some` only if a reassembled stream decodes as a COMPLETE list
+    // response (no tail truncation); `None` if only truncated/absent responses
+    // are present. The caller retries until `Some` (fail-closed) — this is what
+    // makes the multi-packet reads reliable despite concurrent-stream truncation.
+
     pub fn harvest_songs_strict(&self) -> Option<Vec<SongRecord>> {
         self.streams_final()
             .iter()

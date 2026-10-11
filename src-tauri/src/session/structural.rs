@@ -164,7 +164,12 @@ impl Session {
     /// Reads the working copy and compares the group's count of `fender_id` with `was`
     /// (the count before the insert): one more → landed, the same → not, anything else
     /// (or no read, or one cut inside `audioGraph`) → `None`, never guessed.
-    pub(super) fn insert_landed(&mut self, group: &str, fender_id: &str, was: usize) -> Option<bool> {
+    pub(super) fn insert_landed(
+        &mut self,
+        group: &str,
+        fender_id: &str,
+        was: usize,
+    ) -> Option<bool> {
         let doc = self
             .live_complete_value()
             .map_err(|e| log::warn!("insert read-back failed: {e}"))

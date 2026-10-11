@@ -18,35 +18,41 @@ use serde::Serialize;
 use crate::hid::{Hid, HidTransport};
 use crate::proto::{self, Val};
 
-// Child modules; each re-exports at its own visibility.
-mod types;
-pub use types::*;
-mod timing;
-mod handshake;
-pub use handshake::*;
+// The transport set: only these files touch `self.hid`, the clock or a literal pump
+// window (`boundary_tests` holds the rest to it).
 mod backup_stream;
 mod diag;
+mod handshake;
+mod link;
+mod timing;
+
+// Commands, reads and pure decoding, on the link primitives and `timing` consts.
 mod decode;
+mod ftsw;
 mod graph;
-pub use graph::*;
 mod lists;
-mod reads;
 mod preset;
+mod reads;
 mod reamp;
 mod scene;
-mod structural;
-mod ftsw;
 mod songs;
-pub use songs::*;
-#[allow(unused_imports)] // the counters and the state type are read by tests and the e2e build
-pub use reamp::*;
-pub(crate) use reads::*;
+mod structural;
+mod types;
+
+// Every item keeps its `crate::session::X` path; each glob re-exports at the item's own
+// visibility.
 pub(crate) use decode::*;
-pub(crate) use timing::*;
-mod link;
-use link::*;
+pub use graph::*;
+pub use handshake::*;
 #[cfg(feature = "e2e")]
 pub use link::e2e_transport;
+use link::*;
+pub(crate) use reads::*;
+#[allow(unused_imports)] // the counters and the state type are read by tests and the e2e build
+pub use reamp::*;
+pub use songs::*;
+pub(crate) use timing::*;
+pub use types::*;
 
 pub struct Session {
     hid: TrackedHid,
@@ -88,19 +94,6 @@ const TMS_MIXER: u32 = 5;
 const MIXER_REAMP_REQUEST: u32 = 4; // MixerMessage.reAmpModeRequest
 const MIXER_REAMP_RESPONSE: u32 = 9; // MixerMessage.reAmpModeResponse{ isActive = 1 }
 
-impl Session {
-
-    // ─── Strict, completeness-validated harvests ────────────────────────────
-    // (The non-strict `harvest_songs`/`harvest_setlists`/`harvest_setlist_songs`
-    // were removed once every read path moved to the fail-closed strict variants —
-    // a tolerant decode can return a tail-truncated list, which these reads must
-    // never do. The strict harvests + `*_records_strict` decoders are the only tier.)
-    // Return `Some` only if a reassembled stream decodes as a COMPLETE list
-    // response (no tail truncation); `None` if only truncated/absent responses
-    // are present. The caller retries until `Some` (fail-closed) — this is what
-    // makes the multi-packet reads reliable despite concurrent-stream truncation.
-}
-
 #[cfg(test)]
 mod wire_golden;
 
@@ -137,8 +130,8 @@ mod tests {
         crate::proto::heartbeat()
     }
 
-    use super::*;
     use super::lists::*;
+    use super::*;
 
     /// The model ids of a series stage, in order. Panics on a non-series stage
     /// (a test asserting the wrong `Stage` variant should fail loudly, not
