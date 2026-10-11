@@ -86,7 +86,7 @@ export async function listPresets(page: Page): Promise<Preset[]> {
   return (await invoke(page, "list_presets")) as Preset[];
 }
 
-/** Ensure every scenario preset exists at its slot (400-409). Offline: baked into the
+/** Ensure every scenario preset exists at its slot (400-410). Offline: baked into the
  *  fixture + snapshot, so a name check suffices (SimDevice state is disposable).
  *  ONLINE: always route through the ownership-verified seed — it verifies every
  *  occupied target by fixture CONTENT MARKER (not name; a user preset coincidentally
@@ -310,13 +310,26 @@ export async function reampCounters(
   return (await res.json()) as { on: number; off: number };
 }
 
-/** Standing re-amp-OFF safety gate (PR #81 class): THIS TEST must have disengaged re-amp at
- *  least as often as it engaged, checked BEFORE the spec's own reampOff teardown rescue —
- *  so a run that strands the unit re-amp-engaged (input-muted) fails HERE, not masked by the
- *  teardown. Asserts on the per-test DELTA vs `baseline` (grab it with `reampCounters` before
- *  the run) — the counters are cumulative, so a cross-test surplus OFF must not credit a later
- *  unpaired engage. `offDelta >= onDelta` is the invariant (each capture pairs engage+disengage
- *  and every leveling/doctor lane adds a guaranteed final OFF, so a balanced run is off > on). */
+/** The device's re-amp state, read back from both stores on a fresh connection
+ *  (`e2e_reamp_state` → `Session::read_reamp_state`). `null` = that store never answered.
+ *  Offline the SimDevice answers from its latch. Opens the device, so call it after reading
+ *  `/sim/events` in a test: its heartbeats add `Heartbeat` events. */
+export async function reampState(
+  page: Page,
+): Promise<{ mixer: boolean | null; settings: boolean | null }> {
+  return (await invoke(page, "e2e_reamp_state")) as {
+    mixer: boolean | null;
+    settings: boolean | null;
+  };
+}
+
+/** Standing re-amp-OFF safety gate (PR #81 class), checked BEFORE the spec's own reampOff
+ *  teardown rescue, so a run that strands the unit re-amp-engaged (input-muted) fails HERE.
+ *  The oracle is the DEVICE: its Mixer store (the audio path) must read OFF, and the
+ *  Settings flag too when it answers. A missing Mixer reply fails — never read silence as
+ *  OFF. The per-test send-counter DELTA vs `baseline` (grab it with `reampCounters` before
+ *  the run) stays as a second, diagnostic assertion: every capture pairs engage+disengage
+ *  and every leveling/doctor lane adds a guaranteed final OFF, so `offDelta >= onDelta`. */
 export async function expectReampBalanced(
   page: Page,
   baseline: { on: number; off: number },
@@ -324,11 +337,78 @@ export async function expectReampBalanced(
   const { on, off } = await reampCounters(page);
   const onDelta = on - baseline.on;
   const offDelta = off - baseline.off;
+  const counts = `(re-amp sends this test: ON ${String(onDelta)}, OFF ${String(offDelta)})`;
+  const state = await reampState(page);
+  expect(
+    state.mixer,
+    `the device's Mixer store gave no re-amp reply ${counts} — a missing reply is not OFF`,
+  ).not.toBeNull();
+  expect(
+    state.mixer,
+    `the device reports re-amp ON after the run ${counts} — the unit is left input-muted`,
+  ).toBe(false);
+  if (state.settings !== null) {
+    expect(
+      state.settings,
+      `the device's Settings re-amp flag reads ON after the run ${counts}`,
+    ).toBe(false);
+  }
   expect(
     offDelta,
     `re-amp OFF delta (${String(offDelta)}) must be >= ON delta (${String(onDelta)}) this test — a shortfall means the run left the unit re-amp-engaged`,
   ).toBeGreaterThanOrEqual(onDelta);
 }
+
+/** The offline fake's state (`GET /sim/state`): re-amp latch, current slot and scene, the
+ *  unanswered-request histogram and the kinds outside its census, the armed injections.
+ *  Online: `{online: true}`. */
+export async function simState(page: Page): Promise<Record<string, unknown>> {
+  const res = await page.request.get(`${SERVER}/sim/state`);
+  return (await res.json()) as Record<string, unknown>;
+}
+
+/** Arm one protocol fault on the offline fake (`POST /sim/inject`) and return its tag. The
+ *  helper names below carry the tag, so a spec reads whether the fault can happen on the
+ *  device. `/sim/reset` (every test) disarms them all. */
+async function simInject(
+  page: Page,
+  kind: string,
+  args: Record<string, unknown>,
+  expected: string,
+): Promise<void> {
+  const res = await page.request.post(`${SERVER}/sim/inject`, {
+    data: { kind, ...args },
+  });
+  const body = (await res.json()) as { ok: boolean; tag?: string };
+  expect(body.ok, `POST /sim/inject ${kind}`).toBe(true);
+  expect(body.tag, `${kind}'s reachability tag`).toBe(expected);
+}
+
+/** A fault fw 1.8.58 can produce: `lose-first-confirm`, `reject-replace` ({nth}). */
+export const simInjectReachable = (
+  page: Page,
+  kind: "lose-first-confirm" | "reject-replace",
+  args: Record<string, unknown> = {},
+): Promise<void> => simInject(page, kind, args, "reachable");
+
+/** A fault fw 1.8.58 cannot produce: `drop-first-structural`, `bare-confirms`. */
+export const simInjectUnreachable = (
+  page: Page,
+  kind: "drop-first-structural" | "bare-confirms",
+): Promise<void> => simInject(page, kind, {}, "unreachable");
+
+/** Seen once on an older firmware, unverified on fw 1.8.58: `stale-push-after-save`. */
+export const simInjectUnverified = (
+  page: Page,
+  kind: "stale-push-after-save",
+): Promise<void> => simInject(page, kind, {}, "unverified");
+
+/** Not the device's shape (a lapse cuts with no final frame): `truncated-scene-push`. */
+export const simInjectNotDeviceShaped = (
+  page: Page,
+  args: { scene: number; cutBefore: string },
+): Promise<void> =>
+  simInject(page, "truncated-scene-push", args, "not-device-shaped");
 
 /** The SimDevice's ordered event log (offline only — online returns []). Used by the
  *  offline events-equality oracle to prove two identical runs write the same sequence. */
@@ -348,13 +428,14 @@ async function simPost(
 }
 
 /** Arm slot `slot`'s NEXT offline capture to return silence once (POST /sim/fault) — the
- *  leveller's no-signal path. Offline only (no-op online, no fake installed). Used to
+ *  leveller's no-signal path. Tagged approximate: a failed device inject reads the
+ *  stationary output floor, not digital silence. Offline only (no-op online, no fake installed). Used to
  *  inject a mid-run item failure (level-defaults.spec.ts). */
 export async function armCaptureFault(page: Page, slot: number): Promise<void> {
   await simPost(page, "/sim/fault", { slot });
 }
 
-/** Hold every offline capture for `ms` (POST /sim/capture-delay), so a run is still in
+/** Harness timing only. Hold every offline capture for `ms` (POST /sim/capture-delay), so a run is still in
  *  flight when a spec presses Stop. Call AFTER the per-test `/sim/reset`, which clears it. */
 export async function armCaptureDelay(page: Page, ms: number): Promise<void> {
   await simPost(page, "/sim/capture-delay", { ms });
@@ -380,7 +461,7 @@ export async function isOnline(page: Page): Promise<boolean> {
 }
 
 /** End-of-scenario teardown. ONLINE the fixtures stay RESIDENT in the scratch slots
- *  (400-409): the run-start pristine-checking seed self-repairs anything a run leveled,
+ *  (400-410): the run-start pristine-checking seed self-repairs anything a run leveled,
  *  so clearing here only forces the next run to re-import everything (~2 min of device
  *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
  *  TMP_E2E_CLEAR_SCENARIO=1 (or run `probe --clear <slot> <name>` per slot) for the
@@ -391,7 +472,7 @@ export async function isOnline(page: Page): Promise<boolean> {
  *  OFFLINE this is a NO-OP, because it has nothing left to undo: the `page` fixture POSTs
  *  `/sim/reset` before EVERY test, and that rebuilds the whole SimDevice from scratch —
  *  presets, scenes, songs, setlists, the re-amp latch and any armed capture fault — then
- *  reinstalls the 400-409 snapshot. So isolation between tests comes from the reset, not
+ *  reinstalls the 400-410 snapshot. So isolation between tests comes from the reset, not
  *  from this teardown, and the 7 bridged commands here were pure cost. Two things that do
  *  survive the reset are deliberately unaffected: the cumulative re-amp counters (every
  *  spec baseline-DIFFS them via `expectReampBalanced`) and `SCENARIO_VERIFIED` (read only

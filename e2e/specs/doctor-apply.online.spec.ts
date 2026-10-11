@@ -7,9 +7,9 @@ import {
   isOnline,
 } from "../fixtures/scenario";
 
-// COVERAGE row 30 — Doctor's `BypassOnly` prescription refusal: `doctor_apply` cannot
-// run at all offline (this file's own header, below), so its UI path is proven only
-// here, online.
+// This spec covers apply, save and discard only. The `BypassOnly` prescription refusal
+// (COVERAGE row 30) is proven offline: the policy units in `commands/doctor_tests.rs`
+// plus `doctor-apply-refusal.spec.ts`.
 // ONLINE-ONLY suite member: exercises the doctor_apply → doctor_save and
 // doctor_apply → doctor_discard command paths end-to-end on the REAL device
 // with a deterministic hand-built job (an EQ-10 cut inserted into E2E
@@ -23,7 +23,7 @@ import {
 // `scripts/e2e.sh`'s default online spec set — it stays runnable explicitly via
 // `scripts/e2e.sh online doctor-apply.online`. This is a one-off HW validation of a
 // hand-built job (not a preset-shape regression another spec would silently absorb),
-// so trimming it from the default ~40 min run costs no coverage that isn't still one
+// so trimming it from the default ~25 min run costs no coverage that isn't still one
 // command away; it's attended, not a CI gate, either way.
 test.describe("Doctor apply/save/discard — one-off HW validation", () => {
   test.afterEach(async ({ page }) => {

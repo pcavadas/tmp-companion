@@ -16,10 +16,9 @@ import {
 } from "../fixtures/scenario";
 
 // New P4-B (rebuilt-fixture) coverage that lives at the SETUP step (before any run) or is
-// provable via a raw command invoke, rather than through a post-run Summary render — the
-// per-scene/per-footswitch Channel-streaming seam is not UI-observable offline; see
-// .claude/rules/e2e.md's "The Channel-streaming seam" for the deliberate-seam rationale
-// and the sanctioned raw-invoke + /sim/events observation path this file uses instead.
+// provable via a raw command invoke plus /sim/events, rather than through a post-run
+// Summary render. A raw invoke carries no Channel, so its streamed rows go nowhere; the
+// page does receive them (.claude/rules/e2e.md's "Events and Channels reach the page").
 //
 // Fixture map (e2e/fixtures/COVERAGE.md): SCENARIO[0] "E2E Rig" (400) carries the Other-
 // class wah (WAH, sw8), the unlabeled raw-dB Boost (sw2), the wet-mix SPRING (sw3), and the

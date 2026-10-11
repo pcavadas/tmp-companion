@@ -45,10 +45,10 @@ import {
 // loop) now runs on 403 for exactly this reason — 401 no longer has a LOUD-enough named
 // target to demonstrate a clamp with.
 //
-// HARNESS LIMIT: per-SCENE/per-FOOTSWITCH outcomes hit the Channel-streaming seam offline
-// (asserted at the command level instead — see e2e_server_tests.rs
-// `level_defaults_403_scenes_solve_and_offbranch` + `..._base_clamps_and_footswitch_is_offbranch`;
-// rationale in .claude/rules/e2e.md's "The Channel-streaming seam"). The UI here asserts only
+// Per-SCENE/per-FOOTSWITCH outcomes are asserted at the command level (e2e_server_tests.rs
+// `level_defaults_403_scenes_solve_and_offbranch` + `..._base_clamps_and_footswitch_is_offbranch`);
+// their streamed rows reach the page through the UI bridge (.claude/rules/e2e.md's "Events
+// and Channels reach the page"), but this file reads none of them. The UI here asserts only
 // the BASE-leveling outcomes (level_preset returns directly, no Channel): the base-boost
 // reaching a loud default (a), the re-level-clamped loop (b), and a mid-run off-branch
 // capture fault (c).

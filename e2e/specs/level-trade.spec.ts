@@ -23,10 +23,10 @@ import {
 //
 // The trade is disclosed on every row of a batch that traded (`LevelResult.trade`), and it is
 // stamped by `level_scenes_apply_batched` — a per-scene BATCHED command whose per-row PROGRESS
-// rides the Channel (`.claude/rules/e2e.md`'s Channel-streaming seam), but whose RETURN VALUE
-// (this file's only observation path) is real over the mock IPC regardless: the command runs
-// for real, only its live progress is unobservable offline. That is exactly the sanctioned
-// twin the rule describes — this file never drives the wizard UI to prove the trade landed.
+// rides the Channel, but whose RETURN VALUE (this file's only observation path) is real over
+// the mock IPC regardless. A raw invoke carries no Channel, so the progress goes nowhere here
+// (`.claude/rules/e2e.md`'s "Events and Channels reach the page") — this file never drives the
+// wizard UI to prove the trade landed.
 //
 // NO BRIDGE COMMAND SEEDS `presetLevel` DIRECTLY (unlike the Rust tests' raw
 // `Session::set_preset_level` + `save_current_preset`), so this file seeds it through the

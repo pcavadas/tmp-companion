@@ -26,9 +26,8 @@ import {
 // merely "at some point in the run" — a `LoadScene` fired AFTER the engage would be a bug that
 // captures the wrong scene's audio while reporting the requested one.
 //
-// Sanctioned observation: the run's own per-row outcome is unobservable offline (the
-// Channel-streaming seam), but the WIRE WRITES the run makes are real regardless — `/sim/
-// events`' ordering is this file's proof, exactly as `.claude/rules/e2e.md` prescribes.
+// Observation: the WIRE WRITES the run makes are this file's proof — `/sim/events`'
+// ordering, as `.claude/rules/e2e.md` prescribes — not the row the run streams back.
 // COVERAGE row 39 — the scene-that-enables-an-FS third of 406's combined-leveling trio
 // (BOOST/LEAD), driven through the real wizard UI with the D3 override riding the wire.
 test.describe("Level Setup — footswitch scene-context override rides the wire (406, UI-driven)", () => {
