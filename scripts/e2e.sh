@@ -280,8 +280,14 @@ bridge_post() { # $1 = JSON body, $2 = timeout (s, default 60); echoes the respo
 }
 
 # shellcheck disable=SC2329,SC2317  # invoked transitively from the trap handler (cleanup → recover_device → post), which shellcheck doesn't statically trace
-post() { # POST one /invoke command, best-effort (recovery must never fail the script)
-  bridge_post "$1" "${2:-60}" >/dev/null 2>&1 || true
+post() { # POST one /invoke command, best-effort (recovery must never fail the script), and
+         # log its outcome so the recovery is provable from the lane log, not just started.
+  local out
+  out="$(bridge_post "$1" "${2:-60}" 2>/dev/null || true)"
+  case "$out" in
+    *'"ok":true'*) log "  recovery: ok   $(printf '%s' "$1" | sed -n 's/.*"cmd":"\([^"]*\)".*/\1/p')" ;;
+    *) err "  recovery: FAILED $(printf '%s' "$1" | sed -n 's/.*"cmd":"\([^"]*\)".*/\1/p') — ${out:-no response}" ;;
+  esac
 }
 
 # shellcheck disable=SC2329,SC2317  # invoked from the trap handler (cleanup), not statically traced
@@ -709,18 +715,19 @@ done
 # The device drops a client after ~750 ms of host OUT silence (danger.md). The e2e_server
 # logs one `hid-headroom:` line for every OUT gap above 500 ms and every TrackedHid
 # auto-reopen (session.rs), so a load-induced lapse is a named event, not a mystery red.
-# Counted from THIS run's server log (truncated at server start). Informational by
-# default; TMP_E2E_HEADROOM_STRICT=1 (scripts/pre-pr.sh, which loads the host with the
-# offline lane) turns any event into a failure naming the gaps.
+# Counted from THIS run's server log (truncated at server start) and recorded on the stamp's
+# #run line as `headroom=<events>/<reopens>`. INFORMATIONAL, never a failure: an unloaded
+# level.online run on the reference unit logged 224 events, 141 of them auto-reopens (S1,
+# 2026-10-11) — idle gaps the reopen already covers by design — so "no gap above 500 ms"
+# cannot be a pass criterion. Each line carries `at=<unix ms>`, so a loaded run
+# (scripts/pre-pr.sh) can be compared window by window with a quiet one.
 headroom_events="$(grep -c 'hid-headroom:' "$SERVER_LOG" 2>/dev/null || true)"
 headroom_events="${headroom_events:-0}"
-log "headroom: $headroom_events host-silence event(s) (OUT gap > 500 ms or auto-reopen) in the online lane"
+headroom_reopens="$(grep 'hid-headroom:' "$SERVER_LOG" 2>/dev/null | grep -c 'auto-reopen' || true)"
+headroom_reopens="${headroom_reopens:-0}"
+log "headroom: $headroom_events host-silence event(s) (OUT gap > 500 ms), $headroom_reopens of them auto-reopens, in the online lane"
 if [ "$headroom_events" -gt 0 ]; then
   grep 'hid-headroom:' "$SERVER_LOG" | head -10 >&2 || true
-  if [ "${TMP_E2E_HEADROOM_STRICT:-}" = 1 ]; then
-    err "TMP_E2E_HEADROOM_STRICT=1 and the online lane went silent past 500 ms (lines above) — failing the run"
-    fail=1
-  fi
 fi
 
 if [ "$fail" -eq 0 ]; then
@@ -819,7 +826,7 @@ if [ "$verdict" = stamp ]; then
   run_fw="$(lane_fw_from_log < "$SERVER_LOG")"
   log "recording the online stamp (${SPECS[*]})"
   bash "$REPO/scripts/gates.sh" --record-online \
-    --run "os=${run_os:-unknown} fw=$run_fw unit=$UNIT validated=$run_validated set=$run_set" \
+    --run "os=${run_os:-unknown} fw=$run_fw unit=$UNIT validated=$run_validated set=$run_set headroom=$headroom_events/$headroom_reopens" \
     "${SPECS[@]}"
 elif [ "$fail" -eq 0 ]; then
   log "online lane passed but NOT stamped — ${verdict#no-stamp: }"

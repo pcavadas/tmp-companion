@@ -403,10 +403,14 @@ impl TrackedHid {
         let gap_ms = self.last_write.get().elapsed().as_millis() as u64;
         let reopening = self.auto_reopen && self.maybe_lapsed();
         // Headroom accounting for the online e2e lane (`scripts/e2e.sh` counts these lines):
-        // every reopen, and every OUT gap that ate into the last 250 ms before the drop.
+        // every reopen, and every OUT gap that ate into the last 250 ms before the drop. Counted,
+        // never failed on: idle gaps the reopen covers are normal (S1: 141 of 224 were reopens).
         if reopening || gap_ms > HEADROOM_WARN_MS {
+            let at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis());
             log::warn!(
-                "hid-headroom: OUT gap {gap_ms} ms (silent {} ms) before a write{}",
+                "hid-headroom: OUT gap {gap_ms} ms (silent {} ms) before a write{} at={at_ms}",
                 self.silent_ms(),
                 if reopening { ", auto-reopen" } else { "" }
             );

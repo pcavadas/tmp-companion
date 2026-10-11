@@ -16,12 +16,13 @@
 # never SIGKILL, which skips its trap and strands the unit input-muted — and its trap
 # recovers the unit (re-amp OFF, recall 001), kills its server and releases the device lock.
 #
-# The online lane runs with TMP_E2E_REQUIRE_STOCK=1 (a unit without its stock USB interfaces
-# is refused before anything is seeded) and TMP_E2E_HEADROOM_STRICT=1 (an OUT gap above
-# 500 ms or a TrackedHid auto-reopen under this load fails the run, naming the gap).
+# The online lane runs with TMP_E2E_REQUIRE_STOCK=1: a unit without its stock USB interfaces
+# is refused before anything is seeded. Its host-silence count (OUT gaps above 500 ms and
+# TrackedHid auto-reopens) lands on the stamp's #run line, for comparison with quiet runs.
 #
-# Test seam: TMP_PRE_PR_GATES_CMD replaces the gates command (e.g. `false`, to prove the
-# failing-gate path on the unit without a tracked edit, which would re-key the tree).
+# Test seam: TMP_PRE_PR_GATES_CMD replaces the gates command, to prove the failing-gate path
+# on the unit without a tracked edit (which would re-key the tree): `false` stops the online
+# lane before its first spec, `sleep 150; false` stops it inside one.
 #
 # Edit nothing tracked while it runs: a non-prose change moves the key and the online lane
 # then refuses to stamp. bash 3.2-safe (macOS /bin/bash).
@@ -83,7 +84,7 @@ ONLINE_PID=""
 online_rc=0
 if [ -n "$REQ" ]; then
   set -m
-  TMP_E2E_REQUIRE_STOCK=1 TMP_E2E_HEADROOM_STRICT=1 \
+  TMP_E2E_REQUIRE_STOCK=1 \
     /bin/bash scripts/e2e.sh online auto >"$ONLINE_LOG" 2>&1 &
   ONLINE_PID=$!
   set +m
