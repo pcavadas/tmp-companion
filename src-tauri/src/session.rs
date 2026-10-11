@@ -2051,6 +2051,16 @@ impl Session {
             .find_map(|b| extract_current_preset_display_name(b))
     }
 
+    /// The working copy's dirty flag, from the latest `currentPresetInfoChanged` (field
+    /// 22) `isDirty`. fw 1.8.58 fills it from the same flag that decides whether a
+    /// same-slot `loadPreset` really reloads (tmp-audit Q4; `getPresetInfo` copies `+0x686`).
+    pub(crate) fn active_preset_dirty(&self) -> Option<bool> {
+        self.push_bodies()
+            .iter()
+            .rev()
+            .find_map(|b| decode_info_changed(b).map(|(_, dirty, _)| dirty))
+    }
+
     /// Pure read-only check: is the preset at 0-based `list_index` the ACTIVE one?
     /// Prefer the `PresetLoaded` slot echo (identity, immune to duplicate display
     /// names); fall back to the active-preset NAME ONLY when no slot echo has arrived
