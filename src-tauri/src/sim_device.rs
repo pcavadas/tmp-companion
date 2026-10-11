@@ -146,6 +146,14 @@ const TMS_SETTINGS: u32 = 3;
 const F_REAMP_SETTING: u32 = 30;
 /// `SettingsMessage.tapTempoBpm` (12) → `{ value(1)=float, originatorId(2) }`.
 const F_TAP_TEMPO_BPM: u32 = 12;
+/// `SettingsMessage.usbSettingsRequest` (55) → `usbSettingsResponse` (56).
+const F_USB_SETTINGS_REQUEST: u32 = 55;
+const F_USB_SETTINGS_RESPONSE: u32 = 56;
+/// FenderMessageTMS field carrying a `MixerMessage`.
+const TMS_MIXER: u32 = 5;
+/// `MixerMessage.reAmpModeRequest` (4) → `reAmpModeResponse` (9){ isActive(1) }.
+const F_MIXER_REAMP_REQUEST: u32 = 4;
+const F_MIXER_REAMP_RESPONSE: u32 = 9;
 // Device confirmation / echo field numbers.
 const F_PRESET_LOADED: u32 = 11;
 const F_NODE_INSERTED: u32 = 33;
@@ -265,6 +273,108 @@ pub enum SimEvent {
     /// A song setter refused with `SongError{code}` and no write (recorded, not encoded:
     /// the companion detects a refusal by reading the row back).
     SongError(u64),
+    /// A request the fake has no handler for, answered with nothing. `tms` is the
+    /// FenderMessageTMS field, `inner` the first field inside it (0 when it has none),
+    /// `batch` the top-level `batchStatus`. Kept in its own log ([`SimDevice::unhandled`]),
+    /// NEVER in `events`, so the events-equality oracles don't move; [`UNHANDLED_CENSUS`]
+    /// pins the kinds an offline run is known to send.
+    Unhandled {
+        tms: u32,
+        inner: u32,
+        batch: Option<u64>,
+    },
+}
+
+/// Every request kind (`(tms, inner)`) the offline suite sends that the fake answers with
+/// nothing — the census. A kind outside it is REPORTED (`/sim/state`'s `unhandled_new`),
+/// not failed. Each entry names why it is unanswered and who models it.
+pub(crate) const UNHANDLED_CENSUS: &[(u32, u32)] = &[
+    // CENSUS_ENTRIES
+];
+
+/// Whether `(tms, inner)` is a census kind.
+pub(crate) fn in_census(tms: u32, inner: u32) -> bool {
+    UNHANDLED_CENSUS.contains(&(tms, inner))
+}
+
+/// One fault the fake can be armed with: the adversarial shapes the held-session paths are
+/// tested against. [`Injection::tag`] says whether fw 1.8.58 can produce it.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "e2e", derive(serde::Serialize))]
+#[cfg_attr(feature = "e2e", serde(tag = "kind", rename_all = "kebab-case"))]
+pub(crate) enum Injection {
+    /// The FIRST structural edit lands, but its confirm is lost.
+    LoseFirstConfirm,
+    /// The `nth` (1-based) structural edit, when it is a replace, gets `presetError` 14.
+    RejectReplace { nth: u32 },
+    /// The FIRST structural edit is dropped: no confirm, no error, nothing lands.
+    DropFirstStructural,
+    /// `nodeInserted`/`nodeReplaced` carry no node JSON.
+    BareConfirms,
+    /// A save queues a push of the PRE-edit document for the next pump.
+    StalePushAfterSave,
+    /// While scene `scene` is active, field-3 pushes are cut at the first byte of
+    /// `cut_before`, with a proper final frame and the session still live.
+    #[cfg(feature = "e2e")]
+    #[serde(rename_all = "camelCase")]
+    TruncatedScenePush { scene: u32, cut_before: String },
+}
+
+impl Injection {
+    /// Whether fw 1.8.58 can produce this fault:
+    /// - `reachable`: a confirm queued past the reply window or discarded by a session
+    ///   lapse (lapse device-confirmed); an over-budget replace gets `presetError` 14
+    ///   (static RE), and only a replace does — an over-budget insert aborts the server and a
+    ///   remove always confirms.
+    /// - `unreachable`: no fw 1.8.58 path drops a correctly framed structural edit
+    ///   (INFERRED); a write to a lapsed session draws `ConnectionError(0)` (device-confirmed),
+    ///   so a lapse drop is not silent. Confirms carry the node JSON (static RE).
+    /// - `unverified`: seen once on fw 1.8.45 (2026-09-02); on fw 1.8.58 a same-slot save
+    ///   sends 25 and then the CHANGE push (static RE).
+    /// - `not-device-shaped`: the server never truncates a push; a lapse cuts frames with no
+    ///   final, and every later message draws `ConnectionError` (device-confirmed).
+    pub(crate) fn tag(&self) -> &'static str {
+        match self {
+            Injection::LoseFirstConfirm | Injection::RejectReplace { .. } => "reachable",
+            Injection::DropFirstStructural | Injection::BareConfirms => "unreachable",
+            Injection::StalePushAfterSave => "unverified",
+            #[cfg(feature = "e2e")]
+            Injection::TruncatedScenePush { .. } => "not-device-shaped",
+        }
+    }
+
+    /// Parse a `POST /sim/inject` body (`{kind, …}`).
+    #[cfg(feature = "e2e")]
+    pub(crate) fn from_request(v: &serde_json::Value) -> Result<Injection, String> {
+        let kind = v
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let u32_arg = |key: &str| {
+            v.get(key)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| format!("{kind}: missing {key}"))
+        };
+        Ok(match kind {
+            "lose-first-confirm" => Injection::LoseFirstConfirm,
+            "reject-replace" => Injection::RejectReplace {
+                nth: u32_arg("nth")?,
+            },
+            "drop-first-structural" => Injection::DropFirstStructural,
+            "bare-confirms" => Injection::BareConfirms,
+            "stale-push-after-save" => Injection::StalePushAfterSave,
+            "truncated-scene-push" => Injection::TruncatedScenePush {
+                scene: u32_arg("scene")?,
+                cut_before: v
+                    .get("cutBefore")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| format!("{kind}: missing cutBefore"))?
+                    .to_string(),
+            },
+            other => return Err(format!("unknown injection kind '{other}'")),
+        })
+    }
 }
 
 /// Rows per song: the six assignable song footswitches.
@@ -350,6 +460,10 @@ enum WorkingEdit {
 
 struct SimState {
     events: Vec<SimEvent>,
+    /// [`SimEvent::Unhandled`] records, in order — the census log, apart from `events`.
+    unhandled: Vec<SimEvent>,
+    /// The injections armed on this fake, in arming order (`/sim/state`).
+    injections: Vec<Injection>,
     /// Requests sent with `batchStatus` 1/2, waiting for a batch 3 to answer them
     /// (fw 1.8.58). Shared device state, so it outlives a transport clone — a
     /// reconnect — just as the real queue outlives a lapse.
@@ -441,7 +555,7 @@ struct SimState {
     saved_scene: HashMap<u32, Option<u32>>,
     /// Gate seam: while scene `.0` is active, field-3 pushes are cut at the first byte of `.1`.
     /// Field-8 stays whole — it is what `scene_jobs::backfill_scene_docs_from_saved` repairs from.
-    #[cfg(all(test, feature = "e2e"))]
+    #[cfg(feature = "e2e")]
     truncated_scene_push: Option<(u32, String)>,
     /// The last `setPresetLevel` — the linear global multiplier the model shifts by
     /// `20·log10`. PLAIN (non-e2e) BUILD: a real `loadPreset` restores the slot's SAVED
@@ -563,6 +677,8 @@ impl Default for SimState {
     fn default() -> Self {
         SimState {
             events: Vec::new(),
+            unhandled: Vec::new(),
+            injections: Vec::new(),
             batch_queue: Vec::new(),
             structural_seen: 0,
             drop_first: false,
@@ -594,7 +710,7 @@ impl Default for SimState {
             dirty: false,
             current_scene: None,
             saved_scene: HashMap::new(),
-            #[cfg(all(test, feature = "e2e"))]
+            #[cfg(feature = "e2e")]
             truncated_scene_push: None,
             preset_level: 1.0,
             param_writes: HashMap::new(),
@@ -1123,28 +1239,30 @@ impl SimDevice {
     /// Silently DROP the first structural edit (forces the held-session retry path).
     #[cfg(test)]
     pub fn with_drop_first(self) -> SimDevice {
-        self.state.lock().expect("sim lock").drop_first = true;
+        self.arm(Injection::DropFirstStructural);
         self
     }
 
     /// Land the first structural edit but lose its confirm (forces the read-then-retry).
     #[cfg(test)]
     pub fn with_lost_first_confirm(self) -> SimDevice {
-        self.state.lock().expect("sim lock").lose_first_confirm = true;
+        self.arm(Injection::LoseFirstConfirm);
         self
     }
 
     /// Confirm structural edits without the new node's id.
     #[cfg(test)]
     pub fn with_bare_confirms(self) -> SimDevice {
-        self.state.lock().expect("sim lock").bare_confirms = true;
+        self.arm(Injection::BareConfirms);
         self
     }
 
-    /// REJECT the `n`th structural edit (1-based) with `presetError` (never save after).
+    /// REJECT the `n`th structural edit (1-based) with `presetError` 14 when it is a
+    /// replace (never save after). An insert or a remove at `n` is answered normally: fw
+    /// 1.8.58 sends 14 only for a replace (static RE).
     #[cfg(test)]
     pub fn with_reject_at(self, n: u32) -> SimDevice {
-        self.state.lock().expect("sim lock").reject_at = Some(n);
+        self.arm(Injection::RejectReplace { nth: n });
         self
     }
 
@@ -1153,7 +1271,7 @@ impl SimDevice {
     /// never be poisoned by.
     #[cfg(test)]
     pub fn with_stale_push_after_save(self) -> SimDevice {
-        self.state.lock().expect("sim lock").stale_push_after_save = true;
+        self.arm(Injection::StalePushAfterSave);
         self
     }
 
@@ -1189,9 +1307,31 @@ impl SimDevice {
     /// before `template` — that scene's routing template with them.
     #[cfg(all(test, feature = "e2e"))]
     pub fn with_truncated_scene_push(self, scene: u32, cut_before: &str) -> SimDevice {
-        self.state.lock().expect("sim lock").truncated_scene_push =
-            Some((scene, cut_before.to_string()));
+        self.arm(Injection::TruncatedScenePush {
+            scene,
+            cut_before: cut_before.to_string(),
+        });
         self
+    }
+
+    /// Arm one [`Injection`] on this fake (the `with_*` builders and `POST /sim/inject`)
+    /// and return its reachability tag. A fresh fake (`/sim/reset`) has none armed.
+    pub(crate) fn arm(&self, injection: Injection) -> &'static str {
+        let tag = injection.tag();
+        let mut st = self.state.lock().expect("sim lock");
+        match &injection {
+            Injection::LoseFirstConfirm => st.lose_first_confirm = true,
+            Injection::RejectReplace { nth } => st.reject_at = Some(*nth),
+            Injection::DropFirstStructural => st.drop_first = true,
+            Injection::BareConfirms => st.bare_confirms = true,
+            Injection::StalePushAfterSave => st.stale_push_after_save = true,
+            #[cfg(feature = "e2e")]
+            Injection::TruncatedScenePush { scene, cut_before } => {
+                st.truncated_scene_push = Some((*scene, cut_before.clone()));
+            }
+        }
+        st.injections.push(injection);
+        tag
     }
 
     /// The CURRENT `preset_level` — test-only introspection for the saved-doc specs
@@ -1218,6 +1358,12 @@ impl SimDevice {
     #[cfg(any(test, feature = "e2e"))]
     pub fn events(&self) -> Vec<SimEvent> {
         self.state.lock().expect("sim lock").events.clone()
+    }
+
+    /// The [`SimEvent::Unhandled`] log, in order (the census; never part of [`Self::events`]).
+    #[cfg(test)]
+    pub fn unhandled(&self) -> Vec<SimEvent> {
+        self.state.lock().expect("sim lock").unhandled.clone()
     }
 
     /// The current song names (read-back-after-write CRUD mutates them).
@@ -1343,16 +1489,48 @@ impl SimDevice {
         let Some(pm) = proto::first_bytes(&top, TMS_PRESET) else {
             // Song (11) / Setlist (12) CRUD; else heartbeat / connection / settings (ignored).
             if let Some(sm) = proto::first_bytes(&top, TMS_SONG) {
-                return self.handle_song_msg(sm);
+                return self.handle_song_msg(sm, proto::batch_status(body));
             }
             if let Some(slm) = proto::first_bytes(&top, TMS_SETLIST) {
-                return self.handle_setlist_msg(slm);
+                return self.handle_setlist_msg(slm, proto::batch_status(body));
+            }
+            // MixerMessage(5) → reAmpModeRequest(4): the re-amp read the oracle relies on
+            // (fw 1.8.58, device-confirmed) → reAmpModeResponse(9){ isActive(1) }, the flag
+            // omitted when off (proto3). One latch feeds both re-amp stores here.
+            if let Some(mm) = proto::first_bytes(&top, TMS_MIXER) {
+                if proto::first_bytes(&proto::parse(mm), F_MIXER_REAMP_REQUEST).is_some() {
+                    let on = self.state.lock().expect("sim lock").reamp_on;
+                    let mut resp = Vec::new();
+                    if on {
+                        proto::field_varint(&mut resp, 1, 1);
+                    }
+                    return frame_multi(&proto::len_delimited(
+                        TMS_MIXER,
+                        &proto::len_delimited(F_MIXER_REAMP_RESPONSE, &resp),
+                    ));
+                }
             }
             // SettingsMessage(3) → reampModeActive(30) → { value(1) } — the re-amp toggle
             // (ON=`1a05f201020801`, OFF=`1a03f20100`). Latched for the capture model; the
             // real device acks nothing, so no reply.
             if let Some(sm) = proto::first_bytes(&top, TMS_SETTINGS) {
                 let settings = proto::parse(sm);
+                // usbSettingsRequest(55) → usbSettingsResponse(56){ reampModeActive(1){
+                // value(1) } }, the flag omitted when off (fw 1.8.58, device-confirmed).
+                if proto::first_bytes(&settings, F_USB_SETTINGS_REQUEST).is_some() {
+                    let on = self.state.lock().expect("sim lock").reamp_on;
+                    let mut flag = Vec::new();
+                    if on {
+                        proto::field_varint(&mut flag, 1, 1);
+                    }
+                    return frame_multi(&proto::len_delimited(
+                        TMS_SETTINGS,
+                        &proto::len_delimited(
+                            F_USB_SETTINGS_RESPONSE,
+                            &proto::len_delimited(1, &flag),
+                        ),
+                    ));
+                }
                 if let Some(re) = proto::first_bytes(&settings, F_REAMP_SETTING) {
                     let on = proto::first_varint(&proto::parse(re), 1).unwrap_or(0) != 0;
                     let mut st = self.state.lock().expect("sim lock");
@@ -1371,7 +1549,16 @@ impl SimDevice {
                         }
                     }
                 }
+                let handled = [F_REAMP_SETTING, F_TAP_TEMPO_BPM]
+                    .iter()
+                    .any(|&f| proto::first_bytes(&settings, f).is_some());
+                if handled {
+                    return Vec::new();
+                }
             }
+            // Connection traffic, other Settings fields, Mixer fields and every other
+            // message type: unanswered.
+            record_unhandled(&mut self.state.lock().expect("sim lock"), body);
             return Vec::new();
         };
         let f = proto::parse(pm);
@@ -1818,6 +2005,7 @@ impl SimDevice {
                 &proto::len_delimited(1, json.as_bytes()),
             ));
         }
+        record_unhandled(&mut st, body);
         Vec::new()
     }
 
@@ -1825,7 +2013,7 @@ impl SimDevice {
     /// frame); add/remove/rename mutate them so the app's read-back-after-write sees the
     /// change. Membership is modeled too: the add/move/remove setters edit
     /// [`SimSetlist::members`] and the membership request reads it back.
-    fn handle_setlist_msg(&self, inner_bytes: &[u8]) -> Vec<Vec<u8>> {
+    fn handle_setlist_msg(&self, inner_bytes: &[u8], batch: Option<u64>) -> Vec<Vec<u8>> {
         let f = proto::parse(inner_bytes);
         let mut st = self.state.lock().expect("sim lock");
         let song_count = st.songs.len();
@@ -1910,13 +2098,15 @@ impl SimDevice {
             if let Some(i) = slot_index(&inner, 1, lists.len()) {
                 lists[i].name = str_field(&inner, 2);
             }
+            return Vec::new();
         }
+        record_unhandled_inner(&mut st, TMS_SETLIST, &f, batch);
         Vec::new()
     }
 
     /// Handle a `SongMessage`(11): the list and per-song row reads, song CRUD, notes, the
     /// `bpmActive` flag and `assignSongPreset` (see [`SimSong`] for the BPM model).
-    fn handle_song_msg(&self, inner_bytes: &[u8]) -> Vec<Vec<u8>> {
+    fn handle_song_msg(&self, inner_bytes: &[u8], batch: Option<u64>) -> Vec<Vec<u8>> {
         let f = proto::parse(inner_bytes);
         let mut st = self.state.lock().expect("sim lock");
         let song_at = |fields: &[(u32, proto::Val)]| {
@@ -2027,7 +2217,9 @@ impl SimDevice {
                 list_index: dev_slot - 1,
                 scene,
             });
+            return Vec::new();
         }
+        record_unhandled_inner(&mut st, TMS_SONG, &f, batch);
         Vec::new()
     }
 }
@@ -2107,6 +2299,67 @@ pub fn live_events() -> Vec<SimEvent> {
 // RESPONSE of any param outside `leveledParams`, and parallel-lane summation (joint-k) —
 // still online-only classes. The wet-mix curve is NOT HW-measured (see `wet_mix_gain_db`):
 // an offline wet solve proves the OUTCOME PLUMBING, never the real preset's numbers.
+
+/// Clear the installed fake's re-amp latch WITHOUT a wire send, so neither the re-amp
+/// counters nor `/sim/events` move (the offline `e2e_reamp_off` teardown). Returns whether
+/// the latch was ON; `None` when no fake is installed (online).
+#[cfg(feature = "e2e")]
+pub fn clear_live_reamp() -> Option<bool> {
+    let live = LIVE.lock().expect("sim live lock");
+    let mut st = live.as_ref()?.state.lock().expect("sim lock");
+    Some(std::mem::replace(&mut st.reamp_on, false))
+}
+
+/// Arm `injection` on the installed fake (`POST /sim/inject`) and return its tag; `None`
+/// when no fake is installed (online).
+#[cfg(feature = "e2e")]
+pub fn live_inject(injection: Injection) -> Option<&'static str> {
+    LIVE.lock()
+        .expect("sim live lock")
+        .as_ref()
+        .map(|dev| dev.arm(injection))
+}
+
+/// The installed fake's state for `GET /sim/state`: the re-amp latch, the current slot
+/// and scene, the unanswered-request histogram (`"<tms>.<inner>": n`), the kinds outside
+/// [`UNHANDLED_CENSUS`], and the armed injections with their tags. `None` online.
+#[cfg(feature = "e2e")]
+pub fn live_state() -> Option<serde_json::Value> {
+    let live = LIVE.lock().expect("sim live lock");
+    let st = live.as_ref()?.state.lock().expect("sim lock");
+    let mut unhandled = serde_json::Map::new();
+    let mut unhandled_new = Vec::new();
+    for e in &st.unhandled {
+        if let SimEvent::Unhandled { tms, inner, .. } = e {
+            let key = format!("{tms}.{inner}");
+            if !in_census(*tms, *inner) && !unhandled_new.contains(&key) {
+                unhandled_new.push(key.clone());
+            }
+            let n = unhandled.get(&key).and_then(serde_json::Value::as_u64);
+            unhandled.insert(key, serde_json::json!(n.unwrap_or(0) + 1));
+        }
+    }
+    let injections: Vec<serde_json::Value> = st
+        .injections
+        .iter()
+        .map(|i| {
+            let mut v = serde_json::to_value(i).unwrap_or_default();
+            if let Some(o) = v.as_object_mut() {
+                o.insert("tag".into(), serde_json::json!(i.tag()));
+            }
+            v
+        })
+        .collect();
+    Some(serde_json::json!({
+        "online": false,
+        "reamp_on": st.reamp_on,
+        "slot": st.current_slot,
+        "scene": st.current_scene,
+        "unhandled": unhandled,
+        "unhandled_new": unhandled_new,
+        "injections": injections,
+    }))
+}
 
 /// Arm the currently-installed fake so `slot`'s NEXT capture returns silence once (the
 /// `POST /sim/fault` bridge endpoint). No-op when no fake is installed (online).
@@ -2654,7 +2907,7 @@ fn node_output_level(node: &serde_json::Value) -> Option<f32> {
 
 /// Keyed on the ACTIVE scene, not the recall that selected it: the `currentPresetDataRequest`
 /// re-push mid-prepass must be cut too, or it heals the scene the seam exists to break.
-#[cfg(all(test, feature = "e2e"))]
+#[cfg(feature = "e2e")]
 fn truncate_scene_push(st: &SimState, json: Vec<u8>) -> Vec<u8> {
     let Some((scene, marker)) = st.truncated_scene_push.as_ref() else {
         return json;
@@ -2671,7 +2924,7 @@ fn truncate_scene_push(st: &SimState, json: Vec<u8>) -> Vec<u8> {
     }
 }
 
-#[cfg(not(all(test, feature = "e2e")))]
+#[cfg(not(feature = "e2e"))]
 fn truncate_scene_push(_st: &SimState, json: Vec<u8>) -> Vec<u8> {
     json
 }
@@ -3029,6 +3282,37 @@ fn confirm_structural(
     reply
 }
 
+/// Record a request the fake answers with nothing ([`SimEvent::Unhandled`]): `body` is the
+/// whole FenderMessageTMS. Its message type is the first top-level field other than
+/// `batchStatus`(10).
+fn record_unhandled(st: &mut SimState, body: &[u8]) {
+    let top = proto::parse(body);
+    let Some((tms, msg)) = top.iter().find(|(f, _)| *f != 10) else {
+        return;
+    };
+    let inner = msg.as_bytes().map(proto::parse).unwrap_or_default();
+    record_unhandled_inner(st, *tms, &inner, proto::batch_status(body));
+}
+
+/// [`record_unhandled`] for an already-parsed message body `inner` of type `tms`. Prints
+/// `[sim] UNHANDLED <tms>.<inner>` the first time a fake sees a kind, so a run's log shows
+/// every kind once (a fresh fake per `/sim/reset` prints them again).
+fn record_unhandled_inner(
+    st: &mut SimState,
+    tms: u32,
+    inner: &[(u32, proto::Val)],
+    batch: Option<u64>,
+) {
+    let inner = inner.first().map_or(0, |(f, _)| *f);
+    let seen = st.unhandled.iter().any(
+        |e| matches!(e, SimEvent::Unhandled { tms: t, inner: i, .. } if *t == tms && *i == inner),
+    );
+    if !seen {
+        eprintln!("[sim] UNHANDLED {tms}.{inner}");
+    }
+    st.unhandled.push(SimEvent::Unhandled { tms, inner, batch });
+}
+
 /// Produce the framed confirm/reject reply for a structural edit, honoring the
 /// drop-first / lost-confirm / reject-at injections. The flag says whether the edit lands.
 fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (Vec<Vec<u8>>, bool) {
@@ -3040,8 +3324,9 @@ fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (V
     if st.lose_first_confirm && n == 1 {
         return (Vec::new(), true); // applied, but the confirm never arrives
     }
-    if st.reject_at == Some(n) {
-        // Code 14: what fw 1.8.58 sends for a replace over the CPU budget.
+    if st.reject_at == Some(n) && confirm_field == F_NODE_REPLACED {
+        // Code 14: what fw 1.8.58 sends for a replace over the CPU budget — and only for a
+        // replace (an over-budget insert aborts the server; a remove always confirms).
         let mut code = Vec::new();
         proto::field_varint(&mut code, 1, 14);
         return (vec![frame(&preset_message(F_PRESET_ERROR, &code))], false);
@@ -3051,12 +3336,11 @@ fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (V
 }
 
 impl HidTransport for SimDevice {
-    fn send(&self, _body: &[u8]) -> Result<(), String> {
-        self.state
-            .lock()
-            .expect("sim lock")
-            .events
-            .push(SimEvent::Heartbeat);
+    fn send(&self, body: &[u8]) -> Result<(), String> {
+        let mut st = self.state.lock().expect("sim lock");
+        st.events.push(SimEvent::Heartbeat);
+        // Unanswered, so it joins the census too: an allow-list of silent kinds needs it.
+        record_unhandled(&mut st, body);
         Ok(()) // fire-and-forget (heartbeat) — no reply
     }
     fn transact(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
@@ -4520,5 +4804,193 @@ mod setlist_membership_tests {
         assert_eq!(read(&mut s, 2), [2, 5]);
         s.remove_setlist(1).unwrap();
         assert_eq!(read(&mut s, 1), [2, 5]);
+    }
+}
+
+/// The re-amp read pair, the unanswered-request census and the injection tags.
+#[cfg(test)]
+mod oracle_and_census_tests {
+    use super::*;
+    use crate::session::{ReampState, Session};
+
+    fn session(sim: &SimDevice) -> Session {
+        Session::from_transport(Box::new(sim.clone()))
+    }
+
+    #[test]
+    fn both_reamp_stores_read_back_the_latch() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.set_reamp_mode(true).expect("engage");
+        let on = ReampState {
+            mixer: Some(true),
+            settings: Some(true),
+        };
+        assert_eq!(s.read_reamp_state().expect("read"), on);
+        s.set_reamp_mode(false).expect("disengage");
+        let off = ReampState {
+            mixer: Some(false),
+            settings: Some(false),
+        };
+        assert_eq!(s.read_reamp_state().expect("read"), off);
+    }
+
+    #[test]
+    fn the_read_is_read_only_and_answered_off_the_census() {
+        let sim = SimDevice::new();
+        session(&sim).read_reamp_state().expect("read");
+        assert!(
+            !sim.events().iter().any(|e| matches!(e, SimEvent::ReAmp(_))),
+            "the oracle must never send a re-amp write"
+        );
+        assert!(
+            !sim.unhandled().iter().any(|e| matches!(
+                e,
+                SimEvent::Unhandled { tms: 5, .. }
+                    | SimEvent::Unhandled {
+                        tms: 3,
+                        inner: 55,
+                        ..
+                    }
+            )),
+            "both reads are answered, so neither is in the census"
+        );
+    }
+
+    /// A transport that never answers anything.
+    struct Mute;
+    impl HidTransport for Mute {
+        fn send(&self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn transact(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn transact_chunked(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn pump(&self, _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+        fn transact_eager(&self, _: &[u8], _: u64) -> Result<Vec<Vec<u8>>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn a_store_that_never_answers_reads_none_not_off() {
+        let mut s = Session::from_transport(Box::new(Mute));
+        let state = s.read_reamp_state().expect("read");
+        assert_eq!(
+            state,
+            ReampState {
+                mixer: None,
+                settings: None
+            }
+        );
+    }
+
+    #[test]
+    fn an_unanswered_request_is_recorded_apart_from_events_with_its_kind_and_batch() {
+        let sim = SimDevice::new();
+        let before = sim.events();
+        // A batch-2 product-profile request queues, then the batch-3 drain answers it.
+        sim.receive(&proto::product_profile_request(2));
+        sim.receive(&proto::current_preset_data_request(3));
+        sim.receive(&proto::connection_request());
+        let recorded = sim.unhandled();
+        let top = proto::parse(&proto::product_profile_request(2));
+        let (tms, msg) = top.iter().find(|(f, _)| *f != 10).expect("tms");
+        let inner = proto::parse(msg.as_bytes().expect("body"))
+            .first()
+            .map_or(0, |(f, _)| *f);
+        assert!(recorded.contains(&SimEvent::Unhandled {
+            tms: *tms,
+            inner,
+            batch: Some(2),
+        }));
+        assert!(recorded.contains(&SimEvent::Unhandled {
+            tms: 4,
+            inner: 1,
+            batch: None,
+        }));
+        // `events` only gained what the handled drain recorded, never an Unhandled.
+        assert!(!sim
+            .events()
+            .iter()
+            .skip(before.len())
+            .any(|e| matches!(e, SimEvent::Unhandled { .. })));
+    }
+
+    #[test]
+    fn a_heartbeat_joins_the_census_log_and_keeps_its_event() {
+        let sim = SimDevice::new();
+        session(&sim).heartbeat().expect("heartbeat");
+        assert_eq!(sim.events(), vec![SimEvent::Heartbeat]);
+        assert_eq!(
+            sim.unhandled(),
+            vec![SimEvent::Unhandled {
+                tms: 4,
+                inner: 4,
+                batch: None
+            }]
+        );
+    }
+
+    #[test]
+    fn handled_song_and_setlist_setters_stay_out_of_the_census() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.rename_setlist(1, "M").expect("rename setlist");
+        s.rename_song(1, "B").expect("rename song");
+        assert!(sim.unhandled().is_empty(), "{:?}", sim.unhandled());
+    }
+
+    fn preset_error_in(reports: &[Vec<u8>]) -> bool {
+        reports.iter().any(|r| {
+            let top = proto::parse(&r[4..]);
+            proto::first_bytes(&top, TMS_PRESET)
+                .is_some_and(|pm| proto::first_bytes(&proto::parse(pm), F_PRESET_ERROR).is_some())
+        })
+    }
+
+    #[test]
+    fn reject_replace_never_answers_an_insert_or_a_remove_with_an_error() {
+        let insert = proto::insert_node("G1", None, "ACD_Boost", None);
+        let remove = proto::remove_node("G1", "ACD_Boost", None);
+        let replace = proto::replace_node("G1", "ACD_Boost", "ACD_Fuzz", None);
+        let sim = SimDevice::new();
+        assert_eq!(sim.arm(Injection::RejectReplace { nth: 1 }), "reachable");
+        assert!(!preset_error_in(&sim.receive(&insert)));
+        let sim = SimDevice::new();
+        sim.arm(Injection::RejectReplace { nth: 1 });
+        assert!(!preset_error_in(&sim.receive(&remove)));
+        let sim = SimDevice::new();
+        sim.arm(Injection::RejectReplace { nth: 1 });
+        assert!(preset_error_in(&sim.receive(&replace)));
+    }
+
+    #[test]
+    fn every_injection_carries_its_reachability_tag() {
+        let tags: Vec<_> = [
+            Injection::LoseFirstConfirm,
+            Injection::RejectReplace { nth: 2 },
+            Injection::DropFirstStructural,
+            Injection::BareConfirms,
+            Injection::StalePushAfterSave,
+        ]
+        .iter()
+        .map(Injection::tag)
+        .collect();
+        assert_eq!(
+            tags,
+            [
+                "reachable",
+                "reachable",
+                "unreachable",
+                "unreachable",
+                "unverified"
+            ]
+        );
     }
 }
