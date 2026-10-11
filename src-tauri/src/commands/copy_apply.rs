@@ -253,8 +253,9 @@ pub(crate) async fn copy_apply(
 /// and (if `save`) persist it — the [`held_replace_one`] shape generalised from one
 /// replace to a list of replace/insert/remove ops. Loads the preset, re-arms the edit
 /// context, confirms attachment (the SAME safety gate: never edit/save an unverified
-/// preset), applies each op (RETRY-HARDENING the cold first op's silent DROP), and
-/// saves ONLY when every op confirmed AND no `presetError`. An empty op list → skipped.
+/// preset), applies each op (an unconfirmed first op is READ BACK before any re-send — see
+/// [`apply_copy_op`]), and saves ONLY when every op confirmed AND no `presetError`. An
+/// empty op list → skipped.
 fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyApplyItem, String> {
     let list_index = job.list_index;
     let name = job.name.clone();
@@ -290,8 +291,12 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     let (roster, mut counts) = blockcaps_pre_edit_roster(s)?;
     let mut ids = DeviceIds::new(&roster);
 
-    // Apply each op in order. The FIRST structural edit after a fresh load can be
-    // silently DROPPED — retry it once (but NEVER on a presetError, a real rejection).
+    // Apply each op in order. An unconfirmed FIRST edit with no presetError is read back
+    // before anything is re-sent (`apply_copy_op`). The old "cold first edit is silently
+    // dropped" reading is a fw 1.8.45 belief with no cited HW evidence: fw 1.8.58 has no
+    // silent-drop path for a correctly framed edit (INFERRED). A missing confirm is a
+    // confirm queued behind the FIFO, a lapse (which draws ConnectionError), a backup
+    // freeze, or an insert abort. Recover by read-back, never by blind re-send.
     let total = job.ops.len();
     for (i, op) in job.ops.iter().enumerate() {
         let first = i == 0;
@@ -315,13 +320,15 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
                     (None, false, Some((group.as_str(), node_id.as_str())))
                 }
             };
-        // The group's contents before this op, for an insert's anchor check, its
-        // IR/saved address check and its read-then-retry. `None` when the ops so far
+        // The group's FenderIds before this op, for an insert's anchor check, its IR/saved
+        // address check, and an insert's or replace's read-back. `None` when the ops so far
         // cannot be modelled: the group's contents are then unknown.
         let before = match op {
-            CopyOp::Insert { group, .. } => expected_roster(&roster, &job.ops[..i])
-                .map(|r| r.get(group).cloned().unwrap_or_default()),
-            _ => None,
+            CopyOp::Insert { group, .. } | CopyOp::Replace { group, .. } => {
+                expected_roster(&roster, &job.ops[..i])
+                    .map(|r| r.get(group).cloned().unwrap_or_default())
+            }
+            CopyOp::Remove { .. } => None,
         };
         // fw 1.8.58 answers an insert whose anchor is not in the group with no reply and
         // aborts its server (static RE), so the anchor must resolve to a block known to be
@@ -350,8 +357,10 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
             }
         }
         if let CopyOp::Insert { group, repl, .. } = op {
-            // An IR/saved INSERT addresses the node it adds by FenderId (on the unit a node
-            // id IS its FenderId), so a group that ALREADY holds that model would make the
+            // An IR/saved INSERT addresses the node it adds by FenderId (a node id is its
+            // FenderId only for the first instance of a model in a group: fw 1.8.58 mints
+            // `X`, `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
+            // `notes/write-safety.md`), so a group that ALREADY holds that model would make the
             // follow-up swap ambiguous (it could re-point an existing block). (A cap-legal
             // case: two cabinets in one group.) Refuse, never guess.
             let ambiguous = !matches!(repl, CopyRepl::Model { .. })
@@ -386,7 +395,12 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
             ));
         }
 
-        match apply_copy_op(s, op, first, anchor_id.as_deref(), before.as_deref()) {
+        let applied = AppliedOp {
+            anchor_id: anchor_id.as_deref(),
+            before: before.as_deref(),
+            old_fender: replaced.map(|(fender, _)| fender),
+        };
+        match apply_copy_op(s, op, first, &applied) {
             Ok(true) => {
                 blockcaps_advance(&mut counts, candidate_id, replaced);
                 // Every new block's id — the confirm's, else a read — so later ops in the
@@ -433,8 +447,8 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // acked ops (`read_working_copy`).
     let graph = if save {
         // What the acked ops leave behind — the oracle the read is checked against. An
-        // edit that leaves the roster as it was (a same-model re-stamp: on the unit a node
-        // id IS its FenderId, so nothing the roster can see changes) is unverifiable —
+        // edit that leaves the roster as it was (a same-model re-stamp: the roster compares
+        // FenderIds, so nothing it can see changes) is unverifiable —
         // pre-edit and post-edit documents look identical — so no read is spent on it.
         let pre = group_roster(
             roster
@@ -670,19 +684,36 @@ fn read_working_copy(
     Some(graph)
 }
 
+/// What [`apply_copy_op`] knows about the op's target before it is sent.
+struct AppliedOp<'a> {
+    /// An insert's anchor: the device node id to insert AHEAD of (`None` appends).
+    anchor_id: Option<&'a str>,
+    /// The op's group FenderIds before it (insert and replace), `None` when unknown.
+    before: Option<&'a [String]>,
+    /// A replace's target FenderId in the pre-edit roster, `None` when unknown.
+    old_fender: Option<&'a str>,
+}
+
 /// Apply ONE [`CopyOp`] on the held session, returning whether the device CONFIRMED it
-/// (`nodeReplaced`(40) / `nodeRemoved`(36) / `nodeInserted`(33)). `retry_drop` re-tries
-/// a single SILENT drop (the cold first edit after a fresh load) but never a
-/// `presetError`; an insert first reads the working copy against `before` (its group's
-/// FenderIds before the op), see [`Session::insert_landed`]. An IR/saved INSERT then applies its IR-file / saved-block follow-up to
-/// the node it added, addressed by FenderId (= its id on the unit); `copy_apply_one`
-/// refuses the op up front when that address would be ambiguous.
+/// (`nodeReplaced`(40) / `nodeRemoved`(36) / `nodeInserted`(33)).
+///
+/// `recover_unconfirmed`: an edit with no confirm and no `presetError` is READ BACK from
+/// the working copy before anything is re-sent, and a landed edit is never re-sent (a
+/// missing confirm on fw 1.8.58 is a landed edit whose confirm was lost, INFERRED). A
+/// replace mints a new node id, so a blind re-send would name a node that is already gone,
+/// which may abort the device server (static RE that `replaceNode` on an unknown id throws;
+/// whether it is caught is OPEN). See [`replace_read_back`]; a remove re-sends only when the
+/// read shows the node still there; an insert reads against `before` (its group's FenderIds
+/// before the op), see [`Session::insert_landed`]. Never on a `presetError`.
+///
+/// An IR/saved INSERT then applies its IR-file / saved-block follow-up to the node it
+/// added, addressed by FenderId (its id when it is the group's first instance of that
+/// model); `copy_apply_one` refuses the op up front when that address would be ambiguous.
 fn apply_copy_op(
     s: &mut Session,
     op: &CopyOp,
-    retry_drop: bool,
-    anchor_id: Option<&str>,
-    before: Option<&[String]>,
+    recover_unconfirmed: bool,
+    target: &AppliedOp,
 ) -> Result<bool, String> {
     match op {
         CopyOp::Replace {
@@ -690,24 +721,102 @@ fn apply_copy_op(
             node_id,
             repl,
         } => {
-            let confirmed = apply_copy_replace(s, group, node_id, repl)?;
-            if !confirmed && retry_drop && !s.saw_preset_error() {
-                return apply_copy_replace(s, group, node_id, repl);
+            if apply_copy_replace(s, group, node_id, repl)? {
+                return Ok(true);
             }
-            Ok(confirmed)
+            if !recover_unconfirmed || s.saw_preset_error() {
+                return Ok(false);
+            }
+            match replace_read_back(s, group, node_id, target, repl.insert_fender_id()) {
+                // An IR replace is two steps: a landed first step whose confirm was lost
+                // never ran its `file` follow-up, so it stays unconfirmed (no save).
+                Some(true) => Ok(!matches!(repl, CopyRepl::Ir { .. })),
+                Some(false) => apply_copy_replace(s, group, node_id, repl),
+                None => Ok(false),
+            }
         }
         CopyOp::Remove { group, node_id } => {
-            let confirmed = s.remove_node(group, node_id)?;
-            if !confirmed && retry_drop && !s.saw_preset_error() {
-                return s.remove_node(group, node_id);
+            if s.remove_node(group, node_id)? {
+                return Ok(true);
             }
-            Ok(confirmed)
+            if !recover_unconfirmed || s.saw_preset_error() {
+                return Ok(false);
+            }
+            match node_present(s, group, node_id) {
+                Some(false) => Ok(true),
+                Some(true) => s.remove_node(group, node_id),
+                None => Ok(false),
+            }
         }
         CopyOp::Insert { group, repl, .. } => {
-            let retry = if retry_drop { before } else { None };
-            apply_copy_insert(s, group, anchor_id, repl, retry)
+            let retry = if recover_unconfirmed {
+                target.before
+            } else {
+                None
+            };
+            apply_copy_insert(s, group, target.anchor_id, repl, retry)
         }
     }
+}
+
+/// Read the working copy after an unconfirmed replace of `group`/`node_id` by `new` (its
+/// target FenderId): `Some(true)` = landed (`node_id` is gone and the group holds one more
+/// `new` than before), `Some(false)` = not landed (`node_id` is still there with its old
+/// FenderId), `None` = anything else, or no read, never guessed. A same-model re-stamp
+/// (old FenderId equals `new`) is unverifiable — `None` without a read — because a landed
+/// and a missing re-stamp leave the same roster.
+fn replace_read_back(
+    s: &mut Session,
+    group: &str,
+    node_id: &str,
+    target: &AppliedOp,
+    new: &str,
+) -> Option<bool> {
+    let old = target.old_fender?;
+    if old == new {
+        log::warn!(
+            "[copy_apply] unconfirmed same-model re-stamp of {group}/{node_id} is \
+             unverifiable — not re-sent, not saved"
+        );
+        return None;
+    }
+    let was = target.before?.iter().filter(|f| *f == new).count();
+    let doc = s
+        .live_complete_value()
+        .map_err(|e| log::warn!("[copy_apply] replace read-back failed: {e}"))
+        .ok()?;
+    let nodes: Vec<_> = blockcaps::roster_from_preset(&doc)
+        .into_iter()
+        .filter(|e| e.group == group)
+        .collect();
+    let now = nodes.iter().filter(|e| e.fender_id == new).count();
+    let verdict = match nodes.iter().find(|e| e.node_id == node_id) {
+        None if now == was + 1 => Some(true),
+        Some(e) if e.fender_id == old => Some(false),
+        _ => None,
+    };
+    log::info!(
+        "[copy_apply] unconfirmed replace {group}/{node_id} → {new}: read-back {}",
+        match verdict {
+            Some(true) => "shows it landed — not re-sent",
+            Some(false) => "shows it did not land — re-sending once",
+            None => "is inconclusive — not re-sent, not saved",
+        }
+    );
+    verdict
+}
+
+/// Whether the working copy's `group` still holds `node_id` (`None` = no complete read).
+fn node_present(s: &mut Session, group: &str, node_id: &str) -> Option<bool> {
+    let doc = s
+        .live_complete_value()
+        .map_err(|e| log::warn!("[copy_apply] remove read-back failed: {e}"))
+        .ok()?;
+    Some(
+        blockcaps::roster_from_preset(&doc)
+            .iter()
+            .any(|e| e.group == group && e.node_id == node_id),
+    )
 }
 
 /// `CopyRepl` REPLACE dispatch — the `ReplArg` dispatch from `held_replace_one`, minus
@@ -729,8 +838,10 @@ fn apply_copy_replace(
 
 /// INSERT a block. The Model insert is the faithful one-shot (`insert_node` 34). For an
 /// IR/saved insert we insert the bare model/placeholder, then RE-RESOLVE the
-/// node it just added and apply the IR-file link / saved-block swap to it. On the unit a
-/// node's id IS its FenderId (`notes/write-safety.md`), so the new node is addressed as
+/// node it just added and apply the IR-file link / saved-block swap to it. A node's id is
+/// its FenderId only for the first instance of a model in a group (fw 1.8.58 mints `X`,
+/// `X_1`, `X_2`… — device-confirmed for the first, static RE for the rest;
+/// `notes/write-safety.md`), so the new node is addressed as
 /// `repl.insert_fender_id()` directly — no before/after roster diff (the old diff read the
 /// session buffer, which `insert_node`'s `clear_raw` had just emptied, so it always
 /// degraded to a bare insert on hardware; and a partial "before" read could have diffed
@@ -754,7 +865,8 @@ fn apply_copy_insert(
         return Ok(false);
     }
 
-    // IR / Saved → the content follow-up on the node just added (its id = its FenderId).
+    // IR / Saved → the content follow-up on the node just added (its id = its FenderId,
+    // as the group's first instance of that model — see the doc above).
     match repl {
         CopyRepl::Model { .. } => Ok(true),
         CopyRepl::Ir { file, .. } => {

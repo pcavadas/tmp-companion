@@ -20,7 +20,7 @@ Saving runs live, link-safe, in-place edits on a held session, re-armed per pres
 - `removeNode` — remove a block.
 - A user IR is applied as `replaceNode` → `ACD_UserIRTMS` plus a string `changeParameter` on the node's `file` param.
 
-Confirm each edit on its acknowledgement (`nodeReplaced` / `nodeInserted` / `nodeRemoved`); **never save on `presetError` or an unconfirmed edit** (a wrong-content save corrupts the slot). The first edit after a fresh load can be dropped — retry it once. `cancel_copy_apply` stops a run.
+Confirm each edit on its acknowledgement (`nodeReplaced` / `nodeInserted` / `nodeRemoved`); **never save on `presetError` or an unconfirmed edit** (a wrong-content save corrupts the slot). A missing confirm with no `presetError` is recovered by READ-BACK, never by blind re-send: `copy_apply` reads the working copy and re-sends once only when the edit visibly did not land (a landed replace has minted a new node id, so re-sending would name a node that is gone). The old "the first edit after a fresh load can be dropped" reading is a fw 1.8.45 belief with no cited HW evidence; fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED). A missing confirm is a confirm queued behind the FIFO, a lapse (which draws ConnectionError), a backup freeze, or an insert abort. `cancel_copy_apply` stops a run.
 
 ## Block-mutation invariants
 

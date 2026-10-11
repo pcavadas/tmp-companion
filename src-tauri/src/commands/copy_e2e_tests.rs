@@ -121,8 +121,8 @@ mod audition_copy_tests {
 /// `sim_device::SimDevice` fake — NO hardware. These exercise the real command-layer
 /// state machine (`copy_apply_one`'s load → re-arm → confirm-gated edits → identity-
 /// preserving save) and the two safety invariants that previously only ever ran on the
-/// device: a `presetError` is NEVER followed by a save, and the cold first edit's silent
-/// drop is retried. The pure edit→op diff is unit-tested elsewhere (`copyModel` in
+/// device: a `presetError` is NEVER followed by a save, and an unconfirmed edit is read
+/// back before any re-send. The pure edit→op diff is unit-tested elsewhere (`copyModel` in
 /// Vitest, `bulk_cmd` in Rust); this is the wire-driving the diff feeds.
 #[cfg(test)]
 mod copy_level_e2e_tests {
@@ -263,19 +263,109 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn copy_cold_first_edit_silent_drop_is_retried_then_saved() {
-        // The first structural edit after a fresh load is silently DROPPED; the held
-        // path retries it once and then confirms + saves.
+        // The first structural edit after a fresh load is silently DROPPED; the read-back
+        // shows `n2` still there with its old model, so the held path re-sends it once and
+        // then confirms + saves. The shape is `drop-first-structural`, tagged `unreachable`:
+        // fw 1.8.58 has no silent-drop path for a correctly framed edit (INFERRED). It stays
+        // as coverage of the not-landed branch of the read-back.
         let (item, ev) = run_copy(
-            SimDevice::new().with_drop_first(),
+            SimDevice::new()
+                .with_preset_json(&padded_two_node_doc())
+                .with_drop_first(),
             &one_replace_job(5, "Stadium Lead"),
             true,
         );
-        assert_eq!(item.outcome, "updated");
+        assert_eq!(item.outcome, "updated", "{item:?}");
         let replaces = ev
             .iter()
             .filter(|e| matches!(e, SimEvent::Replace { .. }))
             .count();
-        assert_eq!(replaces, 2, "the dropped edit + its retry: {ev:?}");
+        assert_eq!(replaces, 2, "the dropped edit + its one re-send: {ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, SimEvent::Saved(5))));
+    }
+
+    #[test]
+    fn copy_replace_whose_confirm_is_lost_is_read_back_not_resent() {
+        // The replace lands but its confirm never arrives. The landed replace minted a new
+        // id, so a blind re-send would name `n2`, which is gone — on the device that may
+        // abort the server. The read-back shows it landed: nothing is re-sent.
+        let (item, ev) = run_copy(
+            SimDevice::new()
+                .with_preset_json(&padded_two_node_doc())
+                .with_lost_first_confirm(),
+            &one_replace_job(5, "Stadium Lead"),
+            true,
+        );
+        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::Replace { .. }))
+                .count(),
+            1,
+            "landed once, never re-sent: {ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::ServerAbort { .. })),
+            "{ev:?}"
+        );
+        assert!(ev.iter().any(|e| matches!(e, SimEvent::Saved(5))));
+    }
+
+    #[test]
+    fn copy_unconfirmed_same_model_restamp_is_never_resent_or_saved() {
+        // Re-stamping `n2` with its own model leaves the same roster whether or not it
+        // landed, so an unconfirmed one is unverifiable: no re-send, no save.
+        let job = CopyJob {
+            list_index: 5,
+            name: "Stadium Lead".into(),
+            ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
+        };
+        let (item, ev) = run_copy(
+            SimDevice::new()
+                .with_preset_json(&padded_two_node_doc())
+                .with_lost_first_confirm(),
+            &job,
+            true,
+        );
+        assert_eq!(item.outcome, "error", "{item:?}");
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::Replace { .. }))
+                .count(),
+            1,
+            "{ev:?}"
+        );
+        assert!(
+            !ev.iter().any(|e| matches!(e, SimEvent::Saved(_))),
+            "{ev:?}"
+        );
+    }
+
+    #[test]
+    fn copy_remove_whose_confirm_is_lost_is_read_back_not_resent() {
+        let job = CopyJob {
+            list_index: 5,
+            name: "Stadium Lead".into(),
+            ops: vec![CopyOp::Remove {
+                group: "G1".into(),
+                node_id: "n2".into(),
+            }],
+        };
+        let (item, ev) = run_copy(
+            SimDevice::new()
+                .with_preset_json(&padded_two_node_doc())
+                .with_lost_first_confirm(),
+            &job,
+            true,
+        );
+        assert_eq!(item.outcome, "updated", "{item:?}");
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, SimEvent::Remove { .. }))
+                .count(),
+            1,
+            "gone on the read-back, so not re-sent: {ev:?}"
+        );
         assert!(ev.iter().any(|e| matches!(e, SimEvent::Saved(5))));
     }
 
@@ -611,7 +701,8 @@ mod copy_level_e2e_tests {
 
     #[test]
     fn copy_dropped_first_insert_is_applied_once_in_the_working_copy() {
-        // The cold first edit is silently DROPPED and retried; only the CONFIRMED send may
+        // The first edit is silently DROPPED (`drop-first-structural`, unreachable on fw
+        // 1.8.58) and, read back as not landed, re-sent once; only the CONFIRMED send may
         // land in the working copy, or the read-back would show the block twice and be
         // refused (roster ≠ expected) — the retry must not double-apply.
         let sim = SimDevice::new()
