@@ -269,6 +269,14 @@ fn remove_any(path: &Path) {
     }
 }
 
+// Test-only failure injection: when set, `save_to_path` fails its temp-file
+// write right after `File::create`. Kept above the doc comment below so that
+// comment still documents `save_to_path` (clippy: `unused_doc_comments`).
+#[cfg(test)]
+thread_local! {
+    static FAIL_TEMP_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Write the store to `path` (pretty JSON), creating parent dirs as needed.
 /// Atomic: serializes to a same-directory temp file (`<path>.tmp`), flushes +
 /// `sync_all`s it, then `rename`s it onto `path` — same-directory guarantees
@@ -306,6 +314,10 @@ pub fn save_to_path(path: &Path, store: &Store) -> Result<(), String> {
         use std::io::Write;
         let mut file =
             std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
+        #[cfg(test)]
+        if FAIL_TEMP_WRITE.with(std::cell::Cell::get) {
+            return Err(format!("write {}: injected test failure", tmp.display()));
+        }
         file.write_all(json.as_bytes())
             .map_err(|e| format!("write {}: {e}", tmp.display()))?;
         file.sync_all()
@@ -686,7 +698,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn migration_persist_failure_still_returns_the_migrated_store_not_an_error() {
         // Advisor-flagged regression: before the fix, `load_from_path` propagated
@@ -699,29 +710,18 @@ mod tests {
         // Fix 2 made `save_to_path` atomic (temp-file + rename), which needs
         // only DIRECTORY write permission, not permission on the destination
         // file itself — a read-only `profiles.json` no longer blocks a rename
-        // over it. So the failure injection is a read-only PARENT DIRECTORY
-        // (blocks creating the temp file / renaming), not a read-only file;
-        // `std::fs::read` above it still succeeds since that only needs read
-        // access, which a read+execute-only directory still grants.
-        use std::os::unix::fs::PermissionsExt;
-
+        // over it. So the failure is injected into the temp-file write
+        // (`FailTempWrite`), not via file or directory permissions — root
+        // ignores those, and cloud sessions run as root.
         let dir = tmp_dir("migrate-persist-failure");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.json");
         std::fs::write(&path, r#"{"targets":[{"name":"Rhythm","lufs":-26.0}]}"#).unwrap();
 
-        // Scoped so the directory is writable again the instant `load_from_path`
+        // Scoped so the injection is off again the instant `load_from_path`
         // returns — before any assertion or cleanup — even on a panic.
-        struct RestorePerms(PathBuf, std::fs::Permissions);
-        impl Drop for RestorePerms {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(&self.0, self.1.clone());
-            }
-        }
         let result = {
-            let original_perms = std::fs::metadata(&dir).unwrap().permissions();
-            let _restore = RestorePerms(dir.clone(), original_perms);
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let _fail = FailTempWrite::on();
             load_from_path(&path)
         };
 
@@ -782,7 +782,6 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn save_to_path_atomic_failure_leaves_the_original_file_untouched() {
         // Regression: `save_to_path` used to be `std::fs::write` — truncate
@@ -792,8 +791,6 @@ mod tests {
         // half-written, unparseable `profiles.json` behind: the atomic
         // temp-write + rename means a failure before the rename can only ever
         // corrupt the (discarded) temp file, never the real one.
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tmp_dir("save-atomic-failure");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profiles.json");
@@ -804,26 +801,21 @@ mod tests {
         let mut other = original.clone();
         other.playback_level = PlaybackLevel::Quiet;
 
-        // Make the parent directory read-only (no create/rename rights) so the
-        // temp-file write fails deterministically. Scoped so the permission
-        // fixture is restored the instant the risky call returns — before any
+        // Fail the temp-file write deterministically. Scoped so the injection
+        // is off again the instant the risky call returns — before any
         // assertion or cleanup runs — even if `save_to_path` itself panicked.
-        struct RestorePerms(PathBuf, std::fs::Permissions);
-        impl Drop for RestorePerms {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(&self.0, self.1.clone());
-            }
-        }
         let result = {
-            let original_perms = std::fs::metadata(&dir).unwrap().permissions();
-            let _restore = RestorePerms(dir.clone(), original_perms);
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let _fail = FailTempWrite::on();
             save_to_path(&path, &other)
         };
 
         assert!(
             result.is_err(),
-            "save into a read-only parent dir must fail, not silently succeed"
+            "a failed temp-file write must fail the save, not silently succeed"
+        );
+        assert!(
+            !dir.join("profiles.json.tmp").exists(),
+            "a failed save must clean up its temp file"
         );
         let reloaded_bytes = std::fs::read(&path).unwrap();
         assert_eq!(
@@ -836,6 +828,21 @@ mod tests {
             "the original file must still parse to the pre-failure store"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Turns on `save_to_path`'s injected temp-write failure for this thread;
+    /// dropping it turns the injection off again, even on a panic.
+    struct FailTempWrite;
+    impl FailTempWrite {
+        fn on() -> Self {
+            FAIL_TEMP_WRITE.with(|f| f.set(true));
+            FailTempWrite
+        }
+    }
+    impl Drop for FailTempWrite {
+        fn drop(&mut self) {
+            FAIL_TEMP_WRITE.with(|f| f.set(false));
+        }
     }
 
     fn tmp_dir(tag: &str) -> PathBuf {
