@@ -194,16 +194,17 @@ fn offline_copy_journey_through_real_backend() {
 
     // 4. copy_apply a dry-run replace on the target → outcome "updated", NOTHING saved.
     // The job is the exact camelCase wire shape `CopyJob`/`CopyOp`/`CopyRepl` accept
-    // (the input-only structs the frontend's `diffToOps` produces). The fake confirms
-    // any structural edit, so the nodeId need not match a fixture node.
+    // (the input-only structs the frontend's `diffToOps` produces). The nodeId must be a
+    // node 401's G1 holds: a `replaceNode` naming a missing node aborts the fake's server,
+    // as it may the device's.
     let jobs = serde_json::json!([{
         "listIndex": 401,
         "name": "E2E Pedalboard",
         "ops": [{
             "kind": "replace",
             "group": "G1",
-            "nodeId": "ACD_PhaserP90",
-            "repl": { "kind": "model", "fenderId": "ACD_KingOfTone" }
+            "nodeId": "ACD_UniVibe",
+            "repl": { "kind": "model", "fenderId": "ACD_PhaserP90" }
         }]
     }]);
     let items = invoke(
@@ -4686,6 +4687,14 @@ fn sim_inject_tags_every_kind_and_refuses_an_unknown_one() {
         (
             serde_json::json!({ "kind": "truncated-scene-push", "scene": 1, "cutBefore": "ACD_" }),
             "not-device-shaped",
+        ),
+        (
+            serde_json::json!({ "kind": "drop-next-reamp-off" }),
+            "reachable",
+        ),
+        (
+            serde_json::json!({ "kind": "reamp-off-never-lands" }),
+            "unverified",
         ),
     ];
     for (body, tag) in &cases {

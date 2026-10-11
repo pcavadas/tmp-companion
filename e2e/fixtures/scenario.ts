@@ -384,10 +384,11 @@ async function simInject(
   expect(body.tag, `${kind}'s reachability tag`).toBe(expected);
 }
 
-/** A fault fw 1.8.58 can produce: `lose-first-confirm`, `reject-replace` ({nth}). */
+/** A fault fw 1.8.58 can produce: `lose-first-confirm`, `reject-replace` ({nth}),
+ *  `drop-next-reamp-off` (a stale Settings flag makes the next OFF a no-op). */
 export const simInjectReachable = (
   page: Page,
-  kind: "lose-first-confirm" | "reject-replace",
+  kind: "lose-first-confirm" | "reject-replace" | "drop-next-reamp-off",
   args: Record<string, unknown> = {},
 ): Promise<void> => simInject(page, kind, args, "reachable");
 
@@ -397,10 +398,11 @@ export const simInjectUnreachable = (
   kind: "drop-first-structural" | "bare-confirms",
 ): Promise<void> => simInject(page, kind, {}, "unreachable");
 
-/** Seen once on an older firmware, unverified on fw 1.8.58: `stale-push-after-save`. */
+/** Unverified on fw 1.8.58: `stale-push-after-save` (seen once on an older firmware),
+ *  `reamp-off-never-lands` (no OFF clears the re-amp latch). */
 export const simInjectUnverified = (
   page: Page,
-  kind: "stale-push-after-save",
+  kind: "stale-push-after-save" | "reamp-off-never-lands",
 ): Promise<void> => simInject(page, kind, {}, "unverified");
 
 /** Not the device's shape (a lapse cuts with no final frame): `truncated-scene-push`. */
@@ -453,6 +455,19 @@ export async function waitForCaptureInFlight(
     .toBeGreaterThan(baseline.on);
 }
 
+/** Offline teardown gate: the fake's device server never aborted this test. A request the
+ *  real unit answers by aborting its server (a `replaceNode` naming a node the group lacks)
+ *  shows on `/sim/state` as `server_aborts`; no product path may reach one. Online
+ *  `/sim/state` is `{online: true}` and nothing is checked. */
+export async function expectNoServerAborts(page: Page): Promise<void> {
+  const state = await simState(page);
+  if (state.online === true) return;
+  expect(
+    state.server_aborts,
+    "the offline fake recorded a device-server abort (see /sim/events: ServerAbort)",
+  ).toBe(0);
+}
+
 /** Whether the server drives the REAL device — read from /health, which is AUTHORITATIVE;
  *  the Playwright process's env is no mode signal, so never read process.env. */
 export async function isOnline(page: Page): Promise<boolean> {
@@ -460,7 +475,8 @@ export async function isOnline(page: Page): Promise<boolean> {
   return ((await res.json()) as { online?: boolean }).online === true;
 }
 
-/** End-of-scenario teardown. ONLINE the fixtures stay RESIDENT in the scratch slots
+/** End-of-scenario teardown. OFFLINE it asserts the fake's server never aborted
+ *  (`expectNoServerAborts`). ONLINE the fixtures stay RESIDENT in the scratch slots
  *  (400-410): the run-start pristine-checking seed self-repairs anything a run leveled,
  *  so clearing here only forces the next run to re-import everything (~2 min of device
  *  churn per run for nothing — adversarial-reviewed 2026-08-01). Set
@@ -469,7 +485,7 @@ export async function isOnline(page: Page): Promise<boolean> {
  *  Recovery always runs: stray sweep + recall 001 + re-amp OFF. Best-effort — the backend
  *  guard refuses any slot not holding the scenario name, so a real preset is never cleared.
  *
- *  OFFLINE this is a NO-OP, because it has nothing left to undo: the `page` fixture POSTs
+ *  OFFLINE there is nothing left to undo beyond that check: the `page` fixture POSTs
  *  `/sim/reset` before EVERY test, and that rebuilds the whole SimDevice from scratch —
  *  presets, scenes, songs, setlists, the re-amp latch and any armed capture fault — then
  *  reinstalls the 400-410 snapshot. So isolation between tests comes from the reset, not
@@ -483,7 +499,10 @@ export async function clearScenario(page: Page): Promise<void> {
   // no mode signal (same trap documented in level.spec.ts's merged idempotency test). An env check here would read
   // "offline" during an ONLINE run and skip the device recovery — no re-amp OFF, leaving
   // the unit input-muted.
-  if (!(await isOnline(page))) return;
+  if (!(await isOnline(page))) {
+    await expectNoServerAborts(page);
+    return;
+  }
   const resident = process.env.TMP_E2E_CLEAR_SCENARIO !== "1";
   if (!resident) {
     for (const s of SCENARIO) {

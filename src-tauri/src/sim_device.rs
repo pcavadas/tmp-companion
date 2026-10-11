@@ -11,11 +11,18 @@
 //!   `nodeInserted`(33); a save must follow ONLY a confirmed edit,
 //! - a REJECTED edit replies `presetError`(53) and must NEVER be followed by a save
 //!   (an unconfirmed save corrupted a real preset — `confirm_structural_edit`),
-//! - the COLD first structural edit after a fresh load can be silently DROPPED, which
-//!   the held-session path retry-hardens (`apply_copy_op`'s `retry_drop`).
+//! - a structural edit can be armed to be silently DROPPED ([`Injection::DropFirstStructural`]).
+//!   That "cold first edit" is a fw 1.8.45 belief with no cited HW evidence: fw 1.8.58 has
+//!   no silent-drop path for a correctly framed edit (INFERRED). A missing confirm there is a
+//!   confirm queued behind the FIFO, a lapse (which draws ConnectionError), a backup freeze,
+//!   or an insert abort, so the held-session path recovers by read-back, never by blind
+//!   re-send (`apply_copy_op`'s `recover_unconfirmed`),
+//! - a `replaceNode` naming a node its group lacks ABORTS the device server (static RE that
+//!   it throws; whether it is caught is OPEN). The fake records [`SimEvent::ServerAbort`] and
+//!   fails every later send; no product path should ever reach it.
 //!
 //! Configure [`SimDevice::with_drop_first`] / [`SimDevice::with_reject_at`] to drive
-//! those two adversarial cases. Replies are produced SYNCHRONOUSLY from the send call
+//! the drop and rejection cases. Replies are produced SYNCHRONOUSLY from the send call
 //! (the reports land in `Session::raw`); the subsequent heartbeat `pump`s return empty,
 //! exactly as the confirm loop expects.
 //!
@@ -194,6 +201,11 @@ pub enum SimEvent {
     /// and aborts its server on this (static RE), so the fake applies nothing and answers
     /// nothing; a test asserts it never fires.
     AnchorMiss { group: String, before: String },
+    /// The fake's device server ABORTED: `cause` names the request that killed it. Every
+    /// later send on this fake returns `Err` (a narrow model: the real unit's systemd
+    /// restarts the server, and a third crash in 60 s leaves it down). `/sim/state` counts
+    /// these as `server_aborts`, and the offline e2e teardown asserts zero.
+    ServerAbort { cause: String },
     /// `removeNode`(35).
     Remove { group: String, node_id: String },
     /// `currentPresetDataRequest`(2) — the working-copy re-prompt (`Session::live_ftsw` /
@@ -325,6 +337,11 @@ pub(crate) enum Injection {
     BareConfirms,
     /// A save queues a push of the PRE-edit document for the next pump.
     StalePushAfterSave,
+    /// The NEXT Settings re-amp OFF leaves the latch ON (once). It is still recorded, as the
+    /// device still echoes it.
+    DropNextReampOff,
+    /// Every Settings re-amp OFF leaves the latch ON.
+    ReampOffNeverLands,
     /// While scene `scene` is active, field-3 pushes are cut at the first byte of
     /// `cut_before`, with a proper final frame and the session still live.
     #[cfg(feature = "e2e")]
@@ -345,11 +362,20 @@ impl Injection {
     ///   sends 25 and then the CHANGE push (static RE).
     /// - `not-device-shaped`: the server never truncates a push; a lapse cuts frames with no
     ///   final, and every later message draws `ConnectionError` (device-confirmed).
+    ///
+    /// The re-amp OFF faults: `drop-next-reamp-off` is `reachable`, because a stale Settings
+    /// flag turns a Settings write into a no-op that still echoes success (device-confirmed).
+    /// `reamp-off-never-lands` is `unverified`: no device run has shown an OFF that a Settings
+    /// ON → OFF re-sync also fails to clear, but a failed connect or a server restart mid-run
+    /// leaves the unit in that state as far as the companion can tell, so the run-end ladder
+    /// must still end in a visible warning.
     pub(crate) fn tag(&self) -> &'static str {
         match self {
-            Injection::LoseFirstConfirm | Injection::RejectReplace { .. } => "reachable",
+            Injection::LoseFirstConfirm
+            | Injection::RejectReplace { .. }
+            | Injection::DropNextReampOff => "reachable",
             Injection::DropFirstStructural | Injection::BareConfirms => "unreachable",
-            Injection::StalePushAfterSave => "unverified",
+            Injection::StalePushAfterSave | Injection::ReampOffNeverLands => "unverified",
             #[cfg(feature = "e2e")]
             Injection::TruncatedScenePush { .. } => "not-device-shaped",
         }
@@ -376,6 +402,8 @@ impl Injection {
             "drop-first-structural" => Injection::DropFirstStructural,
             "bare-confirms" => Injection::BareConfirms,
             "stale-push-after-save" => Injection::StalePushAfterSave,
+            "drop-next-reamp-off" => Injection::DropNextReampOff,
+            "reamp-off-never-lands" => Injection::ReampOffNeverLands,
             "truncated-scene-push" => Injection::TruncatedScenePush {
                 scene: u32_arg("scene")?,
                 cut_before: v
@@ -484,7 +512,7 @@ struct SimState {
     /// drop-first / reject-at adversarial injections.
     structural_seen: u32,
     /// When set, the FIRST structural edit is silently DROPPED (no confirm, no error) —
-    /// reproduces the cold-first-edit drop the held-session path retries past.
+    /// the fw 1.8.45 cold-first-edit belief, whose read-back shows "not landed".
     drop_first: bool,
     /// When set, the FIRST structural edit LANDS but its confirm is lost — the case a
     /// blind re-send would turn into a second block.
@@ -615,6 +643,12 @@ struct SimState {
     /// Whether re-amp is engaged (the `SettingsMessage` toggle). Latched at capture; a
     /// capture with re-amp OFF returns silence (the real device routes no USB return).
     reamp_on: bool,
+    /// [`Injection::DropNextReampOff`]: the next Settings OFF leaves `reamp_on` set, once.
+    drop_next_reamp_off: bool,
+    /// [`Injection::ReampOffNeverLands`]: no Settings OFF clears `reamp_on`.
+    reamp_off_never_lands: bool,
+    /// Set by the first [`SimEvent::ServerAbort`]: every later send returns `Err`.
+    server_aborted: bool,
     /// Capture-fault injection (`POST /sim/fault`): when armed for a slot, that slot's
     /// NEXT capture returns silence once (the leveller's no-signal path), then disarms.
     /// e2e-only — its only reader is the offline capture model.
@@ -730,6 +764,9 @@ impl Default for SimState {
             scene_edit_enabled: std::collections::HashSet::new(),
             ftsw_working: None,
             reamp_on: false,
+            drop_next_reamp_off: false,
+            reamp_off_never_lands: false,
+            server_aborted: false,
             #[cfg(feature = "e2e")]
             fail_capture_slot: None,
             #[cfg(feature = "e2e")]
@@ -1337,6 +1374,8 @@ impl SimDevice {
             Injection::DropFirstStructural => st.drop_first = true,
             Injection::BareConfirms => st.bare_confirms = true,
             Injection::StalePushAfterSave => st.stale_push_after_save = true,
+            Injection::DropNextReampOff => st.drop_next_reamp_off = true,
+            Injection::ReampOffNeverLands => st.reamp_off_never_lands = true,
             #[cfg(feature = "e2e")]
             Injection::TruncatedScenePush { scene, cut_before } => {
                 st.truncated_scene_push = Some((*scene, cut_before.clone()));
@@ -1546,7 +1585,13 @@ impl SimDevice {
                 if let Some(re) = proto::first_bytes(&settings, F_REAMP_SETTING) {
                     let on = proto::first_varint(&proto::parse(re), 1).unwrap_or(0) != 0;
                     let mut st = self.state.lock().expect("sim lock");
-                    st.reamp_on = on;
+                    // The re-amp OFF faults leave the latch ON; the OFF is still recorded.
+                    let dropped = !on
+                        && (st.reamp_off_never_lands
+                            || std::mem::replace(&mut st.drop_next_reamp_off, false));
+                    if !dropped {
+                        st.reamp_on = on;
+                    }
                     st.events.push(SimEvent::ReAmp(on));
                 }
                 if let Some(tap) = proto::first_bytes(&settings, F_TAP_TEMPO_BPM) {
@@ -1700,6 +1745,16 @@ impl SimDevice {
                 node_id: node_id.clone(),
                 fender_id: fender_id.clone(),
             });
+            // static RE that `replaceNode` naming an unknown id throws; whether the server
+            // catches it is OPEN, so the fake models the uncaught case. A narrow rule, on by
+            // default; a general sim abort model may replace it.
+            if !working_group_ids(&mut st, &group, None).contains(&node_id) {
+                server_abort(
+                    &mut st,
+                    format!("replaceNode names {group}/{node_id}, which the group lacks"),
+                );
+                return Vec::new();
+            }
             return confirm_replace(&mut st, group, node_id, fender_id);
         }
         if let Some(rb) = proto::first_bytes(&f, F_REPLACE_WITH_BLOCK) {
@@ -2370,6 +2425,11 @@ pub fn live_state() -> Option<serde_json::Value> {
         "unhandled": unhandled,
         "unhandled_new": unhandled_new,
         "injections": injections,
+        "server_aborts": st
+            .events
+            .iter()
+            .filter(|e| matches!(e, SimEvent::ServerAbort { .. }))
+            .count(),
     }))
 }
 
@@ -3325,6 +3385,22 @@ fn record_unhandled_inner(
     st.unhandled.push(SimEvent::Unhandled { tms, inner, batch });
 }
 
+/// Record a device-server abort: no reply to the request that caused it, and every later
+/// send on this fake fails ([`SimEvent::ServerAbort`]).
+fn server_abort(st: &mut SimState, cause: String) {
+    eprintln!("[sim] SERVER ABORT: {cause}");
+    st.server_aborted = true;
+    st.events.push(SimEvent::ServerAbort { cause });
+}
+
+/// `Err` once the fake's server has aborted ([`server_abort`]).
+fn alive(st: &SimState) -> Result<(), String> {
+    if st.server_aborted {
+        return Err("sim: the device server aborted; no reply".to_string());
+    }
+    Ok(())
+}
+
 /// Produce the framed confirm/reject reply for a structural edit, honoring the
 /// drop-first / lost-confirm / reject-at injections. The flag says whether the edit lands.
 fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (Vec<Vec<u8>>, bool) {
@@ -3350,15 +3426,18 @@ fn structural_reply(st: &mut SimState, confirm_field: u32, payload: &[u8]) -> (V
 impl HidTransport for SimDevice {
     fn send(&self, body: &[u8]) -> Result<(), String> {
         let mut st = self.state.lock().expect("sim lock");
+        alive(&st)?;
         st.events.push(SimEvent::Heartbeat);
         // Unanswered, so it joins the census too: an allow-list of silent kinds needs it.
         record_unhandled(&mut st, body);
         Ok(()) // fire-and-forget (heartbeat) — no reply
     }
     fn transact(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        alive(&self.state.lock().expect("sim lock"))?;
         Ok(self.receive(body))
     }
     fn transact_chunked(&self, body: &[u8], _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        alive(&self.state.lock().expect("sim lock"))?;
         Ok(self.receive(body))
     }
     fn pump(&self, _pump_ms: u64) -> Result<Vec<Vec<u8>>, String> {
@@ -3369,6 +3448,7 @@ impl HidTransport for SimDevice {
         ))
     }
     fn transact_eager(&self, body: &[u8], _max_ms: u64) -> Result<Vec<Vec<u8>>, String> {
+        alive(&self.state.lock().expect("sim lock"))?;
         Ok(self.receive(body))
     }
 }
@@ -5037,7 +5117,8 @@ mod oracle_and_census_tests {
     fn reject_replace_never_answers_an_insert_or_a_remove_with_an_error() {
         let insert = proto::insert_node("G1", None, "ACD_Boost", None);
         let remove = proto::remove_node("G1", "ACD_Boost", None);
-        let replace = proto::replace_node("G1", "ACD_Boost", "ACD_Fuzz", None);
+        // `n2`: a node the default document holds (a missing one aborts the server).
+        let replace = proto::replace_node("G1", "n2", "ACD_Fuzz", None);
         let sim = SimDevice::new();
         assert_eq!(sim.arm(Injection::RejectReplace { nth: 1 }), "reachable");
         assert!(!preset_error_in(&sim.receive(&insert)));
@@ -5050,6 +5131,61 @@ mod oracle_and_census_tests {
     }
 
     #[test]
+    fn a_replace_naming_a_missing_node_aborts_the_server() {
+        let sim = SimDevice::new();
+        let ghost = proto::replace_node("G1", "ghost", "ACD_Fuzz", None);
+        assert!(sim.receive(&ghost).is_empty(), "an abort answers nothing");
+        assert!(
+            sim.events().iter().any(
+                |e| matches!(e, SimEvent::ServerAbort { cause } if cause.contains("G1/ghost"))
+            ),
+            "{:?}",
+            sim.events()
+        );
+        // The narrow model: every later send on this fake fails.
+        let level = proto::set_preset_level(0.5);
+        assert!(sim.transact(&level, 0).is_err());
+        assert!(sim.send(&level).is_err());
+        // A replace of a node the group holds is answered normally.
+        let sim = SimDevice::new();
+        sim.receive(&proto::replace_node("G1", "n2", "ACD_Fuzz", None));
+        assert!(!sim
+            .events()
+            .iter()
+            .any(|e| matches!(e, SimEvent::ServerAbort { .. })));
+        assert!(sim.transact(&level, 0).is_ok());
+    }
+
+    #[test]
+    fn the_reamp_off_faults_keep_the_latch_on() {
+        let off = proto::set_reamp_mode(false);
+        let on = proto::set_reamp_mode(true);
+        let latch = |sim: &SimDevice| sim.state.lock().expect("sim lock").reamp_on;
+        let sim = SimDevice::new();
+        sim.receive(&on);
+        sim.arm(Injection::DropNextReampOff);
+        sim.receive(&off);
+        assert!(latch(&sim), "the next OFF is dropped");
+        sim.receive(&off);
+        assert!(!latch(&sim), "only once");
+        let sim = SimDevice::new();
+        sim.receive(&on);
+        sim.arm(Injection::ReampOffNeverLands);
+        sim.receive(&off);
+        sim.receive(&on);
+        sim.receive(&off);
+        assert!(latch(&sim), "no OFF ever lands");
+        // Every OFF is still recorded as sent.
+        assert_eq!(
+            sim.events()
+                .iter()
+                .filter(|e| matches!(e, SimEvent::ReAmp(false)))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn every_injection_carries_its_reachability_tag() {
         let tags: Vec<_> = [
             Injection::LoseFirstConfirm,
@@ -5057,6 +5193,8 @@ mod oracle_and_census_tests {
             Injection::DropFirstStructural,
             Injection::BareConfirms,
             Injection::StalePushAfterSave,
+            Injection::DropNextReampOff,
+            Injection::ReampOffNeverLands,
         ]
         .iter()
         .map(Injection::tag)
@@ -5068,6 +5206,8 @@ mod oracle_and_census_tests {
                 "reachable",
                 "unreachable",
                 "unreachable",
+                "unverified",
+                "reachable",
                 "unverified"
             ]
         );
