@@ -623,6 +623,10 @@ export interface RunItem {
    *  row whose base pair never entered the `Boost` regime (the common case) and on every
    *  non-base row. */
   baseBoost?: BaseBoostSummary | null;
+  /** The run-end re-amp warning its command returned (`LevelResult.reamp_warning`): the
+   *  OFF could not be read back, so the unit may still be input-muted. The Summary shows
+   *  one banner when any row carries it. */
+  reampWarning?: string | null;
 }
 
 /** A finished row's MEASURED raw ceiling for the reachable-common-target derivation, or null

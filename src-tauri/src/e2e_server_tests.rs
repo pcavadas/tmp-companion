@@ -4831,3 +4831,62 @@ fn events_and_channel_sends_reach_the_ui_ring() {
         ]
     );
 }
+
+/// The run-end re-amp OFF is read back, and an OFF that never reads back OFF reaches the
+/// run result as `reamp_warning` (the Summary renders it). Gate for the stranded re-amp mute:
+/// `reamp_off_guaranteed` used to send its OFF and log "sent" with no read.
+#[test]
+fn a_base_run_whose_final_off_never_lands_carries_the_reamp_warning() {
+    let _serial = serial();
+    let sim = hiwatt_sim();
+    sim.arm(crate::sim_device::Injection::ReampOffNeverLands);
+    let (_app, webview) = level_preset_app();
+    let r = run_base_level(&webview, FRIEDMAN, -23.0, false);
+    assert_eq!(
+        r["reamp_warning"],
+        serde_json::json!(crate::leveller::REAMP_STILL_ON_WARNING),
+        "{r}"
+    );
+}
+
+/// A stale-flag OFF (a no-op that still echoes) inside the run is caught by the run-end
+/// backstop: the run ends with the latch OFF and no warning on the result.
+#[test]
+fn a_base_run_with_a_dropped_off_ends_with_reamp_read_back_off() {
+    let _serial = serial();
+    let sim = hiwatt_sim();
+    sim.arm(crate::sim_device::Injection::DropNextReampOff);
+    let (_app, webview) = level_preset_app();
+    let r = run_base_level(&webview, FRIEDMAN, -23.0, false);
+    assert!(r.get("reamp_warning").is_none(), "{r}");
+    let state = crate::session::Session::connect()
+        .and_then(|mut s| s.read_reamp_state())
+        .expect("read");
+    assert_eq!(state.mixer, Some(false), "the latch ends OFF");
+    assert!(
+        sim.events()
+            .iter()
+            .filter(|e| matches!(e, crate::sim_device::SimEvent::ReAmp(false)))
+            .count()
+            >= 2,
+        "the dropped OFF and the one that landed"
+    );
+}
+
+/// `/sim/state` counts the fake's server aborts (the offline e2e teardown asserts zero).
+#[test]
+fn sim_state_counts_server_aborts() {
+    let _g = serial();
+    let (_app, webview) = reamp_webview();
+    let (_, state) = route_json(&webview, "GET", "/sim/state", serde_json::json!({}));
+    assert_eq!(state["server_aborts"], serde_json::json!(0), "{state}");
+    let mut s = crate::session::Session::connect().expect("connect");
+    let _ = s.replace_node("G1", "no-such-node", "ACD_Boost");
+    drop(s);
+    let (_, state) = route_json(&webview, "GET", "/sim/state", serde_json::json!({}));
+    assert_eq!(state["server_aborts"], serde_json::json!(1), "{state}");
+    assert!(
+        crate::session::Session::connect().is_err(),
+        "the server is down"
+    );
+}

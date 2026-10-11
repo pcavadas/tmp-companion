@@ -458,8 +458,9 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         }
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
         // device drops an in-session OFF sent after ~1 s of idle — every capture).
-        leveller::reamp_off_guaranteed("level_preset");
-        result
+        // Its read-back verdict rides the result (`LevelResult::reamp_warning`).
+        leveller::reamp_off_guaranteed("level_preset")
+            .stamp(result, |r, w| r.reamp_warning = w)
     })
     .await
 }

@@ -671,12 +671,12 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
             let _ = Session::connect_lean().map(|mut s| s.load_preset(slot));
             Ok(())
         };
-        // Guarantee re-amp OFF on a fresh connection.
-        if let Ok(mut s) = Session::connect_lean() {
-            let _ = s.set_reamp_mode(false);
-        }
-        write_result?;
-        Ok(results.into_iter().flatten().collect())
+        // Guarantee re-amp OFF on a fresh connection, read back; its verdict rides every
+        // returned row (the rows already streamed over the channel).
+        let rows = write_result.map(|()| results.into_iter().flatten().collect::<Vec<_>>());
+        leveller::reamp_off_guaranteed("level_footswitches_apply").stamp(rows, |rows, w| {
+            rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
+        })
     })
     .await
 }

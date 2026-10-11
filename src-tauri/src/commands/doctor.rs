@@ -933,6 +933,10 @@ pub struct DoctorApplyJob {
 pub struct DoctorApplyResult {
     pub before_clip: String,
     pub after_clip: String,
+    /// The run-end re-amp warning (`leveller::REAMP_STILL_ON_WARNING`) when the backstop
+    /// could not read re-amp back OFF. Omitted when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reamp_warning: Option<String>,
 }
 
 /// Identity of a cached BEFORE clip: sound + stimulus + diagnosed context.
@@ -1384,14 +1388,14 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
             Ok(DoctorApplyResult {
                 before_clip,
                 after_clip,
+                reamp_warning: None,
             })
         };
         let result = run();
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`). ONLY
         // the reamp toggle — never a load_preset here, which would discard the
         // just-applied unsaved edit buffer on the success path.
-        leveller::reamp_off_guaranteed("doctor_apply");
-        result
+        leveller::reamp_off_guaranteed("doctor_apply").stamp(result, |r, w| r.reamp_warning = w)
     })
     .await
 }

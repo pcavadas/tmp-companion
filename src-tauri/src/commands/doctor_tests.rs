@@ -147,10 +147,23 @@ fn doctor_apply_result_serializes_camel_case() {
     let r = DoctorApplyResult {
         before_clip: "data:audio/wav;base64,AAA".into(),
         after_clip: "data:audio/wav;base64,BBB".into(),
+        reamp_warning: None,
     };
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["beforeClip"], "data:audio/wav;base64,AAA");
     assert_eq!(v["afterClip"], "data:audio/wav;base64,BBB");
+    assert!(
+        v.get("reampWarning").is_none(),
+        "omitted when the OFF read back: {v}"
+    );
+    let warned = DoctorApplyResult {
+        reamp_warning: Some(crate::leveller::REAMP_STILL_ON_WARNING.into()),
+        ..r
+    };
+    assert_eq!(
+        serde_json::to_value(&warned).unwrap()["reampWarning"],
+        crate::leveller::REAMP_STILL_ON_WARNING
+    );
 }
 
 // ── doctor_force_bypass: isolation force-list per sound (base / footswitch) ──

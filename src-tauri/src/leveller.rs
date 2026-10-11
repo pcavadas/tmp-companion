@@ -225,14 +225,17 @@ pub fn doctor_onset(stim_padded: &[f32], samples: &[f32], rate: u32) -> DoctorOn
 /// re-baseline the OTHER thresholds against this shorter recipe.
 pub const DOCTOR_TAIL_DRY_MS: u32 = 300;
 // The device silently DROPS a scene-context write when the session sat IDLE too long
-// immediately before it — a PER-COMMAND idle-gap cliff at ~400–450 ms, NOT a
-// "time since loadScene" window (the earlier reading of the same bisect data). The
-// discriminating HW run (Hiwatt slot 31, fw 1.8.45): the enable-dropped branch's
-// back-to-back 150+300 ms sleeps formed ONE 450 ms idle gap and 6/6 bare scene
-// writes vanished (no presetError, nothing in the working copy, nothing persisted)
-// even though only ~450 ms had passed since `loadScene` — while the bisect's
-// load_scene→300→edit→400→write (max single gap 400 ms) lands and …→450→write
-// drops. Same cliff family as the idle re-amp-OFF drop (`reamp_off_guaranteed`).
+// immediately before it. On fw 1.8.45 this read as a PER-COMMAND idle-gap cliff at
+// ~400–450 ms rather than a "time since loadScene" window. The HW run (Hiwatt slot 31,
+// fw 1.8.45): the enable-dropped branch's back-to-back 150+300 ms sleeps formed ONE
+// 450 ms idle gap and 6/6 bare scene writes vanished (no presetError, nothing in the
+// working copy, nothing persisted) even though only ~450 ms had passed since
+// `loadScene` — while the bisect's load_scene→300→edit→400→write (max single gap
+// 400 ms) lands and …→450→write drops. Those are fw 1.8.45 numbers. On fw 1.8.58 the
+// client lapses 750 ms after the last OUT report, read windows included (740 ms kept,
+// 760 ms dropped, device-confirmed). The companion measures gaps from the command and
+// excludes its read window of up to 300 ms, so 300 + 450 = 750 ms (dropped) and
+// 300 + 400 = 700 ms (lands): the total-window reading is the consistent one (INFERRED).
 // So: keep EVERY pre-write idle gap ≤~300 ms, and never sleep a settle for a
 // command that wasn't sent (the conditional in `set_knobs`).
 const SETTLE_AFTER_SCENE_EDIT_MS: u64 = 300;
@@ -333,6 +336,12 @@ pub struct LevelResult {
     /// planner chose no boost, and on every lane that isn't the base row (block, footswitch,
     /// scene). Mirrored in `src/lib/types.ts`.
     pub base_boost: Option<crate::headroom_trade::BaseBoostSummary>,
+    /// [`REAMP_STILL_ON_WARNING`] when the run-end [`reamp_off_guaranteed`] could not read
+    /// re-amp back OFF; stamped by the command on every row it returns, because it is a fact
+    /// about the RUN, not the row. Omitted from the wire when `None`. Mirrored in
+    /// `src/lib/types.ts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reamp_warning: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1910,6 +1919,7 @@ pub(crate) fn level_preset_impl(
             persist_mismatch: None,
             trade: None,
             base_boost,
+            reamp_warning: None,
         })
     })();
     restore_after_unsaved_error(slot, opts.save, result)
@@ -2098,6 +2108,7 @@ fn apply_base_boost(
                 value: Some(fader_value),
             },
         )),
+        reamp_warning: None,
     })
 }
 
@@ -2494,16 +2505,21 @@ fn set_knob_value_only(s: &mut Session, knob: &LevelKnob, value: f32) -> Result<
 ///   per-scene skip, never a batch abort: `run_scene_jobs` turns a solve `Err` into a
 ///   `failed_scene_outcome` and continues, exactly like a `build_scene_jobs`
 ///   "no active guitar amp" skip.
-///   Re-asserted on EVERY connection (scene + scene-edit don't survive the
-///   leveller's reconnects) — including the enable, since `saved` is a pre-run
+///   Re-asserted on EVERY connection — including the enable. On fw 1.8.45 the scene
+///   and the scene-edit enables read as not surviving the leveller's reconnects; on
+///   fw 1.8.58 both survive (static RE: only the HID open flag and the send queue
+///   reset), and the 1.8.45 symptom fits a same-slot `loadPreset` being a real reload
+///   into `lastLoadedScene`, or a lapse-dropped `loadScene` (INFERRED). Re-asserting
+///   stays safe, but a repeated enable on an overlay that is already Full reseeds it
+///   from base. The enable repeats because `saved` is a pre-run
 ///   snapshot: an overlay this run just materialised still reads Absent, so the
 ///   enable repeats and reseeds again. Harmless, because the leveled write always
 ///   follows it inside the same batch — do NOT "optimise" it into a cached
 ///   per-node enabled set, which would drop the enable on a later connection where
 ///   the device no longer has scene edit armed.
 ///   The settles must stay SHORT: the device silently drops a write after a
-///   ~400–450 ms pre-write IDLE gap (see `SETTLE_AFTER_SCENE_EDIT_MS` — a
-///   per-command cliff, so a settle is slept ONLY when its command was sent);
+///   ~400–450 ms pre-write IDLE gap (see `SETTLE_AFTER_SCENE_EDIT_MS` — measured as a
+///   per-command cliff on fw 1.8.45, so a settle is slept ONLY when its command was sent);
 ///   the rare too-fast leak-to-base race is covered by the verify + correction
 ///   pass.
 /// * A base-only target set (`Block { scene_slot: None, .. }`, no `Some`) gets
@@ -2753,20 +2769,155 @@ pub(crate) fn engage_capture_disengage(
     cap
 }
 
-/// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
-/// command that engages re-amp must call, success or failure. The device
-/// silently DROPS a `set_reamp_mode(false)` sent on a session that has sat
-/// idle >~1 s (HW-bisected: 300 ms lands, 1 s+ drops; heartbeats through the
-/// idle rescue it — the same session-lapse cliff as the ~700 ms scene-write
-/// drop), and every ~7 s leveling capture idles that long, so the in-session
-/// disengage after each capture cannot be trusted. A dropped final OFF strands
-/// the unit input-muted until a power-cycle (HW-observed; recovery:
-/// `probe --reamp-off`). `tag` names the calling lane in the log lines.
-pub(crate) fn reamp_off_guaranteed(tag: &str) {
-    match Session::connect_lean().and_then(|mut s| s.set_reamp_mode(false)) {
-        Ok(_) => log::info!("{tag}: final re-amp OFF sent"),
-        Err(e) => log::warn!("{tag}: final re-amp OFF failed ({e})"),
+/// What the user is told when [`reamp_off_guaranteed`] cannot read the Mixer store back OFF.
+pub(crate) const REAMP_STILL_ON_WARNING: &str =
+    "Re-amp may still be on. Unplug and replug the unit.";
+
+/// How a [`reamp_off_guaranteed`] run ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReampOffOutcome {
+    /// The Mixer store (the audio path, [`Session::read_reamp_state`]) read back OFF.
+    /// `false` covers both a store still ON and a store that never answered.
+    pub(crate) verified: bool,
+}
+
+impl ReampOffOutcome {
+    /// The run-result warning: [`REAMP_STILL_ON_WARNING`] unless the OFF was verified.
+    pub(crate) fn warning(self) -> Option<String> {
+        (!self.verified).then(|| REAMP_STILL_ON_WARNING.to_string())
     }
+
+    /// `e` with the warning appended, for a run that failed AND left re-amp unverified. The
+    /// [`CANCELLED`] sentinel is returned untouched: callers compare it by equality.
+    pub(crate) fn annotate_err(self, e: String) -> String {
+        match self.warning() {
+            Some(w) if e != CANCELLED => format!("{e} — {w}"),
+            _ => e,
+        }
+    }
+
+    /// Stamp the warning on every row of a run's result, or append it to the run's error.
+    pub(crate) fn stamp<T>(
+        self,
+        result: Result<T, String>,
+        rows: impl FnOnce(&mut T, Option<String>),
+    ) -> Result<T, String> {
+        match result {
+            Ok(mut r) => {
+                rows(&mut r, self.warning());
+                Ok(r)
+            }
+            Err(e) => Err(self.annotate_err(e)),
+        }
+    }
+}
+
+/// GUARANTEED re-amp OFF on a fresh connection — the run-end backstop every
+/// command that engages re-amp must call, success or failure. The in-session
+/// disengage after each capture cannot be trusted: on fw 1.8.45 an OFF sent after more
+/// than ~1 s of idle was silently dropped (HW-bisected: 300 ms lands, 1 s+ drops), and on
+/// fw 1.8.58 an OFF to a lapsed session draws ConnectionError(0) and is discarded
+/// (device-confirmed). `TrackedHid` reopens a client after 600 ms of silence, which
+/// covers the known lapse shapes. A unit stranded re-amp-ON is input-muted; it recovers
+/// with `probe --reamp-off`, not a power-cycle (`danger.md`). `tag` names the calling
+/// lane in the log lines.
+///
+/// The OFF is read back: after it, the Mixer store is read on the same session
+/// ([`Session::read_reamp_state`]), and a store still ON (or silent) climbs a ladder —
+/// one more OFF on a fresh connection, then a Settings ON → OFF on a fresh connection,
+/// which re-syncs both stores when a stale Settings flag made the OFF a no-op that still
+/// echoes (device-confirmed) — reading back after each step. If none reads OFF, the
+/// outcome is unverified: it is logged as an error and [`ReampOffOutcome::warning`] goes
+/// on the run result. The ladder only ever ADDS work after the first OFF; it never skips
+/// or delays it, and it never sends Mixer `setReAmpMode`(15), which desyncs the two
+/// stores (`danger.md`). Callers keep calling it on every exit path.
+pub(crate) fn reamp_off_guaranteed(tag: &str) -> ReampOffOutcome {
+    reamp_off_ladder(tag, Session::connect_lean)
+}
+
+/// One rung of the [`reamp_off_ladder`] past the first OFF: its log name and its sends.
+type ReampRung<'a> = (&'a str, &'a dyn Fn(&mut Session) -> Result<(), String>);
+
+/// [`reamp_off_guaranteed`] over any `connect` (a test hands it a fake's sessions).
+fn reamp_off_ladder(
+    tag: &str,
+    mut connect: impl FnMut() -> Result<Session, String>,
+) -> ReampOffOutcome {
+    // The Mixer store, read on `s` with kept-alive waits; `None` = no reply (never OFF).
+    let read = |s: &mut Session, step: &str| match s.read_reamp_state() {
+        Ok(state) => {
+            if state.mixer.is_some() && state.settings != state.mixer {
+                log::warn!(
+                    "{tag}: re-amp stores disagree after {step} (mixer {:?}, settings {:?})",
+                    state.mixer,
+                    state.settings
+                );
+            }
+            state.mixer
+        }
+        Err(e) => {
+            log::warn!("{tag}: re-amp read-back after {step} failed ({e})");
+            None
+        }
+    };
+    // Step 1: the OFF itself, first and unconditional, then the read on the same session.
+    let mixer = match connect() {
+        Ok(mut s) => match s.set_reamp_mode(false) {
+            Ok(_) => {
+                log::info!("{tag}: final re-amp OFF sent");
+                read(&mut s, "the final OFF")
+            }
+            Err(e) => {
+                log::warn!("{tag}: final re-amp OFF failed ({e})");
+                None
+            }
+        },
+        Err(e) => {
+            log::warn!("{tag}: final re-amp OFF failed ({e})");
+            None
+        }
+    };
+    if mixer == Some(false) {
+        return ReampOffOutcome { verified: true };
+    }
+    log::warn!("{tag}: re-amp read back {mixer:?} after the final OFF; climbing the ladder");
+    // Step 2: one more OFF on a fresh connection.
+    let off_again = |s: &mut Session| s.set_reamp_mode(false).map(|_| ());
+    // Step 3: Settings ON then OFF, which re-syncs both stores.
+    let resync = |s: &mut Session| {
+        s.set_reamp_mode(true)?;
+        s.set_reamp_mode(false).map(|_| ())
+    };
+    let rungs: [ReampRung; 2] = [
+        ("a fresh-connection OFF", &off_again),
+        ("a Settings ON then OFF", &resync),
+    ];
+    let mut last = mixer;
+    for (step, send) in rungs {
+        // Each rung's session drops before the next `connect`: never two seizes at once.
+        last = match connect() {
+            Ok(mut s) => match send(&mut s) {
+                Ok(()) => read(&mut s, step),
+                Err(e) => {
+                    log::warn!("{tag}: {step} failed ({e})");
+                    None
+                }
+            },
+            Err(e) => {
+                log::warn!("{tag}: {step} could not connect ({e})");
+                None
+            }
+        };
+        if last == Some(false) {
+            log::info!("{tag}: re-amp read back OFF after {step}");
+            return ReampOffOutcome { verified: true };
+        }
+    }
+    log::error!(
+        "{tag}: {REAMP_STILL_ON_WARNING} The Mixer store read {last:?} after every OFF the \
+         run-end ladder sent (recovery: `probe --reamp-off`)."
+    );
+    ReampOffOutcome { verified: false }
 }
 
 /// One as-is scene reading: fresh connection, recall, engage, measure, disengage —
@@ -3018,6 +3169,9 @@ pub struct FootswitchLevelResult {
     /// the re-read failed, or a path without the verify). It reads the STORED row
     /// (`presetDataRequest`), which on fw 1.8.58 holds a save the moment its handler returns.
     pub persist_mismatch: Option<bool>,
+    /// The run-end re-amp warning, as on [`LevelResult::reamp_warning`]. Omitted when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reamp_warning: Option<String>,
 }
 
 /// How to write the leveling `param` function — resolved by the caller (edit an existing
@@ -3673,6 +3827,7 @@ pub fn fs_result_from_ceiling(
         dynamic_spread_lu: Some(ceiling.spread_lu),
         method: method.to_string(),
         persist_mismatch: None,
+        reamp_warning: None,
     }
 }
 
@@ -3871,6 +4026,7 @@ impl ParamSolve {
             dynamic_spread_lu: self.spread_lu,
             method: method.into(),
             persist_mismatch: None,
+            reamp_warning: None,
         }
     }
 }
@@ -12026,5 +12182,147 @@ mod onset_gate {
             DOCTOR_TAIL_MS,
         );
         assert_eq!(ratio, -80.0);
+    }
+}
+
+/// The run-end re-amp OFF ladder (`reamp_off_ladder`) over the fake: every rung, its
+/// verdict, and the one write it must never send.
+#[cfg(test)]
+mod reamp_off_ladder_tests {
+    use super::*;
+    use crate::hid::HidTransport;
+    use crate::proto;
+    use crate::sim_device::{Injection, SimDevice, SimEvent};
+    use std::sync::{Arc, Mutex};
+
+    fn session(sim: &SimDevice) -> Session {
+        Session::from_transport(Box::new(sim.clone()))
+    }
+
+    /// An engaged fake with `injection` armed.
+    fn engaged(injection: Injection) -> SimDevice {
+        let sim = SimDevice::new();
+        session(&sim).set_reamp_mode(true).expect("engage");
+        sim.arm(injection);
+        sim
+    }
+
+    fn reamp_writes(sim: &SimDevice) -> Vec<bool> {
+        sim.events()
+            .into_iter()
+            .filter_map(|e| match e {
+                SimEvent::ReAmp(on) => Some(on),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stale_flag_off_is_caught_by_the_read_and_the_fresh_off_lands() {
+        let sim = engaged(Injection::DropNextReampOff);
+        let out = reamp_off_ladder("test", || Ok(session(&sim)));
+        assert!(out.verified, "the second OFF lands and reads back OFF");
+        assert_eq!(out.warning(), None);
+        assert_eq!(
+            session(&sim).read_reamp_state().expect("read").mixer,
+            Some(false),
+            "the fake's latch ends OFF"
+        );
+        // Engage, the dropped OFF, the fresh-connection OFF; no Settings re-sync needed.
+        assert_eq!(reamp_writes(&sim), [true, false, false]);
+    }
+
+    #[test]
+    fn a_clean_off_is_verified_with_no_extra_write() {
+        let sim = SimDevice::new();
+        session(&sim).set_reamp_mode(true).expect("engage");
+        let out = reamp_off_ladder("test", || Ok(session(&sim)));
+        assert!(out.verified);
+        assert_eq!(reamp_writes(&sim), [true, false]);
+    }
+
+    #[test]
+    fn an_off_that_never_lands_climbs_every_rung_and_warns() {
+        let sim = engaged(Injection::ReampOffNeverLands);
+        let out = reamp_off_ladder("test", || Ok(session(&sim)));
+        assert!(!out.verified);
+        assert_eq!(out.warning().as_deref(), Some(REAMP_STILL_ON_WARNING));
+        // Engage; the final OFF; one more OFF; the Settings ON → OFF re-sync.
+        assert_eq!(reamp_writes(&sim), [true, false, false, true, false]);
+        assert_eq!(
+            out.annotate_err("boom".into()),
+            format!("boom — {REAMP_STILL_ON_WARNING}")
+        );
+        assert_eq!(out.annotate_err(CANCELLED.into()), CANCELLED);
+    }
+
+    #[test]
+    fn a_failed_connect_never_verifies() {
+        let out = reamp_off_ladder("test", || Err("no device".to_string()));
+        assert!(!out.verified);
+    }
+
+    /// Records every body a session sends, then hands it to the fake.
+    struct Recording {
+        sim: SimDevice,
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl Recording {
+        fn log(&self, body: &[u8]) {
+            self.sent.lock().expect("log").push(body.to_vec());
+        }
+    }
+
+    impl HidTransport for Recording {
+        fn send(&self, body: &[u8]) -> Result<(), String> {
+            self.log(body);
+            self.sim.send(body)
+        }
+        fn transact(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.log(body);
+            self.sim.transact(body, ms)
+        }
+        fn transact_chunked(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.log(body);
+            self.sim.transact_chunked(body, ms)
+        }
+        fn pump(&self, ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.sim.pump(ms)
+        }
+        fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
+            self.log(body);
+            self.sim.transact_eager(body, ms)
+        }
+    }
+
+    /// The MixerMessage(5) fields `body` carries (empty when it is not a Mixer message).
+    fn mixer_fields(body: &[u8]) -> Vec<u32> {
+        proto::first_bytes(&proto::parse(body), 5)
+            .map(|m| proto::parse(m).iter().map(|(f, _)| *f).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_ladder_never_sends_mixer_set_reamp_mode() {
+        // Every rung runs: the OFF never lands.
+        let sim = engaged(Injection::ReampOffNeverLands);
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let out = reamp_off_ladder("test", || {
+            Ok(Session::from_transport(Box::new(Recording {
+                sim: sim.clone(),
+                sent: sent.clone(),
+            })))
+        });
+        assert!(!out.verified);
+        let sent = sent.lock().expect("log");
+        let mixer: Vec<u32> = sent.iter().flat_map(|b| mixer_fields(b)).collect();
+        // Non-vacuity: the decoder sees the Mixer reads (reAmpModeRequest, field 4), one per
+        // rung.
+        assert_eq!(mixer.iter().filter(|f| **f == 4).count(), 3, "{mixer:?}");
+        assert!(
+            !mixer.contains(&15),
+            "the ladder sent Mixer setReAmpMode(15), which desyncs the two stores: {mixer:?}"
+        );
     }
 }

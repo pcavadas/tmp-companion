@@ -191,6 +191,10 @@ export function SummaryPage({
   const leveled = items.filter((it) => it.outcome === "done");
   const skipped = items.filter((it) => it.outcome === "skipped");
   const notrun = items.filter((it) => it.outcome == null);
+  // The run-end re-amp OFF could not be read back: one banner for the whole run, in the
+  // backend's own words (`leveller::REAMP_STILL_ON_WARNING`).
+  const reampWarning =
+    items.find((it) => it.reampWarning)?.reampWarning ?? null;
   const total = items.length;
   const allGood =
     offbr.length === 0 &&
@@ -317,7 +321,8 @@ export function SummaryPage({
         </>
       }
     >
-      {(offbrAmpZero.length > 0 ||
+      {(reampWarning !== null ||
+        offbrAmpZero.length > 0 ||
         offbrExpMute.length > 0 ||
         offbrRouting.length > 0 ||
         clamped.length > 0) && (
@@ -329,6 +334,15 @@ export function SummaryPage({
             gap: t.space4,
           }}
         >
+          {reampWarning !== null &&
+            guidanceBanner(
+              "warn-tri",
+              t.warn,
+              t.warnSoft,
+              t.warnBorder,
+              "Re-amp may still be on",
+              reampWarning,
+            )}
           {offbrAmpZero.length > 0 &&
             guidanceBanner(
               "x",

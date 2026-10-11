@@ -555,8 +555,9 @@ pub(crate) async fn level_scenes_apply(
         let result = run();
         // Run-end backstop, success or failure (see `reamp_off_guaranteed`: the
         // device drops an in-session OFF sent after ~1 s of idle — every capture).
-        leveller::reamp_off_guaranteed("level_scenes_apply");
-        result
+        leveller::reamp_off_guaranteed("level_scenes_apply").stamp(result, |rows, w| {
+            rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
+        })
     })
     .await
 }
@@ -980,8 +981,11 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
             }
             Err(e) => Err(e),
         };
-        leveller::reamp_off_guaranteed("level_scenes_apply_batched");
-        result
+        // The rows stream over the channel before this OFF, so its verdict rides the
+        // returned rows (every one: it is a fact about the run).
+        leveller::reamp_off_guaranteed("level_scenes_apply_batched").stamp(result, |rows, w| {
+            rows.iter_mut().for_each(|r| r.reamp_warning.clone_from(&w))
+        })
     })
     .await
 }
@@ -1581,6 +1585,7 @@ fn outcome_to_level_result(
         trade: trade.cloned(),
         // Only `level_preset`'s base arm plans a boost (`level_preset_impl`'s v1 routing gate).
         base_boost: None,
+        reamp_warning: None,
     }
 }
 

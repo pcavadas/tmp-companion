@@ -167,6 +167,17 @@ const byEarCause = (r: LevelOutcomeFields): RunItem["verifyByEar"] =>
         ? "rebalance"
         : undefined;
 
+/** Copy a batched command's run-end re-amp warning (stamped on every row it returned)
+ *  onto every run item of the batch, so the Summary can show it. */
+const stampReampWarning = (
+  group: RunItem[],
+  rows: readonly { reamp_warning?: string | null }[],
+): void => {
+  const warning = rows.find((r) => r.reamp_warning)?.reamp_warning ?? null;
+  if (!warning) return;
+  for (const g of group) g.reampWarning = warning;
+};
+
 /** A run row that levels via amp `outputLevel` in scene mode — not Base (`presetLevel`), not
  *  a block-acting footswitch. The run loop batches these. */
 const isSceneItem = (it: RunItem): boolean =>
@@ -542,6 +553,7 @@ export function useLevelingFlow({
               it.truePeakDbtp = res.true_peak_dbtp;
               it.verifyByEar = causeOf(res);
               it.baseBoost = res.base_boost;
+              it.reampWarning = res.reamp_warning ?? null;
             } else {
               // A scene item with no wire slot — nothing to level.
               it.outcome = "skipped";
@@ -585,7 +597,7 @@ export function useLevelingFlow({
           markGroupActive(bySwitch, i);
           let failureReason: string | null = null;
           try {
-            await levelFootswitchesApply(
+            const rows = await levelFootswitchesApply(
               {
                 slot: it.slot,
                 jobs: group.flatMap((g) => {
@@ -604,6 +616,9 @@ export function useLevelingFlow({
                 resolveFs(item.switch, item.status, item.result, item.message);
               },
             );
+            // The rows streamed before the run-end re-amp OFF; its verdict rides the
+            // returned rows only.
+            stampReampWarning(group, rows);
           } catch (error) {
             failureReason = errMsg(error);
           }
@@ -676,7 +691,7 @@ export function useLevelingFlow({
           ? { targetLufs: targetOf(baseItem) }
           : undefined;
         // ponytail: per-scene outcomes arrive via the Channel (`onResult`), NOT the returned
-        // Promise value (deliberately discarded). `LevelResult` DOES now carry `scene_slot`
+        // Promise value — read only for the run-end re-amp warning. `LevelResult` DOES now carry `scene_slot`
         // (identity, not position — the batch filters failed scenes out of the array it
         // returns), so a reconcile-by-scene off the return value is available if a
         // dropped-stream-item hardening is ever wanted; it simply isn't needed while the
@@ -686,7 +701,7 @@ export function useLevelingFlow({
         // instead — see level-defaults.spec.ts).
         let failureReason: string | null = null;
         try {
-          await levelScenesApplyBatched(
+          const rows = await levelScenesApplyBatched(
             {
               slot: it.slot,
               // Unlike the footswitch job's `lev*` fields (plain `String`s that reject an
@@ -716,6 +731,7 @@ export function useLevelingFlow({
               );
             },
           );
+          stampReampWarning(group, rows);
         } catch (error) {
           failureReason = errMsg(error);
         }

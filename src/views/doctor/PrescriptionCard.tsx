@@ -207,6 +207,8 @@ export function PrescriptionCard({
       // local state updates here; there's no mounted UI left to show them.
       if (mountedRef.current) {
         setClips(res);
+        // The run-end re-amp OFF could not be read back: say so in the card's notice line.
+        setError(res.reampWarning ?? null);
         setAppliedOps(ops);
         setAppliedScene(scene ?? null);
         setPhase("applied");

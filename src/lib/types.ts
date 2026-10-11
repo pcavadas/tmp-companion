@@ -195,6 +195,10 @@ export interface LevelResult {
    * entered the `Boost` regime, and on every lane that isn't the base row (block,
    * footswitch, scene). */
   base_boost: BaseBoostSummary | null;
+  /** "Re-amp may still be on. Unplug and replug the unit." when the run-end re-amp OFF
+   * could not be read back OFF (`leveller::REAMP_STILL_ON_WARNING`). A fact about the
+   * RUN, stamped on every row it returns; absent when the OFF read back. */
+  reamp_warning?: string | null;
 }
 
 /** WHICH sound a trade row / clamp error describes (mirrors `headroom_trade::SoundId`,
@@ -323,6 +327,8 @@ export interface FootswitchLevelResult {
   /** The clamp's CAUSE from the shared taxonomy — see `LevelResult.clamp_kind`. Additive
    * alongside `clamp_reason`/`wet_floor`, which keep their documented contracts verbatim. */
   clamp_kind: ClampKind | null;
+  /** The run-end re-amp warning — see `LevelResult.reamp_warning`. */
+  reamp_warning?: string | null;
 }
 
 /** Result of leveling a whole setlist to one common target
@@ -1236,4 +1242,6 @@ export interface DoctorApplyJob {
 export interface DoctorApplyResult {
   beforeClip: string;
   afterClip: string;
+  /** The run-end re-amp warning — see `LevelResult.reamp_warning`. */
+  reampWarning?: string | null;
 }
