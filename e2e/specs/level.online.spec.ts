@@ -25,7 +25,7 @@ import {
 // a `scenario-loudness.json` ceiling) is a sim-model truth, not a device one, and asserting it
 // directly has already failed against real hardware once.
 // Measured real-device run: ~26-27 min, ~5 min of it two fixed 150 s T5 stalls for a lazy save
-// commit that fw 1.8.58 does not have (tmp-audit Q34) — both are gone.
+// commit that fw 1.8.58 does not have — both are gone.
 // Rows this file emits per run: T1′'s 1 base + `SCENES_410.length`, T5's 1 base +
 // `SWITCH_SPECS_405.length` — `scripts/e2e.sh` greps the line below and compares by EQUALITY.
 // STRICT_VALIDATE_ROWS=6

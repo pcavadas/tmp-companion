@@ -448,7 +448,7 @@ fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, 
 //
 // The stored row is checked over field 8 (`presetDataRequest`), which holds an import the
 // moment it returns. A body the firmware rejects only shows at its first real LOAD (fw
-// 1.8.58, tmp-audit Q35), which `replace_inplace_with` already proves for every import
+// 1.8.58), which `replace_inplace_with` already proves for every import
 // before it returns.
 
 /// Where the empty-body substitution is written up — quoted in the hard error so the
@@ -1157,7 +1157,7 @@ mod tests {
         ));
     }
 
-    /// BUG→GATE (tmp-audit Q35, fw 1.8.58): a rejected import's stored row is the fixture
+    /// BUG→GATE (fw 1.8.58): a rejected import's stored row is the fixture
     /// VERBATIM, so every field-8 check passes it; only its first real load shows the
     /// substitute (template `preset_id`, zero blocks, name kept). For every committed
     /// fixture, the load proof must pass the fixture's own working copy and refuse that

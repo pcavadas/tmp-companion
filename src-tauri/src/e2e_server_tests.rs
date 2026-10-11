@@ -2013,7 +2013,7 @@ fn offline_songs_crud_through_real_backend() {
     assert!(!sim.song_names().iter().any(|n| n == "Opening Set"));
 }
 
-/// The batched song saves run on ONE device connection (tmp-audit Q40 follow-up): a
+/// The batched song saves run on ONE device connection: a
 /// create with notes + BPM + a setlist, then an edit with a rename + BPM, each open the
 /// device once, land the BPM (no "didn't land" warning) and return the fresh list.
 #[test]

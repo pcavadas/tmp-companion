@@ -825,7 +825,7 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
                 // correct cleanup is a full reload, unconditionally, mirroring the unbatched
                 // path's own dirt handling. A cancel must not skip it either (danger.md). A
                 // same-slot load reloads the stored preset only over a DIRTY working copy (fw
-                // 1.8.58, tmp-audit Q34(d), HW-shown for a `presetLevel` edit; that a forced
+                // 1.8.58, HW-shown for a `presetLevel` edit; that a forced
                 // bypass's `changeParameter` sets the flag is static RE only). The deleted fw
                 // 1.8.45 barrier issued this same load.
                 //

@@ -19,7 +19,7 @@
 //! (the reports land in `Session::raw`); the subsequent heartbeat `pump`s return empty,
 //! exactly as the confirm loop expects.
 //!
-//! **Same-slot load (fw 1.8.58, tmp-audit Q4/Q34):** a `loadPreset` of the loaded slot
+//! **Same-slot load (fw 1.8.58):** a `loadPreset` of the loaded slot
 //! ([`SimState::loaded_identity`]: the last real load, or the last save's target) over a clean
 //! working copy, in its stored `lastLoadedScene`, is a NO-OP that keeps the working copy and
 //! still pushes it. Every working-copy edit, `loadScene` included, sets
@@ -28,7 +28,7 @@
 //!
 //! **Saved doc (e2e only):** a save is tracked per slot ([`SimState::saved_levels`]) and a
 //! later REAL load of that slot materializes it, as the real device does on fw 1.8.58 (a
-//! save is durable when its handler returns — tmp-audit Q34). The doc is `presetLevel` PLUS a
+//! save is durable when its handler returns). The doc is `presetLevel` PLUS a
 //! footswitch bake's own baked param PLUS a scene deferred save's own overlay param PLUS the
 //! `ftsw` array (`SavedDoc`) — narrower than a full merged presetJson still (the CAPTURE MODEL
 //! doesn't reseed a scene overlay's write on load, only its TEXT round-trips; `SavedDoc`'s doc
@@ -270,7 +270,7 @@ pub enum SimEvent {
 /// Rows per song: the six assignable song footswitches.
 const SIM_SONG_ROWS: usize = 6;
 
-/// One song, modeled on the fw 1.8.58 static RE (tmp-audit Q40). Its BPM changes only
+/// One song, modeled on the fw 1.8.58 static RE. Its BPM changes only
 /// through `tapTempoBpm`, which writes the ACTIVE song's BPM iff that song's `bpm_active`
 /// is ALREADY on; with the flag off the tap goes to the global tempo and the song keeps
 /// its BPM. `setSongBpmActive(true)` sets the flag and re-applies the STORED BPM — it never
@@ -422,11 +422,11 @@ struct SimState {
     /// The 0-based list index of the last REAL `loadPreset` (the sidecar / stored-knob key).
     /// A skipped same-slot load leaves it alone, and so does a save to another slot.
     current_slot: u32,
-    /// The device's load identity (fw 1.8.58 `isPresetLoaded`, tmp-audit Q4): `(tab, song,
+    /// The device's load identity (fw 1.8.58 `isPresetLoaded`): `(tab, song,
     /// song row, slot)`, what a `loadPreset` is compared against. Set by a real load AND by a
     /// save, which moves it to `(1, 0, 0, saved slot)`. `None` until the first load.
     loaded_identity: Option<(u64, u32, u32, u32)>,
-    /// The working copy's dirty flag (`CurrentPresetModel +0x686`, tmp-audit Q4/Q34): set by
+    /// The working copy's dirty flag (`CurrentPresetModel +0x686`): set by
     /// every working-copy edit, cleared by a real load and by a save. While it is clear, a
     /// `loadPreset` of [`SimState::loaded_identity`] is a NO-OP that keeps the working copy.
     dirty: bool,
@@ -846,7 +846,7 @@ impl SimState {
     /// confirm paths (`footswitch::existing_param_fn_index` returning `None`) read the same
     /// whether or not siblings shifted.
     /// Returns whether a function was removed. The device refuses an address above 19, an
-    /// index of 5 or more, or an index past the switch's last function (tmp-audit Q4a).
+    /// index of 5 or more, or an index past the switch's last function.
     fn ftsw_clear(&mut self, addr: u32, index: u32) -> bool {
         if addr > 19 || index >= 5 {
             return false;
@@ -1363,7 +1363,7 @@ impl SimDevice {
                     let bpm = proto::first_f32(&proto::parse(tap), 1).unwrap_or(0.0);
                     let mut st = self.state.lock().expect("sim lock");
                     st.events.push(SimEvent::TapTempo(bpm));
-                    // Lands in the active song only when its flag is ALREADY on (Q40).
+                    // Lands in the active song only when its flag is ALREADY on.
                     let active = st.active_song.and_then(|a| (a as usize).checked_sub(1));
                     if let Some(song) = active.and_then(|i| st.songs.get_mut(i)) {
                         if song.bpm_active {
@@ -1386,7 +1386,7 @@ impl SimDevice {
             let song = proto::first_varint(&load, 4).unwrap_or(0) as u32;
             let row = proto::first_varint(&load, 5).unwrap_or(0) as u32;
             let identity = (tab, song, row, slot0);
-            // fw 1.8.58 `CurrentPresetModel::load` (tmp-audit Q4, device-shown in Q34): a load
+            // fw 1.8.58 `CurrentPresetModel::load` (device-shown): a load
             // with the loaded identity, over a clean working copy, in the scene it was stored
             // in, is skipped. The working copy and DSP stay exactly as they are, but the load
             // pushes still go out, now rendering that working copy.
@@ -1555,7 +1555,7 @@ impl SimDevice {
                 group: group.clone(),
                 node_id: node_id.clone(),
             });
-            // Marks dirty on every request, even for an unknown node id (tmp-audit Q4a).
+            // Marks dirty on every request, even for an unknown node id.
             st.dirty = true;
             return confirm_structural(
                 &mut st,
@@ -1577,7 +1577,7 @@ impl SimDevice {
             st.saved_scene.insert(slot0, scene);
             st.events.push(SimEvent::Saved(slot0));
             // `saveTo` clears the dirty flag and makes the saved slot the load identity, even
-            // when it is not the slot that was loaded (tmp-audit Q4).
+            // when it is not the slot that was loaded.
             st.dirty = false;
             st.loaded_identity = Some((1, 0, 0, slot0));
             if st.stale_push_after_save {
@@ -1612,7 +1612,7 @@ impl SimDevice {
             };
             st.events.push(SimEvent::LoadScene(wire_slot));
             // The loadScene handler sets the dirty flag unconditionally (fw 1.8.58 static RE,
-            // tmp-audit `companion-load_scene_handler.c`), so the next same-slot load is real.
+            // static RE of the load-scene handler), so the next same-slot load is real.
             st.dirty = true;
             // A recall runs the device's own level-apply — base included — silently
             // reverting an unsaved working-copy `presetLevel` to the currently-SAVED
@@ -1712,8 +1712,7 @@ impl SimDevice {
                 node: node.clone(),
                 enable,
             });
-            // Marks dirty in any real scene, for enable and disable alike; refused on base
-            // (tmp-audit Q4a).
+            // Marks dirty in any real scene, for enable and disable alike; refused on base.
             if st.current_scene.is_some() {
                 st.dirty = true;
             }
@@ -1791,7 +1790,7 @@ impl SimDevice {
             let index = proto::first_varint(&inner, 2).unwrap_or(0) as u32;
             st.events
                 .push(SimEvent::ClearFootswitchAssignment { addr, index });
-            // Marks dirty only when the clear succeeds (tmp-audit Q4a).
+            // Marks dirty only when the clear succeeds.
             if st.ftsw_clear(addr, index) {
                 st.dirty = true;
             }
@@ -1855,7 +1854,7 @@ impl SimDevice {
         if let Some(add) = proto::first_bytes(&f, F_SETLIST_SONG_ADD) {
             // {setlistSlot=1, songSlot=2}: append the global song slot. The firmware
             // resolves the slot to a song id first and adds nothing when none exists
-            // (tmp-audit Q51's `SELECT id FROM Songs WHERE slot = ?`).
+            // (a `SELECT id FROM Songs WHERE slot = ?`).
             let inner = proto::parse(add);
             if let (Some(members), Some(song)) =
                 (members_of(lists, &inner), slot_index(&inner, 2, song_count))
@@ -1959,7 +1958,7 @@ impl SimDevice {
                     other => other,
                 };
                 // Setlist members drop the removed song and follow the shift (fw 1.8.58
-                // static RE, tmp-audit Q51; not HW-checked): `removeSong` is a plain
+                // static RE; not HW-checked): `removeSong` is a plain
                 // `DELETE FROM Songs`, `SetlistSongs` cascades on the song id, a trigger
                 // closes the position gap, and the membership read reports the
                 // renumbered `Songs.slot`.
@@ -3638,7 +3637,7 @@ mod physics_tests {
         );
     }
 
-    // ── saved `presetLevel`: durable the moment the save returns (fw 1.8.58, tmp-audit Q34) ──
+    // ── saved `presetLevel`: durable the moment the save returns (fw 1.8.58) ──
 
     /// The field-8 read body's `audioGraph.presetLevel`, via a real `Session` (proves the
     /// wire round-trip, not just the internal store).
@@ -4195,8 +4194,8 @@ mod batch_model_tests {
     }
 }
 
-/// fw 1.8.58's same-slot load (tmp-audit Q4/Q34): a no-op over a clean working copy, a real
-/// reload once an edit has set the dirty flag (which commands set it: Q4a).
+/// fw 1.8.58's same-slot load: a no-op over a clean working copy, a real
+/// reload once an edit has set the dirty flag (the handlers that set `dirty`).
 #[cfg(test)]
 mod same_slot_load_tests {
     use super::*;
@@ -4455,7 +4454,7 @@ mod same_slot_load_tests {
         assert!(sim.state.lock().expect("sim lock").ftsw_working.is_none());
     }
 
-    /// The Q34(d) device shape on the saved `presetLevel`, with the live value moved by a
+    /// The device-checked shape on the saved `presetLevel`, with the live value moved by a
     /// poke as in [`poke_knob`]: the clean load keeps it, and after `setPresetLevel` the
     /// load restores the saved 0.81.
     #[cfg(feature = "e2e")]

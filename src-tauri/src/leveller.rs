@@ -416,8 +416,8 @@ pub const CANCELLED: &str = "cancelled";
 /// measuring. `save=false` is a preview/read-only contract for callers: the TMP
 /// edit buffer may be mutated during capture, but it must not remain dirty.
 ///
-/// fw 1.8.58 skips a same-slot `loadPreset` while the working copy's dirty flag is clear
-/// (tmp-audit Q4), keeping the working copy. Every edit the callers make sets the flag
+/// fw 1.8.58 skips a same-slot `loadPreset` while the working copy's dirty flag is clear,
+/// keeping the working copy. Every edit the callers make sets the flag
 /// (HW 2026-10-10, `probe --restore-check`), but a clear flag can still hide a stale
 /// working copy, and reading `isDirty` costs ~1.1 s. So the restore always loads a
 /// neighbour slot first, which forces the reload (+0.34 s on HW: 1.67 s vs 1.33 s).
@@ -8493,8 +8493,8 @@ mod tests {
             .collect()
     }
 
-    /// BUG→GATE: fw 1.8.58 skips a same-slot `loadPreset` while the dirty flag is clear
-    /// (tmp-audit Q4), so the restore — the one "discard unsaved edits" path — must never
+    /// BUG→GATE: fw 1.8.58 skips a same-slot `loadPreset` while the dirty flag is clear,
+    /// so the restore — the one "discard unsaved edits" path — must never
     /// rely on it: it loads a neighbour first, and the target LAST.
     #[test]
     fn restore_loads_a_neighbour_before_the_target() {

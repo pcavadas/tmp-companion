@@ -29,7 +29,7 @@ import {
 // one save carrying both halves.
 // BUG→GATE (2026-08-02 HW incident, fw 1.8.45): the footswitch batch's load 2 s after the
 // base save materialized the pre-run presetLevel, so all 4 pedal sweeps ran +5.2 LU hot. On
-// fw 1.8.58 a save is durable the moment it returns (tmp-audit Q34), so that load sees it.
+// fw 1.8.58 a save is durable the moment it returns, so that load sees it.
 //
 // This file is the offline, deterministic, sim-layer proof that the WHOLE stack — the base
 // BOOST (presetLevel + fader, one save), the footswitch batch right after it, and the

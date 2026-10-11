@@ -28,7 +28,7 @@
 #   5. per preset, in the order the app used (base → scenes → footswitches), issues ONE
 #      SAVING leveling call per step (batched for scenes/footswitches — one command levels
 #      every row of that step), then re-measures that preset straight away (fw 1.8.58: a
-#      save is durable the moment it returns — tmp-audit Q34);
+#      save is durable the moment it returns);
 #   6. re-measures every leveled row with `e2e_measure_sound` (the strict re-measure
 #      command), which appends one expectation row + WAV to the log the server already
 #      has armed;

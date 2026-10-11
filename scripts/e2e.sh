@@ -552,7 +552,7 @@ seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mi
   [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
 }
 
-# Only a short pause between attempts: fw 1.8.58 has no HID open lockout (tmp-audit Q36).
+# Only a short pause between attempts: fw 1.8.58 has no HID open lockout.
 seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed attempts
   local attempt
   for attempt in 1 2 3 4; do
@@ -569,7 +569,7 @@ seed_with_retry() { # $1 = pre|mid; returns 0 once seeded, 1 after 4 failed atte
 # Seed (pre-server) → start the handshake-verified e2e_server → patch in the seeded presets.
 # Shared by the ordered online spec loop below AND `soak` — this seed-race + fail-loud
 # mark-seeded sequence must not drift between the two callers. No rests: fw 1.8.58 has no HID
-# open lockout (tmp-audit Q36).
+# open lockout.
 # Sets SERVER_PID; exits 1 (recoverable via the trap) on a seed/handshake failure.
 start_online_server() {
   if ! seed_with_retry pre; then
@@ -745,7 +745,7 @@ for s in "${SPECS[@]}"; do
   # mutilated. Value-only drift (leveling saves) is NOT in that set and is still handled by
   # ORDERING: doctor.online must run BEFORE level.online — leveling equalizes the relative
   # scene loudness the doctor's consistency check keys on. No rest between specs: fw 1.8.58
-  # has no HID open lockout (tmp-audit Q36).
+  # has no HID open lockout.
   log "running specs/$s.spec.ts (online)"
   # No outer timeout: Playwright's own 300 s/test governs, except the two heaviest online
   # specs (doctor.online.spec.ts, level.online.spec.ts) which override to multi-minute

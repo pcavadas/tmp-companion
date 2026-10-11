@@ -20,7 +20,7 @@
 #      (`probe --level-preset-scenes`) and optionally block-acting footswitches
 #      (`probe --level-footswitch … --commit`);
 #   5. (no wait after a save: on fw 1.8.58 a save is durable the moment it returns —
-#      tmp-audit Q34);
+#      fw 1.8.58);
 #   6. re-measures each leveled foundation, EMITTING one expectation row + WAV per sound:
 #      base/scenes via `probe --measure-scene … --target … --dump-wav`, footswitches via
 #      `probe --measure-footswitch … --target … --dump-wav` (P5 closed that hole; FS rows

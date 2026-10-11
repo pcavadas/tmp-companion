@@ -101,7 +101,7 @@ pub struct Hid {
     join: Option<JoinHandle<()>>,
 }
 
-/// Live [`Hid`] handles in this process. fw 1.8.58 has no open lockout (tmp-audit Q36), so
+/// Live [`Hid`] handles in this process. fw 1.8.58 has no open lockout, so
 /// an exclusive-access failure means another handle holds the seize: Pro Control, or one of
 /// ours.
 static LIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
@@ -372,7 +372,7 @@ mod imp {
     /// yet a fresh process connected instantly). Genuine Pro Control contention
     /// persists across every attempt and still surfaces the error (~3 s).
     unsafe fn open_device() -> Result<(IOHIDManagerRef, IOHIDDeviceRef), String> {
-        // Short backoff: fw 1.8.58 has no open lockout to wait out (tmp-audit Q36).
+        // Short backoff: fw 1.8.58 has no open lockout to wait out.
         const ENUM_RETRIES: u32 = 3;
         const ENUM_RETRY_DELAY_MS: u64 = 400;
         let mut last_err = String::new();

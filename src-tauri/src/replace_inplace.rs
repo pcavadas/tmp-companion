@@ -253,7 +253,7 @@ pub(crate) fn replace_inplace_with(
 
 /// What a loaded import must show to prove it loaded intact: the file's per-group blocks
 /// and `preset_id` ([`check_loaded_body`]). A body the firmware rejects at load keeps its
-/// stored row intact (fw 1.8.58, tmp-audit Q35), so this check on a LOADED working copy is
+/// stored row intact (fw 1.8.58), so this check on a LOADED working copy is
 /// the only proof an import landed.
 pub(crate) struct LoadProof {
     roster: crate::blockcaps::Roster,

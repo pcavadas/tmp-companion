@@ -2086,7 +2086,7 @@ impl Session {
 
     /// The working copy's dirty flag, from the latest `currentPresetInfoChanged` (field
     /// 22) `isDirty`. fw 1.8.58 fills it from the same flag that decides whether a
-    /// same-slot `loadPreset` really reloads (tmp-audit Q4; `getPresetInfo` copies `+0x686`).
+    /// same-slot `loadPreset` really reloads (fw 1.8.58; `getPresetInfo` copies `+0x686`).
     pub(crate) fn active_preset_dirty(&self) -> Option<bool> {
         self.push_bodies()
             .iter()
@@ -2160,7 +2160,7 @@ impl Session {
 
     /// Prove the loaded working copy is the import before a save writes it over another
     /// slot: a body the firmware rejects at LOAD becomes an EMPTY preset that keeps the
-    /// stored name (fw 1.8.58, tmp-audit Q35 — its `presetError` 6 is dropped by
+    /// stored name (fw 1.8.58, — its `presetError` 6 is dropped by
     /// `load_preset`'s eager transact), which [`Self::confirm_active`] passes. Re-prompts the working copy (the HW-proven [`Self::live_audio_graph`] seam)
     /// and hands `check` its block roster and the accepted document.
     pub(crate) fn confirm_loaded_body(
@@ -2751,7 +2751,7 @@ impl Session {
     ///
     /// The row is read back: the device refuses a `preset_scene_slot` the preset doesn't
     /// have (not [`BASE_SCENE_SLOT`] and ≥ its scene count) with SongError 5 and writes
-    /// nothing (fw 1.8.58, tmp-audit Q40), so a row that didn't land is an `Err`.
+    /// nothing (fw 1.8.58), so a row that didn't land is an `Err`.
     #[allow(clippy::too_many_arguments)]
     pub fn assign_song_preset(
         &mut self,

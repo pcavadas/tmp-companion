@@ -1612,7 +1612,7 @@ mod fixture_gates {
         }
     }
 
-    /// NON-REGRESSION GATE (HW bisect 2026-08-09; fw 1.8.58 tmp-audit Q35): a preset whose
+    /// NON-REGRESSION GATE (HW bisect 2026-08-09; fw 1.8.58): a preset whose
     /// `ftsw` array carries a `func: "param"` entry with NO `valueType` field is rejected
     /// at its first load — the device substitutes an empty preset under the imported name
     /// (`presetError` 6). Every param-func footswitch entry in every committed fixture must

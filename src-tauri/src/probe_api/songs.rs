@@ -212,7 +212,7 @@ pub(crate) fn bpm_landed(songs: &[session::SongRecord], slot: u32, bpm: f32) -> 
 
 /// Set song `slot`'s BPM on ONE open session, then load `restore` (0-based list index).
 /// Order matters: `tapTempoBpm` writes the ACTIVE song's BPM only once that song's
-/// `bpmActive` is already on (fw 1.8.58, tmp-audit Q40), so load the song (tab 5), enable,
+/// `bpmActive` is already on (fw 1.8.58), so load the song (tab 5), enable,
 /// THEN tap, and read back once; no wait or retry. The flag stays on (the Songs tab shows
 /// a BPM only while it is). An existing footswitch binding is used untouched; a song with
 /// none gets row 1 → preset 001's base scene. Returns the read-back list (`None` if it
@@ -445,7 +445,7 @@ mod tests {
             .collect()
     }
 
-    // tmp-audit Q40 (fw 1.8.58): a tap reaches the active song only once its flag is on,
+    // fw 1.8.58: a tap reaches the active song only once its flag is on,
     // and enabling the flag re-applies the STORED BPM rather than the one just tapped.
     #[test]
     fn sim_tap_lands_only_when_the_song_bpm_flag_is_already_on() {
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(sim.song(1).unwrap().bpm, 141);
     }
 
-    // tmp-audit Q40: `assignSongPreset` with a scene index the preset doesn't have is
+    // `assignSongPreset` with a scene index the preset doesn't have is
     // refused with SongError 5 and writes no row (the read-back makes it an Err); base
     // (8) is always accepted.
     #[test]
@@ -487,7 +487,7 @@ mod tests {
         );
     }
 
-    // The two Q40 bugs together: a new song (no footswitch, flag off, 120 BPM) on a preset
+    // The two song bugs together: a new song (no footswitch, flag off, 120 BPM) on a preset
     // with no scenes. One pass on one session must land the BPM — no retry.
     #[test]
     fn a_new_song_bpm_lands_on_the_first_pass_on_one_session() {

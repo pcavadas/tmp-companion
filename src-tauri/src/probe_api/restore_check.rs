@@ -1,9 +1,9 @@
 //! `probe --restore-check <deviceSlot>`: does a same-slot `loadPreset` discard an UNSAVED
-//! edit? fw 1.8.58 skips a same-slot load while the working copy is clean (tmp-audit Q4: the
+//! edit? fw 1.8.58 skips a same-slot load while the working copy is clean (the
 //! dirty flag clear, and the load identity and current scene unchanged), and
 //! `leveller::restore_saved_preset` is the app's one "discard unsaved edits" path.
 //!
-//! For each edit kind — a `presetLevel` set (the HW-shown control, Q34(d)), a `bypass` flip
+//! For each edit kind — a `presetLevel` set (the HW-shown control), a `bypass` flip
 //! and a float write (both `changeParameter`), and an `insertNode` append — this applies the
 //! edit unsaved on its own connection and confirms it in the working copy, then either sends
 //! the bare same-slot load (`raw`) or runs the product's `restore_saved_preset` (`product`),
