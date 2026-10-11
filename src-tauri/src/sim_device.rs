@@ -289,7 +289,19 @@ pub enum SimEvent {
 /// nothing — the census. A kind outside it is REPORTED (`/sim/state`'s `unhandled_new`),
 /// not failed. Each entry names why it is unanswered and who models it.
 pub(crate) const UNHANDLED_CENSUS: &[(u32, u32)] = &[
-    // CENSUS_ENTRIES
+    // Handshake burst (`Session::connect`) requests the fake does not model.
+    (4, 1),  // connectionRequest
+    (2, 6),  // favoriteListRequest
+    (2, 41), // productProfileRequest
+    (3, 66), // settings field 66
+    (13, 2), // user-IR field 2
+    (3, 1),  // currentFwRequest: the offline server pins the firmware string itself
+    // Keepalive.
+    (4, 4), // heartbeat
+    // Preset reads the fake leaves unanswered on this route (a lapse re-arm, and the
+    // handshake's filtered list requests).
+    (2, 1), // currentPresetInfoRequest
+    (2, 4), // presetListRequest by filter
 ];
 
 /// Whether `(tms, inner)` is a census kind.

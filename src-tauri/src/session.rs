@@ -4480,6 +4480,33 @@ mod tests {
         sends
     }
 
+    /// Every request the handshake and the keepalive send that the fake leaves unanswered
+    /// is a census kind, so a handshake change that adds an unmodelled request shows up
+    /// here rather than only in an offline run's `/sim/state`.
+    #[test]
+    fn every_unanswered_handshake_request_is_in_the_sim_census() {
+        let sim = crate::sim_device::SimDevice::new();
+        let mut s = Session::from_transport(Box::new(sim.clone()));
+        s.handshake(true, None, true, true).expect("handshake");
+        s.keepalive_pump().expect("keepalive");
+        let outside: Vec<_> = sim
+            .unhandled()
+            .into_iter()
+            .filter_map(|e| match e {
+                crate::sim_device::SimEvent::Unhandled { tms, inner, .. }
+                    if !crate::sim_device::in_census(tms, inner) =>
+                {
+                    Some((tms, inner))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "unanswered kinds outside the census: {outside:?}"
+        );
+    }
+
     /// The lean handshake trims only the PUMP WINDOWS — the request byte sequence
     /// must stay identical to the full handshake (the device only answers after
     /// seeing the exact captured Pro Control sequence).
