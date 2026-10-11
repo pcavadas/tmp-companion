@@ -972,6 +972,9 @@ fn e2e_route(
                 .to_string();
             let args = req.get("args").cloned().unwrap_or(json!({}));
             let cmd_for_save_check = cmd.clone();
+            // The trace's `cmd` event (inert unless recording): name, argument hash, outcome.
+            let traced_args = crate::trace::enabled().then(|| args.to_string());
+            let started = std::time::Instant::now();
             let request = tauri::webview::InvokeRequest {
                 cmd,
                 callback: tauri::ipc::CallbackFn(0),
@@ -993,6 +996,14 @@ fn e2e_route(
                 }
                 Err(e) => json!({ "ok": false, "error": e }),
             };
+            if let Some(a) = traced_args {
+                crate::trace::record_cmd(
+                    &cmd_for_save_check,
+                    a.as_bytes(),
+                    env["ok"] == true,
+                    started.elapsed().as_millis() as u64,
+                );
+            }
             ("200 OK", serde_json::to_vec(&env).unwrap_or_default())
         }
         _ => (

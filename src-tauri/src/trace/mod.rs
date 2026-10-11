@@ -130,8 +130,15 @@ pub(crate) fn record_field8(list_index: u32, body: &[u8], pristine: Option<&str>
     }
 }
 
+/// Whether this process is recording, for a caller that must build something (a
+/// serialized argument list) only to record it.
+#[allow(dead_code)] // only the e2e server's /invoke route asks
+pub(crate) fn enabled() -> bool {
+    recorder().is_some()
+}
+
 /// A command the e2e server ran: its name, a hash of its arguments, and the outcome.
-#[allow(dead_code)] // wired by the e2e server's /invoke route
+#[allow(dead_code)] // only the e2e server's /invoke route records commands
 pub(crate) fn record_cmd(name: &str, args: &[u8], ok: bool, ms: u64) {
     if let Some(r) = recorder() {
         r.cmd(name, args, ok, ms);

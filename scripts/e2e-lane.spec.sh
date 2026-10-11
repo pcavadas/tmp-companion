@@ -108,20 +108,26 @@ check "Linux unit absent → unknown" unknown "$(unit_on_linux "$a")"
 check "other OS → unknown" unknown "$(TMP_E2E_UNIT_OS=Windows_NT lane_unit_state)"
 
 # ── the stamp verdict ───────────────────────────────────────────────────────────
-# args: fail key_start key_end mode ran_level validated unit
+# args: fail key_start key_end mode ran_level validated unit server_on_device
 v() { lane_stamp_verdict "$@" | cut -d: -f1; }
-check "copy, no ffmpeg, stock → stamp" stamp "$(v 0 k k online 0 0 stock)"
-check "level.online validated → stamp" stamp "$(v 0 k k online 1 1 stock)"
-check "level.online without ffmpeg → no stamp" no-stamp "$(v 0 k k online 1 0 stock)"
-check "soak never stamps" no-stamp "$(v 0 k k soak 1 1 stock)"
-check "a failed spec → no stamp" no-stamp "$(v 1 k k online 0 0 stock)"
-check "the key moved → no stamp" no-stamp "$(v 0 k1 k2 online 0 0 stock)"
-check "an empty key → no stamp" no-stamp "$(v 0 '' '' online 0 0 stock)"
-check "non-stock unit → no stamp" no-stamp "$(v 0 k k online 0 0 non-stock)"
-check "unknown unit → no stamp" no-stamp "$(v 0 k k online 0 0 unknown)"
+check "copy, no ffmpeg, stock → stamp" stamp "$(v 0 k k online 0 0 stock 1)"
+check "level.online validated → stamp" stamp "$(v 0 k k online 1 1 stock 1)"
+check "level.online without ffmpeg → no stamp" no-stamp "$(v 0 k k online 1 0 stock 1)"
+check "soak never stamps" no-stamp "$(v 0 k k soak 1 1 stock 1)"
+check "a failed spec → no stamp" no-stamp "$(v 1 k k online 0 0 stock 1)"
+check "the key moved → no stamp" no-stamp "$(v 0 k1 k2 online 0 0 stock 1)"
+check "an empty key → no stamp" no-stamp "$(v 0 '' '' online 0 0 stock 1)"
+check "non-stock unit → no stamp" no-stamp "$(v 0 k k online 0 0 non-stock 1)"
+check "unknown unit → no stamp" no-stamp "$(v 0 k k online 0 0 unknown 1)"
 check "non-stock reason names the stock interfaces" \
   "no-stamp: unit=non-stock — the unit must present its stock USB interfaces" \
-  "$(lane_stamp_verdict 0 k k online 0 0 non-stock)"
+  "$(lane_stamp_verdict 0 k k online 0 0 non-stock 1)"
+
+check "server trace without a device session → no stamp" no-stamp "$(v 0 k k online 0 0 stock 0)"
+check "missing server-trace proof → no stamp" no-stamp "$(v 0 k k online 0 0 stock '')"
+check "server-trace reason names the stale server" \
+  "no-stamp: the e2e server's trace holds no session on the real device (a stale or offline server answered this run)" \
+  "$(lane_stamp_verdict 0 k k online 0 0 stock 0)"
 
 # ── the firmware parse ──────────────────────────────────────────────────────────
 check "fw from the ready line" 1.8.58 \
@@ -166,7 +172,7 @@ a="$work/auto"
 mkdir -p "$a/scripts/lib" "$a/e2e/specs"
 cp "$script_dir/e2e.sh" "$script_dir/gates.sh" "$script_dir/gate-map.tsv" \
   "$script_dir/gate-policy.tsv" "$script_dir/device-lock.sh" "$a/scripts/"
-cp "$script_dir/lib/e2e-lane.sh" "$a/scripts/lib/"
+cp "$script_dir/lib/e2e-lane.sh" "$script_dir/lib/e2e-evidence.sh" "$a/scripts/lib/"
 cp "$script_dir/../e2e/specs/level.online.spec.ts" "$a/e2e/specs/"
 (
   cd "$a"

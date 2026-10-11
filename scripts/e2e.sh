@@ -103,12 +103,20 @@ export TMP_E2E_PORT="$PORT" TMP_E2E_VITE_PORT="$VITE_PORT" TMP_E2E_WORKERS="$WOR
 . "$REPO/scripts/device-lock.sh"
 # shellcheck source=scripts/lib/e2e-lane.sh disable=SC1091
 . "$REPO/scripts/lib/e2e-lane.sh"
+# shellcheck source=scripts/lib/e2e-evidence.sh disable=SC1091
+. "$REPO/scripts/lib/e2e-evidence.sh"
 
 OFFLINE_CFG="e2e/playwright.config.ts"
 ONLINE_CFG="e2e/playwright.online.config.ts"
 MANIFEST="src-tauri/Cargo.toml"
 LOG_DIR="${TMPDIR:-/tmp}/tmp-companion-e2e"
+# ONLINE and soak runs re-point SERVER_LOG, SEED_LOG and the validation paths below into
+# their own run folder (RUN_DIR, set once the mode is known), so no run overwrites the
+# last one's evidence; $LOG_DIR/e2e_server.log stays a symlink to the current server log.
 SERVER_LOG="$LOG_DIR/e2e_server.log"
+SEED_LOG="$LOG_DIR/seed.log"
+RUN_DIR=""
+STAMPED=0
 # ── P5 external validation (ONLINE only) ──────────────────────────────────────────
 # GATE SEMANTICS, stated identically here and in `.claude/rules/e2e.md`:
 #   ffmpeg ABSENT   ⇒ advisory. A loud, VISIBLE skip line in this lane summary. Never a
@@ -333,15 +341,40 @@ recover_device() {
   post '{"cmd":"e2e_load_preset","args":{"slot":0}}'
 }
 
-# shellcheck disable=SC2329,SC2317  # invoked via `trap cleanup EXIT INT TERM`, which shellcheck doesn't count as a use
+# shellcheck disable=SC2329,SC2317  # invoked via the EXIT/INT/TERM traps, which shellcheck doesn't count as a use
 cleanup() { # ONLINE only (offline execs Playwright, which owns teardown + has no device)
+  # $1 = the exit code for a signal (130 INT, 143 TERM): `$?` there is whatever command
+  # the signal interrupted, which can be 0, and a stopped run must never read as a pass.
   local code=$?
+  [ -z "${1:-}" ] || code="$1"
   trap - EXIT INT TERM
   recover_device                          # guarded-clear is fail-closed: never touches a real preset
   if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
   kill_port "$PORT"                       # cargo run spawns the binary as a child — kill by port too
   device_lock_release                     # release the machine-global device lock (online only)
+  # Archive AFTER the recovery and the server kill, never before, and never able to change
+  # the exit code: a run stopped with SIGINT still gets its MANIFEST.
+  ( set +e; finish_run_evidence "$code" ) || true
   exit "$code"
+}
+
+# shellcheck disable=SC2329,SC2317  # invoked from the trap handler (cleanup), not statically traced
+finish_run_evidence() { # $1 = the run's exit code. Best-effort; see cleanup().
+  [ -n "$RUN_DIR" ] || return 0
+  local fw
+  fw="$(evidence_trace_fw "$RUN_DIR/trace")"
+  [ -n "$fw" ] || fw="$(lane_fw_from_log < "$SERVER_LOG" 2>/dev/null | grep -v '^unknown$' || true)"
+  EV_ROOT="$EVIDENCE_ROOT" EV_RUN_DIR="$RUN_DIR" EV_MODE="$MODE" \
+    EV_SPECS="${SPECS[*]:-}" EV_FULL_SET="${FULL_SET:-0}" EV_STARTED="$RUN_STARTED" EV_EXIT="$1" \
+    EV_VALIDATED="${validated:-}" EV_STAMPED="$STAMPED" \
+    EV_KEY_START="${KEY_START:-}" EV_KEY_END="${KEY_END:-}" \
+    EV_GIT_SHA="$TMP_TRACE_GIT_SHA" EV_DIRTY="$RUN_DIRTY" EV_FFMPEG="$HAVE_FFMPEG" \
+    EV_DEVICE_FW="$fw" EV_UNIT="$UNIT" \
+    EV_SCENE_CHANGE="$(grep -o 'sceneChangeBehavior=[A-Za-z]*' "$SERVER_LOG" 2>/dev/null | tail -1 | sed 's/.*=//')" \
+    EV_FIXTURE_STAMP="$(sed -n 's/.*FIXTURE_SOURCE_STAMP: &str = "\([^"]*\)";.*/\1/p' \
+      "$REPO/src-tauri/src/probe_api/seed_scenario.rs" 2>/dev/null)" \
+    EV_WAV_POLICY=pair EV_WAV_RUNS="${TMP_E2E_EVIDENCE_WAV_RUNS:-10}" \
+    evidence_finalize | while IFS= read -r line; do log "$line"; done
 }
 
 # Wait until the managed ONLINE server prints its ready line AND answers /health, surfacing a
@@ -396,7 +429,41 @@ else
   fi
 fi
 
-trap cleanup EXIT INT TERM
+# ── this run's evidence folder (notes/e2e-test-plan.md, "Recording") ─────────────
+# Created before the first seed. The root lives in the git common dir by default, outside
+# the hashed tree, so writing evidence never changes the tree key this run stamps.
+if ! EVIDENCE_ROOT="$(evidence_root "$REPO")"; then
+  exit 2
+fi
+RUN_DIRTY=0
+[ -z "$(git -C "$REPO" status --porcelain 2>/dev/null)" ] || RUN_DIRTY=1
+if ! RUN_DIR="$(evidence_new_run "$EVIDENCE_ROOT" "$MODE" \
+  "$(git -C "$REPO" rev-parse --short=7 HEAD 2>/dev/null || echo nosha)" "$RUN_DIRTY")"; then
+  err "could not create a run folder under $EVIDENCE_ROOT"
+  exit 2
+fi
+RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SERVER_LOG="$RUN_DIR/e2e_server.log"
+SEED_LOG="$RUN_DIR/seed.log"
+VALIDATE_LOG="$RUN_DIR/level-validate-expectations.jsonl"
+VALIDATE_WAV_DIR="$RUN_DIR/level-validate-wavs"
+: > "$SERVER_LOG"
+ln -sfn "$SERVER_LOG" "$LOG_DIR/e2e_server.log"
+# The trace recorder (src-tauri/src/trace) in the seed probe and the e2e server.
+export TMP_TRACE_DIR="$RUN_DIR/trace"
+export TMP_TRACE_RUN_ID="${RUN_DIR##*/}"
+TMP_TRACE_GIT_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+export TMP_TRACE_GIT_SHA
+TMP_TRACE_TREE_KEY="$(bash "$REPO/scripts/gates.sh" --key)"
+export TMP_TRACE_TREE_KEY
+export TMP_TRACE_WAV=pair
+export TMP_TRACE_FW_FILE="$EVIDENCE_ROOT/LAST_DEVICE_FW"
+export TMP_E2E_UNIT_CONFIG="$UNIT"
+log "run evidence → $RUN_DIR"
+
+trap cleanup EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 # Serialize the ONE device across sessions/worktrees before any device work (seed/handshake).
 # Held elsewhere → wait (polls, honours a stale/dead owner); ~30 min ceiling then abort.
@@ -481,7 +548,7 @@ done
 # (a no-HID snapshot patch) so the specs' `ensureScenario` fallback finds the presets
 # present.
 seed_scenario() { # $1 = "pre" (no server yet — skip the snapshot patch) | "mid"
-  "$PROBE_BIN" --seed-scenario >>"$LOG_DIR/seed.log" 2>&1 || return 1
+  "$PROBE_BIN" --seed-scenario >>"$SEED_LOG" 2>&1 || return 1
   [ "$1" = pre ] || bridge_post '{"cmd":"e2e_mark_seeded","args":{}}' 30 | grep -q '"ok":true'
 }
 
@@ -512,20 +579,20 @@ start_online_server() {
   fi
 
   log "starting handshake-verified server on :$PORT"
-  : > "$SERVER_LOG"
-  # Truncate any PRIOR run's expectations + WAVs before this run's server can append —
-  # a stale row would otherwise ride along into this run's validation pass. Only wired
-  # when ffmpeg is present; UNSET (not merely empty) ⇒ emission stays a no-op and the
-  # server does no extra work at all (`validate_log::log_path`).
+  # The expectations, Doctor rows and WAVs land in THIS run's fresh folder, so no PRIOR
+  # run's row can ride along into this run's validation pass. Only wired when ffmpeg is
+  # present; UNSET (not merely empty) ⇒ emission stays a no-op and the server does no
+  # extra work at all (`validate_log::log_path`). The Doctor rows are written after each
+  # capture session is dropped, so arming them moves no HID gap.
   if [ "$HAVE_FFMPEG" -eq 1 ]; then
-    : > "$VALIDATE_LOG"
-    rm -rf "$VALIDATE_WAV_DIR"
     mkdir -p "$VALIDATE_WAV_DIR"
     export TMP_E2E_VALIDATE_LOG="$VALIDATE_LOG"
     export TMP_E2E_VALIDATE_WAV_DIR="$VALIDATE_WAV_DIR"
+    export TMP_E2E_DOCTOR_LOG="$RUN_DIR/doctor-validate.jsonl"
   else
     unset TMP_E2E_VALIDATE_LOG
     unset TMP_E2E_VALIDATE_WAV_DIR
+    unset TMP_E2E_DOCTOR_LOG
   fi
   TMP_E2E_ONLINE=1 TMP_E2E_PORT="$PORT" \
     cargo run -q --manifest-path "$MANIFEST" --features e2e --bin e2e_server \
@@ -580,7 +647,7 @@ if [ "$MODE" = soak ]; then
       fi
     fi
     start=$(date +%s)
-    run_log="$LOG_DIR/soak-run-$run.log"
+    run_log="$RUN_DIR/soak-run-$run.log"
     if bun x playwright test --config "$ONLINE_CFG" "specs/level.online.spec.ts" >"$run_log" 2>&1; then
       elapsed=$(( $(date +%s) - start ))
       printf 'soak run %d/%s: PASS  wall=%ss\n' "$run" "$N" "$elapsed"
@@ -690,7 +757,7 @@ for s in "${SPECS[@]}"; do
   # actually-PASSED test in the summary. A spec whose every test online-skips (some
   # runtime condition) exits 0 having exercised nothing; that used to log PASSED and
   # could certify a stamp for a run that proved nothing about the spec it named.
-  spec_log="$LOG_DIR/online-spec-$s.log"
+  spec_log="$RUN_DIR/online-spec-$s.log"
   spec_start=$(date +%s)
   spec_verdict=fail
   if bun x playwright test --config "$ONLINE_CFG" "specs/$s.spec.ts" | tee "$spec_log"; then
@@ -769,7 +836,7 @@ if [ "$fail" -eq 0 ]; then
     else
       VALIDATE_FEED="$VALIDATE_LOG"
       if [ "$rows" -gt "$VALIDATE_MAX_ROWS" ]; then
-        VALIDATE_FEED="$LOG_DIR/level-validate-expectations.capped.jsonl"
+        VALIDATE_FEED="$RUN_DIR/level-validate-expectations.capped.jsonl"
         head -n "$VALIDATE_MAX_ROWS" "$VALIDATE_LOG" > "$VALIDATE_FEED"
         err "external validation CAPPED at $VALIDATE_MAX_ROWS rows — $((rows - VALIDATE_MAX_ROWS)) rows DROPPED (raise TMP_E2E_VALIDATE_MAX_ROWS to check them all)"
       fi
@@ -818,7 +885,16 @@ for s in "${SPECS[@]:-}"; do
   [ "$s" = "level.online" ] && ran_level=1
 done
 KEY_END="$(bash "$REPO/scripts/gates.sh" --key)"
-verdict="$(lane_stamp_verdict "$fail" "$KEY_START" "$KEY_END" "$MODE" "$ran_level" "$validated" "$UNIT")"
+# Device-session proof: the server this run talked to must have opened the real device.
+# Its own trace says which backend each open used, so a stale offline server answering on
+# the port (CLAUDE.md's fake-online trap) is a checked fact, not a log line to remember.
+on_device=0
+if evidence_server_touched_device "$RUN_DIR/trace"; then
+  on_device=1
+else
+  err "the e2e server's trace ($RUN_DIR/trace) holds no session on the real device — this run will NOT stamp"
+fi
+verdict="$(lane_stamp_verdict "$fail" "$KEY_START" "$KEY_END" "$MODE" "$ran_level" "$validated" "$UNIT" "$on_device")"
 if [ "$verdict" = stamp ]; then
   if [ "$FULL_SET" -eq 1 ]; then run_set=full; else run_set=partial; fi
   if [ "$ran_level" -eq 1 ]; then run_validated="$validated"; else run_validated=na; fi
@@ -828,6 +904,7 @@ if [ "$verdict" = stamp ]; then
   bash "$REPO/scripts/gates.sh" --record-online \
     --run "os=${run_os:-unknown} fw=$run_fw unit=$UNIT validated=$run_validated set=$run_set headroom=$headroom_events/$headroom_reopens" \
     "${SPECS[@]}"
+  STAMPED=1
 elif [ "$fail" -eq 0 ]; then
   log "online lane passed but NOT stamped — ${verdict#no-stamp: }"
 fi

@@ -60,6 +60,7 @@ scripts/e2e.sh	lane
 scripts/level-validate.sh	lane
 scripts/device-lock.sh	lane
 scripts/lib/e2e-lane.sh	lane
+scripts/lib/e2e-evidence.sh	lane
 e2e/playwright.online.config.ts	lane
 e2e/bridge-client.js	lane
 e2e/fixtures/scenario.ts	lane
