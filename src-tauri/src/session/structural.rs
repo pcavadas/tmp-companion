@@ -8,7 +8,8 @@ impl Session {
     /// `nodeJsonRequest` (field 119){groupId,nodeId} — the node-edit-context preamble
     /// Pro Control sends immediately before a structural edit (device replies
     /// `nodeJsonResponse`, 120). Without it fw 1.8.45 drops the following `replaceNode`.
-    /// Rides the live heartbeat cadence.
+    /// On fw 1.8.58 it is a stateless read broadcast to every client (static RE): harmless,
+    /// not required. Rides the live heartbeat cadence.
     pub(super) fn node_json_request(&mut self, group: &str, node_id: &str) -> Result<(), String> {
         self.send_chunked_collect(
             &proto::node_json_request(group, node_id),
@@ -117,10 +118,12 @@ impl Session {
     /// Unlike [`Self::replace_node`], Pro Control sends this **BARE**: NO
     /// `nodeJsonRequest` edit-context preamble (mirroring replace's preamble made the
     /// device REJECT the insert) and NO batchStatus — RE'd byte-exact from a PC add-block
-    /// capture. `before` = the FenderId to insert AHEAD of (the device's
-    /// field-2 inserts the new block BEFORE the referenced node — HW-verified fw 1.8.45:
-    /// a short-anchor insert "before X" landed the new block ahead of X), or `None` to
-    /// APPEND at the end of the group. Rides the live heartbeat established by
+    /// capture. `before` = the NODE ID to insert AHEAD of (the device's field 2 inserts
+    /// the new block BEFORE the referenced node — HW-verified fw 1.8.45: a short-anchor
+    /// insert "before X" landed the new block ahead of X), or `None` to APPEND at the end
+    /// of the group. Field 2 is matched against the group's CURRENT node ids, and on fw
+    /// 1.8.58 a missing one aborts the device server (static RE, danger.md): resolve it
+    /// through `copy_apply`'s `DeviceIds`, never pass a FenderId. Rides the live heartbeat established by
     /// [`Self::begin_live_edit`]. Returns `true` when the device confirms with
     /// `nodeInserted` (field 33, HW-confirmed), `false` on a `presetError`(53) or no reply.
     pub fn insert_node(

@@ -333,17 +333,20 @@ pub fn change_parameter_bool(
     len_delimited(2, &len_delimited(12, &inner))
 }
 
-/// PresetMessage.replaceNode{ destGroup, nodeIdToReplace, fenderId } (field **39**) —
-/// swap a node to a different model; the device fills the new model's default
-/// parameters and emits `nodeReplaced` (40). Unlike the pure setters this is
-/// request/response-shaped, so it REQUIRES a top-level `batchStatus` (field 10) — the
-/// device silently ignores it without one (HW-confirmed; matches the proven
-/// `drive_replace_node.py` framing, which sends batch=11).
+// PresetMessage.replaceNode{ destGroup, nodeIdToReplace, fenderId } (field **39**) —
+// swap a node to a different model; the device fills the new model's default
+// parameters and emits `nodeReplaced` (40). It is setter-framed: no `batchStatus`, as
+// production's `Session::replace_node` sends it. (An older note said it needed
+// batch=11; on fw 1.8.58 a `batchStatus` of 4 or more is dropped with no reply,
+// device-confirmed.)
+
 /// PresetMessage.nodeJsonRequest (field 119){ groupId=1, nodeId=2 } — Pro Control
 /// sends this immediately BEFORE `replaceNode` to put the device into the
 /// node-edit context (the device replies `nodeJsonResponse`, field 120). Without
 /// it, fw 1.8.45 silently DROPS the subsequent `replaceNode` (HW-confirmed via a
-/// Pro Control USB capture). NO batchStatus (matches the capture).
+/// Pro Control USB capture). NO batchStatus (matches the capture). On fw 1.8.58
+/// `nodeJsonRequest` is a stateless read whose `nodeJsonResponse` (120) goes to every
+/// client (static RE): the preamble is harmless, not required.
 pub fn node_json_request(group_id: &str, node_id: &str) -> Vec<u8> {
     let mut inner = Vec::new();
     field_bytes(&mut inner, 1, group_id.as_bytes());
