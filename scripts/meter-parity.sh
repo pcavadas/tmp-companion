@@ -56,7 +56,7 @@ fi
 
 INPUT_DIR="${1:-}"
 WORKDIR=""
-# shellcheck disable=SC2329  # invoked via `trap cleanup EXIT`, which shellcheck doesn't count as a use
+# shellcheck disable=SC2329,SC2317  # invoked via `trap cleanup EXIT`, which shellcheck does not count as a use
 cleanup() {
   if [ -n "$WORKDIR" ] && [ -d "$WORKDIR" ]; then
     rm -rf "$WORKDIR"
