@@ -2670,8 +2670,9 @@ fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
         } else {
             st.saved_doc(slot0).clone()
         };
-        let patched = with_patched_doc(j, &doc);
-        let json = with_working_edits(with_ftsw(&patched, doc.ftsw.as_ref()), &edits);
+        // Structural edits first, so a knob written to an inserted or replaced node finds it.
+        let graph = with_working_edits(j.to_string(), &edits);
+        let json = with_ftsw(&with_patched_doc(&graph, &doc), doc.ftsw.as_ref());
         // Forced bypasses are live but never saved (`SavedDoc` has no bypass), so only the
         // working copy shows them — the state the capture model sounds.
         return if working {
@@ -4322,6 +4323,35 @@ mod same_slot_load_tests {
             .and_then(|ns| ns.iter().find(|n| n["nodeId"] == node.as_str()))
             .and_then(|n| n["dspUnitParameters"]["bypass"].as_bool());
         assert_eq!(shown, Some(!bypassed));
+    }
+
+    /// A knob written to an inserted node, then saved, shows in the skipped load's push.
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn a_skipped_load_pushes_a_knob_on_an_inserted_node() {
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(401).unwrap();
+        assert!(s.insert_node("G1", None, "ACD_ChorusCE2").unwrap());
+        let doc = s.live_preset_value(|_| true).unwrap();
+        let id = doc["audioGraph"]["guitarNodes"]["G1"]
+            .as_array()
+            .and_then(|ns| ns.last())
+            .and_then(|n| n["nodeId"].as_str())
+            .unwrap()
+            .to_string();
+        s.change_parameter("G1", &id, "mix", 0.42).unwrap();
+        s.save_current_preset(401).unwrap();
+        s.load_preset(401).unwrap();
+        let pushed = s.live_preset_value(|_| true).unwrap();
+        let mix = pushed["audioGraph"]["guitarNodes"]["G1"]
+            .as_array()
+            .and_then(|ns| ns.iter().find(|n| n["nodeId"] == id.as_str()))
+            .and_then(|n| n["dspUnitParameters"]["mix"].as_f64());
+        assert!(
+            mix.is_some_and(|m| (m - 0.42).abs() < 1e-6),
+            "pushed {mix:?}"
+        );
     }
 
     /// A refused clear must not materialize empty switches in the working copy.
