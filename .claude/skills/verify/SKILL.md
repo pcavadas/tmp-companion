@@ -66,7 +66,7 @@ device` (or `/health` reports `online: true`) before trusting a pass — a stale
   back to A/B two builds leaves cargo's freshness check satisfied, so the "proof" run reuses the
   previous binary. Confirm a compile line appeared, or `touch` the file after any restore.
 - **A Channel-streaming command called over raw HTTP hides its per-row outcomes** — they travel
-  only the `"__CHANNEL__:N"` stream, so `ok: true` can come back with rows silently missing; and
+  only the `"__CHANNEL__:N"` stream (the page gets them through the UI bridge; a raw invoke has no Channel), so `ok: true` can come back with rows silently missing; and
   `level_scenes_apply_batched` yields `trade: null` unless `baseAnchor` is passed.
 - **Never `list_my_presets_strict` in a seed/sweep/write-path list read** — see `.claude/rules/e2e.md`'s "Seeding and
   list reads" for why (strict is snapshot/monitor-only).

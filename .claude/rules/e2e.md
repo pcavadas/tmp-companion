@@ -19,24 +19,24 @@ Tauri's `tauri-driver`/WebdriverIO cannot drive this app — macOS WKWebView has
 
 The specs **regex-match user-facing strings** (`doctor.spec.ts` matches `/presets? need a look|All clear/`). Before rewording any view label or heading — especially on a design handoff — **grep `e2e/specs/` for the old phrase first**.
 
-## The Channel-streaming seam (deliberate, not a bug)
+## Events and Channels reach the page (the UI bridge)
 
-Per-scene/per-footswitch leveling **results stream via a Tauri `Channel`**, and the offline
-HTTP bridge (`bin/e2e_server.rs`) **no-ops it** — so a rendered "leveled"/"measured only" row
-outcome (Summary or per-row UI state) is **not UI-observable offline**, even though the
-underlying command completes and persists. This is a **deliberate, permanent seam** — not a
-harness gap to close opportunistically — until someone bridges the Channel offline. The
-**sanctioned observation path** for an offline spec that needs to prove such an outcome is the
-same command over a raw `invoke()` (reading its RETURN value directly) plus the SimDevice event
-log (`/sim/events`, offline-only) for the wire write — never a hand-rolled re-derivation through
-the rendered UI. The Playwright specs that exercise this path exist to prove the HTTP bridge +
-command-registration layer works end to end, as the **twin** of the Rust-only gates
-(`e2e_server_tests.rs`) that prove the underlying physics/outcome — not to duplicate what the
-Rust gate already covers.
+Per-scene/per-footswitch leveling **results stream via a Tauri `Channel`**, and backend
+`tmp://` events (live sync, attach/detach, backup progress, the run meter) are `emit`s. Under
+MockRuntime neither reaches a webview, so `e2e_ui_bridge.rs` captures both in-process (the
+Builder's `channel_interceptor` and one `listen_any` per event name in `UI_EVENTS`) into a
+bounded ring served at `GET /ui/events?after=<seq>` on the side lane. `e2e/bridge-client.js`
+polls it while the page holds a listener or an in-flight Channel, and an invoke that carried a
+Channel polls once more before resolving, so every streamed row lands before the return value.
+**A rendered row outcome is therefore UI-observable in both tiers.** A new `tmp://` event the
+backend emits must join `UI_EVENTS`, or the page never hears it.
 
-Every other site that needs this fact states it in ONE line and points here — see
-`level-setup.spec.ts`'s and `level-defaults.spec.ts`'s file headers, `e2e_server_tests.rs`'s
-scene-leveling test doc comments, and `e2e/fixtures/COVERAGE.md` rows 6/20.
+Two limits: a Channel's end-of-stream notification is not captured, and a spec's own raw
+`invoke()` (`page.request.post`, `fixtures/scenario.ts`) carries no Channel, so its rows go
+nowhere. For a raw invoke the observation path stays the command's RETURN value plus the
+SimDevice event log (`/sim/events`, offline-only) for the wire writes, never a re-derivation.
+The Rust gates in `e2e_server_tests.rs` prove the physics on the return value; the Playwright
+specs prove the bridge, the command layer and, now, the rendered rows.
 
 ## Seeding and list reads
 
