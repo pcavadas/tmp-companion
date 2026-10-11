@@ -143,7 +143,7 @@ fn every_session_file_is_in_the_transport_set_or_checked() {
         "backup_stream.rs",
         "diag.rs",
     ];
-    const TESTS: &[&str] = &["boundary_tests.rs", "wire_golden.rs"];
+    const TESTS: &[&str] = &["boundary_tests.rs", "tests.rs", "wire_golden.rs"];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session");
     for entry in std::fs::read_dir(dir).expect("session dir") {
         let name = entry
