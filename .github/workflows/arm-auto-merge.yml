@@ -12,9 +12,10 @@ name: Arm auto-merge
 #
 # Auto-merge is armed with a GitHub App token, NOT the GITHUB_TOKEN. GitHub does not re-trigger
 # workflows for pushes made by GITHUB_TOKEN, so a GITHUB_TOKEN-armed merge lands on main WITHOUT
-# firing release.yml (or ci.yml) — that's how the release backlog silently built up (see #59).
-# The eventual merge push is attributed to whatever identity ENABLED auto-merge, so arming as the
-# App makes that push trigger the release/CI push workflows. Safety discipline is unchanged: still
+# firing ci.yml's push run — that's how a release backlog once silently built up (see #59; releases
+# are now started by hand, so release.yml has no push trigger). The eventual merge push is
+# attributed to whatever identity ENABLED auto-merge, so arming as the App makes that push trigger
+# ci.yml on main. Safety discipline is unchanged: still
 # no `actions/checkout`, so PR-controlled code never runs; the App private key comes from repo
 # secrets and is never exposed to the PR. The one third-party action (actions/create-github-app-
 # token, GitHub-authored) is pinned to a full commit SHA.
@@ -30,7 +31,7 @@ name: Arm auto-merge
 # PR UNSTABLE, which stalled auto-merge (#143). The job now skips that combination entirely.
 # `pull_request_target` runs keep secrets even for forks, so disarm-on-external-push still works;
 # the review-approval ARM path for a fork PR is instead a manual click by @pcavadas — a
-# user-armed auto-merge attributes the merge push to the user, so release.yml/ci.yml still fire.
+# user-armed auto-merge attributes the merge push to the user, so ci.yml still fires.
 
 on:
   pull_request_target:
