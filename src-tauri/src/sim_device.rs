@@ -4224,9 +4224,10 @@ mod physics_tests {
     fn scene_recall_reverts_an_unsaved_preset_level_to_the_saved_value() {
         let sim = SimDevice::new();
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(401).unwrap();
+        // 402 has 8 scenes: a real-scene recall on a scene-less preset swaps in the template.
+        s.load_preset(402).unwrap();
         s.set_preset_level(0.81).unwrap();
-        s.save_current_preset(401).unwrap(); // saves 0.81, marks 401 `ever_saved`
+        s.save_current_preset(402).unwrap(); // saves 0.81, marks 401 `ever_saved`
 
         // A real scene recall.
         s.set_preset_level(0.55).unwrap(); // unsaved working-copy write, e.g. a solved level
