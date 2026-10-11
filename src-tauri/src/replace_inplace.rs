@@ -171,18 +171,26 @@ pub(crate) fn replace_inplace_with(
     // clear below would save it over itself and then clear it. Nothing has loaded it yet,
     // and only a load shows a body the firmware rejects (the stored row still reads
     // intact), so prove it with one — and take a rejected import back off the unit.
+    // Only a proven rejection is cleared: a dropped load or a short read says nothing about
+    // the body, so that import stays for the caller to retry.
     if scratch_slot == orig_list_index {
-        if let Err(e) = load_and_prove(scratch_slot, &scratch_name, &proof) {
-            let cleanup = match guarded_clear(scratch_slot, &scratch_name) {
-                Ok(()) => "the import was cleared".to_string(),
-                Err(c) => format!("clearing it ALSO failed ({c}) — clear it by hand"),
-            };
-            return Err(format!(
-                "the import at list index {scratch_slot} ({scratch_name:?}) did not load \
-                 intact: {e}; {cleanup}"
-            ));
-        }
-        return Ok(unverified(Some(scratch_name.clone())));
+        return match load_and_prove(scratch_slot, &scratch_name, &proof) {
+            Ok(_) => Ok(unverified(Some(scratch_name.clone()))),
+            Err(ProofError::Unverified(e)) => Err(format!(
+                "the import at list index {scratch_slot} ({scratch_name:?}) could not be \
+                 load-proven: {e}; it was left in place, UNVERIFIED"
+            )),
+            Err(ProofError::Rejected(e)) => {
+                let cleanup = match guarded_clear(scratch_slot, &scratch_name) {
+                    Ok(()) => "the import was cleared".to_string(),
+                    Err(c) => format!("clearing it ALSO failed ({c}) — clear it by hand"),
+                };
+                Err(format!(
+                    "the import at list index {scratch_slot} ({scratch_name:?}) did not load \
+                     intact: {e}; {cleanup}"
+                ))
+            }
+        };
     }
 
     // 3) Land it on the original slot: load the scratch and prove the working copy is it,
@@ -194,8 +202,9 @@ pub(crate) fn replace_inplace_with(
     // indices to the device's 1-based userSlot (HW-confirmed 1.7.75).
     let mut save_conn = load_and_prove(scratch_slot, &scratch_name, &proof).map_err(|e| {
         format!(
-            "{e}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
-             the original slot {orig_list_index} was NOT modified."
+            "{}. Left the scratch import at list index {scratch_slot} ({scratch_name:?}); \
+             the original slot {orig_list_index} was NOT modified.",
+            e.message()
         )
     })?;
     save_conn.save_current_preset(orig_list_index)?; // overwrite the original slot in place
@@ -268,6 +277,23 @@ impl LoadProof {
     }
 }
 
+/// Why [`load_and_prove`] failed: only `Rejected` says anything about the body.
+pub(crate) enum ProofError {
+    /// The working copy was read and is not the file — the firmware rejected the body.
+    Rejected(String),
+    /// The load, the connection, the active-preset confirm or the working-copy read
+    /// failed before the body could be judged.
+    Unverified(String),
+}
+
+impl ProofError {
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Rejected(e) | Self::Unverified(e) => e,
+        }
+    }
+}
+
 /// Load `list_index` on its own connection, then on a FRESH one (its handshake re-attaches
 /// to the now-current preset) confirm it is the active preset named `name` and that its
 /// working copy passes `proof`. Returns that confirmed session, so a save can follow on
@@ -278,11 +304,22 @@ pub(crate) fn load_and_prove(
     list_index: u32,
     name: &str,
     proof: &LoadProof,
-) -> Result<Session, String> {
-    Session::connect()?.load_preset(list_index)?;
-    let mut s = Session::connect()?;
-    s.confirm_active(list_index, Some(name))?;
-    s.confirm_loaded_body(|roster, doc| proof.check(roster, doc))?;
+) -> Result<Session, ProofError> {
+    let mut s = Session::connect()
+        .and_then(|mut s| s.load_preset(list_index))
+        .and_then(|()| Session::connect())
+        .map_err(ProofError::Unverified)?;
+    s.confirm_active(list_index, Some(name))
+        .map_err(ProofError::Unverified)?;
+    let mut rejected = false;
+    s.confirm_loaded_body(|roster, doc| proof.check(roster, doc).inspect_err(|_| rejected = true))
+        .map_err(|e| {
+            if rejected {
+                ProofError::Rejected(e)
+            } else {
+                ProofError::Unverified(e)
+            }
+        })?;
     Ok(s)
 }
 
