@@ -2,19 +2,19 @@ Origin: TMP Companion
 Label: TMP Companion
 Suite: stable
 Codename: stable
-Date: Tue, 06 Oct 2026 17:28:11 UTC
+Date: Sun, 11 Oct 2026 16:13:00 UTC
 Architectures: amd64
 Components: main
 Description: TMP Companion self-hosted apt repository (alpha Linux packaging)
 MD5Sum:
- 3346917a6e86c3f11ab92d6211f55591 891 main/binary-amd64/Packages
- 323c8bede25d5145e3730339038a3127 593 main/binary-amd64/Packages.gz
+ b6aed93dff85529986c37c68a9613cea 891 main/binary-amd64/Packages
+ f136c0924e5efd04b13ddef72f097f37 589 main/binary-amd64/Packages.gz
  4d7e57b6ddf63bfead75a257f71a0894 173 main/binary-amd64/Release
 SHA1:
- 1609b33f01fa8bb3b9c1ea4643886eace3c05c81 891 main/binary-amd64/Packages
- a689fa3973c28b0d5e5bbffac12a87675540b16d 593 main/binary-amd64/Packages.gz
+ 2e70a09cd5b8ebc12d175b9419753e1af264a0e7 891 main/binary-amd64/Packages
+ 298358bd2305c08e801726bfa526c3302e921857 589 main/binary-amd64/Packages.gz
  ee079b33c2cdda110fcb6dc407080344f52af345 173 main/binary-amd64/Release
 SHA256:
- 6851d7b05b82913f9bf2690d37eb74f36f5128b5ff2bff19b9d0b3fc0f30592a 891 main/binary-amd64/Packages
- 0180e0111b56df13b252fd2021e0cffb8c2e0ffa0d5c7034444bbbcdaed07858 593 main/binary-amd64/Packages.gz
+ 19acb45350614aafe7b78b61697f59c9ad1f82c5f71715780e4d89532c3cc58d 891 main/binary-amd64/Packages
+ 11414bc4b5c70b268ac9d0a3a30fe1d4a5b873184b9376a090ae39f61c10e654 589 main/binary-amd64/Packages.gz
  c7bdbfe7230972c3c6744e36a9eecf94e04c0ba581306f4007c926c4836bd5aa 173 main/binary-amd64/Release
