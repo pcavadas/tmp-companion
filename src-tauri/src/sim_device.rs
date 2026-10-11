@@ -911,26 +911,24 @@ impl SimState {
         })
     }
 
-    /// Record a save: the CURRENT working `preset_level`, plus the CURRENTLY-SAVED baked
-    /// params merged with this session's own SCENE_BASE `param_writes` (a footswitch bake) AND
-    /// its scene-scoped `param_writes` (a scene deferred save — `scene_params`), becomes
-    /// `slot0`'s saved doc. Merging onto the CURRENT saved params
-    /// (not the session's writes alone) mirrors the real device: a save persists this
-    /// session's edits ON TOP of whatever was already saved, not a wholesale replacement —
-    /// a base-only save must not erase an earlier footswitch save's baked knob, and vice
-    /// versa (two separate save call sites in the real leveling flow, base then FS batch).
-    fn record_save(&mut self, slot0: u32) {
-        self.ever_saved.insert(slot0);
-        let level = self.preset_level;
-        let mut params = self.saved_doc(slot0).params.clone();
-        let mut scene_params = self.saved_doc(slot0).scene_params.clone();
+    /// `slot0`'s saved doc with this session's working copy folded on top: the live
+    /// `preset_level`, the SCENE_BASE `param_writes` (a footswitch bake), the scene-scoped
+    /// ones (`scene_params`) and the working `ftsw`. It is what a save persists, and what a
+    /// working-copy render shows. Folding onto the CURRENTLY-saved doc (not the session's
+    /// writes alone) mirrors the real device: a save persists this session's edits ON TOP of
+    /// whatever was already saved — a base-only save must not erase an earlier footswitch
+    /// save's baked knob, and vice versa.
+    fn working_doc(&mut self, slot0: u32) -> SavedDoc {
+        let mut doc = self.saved_doc(slot0).clone();
+        doc.preset_level = self.preset_level;
         for ((scene, group, node, param), v) in &self.param_writes {
             if *scene == SCENE_BASE {
-                params.insert((group.clone(), node.clone(), param.clone()), *v);
+                doc.params
+                    .insert((group.clone(), node.clone(), param.clone()), *v);
             } else {
                 // Fold every non-base scene key, cast the wire `i64` scene index down to the
                 // overlay's `u32`.
-                scene_params.insert(
+                doc.scene_params.insert(
                     (*scene as u32, group.clone(), node.clone(), param.clone()),
                     *v,
                 );
@@ -940,16 +938,17 @@ impl SimState {
         // array (`base_ftsw`), so it already carries every earlier save's functions — there is
         // nothing to merge, and merging per-index could not express a clear's shift anyway. No
         // working-copy edit this session leaves the saved array exactly as it was.
-        let ftsw = self
-            .ftsw_working
-            .clone()
-            .or_else(|| self.saved_doc(slot0).ftsw.clone());
-        *self.saved_doc(slot0) = SavedDoc {
-            preset_level: level,
-            params,
-            scene_params,
-            ftsw,
-        };
+        if let Some(f) = &self.ftsw_working {
+            doc.ftsw = Some(f.clone());
+        }
+        doc
+    }
+
+    /// Record a save: [`SimState::working_doc`] becomes `slot0`'s saved doc.
+    fn record_save(&mut self, slot0: u32) {
+        self.ever_saved.insert(slot0);
+        let doc = self.working_doc(slot0);
+        *self.saved_doc(slot0) = doc;
     }
 }
 
@@ -2618,20 +2617,6 @@ fn load_echo_json(st: &mut SimState, slot0: u32, working: bool) -> Vec<u8> {
     truncate_scene_push(st, json.into_bytes())
 }
 
-/// `json` with `audioGraph.presetLevel` set to the live `level`, when the document has one
-/// (the plain build's default graph carries none).
-#[cfg(feature = "e2e")]
-fn with_live_preset_level(json: String, level: f32) -> String {
-    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) else {
-        return json;
-    };
-    match v.pointer_mut("/audioGraph/presetLevel") {
-        Some(pl) => *pl = serde_json::json!(level),
-        None => return json,
-    }
-    serde_json::to_string(&v).unwrap_or(json)
-}
-
 /// [`load_echo_json`] before any injected truncation.
 fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     let edits = if working {
@@ -2641,20 +2626,16 @@ fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     };
     #[cfg(feature = "e2e")]
     if let Some(j) = scenario_json_for(slot0) {
-        let doc = st.saved_doc(slot0).clone();
-        let patched = with_patched_doc(j, &doc);
-        // `ftsw`: the UNSAVED working copy when this session has edited it, else the slot's
-        // saved array — the field-3 push is the LIVE document, which is what makes it the
-        // confirm channel for the no-echo footswitch setters.
-        let ftsw = st.ftsw_working.as_ref().or(doc.ftsw.as_ref());
-        let json = with_working_edits(with_ftsw(&patched, ftsw), &edits);
-        // The working copy carries the LIVE level, which differs from this slot's saved one
-        // after an unsaved `setPresetLevel` or a save to another slot.
-        return if working {
-            with_live_preset_level(json, st.preset_level)
+        // A working-copy render is the LIVE document: unsaved edits included, and after a save
+        // to another slot this slot's own saved doc lacks them. That is what makes the field-3
+        // push the confirm channel for the no-echo footswitch setters.
+        let doc = if working {
+            st.working_doc(slot0)
         } else {
-            json
+            st.saved_doc(slot0).clone()
         };
+        let patched = with_patched_doc(j, &doc);
+        return with_working_edits(with_ftsw(&patched, doc.ftsw.as_ref()), &edits);
     }
     let _ = slot0;
     with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits)
@@ -4231,6 +4212,42 @@ mod same_slot_load_tests {
             .as_f64()
             .unwrap();
         assert!((pushed - 0.6).abs() < 1e-6, "pushed {pushed}");
+    }
+
+    /// The skipped load's push also carries knob edits the loaded slot's own saved doc lacks.
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn a_skipped_load_after_a_save_elsewhere_pushes_the_live_knob() {
+        let doc: serde_json::Value = serde_json::from_str(scenario_json_for(401).unwrap()).unwrap();
+        let (group, node, param) = audiograph::roster(&doc)
+            .into_iter()
+            .find_map(|(g, id, _)| {
+                let n = doc["audioGraph"]["guitarNodes"][&g]
+                    .as_array()?
+                    .iter()
+                    .find(|n| n["nodeId"] == id.as_str())?;
+                let p = n["dspUnitParameters"]
+                    .as_object()?
+                    .iter()
+                    .find(|(_, v)| v.is_f64())?
+                    .0
+                    .clone();
+                Some((g, id, p))
+            })
+            .expect("fixture 401 has a float knob");
+        let sim = SimDevice::new();
+        let mut s = session(&sim);
+        s.load_preset(401).unwrap();
+        s.change_parameter(&group, &node, &param, 0.123).unwrap();
+        s.save_current_preset(402).unwrap();
+        s.load_preset(402).unwrap();
+        let pushed = s.live_preset_value(|_| true).unwrap();
+        let value = pushed["audioGraph"]["guitarNodes"][&group]
+            .as_array()
+            .and_then(|ns| ns.iter().find(|n| n["nodeId"] == node.as_str()))
+            .and_then(|n| n["dspUnitParameters"][&param].as_f64())
+            .unwrap();
+        assert!((value - 0.123).abs() < 1e-6, "pushed {value}");
     }
 
     /// A refused clear must not materialize empty switches in the working copy.
