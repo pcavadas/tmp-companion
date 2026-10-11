@@ -204,12 +204,14 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
     // 402 off-branch: the row's own status, its specific no-signal diagnosis, and the
     // routing remediation banner (design 1a dropped the old per-category sub-tally count —
     // the row status + banner are the evidence now).
-    await expect(page.getByText("can’t hear it")).toBeVisible();
+    // Two rows can't be heard: the faulted Base, and switch 2 `OUT2`, whose block sits on
+    // the split's OUT-2 lane (COVERAGE row 21). The second arrives through the UI bridge.
+    await expect(page.getByText("can’t hear it")).toHaveCount(2);
     await expect(
       page.getByText(
         "Nothing came through USB 1/2, so we couldn’t hear this one.",
       ),
-    ).toBeVisible();
+    ).toHaveCount(2);
     await expect(page.getByText("Needs routing on the unit")).toBeVisible();
     // 401 still leveled — its displayed final LUFS near the default target (−23). No "LUFS"
     // suffix on Summary (that's a RunPage-only unit label) — just the bare reading.
