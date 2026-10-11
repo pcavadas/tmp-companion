@@ -342,6 +342,9 @@ pub(crate) enum Injection {
     DropNextReampOff,
     /// Every Settings re-amp OFF leaves the latch ON.
     ReampOffNeverLands,
+    /// The NEXT real `loadPreset` rejects the stored body: the working copy becomes the
+    /// empty template under the preset's name and the load answers `presetError` 6.
+    RejectNextLoad,
     /// While scene `scene` is active, field-3 pushes are cut at the first byte of
     /// `cut_before`, with a proper final frame and the session still live.
     #[cfg(feature = "e2e")]
@@ -363,6 +366,10 @@ impl Injection {
     /// - `not-device-shaped`: the server never truncates a push; a lapse cuts frames with no
     ///   final, and every later message draws `ConnectionError` (device-confirmed).
     ///
+    /// `reject-next-load` is `reachable`: fw 1.8.58 substitutes the empty template for a
+    /// body it rejects at its first real load and answers that load `presetError` 6
+    /// (device-confirmed; e.g. a param footswitch with no `valueType`).
+    ///
     /// The re-amp OFF faults: `drop-next-reamp-off` is `reachable`, because a stale Settings
     /// flag turns a Settings write into a no-op that still echoes success (device-confirmed).
     /// `reamp-off-never-lands` is `unverified`: no device run has shown an OFF that a Settings
@@ -373,7 +380,8 @@ impl Injection {
         match self {
             Injection::LoseFirstConfirm
             | Injection::RejectReplace { .. }
-            | Injection::DropNextReampOff => "reachable",
+            | Injection::DropNextReampOff
+            | Injection::RejectNextLoad => "reachable",
             Injection::DropFirstStructural | Injection::BareConfirms => "unreachable",
             Injection::StalePushAfterSave | Injection::ReampOffNeverLands => "unverified",
             #[cfg(feature = "e2e")]
@@ -404,6 +412,7 @@ impl Injection {
             "stale-push-after-save" => Injection::StalePushAfterSave,
             "drop-next-reamp-off" => Injection::DropNextReampOff,
             "reamp-off-never-lands" => Injection::ReampOffNeverLands,
+            "reject-next-load" => Injection::RejectNextLoad,
             "truncated-scene-push" => Injection::TruncatedScenePush {
                 scene: u32_arg("scene")?,
                 cut_before: v
@@ -649,6 +658,11 @@ struct SimState {
     reamp_off_never_lands: bool,
     /// Set by the first [`SimEvent::ServerAbort`]: every later send returns `Err`.
     server_aborted: bool,
+    /// The working copy is the unit's EMPTY template (see [`template_json`]): set by a
+    /// `loadScene(N≠8)` on a scene-less preset, cleared by the next real load.
+    template_substituted: bool,
+    /// [`Injection::RejectNextLoad`]: the next real load substitutes the template, once.
+    reject_next_load: bool,
     /// Capture-fault injection (`POST /sim/fault`): when armed for a slot, that slot's
     /// NEXT capture returns silence once (the leveller's no-signal path), then disarms.
     /// e2e-only — its only reader is the offline capture model.
@@ -767,6 +781,8 @@ impl Default for SimState {
             drop_next_reamp_off: false,
             reamp_off_never_lands: false,
             server_aborted: false,
+            template_substituted: false,
+            reject_next_load: false,
             #[cfg(feature = "e2e")]
             fail_capture_slot: None,
             #[cfg(feature = "e2e")]
@@ -1376,6 +1392,7 @@ impl SimDevice {
             Injection::StalePushAfterSave => st.stale_push_after_save = true,
             Injection::DropNextReampOff => st.drop_next_reamp_off = true,
             Injection::ReampOffNeverLands => st.reamp_off_never_lands = true,
+            Injection::RejectNextLoad => st.reject_next_load = true,
             #[cfg(feature = "e2e")]
             Injection::TruncatedScenePush { scene, cut_before } => {
                 st.truncated_scene_push = Some((*scene, cut_before.clone()));
@@ -1649,6 +1666,7 @@ impl SimDevice {
             st.loaded_identity = Some(identity);
             st.dirty = false;
             // A real load re-instantiates the stored preset: the working copy starts clean.
+            st.template_substituted = false;
             st.working_edits.clear();
             st.string_params.clear();
             // A tab-5 load makes its song active when the row it names is bound to this
@@ -1708,6 +1726,20 @@ impl SimDevice {
             // Echo `currentPresetDataChanged`(3) right after the load — the real device's
             // post-load push the `blockcaps` guard reads as the pre-edit roster
             // (`Session::current_preset_value`). May exceed one HID frame, so chunk it.
+            if std::mem::take(&mut st.reject_next_load) {
+                // A body the unit rejects at load: the empty template under the stored name,
+                // answered with presetError 6 (device-confirmed).
+                st.template_substituted = true;
+                let json = load_echo_json(&mut st, slot0, true);
+                let mut code = Vec::new();
+                proto::field_varint(&mut code, 1, crate::session::PRESET_ERROR_TEMPLATE);
+                let mut reports = vec![
+                    frame(&preset_loaded(dev_slot)),
+                    frame(&preset_message(F_PRESET_ERROR, &code)),
+                ];
+                reports.extend(frame_multi(&current_preset_data_changed(&json)));
+                return reports;
+            }
             let json = load_echo_json(&mut st, slot0, false);
             let mut reports = vec![frame(&preset_loaded(dev_slot))];
             reports.extend(frame_multi(&current_preset_data_changed(&json)));
@@ -1859,6 +1891,41 @@ impl SimDevice {
             // `BASE_SCENE_SLOT` (8) sentinel that recalls base (not a real `scenes[]`
             // entry — HW-confirmed; `session::BASE_SCENE_SLOT`).
             let wire_slot = proto::first_varint(&proto::parse(ls), 1).unwrap_or(0) as u32;
+            if wire_slot != crate::session::BASE_SCENE_SLOT {
+                let slot0 = st.current_slot;
+                let count =
+                    serde_json::from_str::<serde_json::Value>(&render_json(&mut st, slot0, true))
+                        .ok()
+                        .and_then(|v| {
+                            v.get("scenes")
+                                .and_then(serde_json::Value::as_array)
+                                .map(Vec::len)
+                        })
+                        .unwrap_or(0);
+                if count == 0 {
+                    // Scene-less preset (fw 1.8.58 static RE): the unit swaps the working copy
+                    // for its EMPTY template under the same name, answers presetError 6, sets
+                    // the dirty flag and keeps the requested scene index.
+                    st.events.push(SimEvent::LoadScene(wire_slot));
+                    st.template_substituted = true;
+                    st.dirty = true;
+                    st.current_scene = Some(wire_slot);
+                    let mut code = Vec::new();
+                    proto::field_varint(&mut code, 1, crate::session::PRESET_ERROR_TEMPLATE);
+                    let mut reports = vec![frame(&preset_message(F_PRESET_ERROR, &code))];
+                    let json = load_echo_json(&mut st, slot0, true);
+                    reports.extend(frame_multi(&current_preset_data_changed(&json)));
+                    return reports;
+                }
+                if wire_slot as usize >= count {
+                    // An index past the preset's scenes aborts the device server (static RE).
+                    server_abort(
+                        &mut st,
+                        format!("loadScene({wire_slot}) past {count} scenes"),
+                    );
+                    return Vec::new();
+                }
+            }
             st.current_scene = if wire_slot == crate::session::BASE_SCENE_SLOT {
                 None
             } else {
@@ -3054,6 +3121,9 @@ fn with_bypass_writes(json: String, writes: &HashMap<String, bool>) -> String {
 
 /// [`load_echo_json`] before any injected truncation.
 fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
+    if working && st.template_substituted {
+        return template_json(&render_json_stored_name(st, slot0));
+    }
     let edits = if working {
         st.working_edits.clone()
     } else {
@@ -3082,6 +3152,30 @@ fn render_json(st: &mut SimState, slot0: u32, working: bool) -> String {
     }
     let _ = slot0;
     with_working_edits(with_ftsw(&st.preset_json, st.ftsw_working.as_ref()), &edits)
+}
+
+/// The unit's EMPTY template as the working copy shows it after a substitution: the
+/// public fields only (template `preset_id`, the preset's own name, no blocks, no scenes,
+/// presetLevel 0.53; device-confirmed), never a copy of the factory record.
+fn template_json(name: &str) -> String {
+    serde_json::json!({
+        "info": {"displayName": name, "preset_id": crate::library::TEMPLATE_PRESET_ID},
+        "presetLevel": 0.53,
+        "audioGraph": {"guitarNodes": {}},
+        "scenes": [],
+    })
+    .to_string()
+}
+
+/// The display name the stored document for `slot0` carries ("" when it has none).
+fn render_json_stored_name(st: &mut SimState, slot0: u32) -> String {
+    serde_json::from_str::<serde_json::Value>(&render_json(st, slot0, false))
+        .ok()
+        .and_then(|v| {
+            v.pointer("/info/displayName")
+                .and_then(|n| n.as_str().map(String::from))
+        })
+        .unwrap_or_default()
 }
 
 /// The node ids `group` holds in the current working copy, minus `except`.
@@ -3384,6 +3478,15 @@ fn record_unhandled_inner(
     }
     st.unhandled.push(SimEvent::Unhandled { tms, inner, batch });
 }
+
+/// The default preset with eight (empty) scenes, for tests that recall scenes 0..=7: on
+/// the scene-less default a `loadScene(N≠8)` substitutes the empty template.
+#[cfg(test)]
+pub(crate) const SCENED_PRESET_JSON: &str = r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[
+    {"FenderId":"ACD_Twin57","nodeId":"n1","dspUnitParameters":{"bypass":false,"outputLevel":0.5}},
+    {"FenderId":"ACD_ChorusCE2","nodeId":"n2","dspUnitParameters":{"bypass":false}}
+]}},"scenes":[{"sceneName":"S1"},{"sceneName":"S2"},{"sceneName":"S3"},{"sceneName":"S4"},
+{"sceneName":"S5"},{"sceneName":"S6"},{"sceneName":"S7"},{"sceneName":"S8"}]}"#;
 
 /// Record a device-server abort: no reply to the request that caused it, and every later
 /// send on this fake fails ([`SimEvent::ServerAbort`]).
@@ -4173,7 +4276,7 @@ mod scene_context_tests {
     // NEXT load — including a save while base (BASE_SCENE_SLOT) is active.
     #[test]
     fn saving_records_the_active_scene_for_the_next_load() {
-        let sim = SimDevice::new();
+        let sim = SimDevice::new().with_preset_json(SCENED_PRESET_JSON);
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(1).unwrap();
         s.load_scene(4).unwrap();
@@ -5195,6 +5298,7 @@ mod oracle_and_census_tests {
             Injection::StalePushAfterSave,
             Injection::DropNextReampOff,
             Injection::ReampOffNeverLands,
+            Injection::RejectNextLoad,
         ]
         .iter()
         .map(Injection::tag)
@@ -5208,7 +5312,8 @@ mod oracle_and_census_tests {
                 "unreachable",
                 "unverified",
                 "reachable",
-                "unverified"
+                "unverified",
+                "reachable"
             ]
         );
     }

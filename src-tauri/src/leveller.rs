@@ -9873,7 +9873,9 @@ mod tests {
     // caught live by the online level.online.spec.ts base idempotency test).
     #[test]
     fn recall_reassert_save_replays_the_unsaved_level_after_the_recall() {
-        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let sim = crate::sim_device::SimDevice::new()
+            .with_preset_json(crate::sim_device::SCENED_PRESET_JSON)
+            .with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
         s.load_preset(30).expect("load_preset");
         recall_reassert_save(&mut s, 30, Some(3), &[Reassert::PresetLevel(0.42)]).expect("save");
@@ -11304,7 +11306,9 @@ mod tests {
     // recalled so the save re-stamps it (HW: the FS save stamped 8 over the user's scene 3).
     #[test]
     fn write_fs_values_mirrors_the_bake_and_restores_the_saved_scene() {
-        let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
+        let sim = crate::sim_device::SimDevice::new()
+            .with_preset_json(crate::sim_device::SCENED_PRESET_JSON)
+            .with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let pending = vec![FsPendingWrite {
             switch: 1,

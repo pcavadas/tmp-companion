@@ -69,6 +69,11 @@ pub(super) struct TrackedHid {
     pub(super) auto_reopen: bool,
     /// Reports the reopen's own pump window collected, handed out with the next batch.
     pub(super) reopened: std::cell::RefCell<Vec<Vec<u8>>>,
+    /// Set when any inbound report carried `presetError` 6: the unit swapped the working
+    /// copy for its EMPTY template under the preset's name (a rejected body at load, or
+    /// `loadScene(N≠8)` on a scene-less preset; static RE + device-confirmed). Cleared by
+    /// the next preset load; while set, [`Session::save_current_preset`] refuses.
+    pub(super) template_substituted: std::cell::Cell<bool>,
 }
 
 impl TrackedHid {
@@ -79,6 +84,21 @@ impl TrackedHid {
             nominal_ms: std::cell::Cell::new(0),
             auto_reopen: true,
             reopened: std::cell::RefCell::new(Vec::new()),
+            template_substituted: std::cell::Cell::new(false),
+        }
+    }
+    /// Note a template substitution in any reassembled body of `reports`.
+    pub(super) fn scan(&self, reports: &[Vec<u8>]) {
+        if proto::reassemble_streams(reports)
+            .iter()
+            .any(|s| is_template_substitution(&s.body))
+        {
+            self.note_substituted();
+        }
+    }
+    pub(super) fn note_substituted(&self) {
+        if !self.template_substituted.replace(true) {
+            log::warn!("presetError 6: the unit replaced the working copy with an empty preset");
         }
     }
     /// About to write `body`: reopen a client the device may have dropped, then reset
@@ -127,9 +147,11 @@ impl TrackedHid {
     pub(super) fn with_reopened(&self, reports: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
         let mut out = self.reopened.take();
         if out.is_empty() {
-            return reports;
+            out = reports;
+        } else {
+            out.extend(reports);
         }
-        out.extend(reports);
+        self.scan(&out);
         out
     }
     pub(super) fn waited(&self, ms: u64) {
@@ -178,6 +200,18 @@ impl Session {
     /// line is quiet (`ms` stays the cap): only for sends whose reports nobody parses.
     pub(super) fn transact_eager(&self, body: &[u8], ms: u64) -> Result<Vec<Vec<u8>>, String> {
         self.hid.transact_eager(body, ms)
+    }
+
+    /// Whether the unit answered `presetError` 6 since the last preset load: the working
+    /// copy is its EMPTY template under this preset's name, and a save would persist it.
+    pub fn template_substituted(&self) -> bool {
+        self.hid.template_substituted.get()
+    }
+
+    /// A preset load starts clean: a real reload restores the stored body, and a body the
+    /// unit rejects re-sets the flag from the load's own reply.
+    pub(super) fn clear_template_substituted(&self) {
+        self.hid.template_substituted.set(false);
     }
 
     /// Whether the device may have dropped this client (see `TrackedHid::maybe_lapsed`).
@@ -249,7 +283,11 @@ impl Session {
     /// connection without `raw`/`streams_final` being module-private to it. The
     /// monitor tracks a "seen" index (the newest stream may still be growing).
     pub fn push_bodies(&self) -> Vec<Vec<u8>> {
-        self.streams_final().into_iter().map(|s| s.body).collect()
+        let bodies: Vec<Vec<u8>> = self.streams_final().into_iter().map(|s| s.body).collect();
+        if bodies.iter().any(|b| is_template_substitution(b)) {
+            self.hid.note_substituted();
+        }
+        bodies
     }
 
     /// One kept-alive [`KEEPALIVE_WINDOW_MS`] window.

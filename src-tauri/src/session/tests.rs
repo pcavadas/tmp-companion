@@ -1805,3 +1805,80 @@ fn list_my_presets_lets_the_session_lapse_after_a_keepalive_harvest() {
         t.idle_ms()
     );
 }
+
+// ─── Template substitution never reaches a save ─────────────────────────────
+
+fn saved_events(sim: &crate::sim_device::SimDevice) -> usize {
+    sim.events()
+        .iter()
+        .filter(|e| matches!(e, crate::sim_device::SimEvent::Saved(_)))
+        .count()
+}
+
+/// `loadScene(N≠8)` on a scene-less preset swaps in the unit's empty template (presetError
+/// 6, static RE); the save choke point refuses it and sends nothing.
+#[test]
+fn a_scene_recall_on_a_scene_less_preset_blocks_the_save() {
+    let sim = crate::sim_device::SimDevice::new();
+    let mut s = Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(0).expect("load");
+    assert!(!s.template_substituted());
+    s.load_scene(0).expect("recall");
+    assert!(s.template_substituted(), "presetError 6 was answered");
+    assert_eq!(
+        s.save_current_preset(0).expect_err("refused"),
+        super::preset::TEMPLATE_SAVE_REFUSED
+    );
+    assert_eq!(saved_events(&sim), 0, "nothing reached the device");
+    // A real load restores the stored body and clears the guard.
+    s.load_preset(1).expect("load another");
+    s.load_preset(0).expect("reload");
+    assert!(!s.template_substituted());
+    s.save_current_preset(0).expect("save");
+    assert_eq!(saved_events(&sim), 1);
+}
+
+/// A body rejected at load (presetError 6 on the load itself, device-confirmed) blocks the
+/// save the same way; the next load that lands clears it.
+#[test]
+fn a_rejected_load_blocks_the_save_until_a_load_lands() {
+    let sim = crate::sim_device::SimDevice::new();
+    sim.arm(crate::sim_device::Injection::RejectNextLoad);
+    let mut s = Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(3).expect("load");
+    assert!(s.template_substituted());
+    assert!(s.save_current_preset(3).is_err());
+    assert_eq!(saved_events(&sim), 0);
+    s.load_preset(4).expect("load another");
+    assert!(!s.template_substituted());
+}
+
+/// The base sentinel (8) and an in-range scene leave the guard clear.
+#[test]
+fn a_valid_scene_recall_keeps_saves_open() {
+    let sim =
+        crate::sim_device::SimDevice::new().with_preset_json(crate::sim_device::SCENED_PRESET_JSON);
+    let mut s = Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(0).expect("load");
+    s.load_scene(BASE_SCENE_SLOT).expect("base");
+    s.load_scene(2).expect("scene 3");
+    assert!(!s.template_substituted());
+    s.save_current_preset(0).expect("save");
+    assert_eq!(saved_events(&sim), 1);
+}
+
+/// A scene index past the preset's scenes aborts the device server (static RE): the fake
+/// records it, so a caller that sends one is caught offline.
+#[test]
+fn a_scene_index_past_the_scenes_aborts_the_server() {
+    let sim = crate::sim_device::SimDevice::new().with_preset_json(
+        r#"{"audioGraph":{"guitarNodes":{"G1":[]}},"scenes":[{"sceneName":"A"},{"sceneName":"B"}]}"#,
+    );
+    let mut s = Session::from_transport(Box::new(sim.clone()));
+    s.load_preset(0).expect("load");
+    let _ = s.load_scene(2);
+    assert!(sim
+        .events()
+        .iter()
+        .any(|e| matches!(e, crate::sim_device::SimEvent::ServerAbort { .. })));
+}

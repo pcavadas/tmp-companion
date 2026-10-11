@@ -27,6 +27,17 @@ pub(crate) struct PresetLoadedFields {
     pub sync: u64,
 }
 
+/// `presetError` code 6: the unit substituted its EMPTY template for the working copy
+/// (fw 1.8.58: a body rejected at load, device-confirmed; `loadScene(N≠8)` on a
+/// scene-less preset, static RE).
+pub(crate) const PRESET_ERROR_TEMPLATE: u64 = 6;
+
+/// Whether `body` is a `presetError` (TMS[2] → [53]) with [`PRESET_ERROR_TEMPLATE`].
+pub(crate) fn is_template_substitution(body: &[u8]) -> bool {
+    dig(body, TMS_PRESET, PRESET_ERROR)
+        .is_some_and(|err| proto::first_varint(&err, 1) == Some(PRESET_ERROR_TEMPLATE))
+}
+
 /// Decode a `PresetLoaded` push (TMS[2] → [11]). `None` if this body is not one.
 pub(crate) fn decode_preset_loaded(body: &[u8]) -> Option<PresetLoadedFields> {
     let f = dig(body, TMS_PRESET, PRESET_LOADED_PUSH)?;
