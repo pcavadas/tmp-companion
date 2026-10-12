@@ -10,7 +10,6 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { SlotLabel } from "../../ui/SlotLabel";
 import { SevDot, SoundRow } from "./SoundRow";
-import type { DoctorStimulus } from "./PrescriptionCard";
 import { SceneConsistency } from "./SceneConsistency";
 import { LevelingDamageRow } from "./LevelingDamageRow";
 import {
@@ -21,7 +20,7 @@ import {
   soundSev,
 } from "./severity";
 import type {
-  ActiveGraph,
+  DoctorInputArg,
   DoctorPresetResult,
   DoctorSoundResult,
   FootswitchInfo,
@@ -31,14 +30,10 @@ import type {
 export interface PresetResultCardProps {
   preset: DoctorPresetResult;
   presetName: string;
-  footswitchInfo: Map<number, FootswitchInfo[]>;
-  /** 0-based list index → the preset's signal chain, from the SAME startup
-   *  backup scan as `footswitchInfo` — threaded into every prescription card
-   *  so its A/B captures under the diagnosed sound's own context. */
-  graphByIndex: Map<number, ActiveGraph>;
-  /** Sound key → the stimulus identity it was diagnosed with — threaded into
-   *  every prescription card so its A/B replays the diagnosis stimulus. */
-  stimulusByKey: Map<string, DoctorStimulus>;
+  /** Sound key → the exact `doctor_check` input it was diagnosed with (chain,
+   *  full footswitch roster, stimulus) — every prescription card's A/B replays
+   *  it, so diagnosis and audition share ONE input. */
+  inputByKey: Map<string, DoctorInputArg>;
   /** 0-based list index → the preset's backup-scan silence hint (same source
    *  as the Level tab) — refines a sound's "no signal captured" error. */
   silenceHintByIndex: Map<number, SilenceHint>;
@@ -54,23 +49,23 @@ export interface PresetResultCardProps {
 }
 
 /** The node ids a footswitch SOUND owns — the blocks its own switch toggles.
- *  Base/scene sounds (`footswitch == null`) own nothing (undefined). The `f${slot}:${i}`
- *  key's `i` indexes the preset's `FootswitchInfo[]`. */
+ *  Base/scene sounds (`footswitch == null`) own nothing (undefined). Matched on
+ *  the device switch number, never on a list position: the sound key's `i`
+ *  indexes the levelable-only list, not the full roster the input carries. */
 function ownNodeIdsFor(
   sound: DoctorSoundResult,
   fsList: FootswitchInfo[] | undefined,
 ): string[] | undefined {
   if (sound.footswitch == null) return undefined;
-  const i = Number(sound.key.split(":")[1]);
-  return fsList?.[i]?.functions.map((f) => f.node_id);
+  return fsList
+    ?.find((f) => f.switch === sound.footswitch)
+    ?.functions.map((f) => f.node_id);
 }
 
 export function PresetResultCard({
   preset,
   presetName,
-  footswitchInfo,
-  graphByIndex,
-  stimulusByKey,
+  inputByKey,
   silenceHintByIndex,
   expanded,
   onToggleRow,
@@ -100,21 +95,17 @@ export function PresetResultCard({
   // "All clear" is a claim about EVERY sound — never made while one wasn't heard.
   const fullyChecked = notMeasured.length === 0;
 
-  const presetFootswitches = footswitchInfo.get(preset.listIndex);
-  const presetNodes = graphByIndex.get(preset.listIndex)?.nodes ?? [];
-
   const row = (sound: DoctorSoundResult) => {
     const id = `${String(preset.listIndex)}|${sound.key}`;
+    const input = inputByKey.get(sound.key);
     return (
       <SoundRow
         key={sound.key}
         sound={sound}
         listIndex={preset.listIndex}
         presetName={presetName}
-        ownNodeIds={ownNodeIdsFor(sound, presetFootswitches)}
-        nodes={presetNodes}
-        footswitches={presetFootswitches ?? []}
-        stimulus={stimulusByKey.get(sound.key)}
+        ownNodeIds={ownNodeIdsFor(sound, input?.footswitches)}
+        input={input}
         silenceHint={silenceHintByIndex.get(preset.listIndex)}
         open={expanded.has(id)}
         onToggle={() => {

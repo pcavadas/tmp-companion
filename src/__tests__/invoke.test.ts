@@ -33,6 +33,7 @@ import {
   setAutoInstallUpdates,
   connectDevice,
   listPresets,
+  CommandError,
   levelPreset,
   listSceneLevelHandles,
   listFootswitchSceneContexts,
@@ -517,6 +518,27 @@ describe("cmd namespace mirrors the named exports", () => {
     // wrappers (restorePresetLevel, redistributeHeadroom, restoreRedistribution,
     // commonReachableTarget — design 1a dropped all in-app revert capability).
     expect(Object.keys(cmd).length).toBe(35);
+  });
+});
+
+describe("invoke rejections are normalized to CommandError", () => {
+  it("wraps a bare-string backend rejection in an Error carrying its text + command", async () => {
+    // Every command returns Result<_, String>, so the real IPC rejects with a
+    // STRING — the shape that made `e instanceof Error ? e.message : "generic"`
+    // drop the backend's reason.
+    invokeMock.mockRejectedValueOnce(
+      "guarded insert refused: over the CPU budget",
+    );
+    const err: unknown = await listPresets().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CommandError);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as CommandError).message).toBe(
+      "guarded insert refused: over the CPU budget",
+    );
+    expect((err as CommandError).cmd).toBe("list_presets");
   });
 });
 

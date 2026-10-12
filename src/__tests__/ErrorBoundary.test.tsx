@@ -70,6 +70,25 @@ describe("ErrorBoundary", () => {
     expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
   });
 
+  it("renders a thrown NON-Error (a bare string) as its text, not an empty box", () => {
+    // A rejected backend command used to reach JS as a bare string; a render
+    // that rethrows one must still show what went wrong.
+    function ThrowsString(): never {
+      const thrown: unknown = "the unit stopped answering";
+      throw thrown;
+    }
+    render(
+      <ThemeProvider>
+        <ErrorBoundary>
+          <ThrowsString />
+        </ErrorBoundary>
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
+    expect(screen.getByText("the unit stopped answering")).toBeInTheDocument();
+  });
+
   it("renders children unchanged when they do not throw", () => {
     render(
       <ThemeProvider>

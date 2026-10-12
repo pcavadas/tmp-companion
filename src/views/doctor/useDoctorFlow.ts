@@ -8,9 +8,10 @@
 // wire DoctorInputArgs). Mirrors useLevelingFlow's structure, minus the
 // per-item command composition — Doctor is ONE backend command for the whole run.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 
 import { doctorCheck, cancelDoctorCheck } from "../../lib/invoke";
+import { errMsg } from "../../lib/format";
 import { NO_INSTRUMENT, type SetupOption } from "../level/leveling";
 import type { RailStep } from "../overlays/wizardContext";
 import type {
@@ -34,30 +35,100 @@ export const DOCTOR_STEPS: readonly RailStep[] = [
  *  streams `active` → `done` (or `error`) per key. */
 export type DoctorRunStatus = "queued" | "active" | "done" | "error";
 
+/** The whole run's status — ONE value, so a failure can never read as a Stop:
+ *  `stopping` = Stop requested, the in-flight sound still winding down;
+ *  `done` = finished on its own; `stopped` = ended by the user's Stop;
+ *  `failed` = the `doctor_check` command itself rejected. */
+export type DoctorFlowStatus =
+  "idle" | "running" | "stopping" | "done" | "stopped" | "failed";
+
 export interface DoctorRunState {
+  status: DoctorFlowStatus;
   /** The exact args sent to `doctor_check` (drives the run rows). */
   items: DoctorInputArg[];
   /** key → live status. */
   statusByKey: Record<string, DoctorRunStatus>;
-  /** Sounds that reached a terminal status (done/error) — the progress index. */
-  currentIndex: number;
-  total: number;
-  done: boolean;
-  stopped: boolean;
-  /** Stop requested; the in-flight check is still winding down (no row is
-   *  truly idle yet). Mirrors useLevelingFlow's RunState.stopping. */
-  stopping: boolean;
+  /** Set when the run resolved (its results) — null otherwise. */
+  result: DoctorCheckResult | null;
+  /** The rejection text when `status === "failed"`. */
+  error: string | null;
+  /** Bumped on every start — a retry remounts the run page's live timers. */
+  attempt: number;
 }
 
 const EMPTY_RUN: DoctorRunState = {
+  attempt: 0,
+  status: "idle",
   items: [],
   statusByKey: {},
-  currentIndex: 0,
-  total: 0,
-  done: false,
-  stopped: false,
-  stopping: false,
+  result: null,
+  error: null,
 };
+
+type RunAction =
+  | { type: "start"; items: DoctorInputArg[] }
+  | { type: "progress"; key: string; status: DoctorRunStatus }
+  | { type: "stop" }
+  | { type: "resolved"; result: DoctorCheckResult }
+  | { type: "failed"; error: string }
+  | { type: "reset" };
+
+export function runReducer(
+  state: DoctorRunState,
+  action: RunAction,
+): DoctorRunState {
+  switch (action.type) {
+    case "start": {
+      const statusByKey: Record<string, DoctorRunStatus> = {};
+      action.items.forEach((it) => (statusByKey[it.key] = "queued"));
+      return {
+        ...EMPTY_RUN,
+        attempt: state.attempt + 1,
+        status: "running",
+        items: action.items,
+        statusByKey,
+      };
+    }
+    case "progress":
+      return {
+        ...state,
+        statusByKey: { ...state.statusByKey, [action.key]: action.status },
+      };
+    case "stop":
+      return state.status === "running"
+        ? { ...state, status: "stopping" }
+        : state;
+    case "resolved":
+      return {
+        ...state,
+        status: action.result.stopped ? "stopped" : "done",
+        result: action.result,
+      };
+    case "failed":
+      return { ...state, status: "failed", error: action.error };
+    case "reset":
+      return { ...EMPTY_RUN, attempt: state.attempt };
+  }
+}
+
+/** The run has ended — on its own, by Stop, or by failure. */
+export function runEnded(status: DoctorFlowStatus): boolean {
+  return status === "done" || status === "stopped" || status === "failed";
+}
+
+/** Sounds that reached a terminal status (done/error) — the progress index. A
+ *  run that resolved counts every sound (nothing is still in flight). */
+export function countFinished(
+  status: DoctorFlowStatus,
+  items: DoctorInputArg[],
+  statusByKey: Record<string, DoctorRunStatus>,
+): number {
+  if (status === "done" || status === "stopped") return items.length;
+  return items.reduce((n, it) => {
+    const s = statusByKey[it.key];
+    return s === "done" || s === "error" ? n + 1 : n;
+  }, 0);
+}
 
 export interface UseDoctorFlowDeps {
   store: Store | null;
@@ -72,16 +143,6 @@ export interface UseDoctorFlowDeps {
   /** Per-preset scene overlays (indexed by scene wire index) from the SAME startup
    *  backup, keyed by 0-based list index — a scene sound's diagnosed graph. */
   sceneOverridesByIndex: Map<number, NodeOverride[][]>;
-}
-
-function countTerminal(
-  items: DoctorInputArg[],
-  statusByKey: Record<string, DoctorRunStatus>,
-): number {
-  return items.reduce((n, it) => {
-    const s = statusByKey[it.key];
-    return s === "done" || s === "error" ? n + 1 : n;
-  }, 0);
 }
 
 /** One scene's overrides out of a preset's per-scene list — empty for a base or
@@ -102,12 +163,7 @@ export function useDoctorFlow({
   footswitchesByIndex,
   sceneOverridesByIndex,
 }: UseDoctorFlowDeps) {
-  const [run, setRun] = useState<DoctorRunState>(EMPTY_RUN);
-  const [result, setResult] = useState<DoctorCheckResult | null>(null);
-  // Set only when the whole `doctor_check` command REJECTS (an IPC/backend
-  // failure) — distinct from a user Stop, which resolves normally with results.
-  // Lets the results stage show a failure notice instead of a blank page.
-  const [error, setError] = useState<string | null>(null);
+  const [run, dispatch] = useReducer(runReducer, EMPTY_RUN);
   const runningRef = useRef(false);
 
   // Turn each chosen list row into a wire DoctorInputArg. The scene wire index is
@@ -174,51 +230,18 @@ export function useDoctorFlow({
     (items: DoctorInputArg[], restoreListIndex: number | null) => {
       if (runningRef.current) return;
       runningRef.current = true;
-      setResult(null);
-      setError(null);
-      const statusByKey: Record<string, DoctorRunStatus> = {};
-      items.forEach((it) => (statusByKey[it.key] = "queued"));
-      setRun({
-        items,
-        statusByKey,
-        currentIndex: 0,
-        total: items.length,
-        done: false,
-        stopped: false,
-        stopping: false,
-      });
+      dispatch({ type: "start", items });
 
       void doctorCheck(items, restoreListIndex, (p) => {
-        setRun((prev) => {
-          const nextStatus = { ...prev.statusByKey, [p.key]: p.status };
-          return {
-            ...prev,
-            statusByKey: nextStatus,
-            currentIndex: countTerminal(prev.items, nextStatus),
-          };
-        });
+        dispatch({ type: "progress", key: p.key, status: p.status });
       })
-        .then((res) => {
-          setResult(res);
-          setRun((prev) => ({
-            ...prev,
-            done: true,
-            stopped: res.stopped,
-            stopping: false,
-            currentIndex: prev.total,
-          }));
+        .then((result) => {
+          dispatch({ type: "resolved", result });
         })
         .catch((e: unknown) => {
-          // A whole-run failure ends the run (the rows keep their last streamed
-          // status). Record the error so the results stage surfaces a failure
-          // notice rather than looking like an intentional Stop with no results.
-          setError(e instanceof Error ? e.message : String(e));
-          setRun((prev) => ({
-            ...prev,
-            done: true,
-            stopped: true,
-            stopping: false,
-          }));
+          // The whole command rejected (an IPC/backend failure) — its own
+          // status, never a Stop: the run page says it failed and offers a retry.
+          dispatch({ type: "failed", error: errMsg(e) });
         })
         .finally(() => {
           runningRef.current = false;
@@ -229,21 +252,19 @@ export function useDoctorFlow({
 
   // Stop the in-flight check — already-checked sounds keep their results. The
   // backend resolves `doctor_check` with `stopped: true`, so the run lands
-  // done+stopped through the same path. `stopping` flips immediately so the
-  // UI can acknowledge the request before the in-flight ~9s capture winds
-  // down (mirrors useLevelingFlow's onRunCancel); the terminal `.then`/
-  // `.catch` above clear it — Doctor is ONE backend command for the whole
-  // run (no per-item publish loop to recompute it automatically).
+  // `stopped` through the same path. `stopping` flips immediately so the UI can
+  // acknowledge the request before the in-flight ~9s capture winds down.
   const stopRun = useCallback(() => {
-    setRun((r) => ({ ...r, stopping: true }));
-    void cancelDoctorCheck();
+    dispatch({ type: "stop" });
+    void cancelDoctorCheck().catch(() => undefined);
   }, []);
 
   const reset = useCallback(() => {
-    setRun(EMPTY_RUN);
-    setResult(null);
-    setError(null);
+    dispatch({ type: "reset" });
   }, []);
 
-  return { run, result, error, buildItems, startRun, stopRun, reset };
+  return useMemo(
+    () => ({ run, buildItems, startRun, stopRun, reset }),
+    [run, buildItems, startRun, stopRun, reset],
+  );
 }

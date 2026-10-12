@@ -17,7 +17,7 @@ import { CutThroughCard } from "./CutThroughCard";
 import { DiagnosisChip } from "./DiagnosisChip";
 import { LevelIndicator } from "./LevelIndicator";
 import { MatchCard } from "./MatchCard";
-import { PrescriptionCard, type DoctorStimulus } from "./PrescriptionCard";
+import { PrescriptionCard } from "./PrescriptionCard";
 import { bandLayoutsMatch } from "./matchModel";
 import { offbranchStatus } from "../level/leveling";
 import {
@@ -31,9 +31,8 @@ import {
 } from "./severity";
 import type {
   DoctorDiag,
+  DoctorInputArg,
   DoctorSoundResult,
-  FootswitchInfo,
-  GraphNode,
   SilenceHint,
 } from "../../lib/types";
 
@@ -131,16 +130,12 @@ export interface SoundRowProps {
   /** The nodes this footswitch sound's own switch toggles; undefined for
    *  Base/scene sounds (drives the "shared block" caption). */
   ownNodeIds?: string[];
-  /** The preset's full chain + block-acting footswitches (same data
-   *  `doctor_check` was given) — threaded into every prescription card so its
-   *  A/B captures under the diagnosed sound's own context, not the as-saved
-   *  base (`derived_force_bypass` needs the whole preset, not just this
-   *  sound's own blocks). */
-  nodes: GraphNode[];
-  footswitches: FootswitchInfo[];
-  /** The stimulus identity this sound was diagnosed with (setup-stage
-   *  instrument pick) — its prescription cards' A/B replays it. */
-  stimulus?: DoctorStimulus;
+  /** The EXACT input `doctor_check` diagnosed this sound with — its chain, its
+   *  FULL footswitch roster and its stimulus. Threaded into every prescription
+   *  card so the A/B captures under the same context and the same forced
+   *  bypasses (`derived_force_bypass` forces off every on/off block of the
+   *  roster it is given, so a different roster auditions a different sound). */
+  input?: DoctorInputArg;
   /** This sound's preset's backup-scan silence hint (same source + rendering
    *  as the Level tab's offbranch row status, `leveling.ts::offbranchStatus`)
    *  — refines a "no signal captured" error into the JSON-visible cause when
@@ -164,9 +159,7 @@ export function SoundRow({
   listIndex,
   presetName,
   ownNodeIds,
-  nodes,
-  footswitches,
-  stimulus,
+  input,
   silenceHint,
   open,
   onToggle,
@@ -533,15 +526,16 @@ export function SoundRow({
                   {diag.rx.map((rx, i) => (
                     <PrescriptionCard
                       key={`${rx.kind}-${String(i)}`}
+                      cardId={`${id}|${diag.key}|${String(i)}`}
                       rx={rx}
                       listIndex={listIndex}
                       presetName={presetName}
                       soundScene={sound.scene}
                       soundFootswitch={sound.footswitch}
                       soundSceneOverrides={sound.sceneOverrides}
-                      nodes={nodes}
-                      footswitches={footswitches}
-                      stimulus={stimulus}
+                      nodes={input?.nodes}
+                      footswitches={input?.footswitches}
+                      stimulus={input}
                     />
                   ))}
                 </div>
@@ -551,13 +545,14 @@ export function SoundRow({
           {sound.cutThrough && <CutThroughCard cutThrough={sound.cutThrough} />}
           {canMatch && (
             <MatchCard
+              cardId={`${id}|match`}
               sound={sound}
               reference={referenceSound}
               listIndex={listIndex}
               presetName={presetName}
-              nodes={nodes}
-              footswitches={footswitches}
-              stimulus={stimulus}
+              nodes={input?.nodes ?? []}
+              footswitches={input?.footswitches ?? []}
+              stimulus={input}
             />
           )}
         </div>

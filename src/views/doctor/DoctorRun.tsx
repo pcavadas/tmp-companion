@@ -8,7 +8,8 @@
 // (no CTA competing with the auto-advance) — a manual Stop is confirm-gated, flips
 // the footer to "finishing current item…" immediately (the in-flight ~9s capture
 // still finishes), and shows a clickable "See results" once it lands. Mirrors
-// RunBody.tsx's stopping/done footer states.
+// RunBody.tsx's stopping/done footer states. A check that FAILS (the command
+// rejected) says so here, with Try again / Back — it never reads as a Stop.
 
 import { useEffect, useState } from "react";
 
@@ -21,7 +22,13 @@ import { ProgressBar } from "../../ui/ProgressBar";
 import { ConfirmBar } from "../../ui/ConfirmBar";
 import { RunRow } from "../../ui/RunRow";
 import { WizardShell, WizardFooter, WizTitle } from "../overlays/WizardShell";
-import { DOCTOR_STEPS, type DoctorRunStatus } from "./useDoctorFlow";
+import {
+  DOCTOR_STEPS,
+  countFinished,
+  runEnded,
+  type DoctorFlowStatus,
+  type DoctorRunStatus,
+} from "./useDoctorFlow";
 import { estimateSecsLeft, avgSoundMs } from "./estimateSecsLeft";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
 import type { DoctorInputArg } from "../../lib/types";
@@ -33,41 +40,48 @@ import type { DoctorInputArg } from "../../lib/types";
 const SECS_PER_SOUND = 15;
 
 export interface DoctorRunProps {
+  /** The run's one status (`useDoctorFlow`'s reducer). `stopping` drives the
+   *  "Stopping…" acknowledgment; `failed` is a rejected check, shown as a
+   *  failure with a retry — never as a Stop. */
+  status: DoctorFlowStatus;
   items: DoctorInputArg[];
   statusByKey: Record<string, DoctorRunStatus>;
-  currentIndex: number;
-  total: number;
-  done: boolean;
-  stopped: boolean;
-  /** Stop requested; the in-flight sound is winding down (no row is truly
-   *  idle yet). Drives the "Stopping…" feedback so the user isn't left
-   *  staring at a "listening…" spinner with no acknowledgment. */
-  stopping: boolean;
+  /** The rejection text when `status === "failed"`. */
+  error: string | null;
   /** key → instrument display name (null when None — no chip). */
   instName: (key: string) => string | null;
   /** Stop the run (cancels the check; already-checked sounds keep results). */
   onStop: () => void;
   /** Advance to Results (auto after a natural finish, or via Continue). */
   onComplete: () => void;
+  /** A failed run: run the same sounds again. */
+  onRetry: () => void;
+  /** A failed run: back to the preset list. */
+  onBack: () => void;
 }
 
 export function DoctorRun({
+  status,
   items,
   statusByKey,
-  currentIndex,
-  total,
-  done,
-  stopped,
-  stopping,
+  error,
   instName,
   onStop,
   onComplete,
+  onRetry,
+  onBack,
 }: DoctorRunProps) {
   const { t } = useTheme();
   const [confirm, setConfirm] = useState(false);
+  const done = runEnded(status);
+  const stopped = status === "stopped";
+  const stopping = status === "stopping";
+  const failed = status === "failed";
+  const total = items.length;
+  const currentIndex = countFinished(status, items, statusByKey);
 
-  // Natural completion auto-advances; a stopped run waits for Continue.
-  useAutoAdvance(done, stopped, onComplete);
+  // Natural completion auto-advances; a stopped or failed run waits on the user.
+  useAutoAdvance(done, stopped || failed, onComplete);
 
   // Live "about Ns left": a 1 Hz tick plus a completion-timestamp history, so
   // the estimate counts down between sound completions instead of only
@@ -107,16 +121,27 @@ export function DoctorRun({
   const secsLeft = estimateSecsLeft(total - currentIndex, avgMs, now - last);
 
   const headerTitle = (): string => {
+    if (failed) return "The check couldn't finish";
     if (stopping) return "Stopping…";
     if (stopped) return "Check stopped";
     if (done) return "Check complete";
     return "Checking your sounds…";
   };
 
+  // Once the run has ended no row is still being listened to: a row the stream
+  // left `active` (a failed command, or a stop that landed mid-sound) shows as
+  // unfinished, never as a spinner that spins forever.
+  const rowStatus = (key: string): DoctorRunStatus | "unfinished" => {
+    const s = statusByKey[key] ?? "queued";
+    return done && s === "active" ? "unfinished" : s;
+  };
+
   const stateWord = (
-    status: DoctorRunStatus,
+    rs: DoctorRunStatus | "unfinished",
   ): { text: string; color: string } => {
-    switch (status) {
+    switch (rs) {
+      case "unfinished":
+        return { text: "didn't finish", color: t.warn };
       case "active":
         return { text: "listening…", color: t.sevWarn };
       case "done":
@@ -148,8 +173,9 @@ export function DoctorRun({
             maxWidth: 460,
           }}
         >
-          Doctor plays a short test tone through each sound and listens back —
-          about {SECS_PER_SOUND} seconds each. Nothing is changed on the unit.
+          {failed
+            ? `Nothing was changed on the unit. ${error ?? ""}`.trim()
+            : `Doctor plays a short test tone through each sound and listens back — about ${String(SECS_PER_SOUND)} seconds each. Nothing is changed on the unit.`}
         </div>
         <div
           style={{
@@ -160,11 +186,13 @@ export function DoctorRun({
           }}
         >
           <span style={{ fontFamily: t.mono, fontSize: 12, color: t.ink2 }}>
-            {done
-              ? stopped
-                ? "stopped"
-                : "done"
-              : `Sound ${String(stepNo)} of ${String(total)}`}
+            {failed
+              ? "failed"
+              : done
+                ? stopped
+                  ? "stopped"
+                  : "done"
+                : `Sound ${String(stepNo)} of ${String(total)}`}
           </span>
           {!done && (
             <span
@@ -187,15 +215,15 @@ export function DoctorRun({
         }}
       >
         {items.map((it) => {
-          const status = statusByKey[it.key] ?? "queued";
-          const active = status === "active";
+          const rs = rowStatus(it.key);
+          const active = rs === "active";
           const inst = instName(it.key);
-          const word = stateWord(status);
+          const word = stateWord(rs);
           return (
             <RunRow
               key={it.key}
               active={active}
-              dim={status === "queued"}
+              dim={rs === "queued"}
               statusWidth={96}
               name={it.label}
               tag={it.tag ?? undefined}
@@ -205,8 +233,8 @@ export function DoctorRun({
                   {active && (
                     <Spinner size={14} stroke={t.sevWarn} strokeWidth={1.8} />
                   )}
-                  {status === "queued" && <Dot color={t.faint} />}
-                  {status === "done" && (
+                  {rs === "queued" && <Dot color={t.faint} />}
+                  {rs === "done" && (
                     <Icon
                       name="check"
                       size={15}
@@ -214,7 +242,7 @@ export function DoctorRun({
                       strokeWidth={2}
                     />
                   )}
-                  {status === "error" && (
+                  {(rs === "error" || rs === "unfinished") && (
                     <Icon
                       name="warn-tri"
                       size={14}
@@ -243,9 +271,32 @@ export function DoctorRun({
         />
       ) : (
         <WizardFooter
-          left={<span />}
+          left={
+            failed ? (
+              <Button
+                variant="ghost"
+                small
+                onClick={onBack}
+                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
+              >
+                Back to presets
+              </Button>
+            ) : (
+              <span />
+            )
+          }
           right={
-            stopped ? (
+            failed ? (
+              <Button
+                variant="primary"
+                small
+                icon="refresh"
+                onClick={onRetry}
+                style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
+              >
+                Try again
+              </Button>
+            ) : stopped ? (
               // A manual stop landed — "See results" and Close would do the
               // same thing, so this is the one clickable CTA.
               <Button

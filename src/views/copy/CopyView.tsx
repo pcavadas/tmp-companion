@@ -10,7 +10,7 @@ import { useMemo, useState } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
-import { slotLabel } from "../../lib/format";
+import { errMsg, slotLabel } from "../../lib/format";
 import { copyApply } from "../../lib/invoke";
 import { patchLibraryGraph } from "../level/libraryScan";
 import { patchLiveGraph, useLiveDevice } from "../level/useLiveDevice";
@@ -237,7 +237,7 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
     void copyApply(jobs, true, onResult).then(settle, (e: unknown) => {
       // The whole run failed (device error / lost connection) — surface it instead of a
       // false "saved" (previously this swallowed the rejection and showed success).
-      setSaveError(e instanceof Error ? e.message : String(e));
+      setSaveError(errMsg(e));
       settle([]);
     });
   };

@@ -4,10 +4,13 @@
 // bug a naive verbatim copy of Leveling's stopping flag would have shipped,
 // since Doctor is one backend command with no per-item publish loop to clear
 // it automatically); (2) a natural finish must NOT render a clickable CTA
-// that duplicates the imminent auto-advance.
+// that duplicates the imminent auto-advance; (3) a check whose command REJECTS
+// must read as a failure with a retry — never as "Check stopped" — and no row
+// may keep its "listening…" spinner (#290).
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -33,16 +36,15 @@ function doctorRun(overrides: Partial<Parameters<typeof DoctorRun>[0]> = {}) {
   const el: ReactElement = (
     <ThemeProvider>
       <DoctorRun
+        status="running"
         items={[item]}
         statusByKey={{ k0: "active" }}
-        currentIndex={0}
-        total={1}
-        done={false}
-        stopped={false}
-        stopping={false}
+        error={null}
         instName={() => null}
         onStop={vi.fn()}
         onComplete={vi.fn()}
+        onRetry={vi.fn()}
+        onBack={vi.fn()}
         {...overrides}
       />
     </ThemeProvider>
@@ -52,7 +54,7 @@ function doctorRun(overrides: Partial<Parameters<typeof DoctorRun>[0]> = {}) {
 
 describe("DoctorRun footer/header — stop + done states", () => {
   it("stopping: shows immediate acknowledgment, no Stop button", () => {
-    render(doctorRun({ stopping: true }));
+    render(doctorRun({ status: "stopping" }));
     expect(screen.getByText("Stopping…")).toBeInTheDocument();
     expect(screen.getByText("finishing current item…")).toBeInTheDocument();
     expect(screen.queryByText("Stop")).not.toBeInTheDocument();
@@ -61,9 +63,7 @@ describe("DoctorRun footer/header — stop + done states", () => {
   it("stopped (terminal): header reads 'Check stopped', not stuck on 'Stopping…'", () => {
     render(
       doctorRun({
-        done: true,
-        stopped: true,
-        stopping: false,
+        status: "stopped",
         statusByKey: { k0: "done" },
       }),
     );
@@ -75,9 +75,7 @@ describe("DoctorRun footer/header — stop + done states", () => {
   it("natural finish: no clickable CTA competing with the auto-advance", () => {
     render(
       doctorRun({
-        done: true,
-        stopped: false,
-        stopping: false,
+        status: "done",
         statusByKey: { k0: "done" },
       }),
     );
@@ -90,5 +88,34 @@ describe("DoctorRun footer/header — stop + done states", () => {
     expect(
       screen.queryByRole("button", { name: /see results/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("failed: says the check failed (not 'Check stopped'), shows why, and offers Try again", async () => {
+    const onRetry = vi.fn();
+    const onBack = vi.fn();
+    render(
+      doctorRun({
+        status: "failed",
+        // The stream left the row active when the command rejected.
+        statusByKey: { k0: "active" },
+        error: "the unit stopped answering",
+        onRetry,
+        onBack,
+      }),
+    );
+    expect(screen.getByText("The check couldn't finish")).toBeInTheDocument();
+    expect(screen.queryByText("Check stopped")).not.toBeInTheDocument();
+    expect(screen.queryByText("See results")).not.toBeInTheDocument();
+    expect(screen.getByText(/the unit stopped answering/)).toBeInTheDocument();
+    // No row keeps spinning once the run has ended.
+    expect(screen.queryByText("listening…")).not.toBeInTheDocument();
+    expect(screen.getByText("didn't finish")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    await userEvent.click(
+      screen.getByRole("button", { name: /back to presets/i }),
+    );
+    expect(onBack).toHaveBeenCalledTimes(1);
   });
 });

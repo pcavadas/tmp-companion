@@ -12,29 +12,22 @@ import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { Tag } from "../../ui/Tag";
 import { Button, SegmentedControl } from "../../ui/primitives";
-import { doctorDiscard } from "../../lib/invoke";
 import { slotLabel } from "../../lib/format";
 import { StepRail } from "../overlays/WizardShell";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
 import { PresetResultCard } from "./PresetResultCard";
-import type { DoctorStimulus } from "./PrescriptionCard";
 import {
   presetLookCount,
   presetWorstSev,
   sceneConsistencySev,
   sevRank,
 } from "./severity";
-import {
-  ApplyLockContext,
-  type ActiveApplyCard,
-  type ApplyLock,
-} from "./applyLock";
+import { ApplyLockContext, useApplyLockOwner } from "./applyLock";
 import type {
-  ActiveGraph,
   DoctorCheckResult,
+  DoctorInputArg,
   DoctorPresetResult,
   DoctorSoundResult,
-  FootswitchInfo,
   SilenceHint,
 } from "../../lib/types";
 
@@ -52,16 +45,12 @@ export interface DoctorResultsProps {
   result: DoctorCheckResult;
   /** 0-based list index → preset name (for the per-preset card headers). */
   presetNames: Map<number, string>;
-  /** 0-based list index → the preset's block-acting footswitches (their toggled
-   *  nodes drive the "shared block" caption on FS-sound prescriptions). */
-  footswitchInfo: Map<number, FootswitchInfo[]>;
-  /** 0-based list index → the preset's signal chain, from the SAME startup
-   *  backup scan as `footswitchInfo` — threaded into every prescription card
-   *  so its A/B captures under the diagnosed sound's own context. */
-  graphByIndex: Map<number, ActiveGraph>;
-  /** Sound key → the stimulus identity it was diagnosed with (the setup-stage
-   *  instrument pick) — the prescription cards' A/B replays it. */
-  stimulusByKey: Map<string, DoctorStimulus>;
+  /** Sound key → the exact `doctor_check` input it was diagnosed with: its
+   *  chain, its FULL footswitch roster and its stimulus. Every prescription
+   *  card's A/B replays it, so the audition forces off the same blocks the
+   *  diagnosis did; an FS sound's own switch (the "shared block" caption) is
+   *  found in the same roster. */
+  inputByKey: Map<string, DoctorInputArg>;
   /** 0-based list index → the preset's backup-scan silence hint (same source
    *  the Level tab uses) — refines a sound's "no signal captured" error into
    *  a specific JSON-visible cause. */
@@ -72,9 +61,7 @@ export interface DoctorResultsProps {
 export function DoctorResults({
   result,
   presetNames,
-  footswitchInfo,
-  graphByIndex,
-  stimulusByKey,
+  inputByKey,
   silenceHintByIndex,
   onCheckMore,
 }: DoctorResultsProps) {
@@ -99,75 +86,68 @@ export function DoctorResults({
   const referenceSound = referenceId
     ? (soundById.get(referenceId) ?? null)
     : null;
-  const clearReference = useCallback(() => {
-    setReferenceId(null);
-  }, []);
 
   // ONE applied-but-unsaved prescription across the whole page — the device has
   // a single edit buffer, so a second card's apply (even in another preset)
-  // would clobber the first card's live edit. Hence the lock lives here, not per
-  // preset card.
-  const [activeCard, setActiveCard] = useState<ActiveApplyCard | null>(null);
+  // would clobber the first card's live edit. Hence the lock, and every card's
+  // lifecycle, lives here, not per card or per preset card.
+  const lock = useApplyLockOwner();
+  const { busy, holder, discardIfMine } = lock;
 
   // An applied-but-unsaved edit sits in the DEVICE's edit buffer — leaving this
   // page (unmount, or "Check other sounds" → flow.reset) must drop it, or the
-  // orphaned edit silently rides the next preset interaction. Fire-and-forget
-  // (the cancel-lane pattern); the ref is cleared first so the page's own
-  // unmount cleanup can't double-fire after the reset path already discarded.
-  const activeCardRef = useRef<ActiveApplyCard | null>(null);
+  // orphaned edit silently rides the next preset interaction. `discardIfMine`
+  // no-ops for a card that is mid-save, and whichever of this cleanup and the
+  // card's own runs first wins.
+  const holderRef = useRef<string | null>(null);
   useEffect(() => {
-    activeCardRef.current = activeCard;
-  }, [activeCard]);
-
-  // The single arbiter for "discard the device edit + drop the lock, but only
-  // if `id` is really still the holder" — reads/writes `activeCardRef`
-  // directly (not React state) so it's safe to call from BOTH this page's own
-  // unmount cleanup AND a PrescriptionCard's unmount cleanup without knowing
-  // which one runs first (React doesn't guarantee child-before-parent
-  // ordering when a whole subtree unmounts at once): the first call to fire
-  // wins, the second sees the ref already cleared and no-ops.
-  const discardIfMine = useCallback((id: string, listIndex: number) => {
-    if (activeCardRef.current?.id !== id) return;
-    activeCardRef.current = null;
-    void doctorDiscard(listIndex).catch(() => undefined);
-    setActiveCard((cur) => (cur?.id === id ? null : cur));
-  }, []);
-
-  const lock = useMemo<ApplyLock>(
-    () => ({
-      activeCard,
-      acquire: (id, listIndex) => {
-        setActiveCard({ id, listIndex });
-      },
-      release: (id) => {
-        setActiveCard((cur) => (cur?.id === id ? null : cur));
-      },
-      discardIfMine,
-    }),
-    [activeCard, discardIfMine],
-  );
-
+    holderRef.current = holder;
+  }, [holder]);
   const discardActive = useCallback(() => {
-    const cur = activeCardRef.current;
-    if (cur) discardIfMine(cur.id, cur.listIndex);
+    const cur = holderRef.current;
+    if (cur !== null) discardIfMine(cur);
   }, [discardIfMine]);
   useEffect(() => {
     return discardActive; // unmount only (discardActive is stable)
   }, [discardActive]);
 
   const handleCheckMore = useCallback(() => {
+    if (busy) return;
     discardActive();
     onCheckMore();
-  }, [discardActive, onCheckMore]);
+  }, [busy, discardActive, onCheckMore]);
 
-  const toggleRow = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  const setReference = useCallback(
+    (id: string) => {
+      if (!busy) setReferenceId(id);
+    },
+    [busy],
+  );
+  const clearReference = useCallback(() => {
+    if (!busy) setReferenceId(null);
+  }, [busy]);
+  const changeFilter = useCallback(
+    (f: Filter) => {
+      if (!busy) setFilter(f);
+    },
+    [busy],
+  );
+
+  // While a device command is in flight for a card, nothing on the page may
+  // unmount it: a collapsed row, a swapped Match reference or a filter that
+  // hides its preset would orphan the in-flight apply/save.
+  const toggleRow = useCallback(
+    (id: string) => {
+      if (busy) return;
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [busy],
+  );
 
   const totalSounds = result.presets.reduce((a, p) => a + p.sounds.length, 0);
   const totalPresets = result.presets.length;
@@ -214,9 +194,14 @@ export function DoctorResults({
   const shown = allClear || filter === "all" ? sorted : sorted.filter(hasIssue);
   const showFilter = !allClear && cleanGroups.length > 0;
 
+  // A stopped run that flagged nothing has not earned "N of M need a look" (0
+  // of M, under a warn icon) — nor "all good", since part of it was never heard.
+  const stoppedClean = !allClear && flagged === 0 && result.stopped;
   const title = allClear
     ? `All ${String(totalSounds)} sound${totalSounds === 1 ? " sounds" : "s sound"} good`
-    : `${String(flagged)} of ${String(totalPresets)} presets need a look`;
+    : stoppedClean
+      ? "Check stopped · nothing flagged so far"
+      : `${String(flagged)} of ${String(totalPresets)} presets need a look`;
 
   let subtitle: string;
   if (allClear) {
@@ -279,7 +264,11 @@ export function DoctorResults({
               width: 40,
               height: 40,
               borderRadius: 10,
-              background: allClear ? t.goodSoft : t.accentSoft,
+              background: allClear
+                ? t.goodSoft
+                : stoppedClean
+                  ? t.bgAlt
+                  : t.accentSoft,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -289,7 +278,7 @@ export function DoctorResults({
             <Icon
               name={allClear ? "check" : "wave"}
               size={20}
-              stroke={allClear ? t.good : t.warn}
+              stroke={allClear ? t.good : stoppedClean ? t.mutedInk : t.warn}
             />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -316,7 +305,7 @@ export function DoctorResults({
                 size="sm"
                 ariaLabel="Filter results"
                 value={filter}
-                onChange={setFilter}
+                onChange={changeFilter}
                 options={[
                   { value: "look", label: "Needs a look" },
                   { value: "all", label: "Everything" },
@@ -337,7 +326,12 @@ export function DoctorResults({
             }}
           >
             <Tag tone="accent">{`Reference: ${referenceSound.label}`}</Tag>
-            <Button variant="ghost" small onClick={clearReference}>
+            <Button
+              variant="ghost"
+              small
+              disabled={busy}
+              onClick={clearReference}
+            >
               Clear
             </Button>
           </div>
@@ -362,22 +356,20 @@ export function DoctorResults({
                 presetNames.get(preset.listIndex) ??
                 `Slot ${slotLabel(preset.listIndex)}`
               }
-              footswitchInfo={footswitchInfo}
-              graphByIndex={graphByIndex}
-              stimulusByKey={stimulusByKey}
+              inputByKey={inputByKey}
               silenceHintByIndex={silenceHintByIndex}
               expanded={expanded}
               onToggleRow={toggleRow}
               referenceSound={referenceSound}
               referenceId={referenceId}
-              onSetReference={setReferenceId}
+              onSetReference={setReference}
               onClearReference={clearReference}
             />
           ))}
           {showFilter && filter === "look" && (
             <div
               onClick={() => {
-                setFilter("all");
+                changeFilter("all");
               }}
               style={{
                 display: "flex",
@@ -439,7 +431,12 @@ export function DoctorResults({
             Nothing here is written until you save it. Each fix has its own
             Save.
           </span>
-          <Button variant="primary" icon="refresh" onClick={handleCheckMore}>
+          <Button
+            variant="primary"
+            icon="refresh"
+            disabled={busy}
+            onClick={handleCheckMore}
+          >
             Check other sounds
           </Button>
         </div>

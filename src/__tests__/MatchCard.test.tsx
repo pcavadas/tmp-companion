@@ -62,6 +62,7 @@ function renderCard(nodes: GraphNode[]) {
   return render(
     <ThemeProvider>
       <MatchCard
+        cardId="0|p0|match"
         sound={thisSound}
         reference={referenceSound}
         listIndex={0}

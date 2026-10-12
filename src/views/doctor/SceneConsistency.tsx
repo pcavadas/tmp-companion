@@ -162,6 +162,7 @@ export function SceneConsistency({
         {sc.rx.map((rx, i) => (
           <PrescriptionCard
             key={`${rx.kind}-${String(i)}`}
+            cardId={`${String(listIndex)}|consistency|${String(i)}`}
             rx={rx}
             listIndex={listIndex}
             presetName={presetName}

@@ -11,25 +11,30 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 
 import { useTheme } from "../theme/ThemeContext";
 import { logError } from "../lib/log";
+import { errMsg } from "../lib/format";
 
 interface Props {
   children: ReactNode;
 }
 
+// JS can throw ANY value (a bare string from a rejected command, an object), so
+// the caught value is kept as `unknown` and rendered through `errMsg` — typing
+// it `Error` once rendered a non-Error throw as an empty box.
 interface State {
-  error: Error | null;
+  caught: { value: unknown } | null;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+  state: State = { caught: null };
 
-  static getDerivedStateFromError(error: Error): State {
-    return { error };
+  static getDerivedStateFromError(value: unknown): State {
+    return { caught: { value } };
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo): void {
+  componentDidCatch(value: unknown, info: ErrorInfo): void {
+    const stack = value instanceof Error ? (value.stack ?? "") : "";
     logError(
-      `React render crash: ${error.message}\n${error.stack ?? ""}\nComponent stack:${info.componentStack ?? ""}`,
+      `React render crash: ${errMsg(value)}\n${stack}\nComponent stack:${info.componentStack ?? ""}`,
     );
   }
 
@@ -37,13 +42,16 @@ export class ErrorBoundary extends Component<Props, State> {
   // a transient render error, and far cheaper than a full reload (which re-runs
   // the device handshake). The Reload button remains the harder fallback.
   reset = (): void => {
-    this.setState({ error: null });
+    this.setState({ caught: null });
   };
 
   render(): ReactNode {
-    if (this.state.error) {
+    if (this.state.caught) {
       return (
-        <Fallback message={this.state.error.message} onReset={this.reset} />
+        <Fallback
+          message={errMsg(this.state.caught.value)}
+          onReset={this.reset}
+        />
       );
     }
     return this.props.children;

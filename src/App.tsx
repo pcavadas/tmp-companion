@@ -47,6 +47,7 @@ import { onDeviceDetached as resetLevelOnDetach } from "./views/level/levelRunSt
 import { startScanAfterGraph } from "./lib/scheduleLibraryScan";
 import type { ActiveGraph } from "./lib/types";
 import { actionableError } from "./lib/connectError";
+import { errMsg } from "./lib/format";
 import { DISCLAIMER_PERM_KEY, DISCLAIMER_SESSION_KEY } from "./lib/gates";
 
 const RETRY_MS = 3000; // auto-connect retry interval (armed while disconnected).
@@ -135,12 +136,7 @@ function AppShell() {
         startScan: ensureLibraryScan,
       });
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object" && e !== null && "message" in e
-            ? String(e.message)
-            : String(e);
+      const msg = errMsg(e);
       // A booting/just-replugged unit fails the first handshake send with a
       // timeout — suppressed by actionableError into the friendly gate, not a
       // red banner; the retry loop reconnects once the unit is up.

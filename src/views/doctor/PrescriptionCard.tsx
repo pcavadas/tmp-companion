@@ -1,9 +1,10 @@
 // src/views/doctor/PrescriptionCard.tsx — one prescription with its lifecycle:
-// draft → applied → saved. Advisory cards are static (the player turns the knob,
+// draft → applied → saved, held on the results page (`applyLock`) so it survives
+// a remount. Advisory cards are static (the player turns the knob,
 // nothing to apply). The apply path writes LIVE (unsaved) and the save is gated on
 // the backup acknowledgment, mirroring the Leveling / Copy save-disclaimer model.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 import { useTheme } from "../../theme/ThemeContext";
@@ -14,6 +15,7 @@ import { Spinner } from "../../ui/Spinner";
 import { Button } from "../../ui/primitives";
 import { BackupAckLabel } from "../../ui/BackupAckLabel";
 import { doctorApply, doctorDiscard, doctorSave } from "../../lib/invoke";
+import { errMsg } from "../../lib/format";
 import { nodeTileArt } from "../../models/blockArt";
 import { isComboBid } from "../../models/catalog";
 import {
@@ -24,7 +26,6 @@ import {
 import { ABAudition } from "./ABAudition";
 import { useApplyLock } from "./applyLock";
 import type {
-  DoctorApplyResult,
   DoctorChainPreview,
   DoctorInputArg,
   DoctorRx,
@@ -64,9 +65,11 @@ function chainGraph(chain: DoctorChainPreview): StripGraph {
   return { template: chain.template, stages: [{ kind: "series", blocks }] };
 }
 
-type Phase = "draft" | "applied" | "saved";
-
 export interface PrescriptionCardProps {
+  /** A STABLE id for this card across remounts (the row's composite id plus
+   *  the diagnosis and rx position) — the key of its lifecycle state on the
+   *  results page. */
+  cardId: string;
   rx: DoctorRx;
   listIndex: number;
   presetName: string;
@@ -104,6 +107,7 @@ const DEFAULT_STIMULUS: DoctorStimulus = {
 };
 
 export function PrescriptionCard({
+  cardId,
   rx,
   listIndex,
   presetName,
@@ -116,45 +120,38 @@ export function PrescriptionCard({
   stimulus = DEFAULT_STIMULUS,
 }: PrescriptionCardProps) {
   const { t } = useTheme();
-  const [phase, setPhase] = useState<Phase>("draft");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [clips, setClips] = useState<DoctorApplyResult | null>(null);
-  const [acked, setAcked] = useState(false);
-  // Snapshot of the exact ops sent to doctorApply — `rx` is a live prop and
-  // can be replaced (e.g. MatchCard recomputing on a new reference pick)
-  // while this card sits in "applied"; runSave must persist what was
-  // actually applied/auditioned, not whatever `rx.ops` reads at save time.
-  const [appliedOps, setAppliedOps] = useState<DoctorRx["ops"] | null>(null);
-  const [appliedScene, setAppliedScene] = useState<number | null>(null);
-
-  // Global guard: every card targets the device's ONE edit buffer, so only one
-  // card app-wide may hold an applied-but-unsaved edit at a time (see `applyLock`).
-  const cardId = useId();
+  // The lifecycle (applying → applied → saving → saved) lives on the results
+  // page, keyed by `cardId`, so a row collapse/reopen remounts this card in the
+  // state it left — a saved fix stays saved and never offers Apply again.
   const lock = useApplyLock();
-  const lockedByOther =
-    lock.activeCard !== null && lock.activeCard.id !== cardId;
+  const state = lock.stateOf(cardId);
+  const phase = state?.phase ?? "idle";
+  const busy =
+    phase === "applying" || phase === "saving" || phase === "discarding";
+  const lockedByOther = lock.holder !== null && lock.holder !== cardId;
+  // Local, view-only: an error line and the backup ack. Both may reset on a
+  // remount without harm (the ack must be re-ticked, which is the safe side).
+  const [error, setError] = useState<string | null>(null);
+  const [acked, setAcked] = useState(false);
 
-  // The card itself can unmount while an edit sits applied-but-unsaved on the
-  // device (row collapse, or a Match-reference swap that stops rendering this
-  // card) — with no mounted UI left to Save/Discard, that would strand the
-  // device edit AND the app-wide lock. `discardIfMine` is a stable function
-  // (always the same reference, however `lock`'s wrapping object churns from
-  // OTHER cards' acquire/release) that no-ops unless THIS card still holds
-  // the lock, so calling it unconditionally on unmount is safe and needs no
-  // extra phase/ownership bookkeeping here.
+  // The card can unmount while an edit sits applied-but-unsaved on the device
+  // (a tab switch, or a Match card whose reference stops matching) — with no
+  // mounted UI left to Save/Discard, that would strand the device edit AND the
+  // page-wide lock. `discardIfMine` is a stable function that no-ops unless
+  // THIS card holds an applying/applied edit (a SAVING card is left to finish),
+  // so calling it unconditionally on unmount is safe.
   const { discardIfMine } = lock;
   const mountedRef = useRef(true);
   useEffect(() => {
     // Re-arm on every effect run: the cleanup below flips it false, and without
-    // this reset a dep change (new cardId/listIndex) would leave it permanently
-    // false, silently dropping every later async success/error state update.
+    // this reset a dep change (a new cardId) would leave it permanently false,
+    // silently dropping every later async error update.
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      discardIfMine(cardId, listIndex);
+      discardIfMine(cardId);
     };
-  }, [discardIfMine, cardId, listIndex]);
+  }, [discardIfMine, cardId]);
 
   // Only oneclick / chain non-scene prescriptions have an Apply path; advisory and
   // scene-consistency cards are static.
@@ -174,17 +171,16 @@ export function PrescriptionCard({
   };
 
   async function runApply() {
-    setBusy(true);
-    setError(null);
     // Snapshot rx.ops and soundScene now — both are live props that may change
-    // (e.g. MatchCard recomputing on a new reference pick, or the user switching
-    // scenes) before Save is clicked; Save must replay into the scene Apply diagnosed.
+    // (e.g. MatchCard recomputing on a new reference pick) before Save is
+    // clicked; Save must replay what Apply auditioned, in the scene it diagnosed.
     const ops = rx.ops;
-    const scene = soundScene;
+    const applyScene = soundScene;
     // Take the lock BEFORE the await: the device's edit buffer is dirty from the
     // moment the command starts, so a sibling Apply during the in-flight window
-    // would clobber it. Released in the catch (a failed apply auto-restores).
-    lock.acquire(cardId, listIndex);
+    // would clobber it.
+    if (!lock.beginApply(cardId, listIndex)) return;
+    setError(null);
     try {
       const res = await doctorApply({
         listIndex,
@@ -193,66 +189,52 @@ export function PrescriptionCard({
         topologyId: stimulus.topologyId,
         calibrationLufs: stimulus.calibrationLufs,
         profileId: stimulus.profileId,
-        scene,
+        scene: applyScene,
         footswitch: soundFootswitch,
         nodes,
         footswitches,
         sceneOverrides: soundSceneOverrides,
       });
-      // If we unmounted while this was in flight (row collapsed, or the
-      // Match reference swapped away), the unmount cleanup above already
-      // fired `discardIfMine` — `lock.acquire` ran before the await, so
-      // ownership was already established for it to find and clean up,
-      // regardless of whether doctorApply itself had landed yet. Skip the
-      // local state updates here; there's no mounted UI left to show them.
-      if (mountedRef.current) {
-        setClips(res);
-        // The run-end re-amp OFF could not be read back: say so in the card's notice line.
-        setError(res.reampWarning ?? null);
-        setAppliedOps(ops);
-        setAppliedScene(scene ?? null);
-        setPhase("applied");
-      }
+      // `finishApply` refuses when an unmount already discarded this card
+      // mid-flight (it found the card applying and dropped it) — the edit is
+      // gone from the device, so there is nothing to show.
+      const kept = lock.finishApply(cardId, {
+        clips: res,
+        ops,
+        scene: applyScene,
+      });
+      // The run-end re-amp OFF could not be read back: say so in the card's notice line.
+      if (kept && mountedRef.current) setError(res.reampWarning ?? null);
     } catch (e) {
-      lock.release(cardId);
-      if (mountedRef.current) {
-        setError(e instanceof Error ? e.message : "Couldn't apply this fix.");
-      }
-    } finally {
-      if (mountedRef.current) setBusy(false);
+      lock.failApply(cardId);
+      if (mountedRef.current) setError(errMsg(e));
     }
   }
 
   async function runDiscard() {
-    setBusy(true);
     setError(null);
+    lock.beginDiscard(cardId);
     try {
       await doctorDiscard(listIndex);
-      setPhase("draft");
-      setClips(null);
-      setAppliedOps(null);
-      setAppliedScene(null);
-      setAcked(false);
-      lock.release(cardId);
+      lock.finishDiscard(cardId);
+      if (mountedRef.current) setAcked(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't discard.");
-    } finally {
-      setBusy(false);
+      lock.failDiscard(cardId);
+      if (mountedRef.current) setError(errMsg(e));
     }
   }
 
   async function runSave() {
-    if (appliedOps == null) return;
-    setBusy(true);
+    if (state?.phase !== "applied") return;
+    const { ops, scene: savedScene } = state;
     setError(null);
+    lock.beginSave(cardId);
     try {
-      await doctorSave(listIndex, presetName, appliedScene, appliedOps);
-      setPhase("saved");
-      lock.release(cardId);
+      await doctorSave(listIndex, presetName, savedScene, ops);
+      lock.finishSave(cardId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't save to the preset.");
-    } finally {
-      setBusy(false);
+      lock.failSave(cardId);
+      if (mountedRef.current) setError(errMsg(e));
     }
   }
 
@@ -311,7 +293,12 @@ export function PrescriptionCard({
     );
   }
 
-  if (phase === "applied" && clips) {
+  if (
+    state?.phase === "applied" ||
+    state?.phase === "saving" ||
+    state?.phase === "discarding"
+  ) {
+    const clips = state.clips;
     return (
       <div style={card}>
         <span

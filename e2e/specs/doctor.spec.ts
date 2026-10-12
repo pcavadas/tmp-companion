@@ -84,8 +84,8 @@ test.describe("Doctor — select, check, results", () => {
 
     // The run auto-advances to Results on a natural finish. Progress events don't stream
     // over the bridge, so the only signal is the terminal Results page — but a rejected run
-    // (backend/IPC failure) renders LoadErrorPane's "The check couldn't finish: …" within
-    // seconds instead (DoctorView.tsx). The error pane is a fast-fail: match it in the wait
+    // (backend/IPC failure) shows "The check couldn't finish" on the run page within
+    // seconds instead (DoctorRun.tsx). That failure is a fast-fail: match it in the wait
     // so a dropped device reports in seconds, then assert it wasn't the branch we took.
     await expect(
       page

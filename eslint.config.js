@@ -151,6 +151,27 @@ export default tseslint.config(
   },
 
   {
+    // Error text on screen goes through `errMsg` (src/lib/format.ts), never a
+    // hand-rolled `e instanceof Error ? e.message : "generic"`: a command
+    // rejection used to arrive as a bare string, so that idiom showed the generic
+    // fallback and threw the backend's real reason away (the Doctor fix cards
+    // always read "Couldn't apply this fix."). `invoke` now wraps rejections in
+    // `CommandError`, and `errMsg` handles every shape a `catch` can receive.
+    files: ["src/views/**/*.{ts,tsx}", "src/App.tsx"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "BinaryExpression[operator='instanceof'][right.name='Error']",
+          message:
+            "Render a caught value with `errMsg(e)` from src/lib/format.ts — never a hand-rolled `instanceof Error` check.",
+        },
+      ],
+    },
+  },
+
+  {
     // blockArt.ts must NOT import catalog.ts: that closes a module-init cycle
     // blockArt → catalog → cpu → blockArt (a TDZ "cannot access before
     // initialization" crash). Cross-cutting form+art decisions resolve at the

@@ -28,7 +28,6 @@ import { DoctorSelect } from "./DoctorSelect";
 import { DoctorSetup } from "./DoctorSetup";
 import { DoctorRun } from "./DoctorRun";
 import { DoctorResults } from "./DoctorResults";
-import type { DoctorStimulus } from "./PrescriptionCard";
 import type { PickOption } from "../overlays/Pick";
 
 type Stage = "select" | "setup" | "run" | "results";
@@ -66,7 +65,6 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const [stage, setStage] = useState<Stage>("select");
   const [filter, setFilter] = useState("");
   const [chosen, setChosen] = useState<SetupOption[]>([]);
-  const [instByKey, setInstByKey] = useState<Record<string, string>>({});
 
   const flow = useDoctorFlow({
     store,
@@ -91,13 +89,16 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
     [store?.profiles],
   );
 
+  // The run's own items carry each sound's chosen profile — no second copy of
+  // the setup step's picks is kept here.
+  const runItems = flow.run.items;
   const instNameForKey = useCallback(
     (key: string): string | null => {
-      const id = instByKey[key];
-      if (!id || !hasInstrument(id)) return null;
+      const id = runItems.find((it) => it.key === key)?.profileId;
+      if (id == null || !hasInstrument(id)) return null;
       return instrumentName(store?.profiles, id);
     },
-    [instByKey, store?.profiles],
+    [runItems, store?.profiles],
   );
 
   const presetNames = useMemo(
@@ -117,20 +118,25 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   }, [sel, rows, sceneInfo, footswitchInfo]);
 
   // Set up → Run: build the wire items and fire the ONE check command.
+  const { startRun, buildItems, reset } = flow;
   const handleRun = useCallback(
     (map: Record<string, string>) => {
-      setInstByKey(map);
-      flow.startRun(flow.buildItems(chosen, map), activeListIndex);
+      startRun(buildItems(chosen, map), activeListIndex);
       setStage("run");
     },
-    [flow, chosen, activeListIndex],
+    [startRun, buildItems, chosen, activeListIndex],
   );
 
-  // Results → Select (fresh check on new sounds).
+  // A failed run → the same sounds again.
+  const handleRetry = useCallback(() => {
+    startRun(runItems, activeListIndex);
+  }, [startRun, runItems, activeListIndex]);
+
+  // Results (or a failed run) → Select (fresh check on new sounds).
   const handleCheckMore = useCallback(() => {
-    flow.reset();
+    reset();
     setStage("select");
-  }, [flow]);
+  }, [reset]);
 
   // ── render ──────────────────────────────────────────────────────────────────
   if (!connected) {
@@ -169,41 +175,18 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
     );
   }
 
-  if (stage === "results" && flow.result) {
-    // Each diagnosed sound's stimulus identity (the setup-stage instrument
-    // pick), off the run's own input items — the prescription cards replay it
-    // in their A/B auditions.
-    const stimulusByKey = new Map<string, DoctorStimulus>(
-      flow.run.items.map((it) => [
-        it.key,
-        {
-          topologyId: it.topologyId,
-          calibrationLufs: it.calibrationLufs,
-          profileId: it.profileId,
-        },
-      ]),
-    );
+  if (stage === "results" && flow.run.result) {
+    // Each diagnosed sound's EXACT input (chain, full footswitch roster,
+    // stimulus) — the prescription cards' A/B replays it, so the audition forces
+    // off the same blocks the diagnosis did.
+    const inputByKey = new Map(runItems.map((it) => [it.key, it]));
     return (
       <DoctorResults
-        result={flow.result}
+        result={flow.run.result}
         presetNames={presetNames}
-        footswitchInfo={footswitchInfo}
-        graphByIndex={graphByIndex}
-        stimulusByKey={stimulusByKey}
+        inputByKey={inputByKey}
         silenceHintByIndex={silenceHintByIndex}
         onCheckMore={handleCheckMore}
-      />
-    );
-  }
-
-  // The run rejected outright (backend/IPC failure) — no results to show. Surface
-  // it instead of silently dropping back to the list (a failed run otherwise
-  // looks identical to an intentional Stop).
-  if (stage === "results" && flow.error) {
-    return (
-      <LoadErrorPane
-        message={`The check couldn't finish: ${flow.error}`}
-        onRetry={handleCheckMore}
       />
     );
   }
@@ -232,18 +215,18 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
       />
       {stage === "run" && (
         <DoctorRun
-          items={flow.run.items}
+          key={flow.run.attempt}
+          status={flow.run.status}
+          items={runItems}
           statusByKey={flow.run.statusByKey}
-          currentIndex={flow.run.currentIndex}
-          total={flow.run.total}
-          done={flow.run.done}
-          stopped={flow.run.stopped}
-          stopping={flow.run.stopping}
+          error={flow.run.error}
           instName={instNameForKey}
           onStop={flow.stopRun}
           onComplete={() => {
             setStage("results");
           }}
+          onRetry={handleRetry}
+          onBack={handleCheckMore}
         />
       )}
     </>

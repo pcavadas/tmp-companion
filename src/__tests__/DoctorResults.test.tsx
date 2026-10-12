@@ -28,6 +28,7 @@ import type {
   DoctorApplyResult,
   DoctorCheckResult,
   DoctorDiag,
+  DoctorInputArg,
   DoctorLevelingDamageHint,
   DoctorOp,
   DoctorSoundResult,
@@ -256,19 +257,42 @@ function fixture(): DoctorCheckResult {
   };
 }
 
+/** The `doctor_check` input a sound was diagnosed with (chain + roster empty
+ *  unless the test supplies them). */
+function inputFor(
+  key: string,
+  listIndex: number,
+  extra: Partial<DoctorInputArg> = {},
+): DoctorInputArg {
+  return {
+    key,
+    listIndex,
+    scene: null,
+    footswitch: null,
+    label: key,
+    tag: null,
+    topologyId: null,
+    calibrationLufs: null,
+    profileId: null,
+    nodes: [],
+    footswitches: [],
+    sceneOverrides: [],
+    ...extra,
+  };
+}
+
 function renderResults(
   result: DoctorCheckResult = fixture(),
   onCheckMore: () => void = () => undefined,
   silenceHintByIndex: Map<number, SilenceHint> = new Map<number, SilenceHint>(),
+  inputByKey = new Map<string, DoctorInputArg>(),
 ) {
   return render(
     <ThemeProvider>
       <DoctorResults
         result={result}
         presetNames={NAMES}
-        footswitchInfo={new Map()}
-        graphByIndex={new Map()}
-        stimulusByKey={new Map()}
+        inputByKey={inputByKey}
         silenceHintByIndex={silenceHintByIndex}
         onCheckMore={onCheckMore}
       />
@@ -1006,13 +1030,111 @@ describe("DoctorResults — prescription lifecycle", () => {
     ).toBeEnabled();
   });
 
-  it("discards an apply that's still in flight when its row collapses, and doesn't re-discard once it resolves", async () => {
+  it("won't collapse a row while its apply is in flight; leaving the page discards once and a late resolve doesn't re-discard", async () => {
     let resolveApply: (r: DoctorApplyResult) => void = () => undefined;
     vi.mocked(doctorApply).mockImplementation(
       () =>
         new Promise<DoctorApplyResult>((res) => {
           resolveApply = res;
         }),
+    );
+    const user = userEvent.setup();
+    const { unmount } = renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+
+    // Busy: the row toggle and "Check other sounds" are inert, so nothing on
+    // the page can orphan the in-flight apply.
+    await user.click(screen.getByText("Rhythm Crunch"));
+    expect(screen.getByText("Applying…")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /check other sounds/i }),
+    ).toBeDisabled();
+    expect(doctorDiscard).not.toHaveBeenCalled();
+
+    // A tab switch can't be disabled: the page unmount discards right away
+    // (the lock was taken before the await).
+    unmount();
+    expect(doctorDiscard).toHaveBeenCalledWith(1);
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+
+    // The apply landing afterward must not re-discard nor blow up.
+    resolveApply({
+      beforeClip: "data:audio/wav;base64,AAAA",
+      afterClip: "data:audio/wav;base64,BBBB",
+    });
+    await waitFor(() => {
+      expect(doctorApply).toHaveBeenCalledTimes(1);
+    });
+    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+  });
+
+  it("remembers a SAVED fix across collapse + reopen — no second Apply over the saved preset", async () => {
+    const user = userEvent.setup();
+    renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    await screen.findByText("Listen & compare");
+    await user.click(screen.getByText("I've backed up with Pro Control"));
+    await user.click(screen.getByRole("button", { name: /save to preset/i }));
+    await screen.findByText("Saved to the preset.");
+
+    // Collapse (the card unmounts), then reopen (it remounts).
+    await user.click(screen.getByText("Rhythm Crunch"));
+    expect(screen.queryByText("Saved to the preset.")).not.toBeInTheDocument();
+    await user.click(screen.getByText("Rhythm Crunch"));
+
+    expect(screen.getByText("Saved to the preset.")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /apply to the unit/i }),
+    ).not.toBeInTheDocument();
+    expect(doctorApply).toHaveBeenCalledTimes(1);
+    expect(doctorDiscard).not.toHaveBeenCalled();
+  });
+
+  it("does not discard when the page unmounts while a save is in flight", async () => {
+    let resolveSave: () => void = () => undefined;
+    vi.mocked(doctorSave).mockImplementation(
+      () =>
+        new Promise<undefined>((res) => {
+          resolveSave = () => {
+            res(undefined);
+          };
+        }),
+    );
+    const user = userEvent.setup();
+    const { unmount } = renderResults();
+
+    await user.click(screen.getByText("Rhythm Crunch"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    await screen.findByText("Listen & compare");
+    await user.click(screen.getByText("I've backed up with Pro Control"));
+    await user.click(screen.getByRole("button", { name: /save to preset/i }));
+    expect(doctorSave).toHaveBeenCalledTimes(1);
+
+    // Mid-save: collapse is refused, and leaving the page must not queue a
+    // discard behind the save.
+    await user.click(screen.getByText("Rhythm Crunch"));
+    expect(screen.getByText("Listen & compare")).toBeInTheDocument();
+    unmount();
+    resolveSave();
+    await waitFor(() => {
+      expect(doctorSave).toHaveBeenCalledTimes(1);
+    });
+    expect(doctorDiscard).not.toHaveBeenCalled();
+  });
+
+  it("shows the backend's own reason when an apply is refused (a bare-string rejection)", async () => {
+    vi.mocked(doctorApply).mockRejectedValue(
+      "guarded insert refused: over the CPU budget",
     );
     const user = userEvent.setup();
     renderResults();
@@ -1022,24 +1144,14 @@ describe("DoctorResults — prescription lifecycle", () => {
       screen.getByRole("button", { name: /apply to the unit/i }),
     );
 
-    // Collapse before doctorApply resolves — no PrescriptionCard is mounted
-    // to receive the eventual result. The lock was already acquired before
-    // the await, so the row's own unmount cleanup can (and does) discard
-    // right away, without waiting on the in-flight apply.
-    await user.click(screen.getByText("Rhythm Crunch"));
-    expect(doctorDiscard).toHaveBeenCalledWith(1);
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
-
-    // The apply landing afterward must not re-discard nor blow up on an
-    // unmounted component.
-    resolveApply({
-      beforeClip: "data:audio/wav;base64,AAAA",
-      afterClip: "data:audio/wav;base64,BBBB",
-    });
-    await waitFor(() => {
-      expect(doctorApply).toHaveBeenCalledTimes(1);
-    });
-    expect(doctorDiscard).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText("guarded insert refused: over the CPU budget"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't apply this fix.")).toBeNull();
+    // The failed apply released the lock: Apply is offered again.
+    expect(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    ).toBeEnabled();
   });
 
   it("does not discard on leave when nothing is applied (or after a save)", async () => {
@@ -1160,15 +1272,29 @@ describe("DoctorResults — shared-block caption", () => {
     value: 90,
   });
 
-  function renderShared(result: DoctorCheckResult) {
+  function renderShared(
+    result: DoctorCheckResult,
+    roster: FootswitchInfo[] = fsInfo.get(0) ?? [],
+  ) {
+    // Every sound's input carries the preset's FULL roster, as DoctorView
+    // builds it from `allFootswitchInfo`.
+    const inputByKey = new Map(
+      result.presets.flatMap((p) =>
+        p.sounds.map((snd) => [
+          snd.key,
+          inputFor(snd.key, p.listIndex, {
+            footswitch: snd.footswitch,
+            footswitches: roster,
+          }),
+        ]),
+      ),
+    );
     return render(
       <ThemeProvider>
         <DoctorResults
           result={result}
           presetNames={new Map([[0, "Overdrive Rhythm"]])}
-          footswitchInfo={fsInfo}
-          graphByIndex={new Map()}
-          stimulusByKey={new Map()}
+          inputByKey={inputByKey}
           silenceHintByIndex={new Map()}
           onCheckMore={() => undefined}
         />
@@ -1218,6 +1344,54 @@ describe("DoctorResults — shared-block caption", () => {
         footswitches: fsInfo.get(0),
       }),
     );
+  });
+
+  // A non-levelable switch (FS1, a phaser with no level param) ahead of the
+  // levelable FS4 in the FULL roster. The diagnosis forced the phaser off;
+  // the A/B must get the same roster or it auditions the phaser ON (#288).
+  const phaser: FootswitchInfo = {
+    switch: 0,
+    label: "Phaser",
+    link_group: null,
+    functions: [
+      {
+        func: "on-off",
+        group_id: "g",
+        node_id: "PHS1",
+        fender_id: "ACD_Phaser",
+        parameter_id: null,
+        value_a: null,
+        value_b: null,
+        is_active: true,
+      },
+    ],
+    level_params: [],
+  };
+
+  it("auditions under the SAME full footswitch roster the diagnosis used, incl. non-levelable switches", async () => {
+    const roster = [phaser, ...(fsInfo.get(0) ?? [])];
+    const user = userEvent.setup();
+    renderShared(fsFixture([diag(paramOp("CAB1"), "muddy")], null), roster);
+    await user.click(screen.getByText("Overdrive"));
+    await user.click(
+      screen.getByRole("button", { name: /apply to the unit/i }),
+    );
+    expect(doctorApply).toHaveBeenCalledWith(
+      expect.objectContaining({ footswitch: null, footswitches: roster }),
+    );
+  });
+
+  it("finds an FS sound's own blocks by its switch number, not its levelable-list position", async () => {
+    // Key `f0:0` = position 0 of the LEVELABLE list (FS4), but position 0 of
+    // the full roster is the phaser. A position lookup would treat DRV1 as
+    // shared and caption the row.
+    const user = userEvent.setup();
+    renderShared(fsFixture([diag(paramOp("DRV1"), "muddy")], 3), [
+      phaser,
+      ...(fsInfo.get(0) ?? []),
+    ]);
+    await user.click(screen.getByText("Overdrive"));
+    expect(screen.queryByText(CAPTION)).not.toBeInTheDocument();
   });
 });
 
@@ -1363,6 +1537,14 @@ describe("DoctorResults — sounds a stopped run never reached (#190)", () => {
     expect(
       screen.getByText(/1 not checked \(the run was stopped\)/),
     ).toBeInTheDocument();
+  });
+
+  it("titles a stopped run with no findings as stopped, not '0 of N need a look'", () => {
+    renderResults(stoppedRun());
+    expect(
+      screen.getByText("Check stopped · nothing flagged so far"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/0 of \d+ presets? need a look/)).toBeNull();
   });
 
   it("keeps the measured sound's own reading", () => {

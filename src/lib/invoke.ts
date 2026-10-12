@@ -12,6 +12,7 @@ import { Channel, invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type { InvokeArgs } from "@tauri-apps/api/core";
 
 import { actionableError } from "./connectError";
+import { errMsg } from "./format";
 import { logError } from "./log";
 import type { FootswitchTarget } from "../views/level/leveling";
 import type {
@@ -54,21 +55,40 @@ import type {
 export { isTauri } from "./log";
 
 /**
+ * A rejected backend command. Every command returns `Result<_, String>`, so a
+ * rejection reaches JS as a bare STRING — and `e instanceof Error ? e.message :
+ * "generic text"` at a call site silently threw the backend's real reason away.
+ * `invoke` normalizes every rejection into this one `Error` subclass at the
+ * seam, so a `catch` always gets an `Error` whose `message` is the backend text.
+ */
+export class CommandError extends Error {
+  /** The backend command that rejected (e.g. `doctor_apply`). */
+  readonly cmd: string;
+
+  constructor(cmd: string, message: string) {
+    super(message);
+    this.name = "CommandError";
+    this.cmd = cmd;
+  }
+}
+
+/**
  * The ONE call path every wrapper below goes through, so a backend command
  * rejection always reaches the on-disk log (`logError`) before it propagates —
  * otherwise a rejection a caller doesn't `.catch()` vanishes with nothing but an
- * in-memory stack trace. Rethrows unchanged so callers see the exact same
- * rejection bare `invoke` would have produced.
+ * in-memory stack trace. Rejects with a {@link CommandError} carrying the
+ * backend's own text (see there).
  */
 function invoke<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   return tauriInvoke<T>(cmd, args).catch((e: unknown) => {
+    const message = errMsg(e);
     // The 3 s auto-connect poll rejects BY DESIGN while no unit is present —
     // error-logging that class (~1 line/3 s, forever, while unplugged) would
     // churn the size-capped log and evict the diagnostics a bug report needs,
     // so the connect gate classes `connectError` already recognizes stay quiet.
-    if (cmd !== "connect_device" || actionableError(String(e)) !== null)
-      logError(`invoke(${cmd}) failed: ${String(e)}`);
-    throw e;
+    if (cmd !== "connect_device" || actionableError(message) !== null)
+      logError(`invoke(${cmd}) failed: ${message}`);
+    throw new CommandError(cmd, message);
   });
 }
 

@@ -34,6 +34,8 @@ const RESIDUAL_LINE =
   "Big tonal gap. EQ can only fix part of it — try a different cab or amp instead.";
 
 export interface MatchCardProps {
+  /** Stable id for the synthetic prescription card's lifecycle state. */
+  cardId: string;
   sound: DoctorSoundResult;
   reference: DoctorSoundResult;
   listIndex: number;
@@ -46,6 +48,7 @@ export interface MatchCardProps {
 }
 
 export function MatchCard({
+  cardId,
   sound,
   reference,
   listIndex,
@@ -154,6 +157,7 @@ export function MatchCard({
   return (
     <div>
       <PrescriptionCard
+        cardId={cardId}
         rx={rx}
         listIndex={listIndex}
         presetName={presetName}
