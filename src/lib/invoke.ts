@@ -416,8 +416,9 @@ export const listSongs = (): Promise<SongRecord[]> => invoke("list_songs");
 export const readSetlists = (): Promise<SetlistRecord[]> =>
   invoke("read_setlists");
 
-/** Songs page — read a setlist's songs (ordered GLOBAL song slots, dense). The
- * 1-based index of a slot in THIS list is the position the membership ops address. */
+/** Songs page — read a setlist's songs (ordered GLOBAL song slots; trailing empty
+ * padding dropped, an interior empty entry kept as 0). The 1-based index of a slot
+ * in THIS list is the position the membership ops address. */
 export const listSetlistSongs = (setlistSlot: number): Promise<number[]> =>
   invoke("list_setlist_songs", { setlistSlot });
 
@@ -432,11 +433,14 @@ export const removeSong = (
 export const addSetlist = (name: string): Promise<SetlistRecord[]> =>
   invoke("add_setlist", { name });
 
-/** Rename a setlist by slot → fresh setlist list. DEVICE WRITE (renameSetlist). */
+/** Rename a setlist by slot → fresh setlist list. DEVICE WRITE (renameSetlist).
+ * `expectName` (the CURRENT name) guards the slot: setlist slots shift on delete. */
 export const renameSetlist = (
   slot: number,
+  expectName: string,
   name: string,
-): Promise<SetlistRecord[]> => invoke("rename_setlist", { slot, name });
+): Promise<SetlistRecord[]> =>
+  invoke("rename_setlist", { slot, expectName, name });
 
 /** Delete a setlist by slot → fresh setlist list. DEVICE WRITE (removeSetlist);
  * the songs themselves are kept. `expectName` guards the slot. DESTRUCTIVE. */
@@ -446,21 +450,25 @@ export const removeSetlist = (
 ): Promise<SetlistRecord[]> => invoke("remove_setlist", { slot, expectName });
 
 /** Remove a song from a setlist by its 1-based POSITION within the setlist (NOT the
- * global song slot) → fresh ordered member slots. DEVICE WRITE (removeSetlistSong). */
+ * global song slot) → fresh ordered member slots. DEVICE WRITE (removeSetlistSong).
+ * `expectName` (the setlist's name) guards the setlist slot. */
 export const removeSetlistSong = (
   setlistSlot: number,
+  expectName: string,
   setlistSongSlot: number,
 ): Promise<number[]> =>
-  invoke("remove_setlist_song", { setlistSlot, setlistSongSlot });
+  invoke("remove_setlist_song", { setlistSlot, expectName, setlistSongSlot });
 
 /** Reorder a song within a setlist by 1-based POSITIONS (array-splice semantics) →
- * fresh ordered member slots. DEVICE WRITE (moveSetlistSong). */
+ * fresh ordered member slots. DEVICE WRITE (moveSetlistSong). `expectName` (the
+ * setlist's name) guards the setlist slot. */
 export const moveSetlistSong = (
   setlistSlot: number,
+  expectName: string,
   oldPos: number,
   newPos: number,
 ): Promise<number[]> =>
-  invoke("move_setlist_song", { setlistSlot, oldPos, newPos });
+  invoke("move_setlist_song", { setlistSlot, expectName, oldPos, newPos });
 
 /** Batched song create: name + optional notes / BPM / setlist membership as ONE
  * device transaction (one seize bookend, one final read — vs one of each PER
@@ -485,11 +493,14 @@ export const updateSongFull = (
 
 /** Add several songs (GLOBAL song slots) to a setlist under ONE bookend with ONE
  * final membership read (vs one of each per song) → fresh ordered member slots.
- * DEVICE WRITE (addSetlistSong ×N). */
+ * DEVICE WRITE (addSetlistSong ×N). `expectName` (the setlist's name) guards the
+ * setlist slot. */
 export const addSetlistSongs = (
   setlistSlot: number,
+  expectName: string,
   songSlots: number[],
-): Promise<number[]> => invoke("add_setlist_songs", { setlistSlot, songSlots });
+): Promise<number[]> =>
+  invoke("add_setlist_songs", { setlistSlot, expectName, songSlots });
 
 /**
  * Namespaced handle for screens that prefer `cmd.importLibrary(...)` over named

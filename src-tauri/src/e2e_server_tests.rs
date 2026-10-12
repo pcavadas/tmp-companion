@@ -2013,6 +2013,111 @@ fn offline_songs_crud_through_real_backend() {
     assert!(!sim.song_names().iter().any(|n| n == "Opening Set"));
 }
 
+/// Issue #295 gate: the slot-keyed setlist writes carry the setlist's expected NAME
+/// and are refused when a fresh read shows another setlist at that slot. Setlist slots
+/// shift down after a delete, so a UI acting on the pre-delete list would otherwise
+/// rename, add to, or remove/reorder songs in the NEXT setlist.
+#[test]
+fn offline_setlist_writes_refuse_a_stale_slot() {
+    let _serial = serial();
+    let sim = crate::sim_device::SimDevice::new();
+    let sim_for_factory = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sim_for_factory.clone())));
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            add_setlist,
+            remove_setlist,
+            rename_setlist,
+            add_setlist_songs,
+            remove_setlist_song,
+            move_setlist_song
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build mock app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("build webview");
+    let call = |cmd: &str, args: serde_json::Value| invoke(&webview, cmd, args);
+
+    // Seed [Saturday Night, B, C] with C = [1, 2].
+    for name in ["B", "C"] {
+        call("add_setlist", serde_json::json!({ "name": name })).expect("add_setlist");
+    }
+    let members = call(
+        "add_setlist_songs",
+        serde_json::json!({ "setlistSlot": 3, "expectName": "C", "songSlots": [1, 2] }),
+    )
+    .expect("add_setlist_songs");
+    assert_eq!(members, serde_json::json!([1, 2]));
+
+    // Delete B → C shifts down to slot 2.
+    call(
+        "remove_setlist",
+        serde_json::json!({ "slot": 2, "expectName": "B" }),
+    )
+    .expect("remove_setlist");
+    let c = || ("C".to_string(), vec![1u32, 2]);
+    assert_eq!(sim.setlists()[1], c());
+
+    // A stale UI still believes slot 2 is "B": every write is refused, C is untouched.
+    let stale: [(&str, serde_json::Value); 4] = [
+        (
+            "rename_setlist",
+            serde_json::json!({ "slot": 2, "expectName": "B", "name": "X" }),
+        ),
+        (
+            "add_setlist_songs",
+            serde_json::json!({ "setlistSlot": 2, "expectName": "B", "songSlots": [1] }),
+        ),
+        (
+            "remove_setlist_song",
+            serde_json::json!({ "setlistSlot": 2, "expectName": "B", "setlistSongSlot": 1 }),
+        ),
+        (
+            "move_setlist_song",
+            serde_json::json!({ "setlistSlot": 2, "expectName": "B", "oldPos": 1, "newPos": 2 }),
+        ),
+    ];
+    for (cmd, args) in stale {
+        let err = call(cmd, args).expect_err(cmd);
+        assert!(
+            err.to_string().contains("refused") && err.to_string().contains("\\\"B\\\""),
+            "{cmd}: {err}"
+        );
+        assert_eq!(sim.setlists()[1], c(), "{cmd} must not touch C");
+    }
+    // …and the stale "C" at slot 3 now points past the end: refused, not sent.
+    let err = call(
+        "rename_setlist",
+        serde_json::json!({ "slot": 3, "expectName": "C", "name": "X" }),
+    )
+    .expect_err("past the end");
+    assert!(err.to_string().contains("no longer exists"), "{err}");
+    assert_eq!(sim.setlists().len(), 2);
+
+    // The matching name lands each write on C.
+    let moved = call(
+        "move_setlist_song",
+        serde_json::json!({ "setlistSlot": 2, "expectName": "C", "oldPos": 1, "newPos": 2 }),
+    )
+    .expect("move_setlist_song");
+    assert_eq!(moved, serde_json::json!([2, 1]));
+    let removed = call(
+        "remove_setlist_song",
+        serde_json::json!({ "setlistSlot": 2, "expectName": "C", "setlistSongSlot": 1 }),
+    )
+    .expect("remove_setlist_song");
+    assert_eq!(removed, serde_json::json!([1]));
+    call(
+        "rename_setlist",
+        serde_json::json!({ "slot": 2, "expectName": "C", "name": "C2" }),
+    )
+    .expect("rename_setlist");
+    assert_eq!(sim.setlists()[1], ("C2".to_string(), vec![1]));
+}
+
 /// The batched song saves run on ONE device connection (tmp-audit Q40 follow-up): a
 /// create with notes + BPM + a setlist, then an edit with a rename + BPM, each open the
 /// device once, land the BPM (no "didn't land" warning) and return the fresh list.

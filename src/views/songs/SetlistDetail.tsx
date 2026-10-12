@@ -10,7 +10,7 @@ import { PaneEmpty } from "../../ui/PaneEmpty";
 import type { SetlistRecord, SongRecord } from "../../lib/types";
 import { LIST_COLS, IconBtn } from "./shared";
 import { plainInput } from "../../theme/tokens";
-import type { SongDraft } from "./shared";
+import type { SetlistMember, SongDraft } from "./shared";
 import { AddSongs } from "./AddSongs";
 import { SongRow } from "./SongRow";
 import { ListHeader } from "./ListHeader";
@@ -80,13 +80,14 @@ function SetlistRow({
 
 interface SetlistDetailProps {
   setlist: SetlistRecord;
-  /** The setlist's member songs in device order, or null while not yet read. */
-  members: SongRecord[] | null;
+  /** The setlist's entries in device order, each with its RAW 1-based device
+   *  position (what remove/reorder send), or null while not yet read. */
+  members: SetlistMember[] | null;
   available: SongRecord[];
   busy: boolean;
   onRename: (name: string) => void;
   onDelete: () => void;
-  /** position = 1-based index within the setlist. */
+  /** position = the entry's 1-based device position within the setlist. */
   onRemoveSong: (position: number) => void;
   onReorder: (oldPos: number, newPos: number) => void;
   onAdd: (songSlots: number[]) => void;
@@ -221,11 +222,13 @@ export function SetlistDetail({
             position: "relative",
           }}
         >
+          {/* Unknown membership is "loading", not "empty": the picker would offer
+              songs already in the setlist. */}
           <Button
             variant="primary"
             icon="plus"
             small
-            disabled={busy}
+            disabled={busy || members == null}
             onClick={() => {
               setPicker((o) => !o);
             }}
@@ -326,21 +329,21 @@ export function SetlistDetail({
               overflowY: "auto",
             }}
           >
-            {songsInList.map((rec, i) => (
+            {songsInList.map((m, i) => (
               <SetlistRow
-                key={rec.slot}
-                song={rec}
+                key={m.position}
+                song={m.song}
                 idx={i}
                 busy={busy}
                 onRemove={() => {
-                  onRemoveSong(i + 1);
+                  onRemoveSong(m.position);
                 }}
                 onGrab={() => {
-                  dragPos.current = i + 1;
+                  dragPos.current = m.position;
                 }}
                 onDropOn={() => {
                   if (dragPos.current != null)
-                    onReorder(dragPos.current, i + 1);
+                    onReorder(dragPos.current, m.position);
                   dragPos.current = null;
                 }}
               />

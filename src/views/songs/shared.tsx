@@ -2,12 +2,21 @@
 // PRIVATE: not re-exported from index.ts; must not import any sub-component.
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
+import type { SongRecord } from "../../lib/types";
 
 /** Inline-edit draft of a song (the create/edit form's working values). */
 export interface SongDraft {
   name: string;
   notes: string;
   bpm: number | null;
+}
+
+/** One setlist entry: its 1-based device POSITION within the setlist (what
+ *  remove/move address) and the song it resolves to — a placeholder when its global
+ *  slot resolves to no song, so every row keeps its real position. */
+export interface SetlistMember {
+  position: number;
+  song: SongRecord;
 }
 
 export const SONG_COLS = "34px 1fr 72px 72px";

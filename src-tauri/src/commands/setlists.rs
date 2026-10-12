@@ -11,6 +11,35 @@ use crate::*;
 // reshaped as slot-addressed, frontend-callable commands. HW writes are gated by
 // the read-only-on-hardware policy (lifted per-session by explicit authorization).
 
+/// Refuse a slot-keyed setlist write unless `list` (a fresh read) still shows
+/// `expect_name` at `slot`. Setlist slots are list index + 1 and shift down after a
+/// delete, so a UI acting on a stale list would otherwise silently retarget the
+/// NEXT setlist. The guard and the write share ONE address space — the 1-based
+/// setlist slot the device mutation takes (danger.md: same-address-space guards).
+pub(crate) fn check_setlist_slot(
+    list: &[session::SetlistRecord],
+    slot: u32,
+    expect_name: &str,
+    action: &str,
+) -> Result<(), String> {
+    let rec = list
+        .iter()
+        .find(|r| r.slot == slot)
+        .ok_or_else(|| format!("setlist slot {slot} no longer exists — refusing to {action}"))?;
+    if rec.name != expect_name {
+        return Err(format!(
+            "guarded {action} refused: setlist slot {slot} reads {:?}, expected {:?} (list changed)",
+            rec.name, expect_name
+        ));
+    }
+    Ok(())
+}
+
+/// [`check_setlist_slot`] against a fresh strict setlist-list read.
+fn guard_setlist_slot(slot: u32, expect_name: &str, action: &str) -> Result<(), String> {
+    check_setlist_slot(&read_setlist_list()?, slot, expect_name, action)
+}
+
 /// Read every Setlist's name for the Songs page — strict fail-closed live read.
 #[tauri::command]
 pub(crate) async fn read_setlists(
@@ -20,8 +49,9 @@ pub(crate) async fn read_setlists(
 }
 
 /// Read a setlist's songs in device order as GLOBAL song slots, trailing empty
-/// (`songSlot==0`) entries dropped so the list is dense — position `i` here is the
-/// `setlistSongSlot` the membership ops address (the index base is HW-pinned).
+/// (`songSlot==0`) padding dropped but any interior `0` KEPT — so index `i` here is
+/// always position `i + 1`, the `setlistSongSlot` the membership ops address (the
+/// index base is HW-pinned).
 #[tauri::command]
 pub(crate) async fn list_setlist_songs(
     state: State<'_, AppState>,
@@ -48,14 +78,17 @@ pub(crate) async fn add_setlist(
     .await
 }
 
-/// Rename a setlist by slot; returns the fresh setlist list.
+/// Rename a setlist by slot; returns the fresh setlist list. Guarded by
+/// `expect_name` (the CURRENT name) in the same slot space.
 #[tauri::command]
 pub(crate) async fn rename_setlist(
     state: State<'_, AppState>,
     slot: u32,
+    expect_name: String,
     name: String,
 ) -> Result<Vec<session::SetlistRecord>, String> {
     with_released_seize(state.session.clone(), move || {
+        guard_setlist_slot(slot, &expect_name, "rename")?;
         {
             let mut s = Session::connect()?;
             s.rename_setlist(slot, &name)?;
@@ -74,17 +107,7 @@ pub(crate) async fn remove_setlist(
     expect_name: String,
 ) -> Result<Vec<session::SetlistRecord>, String> {
     with_released_seize(state.session.clone(), move || {
-        let before = read_setlist_list()?;
-        let rec = before
-            .iter()
-            .find(|r| r.slot == slot)
-            .ok_or_else(|| format!("setlist slot {slot} no longer exists — refusing to delete"))?;
-        if rec.name != expect_name {
-            return Err(format!(
-                "guarded remove refused: setlist slot {slot} reads {:?}, expected {:?} (list changed)",
-                rec.name, expect_name
-            ));
-        }
+        guard_setlist_slot(slot, &expect_name, "delete")?;
         {
             let mut s = Session::connect()?;
             s.remove_setlist(slot)?;
@@ -95,14 +118,17 @@ pub(crate) async fn remove_setlist(
 }
 
 /// Add a song (by GLOBAL song slot) to a setlist; returns the setlist's fresh
-/// ordered member song slots (dense — trailing 0s dropped).
+/// ordered member song slots (trailing 0s dropped). Guarded by `expect_name` (the
+/// setlist's name) in the setlist slot space.
 #[tauri::command]
 pub(crate) async fn add_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
+    expect_name: String,
     song_slot: u32,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
+        guard_setlist_slot(setlist_slot, &expect_name, "add a song to")?;
         {
             let mut s = Session::connect()?;
             s.add_setlist_song(setlist_slot, song_slot)?;
@@ -113,14 +139,17 @@ pub(crate) async fn add_setlist_song(
 }
 
 /// Remove a song from a setlist by its POSITION within the setlist
-/// (`setlist_song_slot`, NOT the global song slot). Returns fresh member slots.
+/// (`setlist_song_slot`, NOT the global song slot). Guarded by `expect_name` (the
+/// setlist's name) in the setlist slot space. Returns fresh member slots.
 #[tauri::command]
 pub(crate) async fn remove_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
+    expect_name: String,
     setlist_song_slot: u32,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
+        guard_setlist_slot(setlist_slot, &expect_name, "remove a song from")?;
         {
             let mut s = Session::connect()?;
             s.remove_setlist_song(setlist_slot, setlist_song_slot)?;
@@ -131,15 +160,18 @@ pub(crate) async fn remove_setlist_song(
 }
 
 /// Reorder a song within a setlist by POSITION (both indices are positions within
-/// the setlist, NOT global song slots). Returns fresh member slots.
+/// the setlist, NOT global song slots). Guarded by `expect_name` (the setlist's
+/// name) in the setlist slot space. Returns fresh member slots.
 #[tauri::command]
 pub(crate) async fn move_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
+    expect_name: String,
     old_pos: u32,
     new_pos: u32,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
+        guard_setlist_slot(setlist_slot, &expect_name, "reorder")?;
         {
             let mut s = Session::connect()?;
             s.move_setlist_song(setlist_slot, old_pos, new_pos)?;
@@ -151,14 +183,17 @@ pub(crate) async fn move_setlist_song(
 /// Add several songs (by GLOBAL song slot) to a setlist under ONE bookend with ONE
 /// final membership read — replaces the UI's per-song `add_setlist_song` loop
 /// (which paid a bookend + membership read per song). Same proven per-write fresh
-/// connection per `addSetlistSong`.
+/// connection per `addSetlistSong`. Guarded by `expect_name` (the setlist's name)
+/// in the setlist slot space, once before the first write.
 #[tauri::command]
 pub(crate) async fn add_setlist_songs(
     state: State<'_, AppState>,
     setlist_slot: u32,
+    expect_name: String,
     song_slots: Vec<u32>,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
+        guard_setlist_slot(setlist_slot, &expect_name, "add songs to")?;
         for ss in &song_slots {
             let mut s = Session::connect()?;
             s.add_setlist_song(setlist_slot, *ss)?;

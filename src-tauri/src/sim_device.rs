@@ -1239,6 +1239,17 @@ impl SimDevice {
         st.songs.get((slot as usize).checked_sub(1)?).cloned()
     }
 
+    /// Every setlist as `(name, member song slots)` in slot order — test-only
+    /// introspection of the membership model.
+    #[cfg(test)]
+    pub(crate) fn setlists(&self) -> Vec<(String, Vec<u32>)> {
+        let st = self.state.lock().expect("sim lock");
+        st.setlists
+            .iter()
+            .map(|l| (l.name.clone(), l.members.clone()))
+            .collect()
+    }
+
     /// Give the preset at 0-based `list_index` `n` scenes (the `assignSongPreset` scene check).
     #[cfg(test)]
     pub(crate) fn with_preset_scenes(self, list_index: u32, n: u32) -> SimDevice {

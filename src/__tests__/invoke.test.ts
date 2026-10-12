@@ -52,6 +52,7 @@ import {
   removeSetlist,
   removeSetlistSong,
   moveSetlistSong,
+  addSetlistSongs,
   doctorCheck,
   cancelDoctorCheck,
   doctorApply,
@@ -463,21 +464,42 @@ describe("device-backed song/setlist CRUD (Songs page)", () => {
     await addSetlist("Tutu");
     expectCall("add_setlist", { name: "Tutu" });
   });
-  it("rename_setlist uses slot/name", async () => {
-    await renameSetlist(4, "Tutu Tutu");
-    expectCall("rename_setlist", { slot: 4, name: "Tutu Tutu" });
+  it("rename_setlist uses slot/expectName/name (guarded rename)", async () => {
+    await renameSetlist(4, "Tutu", "Tutu Tutu");
+    expectCall("rename_setlist", {
+      slot: 4,
+      expectName: "Tutu",
+      name: "Tutu Tutu",
+    });
   });
   it("remove_setlist uses slot/expectName (guarded delete)", async () => {
     await removeSetlist(4, "Tutu");
     expectCall("remove_setlist", { slot: 4, expectName: "Tutu" });
   });
   it("remove_setlist_song uses setlistSlot/setlistSongSlot (1-based POSITION)", async () => {
-    await removeSetlistSong(4, 2);
-    expectCall("remove_setlist_song", { setlistSlot: 4, setlistSongSlot: 2 });
+    await removeSetlistSong(4, "Tutu", 2);
+    expectCall("remove_setlist_song", {
+      setlistSlot: 4,
+      expectName: "Tutu",
+      setlistSongSlot: 2,
+    });
   });
   it("move_setlist_song uses setlistSlot/oldPos/newPos (1-based POSITIONS)", async () => {
-    await moveSetlistSong(4, 3, 1);
-    expectCall("move_setlist_song", { setlistSlot: 4, oldPos: 3, newPos: 1 });
+    await moveSetlistSong(4, "Tutu", 3, 1);
+    expectCall("move_setlist_song", {
+      setlistSlot: 4,
+      expectName: "Tutu",
+      oldPos: 3,
+      newPos: 1,
+    });
+  });
+  it("add_setlist_songs uses setlistSlot/expectName/songSlots (guarded add)", async () => {
+    await addSetlistSongs(4, "Tutu", [2, 7]);
+    expectCall("add_setlist_songs", {
+      setlistSlot: 4,
+      expectName: "Tutu",
+      songSlots: [2, 7],
+    });
   });
 });
 

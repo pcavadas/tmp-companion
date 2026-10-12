@@ -54,7 +54,7 @@ describe("SetlistDetail — mutate gated while busy (BUG-5)", () => {
   const setlist: SetlistRecord = { slot: 1, name: "Set 1" };
   const baseProps = {
     setlist,
-    members: [song],
+    members: [{ position: 1, song }],
     available: [],
     onRename: vi.fn(),
     onDelete: vi.fn(),

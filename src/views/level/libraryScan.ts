@@ -87,15 +87,20 @@ export interface LibraryScan {
   presets: { slot: number; name: string }[];
   /** Song slot → the preset LIST INDICES that song uses (`SongPresets` table), for the
    *  Songs tab's read-only "songs per preset" view. The song slot is the live song
-   *  list's 1-based positional slot. Read from the same backup. */
-  songPresetSlots: Map<number, number[]>;
+   *  list's 1-based positional slot. Read from the same backup. `null` = UNKNOWN: a
+   *  song add/remove shifted every song slot, so the join is stale until the next
+   *  connection rescans (see `invalidateSongPresetJoin`) — never render it as 0. */
+  songPresetSlots: Map<number, number[]> | null;
   /** Full song list (`Songs` table) — for the Songs tab's INSTANT first paint in steady
-   *  state. After first paint SongsView holds its own state; live reads stay the
-   *  read-back-after-write source for CRUD. */
+   *  state. SongsView patches this (and the two setlist fields below) after every
+   *  successful write via `patchLibrarySongs`, so a tab switch repaints the post-edit
+   *  state, not the connect-time snapshot. Live reads stay the read-back-after-write
+   *  source for CRUD. */
   songs: SongRecord[];
   /** Full setlist list (`Setlists` table) — instant first paint. */
   setlists: SetlistRecord[];
-  /** Setlist slot → ordered global song slots (`SetlistSongs`) — instant rail counts. */
+  /** Setlist slot → ordered global song slots (`SetlistSongs`) — instant rail counts.
+   *  A setlist with no entry is "not read yet", re-read live on select. */
   setlistSongs: Map<number, number[]>;
 }
 
@@ -269,21 +274,30 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
   set({ graphByIndex: next });
 }
 
-/** Invalidate the backup-sourced SONG data after a slot-shifting song CRUD (add/remove
- *  bumps every song slot, so `songPresetSlots` — keyed by song slot — would join the
- *  Presets axis against WRONG bindings, and the song/setlist seed is now stale). Clears
- *  it to empty (honest "unknown after edit") rather than confidently-wrong; the preset
- *  list itself is unaffected by song edits, so `presets`/`ready` are kept.
- *  ponytail: clear-all; a precise old→new slot remap is the upgrade path if the Presets
- *  axis needs to survive edits without a reconnect re-scan. */
-export function invalidateLibrarySongs(): void {
+/** Mark the song↔preset join UNKNOWN after a slot-shifting song CRUD (add/remove bumps
+ *  every song slot, so `songPresetSlots` — keyed by song slot — would join the Presets
+ *  axis against WRONG bindings). `null`, not an empty map: an empty map reads as "no
+ *  song uses any preset", a confident zero where the truth is unknown. The preset list
+ *  itself is unaffected by song edits, so `presets`/`ready` are kept.
+ *  ponytail: a precise old→new slot remap is the upgrade path if the Presets axis needs
+ *  to survive edits without a reconnect re-scan. */
+export function invalidateSongPresetJoin(): void {
   if (!state.ready) return;
-  set({
-    songs: [],
-    setlists: [],
-    setlistSongs: new Map(),
-    songPresetSlots: new Map(),
-  });
+  set({ songPresetSlots: null });
+}
+
+/** Write the Songs tab's post-edit songs / setlists / membership back into the snapshot,
+ *  so the next mount (a tab switch) paints the CURRENT state instead of the connect-time
+ *  one. A stale seed showed deleted setlists and old names, and a write on such a stale
+ *  slot landed on another setlist. No-op until the scan has settled (`ready`) — the
+ *  scan's own result would overwrite it. */
+export function patchLibrarySongs(next: {
+  songs: SongRecord[];
+  setlists: SetlistRecord[];
+  setlistSongs: Map<number, number[]>;
+}): void {
+  if (!state.ready) return;
+  set(next);
 }
 
 /** Reset on disconnect so the NEXT connection scans fresh. */

@@ -14,7 +14,8 @@ import type {
 import {
   ensureLibraryScan,
   getLibraryScan,
-  invalidateLibrarySongs,
+  invalidateSongPresetJoin,
+  patchLibrarySongs,
   patchLibraryGraph,
   resetLibraryScan,
 } from "../views/level/libraryScan";
@@ -107,8 +108,8 @@ describe("libraryScan — songs↔presets axis data", () => {
       { slot: 7, name: "Plexi Crunch" },
       { slot: 57, name: "Stadium Lead" },
     ]);
-    expect(lib.songPresetSlots.get(1)).toEqual([7, 57]);
-    expect(lib.songPresetSlots.get(2)).toEqual([57]);
+    expect(lib.songPresetSlots?.get(1)).toEqual([7, 57]);
+    expect(lib.songPresetSlots?.get(2)).toEqual([57]);
   });
 
   it("derives songs + setlists + ordered membership for the Songs tab first paint", async () => {
@@ -143,7 +144,7 @@ describe("libraryScan — songs↔presets axis data", () => {
     expect(lib.setlistSongs.get(1)).toEqual([2, 1]);
   });
 
-  it("invalidates the stale song↔preset join after a slot-shifting CRUD, keeps presets", async () => {
+  it("marks the stale song↔preset join UNKNOWN after a slot-shifting CRUD, keeps presets", async () => {
     vi.mocked(invoke).mockImplementation((cmd: string) =>
       cmd === "read_library_via_backup"
         ? Promise.resolve(BACKUP)
@@ -151,7 +152,7 @@ describe("libraryScan — songs↔presets axis data", () => {
     );
     await ensureLibraryScan();
 
-    invalidateLibrarySongs();
+    invalidateSongPresetJoin();
     const lib = getLibraryScan();
 
     // The preset list is unaffected by song edits — kept.
@@ -159,9 +160,27 @@ describe("libraryScan — songs↔presets axis data", () => {
       { slot: 7, name: "Plexi Crunch" },
       { slot: 57, name: "Stadium Lead" },
     ]);
-    // The slot-keyed song→preset map is cleared (would otherwise join wrong slots).
-    expect(lib.songPresetSlots.size).toBe(0);
-    expect(lib.songs).toEqual([]);
+    // The slot-keyed song→preset join is UNKNOWN (null), not an empty map — an empty
+    // map would read as "no song uses any preset" (issue #299).
+    expect(lib.songPresetSlots).toBeNull();
+  });
+
+  it("patchLibrarySongs writes the post-edit songs/setlists/membership into the snapshot", async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? Promise.resolve(BACKUP)
+        : Promise.resolve(null),
+    );
+    await ensureLibraryScan();
+
+    patchLibrarySongs({
+      songs: [],
+      setlists: [{ slot: 1, name: "Renamed" }],
+      setlistSongs: new Map([[1, [3]]]),
+    });
+    const lib = getLibraryScan();
+    expect(lib.setlists).toEqual([{ slot: 1, name: "Renamed" }]);
+    expect(lib.setlistSongs.get(1)).toEqual([3]);
   });
 
   it("caches only LEVELABLE footswitches per index (filters empty level_params)", async () => {

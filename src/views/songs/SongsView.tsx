@@ -13,10 +13,15 @@
 // GLOBAL song slot) is cached per setlist and re-fetched on select; it is cleared
 // whenever a song is added/removed (those shift every global slot).
 //
-// Operations are SERIALIZED (single USB connection) via `runDeviceOp` — one in-
-// flight op at a time, controls disabled while busy, failures surfaced as a Toast
-// (never swallowed: the device is truth, so the UI must not show an un-persisted
-// edit). Only mounted when connected (App gates the disconnected branch).
+// Operations are SERIALIZED (single USB connection) via `runDeviceOp` — a module-
+// scoped promise QUEUE: an action taken while another op runs waits its turn, it is
+// never dropped. Controls are disabled while busy, failures surface as a Toast (never
+// swallowed: the device is truth, so the UI must not show an un-persisted edit).
+// Every successful op is applied as ONE reducer to both the view's state and the
+// libraryScan snapshot the next mount paints from, so a tab switch never repaints a
+// stale setlist list. Slot-keyed setlist writes carry the setlist's expected name;
+// the backend refuses a stale slot. Only mounted when connected (App gates the
+// disconnected branch).
 
 import {
   useCallback,
@@ -52,17 +57,62 @@ import { DASH, errMsg } from "../../lib/format";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
 import type { SongRecord, SetlistRecord } from "../../lib/types";
 import { plainInput } from "../../theme/tokens";
-import { songBpm } from "./songUtil";
-import type { SongDraft } from "./shared";
+import { shiftMembershipAfterDelete, songBpm } from "./songUtil";
+import type { SetlistMember, SongDraft } from "./shared";
 import { SongList } from "./SongList";
 import { SetlistDetail } from "./SetlistDetail";
 import { PresetDetail, UnitBadge } from "./PresetDetail";
 import {
   subscribeLibraryScan,
   getLibraryScan,
-  invalidateLibrarySongs,
+  invalidateSongPresetJoin,
+  patchLibrarySongs,
 } from "../level/libraryScan";
 import { SongsLoadingSkeleton } from "./skeletons";
+
+// ---------------------------------------------------------------------------
+// device-op queue + the songs data reducer
+// ---------------------------------------------------------------------------
+
+/** The view's device-backed data. `membership`: setlistSlot → ordered GLOBAL song
+ *  slots; an absent key = not read yet. */
+interface SongsData {
+  songs: SongRecord[];
+  setlists: SetlistRecord[];
+  membership: Map<number, number[]>;
+}
+
+/** The tail of the device-op queue. MODULE-scoped so it outlives a tab switch: a
+ *  remount waits for an unmounted instance's queued writes before it paints. */
+let opQueue: Promise<void> = Promise.resolve();
+
+/** Apply a successful op's reducer to the libraryScan snapshot (the next mount's
+ *  instant-paint seed) — even when this view has since unmounted. */
+function patchSnapshot(reduce: (d: SongsData) => SongsData): void {
+  const scan = getLibraryScan();
+  if (!scan.ready) return;
+  const next = reduce({
+    songs: scan.songs,
+    setlists: scan.setlists,
+    membership: scan.setlistSongs,
+  });
+  patchLibrarySongs({
+    songs: next.songs,
+    setlists: next.setlists,
+    setlistSongs: next.membership,
+  });
+}
+
+/** A song slot no song resolves to (an out-of-band edit, or an empty entry): shown
+ *  as its own row — never filtered out, which would shift every later row onto the
+ *  wrong device position. */
+const unresolvedSong = (slot: number): SongRecord => ({
+  slot,
+  name: slot === 0 ? "Empty entry" : "Unknown song",
+  notes: "",
+  bpm: 0,
+  bpm_active: false,
+});
 
 // ---------------------------------------------------------------------------
 // root
@@ -86,12 +136,12 @@ export interface SongsViewProps {
 export function SongsView({ connected, onScan }: SongsViewProps) {
   const { t } = useTheme();
   const { phase, mountedRef, runLoad } = useDeviceLoad();
-  const [songs, setSongs] = useState<SongRecord[]>([]);
-  const [setlists, setSetlists] = useState<SetlistRecord[]>([]);
-  // setlistSlot → ordered GLOBAL song slots (membership). Absent = not yet read.
-  const [membership, setMembership] = useState<Map<number, number[]>>(
-    new Map(),
-  );
+  const [data, setData] = useState<SongsData>(() => ({
+    songs: [],
+    setlists: [],
+    membership: new Map(),
+  }));
+  const { songs, setlists, membership } = data;
   const [view, setView] = useState<View>({ mode: "all" });
   const [railAxis, setRailAxis] = useState<RailAxis>("setlists");
   const [busy, setBusy] = useState(false);
@@ -106,7 +156,11 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     kind: ToastKind;
   } | null>(null);
 
-  const busyRef = useRef(false);
+  // This instance's queued + running device ops (drives `busy`).
+  const pendingRef = useRef(0);
+  // Setlist slots with a membership read already queued — a repeat click on the same
+  // setlist doesn't stack a second read behind it.
+  const pendingReads = useRef(new Set<number>());
   const toastTimer = useRef<number | null>(null);
 
   const showToast = useCallback(
@@ -138,11 +192,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   // (songs, bindings) change and reused for BOTH the rail counts and the detail pane —
   // avoids an O(songs × presets) re-filter on every render. `lib.songPresetSlots` is
   // keyed by the live song slot; this is a snapshot join the unit owns (assignments are
-  // edited in Pro Control, not here).
+  // edited in Pro Control, not here). `null` = the join is UNKNOWN (a song add/remove
+  // shifted every song slot since the scan) — rendered as "—", never as 0.
   const presetMembers = useMemo(() => {
+    const join = lib.songPresetSlots;
+    if (join == null) return null;
     const m = new Map<number, SongRecord[]>();
     songs.forEach((s) => {
-      (lib.songPresetSlots.get(s.slot) ?? []).forEach((idx) => {
+      (join.get(s.slot) ?? []).forEach((idx) => {
         const arr = m.get(idx);
         if (arr) arr.push(s);
         else m.set(idx, [s]);
@@ -153,22 +210,28 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
 
   // Initial / connected-edge load. FAST PATH: a settled startup backup scan already
   // holds songs + setlists + membership (the slowest live payloads — two sequential
-  // fail-closed handshakes, ~5–9 s) → paint instantly from it, no device read. COLD
-  // OPEN (scan not ready yet during the initial ~22 s backup) falls back to the live
-  // read. Live reads (here + listSetlistSongs on select) stay the read-back-after-write
-  // source for CRUD. Live reads are SEQUENTIAL, not parallel — each opens its own
-  // exclusive HID connection and the TMP is single-connection (concurrent connects
-  // collide with kIOReturnExclusiveAccess 0xe00002c5).
+  // fail-closed handshakes, ~5–9 s) → paint instantly from it, no device read. Every
+  // successful write patches that snapshot (`patchSnapshot`), so a remount paints the
+  // post-edit state. COLD OPEN (scan not ready yet during the initial ~22 s backup)
+  // falls back to the live read. Live reads (here + listSetlistSongs on select) stay
+  // the read-back-after-write source for CRUD. Live reads are SEQUENTIAL, not
+  // parallel — each opens its own exclusive HID connection and the TMP is
+  // single-connection (concurrent connects collide with kIOReturnExclusiveAccess
+  // 0xe00002c5). The load first waits out any write still queued by a previous mount.
   const refresh = useCallback(async () => {
     await runLoad(async () => {
+      await opQueue;
       const scan = getLibraryScan();
       const fromScan = scan.ready && scan.songs.length > 0;
       const s = fromScan ? scan.songs : await listSongs();
       const l = fromScan ? scan.setlists : await readSetlists();
+      const m = fromScan
+        ? new Map(scan.setlistSongs)
+        : new Map<number, number[]>();
+      if (!fromScan)
+        patchSnapshot(() => ({ songs: s, setlists: l, membership: m }));
       if (!mountedRef.current) return;
-      setSongs(s);
-      setSetlists(l);
-      setMembership(fromScan ? new Map(scan.setlistSongs) : new Map());
+      setData({ songs: s, setlists: l, membership: m });
       setView((v) =>
         v.mode === "setlist" && !l.some((x) => x.slot === v.slot)
           ? { mode: "all" }
@@ -181,22 +244,34 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     if (connected) void refresh();
   }, [connected, refresh]);
 
-  // One in-flight device op at a time (single USB connection). `apply` runs only on
-  // success — a failed write must NOT leave the UI showing an un-persisted edit.
+  // Device ops run ONE at a time (single USB connection) on the module-scoped queue:
+  // an action taken while another op runs WAITS its turn — it is never dropped. On
+  // success `reduce` is applied to this view's data AND to the libraryScan snapshot
+  // (even after an unmount), then `after` runs; a failed write applies nothing — the
+  // UI must NOT show an un-persisted edit — and surfaces a Toast.
   const runDeviceOp = useCallback(
-    async <T,>(fn: () => Promise<T>, apply: (r: T) => void): Promise<void> => {
-      if (busyRef.current) return;
-      busyRef.current = true;
+    <T,>(
+      fn: () => Promise<T>,
+      reduce: (d: SongsData, r: T) => SongsData,
+      after?: (r: T) => void,
+    ): Promise<void> => {
+      pendingRef.current += 1;
       setBusy(true);
-      try {
-        const r = await fn();
-        if (mountedRef.current) apply(r);
-      } catch (e) {
-        if (mountedRef.current) showToast(errMsg(e), "err");
-      } finally {
-        busyRef.current = false;
-        if (mountedRef.current) setBusy(false);
-      }
+      const run = opQueue.then(async () => {
+        try {
+          const r = await fn();
+          patchSnapshot((d) => reduce(d, r));
+          if (mountedRef.current) setData((d) => reduce(d, r));
+          after?.(r);
+        } catch (e) {
+          if (mountedRef.current) showToast(errMsg(e), "err");
+        } finally {
+          pendingRef.current -= 1;
+          if (mountedRef.current && pendingRef.current === 0) setBusy(false);
+        }
+      });
+      opQueue = run;
+      return run;
     },
     [showToast, mountedRef],
   );
@@ -204,11 +279,17 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   // Fetch a setlist's membership (always re-read on select for freshness).
   const loadMembership = useCallback(
     (slot: number) => {
+      if (pendingReads.current.has(slot)) return; // already queued — it will land
+      pendingReads.current.add(slot);
       void runDeviceOp(
-        () => listSetlistSongs(slot),
-        (slots) => {
-          setMembership((m) => new Map(m).set(slot, slots));
-        },
+        () =>
+          listSetlistSongs(slot).finally(() =>
+            pendingReads.current.delete(slot),
+          ),
+        (d, slots) => ({
+          ...d,
+          membership: new Map(d.membership).set(slot, slots),
+        }),
       );
     },
     [runDeviceOp],
@@ -241,10 +322,9 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     (d: SongDraft) => {
       void runDeviceOp(
         () => apiCreateSongFull(d.name, d.notes.trim() || null, d.bpm, null),
+        (s, out) => ({ ...s, songs: out.songs, membership: new Map() }),
         (out) => {
-          setSongs(out.songs);
-          setMembership(new Map());
-          invalidateLibrarySongs(); // slots shifted → backup song↔preset join is stale
+          invalidateSongPresetJoin(); // slots shifted → backup song↔preset join unknown
           warnBpm(out.bpm_warning);
         },
       );
@@ -262,8 +342,8 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
       if (name == null && notes == null && bpm == null) return;
       void runDeviceOp(
         () => apiUpdateSongFull(rec.slot, name, notes, bpm),
+        (s, out) => ({ ...s, songs: out.songs }),
         (out) => {
-          setSongs(out.songs);
           warnBpm(out.bpm_warning);
         },
       );
@@ -275,10 +355,10 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
     (slot: number, name: string) => {
       void runDeviceOp(
         () => apiRemoveSong(slot, name),
-        (fresh) => {
-          setSongs(fresh);
-          setMembership(new Map()); // slots shifted — every cached membership is stale
-          invalidateLibrarySongs(); // …and the backup song↔preset join is stale too
+        // slots shifted — every cached membership is stale
+        (s, fresh) => ({ ...s, songs: fresh, membership: new Map() }),
+        () => {
+          invalidateSongPresetJoin(); // …and the backup song↔preset join is unknown
         },
       );
     },
@@ -286,33 +366,46 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   );
 
   // ── setlist ops ──
+  // Every slot-keyed setlist write carries the setlist's NAME as it is shown: the
+  // backend re-reads the list and refuses a slot that now names another setlist.
   const addSetlist = useCallback(
     (name: string) => {
-      void runDeviceOp(() => apiAddSetlist(name), setSetlists);
+      void runDeviceOp(
+        () => apiAddSetlist(name),
+        (s, fresh) => ({ ...s, setlists: fresh }),
+      );
     },
     [runDeviceOp],
   );
 
   const renameSetlist = useCallback(
-    (slot: number, name: string) => {
-      void runDeviceOp(() => apiRenameSetlist(slot, name), setSetlists);
+    (slot: number, expectName: string, name: string) => {
+      void runDeviceOp(
+        () => apiRenameSetlist(slot, expectName, name),
+        (s, fresh) => ({ ...s, setlists: fresh }),
+      );
     },
     [runDeviceOp],
   );
 
+  // Delete shifts every later setlist down one slot: re-key the membership cache and
+  // the selection the same way, or a later row shows (and edits) its neighbour.
   const doDeleteSetlist = useCallback(
     (slot: number, name: string) => {
       void runDeviceOp(
         () => apiRemoveSetlist(slot, name),
-        (fresh) => {
-          setSetlists(fresh);
-          setMembership((m) => {
-            const n = new Map(m);
-            n.delete(slot);
-            return n;
-          });
+        (s, fresh) => ({
+          ...s,
+          setlists: fresh,
+          membership: shiftMembershipAfterDelete(s.membership, slot),
+        }),
+        () => {
           setView((v) =>
-            v.mode === "setlist" && v.slot === slot ? { mode: "all" } : v,
+            v.mode !== "setlist" || v.slot < slot
+              ? v
+              : v.slot === slot
+                ? { mode: "all" }
+                : { mode: "setlist", slot: v.slot - 1 },
           );
         },
       );
@@ -321,40 +414,46 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   );
 
   // ── membership ops (positions are 1-based within the setlist) ──
+  const setMembers =
+    (setlistSlot: number) =>
+    (s: SongsData, members: number[]): SongsData => ({
+      ...s,
+      membership: new Map(s.membership).set(setlistSlot, members),
+    });
+
   // Multi-add = ONE batched transaction (add_setlist_songs): N writes under a
   // single bookend with a single final membership read.
   const addSongsToSetlist = useCallback(
-    (setlistSlot: number, songSlots: number[]) => {
+    (setlistSlot: number, expectName: string, songSlots: number[]) => {
       void runDeviceOp(
-        () => apiAddSetlistSongs(setlistSlot, songSlots),
-        (members) => {
-          setMembership((m) => new Map(m).set(setlistSlot, members));
-        },
+        () => apiAddSetlistSongs(setlistSlot, expectName, songSlots),
+        setMembers(setlistSlot),
       );
     },
     [runDeviceOp],
   );
 
   const removeFromSetlist = useCallback(
-    (setlistSlot: number, position: number) => {
+    (setlistSlot: number, expectName: string, position: number) => {
       void runDeviceOp(
-        () => apiRemoveSetlistSong(setlistSlot, position),
-        (members) => {
-          setMembership((m) => new Map(m).set(setlistSlot, members));
-        },
+        () => apiRemoveSetlistSong(setlistSlot, expectName, position),
+        setMembers(setlistSlot),
       );
     },
     [runDeviceOp],
   );
 
   const reorderSetlist = useCallback(
-    (setlistSlot: number, oldPos: number, newPos: number) => {
+    (
+      setlistSlot: number,
+      expectName: string,
+      oldPos: number,
+      newPos: number,
+    ) => {
       if (oldPos === newPos) return;
       void runDeviceOp(
-        () => apiMoveSetlistSong(setlistSlot, oldPos, newPos),
-        (members) => {
-          setMembership((m) => new Map(m).set(setlistSlot, members));
-        },
+        () => apiMoveSetlistSong(setlistSlot, expectName, oldPos, newPos),
+        setMembers(setlistSlot),
       );
     },
     [runDeviceOp],
@@ -371,14 +470,16 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
       void runDeviceOp(
         () =>
           apiCreateSongFull(d.name, d.notes.trim() || null, d.bpm, setlistSlot),
-        (out) => {
-          setSongs(out.songs);
-          setMembership(
+        (s, out) => ({
+          ...s,
+          songs: out.songs,
+          membership:
             out.members != null
               ? new Map([[setlistSlot, out.members]])
-              : new Map(),
-          );
-          invalidateLibrarySongs(); // create shifted slots → stale backup join
+              : new Map<number, number[]>(),
+        }),
+        (out) => {
+          invalidateSongPresetJoin(); // create shifted slots → join unknown
           warnBpm(out.bpm_warning);
         },
       );
@@ -398,12 +499,16 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
       ? (setlists.find((l) => l.slot === view.slot) ?? null)
       : null;
   const currentMemberSlots = current ? membership.get(current.slot) : undefined;
-  const currentMembers: SongRecord[] | null =
+  // Every device entry becomes a row carrying its RAW 1-based position — an entry no
+  // song resolves to is shown as a placeholder, never filtered out (filtering would
+  // send a later row's render index as the device position: a wrong-entry write).
+  const currentMembers: SetlistMember[] | null =
     currentMemberSlots === undefined
       ? null
-      : currentMemberSlots
-          .map((slot) => songsBySlot.get(slot))
-          .filter((s): s is SongRecord => Boolean(s));
+      : currentMemberSlots.map((slot, i) => ({
+          position: i + 1,
+          song: songsBySlot.get(slot) ?? unresolvedSong(slot),
+        }));
   const memberSlotSet = new Set(currentMemberSlots ?? []);
   const availableForSetlist = songs.filter((s) => !memberSlotSet.has(s.slot));
 
@@ -627,7 +732,11 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
                     <RailItem
                       key={p.slot}
                       label={p.name}
-                      meta={presetMembers.get(p.slot)?.length ?? 0}
+                      meta={
+                        presetMembers
+                          ? (presetMembers.get(p.slot)?.length ?? 0)
+                          : DASH
+                      }
                       active={view.mode === "preset" && view.slot === p.slot}
                       onClick={() => {
                         setView({ mode: "preset", slot: p.slot });
@@ -644,7 +753,11 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         {view.mode === "preset" && currentPreset ? (
           <PresetDetail
             preset={currentPreset}
-            members={presetMembers.get(currentPreset.slot) ?? []}
+            members={
+              presetMembers
+                ? (presetMembers.get(currentPreset.slot) ?? [])
+                : null
+            }
           />
         ) : view.mode === "all" || !current ? (
           <SongList
@@ -663,7 +776,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
             available={availableForSetlist}
             busy={busy}
             onRename={(n) => {
-              renameSetlist(current.slot, n);
+              renameSetlist(current.slot, current.name, n);
             }}
             onDelete={() => {
               setConfirm({
@@ -673,13 +786,13 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
               });
             }}
             onRemoveSong={(pos) => {
-              removeFromSetlist(current.slot, pos);
+              removeFromSetlist(current.slot, current.name, pos);
             }}
             onReorder={(o, n) => {
-              reorderSetlist(current.slot, o, n);
+              reorderSetlist(current.slot, current.name, o, n);
             }}
             onAdd={(slots) => {
-              addSongsToSetlist(current.slot, slots);
+              addSongsToSetlist(current.slot, current.name, slots);
             }}
             onCreateAndAdd={(d) => {
               createAndAdd(current.slot, d);

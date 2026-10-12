@@ -66,15 +66,22 @@ pub(crate) fn read_setlist_songs_raw(setlist_slot: u32) -> Result<Vec<u32>, Stri
     ))
 }
 
-/// A setlist's member song slots in device order, DENSE — trailing `songSlot==0`
-/// padding (unassigned slots) dropped. This is the membership every command + the UI
-/// consume, so the "songSlot 0 = not a member" invariant lives HERE, once, rather
-/// than re-applied at each call site. Empty Vec = an empty setlist.
+/// A setlist's member song slots in device order — TRAILING `songSlot==0` padding
+/// (unassigned slots) dropped. This is the membership every command + the UI consume,
+/// so the padding rule lives HERE, once, rather than re-applied at each call site.
+/// An INTERIOR `0` is kept: remove/move address a 1-based POSITION, so index `i` of
+/// this list must stay position `i + 1` (dropping a middle entry would shift every
+/// later row onto the wrong device position). Empty Vec = an empty setlist.
 pub(crate) fn read_setlist_songs(setlist_slot: u32) -> Result<Vec<u32>, String> {
-    Ok(read_setlist_songs_raw(setlist_slot)?
-        .into_iter()
-        .filter(|&s| s != 0)
-        .collect())
+    Ok(trim_setlist_padding(read_setlist_songs_raw(setlist_slot)?))
+}
+
+/// Drop only the trailing `songSlot==0` padding; see [`read_setlist_songs`].
+fn trim_setlist_padding(mut raw: Vec<u32>) -> Vec<u32> {
+    while raw.last() == Some(&0) {
+        raw.pop();
+    }
+    raw
 }
 
 /// Probe (`--setlist-songs`): for every Setlist on the device, list the songs it
@@ -282,4 +289,18 @@ pub fn probe_move_setlist_song(
         "[probe --move-setlist-song] {setlist_name:?} (slot {setlist_slot}) move {old_pos}→{new_pos}\n  \
          before: {before:?}\n  after:  {after:?}\n"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trim_setlist_padding;
+
+    /// Only TRAILING padding is dropped: an interior 0 keeps its position, so index `i`
+    /// stays the device position `i + 1` the remove/move setters address.
+    #[test]
+    fn trims_trailing_padding_but_keeps_interior_zeros() {
+        assert_eq!(trim_setlist_padding(vec![3, 0, 5, 0, 0]), [3, 0, 5]);
+        assert_eq!(trim_setlist_padding(vec![0, 0]), Vec::<u32>::new());
+        assert_eq!(trim_setlist_padding(vec![4, 2]), [4, 2]);
+    }
 }

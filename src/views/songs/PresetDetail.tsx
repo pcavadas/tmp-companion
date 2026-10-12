@@ -9,7 +9,7 @@ import type { CSSProperties } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
 import { PaneEmpty } from "../../ui/PaneEmpty";
-import { slotLabel } from "../../lib/format";
+import { DASH, slotLabel } from "../../lib/format";
 import type { SongRecord } from "../../lib/types";
 import { SongRow } from "./SongRow";
 import { ListHeader } from "./ListHeader";
@@ -49,13 +49,15 @@ export function UnitBadge({ note = "on unit" }: { note?: string }) {
 export interface PresetDetailProps {
   /** `slot` is the 0-based My-Presets list index; `slotLabel` renders it as `058`. */
   preset: { slot: number; name: string };
-  /** The songs that use this preset (read-only). */
-  members: SongRecord[];
+  /** The songs that use this preset (read-only), or null when UNKNOWN — a song
+   *  add/remove since the connect-time scan shifted every song slot, so the join is
+   *  stale until a reconnect rescans. Never rendered as 0. */
+  members: SongRecord[] | null;
 }
 
 export function PresetDetail({ preset, members }: PresetDetailProps) {
   const { t } = useTheme();
-  const n = members.length;
+  const n = members?.length ?? 0;
   return (
     <div style={{ minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div
@@ -97,11 +99,19 @@ export function PresetDetail({ preset, members }: PresetDetailProps) {
             color: t.mutedInk,
           }}
         >
-          {n} song{n === 1 ? "" : "s"} use{n === 1 ? "s" : ""} this preset
+          {members == null
+            ? `${DASH} songs use this preset`
+            : `${String(n)} song${n === 1 ? "" : "s"} use${n === 1 ? "s" : ""} this preset`}
         </div>
       </div>
 
-      {n === 0 ? (
+      {members == null ? (
+        <PaneEmpty
+          icon="wave"
+          title="Song links unknown since your last song edit"
+          body="Adding or removing a song renumbers the songs on the unit, so which songs use this preset is re-read when you reconnect the Tone Master Pro."
+        />
+      ) : n === 0 ? (
         <PaneEmpty
           icon="wave"
           title="No songs use this preset"
