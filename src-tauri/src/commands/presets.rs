@@ -72,19 +72,24 @@ pub(crate) fn decode_preset_scenes(json: &[u8]) -> Result<PresetScenes, String> 
     })
 }
 
-pub(crate) fn read_preset_scenes_fresh(list_index: u32) -> Result<PresetScenes, String> {
+pub(crate) fn read_preset_scenes_fresh(list_index: ListIndex) -> Result<PresetScenes, String> {
     read_slot_scenes_raw(list_index).map(|(_, scenes)| scenes)
 }
 
 /// One fresh field-8 read returning BOTH the raw bytes (for truncation detection) and
 /// the decoded scenes — the connect/drain/read incantation lives here once so the
 /// fresh and complete-read paths cannot drift.
-fn read_slot_scenes_raw(list_index: u32) -> Result<(Vec<u8>, PresetScenes), String> {
+fn read_slot_scenes_raw(list_index: ListIndex) -> Result<(Vec<u8>, PresetScenes), String> {
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
     let json = s
-        .read_slot_preset_json(list_index + 1)?
-        .ok_or_else(|| format!("no preset scene data returned for slot {}", list_index + 1))?;
+        .read_slot_preset_json(list_index.device_slot())?
+        .ok_or_else(|| {
+            format!(
+                "no preset scene data returned for slot {}",
+                list_index.device_slot()
+            )
+        })?;
     let scenes = decode_preset_scenes(&json)?;
     Ok((json, scenes))
 }
@@ -128,12 +133,12 @@ pub(crate) fn preset_scenes_look_truncated(
 /// — logged, never a silent empty-string compare. Pure (no device I/O), so it's testable
 /// without hardware.
 pub(crate) fn scenes_from_backup_row(
-    list_index: u32,
+    list_index: ListIndex,
     field8_name: &str,
     field8_id: Option<&str>,
     rows: &[BackupPresetRow],
 ) -> Result<PresetScenes, String> {
-    let device_slot = i64::from(list_index) + 1;
+    let device_slot = i64::from(list_index.device_slot());
     let row = rows.iter().find(|r| r.slot == device_slot).ok_or_else(|| {
         format!(
             "read_preset_scenes_complete: backup has no row for slot {device_slot} \
@@ -209,7 +214,7 @@ pub(crate) fn scenes_from_backup_row(
 /// row is accepted only when its slot, name, AND `info.preset_id` all match the field-8
 /// partial's own — falling back to slot+name when the field-8 partial carries no id. A
 /// scene list silently read from the WRONG preset would level the wrong sounds.
-pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScenes, String> {
+pub(crate) fn read_preset_scenes_complete(list_index: ListIndex) -> Result<PresetScenes, String> {
     let (json, scenes) = read_slot_scenes_raw(list_index)?;
     let doc = session::tolerant_parse_json(&String::from_utf8_lossy(&json));
     if !preset_scenes_look_truncated(doc.as_ref(), &scenes) {
@@ -226,13 +231,19 @@ pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScene
         .and_then(|d| crate::library::preset_id_of(d))
         .map(str::to_string);
     // Before the multi-second backup transfer — `scenes_from_backup_row` re-checks both sides.
-    crate::library::refuse_template_id(field8_id.as_deref(), "the field-8 partial")
-        .map_err(|e| format!("read_preset_scenes_complete: slot {}: {e}", list_index + 1))?;
+    crate::library::refuse_template_id(field8_id.as_deref(), "the field-8 partial").map_err(
+        |e| {
+            format!(
+                "read_preset_scenes_complete: slot {}: {e}",
+                list_index.device_slot()
+            )
+        },
+    )?;
     let max_ref = doc.as_ref().and_then(footswitch::max_referenced_scene);
     log::warn!(
         "read_preset_scenes_complete: slot {} {field8_name:?} scene list truncated by the \
          field-8 partial ({} of {} scenes) — reading the complete list via device backup",
-        list_index + 1,
+        list_index.device_slot(),
         scenes.scenes.len(),
         max_ref
             .map(|m| format!("≥{}", m + 1))
@@ -259,7 +270,7 @@ pub(crate) fn read_preset_scenes_complete(list_index: u32) -> Result<PresetScene
 #[tauri::command]
 pub(crate) async fn read_preset_scenes(
     state: State<'_, AppState>,
-    list_index: u32,
+    list_index: ListIndex,
 ) -> Result<PresetScenes, String> {
     if let Some(result) = monitor::try_metadata_read(list_index) {
         match result {
@@ -280,7 +291,7 @@ pub(crate) async fn read_preset_scenes(
 /// renders that preset as scanned-with-no-scenes (block roles still level it).
 #[derive(Clone, Serialize)]
 pub(crate) struct SceneScanItem {
-    list_index: u32,
+    list_index: ListIndex,
     result: Option<PresetScenes>,
 }
 
@@ -304,7 +315,7 @@ pub(crate) fn cancel_scene_scan() {
 #[tauri::command]
 pub(crate) async fn scan_preset_scenes(
     state: State<'_, AppState>,
-    list_indices: Vec<u32>,
+    list_indices: Vec<ListIndex>,
     on_result: tauri::ipc::Channel<SceneScanItem>,
 ) -> Result<(), String> {
     SCENE_SCAN_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -319,7 +330,7 @@ pub(crate) async fn scan_preset_scenes(
             }
             // Per-read failures degrade to a `None` row instead of aborting the
             // sweep — one unanswered slot must not strand the remaining rows.
-            let result = match s.read_slot_preset_json(idx + 1) {
+            let result = match s.read_slot_preset_json(idx.device_slot()) {
                 Ok(Some(json)) => decode_preset_scenes(&json).ok(),
                 Ok(None) | Err(_) => None,
             };
@@ -367,7 +378,7 @@ pub(crate) async fn request_scene_list(
 #[tauri::command]
 pub(crate) async fn load_preset_on_amp(
     state: State<'_, AppState>,
-    list_index: u32,
+    list_index: ListIndex,
 ) -> Result<(), String> {
     let arc = state.session.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -394,7 +405,7 @@ pub(crate) async fn load_preset_on_amp(
 #[tauri::command]
 pub(crate) async fn delete_preset(
     state: State<'_, AppState>,
-    list_index: u32,
+    list_index: ListIndex,
     expect_name: String,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
@@ -408,8 +419,8 @@ pub(crate) async fn delete_preset(
 #[tauri::command]
 pub(crate) async fn move_preset(
     state: State<'_, AppState>,
-    from: u32,
-    to: u32,
+    from: ListIndex,
+    to: ListIndex,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         let mut s = Session::connect()?;
@@ -425,7 +436,7 @@ pub(crate) async fn move_preset(
 #[tauri::command]
 pub(crate) async fn rename_save_preset(
     state: State<'_, AppState>,
-    list_index: u32,
+    list_index: ListIndex,
     name: String,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
@@ -464,7 +475,7 @@ pub(crate) async fn rename_save_preset(
 #[tauri::command]
 pub(crate) async fn load_scene_on_amp(
     state: State<'_, AppState>,
-    list_index: Option<u32>,
+    list_index: Option<ListIndex>,
     scene_slot: u32,
 ) -> Result<(), String> {
     let arc = state.session.clone();
@@ -769,7 +780,7 @@ mod truncation_fallback_tests {
                 fs: Some(1),
             }],
         )];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows) {
+        let err = match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &rows) {
             Ok(_) => panic!("mismatched name must be refused"),
             Err(e) => e,
         };
@@ -780,7 +791,7 @@ mod truncation_fallback_tests {
     #[test]
     fn no_matching_slot_is_refused() {
         let rows = vec![backup_row(3, "Other Preset", vec![])];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows) {
+        let err = match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &rows) {
             Ok(_) => panic!("no row for the slot must be refused"),
             Err(e) => e,
         };
@@ -795,7 +806,7 @@ mod truncation_fallback_tests {
         // exists to eliminate.
         let mut row = backup_row(25, "HBE ANATOMY", vec![]);
         row.scene_count = -1;
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &[row]) {
+        let err = match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &[row]) {
             Ok(_) => panic!("an unparseable backup row must be refused"),
             Err(e) => e,
         };
@@ -826,8 +837,8 @@ mod truncation_fallback_tests {
                 },
             ],
         )];
-        let scenes =
-            scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows).expect("matching row");
+        let scenes = scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &rows)
+            .expect("matching row");
         assert_eq!(scenes.scenes, vec!["Dirt", "Crunch", "Solo", "Clean"]);
         assert_eq!(scenes.fs, vec![Some(1), None, Some(3), Some(4)]);
         assert_eq!(scenes.footswitches.len(), 1);
@@ -839,15 +850,16 @@ mod truncation_fallback_tests {
         let tpl = crate::library::TEMPLATE_PRESET_ID;
         for (field8, row) in [(tpl, tpl), (tpl, ROW_ID), (ROW_ID, tpl)] {
             let rows = vec![backup_row_id(25, "HBE ANATOMY", Some(row), vec![])];
-            let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(field8), &rows) {
-                Ok(_) => panic!("{field8} / {row}: a template id must be refused"),
-                Err(e) => e,
-            };
+            let err =
+                match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(field8), &rows) {
+                    Ok(_) => panic!("{field8} / {row}: a template id must be refused"),
+                    Err(e) => e,
+                };
             assert!(err.contains("\"Empty\" template"), "{err}");
         }
         // A template row refuses even when the partial carried no id to compare.
         let rows = vec![backup_row_id(25, "HBE ANATOMY", Some(tpl), vec![])];
-        assert!(scenes_from_backup_row(24, "HBE ANATOMY", None, &rows).is_err());
+        assert!(scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", None, &rows).is_err());
     }
 
     const OTHER_ID: &str = "bbbbbbbb-0000-0000-0000-000000000002";
@@ -864,7 +876,8 @@ mod truncation_fallback_tests {
                 fs: Some(1),
             }],
         )];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(OTHER_ID), &rows) {
+        let err = match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(OTHER_ID), &rows)
+        {
             Ok(_) => panic!("mismatched preset_id must be refused"),
             Err(e) => e,
         };
@@ -885,7 +898,7 @@ mod truncation_fallback_tests {
                 fs: Some(1),
             }],
         )];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows) {
+        let err = match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &rows) {
             Ok(_) => panic!("a row with no preset_id must be refused when field-8 has one"),
             Err(e) => e,
         };
@@ -906,12 +919,12 @@ mod truncation_fallback_tests {
             Some(ROW_ID),
             scenes_in.clone(),
         )];
-        let scenes = scenes_from_backup_row(24, "HBE ANATOMY", None, &rows_with_id)
+        let scenes = scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", None, &rows_with_id)
             .expect("no field-8 id: falls back to slot+name, row id present");
         assert_eq!(scenes.scenes, vec!["Dirt"]);
 
         let rows_without_id = vec![backup_row_id(25, "HBE ANATOMY", None, scenes_in)];
-        let scenes = scenes_from_backup_row(24, "HBE ANATOMY", None, &rows_without_id)
+        let scenes = scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", None, &rows_without_id)
             .expect("no field-8 id: falls back to slot+name, row id absent too");
         assert_eq!(scenes.scenes, vec!["Dirt"]);
     }
@@ -927,7 +940,7 @@ mod truncation_fallback_tests {
                 fs: Some(1),
             }],
         )];
-        let scenes = scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows)
+        let scenes = scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &rows)
             .expect("matching preset_id");
         assert_eq!(scenes.scenes, vec!["Dirt"]);
         assert_eq!(scenes.fs, vec![Some(1)]);
@@ -948,8 +961,12 @@ mod truncation_fallback_tests {
             Some(""),
             scenes_in.clone(),
         )];
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &rows_empty_row_id)
-        {
+        let err = match scenes_from_backup_row(
+            ListIndex(24),
+            "HBE ANATOMY",
+            Some(ROW_ID),
+            &rows_empty_row_id,
+        ) {
             Ok(_) => panic!("an empty-string row id must never satisfy a present field-8 id"),
             Err(e) => e,
         };
@@ -958,7 +975,7 @@ mod truncation_fallback_tests {
         // field-8 carries an empty-string id: treated as absent, so the identity
         // check is skipped (fallback path) — must accept on slot+name alone.
         let rows_with_id = vec![backup_row_id(25, "HBE ANATOMY", Some(ROW_ID), scenes_in)];
-        let scenes = scenes_from_backup_row(24, "HBE ANATOMY", Some(""), &rows_with_id)
+        let scenes = scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(""), &rows_with_id)
             .expect("empty-string field-8 id falls back to slot+name");
         assert_eq!(scenes.scenes, vec!["Dirt"]);
     }
@@ -969,7 +986,7 @@ mod truncation_fallback_tests {
         // first and keep its precise "unparseable" message, not the id-mismatch one.
         let mut row = backup_row_id(25, "HBE ANATOMY", Some(OTHER_ID), vec![]);
         row.scene_count = -1;
-        let err = match scenes_from_backup_row(24, "HBE ANATOMY", Some(ROW_ID), &[row]) {
+        let err = match scenes_from_backup_row(ListIndex(24), "HBE ANATOMY", Some(ROW_ID), &[row]) {
             Ok(_) => panic!("an unparseable backup row must be refused"),
             Err(e) => e,
         };

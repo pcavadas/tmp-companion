@@ -5,6 +5,7 @@ use crate::proto;
 use crate::saved_blocks::{find_block_presets_blob, parse_block_presets_map, SavedBlock};
 use crate::session;
 use crate::session::Session;
+use crate::slot::DeviceSlot;
 use crate::{discover_replace_plans, read_backup_archive};
 
 /// READ-ONLY RE spike (`probe --re-blocks`): fire `RequestAllBlockPresets` (135) +
@@ -161,7 +162,7 @@ pub fn probe_re_blocks() -> Result<String, String> {
 /// Read-only full-roster dump for the perf experiments (`probe --roster <slots_csv>`):
 /// every `(group, node_id, fenderId)` per slot via the proven field-8 read, so an
 /// experiment can pick a FROM/TO that actually exists in the target presets.
-pub fn probe_roster(device_slots: &[u32]) -> Result<String, String> {
+pub fn probe_roster(device_slots: &[DeviceSlot]) -> Result<String, String> {
     let mut report = String::new();
     report.push_str(&format!("[probe --roster] slots {device_slots:?}\n"));
     let mut s = Session::connect()?;
@@ -190,7 +191,7 @@ pub fn probe_roster(device_slots: &[u32]) -> Result<String, String> {
 /// Read-only raw field-8 preset-JSON dump for a single slot (`probe --slot-json <slot>`),
 /// pretty-printed. Used to inspect node params the roster summary drops (e.g. a saved
 /// dual-cab's `dualCabsEnabled`/`cab1`/`cab2` after a `replaceNodeWithBlock`).
-pub fn probe_slot_json(device_slot: u32) -> Result<String, String> {
+pub fn probe_slot_json(device_slot: DeviceSlot) -> Result<String, String> {
     let mut s = Session::connect()?;
     s.drain_until_quiet(250, 20)?;
     let raw = s
@@ -210,7 +211,7 @@ pub fn probe_slot_json(device_slot: u32) -> Result<String, String> {
 /// COMPLETE JSON) beats per-slot field-8 (~0.9 s × N) AND can't miss a block past the
 /// field-8 truncation point — this proves the two sources agree (or surfaces a miss).
 /// Read-only.
-pub fn probe_discover_diff(from_id: &str, device_slots: &[u32]) -> Result<String, String> {
+pub fn probe_discover_diff(from_id: &str, device_slots: &[DeviceSlot]) -> Result<String, String> {
     use std::collections::BTreeSet;
     let mut report = String::new();
     report.push_str(&format!(
@@ -221,9 +222,14 @@ pub fn probe_discover_diff(from_id: &str, device_slots: &[u32]) -> Result<String
     let t_f8 = std::time::Instant::now();
     let plans = discover_replace_plans(device_slots, from_id)?;
     let f8_secs = t_f8.elapsed().as_secs_f64();
-    let f8: std::collections::HashMap<u32, BTreeSet<(String, String)>> = plans
+    let f8: std::collections::HashMap<DeviceSlot, BTreeSet<(String, String)>> = plans
         .iter()
-        .map(|p| ((p.list_index + 1), p.targets.iter().cloned().collect()))
+        .map(|p| {
+            (
+                p.list_index.device_slot(),
+                p.targets.iter().cloned().collect(),
+            )
+        })
         .collect();
 
     std::thread::sleep(std::time::Duration::from_millis(600));
@@ -235,19 +241,20 @@ pub fn probe_discover_diff(from_id: &str, device_slots: &[u32]) -> Result<String
     drop(s);
     let result = read_backup_archive(&blob)?;
     let bk_secs = t_bk.elapsed().as_secs_f64();
-    let want: BTreeSet<u32> = device_slots.iter().copied().collect();
-    let bk: std::collections::HashMap<u32, BTreeSet<(String, String)>> = result
+    let want: BTreeSet<DeviceSlot> = device_slots.iter().copied().collect();
+    let bk: std::collections::HashMap<DeviceSlot, BTreeSet<(String, String)>> = result
         .presets
         .iter()
-        .filter(|p| p.slot > 0 && want.contains(&(p.slot as u32)))
-        .map(|p| {
+        .filter_map(|p| Some((DeviceSlot::try_from(p.slot).ok()?, p)))
+        .filter(|(slot, _)| want.contains(slot))
+        .map(|(slot, p)| {
             let set: BTreeSet<(String, String)> = p
                 .blocks
                 .iter()
                 .filter(|b| b.fender_id == from_id)
                 .map(|b| (b.group_id.clone(), b.node_id.clone()))
                 .collect();
-            (p.slot as u32, set)
+            (slot, set)
         })
         .collect();
 

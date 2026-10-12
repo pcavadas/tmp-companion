@@ -35,6 +35,7 @@ mod format;
 mod record;
 mod state;
 
+use crate::slot::ListIndex;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -124,9 +125,9 @@ pub(crate) fn capture(
 
 /// A field-8 body the seed read for `list_index`, with its pristine verdict (`ok`, the
 /// reason it is not, or `None` when not checked). Record only fixture bodies.
-pub(crate) fn record_field8(list_index: u32, body: &[u8], pristine: Option<&str>) {
+pub(crate) fn record_field8(list_index: ListIndex, body: &[u8], pristine: Option<&str>) {
     if let Some(r) = recorder() {
-        r.field8(list_index, body, pristine.map(str::to_string));
+        r.field8(list_index.get(), body, pristine.map(str::to_string));
     }
 }
 

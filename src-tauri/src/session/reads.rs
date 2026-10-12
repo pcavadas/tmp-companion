@@ -68,21 +68,21 @@ pub(super) fn extract_current_preset_display_name(body: &[u8]) -> Option<String>
 
 /// Extract a My Presets list index from `PresetLoaded`. The wire event carries
 /// the 1-based device user slot; the Companion uses 0-based list indices.
-pub(super) fn extract_loaded_user_slot(body: &[u8]) -> Option<u32> {
+pub(super) fn extract_loaded_user_slot(body: &[u8]) -> Option<ListIndex> {
     let fields = dig(body, TMS_PRESET, PRESET_LOADED)?;
     let tab_enum = field1(&fields)?.as_u64()?;
     if tab_enum != 1 {
         return None;
     }
-    let device_slot = field_n(&fields, 6)?.as_u64()? as u32;
-    device_slot.checked_sub(1)
+    let device_slot = u32::try_from(field_n(&fields, 6)?.as_u64()?).ok()?;
+    DeviceSlot::try_from(device_slot).ok().map(ListIndex::from)
 }
 
 impl Session {
     /// NON-DESTRUCTIVE slot-addressed preset-JSON read: `presetDataRequest`
     /// (field 8) → `presetDataChanged` (field 9, PLAINTEXT partial). Sends NO
     /// LoadPreset — the unit's selected preset (and any unsaved edits on it)
-    /// are never touched. `device_slot` is **1-based** (list index + 1).
+    /// are never touched. Addressed by 1-based [`DeviceSlot`].
     ///
     /// HW-proven on fw 1.8.45 (`probe --slotread-x` / `--scenes-passive`):
     /// the device answers exactly ONE data request per burst state, and a
@@ -100,7 +100,10 @@ impl Session {
     /// re-arm — on a live session the re-arm only draws a `connectionError` (HW: 1
     /// error/read + ~140 ms slower). On the monitor's LIVE-CONTROLLER session use
     /// [`Self::read_slot_preset_json_live`], which never re-arms.
-    pub fn read_slot_preset_json(&mut self, device_slot: u32) -> Result<Option<Vec<u8>>, String> {
+    pub fn read_slot_preset_json(
+        &mut self,
+        device_slot: DeviceSlot,
+    ) -> Result<Option<Vec<u8>>, String> {
         self.read_slot_preset_json_inner(device_slot, false)
     }
 
@@ -112,14 +115,14 @@ impl Session {
     /// and ~140 ms/read faster, reliable across repeated reads.
     pub fn read_slot_preset_json_live(
         &mut self,
-        device_slot: u32,
+        device_slot: DeviceSlot,
     ) -> Result<Option<Vec<u8>>, String> {
         self.read_slot_preset_json_inner(device_slot, true)
     }
 
     pub(super) fn read_slot_preset_json_inner(
         &mut self,
-        device_slot: u32,
+        device_slot: DeviceSlot,
         on_live_session: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         self.read_list_preset_json(1, device_slot, on_live_session)
@@ -130,7 +133,7 @@ impl Session {
     pub(crate) fn read_list_preset_json(
         &mut self,
         list_enum: u64,
-        device_slot: u32,
+        device_slot: DeviceSlot,
         on_live_session: bool,
     ) -> Result<Option<Vec<u8>>, String> {
         self.raw.clear();
@@ -143,7 +146,7 @@ impl Session {
             )?;
         }
         self.send_and_collect(
-            &proto::preset_data_request(list_enum, device_slot as u64, None),
+            &proto::preset_data_request(list_enum, device_slot.wire(), None),
             SLOT_READ_REQUEST_MS,
         )?;
         // Growth-stability harvest: a 17 KB reply is ~290 frames, ~1 s end-to-end; small
@@ -171,9 +174,9 @@ impl Session {
     /// via [`Session::send_and_collect`] (NOT [`Session::load_preset`], whose
     /// `transact_eager` discards the reports the field-3 push rides on), then keep pumping
     /// past the 125 hit so the multi-packet push finishes arriving.
-    pub(crate) fn rich_load_collect(&mut self, slot: u32) -> Result<(), String> {
+    pub(crate) fn rich_load_collect(&mut self, slot: ListIndex) -> Result<(), String> {
         self.raw.clear();
-        self.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), LOAD_ECHO_MS)?;
+        self.send_and_collect(&proto::load_my_preset(slot.into()), LOAD_ECHO_MS)?;
         for _ in 0..10 {
             self.heartbeat()?;
             self.pump_silent(LIVE_BEAT_MS)?;
@@ -220,7 +223,7 @@ impl Session {
     /// device-truncated partial; the caller checks completeness.
     pub fn capture_full_preset_json(
         &mut self,
-        slot: Option<u32>,
+        slot: Option<ListIndex>,
         settle_ms: u64,
     ) -> Result<Vec<u8>, String> {
         if let Some(idx) = slot {

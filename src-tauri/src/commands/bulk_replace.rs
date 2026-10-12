@@ -34,7 +34,7 @@ pub enum ReplArg {
 #[derive(Debug, Clone, Serialize)]
 pub struct BulkReplaceItem {
     /// 0-based list index of the preset (the UI keys its rows by this).
-    pub slot: u32,
+    pub slot: ListIndex,
     pub name: String,
     /// `"updated"` | `"skipped"` | `"error"`.
     pub outcome: String,
@@ -67,7 +67,7 @@ pub(crate) fn cancel_bulk_replace() {
 #[tauri::command]
 pub(crate) async fn bulk_replace_live(
     state: State<'_, AppState>,
-    selection: Vec<u32>,
+    selection: Vec<ListIndex>,
     from_id: String,
     repl: ReplArg,
     save: bool,
@@ -77,7 +77,7 @@ pub(crate) async fn bulk_replace_live(
     with_released_seize(state.session.clone(), move || {
         // Discovery: per-slot field-8 reads for small selections, ONE whole-library
         // device backup once the selection crosses the measured break-even (E5).
-        let device_slots: Vec<u32> = selection.iter().map(|i| i + 1).collect();
+        let device_slots: Vec<DeviceSlot> = selection.iter().map(|i| i.device_slot()).collect();
         let plans = discover_replace_plans_smart(&device_slots, &from_id)?;
         // Edit on ONE HELD session (E1): connect once, warm the live-controller
         // heartbeat once, then edit every preset in place with no reopens and no
@@ -118,7 +118,7 @@ pub(crate) async fn bulk_replace_live(
 /// One preset's matching target nodes, discovered up front (field-8 read) so the
 /// edit hot path never does a fragile post-reconnect read.
 pub(crate) struct ReplacePlan {
-    pub(crate) list_index: u32,
+    pub(crate) list_index: ListIndex,
     pub(crate) name: String,
     /// The discovered body's `info.preset_id` (`library::identity_preset_id_of`). The
     /// writers require it to match the loaded working copy before the first edit
@@ -132,7 +132,7 @@ pub(crate) struct ReplacePlan {
 /// list. Field-8 reads are reliable on a clean session but flaky right after a
 /// reconnect, so all reads are batched here, away from the edit reconnect churn.
 pub(crate) fn discover_replace_plans(
-    device_slots: &[u32],
+    device_slots: &[DeviceSlot],
     from_id: &str,
 ) -> Result<Vec<ReplacePlan>, String> {
     let mut s = Session::connect()?;
@@ -155,7 +155,7 @@ pub(crate) fn discover_replace_plans(
             .map(|(group, node_id, _)| (group, node_id))
             .collect();
         plans.push(ReplacePlan {
-            list_index: dev_slot.saturating_sub(1),
+            list_index: dev_slot.list_index(),
             name,
             preset_id: crate::library::identity_preset_id_of(&value).map(str::to_string),
             targets,
@@ -172,7 +172,7 @@ const BACKUP_DISCOVERY_THRESHOLD: usize = 22;
 
 /// Build replace plans, choosing the discovery source by selection size (E5).
 fn discover_replace_plans_smart(
-    device_slots: &[u32],
+    device_slots: &[DeviceSlot],
     from_id: &str,
 ) -> Result<Vec<ReplacePlan>, String> {
     if device_slots.len() < BACKUP_DISCOVERY_THRESHOLD {
@@ -186,18 +186,17 @@ fn discover_replace_plans_smart(
 /// JSON, so no field-8 truncation can hide a target block. Slots not present in the
 /// backup (empty) get an empty plan (skipped downstream).
 fn discover_replace_plans_via_backup(
-    device_slots: &[u32],
+    device_slots: &[DeviceSlot],
     from_id: &str,
 ) -> Result<Vec<ReplacePlan>, String> {
     let mut s = Session::connect()?;
     let (blob, _stats) = s.device_backup(60, |_p| {})?;
     drop(s);
     let result = read_backup_archive(&blob)?;
-    let by_slot: std::collections::HashMap<u32, &BackupPresetRow> = result
+    let by_slot: std::collections::HashMap<DeviceSlot, &BackupPresetRow> = result
         .presets
         .iter()
-        .filter(|p| p.slot > 0)
-        .map(|p| (p.slot as u32, p))
+        .filter_map(|p| Some((DeviceSlot::try_from(p.slot).ok()?, p)))
         .collect();
     let plans = device_slots
         .iter()
@@ -217,7 +216,7 @@ fn discover_replace_plans_via_backup(
                 None => (String::new(), None, Vec::new()),
             };
             ReplacePlan {
-                list_index: dev_slot.saturating_sub(1),
+                list_index: dev_slot.list_index(),
                 name,
                 preset_id,
                 targets,
@@ -228,7 +227,7 @@ fn discover_replace_plans_via_backup(
 }
 
 /// An `error` row for `list_index` (the preset was not edited).
-pub(crate) fn error_item(list_index: u32, name: String, detail: String) -> BulkReplaceItem {
+pub(crate) fn error_item(list_index: ListIndex, name: String, detail: String) -> BulkReplaceItem {
     BulkReplaceItem {
         slot: list_index,
         name,

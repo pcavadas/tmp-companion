@@ -7,6 +7,7 @@ use crate::proto;
 use crate::scenes;
 use crate::session;
 use crate::session::Session;
+use crate::slot::ListIndex;
 use crate::{param_class, AmpKnobSpec, LevelBlockArg};
 
 pub(crate) fn is_amp_category(category: &str) -> bool {
@@ -685,7 +686,7 @@ fn handle_scene_job(
 /// [`build_scene_jobs`]'s routing-structure fallback.
 /// Read it once per preset and thread the document — never add a second read. A failed
 /// read returns `None` and every consumer degrades to its pre-read behaviour.
-pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
+pub(crate) fn read_saved_preset(list_index: ListIndex) -> Option<serde_json::Value> {
     match crate::read_slot_preset_parsed(list_index) {
         Ok((preset, _, _)) => Some(preset),
         Err(e) => {
@@ -709,7 +710,9 @@ pub(crate) fn read_saved_preset(list_index: u32) -> Option<serde_json::Value> {
 /// So this routes through [`crate::read_slot_preset_complete`], which falls back to a
 /// name-guarded device backup — the only transport carrying the whole document — and
 /// refuses rather than returning a partial one.
-pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::Value, String> {
+pub(crate) fn read_saved_preset_complete(
+    list_index: ListIndex,
+) -> Result<serde_json::Value, String> {
     read_saved_preset_complete_sections(list_index, &["scenes"])
 }
 
@@ -718,7 +721,7 @@ pub(crate) fn read_saved_preset_complete(list_index: u32) -> Result<serde_json::
 /// `ftsw` (`doctor_force_bypass`'s own input), and a partial `ftsw` under-isolates silently
 /// rather than erroring, so it must be COMPLETE-OR-FAIL exactly like `scenes` already is.
 pub(crate) fn read_saved_preset_complete_sections(
-    list_index: u32,
+    list_index: ListIndex,
     sections: &[&str],
 ) -> Result<serde_json::Value, String> {
     crate::read_slot_preset_complete(list_index, sections).map(|(p, _, _)| p)
@@ -746,7 +749,10 @@ pub(crate) fn read_saved_preset_complete_sections(
 /// batch-end save must restore so the preset persists in the state it was loaded in.
 pub(crate) type SceneDocs = (Vec<(u32, Option<serde_json::Value>)>, Option<u32>);
 
-pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<SceneDocs, String> {
+pub(crate) fn prepass_scene_docs(
+    slot: ListIndex,
+    scene_slots: &[u32],
+) -> Result<SceneDocs, String> {
     crate::leveller::make_current(slot)?;
     let mut s = Session::connect()?;
     for _ in 0..8 {
@@ -754,7 +760,7 @@ pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<Scene
         s.pump_silent(120)?;
     }
     s.raw.clear();
-    s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+    s.send_and_collect(&proto::load_my_preset(slot.into()), 300)?;
     for _ in 0..6 {
         s.heartbeat()?;
         s.pump_silent(200)?;
@@ -1461,7 +1467,7 @@ pub(crate) fn last_loaded_scene(preset: &serde_json::Value) -> Option<u32> {
 /// scene. Fine (and silent) for a scene-less preset. `tag` names the calling lane.
 pub(crate) fn warn_missing_restore_scene(
     tag: &str,
-    slot: u32,
+    slot: ListIndex,
     preset: &serde_json::Value,
     restore: Option<u32>,
 ) {
@@ -1587,7 +1593,7 @@ pub(crate) fn scene_docs_from_saved(
 /// `saved` is the caller's COMPLETE saved preset: the amp roster the scene-doc repair scan
 /// checks every live doc against, and the answer it splices in. `None` = no repair.
 pub(crate) fn prepass_scene_docs_via(
-    slot: u32,
+    slot: ListIndex,
     scene_slots: &[u32],
     use_overlay: bool,
     saved: Option<&serde_json::Value>,
@@ -1675,7 +1681,7 @@ pub(crate) fn repair_scene_docs_from(
 /// roster the scan checks each doc against, and its scene overlays are the answer spliced
 /// in. Pure apart from the log lines; `repair_scene_docs_from` is the splice.
 fn backfill_scene_docs_from_saved(
-    slot: u32,
+    slot: ListIndex,
     preset: &serde_json::Value,
     docs: &mut [(u32, Option<serde_json::Value>)],
 ) {

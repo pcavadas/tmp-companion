@@ -27,7 +27,7 @@ pub(crate) fn list_block_templates(
 #[tauri::command]
 pub(crate) fn save_block_template(
     app: tauri::AppHandle,
-    source_list_index: u32,
+    source_list_index: ListIndex,
     model: String,
     name: String,
     state: State<'_, AppState>,
@@ -111,7 +111,7 @@ impl RecipeArg {
 /// HW-validation pending.
 #[tauri::command]
 pub(crate) async fn create_variant(
-    source_list_index: u32,
+    source_list_index: ListIndex,
     recipe: RecipeArg,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -170,7 +170,7 @@ impl RenameSpecArg {
 
 #[derive(serde::Serialize, Clone)]
 pub(crate) struct RenameRow {
-    list_index: Option<u32>,
+    list_index: Option<ListIndex>,
     name: String,
     new_name: String,
     /// Set on a no-op rename (new == old) or a validation failure; the row is then skipped on apply.
@@ -181,7 +181,7 @@ pub(crate) struct RenameRow {
 /// offset use each preset's position within the selection.
 fn rename_rows(
     lib: &library::Library,
-    selection: &[u32],
+    selection: &[ListIndex],
     spec: &rename::RenameSpec,
 ) -> Vec<RenameRow> {
     selection
@@ -207,7 +207,7 @@ fn rename_rows(
 
 #[derive(serde::Serialize)]
 pub(crate) struct RenameApplyRow {
-    list_index: u32,
+    list_index: ListIndex,
     new_name: String,
     applied: bool,
     error: Option<String>,
@@ -218,7 +218,7 @@ pub(crate) struct RenameApplyRow {
 /// new name" pair). Rows with a validation note / no-op are skipped.
 #[tauri::command]
 pub(crate) async fn bulk_rename(
-    selection: Vec<u32>,
+    selection: Vec<ListIndex>,
     spec: RenameSpecArg,
     state: State<'_, AppState>,
 ) -> Result<Vec<RenameApplyRow>, String> {
@@ -228,7 +228,7 @@ pub(crate) async fn bulk_rename(
         rename_rows(lib, &selection, &spec.to_spec())
     };
     // Only valid, changed, matched rows are applied.
-    let jobs: Vec<(u32, String, String)> = rows
+    let jobs: Vec<(ListIndex, String, String)> = rows
         .into_iter()
         .filter(|r| r.note.is_none())
         .filter_map(|r| r.list_index.map(|i| (i, r.name, r.new_name)))
@@ -252,7 +252,7 @@ pub(crate) async fn bulk_rename(
                 // rename+save the WRONG preset over this slot (same fix as the
                 // single-preset rename_save_preset path).
                 s.clear_raw();
-                s.send_and_collect(&proto::load_preset((idx + 1) as u64, 1), 200)?;
+                s.send_and_collect(&proto::load_my_preset(idx.device_slot()), 200)?;
                 s.confirm_active(idx, Some(&name_before))?;
                 s.rename_current_preset(&new_name)?;
                 s.save_current_preset(idx)?; // persist (rename = save-under-new-name)

@@ -8,11 +8,12 @@ use crate::leveller;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
+use crate::slot::ListIndex;
 use crate::SCENE_LEVEL_CANCEL;
 use std::sync::atomic::Ordering::SeqCst;
 
 pub fn probe_bench_scene_leveling(
-    slots: Vec<u32>,
+    slots: Vec<ListIndex>,
     target_lufs: f64,
     topology_id: String,
     out_path: String,
@@ -78,7 +79,7 @@ pub fn probe_bench_scene_leveling(
         // field-78 burst kills field-3 delivery for its whole session on 1.8.45.
         eprintln!(
             "[bench] preset {:03}: load + scene + block-discovery session…",
-            slot + 1
+            slot.device_slot()
         );
         type PresetIntel = (
             Option<Vec<String>>,
@@ -94,7 +95,7 @@ pub fn probe_bench_scene_leveling(
                 s.pump_silent(120)?;
             }
             s.raw.clear();
-            s.send_and_collect(&proto::load_preset((slot + 1) as u64, 1), 300)?;
+            s.send_and_collect(&proto::load_my_preset(slot.device_slot()), 300)?;
             let mut scenes: Option<Vec<String>> = None;
             let mut seen = 0usize;
             // Keep pumping past the 125 hit — the multi-packet field-3 push
@@ -154,10 +155,13 @@ pub fn probe_bench_scene_leveling(
         let (scenes, discovered, docs) = match intel {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[bench] preset {:03}: intel session failed: {e}", slot + 1);
+                eprintln!(
+                    "[bench] preset {:03}: intel session failed: {e}",
+                    slot.device_slot()
+                );
                 let row = leveller::SceneLevelBenchmarkRow {
                     preset_slot: slot,
-                    ui_label: format!("{:03}", slot + 1),
+                    ui_label: format!("{:03}", slot.device_slot()),
                     scene_slot: session::BASE_SCENE_SLOT,
                     scene_name: "Base".to_string(),
                     strategy: leveller::SceneLevelStrategy::BatchedLive,
@@ -179,7 +183,7 @@ pub fn probe_bench_scene_leveling(
         if scenes.is_none() {
             eprintln!(
                 "[bench] preset {:03}: no scene list harvested; Base only",
-                slot + 1
+                slot.device_slot()
             );
         }
         session_gap();
@@ -199,7 +203,7 @@ pub fn probe_bench_scene_leveling(
         if scene_rows.is_empty() {
             let row = leveller::SceneLevelBenchmarkRow {
                 preset_slot: slot,
-                ui_label: format!("{:03}", slot + 1),
+                ui_label: format!("{:03}", slot.device_slot()),
                 scene_slot: session::BASE_SCENE_SLOT,
                 scene_name: "Base".to_string(),
                 strategy: leveller::SceneLevelStrategy::BatchedLive,
@@ -223,7 +227,7 @@ pub fn probe_bench_scene_leveling(
             for (scene_slot, scene_name) in &scene_rows {
                 let row = leveller::SceneLevelBenchmarkRow {
                     preset_slot: slot,
-                    ui_label: format!("{:03}", slot + 1),
+                    ui_label: format!("{:03}", slot.device_slot()),
                     scene_slot: *scene_slot,
                     scene_name: scene_name.clone(),
                     strategy: leveller::SceneLevelStrategy::BatchedLive,
@@ -246,7 +250,7 @@ pub fn probe_bench_scene_leveling(
         SCENE_LEVEL_CANCEL.store(false, SeqCst);
         eprintln!(
             "[bench] preset {:03}: batched-live run over {} scene rows…",
-            slot + 1,
+            slot.device_slot(),
             scene_rows.len()
         );
         let wire_slots: Vec<u32> = scene_rows.iter().map(|(s, _)| *s).collect();
@@ -260,7 +264,7 @@ pub fn probe_bench_scene_leveling(
                     for (scene_slot, scene_name) in &scene_rows {
                         let row = leveller::SceneLevelBenchmarkRow {
                             preset_slot: slot,
-                            ui_label: format!("{:03}", slot + 1),
+                            ui_label: format!("{:03}", slot.device_slot()),
                             scene_slot: *scene_slot,
                             scene_name: scene_name.clone(),
                             strategy: leveller::SceneLevelStrategy::BatchedLive,
@@ -318,7 +322,7 @@ pub fn probe_bench_scene_leveling(
                     }
                     let row = leveller::SceneLevelBenchmarkRow {
                         preset_slot: slot,
-                        ui_label: format!("{:03}", slot + 1),
+                        ui_label: format!("{:03}", slot.device_slot()),
                         scene_slot: o.scene_slot,
                         scene_name: name,
                         strategy: leveller::SceneLevelStrategy::BatchedLive,
@@ -337,18 +341,18 @@ pub fn probe_bench_scene_leveling(
                 }
                 eprintln!(
                     "[bench] preset {:03}: batched-live run total {:.1}s",
-                    slot + 1,
+                    slot.device_slot(),
                     t0.elapsed().as_millis() as f64 / 1000.0
                 );
             }
             Err(e) => {
                 eprintln!(
                     "[bench] preset {:03}: batched-live run FAILED: {e}",
-                    slot + 1
+                    slot.device_slot()
                 );
                 let row = leveller::SceneLevelBenchmarkRow {
                     preset_slot: slot,
-                    ui_label: format!("{:03}", slot + 1),
+                    ui_label: format!("{:03}", slot.device_slot()),
                     scene_slot: session::BASE_SCENE_SLOT,
                     scene_name: "Base".to_string(),
                     strategy: leveller::SceneLevelStrategy::BatchedLive,

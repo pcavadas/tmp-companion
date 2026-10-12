@@ -68,6 +68,8 @@ mod search;
 mod session;
 #[cfg(any(test, feature = "e2e"))]
 mod sim_device;
+// `pub` so the `probe` bin parses and passes typed slots (`tmp_companion_lib::slot`).
+pub mod slot;
 mod slot_read;
 mod spectrum;
 // Shared test-only fixtures/generators (`audio` onset tests, `leveller`
@@ -130,6 +132,7 @@ pub use saved_blocks::*;
 pub use session::PresetEntry;
 use session::Session;
 pub use session::{ActiveGraph, GraphNode, Stage};
+pub use slot::{DeviceSlot, ListIndex};
 // The truncation-aware saved-preset read seam — re-exported at the crate root so the
 // ~20 probe_api call sites and the leveling commands keep addressing it as `crate::read_slot_preset_*`.
 pub(crate) use slot_read::*;
@@ -2457,7 +2460,7 @@ mod fixture_gates {
             .lines()
             .find(|l| l.starts_with("SCRATCH_SLOTS="))
             .expect("validate-hbe.sh: the SCRATCH_SLOTS mirror line is gone");
-        let mirrored: Vec<u32> = line
+        let mirrored: Vec<crate::slot::ListIndex> = line
             .trim_start_matches("SCRATCH_SLOTS=")
             .trim_matches('"')
             .split_whitespace()

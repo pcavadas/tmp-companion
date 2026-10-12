@@ -115,6 +115,7 @@ impl crate::bulkrun::Operation for ParamEditOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slot::ListIndex;
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -194,7 +195,7 @@ mod tests {
             max: 1.0,
         };
         let t = PresetTarget {
-            list_index: 0,
+            list_index: ListIndex(0),
             list_enum: 1,
             display_name: "x".into(),
             source: crate::backup::SnapshotSource::OfflineFile,

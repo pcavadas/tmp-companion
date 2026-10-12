@@ -27,6 +27,7 @@ use crate::leveller;
 use crate::lufs;
 use crate::read_slot_preset_parsed;
 use crate::session;
+use crate::slot::ListIndex;
 
 use super::stimulus::read_stimulus_48k;
 
@@ -149,7 +150,7 @@ fn stim_hash(samples: &[f32]) -> String {
 type RuleMetric = (&'static str, f64, f64);
 
 /// A slot's rule metrics + its broadband tilt slope: `(slot, tilt_slope, rule_metrics)`.
-type SlotMetrics = (u32, Option<f64>, Vec<RuleMetric>);
+type SlotMetrics = (ListIndex, Option<f64>, Vec<RuleMetric>);
 
 /// Per-slot rule metrics, in the SAME LHS space `doctor::diagnose` compares to
 /// each threshold (every rule is "metric > threshold"): the target-deviation
@@ -226,7 +227,7 @@ fn peaks_json(profile: &doctor::SoundProfile) -> serde_json::Value {
 
 /// One measured slot in the sweep.
 struct Row {
-    slot: u32,
+    slot: ListIndex,
     profile: doctor::SoundProfile,
     coverage: Vec<bool>,
     noise_floor_db: Option<f64>,
@@ -273,7 +274,7 @@ fn profile_and_coverage(
 #[allow(clippy::too_many_arguments)]
 fn profile_or_skip(
     label: &str,
-    slot: u32,
+    slot: ListIndex,
     samples: &[f32],
     rate: u32,
     stim: &[f32],
@@ -292,7 +293,7 @@ fn profile_or_skip(
 
 /// Requested-but-not-captured slots — recorded in the JSON and flagged
 /// INCOMPLETE on stdout so a biased subset never reads as complete evidence.
-fn skipped_slots(requested: &[u32], rows: &[Row]) -> Vec<u32> {
+fn skipped_slots(requested: &[ListIndex], rows: &[Row]) -> Vec<ListIndex> {
     requested
         .iter()
         .copied()
@@ -301,7 +302,7 @@ fn skipped_slots(requested: &[u32], rows: &[Row]) -> Vec<u32> {
 }
 
 pub fn probe_doctor_calib(
-    slots: &[u32],
+    slots: &[ListIndex],
     stim_path: &str,
     family_id: &str,
     labels_path: Option<&str>,
@@ -387,7 +388,7 @@ pub fn probe_doctor_calib(
     }
 
     // Ground-truth positive slot lists per rule (0-based list indices).
-    let labels: std::collections::HashMap<String, Vec<u32>> = match labels_path {
+    let labels: std::collections::HashMap<String, Vec<ListIndex>> = match labels_path {
         Some(p) => {
             let raw = std::fs::read_to_string(p).map_err(|e| format!("read {p}: {e}"))?;
             serde_json::from_str(&raw).map_err(|e| format!("parse labels {p}: {e}"))?
@@ -453,7 +454,7 @@ pub fn probe_doctor_calib(
         // Positive slots labelled but not captured this sweep — report them so
         // the operator notices (every captured slot's metrics vec always
         // carries all RULES, so "missing" means "not captured at all").
-        let missing: Vec<u32> = positives
+        let missing: Vec<ListIndex> = positives
             .iter()
             .copied()
             .filter(|s| !metrics_by_slot.iter().any(|(slot, _, _)| slot == s))
@@ -557,7 +558,7 @@ pub fn probe_doctor_calib(
 /// feed the offline per-band median → the per-topology reference curve. READ-ONLY:
 /// load + capture, never saves; ends re-amp OFF.
 pub fn probe_doctor_calib_factory(
-    factory_slots: &[u32],
+    factory_slots: &[ListIndex],
     stim_path: &str,
     family_id: &str,
     out_path: &str,

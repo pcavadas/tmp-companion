@@ -18,15 +18,16 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::backup::{self, FieldChange, PresetSnapshot};
+use crate::slot::ListIndex;
 
 /// A preset selected for a run, carrying its captured "before" state. `before_json`
 /// is the canonical full preset JSON (an OFFLINE `.preset` decode, or a USB partial);
 /// `source` records its fidelity ([`backup::SnapshotSource`]) so the
 /// snapshot never over-promises. `list_index` is the 0-based
-/// "My Presets" index (`session` translates to the device's 1-based userSlot).
+/// "My Presets" index (`session` derives the device's 1-based userSlot).
 #[derive(Debug, Clone)]
 pub struct PresetTarget {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub list_enum: u32,
     pub display_name: String,
     pub source: backup::SnapshotSource,
@@ -73,7 +74,7 @@ pub enum ChangeStatus {
 /// What WOULD happen to one preset under an operation (dry-run preview).
 #[derive(Debug, Clone, Serialize)]
 pub struct DryRunEntry {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub display_name: String,
     pub status: ChangeStatus,
     pub changes: Vec<FieldChange>,
@@ -113,7 +114,7 @@ pub fn dry_run(targets: &[PresetTarget], op: &dyn Operation) -> Vec<DryRunEntry>
 /// The outcome of applying an operation to one preset.
 #[derive(Debug, Clone, Serialize)]
 pub struct RunEntry {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub display_name: String,
     /// True iff a write was attempted AND succeeded (the slot's state changed).
     pub changed: bool,
@@ -247,7 +248,7 @@ fn apply_one(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RevertEntry {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub restored: bool,
     pub error: Option<String>,
 }
@@ -305,7 +306,7 @@ pub(crate) fn now_stamp() -> String {
 pub(crate) fn save_pre_write_snapshot(
     dir: &Path,
     list_enum: u32,
-    slot: u32,
+    slot: ListIndex,
     display_name: &str,
     source: backup::SnapshotSource,
     preset_json: &str,
@@ -344,16 +345,16 @@ mod tests {
     }
     impl PresetIo for MockIo {
         fn write(&mut self, t: &PresetTarget, after: &str) -> Result<(), String> {
-            if self.fail_write_on == Some(t.list_index) {
+            if self.fail_write_on == Some(t.list_index.get()) {
                 return Err("simulated device write failure".into());
             }
             self.writes += 1;
-            self.store.insert(t.list_index, after.to_string());
+            self.store.insert(t.list_index.get(), after.to_string());
             Ok(())
         }
         fn read_back(&mut self, t: &PresetTarget) -> Result<String, String> {
             self.store
-                .get(&t.list_index)
+                .get(&t.list_index.get())
                 .cloned()
                 .ok_or_else(|| "no such slot".into())
         }
@@ -381,7 +382,7 @@ mod tests {
 
     fn target(idx: u32, json: &str) -> PresetTarget {
         PresetTarget {
-            list_index: idx,
+            list_index: ListIndex(idx),
             list_enum: 1,
             display_name: format!("P{idx}"),
             source: crate::backup::SnapshotSource::OfflineFile,

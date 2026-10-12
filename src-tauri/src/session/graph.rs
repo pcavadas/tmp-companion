@@ -120,7 +120,7 @@ pub(super) struct RouteGraph {
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct ActiveGraph {
     pub name: Option<String>,
-    pub slot: Option<u32>,
+    pub slot: Option<ListIndex>,
     pub template: Option<String>,
     pub split_mix: Option<serde_json::Value>,
     /// Flat block list in stable group+array order (every block, all groups).
@@ -390,7 +390,9 @@ pub(crate) fn extract_active_graph(
         slot: v
             .pointer("/info/userSlot")
             .and_then(|x| x.as_u64())
-            .and_then(|s| (s as u32).checked_sub(1)),
+            .and_then(|s| u32::try_from(s).ok())
+            .and_then(|s| DeviceSlot::try_from(s).ok())
+            .map(ListIndex::from),
         template,
         split_mix,
         nodes,

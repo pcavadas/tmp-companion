@@ -530,7 +530,7 @@ pub(crate) const SHOWCASE_DARK_MUDDY_BDB: [f64; 6] = [
 ];
 
 #[cfg(any(test, feature = "e2e"))]
-pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
+pub(crate) fn showcase_profile(list_index: crate::slot::ListIndex) -> SoundProfile {
     // (band dB `[Lo, LoM, Mid, HiM, Hi, Air]`, tail_ratio_db). Scooped Verse (index 4)
     // carries `lost` (the mid scoop sorts first in the row), the tour expands it to
     // feature the add-a-compressor fix.
@@ -539,7 +539,7 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
     // block's derivation comments for the shared method), so each showcase
     // preset lands its intended verdict pair under the new gates and every
     // other rule stays silent.
-    let (db, tail): ([f64; 6], f64) = match list_index {
+    let (db, tail): ([f64; 6], f64) = match list_index.get() {
         // Scooped Verse → lost + washed: target + a −7 dB Mids scoop (a
         // single-band bump — both consensus spaces read back the full −7.0,
         // vs the 3.5 dB lost gate in each ⇒ margin ≈3.5) and a −2 dB tail
@@ -5680,7 +5680,11 @@ mod tests {
         // 11 is dark+muddy; together the three presets cover five of the six
         // guitar diagnoses.
         let diag_set = |idx: u32| {
-            let mut got = keys(&diagnose(&showcase_profile(idx), None, Instrument::Guitar));
+            let mut got = keys(&diagnose(
+                &showcase_profile(crate::slot::ListIndex(idx)),
+                None,
+                Instrument::Guitar,
+            ));
             got.sort_unstable();
             got
         };

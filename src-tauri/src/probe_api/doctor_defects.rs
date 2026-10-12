@@ -25,6 +25,7 @@
 
 use crate::doctor;
 use crate::leveller;
+use crate::slot::ListIndex;
 
 use super::analyze::DoctorRead;
 use super::doctor_inject::{last_guitar_group_anchor, measure, tail_ms_for_doc};
@@ -188,7 +189,7 @@ fn recipes(group_id: &str) -> Vec<DefectRecipe> {
 /// turn a known-dry base preset wet, and reusing `before_tail_ms` would
 /// under-capture that recipe's own wash tail.
 fn run_recipe(
-    slot: u32,
+    slot: ListIndex,
     stim: &[f32],
     before_tail_ms: u64,
     preset_name: &str,
@@ -290,7 +291,7 @@ fn recipe_row(recipe: &DefectRecipe, before: &DoctorRead, after: &DoctorRead) ->
 
 /// See the module doc. `out_path` optionally writes a deterministic JSON
 /// report (rows + summary counts), mirroring `--doctor-window-ab`'s `--out`.
-pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String, String> {
+pub fn probe_doctor_defects(slot: ListIndex, out_path: Option<&str>) -> Result<String, String> {
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
         "guitar-humbucker",
     )?)?);
@@ -380,7 +381,7 @@ pub fn probe_doctor_defects(slot: u32, out_path: Option<&str>) -> Result<String,
 /// and print the diagnosis verdicts. The FS twin of the defect sweep: proves an
 /// FS-carried defect (the oracle-fixture shape) reaches the Doctor's measured audio.
 /// Read-only — working-copy writes only; re-amp OFF via the drop guard.
-pub fn probe_doctor_fs(slot: u32, switch: u32) -> Result<String, String> {
+pub fn probe_doctor_fs(slot: ListIndex, switch: u32) -> Result<String, String> {
     let stim = leveller::doctor_stim_slice(read_stimulus_48k(&probe_stimulus_path(
         "guitar-humbucker",
     )?)?);

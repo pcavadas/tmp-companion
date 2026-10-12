@@ -7,6 +7,7 @@
 //! `firmware/<v>/recon/dsp-effects-catalog.md`, version-pinned); the rename mapping
 //! is curated (the recon registry knows old→new). Single from→to per run.
 
+use crate::slot::ListIndex;
 use std::collections::{BTreeMap, HashSet};
 
 use serde::Serialize;
@@ -69,9 +70,12 @@ pub fn classify(diff: &CatalogDiff, rename_map: &BTreeMap<String, String>) -> Cl
     }
 }
 
-/// Presets referencing any of `ids`, with the matched ids. `presets` is a
-/// list of `(list_index, decoded_json)`.
-pub fn scan_affected(presets: &[(u32, Value)], ids: &HashSet<String>) -> Vec<(u32, Vec<String>)> {
+/// Presets referencing any of `ids`, with the matched ids. `presets` is a list of
+/// `(key, decoded_json)`; the key is the caller's (a `ListIndex`, or a library position).
+pub fn scan_affected<K: Copy>(
+    presets: &[(K, Value)],
+    ids: &HashSet<String>,
+) -> Vec<(K, Vec<String>)> {
     let mut out = Vec::new();
     for (idx, preset) in presets {
         let hits: Vec<String> = ids
@@ -91,7 +95,7 @@ pub fn scan_affected(presets: &[(u32, Value)], ids: &HashSet<String>) -> Vec<(u3
 /// One planned replacement: in preset `list_index`, swap `from` → `to`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Replacement {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub from: String,
     pub to: String,
 }
@@ -100,7 +104,7 @@ pub struct Replacement {
 /// `from → to` swap. Only ids present in `rename_map` are planned; purely-removed ids
 /// are reported by `scan_affected` for manual handling.
 pub fn plan_replacements(
-    affected: &[(u32, Vec<String>)],
+    affected: &[(ListIndex, Vec<String>)],
     rename_map: &BTreeMap<String, String>,
 ) -> Vec<Replacement> {
     let mut plan = Vec::new();
@@ -174,7 +178,10 @@ mod tests {
     // AC3 — dispatch a replacement mapping (and apply it via block-replace).
     #[test]
     fn dispatch_replacement_mapping() {
-        let presets = vec![(0u32, preset_with("A")), (5, preset_with("A"))];
+        let presets = vec![
+            (ListIndex(0), preset_with("A")),
+            (ListIndex(5), preset_with("A")),
+        ];
         let affected = scan_affected(&presets, &set(&["A"]));
         let mut rename = BTreeMap::new();
         rename.insert("A".to_string(), "A2".to_string());
@@ -183,7 +190,7 @@ mod tests {
         assert_eq!(
             plan[0],
             Replacement {
-                list_index: 0,
+                list_index: ListIndex(0),
                 from: "A".into(),
                 to: "A2".into()
             }
@@ -214,7 +221,7 @@ mod tests {
         assert_eq!(affected, vec![(3, ids(&["A"]))], "A_1 is an A block");
         let mut p = preset_with_second_instance_only();
         let r = Replacement {
-            list_index: 3,
+            list_index: ListIndex(3),
             from: "A".into(),
             to: "A2".into(),
         };

@@ -8,7 +8,7 @@ use crate::*;
 /// references that are absent from the target catalog.
 #[derive(serde::Serialize)]
 pub(crate) struct MigrationRow {
-    list_index: Option<u32>,
+    list_index: Option<ListIndex>,
     name: String,
     affected_blocks: Vec<String>,
 }
@@ -34,20 +34,16 @@ pub(crate) fn migration_scan(
     let diff = migration::diff_catalogs(&old, &target_catalog);
     let removed: std::collections::HashSet<String> = diff.removed.into_iter().collect();
     // Index by array position (stable identity), then map results back to records.
-    let presets: Vec<(u32, serde_json::Value)> = lib
+    let presets: Vec<(usize, serde_json::Value)> = lib
         .records
         .iter()
         .enumerate()
-        .filter_map(|(i, r)| {
-            serde_json::from_str(&r.decoded_json)
-                .ok()
-                .map(|v| (i as u32, v))
-        })
+        .filter_map(|(i, r)| serde_json::from_str(&r.decoded_json).ok().map(|v| (i, v)))
         .collect();
     Ok(migration::scan_affected(&presets, &removed)
         .into_iter()
         .map(|(pos, blocks)| {
-            let r = &lib.records[pos as usize];
+            let r = &lib.records[pos];
             MigrationRow {
                 list_index: r.list_index,
                 name: r.display_name.clone(),
@@ -81,7 +77,7 @@ fn compute_migration_plan(
     let diff = migration::diff_catalogs(&old, target_catalog);
     let classified = migration::classify(&diff, rename_map);
     let removed: std::collections::HashSet<String> = diff.removed.iter().cloned().collect();
-    let presets: Vec<(u32, serde_json::Value)> = lib
+    let presets: Vec<(ListIndex, serde_json::Value)> = lib
         .records
         .iter()
         .filter_map(|r| r.list_index.zip(serde_json::from_str(&r.decoded_json).ok()))
@@ -107,7 +103,7 @@ pub(crate) fn migration_plan(
 /// One preset's migration-apply outcome.
 #[derive(serde::Serialize)]
 pub(crate) struct MigrationApplyRow {
-    list_index: u32,
+    list_index: ListIndex,
     swaps: usize,
     applied: bool,
     error: Option<String>,
@@ -119,7 +115,7 @@ pub(crate) struct MigrationApplyRow {
 /// is `SnapshotSource::OfflineFile`: migration edits a complete `.preset` from the offline library.
 pub(crate) fn snapshot_before_migrate(
     backup_dir: &std::path::Path,
-    list_index: u32,
+    list_index: ListIndex,
     display_name: &str,
     before_json: &str,
 ) -> Result<std::path::PathBuf, String> {
@@ -147,13 +143,13 @@ pub(crate) async fn migration_apply(
     state: State<'_, AppState>,
 ) -> Result<Vec<MigrationApplyRow>, String> {
     // Build the plan + each affected preset's (original json, edited bytes) under the lock.
-    let mut jobs: Vec<(u32, String, usize, String, Vec<u8>)> = Vec::new();
+    let mut jobs: Vec<(ListIndex, String, usize, String, Vec<u8>)> = Vec::new();
     {
         let guard = lock_ok(&state.library);
         let lib = guard.as_ref().ok_or("no library imported")?;
         let plan = compute_migration_plan(lib, &target_catalog, &rename_map).plan;
         // Group the plan by preset, then apply all its swaps to one decoded copy.
-        let mut by_preset: std::collections::BTreeMap<u32, Vec<migration::Replacement>> =
+        let mut by_preset: std::collections::BTreeMap<ListIndex, Vec<migration::Replacement>> =
             Default::default();
         for r in plan {
             by_preset.entry(r.list_index).or_default().push(r);
@@ -242,7 +238,7 @@ pub(crate) async fn migration_apply(
 #[tauri::command]
 pub(crate) async fn audit_loudness(
     app: tauri::AppHandle,
-    slots: Vec<u32>,
+    slots: Vec<ListIndex>,
     topology_id: Option<String>,
     outlier_lu: f64,
     state: State<'_, AppState>,

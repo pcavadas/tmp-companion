@@ -272,6 +272,12 @@ pub fn load_preset(preset_slot: u64, tab_enum: u64) -> Vec<u8> {
     len_delimited(2, &len_delimited(10, &inner))
 }
 
+/// [`load_preset`] on the My Presets tab (tabEnum 1) by typed device slot — the shape every
+/// user-preset load sends. The raw form stays for the factory bank and the verbatim probe.
+pub fn load_my_preset(slot: crate::slot::DeviceSlot) -> Vec<u8> {
+    load_preset(slot.wire(), 1)
+}
+
 /// PresetMessage.setPresetLevel{ presetLevel } — float clamped to 0.0..=1.0.
 /// NO `batchStatus`: like the re-amp setter, the device silently ignores this
 /// mutation if a batchStatus is present (confirmed live — a level sweep was
@@ -464,9 +470,9 @@ pub fn remove_node(dest_group: &str, node_id: &str, batch: Option<u64>) -> Vec<u
 }
 
 /// PresetMessage.saveCurrentPreset{ userSlot }. No `batchStatus` (setter rule).
-pub fn save_current_preset(user_slot: u64) -> Vec<u8> {
+pub fn save_current_preset(user_slot: crate::slot::DeviceSlot) -> Vec<u8> {
     let mut inner = Vec::new();
-    field_varint(&mut inner, 1, user_slot);
+    field_varint(&mut inner, 1, user_slot.wire());
     len_delimited(2, &len_delimited(14, &inner))
 }
 
@@ -482,25 +488,23 @@ pub fn rename_current_preset(display_name: &str) -> Vec<u8> {
 }
 
 /// PresetMessage.moveUserPreset{ oldSlot, newSlot } — relocate a user preset
-/// (field **16**). Setter: NO `batchStatus`. proto3 zero-omission applies.
-pub fn move_user_preset(old_slot: u64, new_slot: u64) -> Vec<u8> {
+/// (field **16**). Setter: NO `batchStatus`. Both slots are 1-based device slots, so
+/// neither is ever the proto3-omitted 0.
+pub fn move_user_preset(
+    old_slot: crate::slot::DeviceSlot,
+    new_slot: crate::slot::DeviceSlot,
+) -> Vec<u8> {
     let mut inner = Vec::new();
-    if old_slot != 0 {
-        field_varint(&mut inner, 1, old_slot);
-    }
-    if new_slot != 0 {
-        field_varint(&mut inner, 2, new_slot);
-    }
+    field_varint(&mut inner, 1, old_slot.wire());
+    field_varint(&mut inner, 2, new_slot.wire());
     len_delimited(2, &len_delimited(16, &inner))
 }
 
 /// PresetMessage.clearUserPreset{ userSlot } — empty a user slot (field **15**).
-/// Setter: NO `batchStatus`. proto3 zero-omission applies.
-pub fn clear_user_preset(user_slot: u64) -> Vec<u8> {
+/// Setter: NO `batchStatus`. A 1-based device slot is never the proto3-omitted 0.
+pub fn clear_user_preset(user_slot: crate::slot::DeviceSlot) -> Vec<u8> {
     let mut inner = Vec::new();
-    if user_slot != 0 {
-        field_varint(&mut inner, 1, user_slot);
-    }
+    field_varint(&mut inner, 1, user_slot.wire());
     len_delimited(2, &len_delimited(15, &inner))
 }
 
@@ -1899,7 +1903,10 @@ mod tests {
     #[test]
     fn save_current_preset_structure() {
         // TMS[2]{ [14]{ [1]=7 } } no batch → 12 04 72 02 08 07
-        assert_eq!(hex(&save_current_preset(7)), "120472020807");
+        assert_eq!(
+            hex(&save_current_preset(crate::slot::ds(7))),
+            "120472020807"
+        );
     }
 
     #[test]
@@ -2005,14 +2012,17 @@ mod tests {
     fn move_user_preset_matches_golden() {
         // TMS[2]{ moveUserPreset[16]{ oldSlot[1]=5, newSlot[2]=7 } }, no batch.
         //   inner = 08 05 10 07 · [16] tag = 82 01 (field 16 wire2) · TMS[2] = 12 07 <..>
-        assert_eq!(hex(&move_user_preset(5, 7)), "120782010408051007");
+        assert_eq!(
+            hex(&move_user_preset(crate::slot::ds(5), crate::slot::ds(7))),
+            "120782010408051007"
+        );
     }
 
     #[test]
     fn clear_user_preset_matches_golden() {
         // TMS[2]{ clearUserPreset[15]{ userSlot[1]=7 } }, no batch.
         //   inner = 08 07 · [15] = 7a 02 <..> · TMS[2] = 12 04 <..>
-        assert_eq!(hex(&clear_user_preset(7)), "12047a020807");
+        assert_eq!(hex(&clear_user_preset(crate::slot::ds(7))), "12047a020807");
     }
 
     #[test]

@@ -103,47 +103,47 @@ fn offline_copy_journey_through_real_backend() {
     // the 11 scenario presets at slots 400-410 (matching the backup fixture).
     let presets = vec![
         crate::session::PresetEntry {
-            slot: 400,
+            slot: ListIndex(400),
             name: "E2E Rig".into(),
         },
         crate::session::PresetEntry {
-            slot: 401,
+            slot: ListIndex(401),
             name: "E2E Pedalboard".into(),
         },
         crate::session::PresetEntry {
-            slot: 402,
+            slot: ListIndex(402),
             name: "E2E Edge".into(),
         },
         crate::session::PresetEntry {
-            slot: 403,
+            slot: ListIndex(403),
             name: "E2E Parallel".into(),
         },
         crate::session::PresetEntry {
-            slot: 404,
+            slot: ListIndex(404),
             name: "E2E Hiwatt 3S".into(),
         },
         crate::session::PresetEntry {
-            slot: 405,
+            slot: ListIndex(405),
             name: "E2E Preset24".into(),
         },
         crate::session::PresetEntry {
-            slot: 406,
+            slot: ListIndex(406),
             name: "E2E Combined Level".into(),
         },
         crate::session::PresetEntry {
-            slot: 407,
+            slot: ListIndex(407),
             name: "E2E Doctor Oracle".into(),
         },
         crate::session::PresetEntry {
-            slot: 408,
+            slot: ListIndex(408),
             name: "E2E Preset24 Min".into(),
         },
         crate::session::PresetEntry {
-            slot: 409,
+            slot: ListIndex(409),
             name: "E2E Hiwatt Min".into(),
         },
         crate::session::PresetEntry {
-            slot: 410,
+            slot: ListIndex(410),
             name: "E2E Friedman 3S".into(),
         },
     ];
@@ -257,7 +257,7 @@ fn offline_level_preset_runs_against_the_fake_audio() {
         verify: true,
         ..Default::default()
     };
-    let r = crate::leveller::level_preset(0, &stim, -30.0, opts, &[], None, || false)
+    let r = crate::leveller::level_preset(ListIndex(0), &stim, -30.0, opts, &[], None, || false)
         .expect("level_preset");
     assert!(
         r.final_level.is_finite() && r.final_level > 0.0,
@@ -398,7 +398,7 @@ fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
     let spec = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let edge = spec
         .iter()
-        .find(|p| p.list_index == 402)
+        .find(|p| p.list_index == ListIndex(402))
         .expect("402 present");
     let pj: serde_json::Value = serde_json::from_str(&edge.preset_json).expect("402 json");
     assert_eq!(
@@ -428,8 +428,9 @@ fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
         verify: true,
         ..Default::default()
     };
-    let base = crate::leveller::level_preset(403, &stim, -19.0, opts, &[], None, || false)
-        .expect("level 403 base");
+    let base =
+        crate::leveller::level_preset(ListIndex(403), &stim, -19.0, opts, &[], None, || false)
+            .expect("level 403 base");
     assert!(
         base.clamped,
         "403 Base must clamp at a shipped default target"
@@ -446,7 +447,7 @@ fn level_defaults_base_clamps_and_the_split_lane_footswitch_is_offbranch() {
     // 402's OUT2 switch toggles ACD_KingOfTone on the off-USB lane: engaging it
     // (bypass=false) routes to dead air → off-branch silence → the routing clamp.
     let fs = crate::leveller::level_footswitch(
-        402,
+        ListIndex(402),
         2,
         ("G3", "ACD_KingOfTone", "volume"),
         &[("G3".into(), "ACD_KingOfTone".into(), false)],
@@ -719,7 +720,7 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
     let spec = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let p24 = spec
         .iter()
-        .find(|p| p.list_index == 405)
+        .find(|p| p.list_index == ListIndex(405))
         .expect("405 present");
     let preset: serde_json::Value = serde_json::from_str(&p24.preset_json).expect("405 json");
     let ftsw = preset["ftsw"].clone();
@@ -727,7 +728,7 @@ fn the_fs_prepass_reads_the_ceiling_at_the_handles_top_bound() {
     // Caller contract (same as `measure_footswitch`): the preset is already current.
     {
         let mut s = crate::session::Session::connect_lean().expect("connect");
-        s.load_preset(405).expect("load 405");
+        s.load_preset(ListIndex(405)).expect("load 405");
     }
     let states = crate::footswitch::switch_states(&ftsw, &preset, 5);
     let handle = crate::leveller::FsParamTarget::new("ACD_Plumes", "level", 0.5);
@@ -807,7 +808,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec_json
         .iter()
-        .find(|p| p.list_index == 400)
+        .find(|p| p.list_index == ListIndex(400))
         .expect("400 present");
     let preset: serde_json::Value = serde_json::from_str(&rig.preset_json).expect("400 json");
     let ftsw = preset["ftsw"].clone();
@@ -860,7 +861,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     );
 
     let r = crate::leveller::level_footswitch(
-        400,
+        ListIndex(400),
         SWITCH,
         ("G1", NODE, PARAM),
         &engaged,
@@ -927,7 +928,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     // this test rather than sailing through silently.
     {
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(400).expect("load 400");
+        s.load_preset(ListIndex(400)).expect("load 400");
         let live = s.live_ftsw().expect("the field-2 re-prompt must answer");
         assert!(
             crate::footswitch::existing_param_fn_index(&live, SWITCH, NODE, PARAM).is_none(),
@@ -949,7 +950,7 @@ fn bake_path_footswitch_writes_the_block_directly_and_persists_its_value() {
     // own dspUnitParameters). `is_assign: false` reads the block, not `ftsw.valueA`.
     let mut results = vec![Some(r.clone())];
     crate::leveller::verify_fs_persisted_writes(
-        400,
+        ListIndex(400),
         &[(0, NODE.to_string(), PARAM.to_string(), r.final_value, false)],
         None,
         &mut results,
@@ -1035,7 +1036,7 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let p24 = spec_json
         .iter()
-        .find(|p| p.list_index == 405)
+        .find(|p| p.list_index == ListIndex(405))
         .expect("405 present");
     let preset: serde_json::Value = serde_json::from_str(&p24.preset_json).expect("405 json");
     let ftsw = preset["ftsw"].clone();
@@ -1217,7 +1218,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec_json
         .iter()
-        .find(|p| p.list_index == 407)
+        .find(|p| p.list_index == ListIndex(407))
         .expect("407 present");
     let preset: serde_json::Value = serde_json::from_str(&rig.preset_json).expect("407 json");
     let ftsw = preset["ftsw"].clone();
@@ -1307,7 +1308,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
         "plate1.wetdrymix must classify wet_mix"
     );
     let r = crate::leveller::level_footswitch(
-        407,
+        ListIndex(407),
         SWITCH,
         ("G1", NODE, PARAM),
         &engaged,
@@ -1372,7 +1373,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
     // function at the SAME index — the switch still carries exactly one entry.
     {
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(407).expect("load 407");
+        s.load_preset(ListIndex(407)).expect("load 407");
         let live = s.live_ftsw().expect("the field-2 re-prompt must answer");
         assert_eq!(
             crate::footswitch::existing_param_fn_index(&live, SWITCH, NODE, PARAM),
@@ -1400,7 +1401,7 @@ fn assign_path_footswitch_edits_its_existing_function_at_its_own_index_and_persi
     // (4) the save round trip, through the production persist verify (field-8 → ftsw valueA).
     let mut results = vec![Some(r.clone())];
     crate::leveller::verify_fs_persisted_writes(
-        407,
+        ListIndex(407),
         &[(0, NODE.to_string(), PARAM.to_string(), r.final_value, true)],
         None,
         &mut results,
@@ -1541,7 +1542,7 @@ fn solve_400_spring(
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec_json
         .iter()
-        .find(|p| p.list_index == 400)
+        .find(|p| p.list_index == ListIndex(400))
         .expect("400 present");
     let preset: serde_json::Value = serde_json::from_str(&rig.preset_json).expect("400 json");
     let ftsw = preset["ftsw"].clone();
@@ -1609,7 +1610,7 @@ fn solve_400_spring(
         "the whole gate rests on `mix` classifying wet_mix"
     );
     let r = crate::leveller::level_footswitch(
-        400,
+        ListIndex(400),
         SWITCH,
         ("G1", NODE, PARAM),
         &engaged,
@@ -1670,7 +1671,7 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
     };
 
     let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-    s.load_preset(400).expect("load 400");
+    s.load_preset(ListIndex(400)).expect("load 400");
     assert_eq!(
         fn_count(&mut s),
         1,
@@ -1698,7 +1699,7 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
     );
 
     // A fresh load discards the UNSAVED edit (the device's own edit-buffer semantics).
-    s.load_preset(400).expect("reload 400");
+    s.load_preset(ListIndex(400)).expect("reload 400");
     assert_eq!(
         fn_count(&mut s),
         1,
@@ -1722,8 +1723,8 @@ fn footswitch_assignment_set_and_clear_edit_the_working_copy_and_survive_only_a_
     );
 
     // Saved, it survives the load — the `SavedDoc::ftsw` round trip.
-    s.save_current_preset(400).expect("save");
-    s.load_preset(400).expect("reload after save");
+    s.save_current_preset(ListIndex(400)).expect("save");
+    s.load_preset(ListIndex(400)).expect("reload after save");
     let live = s.live_ftsw().expect("live ftsw");
     assert_eq!(
         fn_count(&mut s),
@@ -2413,7 +2414,8 @@ fn sim_answers_the_field8_saved_preset_read() {
     let sf = sim.clone();
     crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
 
-    let saved = crate::read_saved_preset(403).expect("field-8 read answers for a scenario slot");
+    let saved =
+        crate::read_saved_preset(ListIndex(403)).expect("field-8 read answers for a scenario slot");
     let scenes = saved["scenes"].as_array().expect("scenes array survived");
     assert_eq!(scenes.len(), 4, "403 has 4 scenes: {scenes:?}");
     assert!(
@@ -2466,7 +2468,7 @@ fn hiwatt_scene_leveling_never_reseeds_an_existing_overlay() {
 
     // Premise: scenes 0/1/2 each carry an overlay for the amp — the `Present` branch, the one
     // where the enable is pure corruption (an `Absent` overlay legitimately needs it).
-    let saved = crate::read_saved_preset(HIWATT).expect("field-8 read");
+    let saved = crate::read_saved_preset(ListIndex(HIWATT)).expect("field-8 read");
     for scene in 0..3u32 {
         assert!(
             matches!(
@@ -2555,7 +2557,7 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
     // reason the recall exists) — else this gate would pass with no recall at all.
     {
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(HIWATT).expect("load");
+        s.load_preset(ListIndex(HIWATT)).expect("load");
         assert!(
             sim.events()
                 .iter()
@@ -2647,7 +2649,7 @@ fn base_leveling_forces_every_footswitch_owned_block_off_not_the_preset_as_saved
     let spec = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec
         .iter()
-        .find(|p| p.list_index == RIG)
+        .find(|p| p.list_index == ListIndex(RIG))
         .expect("400 present");
     let preset: serde_json::Value = serde_json::from_str(&rig.preset_json).expect("400 json");
     let onoff = crate::footswitch::all_onoff_blocks(&preset["ftsw"]);
@@ -2847,7 +2849,7 @@ fn saved_event_count(events: &[crate::sim_device::SimEvent]) -> usize {
 /// `slot`'s SAVED `presetLevel` + `node`'s SAVED `outputLevel`, off a fresh field-8 read — the
 /// post-run pair every E1-E8 gate re-reads to confirm what actually persisted.
 fn saved_pl_and_output_level(slot: u32, node: &str) -> (f64, f64) {
-    let doc = crate::read_saved_preset(slot).expect("post-run field-8 read");
+    let doc = crate::read_saved_preset(ListIndex(slot)).expect("post-run field-8 read");
     let pl = crate::audiograph::preset_level(&doc).expect("presetLevel");
     let fader = crate::commands::level_footswitch::node_param_f64(&doc, node, "outputLevel")
         .unwrap_or_else(|| panic!("{node} outputLevel must be present in the saved doc: {doc}"));
@@ -2972,7 +2974,7 @@ fn a_healthy_base_row_never_moves_the_amp_fader() {
          this pair of gates exists to catch: {events:?}"
     );
 
-    let doc = crate::read_saved_preset(FRIEDMAN).expect("post-save field-8 read");
+    let doc = crate::read_saved_preset(ListIndex(FRIEDMAN)).expect("post-save field-8 read");
     assert_eq!(
         doc["lastLoadedScene"].as_u64(),
         Some(1),
@@ -2993,8 +2995,8 @@ fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
 
     {
         let mut s = crate::session::Session::connect_lean().expect("connect");
-        s.load_preset(PLUMES).expect("load 405");
-        s.save_current_preset(PLUMES)
+        s.load_preset(ListIndex(PLUMES)).expect("load 405");
+        s.save_current_preset(ListIndex(PLUMES))
             .expect("seed ever_saved with an unedited save");
     }
 
@@ -3016,7 +3018,7 @@ fn the_base_boost_saves_both_halves_of_the_pair_and_undoes_the_isolation() {
 
     // ISOLATION UNDONE: every forced pedal's bypass is back at its OWN authored value —
     // never left forced off, never re-engaged past what the player actually saved.
-    let doc = crate::read_saved_preset(PLUMES).expect("post-save field-8 read");
+    let doc = crate::read_saved_preset(ListIndex(PLUMES)).expect("post-save field-8 read");
     let bypass_of = |node: &str| -> bool {
         doc.pointer("/audioGraph/guitarNodes/G1")
             .and_then(|v| v.as_array())
@@ -3075,19 +3077,20 @@ fn base_isolation_on_a_base_engaged_pedal_costs_the_measured_lu_delta() {
     let spec = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let p24 = spec
         .iter()
-        .find(|p| p.list_index == PLUMES)
+        .find(|p| p.list_index == ListIndex(PLUMES))
         .expect("405 present");
     let preset: serde_json::Value = serde_json::from_str(&p24.preset_json).expect("405 json");
 
     // AS-SAVED: no isolation at all. Rat (bypass:false, isActive:true) renders ENGAGED, so
     // its SaturatedPedal curve REPLACES the flat law entirely (`sim_device.rs::model_lufs`).
-    let as_saved = crate::leveller::measure_c(PLUMES, &stim, 0.5, &[]).expect("as-saved measure");
+    let as_saved =
+        crate::leveller::measure_c(ListIndex(PLUMES), &stim, 0.5, &[]).expect("as-saved measure");
 
     // ISOLATED: the base run's own isolation — every footswitch-owned on-off block forced
     // off, Rat included — falls through to the fixture's flat C law.
     let force = crate::commands::doctor::doctor_force_bypass(&preset["ftsw"], &preset, None);
-    let isolated =
-        crate::leveller::measure_c(PLUMES, &stim, 0.5, &force).expect("isolated measure");
+    let isolated = crate::leveller::measure_c(ListIndex(PLUMES), &stim, 0.5, &force)
+        .expect("isolated measure");
 
     assert!(
         (isolated.c - (-28.0)).abs() < 0.5,
@@ -3410,7 +3413,7 @@ fn hiwatt_footswitch_plan_bakes_and_mirrors_only_the_scenes_restating_base() {
     let preset: serde_json::Value = serde_json::from_str(
         &spec
             .iter()
-            .find(|p| p.list_index == HIWATT)
+            .find(|p| p.list_index == ListIndex(HIWATT))
             .expect("404 present")
             .preset_json,
     )
@@ -3515,7 +3518,7 @@ fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
     let spec_json = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec_json
         .iter()
-        .find(|p| p.list_index == 400)
+        .find(|p| p.list_index == ListIndex(400))
         .expect("400 present");
     let preset: serde_json::Value = serde_json::from_str(&rig.preset_json).expect("400 json");
     let ftsw = preset["ftsw"].clone();
@@ -3529,9 +3532,9 @@ fn a_capture_renders_at_the_run_level_not_the_recall_reverted_one() {
     const RUN_PL: f32 = 0.8;
     {
         let mut s = crate::session::Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(400).expect("load 400");
+        s.load_preset(ListIndex(400)).expect("load 400");
         s.set_preset_level(SAVED_PL).expect("set");
-        s.save_current_preset(400).expect("save");
+        s.save_current_preset(ListIndex(400)).expect("save");
         s.set_preset_level(RUN_PL)
             .expect("set the unsaved run level");
     }
@@ -3618,11 +3621,11 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
     const AMP: &str = "ACD_HiwattDR103CanMod";
     // Scene 0's own authored value for the handle (its overlay carries 0.96).
     const AUTHORED: f32 = 0.96;
-    let saved = crate::read_saved_preset(404);
+    let saved = crate::read_saved_preset(ListIndex(404));
     // The runner's caller contract: the preset is already current.
     {
         let mut s = crate::session::Session::connect_lean().expect("connect");
-        s.load_preset(404).expect("load 404");
+        s.load_preset(ListIndex(404)).expect("load 404");
     }
     let handle = crate::leveller::FsParamTarget::new(AMP, "outputLevel", AUTHORED);
     let (lo, hi) = handle.bounds();
@@ -3649,7 +3652,7 @@ fn a_user_chosen_scene_handle_is_solved_by_the_param_secant_and_reaches_target()
         force_bypass: vec![],
     };
     let outcomes = crate::leveller::level_scenes_oneshot(
-        404,
+        ListIndex(404),
         &[job],
         &stim,
         false,
@@ -3705,7 +3708,7 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
     let stim = test_stim();
 
     // Fixture 403 "E2E Parallel": two lane amps, both with a Full overlay in scene 0.
-    let saved = crate::read_saved_preset(403);
+    let saved = crate::read_saved_preset(ListIndex(403));
     let saved_pl = saved
         .as_ref()
         .and_then(crate::audiograph::preset_level)
@@ -3739,7 +3742,7 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
     ] {
         {
             let mut s = crate::session::Session::connect_lean().expect("connect");
-            s.load_preset(403).expect("load 403");
+            s.load_preset(ListIndex(403)).expect("load 403");
         }
         let job = crate::leveller::SceneJob {
             scene_slot: 0,
@@ -3753,7 +3756,7 @@ fn every_rebalance_capture_asserts_the_run_preset_level() {
         };
         let from = sim.events().len();
         let outcomes = crate::leveller::level_scenes_rebalance(
-            403,
+            ListIndex(403),
             &[job],
             &stim,
             false,
@@ -4003,10 +4006,12 @@ fn trade_sim() -> (crate::sim_device::SimDevice, usize) {
     // always in, since a load there restores the saved level.
     {
         let mut s = crate::session::Session::connect_lean().expect("connect");
-        s.load_preset(TRADE_SLOT).expect("load the trade fixture");
+        s.load_preset(ListIndex(TRADE_SLOT))
+            .expect("load the trade fixture");
         s.set_preset_level(TRADE_PRESET_LEVEL)
             .expect("seed presetLevel");
-        s.save_current_preset(TRADE_SLOT).expect("seed save");
+        s.save_current_preset(ListIndex(TRADE_SLOT))
+            .expect("seed save");
     }
     let from = sim.events().len();
     (sim, from)
@@ -4133,7 +4138,7 @@ fn a_shared_base_scene_save_is_not_reported_lost() {
         .clone();
     let solved = row["final_level"].as_f64().expect("final_level");
     // PREMISE: the write really landed on base and the save kept it there.
-    let saved = crate::read_saved_preset(SLOT).expect("re-read 402");
+    let saved = crate::read_saved_preset(ListIndex(SLOT)).expect("re-read 402");
     let base = crate::commands::level_footswitch::node_param_f64(&saved, "ACD_Boost", "gain")
         .expect("base ACD_Boost.gain");
     assert!(
@@ -4295,7 +4300,7 @@ fn a_batched_scene_run_persists_both_halves_of_a_landed_headroom_trade() {
         "exactly one deferred save persists the batch: {:?}",
         &sim.events()[from..]
     );
-    let saved = crate::read_saved_preset(TRADE_SLOT).expect("the saved preset re-reads");
+    let saved = crate::read_saved_preset(ListIndex(TRADE_SLOT)).expect("the saved preset re-reads");
     let saved_pl = crate::audiograph::preset_level(&saved).expect("saved presetLevel") as f32;
     assert!(
         (saved_pl - raised_pl).abs() < 1e-3,
@@ -4567,7 +4572,7 @@ fn a_wizard_shaped_run_trades_headroom_when_base_arrives_as_an_anchor() {
         "one deferred save persists the anchor-driven pair: {:?}",
         &sim.events()[from..]
     );
-    let saved = crate::read_saved_preset(TRADE_SLOT).expect("the saved preset re-reads");
+    let saved = crate::read_saved_preset(ListIndex(TRADE_SLOT)).expect("the saved preset re-reads");
     let saved_pl = crate::audiograph::preset_level(&saved).expect("saved presetLevel") as f32;
     assert!(
         (saved_pl - raised_pl).abs() < 1e-3,
@@ -4653,7 +4658,7 @@ fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
 
     // Fixture premise: the pedal really is saved ON, or "isolation never leaked" would pass
     // vacuously with no isolation ever needed.
-    let saved_before = crate::read_saved_preset(RIG).expect("400 field-8 read");
+    let saved_before = crate::read_saved_preset(ListIndex(RIG)).expect("400 field-8 read");
     assert!(
         !crate::footswitch::block_bypassed_in_base(&saved_before, TUBE_SCREAMER),
         "fixture premise: 400's DRIVE pedal (TubeScreamer) must be saved ON (bypass=false)"
@@ -4696,7 +4701,7 @@ fn a_base_anchor_measures_the_isolated_base_and_never_persists_the_isolation() {
 
     // …AND NEVER PERSISTED: the saved preset still reads the pedal ON, exactly as the user
     // left it — the working copy was cleaned before the batch's one save.
-    let saved_after = crate::read_saved_preset(RIG).expect("400 field-8 re-read");
+    let saved_after = crate::read_saved_preset(ListIndex(RIG)).expect("400 field-8 re-read");
     assert!(
         !crate::footswitch::block_bypassed_in_base(&saved_after, TUBE_SCREAMER),
         "the isolation must NEVER reach the saved preset — the pedal must still read ON"
@@ -4737,7 +4742,7 @@ fn an_fs_scene_context_recalls_its_scene_before_the_engage_and_base_without_one(
     let spec = crate::probe_api::seed_scenario::scenario_spec().expect("scenario spec");
     let rig = spec
         .iter()
-        .find(|p| p.list_index == 400)
+        .find(|p| p.list_index == ListIndex(400))
         .expect("400 present");
     let preset: serde_json::Value = serde_json::from_str(&rig.preset_json).expect("400 json");
     let ftsw = preset["ftsw"].clone();
@@ -4755,7 +4760,7 @@ fn an_fs_scene_context_recalls_its_scene_before_the_engage_and_base_without_one(
     let read_in = |scene: Option<u32>| -> (Vec<crate::sim_device::SimEvent>, f64) {
         {
             let mut s = crate::session::Session::connect_lean().expect("connect");
-            s.load_preset(400).expect("load 400");
+            s.load_preset(ListIndex(400)).expect("load 400");
         }
         let from = sim.events().len();
         let probe = crate::leveller::FsCeilingProbe {

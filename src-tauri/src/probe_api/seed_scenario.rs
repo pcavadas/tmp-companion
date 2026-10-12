@@ -8,11 +8,12 @@
 use crate::backup;
 use crate::replace_inplace::replace_inplace_with;
 use crate::session::{self, Session};
+use crate::slot::ListIndex;
 
 #[derive(serde::Deserialize)]
 pub(crate) struct ScenarioPreset {
     #[serde(rename = "listIndex")]
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub name: String,
     #[serde(rename = "presetJson")]
     pub(crate) preset_json: String,
@@ -38,7 +39,10 @@ pub(crate) fn scenario_spec() -> Result<Vec<ScenarioPreset>, String> {
 /// EMPTY slot, so each aborted run strands one copy in the user's bank; HW-observed:
 /// 13 stray "E2E Reference" copies accumulated at list indices 27–39 across failed
 /// runs, and the duplicates then broke the next seed's landing detection). Pure.
-fn scenario_strays(list: &[session::PresetEntry], spec: &[ScenarioPreset]) -> Vec<(u32, String)> {
+fn scenario_strays(
+    list: &[session::PresetEntry],
+    spec: &[ScenarioPreset],
+) -> Vec<(ListIndex, String)> {
     list.iter()
         .filter(|e| {
             spec.iter()
@@ -116,7 +120,7 @@ fn manifest_path() -> std::path::PathBuf {
 /// Claim `list_index` (0-based) under `name`. Best-effort: a manifest we fail to write
 /// only costs the NEXT run a manual clear — it must never fail a seed that already
 /// landed on the device.
-fn record_seeded(list_index: u32, name: &str) {
+fn record_seeded(list_index: ListIndex, name: &str) {
     let mut map = read_manifest();
     map.insert(list_index.to_string(), name.to_string());
     write_manifest(&map);
@@ -133,7 +137,7 @@ fn record_seeded(list_index: u32, name: &str) {
 // Its one production caller (`e2e_server::e2e_clear_preset`) is behind `--features e2e`,
 // so a plain lib build sees no user; the unit test below is the other caller.
 #[allow(dead_code)]
-pub(crate) fn forget_seeded(list_index: u32) {
+pub(crate) fn forget_seeded(list_index: ListIndex) {
     let mut map = read_manifest();
     if map.remove(&list_index.to_string()).is_some() {
         write_manifest(&map);
@@ -179,7 +183,7 @@ fn read_manifest() -> std::collections::BTreeMap<String, String> {
 }
 
 /// Did THIS machine's harness seed `list_index` under `name`? Pure given the file.
-fn manifest_owns(list_index: u32, name: &str) -> bool {
+fn manifest_owns(list_index: ListIndex, name: &str) -> bool {
     read_manifest()
         .get(&list_index.to_string())
         .is_some_and(|n| n == name)
@@ -195,15 +199,15 @@ fn manifest_owns(list_index: u32, name: &str) -> bool {
 /// already lost a real preset to a guard that read one space while the mutation acted in
 /// another. Callers must be on a QUIET line (`drain_until_quiet` first) — a field-8 read
 /// fired mid-flood is dropped device-side.
-pub(crate) fn slot_is_ours(s: &mut Session, list_index: u32, name: &str) -> bool {
+pub(crate) fn slot_is_ours(s: &mut Session, list_index: ListIndex, name: &str) -> bool {
     manifest_owns(list_index, name) || slot_is_pristine_fixture(s, list_index)
 }
 
 /// Does the body still carry an injected marker — i.e. NO spec has saved over it since
 /// the import? Answers "is this untouched", NOT "did we put it here"; conflating the two
 /// is what stranded fixtures. `list_index` is 0-BASED (the field-8 read takes +1).
-pub(crate) fn slot_is_pristine_fixture(s: &mut Session, list_index: u32) -> bool {
-    matches!(s.read_slot_preset_json(list_index + 1), Ok(Some(bytes)) if is_fixture_body(&bytes))
+pub(crate) fn slot_is_pristine_fixture(s: &mut Session, list_index: ListIndex) -> bool {
+    matches!(s.read_slot_preset_json(list_index.device_slot()), Ok(Some(bytes)) if is_fixture_body(&bytes))
 }
 
 /// Substring-extract `audioGraph.presetLevel` (the one `presetLevel` key a
@@ -480,14 +484,19 @@ fn body_was_discarded(body: &[u8], fixture_json: &str) -> bool {
 /// body is a DIFFERENT class and is NOT retried here: the field-8 partial truncates at a
 /// per-slot-deterministic size, so a re-read cannot lengthen it. Shared by
 /// `verify_landed_imports` and `seed_scenario_core`'s per-target classify pass.
-fn paced_retry_read(s: &mut Session, list_index: u32) -> Option<Vec<u8>> {
+fn paced_retry_read(s: &mut Session, list_index: ListIndex) -> Option<Vec<u8>> {
     crate::settle(std::time::Duration::from_millis(300));
-    let body = s.read_slot_preset_json(list_index + 1).ok().flatten();
+    let body = s
+        .read_slot_preset_json(list_index.device_slot())
+        .ok()
+        .flatten();
     if body.is_some() {
         return body;
     }
     crate::settle(std::time::Duration::from_millis(300));
-    s.read_slot_preset_json(list_index + 1).ok().flatten()
+    s.read_slot_preset_json(list_index.device_slot())
+        .ok()
+        .flatten()
 }
 
 /// Read every slot imported THIS run back over field-8 and prove the LANDED body is
@@ -498,7 +507,7 @@ fn paced_retry_read(s: &mut Session, list_index: u32) -> Option<Vec<u8>> {
 /// drained first (a read fired mid-flood is dropped device-side). Offline nothing is
 /// imported (the sim's scenario slots are always present), so `seeded` is empty and this
 /// returns at once.
-fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[u32]) -> Result<(), String> {
+fn verify_landed_imports(spec: &[ScenarioPreset], seeded: &[ListIndex]) -> Result<(), String> {
     if seeded.is_empty() {
         return Ok(());
     }
@@ -573,7 +582,7 @@ fn sweep_on(
     s: &mut Session,
     list: &[session::PresetEntry],
     spec: &[ScenarioPreset],
-) -> Result<Vec<u32>, String> {
+) -> Result<Vec<ListIndex>, String> {
     let strays = scenario_strays(list, spec);
     if strays.is_empty() {
         return Ok(Vec::new());
@@ -601,7 +610,7 @@ fn sweep_on(
 }
 
 /// Standalone stray sweep (one fresh session): the teardown/recovery arm.
-pub(crate) fn sweep_strays_core() -> Result<Vec<u32>, String> {
+pub(crate) fn sweep_strays_core() -> Result<Vec<ListIndex>, String> {
     let spec = scenario_spec()?;
     let mut s = Session::connect()?;
     let list = read_full_list(&mut s)?;
@@ -647,9 +656,9 @@ fn read_full_list(s: &mut Session) -> Result<Vec<session::PresetEntry>, String> 
 
 pub(crate) struct SeedOutcome {
     /// Slots freed by the stray sweep.
-    pub swept: Vec<u32>,
+    pub swept: Vec<ListIndex>,
     /// Scenario slots imported this run (already-correct slots are skipped).
-    pub seeded: Vec<u32>,
+    pub seeded: Vec<ListIndex>,
 }
 
 /// Sweep strays, then place each missing scenario preset in-place at its slot.
@@ -791,7 +800,7 @@ pub(crate) fn seed_scenario_core(check_pristine: bool) -> Result<SeedOutcome, St
 /// `probe --import-file <path> <listIdx>` — repro instrumentation: import an arbitrary
 /// `.preset` FILE (raw xor_jld bytes on disk) into an EMPTY target list index via the
 /// production `replace_inplace_with` machinery. Refuses an occupied target.
-pub fn probe_import_file(path: &str, list_index: u32) -> Result<String, String> {
+pub fn probe_import_file(path: &str, list_index: ListIndex) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
     let mut s = Session::connect()?;
     let list = read_full_list(&mut s)?;
@@ -808,7 +817,7 @@ pub fn probe_import_file(path: &str, list_index: u32) -> Result<String, String> 
     replace_inplace_with(list_index, &bytes, false)?;
     Ok(format!(
         "[probe --import-file] imported {path} → list index {list_index} (device slot {})\n",
-        list_index + 1
+        list_index.device_slot()
     ))
 }
 
@@ -874,24 +883,24 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         // Nothing recorded yet → not owned (a pre-seed run must never bless a slot).
-        assert!(!manifest_owns(400, "E2E Reference"));
+        assert!(!manifest_owns(ListIndex(400), "E2E Reference"));
 
-        record_seeded(400, "E2E Reference");
+        record_seeded(ListIndex(400), "E2E Reference");
 
         // Owned by provenance alone — this is the case a body-marker probe misses.
-        assert!(manifest_owns(400, "E2E Reference"));
+        assert!(manifest_owns(ListIndex(400), "E2E Reference"));
         // A saved body really has lost its markers: the content probe says no.
         assert!(!is_fixture_body(
             br#"{"info":{"preset_id":"9f2c-device-generated"}}"#
         ));
         // Fail-closed on the axes that matter: wrong slot, and a renamed occupant.
-        assert!(!manifest_owns(401, "E2E Reference"));
-        assert!(!manifest_owns(400, "My Own Preset"));
+        assert!(!manifest_owns(ListIndex(401), "E2E Reference"));
+        assert!(!manifest_owns(ListIndex(400), "My Own Preset"));
 
         // The claim is a LEASE: a verified clear releases it, so it can never outlive
         // the fixture and bless whatever occupies the scratch slot next.
-        forget_seeded(400);
-        assert!(!manifest_owns(400, "E2E Reference"));
+        forget_seeded(ListIndex(400));
+        assert!(!manifest_owns(ListIndex(400), "E2E Reference"));
     }
 
     /// The stray classifier flags scenario names at the WRONG slot only — the
@@ -907,7 +916,7 @@ mod tests {
         )
         .expect("spec json");
         let entry = |slot: u32, name: &str| session::PresetEntry {
-            slot,
+            slot: ListIndex(slot),
             name: name.into(),
         };
         let list = vec![
@@ -922,9 +931,9 @@ mod tests {
         assert_eq!(
             strays,
             vec![
-                (27, "E2E Reference".to_string()),
-                (39, "E2E Reference".to_string()),
-                (401, "E2E Reference".to_string()),
+                (ListIndex(27), "E2E Reference".to_string()),
+                (ListIndex(39), "E2E Reference".to_string()),
+                (ListIndex(401), "E2E Reference".to_string()),
             ]
         );
         // No spec → nothing is ever a stray.

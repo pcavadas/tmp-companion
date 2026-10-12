@@ -341,47 +341,47 @@ fn e2e_install_offline_fake() {
     // nothing derives one from the other.
     let presets = vec![
         session::PresetEntry {
-            slot: 400,
+            slot: ListIndex(400),
             name: "E2E Rig".into(),
         },
         session::PresetEntry {
-            slot: 401,
+            slot: ListIndex(401),
             name: "E2E Pedalboard".into(),
         },
         session::PresetEntry {
-            slot: 402,
+            slot: ListIndex(402),
             name: "E2E Edge".into(),
         },
         session::PresetEntry {
-            slot: 403,
+            slot: ListIndex(403),
             name: "E2E Parallel".into(),
         },
         session::PresetEntry {
-            slot: 404,
+            slot: ListIndex(404),
             name: "E2E Hiwatt 3S".into(),
         },
         session::PresetEntry {
-            slot: 405,
+            slot: ListIndex(405),
             name: "E2E Preset24".into(),
         },
         session::PresetEntry {
-            slot: 406,
+            slot: ListIndex(406),
             name: "E2E Combined Level".into(),
         },
         session::PresetEntry {
-            slot: 407,
+            slot: ListIndex(407),
             name: "E2E Doctor Oracle".into(),
         },
         session::PresetEntry {
-            slot: 408,
+            slot: ListIndex(408),
             name: "E2E Preset24 Min".into(),
         },
         session::PresetEntry {
-            slot: 409,
+            slot: ListIndex(409),
             name: "E2E Hiwatt Min".into(),
         },
         session::PresetEntry {
-            slot: 410,
+            slot: ListIndex(410),
             name: "E2E Friedman 3S".into(),
         },
     ];
@@ -460,7 +460,9 @@ fn e2e_install_showcase() {
                 .presets
                 .iter()
                 .map(|r| session::PresetEntry {
-                    slot: (r.slot - 1).max(0) as u32,
+                    slot: crate::slot::DeviceSlot::try_from(r.slot)
+                        .map(ListIndex::from)
+                        .unwrap_or_default(),
                     name: r.name.clone(),
                 })
                 .collect();
@@ -502,7 +504,7 @@ fn e2e_seed_online_snapshot() -> Result<Option<String>, String> {
 /// the KNOWN write rather than a device re-read — `list_my_presets` lags its own writes
 /// (read-after-write propagation), so an immediate re-read installs a stale list.
 #[cfg(feature = "e2e")]
-fn e2e_patch_snapshot_slot(slot: u32, name: &str) -> bool {
+fn e2e_patch_snapshot_slot(slot: ListIndex, name: &str) -> bool {
     let Some(snap) = monitor::startup_snapshot() else {
         return false;
     };
@@ -546,7 +548,7 @@ async fn e2e_seed_scenario(state: State<'_, AppState>) -> Result<(), String> {
 
 /// Snapshot patch for slots the stray sweep freed — no device I/O.
 #[cfg(feature = "e2e")]
-fn e2e_patch_swept(swept: &[u32]) {
+fn e2e_patch_swept(swept: &[ListIndex]) {
     for slot in swept {
         e2e_patch_snapshot_slot(*slot, "Empty");
     }
@@ -608,7 +610,7 @@ async fn e2e_clear_strays(state: State<'_, AppState>) -> Result<usize, String> {
 #[tauri::command]
 async fn e2e_clear_preset(
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
     expect_name: String,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
@@ -618,7 +620,7 @@ async fn e2e_clear_preset(
         // guard below refuses (fail-closed).
         let list = s.list_my_presets()?;
         let entry = list
-            .get(slot as usize)
+            .get(slot.as_usize())
             .ok_or_else(|| format!("slot {slot} out of range"))?;
         if entry.name != expect_name {
             return Err(format!(
@@ -660,7 +662,7 @@ async fn e2e_clear_preset(
         let now_empty = s
             .list_my_presets()
             .ok()
-            .and_then(|list| list.get(slot as usize).map(|e| e.name.clone()))
+            .and_then(|list| list.get(slot.as_usize()).map(|e| e.name.clone()))
             .is_some_and(|name| session::is_empty_slot_name(&name));
         if now_empty {
             probe_api::seed_scenario::forget_seeded(slot);
@@ -681,7 +683,7 @@ async fn e2e_clear_preset(
 /// the test leaves it on a known preset (001 = index 0). Non-destructive (a load, no save).
 #[cfg(feature = "e2e")]
 #[tauri::command]
-async fn e2e_load_preset(state: State<'_, AppState>, slot: u32) -> Result<(), String> {
+async fn e2e_load_preset(state: State<'_, AppState>, slot: ListIndex) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         Session::connect()?.load_preset(slot)
     })
@@ -774,7 +776,7 @@ struct ValidateArg {
 async fn e2e_measure_sound(
     app: tauri::AppHandle<tauri::test::MockRuntime>,
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     footswitch: Option<u32>,
     topology_id: String,
@@ -788,11 +790,13 @@ async fn e2e_measure_sound(
         // measured names itself, so a mid-batch failure upstream can never shift a row.
         let row = validate.map(|v| {
             let base = match (scene, footswitch) {
-                (Some(s), _) => crate::validate_log::ValidationRow::scene(slot, s, v.target_lufs),
-                (None, Some(sw)) => {
-                    crate::validate_log::ValidationRow::footswitch(slot, sw, v.target_lufs)
+                (Some(s), _) => {
+                    crate::validate_log::ValidationRow::scene(slot.get(), s, v.target_lufs)
                 }
-                (None, None) => crate::validate_log::ValidationRow::base(slot, v.target_lufs),
+                (None, Some(sw)) => {
+                    crate::validate_log::ValidationRow::footswitch(slot.get(), sw, v.target_lufs)
+                }
+                (None, None) => crate::validate_log::ValidationRow::base(slot.get(), v.target_lufs),
             };
             base.with_flags(v.clamped, v.persist_mismatch)
         });

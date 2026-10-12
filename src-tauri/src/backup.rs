@@ -44,7 +44,8 @@ pub enum SnapshotSource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PresetSnapshot {
     pub list_enum: u32,
-    pub slot: u32,
+    /// The 0-based list index the snapshot was captured at.
+    pub slot: crate::slot::ListIndex,
     /// Best-effort display name (for the backups list); not load-bearing.
     #[serde(default)]
     pub display_name: String,
@@ -249,7 +250,7 @@ mod tests {
     fn sample() -> PresetSnapshot {
         PresetSnapshot {
             list_enum: 1,
-            slot: 11,
+            slot: crate::slot::ListIndex(11),
             display_name: "Bassmans Comparison".into(),
             captured_at: "00000001750435740000".into(),
             source: SnapshotSource::OfflineFile,

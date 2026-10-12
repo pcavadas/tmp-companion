@@ -58,12 +58,12 @@ pub(crate) fn wav_bytes(samples: &[f32], rate: u32) -> Result<Vec<u8>, String> {
 #[tauri::command]
 pub(crate) async fn audition_render(
     app: tauri::AppHandle,
-    slot: u32,
+    slot: ListIndex,
     topology_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Cache hit → return the already-rendered clip, skipping the re-amp pass.
-    let cache_key = audition::clip_key(slot, topology_id.as_deref().unwrap_or("default"));
+    let cache_key = audition::clip_key(slot.get(), topology_id.as_deref().unwrap_or("default"));
     if let Some(url) = lock_ok(&state.clip_cache).get(&cache_key) {
         return Ok(url);
     }
@@ -93,7 +93,7 @@ pub(crate) struct SpectrumResult {
 #[tauri::command]
 pub(crate) async fn spectrum_scan(
     app: tauri::AppHandle,
-    slot: u32,
+    slot: ListIndex,
     topology_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SpectrumResult, String> {
@@ -124,8 +124,8 @@ pub(crate) struct EqMatchResult {
 #[tauri::command]
 pub(crate) async fn eq_match(
     app: tauri::AppHandle,
-    source_slot: u32,
-    reference_slot: u32,
+    source_slot: ListIndex,
+    reference_slot: ListIndex,
     topology_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<EqMatchResult, String> {
@@ -156,8 +156,8 @@ pub(crate) async fn eq_match(
 #[tauri::command]
 pub(crate) async fn rank_candidates(
     app: tauri::AppHandle,
-    target_slot: u32,
-    candidate_slots: Vec<u32>,
+    target_slot: ListIndex,
+    candidate_slots: Vec<ListIndex>,
     topology_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<spectrum::SicRank>, String> {

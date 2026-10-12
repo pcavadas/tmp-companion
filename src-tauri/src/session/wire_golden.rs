@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use super::Session;
 use crate::hid::HidTransport;
 use crate::sim_device::SimDevice;
+use crate::slot::ListIndex;
 
 /// Delegates to a [`SimDevice`] and logs `(op, window, body hex)` per call.
 struct Recorder {
@@ -96,11 +97,15 @@ fn record() -> Vec<String> {
     step(l, "list_my_presets_strict", s.list_my_presets_strict());
     step(l, "request_scene_list", s.request_scene_list());
     step(l, "heartbeat", s.heartbeat());
-    step(l, "load_preset", s.load_preset(400));
+    step(l, "load_preset", s.load_preset(ListIndex(400)));
     step(l, "load_preset_raw", s.load_preset_raw(401, 1));
-    step(l, "load_factory_preset", s.load_factory_preset(3));
-    step(l, "load_preset again", s.load_preset(400));
-    step(l, "confirm_active", s.confirm_active(400, None));
+    step(
+        l,
+        "load_factory_preset",
+        s.load_factory_preset(ListIndex(3)),
+    );
+    step(l, "load_preset again", s.load_preset(ListIndex(400)));
+    step(l, "confirm_active", s.confirm_active(ListIndex(400), None));
     step(l, "begin_live_edit", s.begin_live_edit());
     step(l, "set_reamp_mode on", s.set_reamp_mode(true));
     step(l, "read_reamp_state", s.read_reamp_state());
@@ -173,22 +178,34 @@ fn record() -> Vec<String> {
         "rename_current_preset",
         s.rename_current_preset("Golden"),
     );
-    step(l, "save_current_preset", s.save_current_preset(400));
-    step(l, "read_slot_preset_json", s.read_slot_preset_json(401));
+    step(
+        l,
+        "save_current_preset",
+        s.save_current_preset(ListIndex(400)),
+    );
+    step(
+        l,
+        "read_slot_preset_json",
+        s.read_slot_preset_json(crate::slot::ds(401)),
+    );
     step(
         l,
         "read_slot_preset_json_live",
-        s.read_slot_preset_json_live(401),
+        s.read_slot_preset_json_live(crate::slot::ds(401)),
     );
     step(
         l,
         "capture_full_preset_json",
-        s.capture_full_preset_json(Some(400), 200),
+        s.capture_full_preset_json(Some(ListIndex(400)), 200),
     );
     step(l, "harvest_slot_read", s.harvest_slot_read());
     step(l, "import_preset", s.import_preset(b"not a preset body"));
-    step(l, "move_user_preset", s.move_user_preset(409, 410));
-    step(l, "clear_user_preset", s.clear_user_preset(410));
+    step(
+        l,
+        "move_user_preset",
+        s.move_user_preset(ListIndex(409), ListIndex(410)),
+    );
+    step(l, "clear_user_preset", s.clear_user_preset(ListIndex(410)));
     step(l, "add_song", s.add_song("Golden Song"));
     step(l, "rename_song", s.rename_song(0, "Golden Song 2"));
     step(l, "set_song_notes", s.set_song_notes(0, "notes"));
@@ -197,7 +214,7 @@ fn record() -> Vec<String> {
     step(
         l,
         "assign_song_preset",
-        s.assign_song_preset(0, 0, 400, "A", 1, 0, 2),
+        s.assign_song_preset(0, 0, ListIndex(400), "A", 1, 0, 2),
     );
     step(l, "move_song_preset", s.move_song_preset(0, 0, 1));
     step(l, "swap_song_preset", s.swap_song_preset(0, 0, 1));

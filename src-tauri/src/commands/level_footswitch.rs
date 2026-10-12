@@ -178,7 +178,7 @@ const SCENE_CONTEXT_SECTIONS: &[&str] = &["ftsw", "scenes"];
 #[tauri::command]
 pub(crate) async fn list_footswitch_scene_contexts(
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<Vec<footswitch::FsSceneContext>, String> {
     with_released_seize(state.session.clone(), move || {
         let (preset, _, _) = read_slot_preset_complete(slot, SCENE_CONTEXT_SECTIONS)?;
@@ -195,7 +195,7 @@ pub(crate) async fn list_footswitch_scene_contexts(
 pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
     jobs: Vec<FootswitchLevelJob>,
     save: bool,
     topology_id: Option<String>,

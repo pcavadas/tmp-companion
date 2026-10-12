@@ -19,6 +19,7 @@
 //! So leveling is one-shot/open-loop: measure once at a reference level, solve
 //! for `C`, compute the exact `presetLevel` that hits the target, set it, save.
 
+use crate::slot::ListIndex;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -284,7 +285,7 @@ impl Verification {
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct LevelResult {
-    pub slot: u32,
+    pub slot: ListIndex,
     /// WHICH sound this row describes, when the row is a SCENE row: the 0-based
     /// `scenes[]` wire index. `None` on every base / block / footswitch row.
     ///
@@ -462,7 +463,7 @@ pub const CANCELLED: &str = "cancelled";
 /// (HW 2026-10-10, `probe --restore-check`), but a clear flag can still hide a stale
 /// working copy, and reading `isDirty` costs ~1.1 s. So the restore always loads a
 /// neighbour slot first, which forces the reload (+0.34 s on HW: 1.67 s vs 1.33 s).
-pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
+pub(crate) fn restore_saved_preset(slot: ListIndex) -> Result<(), String> {
     // NOT `sleep_or_cancel`: this runs AFTER a cancel to clean up. Bailing here would leave
     // the edit buffer dirty at the measurement level — the whole point of the restore.
     let mut s = Session::connect_lean()?;
@@ -474,11 +475,11 @@ pub(crate) fn restore_saved_preset(slot: u32) -> Result<(), String> {
 
 /// [`restore_saved_preset`]'s loads on `s`: a neighbour slot, then the target. Returns the
 /// neighbour, which stays inside the e2e scratch zone when the target is in it.
-fn reload_stored_on(s: &mut Session, slot: u32) -> Result<u32, String> {
+fn reload_stored_on(s: &mut Session, slot: ListIndex) -> Result<ListIndex, String> {
     let other = if slot == crate::probe_api::SCRATCH_SLOTS[0] {
-        slot + 1
+        ListIndex(slot.get() + 1)
     } else {
-        slot.checked_sub(1).unwrap_or(1)
+        ListIndex(slot.get().checked_sub(1).unwrap_or(1))
     };
     s.load_preset(other)?;
     s.load_preset(slot)?;
@@ -492,7 +493,7 @@ fn reload_stored_on(s: &mut Session, slot: u32) -> Result<u32, String> {
 /// save on another slot, returned that slot's blocks. With the target already current,
 /// every push the harvest can see is the target's. A bare load on purpose: a same-slot
 /// no-op still leaves the target current, and a neighbour load would add its own pushes.
-pub(crate) fn make_current(slot: u32) -> Result<(), String> {
+pub(crate) fn make_current(slot: ListIndex) -> Result<(), String> {
     let mut s = Session::connect_lean()?;
     s.load_preset(slot)?;
     crate::settle(Duration::from_millis(settle_after_load_ms()));
@@ -502,7 +503,7 @@ pub(crate) fn make_current(slot: u32) -> Result<(), String> {
 /// If an unsaved operation fails after touching a level control, try to discard
 /// the temporary edit before returning the original error.
 fn restore_after_unsaved_error<T>(
-    slot: u32,
+    slot: ListIndex,
     save: bool,
     result: Result<T, String>,
 ) -> Result<T, String> {
@@ -726,7 +727,7 @@ fn median3(a: f64, b: f64, c: f64) -> f64 {
 /// first (`arm_measurement`), since a load activates the preset's saved `lastLoadedScene`
 /// and an unrecalled capture would solve `C` for that scene instead.
 pub fn measure_c(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
@@ -746,7 +747,7 @@ pub fn measure_c(
 /// (one engage per connection, the level set before the engage). Still clipped there → the
 /// error stands.
 pub(crate) fn measure_c_checked(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
@@ -836,7 +837,7 @@ pub(crate) fn predicted_true_peak_dbtp(ref_tp_dbtp: f64, ref_level: f32, final_l
 /// every existing `capture_full` call, so that path is otherwise unchanged by
 /// this extraction.
 fn capture_full_at(
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     stimulus: &[f32],
@@ -864,7 +865,7 @@ fn capture_full_at(
 /// change, defect shaping) would be silently absent from the measured audio.
 #[allow(clippy::too_many_arguments)]
 fn capture_full_at_params(
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     fs_params: &[(String, String, String, f32)],
@@ -874,7 +875,7 @@ fn capture_full_at_params(
     skip_load: bool,
 ) -> Result<audio::Capture, String> {
     // Names this capture in the trace (inert unless recording); an outer caller's name wins.
-    let _trace_ctx = crate::trace::capture_ctx("capture", Some(slot), scene, None);
+    let _trace_ctx = crate::trace::capture_ctx("capture", Some(slot.get()), scene, None);
     // The settles here are `sleep_abortable`: a Stop pressed anywhere in the ~1.9 s of
     // settling that brackets a capture bails immediately instead of being noticed only at
     // the next step seam. Safe to leave from any of these points — nothing is engaged or
@@ -983,7 +984,11 @@ pub(crate) fn capture_on_session(
 /// `stimulus` at `ref_level`, return every captured channel. Validated own-conn
 /// load → fresh-connect set → engage re-amp once → capture → off. `capture_samples`
 /// and the per-channel N1 diagnostic (`probe --channels`) share this.
-pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio::Capture, String> {
+pub fn capture_full(
+    slot: ListIndex,
+    stimulus: &[f32],
+    ref_level: f32,
+) -> Result<audio::Capture, String> {
     capture_full_at(
         slot,
         None,
@@ -1006,7 +1011,7 @@ pub fn capture_full(slot: u32, stimulus: &[f32], ref_level: f32) -> Result<audio
 /// which drops `set_reamp_mode(true)` and yields silent captures that read as
 /// device flakiness (the "no signal captured" class in `notes/leveling.md`).
 pub fn capture_loudness_asis(
-    slot: Option<u32>,
+    slot: Option<ListIndex>,
     scene: Option<u32>,
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, String> {
@@ -1017,12 +1022,12 @@ pub fn capture_loudness_asis(
 /// [`capture_loudness_asis`], so a probe can report EVERY channel's loudness and
 /// make the loudest-channel argmax observable instead of inferred.
 pub fn capture_asis_full(
-    slot: Option<u32>,
+    slot: Option<ListIndex>,
     scene: Option<u32>,
     stimulus: &[f32],
 ) -> Result<audio::Capture, String> {
     capture_full_at(
-        slot.unwrap_or(0), // unused when skip_load
+        slot.unwrap_or_default(), // unused when skip_load
         scene,
         &[],
         stimulus,
@@ -1037,7 +1042,7 @@ pub fn capture_asis_full(
 /// rate (for FFT / band analysis). Mirrors the validated `measure_c` + `measure_knob_at`
 /// sequence (own-connection load → fresh-connect set → engage re-amp once → capture).
 pub fn capture_samples(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     ref_level: f32,
 ) -> Result<(Vec<f32>, u32), String> {
@@ -1059,7 +1064,7 @@ pub fn capture_samples(
 /// Uses the same `capture_full_at` ordering as the leveller's own force-bypass
 /// callers: the bypasses land after the load, before the engage.
 pub fn capture_samples_bypassed(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
@@ -1099,7 +1104,7 @@ pub fn capture_samples_bypassed(
 /// valueA)` writes — empty for base/scene sounds. See `capture_full_at_params`.
 #[allow(clippy::too_many_arguments)]
 pub fn doctor_capture(
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     fs_params: &[(String, String, String, f32)],
@@ -1140,7 +1145,7 @@ pub fn doctor_capture(
 /// capture.
 #[allow(clippy::too_many_arguments)]
 pub fn doctor_capture_with_loudness(
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     fs_params: &[(String, String, String, f32)],
@@ -1206,7 +1211,7 @@ pub fn doctor_capture_current(
     tail_ms: u64,
 ) -> Result<(Vec<f32>, u32), String> {
     Ok(to_stereo(capture_full_at(
-        0, // slot unused: skip_load
+        ListIndex::default(), // slot unused: skip_load
         scene,
         force_bypass,
         stimulus,
@@ -1271,7 +1276,7 @@ pub fn doctor_capture_on_session(
 /// at the solve: the solve captures at its REFERENCE level, so its PCM is not the saved
 /// preset's output.
 pub fn measure_sound_asis_strict(
-    slot: u32,
+    slot: ListIndex,
     scene: Option<u32>,
     force_bypass: &[(String, String, bool)],
     fs_value: Option<((String, String, String), f32)>,
@@ -1281,7 +1286,7 @@ pub fn measure_sound_asis_strict(
     // The trace names these captures by the validation row's identity when there is one.
     let _trace_ctx = match validate {
         Some(r) => crate::trace::capture_ctx(&r.label, Some(r.slot), r.scene_slot, r.switch),
-        None => crate::trace::capture_ctx("strict", Some(slot), scene, None),
+        None => crate::trace::capture_ctx("strict", Some(slot.get()), scene, None),
     };
     // Resolved ONCE, up front: an unarmed run must not clone a ~2.7 MB capture per
     // floor-guard attempt just to throw it away.
@@ -1345,7 +1350,7 @@ pub fn measure_sound_asis_strict(
 /// loaded on the earlier preset-load connection does not reliably survive the
 /// reconnect.
 pub fn capture_scene_ceilings(
-    slot: u32,
+    slot: ListIndex,
     scene_count: u32,
     stimulus: &[f32],
 ) -> Result<Vec<f64>, String> {
@@ -1466,7 +1471,7 @@ pub fn solve_level(c: f64, target_lufs: f64) -> (f32, bool, f64) {
 /// applies changes it; a reload per apply was pure churn the user SAW (the unit
 /// flashing back to the preset between every scene write).
 pub fn apply_level(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     knob: &LevelKnob,
     final_level: f32,
@@ -1490,7 +1495,7 @@ pub fn apply_level(
 /// whole set) and save. `apply_level` is the one-element case. See `apply_level`'s
 /// notes on `reload_preset`.
 pub fn apply_levels(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     targets: &[(&LevelKnob, f32)],
     opts: LevelOptions,
@@ -1732,7 +1737,7 @@ mod scene_bearing_for_boost_gate_tests {
 /// Thin compat wrapper over [`level_preset_impl`] for the legacy 6-arg (well, 7 with
 /// `cancelled`) callers that have no boost context to supply — see [`BoostContext`]'s doc.
 pub fn level_preset(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     target_lufs: f64,
     opts: LevelOptions,
@@ -1754,7 +1759,7 @@ pub fn level_preset(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn level_preset_impl(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     target_lufs: f64,
     opts: LevelOptions,
@@ -2047,7 +2052,7 @@ pub(crate) fn level_preset_impl(
 /// Back a half-landed raise-and-hold pair out: reload the stored preset (discarding the
 /// unsaved raise and whatever the hold wrote, together) and guarantee re-amp OFF on a fresh
 /// connection. `tag` names the executor in the log line.
-fn backout_pair(slot: u32, tag: &str) {
+fn backout_pair(slot: ListIndex, tag: &str) {
     if let Err(e) = restore_saved_preset(slot) {
         log::warn!("restore_saved_preset failed backing out a {tag} (slot {slot}): {e}");
     }
@@ -2098,7 +2103,7 @@ fn raise_preset_level_unsaved<E>(
 /// beats the honest clamp, where a trade's clamped hold backs out instead.
 #[allow(clippy::too_many_arguments)]
 fn apply_base_boost(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     target_lufs: f64,
     opts: LevelOptions,
@@ -2235,7 +2240,7 @@ fn apply_base_boost(
 /// One entry in a setlist leveling pass: the preset slot + its already-loaded
 /// instrument stimulus.
 pub struct SetlistEntry<'a> {
-    pub slot: u32,
+    pub slot: ListIndex,
     pub stimulus: &'a [f32],
     /// Fletcher–Munson playback compensation (LU) added to this entry's target
     /// (see `profiles::playback_offset_lu`). 0 = level at the common target as-is.
@@ -2413,7 +2418,7 @@ pub enum SceneLevelStrategy {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SceneLevelBenchmarkRow {
-    pub preset_slot: u32,
+    pub preset_slot: ListIndex,
     pub ui_label: String,
     pub scene_slot: u32,
     pub scene_name: String,
@@ -2438,7 +2443,7 @@ pub struct SceneLevelBenchmarkRow {
 /// (`read_saved_preset`'s read-once contract). `None` (read failed) makes `set_knobs`
 /// refuse the scene write rather than guess.
 fn saved_for_scene_knobs<'a>(
-    slot: u32,
+    slot: ListIndex,
     knobs: impl IntoIterator<Item = &'a LevelKnob>,
 ) -> Option<serde_json::Value> {
     knobs
@@ -2502,7 +2507,7 @@ fn recall_original_scene(s: &mut Session, restore_scene: Option<u32>) -> Result<
 /// `SETTLE_AFTER_SET_MS` so the idle gap stays under the cliff.
 fn recall_reassert_save(
     s: &mut Session,
-    slot: u32,
+    slot: ListIndex,
     restore_scene: Option<u32>,
     reasserts: &[Reassert],
 ) -> Result<(), String> {
@@ -4688,7 +4693,7 @@ pub struct FsPendingWrite {
 /// (`level_footswitches_apply`) assembles itself — keep the three in lockstep.
 #[allow(clippy::too_many_arguments)]
 pub fn level_footswitch(
-    slot: u32,
+    slot: ListIndex,
     switch: u32,
     lev: (&str, &str, &str),
     engaged_bypass: &[(String, String, bool)],
@@ -4811,7 +4816,7 @@ pub fn level_footswitch(
 /// scened preset's bake landed in that scene's overlay while BASE — the state the leveler
 /// measured, and the one the switch's off position renders — kept its old value.
 pub fn write_footswitch_values(
-    slot: u32,
+    slot: ListIndex,
     pending: &[FsPendingWrite],
     restore_scene: Option<u32>,
 ) -> Result<(), String> {
@@ -4837,7 +4842,7 @@ pub fn write_footswitch_values(
 /// writes too and the fix is to split the batch, not to drop the recall.
 fn write_fs_values_on_session(
     s: &mut Session,
-    slot: u32,
+    slot: ListIndex,
     pending: &[FsPendingWrite],
     restore_scene: Option<u32>,
 ) -> Result<(), String> {
@@ -5245,7 +5250,7 @@ impl SceneJob {
 /// knob + bounds + that scene's current value). `save` persists once at the
 /// end; otherwise the stored preset is reloaded.
 pub fn level_scenes_live_batched(
-    slot: u32,
+    slot: ListIndex,
     jobs: &[SceneJob],
     stimulus: &[f32],
     save: bool,
@@ -5605,7 +5610,7 @@ pub(crate) fn scene_capture_level(
 
 #[allow(clippy::too_many_arguments)]
 pub fn level_scenes_oneshot(
-    slot: u32,
+    slot: ListIndex,
     jobs: &[SceneJob],
     stimulus: &[f32],
     save: bool,
@@ -5745,7 +5750,7 @@ pub struct TradeHold {
 /// taken at the OLD `presetLevel`, so it is SHIFTED by `raise_db` rather than used as-is — see
 /// the seed comment on `hold_job` below for why that shift is exact and what it trades.
 pub fn apply_headroom_trade(
-    slot: u32,
+    slot: ListIndex,
     plan: &crate::headroom_trade::TradePlan,
     preset_level: f32,
     base_job: &SceneJob,
@@ -6026,7 +6031,7 @@ pub(crate) const REDIST_POST_VERIFY_TOL_LU: f64 = 1.5;
 /// ran `prepass_scene_docs`), and `jobs`' knobs carry each sound's pre-raise `current` value.
 #[allow(clippy::too_many_arguments)]
 pub fn redistribute_clamped_headroom(
-    slot: u32,
+    slot: ListIndex,
     new_preset_level: f32,
     jobs: &[SceneJob],
     stimulus: &[f32],
@@ -6254,7 +6259,7 @@ mod union_isolation_restore_tests {
 /// between the prepass and the first scene measure, once per dispatched scene.
 #[allow(clippy::too_many_arguments)]
 fn run_scene_jobs(
-    slot: u32,
+    slot: ListIndex,
     jobs: &[SceneJob],
     save: bool,
     restore_scene: Option<u32>,
@@ -6481,7 +6486,7 @@ fn run_scene_jobs(
 /// open, not the save itself). The connection never toggles re-amp, so the post-re-amp
 /// save-drop cannot bite.
 fn save_deferred_scene_writes(
-    slot: u32,
+    slot: ListIndex,
     restore_scene: Option<u32>,
     reasserts: &[Reassert],
 ) -> Result<(), String> {
@@ -6654,7 +6659,7 @@ pub(crate) fn persist_mismatches(
 /// means the run's own isolation cleanup did not land, so the saved preset carries a pedal in a
 /// state the player never authored.
 fn verify_persisted_writes(
-    slot: u32,
+    slot: ListIndex,
     writes: &[PersistedWrite],
     force_bypass_restore: &[(String, String, bool)],
     outcomes: &mut [BatchedSceneOutcome],
@@ -6748,7 +6753,7 @@ fn verify_persisted_writes(
 /// would ever catch on its own — so every switch in this batch is stamped mismatched too
 /// (the whole preset's base sound, not just one switch, is now suspect).
 pub(crate) fn verify_fs_persisted_writes(
-    slot: u32,
+    slot: ListIndex,
     writes: &[(usize, String, String, f32, bool)],
     base_expect: Option<f32>,
     results: &mut [Option<FootswitchLevelResult>],
@@ -7168,7 +7173,7 @@ impl Prologue {
 /// both verify and correction.
 #[allow(clippy::too_many_arguments)]
 fn jointk_one_scene(
-    slot: u32,
+    slot: ListIndex,
     job: &SceneJob,
     stimulus: &[f32],
     target_lufs: f64,
@@ -7403,7 +7408,7 @@ const SCENE_HANDLE_CORRECT_MAX: u32 = 8;
 /// `save_deferred_scene_writes` persists it: ONE save per preset, unchanged.
 #[allow(clippy::too_many_arguments)]
 fn handle_one_scene(
-    slot: u32,
+    slot: ListIndex,
     job: &SceneJob,
     handle: &FsParamTarget,
     stimulus: &[f32],
@@ -7538,7 +7543,7 @@ fn zip_targets<'a>(knobs: &[&'a LevelKnob], levels: &[f32]) -> Vec<(&'a LevelKno
 /// `(verify_lufs, retry_writes)`.
 #[allow(clippy::too_many_arguments)]
 fn apply_first_verified(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     knobs: &[&LevelKnob],
     levels: &[f32],
@@ -7600,7 +7605,7 @@ struct Correction {
 /// verified loudness; `measured0` = loudness at `base`.
 #[allow(clippy::too_many_arguments)]
 fn correct_iter(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     knobs: &[&LevelKnob],
     base: &[f32],
@@ -7905,7 +7910,7 @@ fn measure_mute_floor(
 /// muted lane bleeds into the solo, so the equal-solo rebalance balance is only approximate
 /// (the combined joint-k still hits the overall target). NO SAVE (each measure reloads).
 pub fn mute_floor_report(
-    slot: u32,
+    slot: ListIndex,
     a: &LevelKnob,
     cur_a: f32,
     b: &LevelKnob,
@@ -7987,7 +7992,7 @@ fn balanced_solo_levels(c_a: f64, c_b: f64) -> (f32, f32) {
 /// Restores via preset reload on no-save; ends with a guaranteed re-amp OFF.
 #[allow(clippy::too_many_arguments)]
 pub fn level_scenes_rebalance(
-    slot: u32,
+    slot: ListIndex,
     jobs: &[SceneJob],
     stimulus: &[f32],
     save: bool,
@@ -8055,7 +8060,7 @@ pub fn level_scenes_rebalance(
 /// plus a `verify_by_ear` flag when the lane-mute floor is too shallow to trust the balance.
 #[allow(clippy::too_many_arguments)]
 fn rebalance_one_scene(
-    slot: u32,
+    slot: ListIndex,
     job: &SceneJob,
     stimulus: &[f32],
     target_lufs: f64,
@@ -8289,7 +8294,7 @@ fn failed_scene_outcome(
 /// outside `[lo, hi]` (unreachable). Optionally verifies and saves.
 #[allow(clippy::too_many_arguments)]
 pub fn level_preset_block(
-    slot: u32,
+    slot: ListIndex,
     stimulus: &[f32],
     knob: &LevelKnob,
     lo: f32,
@@ -9196,7 +9201,7 @@ mod tests {
         ] {
             let t = crate::test_support::ScriptedTransport::default();
             let mut s = crate::test_support::session_over(&t, Vec::new());
-            reload_stored_on(&mut s, slot).unwrap();
+            reload_stored_on(&mut s, ListIndex(slot)).unwrap();
             assert_eq!(loads_sent(&t), want);
         }
     }
@@ -9218,12 +9223,13 @@ mod tests {
         let stim = [0.0f32; 16];
         let opts = LevelOptions::default();
         assert_eq!(
-            level_preset(0, &stim, -30.0, opts, &[], None, || true).unwrap_err(),
+            level_preset(ListIndex(0), &stim, -30.0, opts, &[], None, || true).unwrap_err(),
             CANCELLED
         );
         let knob = LevelKnob::PresetLevel;
         assert_eq!(
-            level_preset_block(0, &stim, &knob, 0.05, 1.0, -30.0, opts, || true).unwrap_err(),
+            level_preset_block(ListIndex(0), &stim, &knob, 0.05, 1.0, -30.0, opts, || true)
+                .unwrap_err(),
             CANCELLED
         );
     }
@@ -10277,7 +10283,7 @@ mod tests {
     fn set_knob_base_block_recalls_base_explicitly() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset"); // activates saved scene 3, not base
+        s.load_preset(ListIndex(30)).expect("load_preset"); // activates saved scene 3, not base
         let knob = LevelKnob::Block {
             group_id: "G1".into(),
             node_id: "amp".into(),
@@ -10307,7 +10313,7 @@ mod tests {
         // write in that scene's overlay — silently, each write confirming normally.
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         let mk = |scene: u32| LevelKnob::Block {
             group_id: "G1".into(),
             node_id: "amp".into(),
@@ -10336,7 +10342,7 @@ mod tests {
         // base-scoped knob riding along would be written under that overlay, not base.
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         let mk = |scene: Option<u32>| LevelKnob::Block {
             group_id: "G1".into(),
             node_id: "amp".into(),
@@ -10363,7 +10369,7 @@ mod tests {
     fn set_knobs_base_only_batch_recalls_base_explicitly() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         let knob = LevelKnob::Block {
             group_id: "G1".into(),
             node_id: "amp".into(),
@@ -10392,7 +10398,7 @@ mod tests {
     fn set_knobs_preset_level_only_gets_no_recall() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         set_knobs(&mut s, &[(&LevelKnob::PresetLevel, 0.5)], None).expect("set_knobs");
         let ev = sim.events();
         assert!(
@@ -10413,8 +10419,14 @@ mod tests {
             .with_preset_json(crate::sim_device::SCENED_PRESET_JSON)
             .with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
-        recall_reassert_save(&mut s, 30, Some(3), &[Reassert::PresetLevel(0.42)]).expect("save");
+        s.load_preset(ListIndex(30)).expect("load_preset");
+        recall_reassert_save(
+            &mut s,
+            ListIndex(30),
+            Some(3),
+            &[Reassert::PresetLevel(0.42)],
+        )
+        .expect("save");
         let tail: Vec<String> = sim
             .events()
             .iter()
@@ -10437,8 +10449,9 @@ mod tests {
     fn recall_reassert_save_skips_the_reassert_without_a_recall() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
-        recall_reassert_save(&mut s, 30, None, &[Reassert::PresetLevel(0.42)]).expect("save");
+        s.load_preset(ListIndex(30)).expect("load_preset");
+        recall_reassert_save(&mut s, ListIndex(30), None, &[Reassert::PresetLevel(0.42)])
+            .expect("save");
         let ev = sim.events();
         assert!(
             !ev.iter()
@@ -10489,7 +10502,7 @@ mod tests {
     fn set_knobs_omits_the_scene_edit_enable_when_the_overlay_exists() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(0).expect("load_preset");
+        s.load_preset(ListIndex(0)).expect("load_preset");
         // Base gain 0.7; scene 0 already carries its own gain 0.3 (what the reseed wipes).
         s.load_scene(crate::session::BASE_SCENE_SLOT).expect("base");
         s.change_parameter("G1", "amp", "gain", 0.7)
@@ -10529,7 +10542,7 @@ mod tests {
     fn set_knobs_enables_scene_edit_when_the_overlay_is_absent() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(0).expect("load_preset");
+        s.load_preset(ListIndex(0)).expect("load_preset");
         let knob = scene_knob("outputLevel");
         let saved = saved_with_overlay(false);
         set_knobs(&mut s, &[(&knob, 0.9)], Some(&saved)).expect("set_knobs");
@@ -10560,7 +10573,7 @@ mod tests {
         ] {
             let sim = crate::sim_device::SimDevice::new();
             let mut s = Session::from_transport(Box::new(sim.clone()));
-            s.load_preset(0).expect("load_preset");
+            s.load_preset(ListIndex(0)).expect("load_preset");
             let knob = scene_knob("outputLevel");
             let err = set_knobs(&mut s, &[(&knob, 0.9)], saved.as_ref())
                 .expect_err("a scene write with unknown overlay presence must be refused");
@@ -10596,7 +10609,7 @@ mod tests {
         ] {
             let sim = crate::sim_device::SimDevice::new();
             let mut s = Session::from_transport(Box::new(sim.clone()));
-            s.load_preset(0).expect("load_preset");
+            s.load_preset(ListIndex(0)).expect("load_preset");
             let mut saved = saved_with_overlay(true);
             saved["scenes"][0]["guitarNodes"]["G1"]["amp"] =
                 serde_json::json!({ "dspUnitParameters": overlay });
@@ -11766,7 +11779,7 @@ mod tests {
             },
             value: 8.0,
         }];
-        write_fs_values_on_session(&mut s, 30, &pending, None).expect("write");
+        write_fs_values_on_session(&mut s, ListIndex(30), &pending, None).expect("write");
         assert_eq!(
             sim.param_write(crate::sim_device::SCENE_BASE, "G1", "boost", "gain"),
             Some(8.0),
@@ -11828,7 +11841,7 @@ mod tests {
             },
             value: 0.42,
         }];
-        write_fs_values_on_session(&mut s, 30, &pending, None).expect("write");
+        write_fs_values_on_session(&mut s, ListIndex(30), &pending, None).expect("write");
         let ev = sim.events();
         let baked: Vec<i64> = ev
             .iter()
@@ -11876,7 +11889,7 @@ mod tests {
             },
             value: 0.7,
         }];
-        write_fs_values_on_session(&mut s, 30, &pending, None).expect("write");
+        write_fs_values_on_session(&mut s, ListIndex(30), &pending, None).expect("write");
         let ev = sim.events();
         let sent = ev
             .iter()
@@ -11920,7 +11933,7 @@ mod tests {
             },
             value: 0.42,
         }];
-        write_fs_values_on_session(&mut s, 30, &pending, Some(3)).expect("write");
+        write_fs_values_on_session(&mut s, ListIndex(30), &pending, Some(3)).expect("write");
         let ev = sim.events();
         let writes: Vec<i64> = ev
             .iter()
@@ -11962,7 +11975,7 @@ mod tests {
     fn arm_measurement_recalls_base_before_a_preset_level_capture() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset"); // activates saved scene 3, not base
+        s.load_preset(ListIndex(30)).expect("load_preset"); // activates saved scene 3, not base
         arm_measurement(&mut s, &LevelKnob::PresetLevel, 0.5, &[], None, None).expect("arm");
         let ev = sim.events();
         let recall = ev.iter().position(|e| {
@@ -11984,7 +11997,7 @@ mod tests {
     fn arm_measurement_writes_isolation_bypasses_after_the_scene_recall() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         let knob = LevelKnob::Block {
             group_id: "G1".into(),
             node_id: "amp".into(),
@@ -12029,7 +12042,7 @@ mod tests {
         let arm = |intended: Option<f32>| {
             let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
             let mut s = Session::from_transport(Box::new(sim.clone()));
-            s.load_preset(30).expect("load_preset");
+            s.load_preset(ListIndex(30)).expect("load_preset");
             arm_measurement(
                 &mut s,
                 &knob,
@@ -12087,7 +12100,7 @@ mod tests {
     fn arm_pair_measurement_zero_write_base_arm_heartbeats_before_the_naked_engage() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         arm_pair_measurement(&mut s, None, 0.5, &[]).expect("arm");
         // Stand in for the caller's engage (`measure_pair_at` calls `engage_measure_disengage`
         // next, which opens with exactly this write) — a real audio capture isn't reachable
@@ -12123,7 +12136,7 @@ mod tests {
     fn arm_pair_measurement_does_not_heartbeat_when_writes_are_present() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         arm_pair_measurement(
             &mut s,
             None,
@@ -12151,7 +12164,7 @@ mod tests {
     fn arm_pair_measurement_scene_arm_never_heartbeats() {
         let sim = crate::sim_device::SimDevice::new().with_saved_scene(30, Some(3));
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(30).expect("load_preset");
+        s.load_preset(ListIndex(30)).expect("load_preset");
         arm_pair_measurement(&mut s, Some(2), 0.5, &[]).expect("arm");
         let ev = sim.events();
         assert!(
@@ -12170,7 +12183,7 @@ mod tests {
     fn set_knob_value_only_routes_bypass_through_the_bool_wire_call() {
         let sim = crate::sim_device::SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(0).expect("load_preset");
+        s.load_preset(ListIndex(0)).expect("load_preset");
         let bypass_knob = LevelKnob::Block {
             group_id: "G1".into(),
             node_id: "amp".into(),

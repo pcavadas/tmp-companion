@@ -4,6 +4,7 @@ use super::SCRATCH_SLOTS;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
+use crate::slot::ListIndex;
 
 /// Read a Song's preset assignments. Song reads ride the handshake burst with
 /// [`proto::BATCH_DRAIN`] (fw 1.8.58: 1/2 only queue, 3 queues and drains, ≥4 is
@@ -221,7 +222,7 @@ pub(crate) fn set_song_bpm_on(
     s: &mut Session,
     slot: u32,
     bpm: f32,
-    restore: Option<u32>,
+    restore: Option<ListIndex>,
 ) -> Result<(Option<Vec<session::SongRecord>>, bool), String> {
     // FAIL-CLOSED: an empty read means no usable reply (a footswitch-less song still
     // returns its all-empty rows), so refuse rather than assign over a binding we
@@ -241,13 +242,21 @@ pub(crate) fn set_song_bpm_on(
         Some(i) => ((i + 1) as u32, rows[i].user_preset_slot),
         None => {
             // An all-empty song: no label or colours to keep.
-            s.assign_song_preset(slot, 1, 0, "", 0, session::BASE_SCENE_SLOT, 0)
-                .map_err(|e| {
-                    format!(
-                        "could not give this song a footswitch, which setting its BPM \
+            s.assign_song_preset(
+                slot,
+                1,
+                crate::slot::ListIndex(0),
+                "",
+                0,
+                session::BASE_SCENE_SLOT,
+                0,
+            )
+            .map_err(|e| {
+                format!(
+                    "could not give this song a footswitch, which setting its BPM \
                          needs — assign a preset to it on the unit and retry ({e})"
-                    )
-                })?;
+                )
+            })?;
             (1, 1)
         }
     };
@@ -361,7 +370,7 @@ pub fn probe_set_song_bpm(name: &str, bpm: f32) -> Result<String, String> {
 pub fn probe_assign_song_preset(
     song_name: &str,
     row: u32,
-    list_index: u32,
+    list_index: ListIndex,
 ) -> Result<String, String> {
     if !SCRATCH_SLOTS.contains(&list_index) {
         return Err(format!(
@@ -386,7 +395,7 @@ pub fn probe_assign_song_preset(
     let mut out = format!(
         "[probe --assign-song-preset] {song_name:?} (songSlot {slot}) row {row} \
          → list idx {list_index} (device userPresetSlot {}): {}\n",
-        list_index + 1,
+        list_index.device_slot(),
         match &assigned {
             Ok(()) => "landed ✓".to_string(),
             Err(e) => format!("REFUSED ✗ — {e}"),
@@ -464,7 +473,7 @@ mod tests {
         s.set_tap_tempo_bpm(141.0).unwrap();
         assert_eq!(sim.song(1).unwrap().bpm, 141);
         // A tab-1 load leaves song mode: a tap no longer reaches any song.
-        s.load_preset(0).unwrap();
+        s.load_preset(ListIndex(0)).unwrap();
         s.set_tap_tempo_bpm(90.0).unwrap();
         assert_eq!(sim.song(1).unwrap().bpm, 141);
     }
@@ -474,14 +483,17 @@ mod tests {
     // (8) is always accepted.
     #[test]
     fn a_song_scene_the_preset_does_not_have_is_refused_and_reported() {
-        let sim = SimDevice::new().with_preset_scenes(1, 2);
+        let sim = SimDevice::new().with_preset_scenes(ListIndex(1), 2);
         let mut s = sim_session(&sim);
-        let err = s.assign_song_preset(1, 1, 0, "", 0, 1, 0).unwrap_err(); // 001: no scenes
+        let err = s
+            .assign_song_preset(1, 1, ListIndex(0), "", 0, 1, 0)
+            .unwrap_err(); // 001: no scenes
         assert!(err.contains("did not bind"), "{err}");
         assert_eq!(sim.song(1).unwrap().rows[0], None);
         assert!(sim.events().contains(&SimEvent::SongError(5)));
-        s.assign_song_preset(1, 2, 1, "", 0, 1, 0).unwrap(); // 002: 2 scenes
-        s.assign_song_preset(1, 3, 0, "", 0, session::BASE_SCENE_SLOT, 0)
+        s.assign_song_preset(1, 2, ListIndex(1), "", 0, 1, 0)
+            .unwrap(); // 002: 2 scenes
+        s.assign_song_preset(1, 3, ListIndex(0), "", 0, session::BASE_SCENE_SLOT, 0)
             .unwrap();
         let rows = sim.song(1).unwrap().rows;
         assert_eq!(rows[1].as_ref().map(|r| r.scene_slot), Some(1));
@@ -497,7 +509,7 @@ mod tests {
     fn a_new_song_bpm_lands_on_the_first_pass_on_one_session() {
         let sim = SimDevice::new();
         let mut s = sim_session(&sim);
-        let (songs, landed) = set_song_bpm_on(&mut s, 1, 97.0, Some(5)).unwrap();
+        let (songs, landed) = set_song_bpm_on(&mut s, 1, 97.0, Some(ListIndex(5))).unwrap();
         assert!(landed);
         let rec = songs.unwrap().into_iter().find(|r| r.slot == 1).unwrap();
         assert_eq!((rec.bpm, rec.bpm_active), (97, true));
@@ -507,7 +519,7 @@ mod tests {
                 SimEvent::SongAssign {
                     song: 1,
                     row: 1,
-                    list_index: 0,
+                    list_index: ListIndex(0),
                     scene: session::BASE_SCENE_SLOT,
                 },
                 SimEvent::Loaded(0),

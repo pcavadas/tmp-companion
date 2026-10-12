@@ -69,7 +69,7 @@ impl Session {
         &mut self,
         song_slot: u32,
         song_preset_slot: u32,
-        user_list_index: u32,
+        user_list_index: ListIndex,
         footswitch_label: &str,
         footswitch_color: u32,
         preset_scene_slot: u32,
@@ -79,7 +79,7 @@ impl Session {
             &proto::assign_song_preset(
                 song_slot as u64,
                 song_preset_slot as u64,
-                (user_list_index + 1) as u64,
+                DeviceSlot::from(user_list_index).wire(),
                 footswitch_label,
                 footswitch_color as u64,
                 preset_scene_slot as u64,
@@ -99,7 +99,7 @@ impl Session {
             .and_then(|i| rows.get(i))
             .is_some_and(|r| {
                 !r.is_empty
-                    && r.user_preset_slot == user_list_index + 1
+                    && r.user_preset_slot == DeviceSlot::from(user_list_index).get()
                     && r.preset_scene_slot == preset_scene_slot
             });
         if landed {
@@ -109,7 +109,7 @@ impl Session {
             "the unit did not bind song {song_slot} footswitch {song_preset_slot} to preset \
              {:03} scene slot {preset_scene_slot} (it refuses a scene the preset doesn't \
              have; {BASE_SCENE_SLOT} = the whole preset)",
-            user_list_index + 1
+            DeviceSlot::from(user_list_index).get()
         ))
     }
 

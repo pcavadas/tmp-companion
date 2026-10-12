@@ -192,7 +192,7 @@ fn song_bpm_step(
     s: &mut Session,
     slot: u32,
     bpm: f32,
-    prior: Option<u32>,
+    prior: Option<ListIndex>,
 ) -> (Option<Vec<session::SongRecord>>, Option<String>) {
     match set_song_bpm_on(s, slot, bpm, prior) {
         Ok((songs, _)) => (songs, None),
@@ -365,7 +365,7 @@ fn finish_song_save(
 pub(crate) async fn song_assign(
     song_slot: u32,
     song_preset_slot: u32,
-    user_list_index: u32,
+    user_list_index: ListIndex,
     footswitch_label: String,
     footswitch_color: u32,
     preset_scene_slot: u32,

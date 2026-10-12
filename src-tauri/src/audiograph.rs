@@ -401,6 +401,7 @@ mod preset_level_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slot::ListIndex;
     use std::collections::HashSet;
     use std::path::PathBuf;
 
@@ -508,7 +509,7 @@ mod tests {
             bypass: true,
         };
         let t = PresetTarget {
-            list_index: 0,
+            list_index: ListIndex(0),
             list_enum: 1,
             display_name: "x".into(),
             source: crate::backup::SnapshotSource::OfflineFile,

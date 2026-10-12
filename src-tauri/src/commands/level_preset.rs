@@ -14,7 +14,7 @@ use crate::*;
 /// `FootswitchLevelJob` — three row kinds, one shape.
 #[derive(serde::Deserialize)]
 pub(crate) struct LevelJob {
-    slot: u32,
+    slot: ListIndex,
     target_lufs: f64,
     /// Persist the computed `presetLevel` to the preset (SaveCurrentPreset).
     save: bool,
@@ -46,7 +46,7 @@ pub(crate) struct LevelJob {
 #[tauri::command]
 pub(crate) async fn list_level_blocks(
     state: State<'_, AppState>,
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<Vec<session::LevelBlock>, String> {
     let blocks = with_released_seize(state.session.clone(), move || {
         load_then_discover_blocks(slot)
@@ -328,7 +328,7 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
                         "could not read preset {} to classify {parameter_id} on {node_id} — \
                          leveling an unclassified parameter could change the sound instead of \
                          its loudness",
-                        slot + 1
+                        slot.device_slot()
                     ));
                 };
                 // `block_value` — the value the picker displayed — stays the wet-floor

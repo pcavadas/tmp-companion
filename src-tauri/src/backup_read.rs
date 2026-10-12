@@ -1,5 +1,6 @@
 //! Decode a device backup archive into preset/scene/song data.
 
+use crate::slot::DeviceSlot;
 use crate::{
     audiograph, base_handle_candidates_scanned, decode_preset_scenes, filter_amp_candidates,
     footswitch, is_amp_model_id, is_amp_output_level_param, scan_node_graph,
@@ -537,7 +538,7 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
 /// TAIL-TRUNCATED (on fw 1.8.58 a cut is the device's inactivity drop, which the
 /// kept-alive read no longer hits — this stays the fallback for any partial).
 ///
-/// `device_slot` is the DB `slot` = list index + 1 (see [`BackupPresetRow::slot`]).
+/// `device_slot` is the DB `slot`, a 1-based [`DeviceSlot`] (see [`BackupPresetRow::slot`]).
 /// IDENTITY-GUARDED (danger.md's address-space rule): the caller states the slot,
 /// the name it expects there, and — when its own partial could name one —
 /// `expect_id` (the partial's `info.preset_id`, per `crate::library::preset_id_of`).
@@ -557,7 +558,7 @@ fn extract_backup_entries(blob: &[u8]) -> Result<BackupEntries, String> {
 /// own doc for the vacuous-pass hazard this avoids).
 pub(crate) fn preset_json_from_backup(
     blob: &[u8],
-    device_slot: i64,
+    device_slot: DeviceSlot,
     expect_name: &str,
     expect_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
@@ -582,7 +583,7 @@ pub(crate) fn preset_json_from_backup(
 /// the `got_id` comparison, but the alignment is worth stating.
 fn backup_row_preset_json(
     rows: &serde_json::Value,
-    device_slot: i64,
+    device_slot: DeviceSlot,
     expect_name: &str,
     expect_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {

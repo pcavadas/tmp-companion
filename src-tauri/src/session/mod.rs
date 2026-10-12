@@ -26,6 +26,7 @@ use serde::Serialize;
 
 use crate::hid::{Hid, HidTransport};
 use crate::proto::{self, Val};
+use crate::slot::{DeviceSlot, ListIndex};
 
 // The transport set: only these files touch `self.hid`, the clock or a literal pump
 // window (`boundary_tests` holds the rest to it).

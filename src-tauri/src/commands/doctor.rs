@@ -11,7 +11,7 @@ use crate::*;
 #[serde(rename_all = "camelCase")]
 pub struct DoctorInput {
     pub key: String,
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub scene: Option<u32>,
     /// Block-acting footswitch index (0-based `switch`) when this sound is a
     /// footswitch state; `None` for base/scene sounds.
@@ -89,14 +89,14 @@ pub(crate) fn doctor_force_bypass(
 /// never be driven from an offline fixture — a test hands this fn a synthetic `Err` instead.
 pub(crate) fn base_isolation_or_refuse(
     read: Result<serde_json::Value, String>,
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<(serde_json::Value, ForceBypass, Option<u32>), String> {
     let preset = read.map_err(|e| {
         format!(
             "could not read preset {}'s footswitch assignments ({e}) — they define which \
              blocks are switched off for the Base measurement, and leveling without them \
              would save a level solved for the wrong sound",
-            slot + 1
+            slot.device_slot()
         )
     })?;
     let force = doctor_force_bypass(&preset["ftsw"], &preset, None);
@@ -109,7 +109,7 @@ pub(crate) fn base_isolation_or_refuse(
 /// probe arms). Returns the preset body, the read's own fail-safe `has_fs_scenes` flag
 /// (`read_slot_preset_sections`' doc), the force-bypass list and `restore_scene`.
 pub(crate) fn read_base_isolation(
-    slot: u32,
+    slot: ListIndex,
 ) -> Result<(serde_json::Value, bool, ForceBypass, Option<u32>), String> {
     let read = crate::read_slot_preset_complete(slot, &["ftsw"]);
     let has_fs_scenes = read
@@ -192,8 +192,8 @@ fn resolve_sound_isolation(
     scene_overrides: &[doctor::NodeOverride],
     scene: Option<u32>,
     footswitch: Option<u32>,
-    list_index: u32,
-    preset_cache: &mut std::collections::HashMap<u32, serde_json::Value>,
+    list_index: ListIndex,
+    preset_cache: &mut std::collections::HashMap<ListIndex, serde_json::Value>,
 ) -> SoundIsolation {
     if scene.is_some() {
         return SoundIsolation {
@@ -213,8 +213,8 @@ fn isolation_writes(
     nodes: &[doctor::DoctorNode],
     footswitches: &[footswitch::FootswitchInfo],
     footswitch: Option<u32>,
-    list_index: u32,
-    preset_cache: &mut std::collections::HashMap<u32, serde_json::Value>,
+    list_index: ListIndex,
+    preset_cache: &mut std::collections::HashMap<ListIndex, serde_json::Value>,
 ) -> SoundIsolation {
     if !nodes.is_empty() {
         SoundIsolation {
@@ -271,7 +271,7 @@ fn isolation_writes(
                      be read (the preset is too large to read over USB), so this switch's \
                      sound cannot be isolated — skipped",
                     sw + 1,
-                    list_index + 1
+                    list_index.device_slot()
                 )
             }),
             graph: Vec::new(),
@@ -283,7 +283,7 @@ fn isolation_writes(
 /// Only a SUCCESSFUL sound is recorded — after an error the unit may be on any
 /// preset, so the loop resets this to `None` (same effect as the run's start).
 struct PrevSound {
-    list_index: u32,
+    list_index: ListIndex,
     /// It sent working-copy writes — force-bypass isolation OR a footswitch's
     /// param-function `valueA` jumps (`SoundIsolation`, either list non-empty).
     /// Only a reload clears the pollution (a scene recall re-asserts ONLY the
@@ -297,7 +297,7 @@ struct PrevSound {
 /// scene anyway, the production scene-leveling mechanism; HW-validated 0.001 LU
 /// identical to a fresh reload). Base and footswitch sounds always reload (base
 /// needs the base-scene state; footswitch sounds write isolation either way).
-fn doctor_skip_load(prev: Option<&PrevSound>, list_index: u32, is_scene: bool) -> bool {
+fn doctor_skip_load(prev: Option<&PrevSound>, list_index: ListIndex, is_scene: bool) -> bool {
     is_scene
         && prev
             .map(|p| p.list_index == list_index && !p.wrote)
@@ -364,7 +364,7 @@ pub enum SoundStatus {
 #[serde(rename_all = "camelCase")]
 pub struct DoctorSoundResult {
     pub key: String,
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub scene: Option<u32>,
     pub footswitch: Option<u32>,
     /// The scene sound's saved overlay, echoed from its `DoctorInput` like `scene` and
@@ -408,7 +408,7 @@ pub struct DoctorSoundResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorPresetResult {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub sounds: Vec<DoctorSoundResult>,
     pub scene_consistency: Option<doctor::SceneConsistency>,
     /// Backup-scan-only advisories (zero device captures): footswitch `param`
@@ -507,7 +507,7 @@ fn assemble_results(
 ) -> Vec<DoctorPresetResult> {
     let mut presets: Vec<DoctorPresetResult> = Vec::new();
     // Each preset's first measured base sound — scene consistency's reference.
-    let mut bases: std::collections::HashMap<u32, (String, f64, doctor::Instrument)> =
+    let mut bases: std::collections::HashMap<ListIndex, (String, f64, doctor::Instrument)> =
         std::collections::HashMap::new();
     for ((item, _, kind), outcome) in resolved.iter().zip(outcomes) {
         let sound = sound_result(item, *kind, outcome);
@@ -573,7 +573,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: State<'_, AppState>,
     items: Vec<DoctorInput>,
-    restore_list_index: Option<u32>,
+    restore_list_index: Option<ListIndex>,
     on_result: tauri::ipc::Channel<DoctorProgressItem>,
 ) -> Result<DoctorCheckResult, String> {
     if items.is_empty() {
@@ -612,10 +612,10 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
         let mut outcomes: Vec<SoundOutcome> = vec![SoundOutcome::Unrun; resolved.len()];
         // One field-8 preset read per list index, reused across that preset's base
         // + footswitch sounds — the source for each sound's force-bypass isolation.
-        let mut preset_cache: std::collections::HashMap<u32, serde_json::Value> =
+        let mut preset_cache: std::collections::HashMap<ListIndex, serde_json::Value> =
             std::collections::HashMap::new();
         let mut stopped = false;
-        let mut last_scanned: Option<u32> = None;
+        let mut last_scanned: Option<ListIndex> = None;
         // The previous sound's outcome — drives the consecutive-scene load skip
         // (`doctor_skip_load`).
         let mut prev: Option<PrevSound> = None;
@@ -724,7 +724,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                 // ⟦P1/P4⟧ PREMISE-CHECK SEAM — see `validate_log::emit_doctor`'s doc.
                 let validate = crate::validate_log::doctor_log_path().map(|_| {
                     crate::validate_log::ValidationRow::doctor(
-                        item.list_index,
+                        item.list_index.get(),
                         item.scene,
                         item.footswitch,
                     )
@@ -885,7 +885,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoctorApplyJob {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub name: String,
     pub ops: Vec<doctor::DoctorOp>,
     pub topology_id: Option<String>,
@@ -941,7 +941,14 @@ pub struct DoctorApplyResult {
 /// instrument-profile switch between applies, and `scene`/`footswitch` (the
 /// last two fields) catch a switch between sounds of the SAME preset — a
 /// scene's cached clip must never serve a different scene or the base sound.
-type BeforeKey = (u32, String, String, Option<u32>, Option<u32>, Option<u32>);
+type BeforeKey = (
+    ListIndex,
+    String,
+    String,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+);
 
 /// Single-entry cache of `doctor_apply`'s BEFORE clip (the stored preset captured at
 /// its own level — ~11 s to produce). The before-state is stable across consecutive
@@ -1107,13 +1114,13 @@ fn check_doctor_inserts(
 /// own `Session::connect` runs — a setup failure here must still discard that,
 /// not just an `apply_doctor_ops` failure.
 pub(crate) fn ops_session(
-    list_index: u32,
+    list_index: ListIndex,
     expect_name: &str,
     scene: Option<u32>,
     ops: &[doctor::DoctorOp],
     verb: &str,
 ) -> Result<Session, String> {
-    fn restored_err(list_index: u32, verb: &str, detail: String) -> String {
+    fn restored_err(list_index: ListIndex, verb: &str, detail: String) -> String {
         match leveller::restore_saved_preset(list_index) {
             Ok(()) => format!("couldn't {verb} — the preset was restored unchanged: {detail}"),
             Err(restore_err) => format!(
@@ -1439,7 +1446,7 @@ pub(crate) async fn doctor_apply<R: tauri::Runtime>(
 #[tauri::command]
 pub(crate) async fn doctor_save(
     state: State<'_, AppState>,
-    list_index: u32,
+    list_index: ListIndex,
     expect_name: String,
     scene: Option<u32>,
     ops: Vec<doctor::DoctorOp>,
@@ -1457,7 +1464,7 @@ pub(crate) async fn doctor_save(
 #[tauri::command]
 pub(crate) async fn doctor_discard(
     state: State<'_, AppState>,
-    list_index: u32,
+    list_index: ListIndex,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
         leveller::restore_saved_preset(list_index)

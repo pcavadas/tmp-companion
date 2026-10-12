@@ -6,12 +6,13 @@
 //! Fixed rule set; it reports (no auto-fix).
 
 use crate::doctor::median;
+use crate::slot::ListIndex;
 use serde::Serialize;
 
 /// One lint/audit finding for a preset.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Finding {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub rule: String,
     pub message: String,
 }
@@ -19,7 +20,7 @@ pub struct Finding {
 /// A re-amp measurement of one preset (the MEASURE input to the audit).
 #[derive(Debug, Clone, Copy)]
 pub struct AuditMeasure {
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub peak_dbfs: f64,
     pub loudness_lufs: f64,
 }
@@ -60,17 +61,17 @@ mod tests {
     fn audit_flags_clip_and_outliers() {
         let measures = [
             AuditMeasure {
-                list_index: 0,
+                list_index: ListIndex(0),
                 peak_dbfs: -6.0,
                 loudness_lufs: -20.0,
             },
             AuditMeasure {
-                list_index: 1,
+                list_index: ListIndex(1),
                 peak_dbfs: 0.5,
                 loudness_lufs: -20.5,
             }, // clips
             AuditMeasure {
-                list_index: 2,
+                list_index: ListIndex(2),
                 peak_dbfs: -3.0,
                 loudness_lufs: -30.0,
             }, // outlier (median ~-20.5)
@@ -79,12 +80,12 @@ mod tests {
         let clip: Vec<u32> = findings
             .iter()
             .filter(|f| f.rule == "clip")
-            .map(|f| f.list_index)
+            .map(|f| f.list_index.get())
             .collect();
         let out: Vec<u32> = findings
             .iter()
             .filter(|f| f.rule == "loudness-outlier")
-            .map(|f| f.list_index)
+            .map(|f| f.list_index.get())
             .collect();
         assert_eq!(clip, vec![1]);
         assert_eq!(out, vec![2]);

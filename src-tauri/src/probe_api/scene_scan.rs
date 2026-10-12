@@ -11,6 +11,7 @@ use crate::leveller;
 use crate::proto;
 use crate::session;
 use crate::session::Session;
+use crate::slot::ListIndex;
 
 /// NO-SAVE joint-k leveling run (`probe --level-scenes <listIdx> <target> <topology> [scene…]`):
 /// the REAL `build_scene_jobs` → `level_scenes_oneshot` path with `save=false`, so it
@@ -19,7 +20,7 @@ use crate::session::Session;
 /// joint-k on hardware: for a parallel preset both lane amps are scaled by one factor and
 /// the verify capture reports the achieved LUFS vs target. Ends with a guaranteed re-amp OFF.
 pub fn probe_level_scenes_oneshot(
-    list_index: u32,
+    list_index: ListIndex,
     target_lufs: f64,
     topology_id: String,
     scene_slots: Vec<u32>,
@@ -114,7 +115,7 @@ pub fn probe_level_scenes_oneshot(
 /// by a final reload; ends with a guaranteed re-amp OFF. Stimulus via
 /// TMP_LEVELLER_STIMULUS (injected verbatim).
 pub fn probe_knob_sweep(
-    list_index: u32,
+    list_index: ListIndex,
     group: &str,
     node: &str,
     param: &str,
@@ -153,7 +154,7 @@ pub fn probe_knob_sweep(
 /// (bundled stimulus, base recall inside `measure_pair_at`). Working-copy writes are
 /// discarded by a final reload; ends with a guaranteed re-amp OFF.
 pub fn probe_measure_pair(
-    list_index: u32,
+    list_index: ListIndex,
     topology_id: &str,
     preset_level: f32,
     scene: Option<u32>,
@@ -192,7 +193,7 @@ pub fn probe_measure_pair(
 /// RENDERED field-3 doc after each recall and printing the amp/vibe param values.
 /// Lets the caller control the arrival order, to catch rendered-vs-stored divergence
 /// (scene-materialization infidelity) deterministically. NON-DESTRUCTIVE: no writes.
-pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String> {
+pub fn probe_scene_doc(list_index: ListIndex, scenes: &[u32]) -> Result<String, String> {
     const NODES: [(&str, &str); 2] = [("G1", "ACD_HiwattDR103CanMod"), ("G4", "ACD_UniVibe")];
     fn fmt_doc(label: &str, doc: &serde_json::Value) -> String {
         let mut out = format!(
@@ -223,7 +224,7 @@ pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String
         s.pump_silent(120)?;
     }
     s.raw.clear();
-    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 300)?;
+    s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 300)?;
     for _ in 0..6 {
         s.heartbeat()?;
         s.pump_silent(200)?;
@@ -262,7 +263,7 @@ pub fn probe_scene_doc(list_index: u32, scenes: &[u32]) -> Result<String, String
 /// (bypass-only) scene overlay and `ftswStates` materialize on recall.
 /// NON-DESTRUCTIVE: no writes, no re-amp.
 pub fn probe_scene_node_doc(
-    list_index: u32,
+    list_index: ListIndex,
     group: &str,
     node: &str,
     scenes: &[u32],
@@ -314,7 +315,7 @@ pub fn probe_scene_node_doc(
         s.pump_silent(120)?;
     }
     s.raw.clear();
-    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 300)?;
+    s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 300)?;
     for _ in 0..6 {
         s.heartbeat()?;
         s.pump_silent(200)?;
@@ -349,7 +350,10 @@ pub fn probe_scene_node_doc(
 /// each scene's amp-knob set (routing → series last-amp / parallel joint-k / skip).
 /// No re-amp, no parameter writes, no save — just loads + reads field-3. The headless
 /// proof that the routing-aware classifier sees a real preset (e.g. 027 parallel) right.
-pub fn probe_classify_scenes(list_index: u32, scene_slots: Vec<u32>) -> Result<String, String> {
+pub fn probe_classify_scenes(
+    list_index: ListIndex,
+    scene_slots: Vec<u32>,
+) -> Result<String, String> {
     let scene_slots = if scene_slots.is_empty() {
         vec![session::BASE_SCENE_SLOT]
     } else {
@@ -437,7 +441,7 @@ pub fn probe_scan_scenes_passive() -> Result<String, String> {
     let (mut ok, mut missed) = (0u32, 0u32);
     for p in &non_empty {
         let t0 = Instant::now();
-        match s.read_slot_preset_json(p.slot + 1)? {
+        match s.read_slot_preset_json(p.slot.device_slot())? {
             Some(json) => {
                 ok += 1;
                 let names = session::scene_names_from_slot_json(&json);
@@ -506,7 +510,7 @@ pub fn probe_scan_scenes_load() -> Result<String, String> {
         s.raw.clear();
         // LoadPreset via send_and_collect (not load_preset which discards
         // the HID reports — the sceneListResponse push would be lost).
-        s.send_and_collect(&proto::load_preset((p.slot + 1) as u64, 1), 300)?;
+        s.send_and_collect(&proto::load_my_preset(p.slot.device_slot()), 300)?;
         // Pump for the unsolicited sceneListResponse(125) push.
         let mut scenes: Option<Vec<String>> = None;
         let mut seen = 0usize;
@@ -617,7 +621,7 @@ pub fn probe_scan_scenes_full_live() -> Result<String, String> {
     for p in &non_empty {
         let t0 = Instant::now();
         s.raw.clear();
-        s.send_and_collect(&proto::load_preset((p.slot + 1) as u64, 1), 300)?;
+        s.send_and_collect(&proto::load_my_preset(p.slot.device_slot()), 300)?;
         let mut live: Option<session::CurrentPresetLive> = None;
         let mut seen = 0usize;
         for _ in 0..12 {

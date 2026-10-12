@@ -12,7 +12,7 @@ impl Session {
     /// The active preset's 0-based My Presets list index, from the most recent
     /// `PresetLoaded` echo in this session's accumulated pushes (handshake +
     /// heartbeat). `None` if no echo has arrived yet.
-    pub fn loaded_slot(&self) -> Option<u32> {
+    pub fn loaded_slot(&self) -> Option<ListIndex> {
         self.push_bodies()
             .iter()
             .rev()
@@ -37,17 +37,15 @@ impl Session {
         )
     }
 
-    /// LoadPreset on the My Presets tab (tabEnum = 1). `slot` is the **0-based
-    /// list index** (`list_my_presets` position); the device addresses presets by
-    /// a **1-based** userSlot, so we send `slot + 1`. HW-confirmed on 1.7.75: the
-    /// Song read reports `userPresetSlot=2` for the preset at list index 1, and a
-    /// `load_preset(28)` loads list index 27 — i.e. device userSlot = list + 1.
-    pub fn load_preset(&mut self, slot: u32) -> Result<(), String> {
+    /// LoadPreset on the My Presets tab (tabEnum = 1) at **list index** `slot`
+    /// (`list_my_presets` position); the device addresses presets by a 1-based userSlot,
+    /// which [`DeviceSlot::from`] derives. HW-confirmed on 1.7.75: the Song read reports
+    /// `userPresetSlot=2` for the preset at list index 1, and a device `loadPreset(28)`
+    /// loads list index 27 — i.e. device userSlot = list + 1.
+    pub fn load_preset(&mut self, slot: ListIndex) -> Result<(), String> {
         // Eager pump: the reports are discarded (fire-and-forget), so exit as
         // soon as the echo burst completes instead of burning the full window.
-        self.landing_load(|s| {
-            s.transact_eager(&proto::load_preset((slot + 1) as u64, 1), LOAD_ECHO_MS)
-        })?;
+        self.landing_load(|s| s.transact_eager(&proto::load_my_preset(slot.into()), LOAD_ECHO_MS))?;
         Ok(())
     }
 
@@ -70,11 +68,10 @@ impl Session {
         Ok(())
     }
 
-    /// Load a FACTORY preset (tab enum 4) by **0-based list index** — this method
-    /// owns the 1-based device-slot translation, like [`Self::load_preset`] does
-    /// for My Presets, so callers never apply `+ 1` themselves.
-    pub fn load_factory_preset(&mut self, list_index: u32) -> Result<(), String> {
-        self.load_preset_raw(u64::from(list_index) + 1, 4)
+    /// Load a FACTORY preset (tab enum 4) by **0-based list index** — the factory bank
+    /// takes the same 1-based slot shape as My Presets, so callers never apply `+ 1`.
+    pub fn load_factory_preset(&mut self, list_index: ListIndex) -> Result<(), String> {
+        self.load_preset_raw(DeviceSlot::from(list_index).wire(), 4)
     }
 
     /// Set the whole-preset level (0.0..=1.0). Returns the echoed
@@ -197,7 +194,11 @@ impl Session {
     /// presets can share a display name (or the name can be an empty-slot label), so a
     /// bare name match on a dropped load could otherwise confirm — and then save over —
     /// the WRONG preset. No proven-unique list ⇒ no confirmation.
-    pub(crate) fn active_matches(&self, list_index: u32, expected_name: Option<&str>) -> bool {
+    pub(crate) fn active_matches(
+        &self,
+        list_index: ListIndex,
+        expected_name: Option<&str>,
+    ) -> bool {
         let loaded = self.loaded_slot();
         if loaded == Some(list_index) {
             return true;
@@ -227,7 +228,7 @@ impl Session {
     /// `connectionError` on a dense-heartbeat session (the live-line re-arm gotcha).
     pub fn confirm_active(
         &mut self,
-        list_index: u32,
+        list_index: ListIndex,
         expected_name: Option<&str>,
     ) -> Result<(), String> {
         if self.active_matches(list_index, expected_name) {
@@ -266,19 +267,18 @@ impl Session {
         )
     }
 
-    /// Persist the current edit buffer into the slot at **0-based list index**
-    /// `list_index`. The device addresses user presets by a **1-based** userSlot,
-    /// so we send `list_index + 1` (see [`Self::load_preset`] for the HW evidence).
+    /// Persist the current edit buffer into the slot at list index `list_index` (sent as
+    /// its 1-based device slot; see [`Self::load_preset`] for the HW evidence).
     /// The device sends no save ACK; persistence is verified by reload.
     ///
     /// Refuses, sending nothing, while [`Self::template_substituted`]: the working copy is
     /// then the unit's EMPTY template, and a save would overwrite the stored preset with it.
-    pub fn save_current_preset(&mut self, list_index: u32) -> Result<(), String> {
+    pub fn save_current_preset(&mut self, list_index: ListIndex) -> Result<(), String> {
         if self.template_substituted() {
             return Err(TEMPLATE_SAVE_REFUSED.to_string());
         }
         self.transact(
-            &proto::save_current_preset((list_index + 1) as u64),
+            &proto::save_current_preset(list_index.into()),
             PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation choke point: EVERY save routes through here, so this
@@ -290,12 +290,11 @@ impl Session {
         Ok(())
     }
 
-    /// Clear (delete) the user preset at **0-based list index** `list_index` —
-    /// `clearUserPreset` (field 15). Sends the **1-based** device userSlot
-    /// (`list_index + 1`). Fire-and-forget; verify by re-listing.
-    pub fn clear_user_preset(&mut self, list_index: u32) -> Result<(), String> {
+    /// Clear (delete) the user preset at list index `list_index` — `clearUserPreset`
+    /// (field 15), sent as its 1-based device slot. Fire-and-forget; verify by re-listing.
+    pub fn clear_user_preset(&mut self, list_index: ListIndex) -> Result<(), String> {
         self.transact(
-            &proto::clear_user_preset((list_index + 1) as u64),
+            &proto::clear_user_preset(list_index.into()),
             PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation — see save_current_preset's choke-point note.
@@ -428,12 +427,11 @@ impl Session {
         })
     }
 
-    /// Relocate a user preset between **0-based list indices** `old`→`new` —
-    /// `moveUserPreset` (field 16). Sends the **1-based** device userSlots
-    /// (`old + 1`, `new + 1`). Fire-and-forget; verify by re-listing.
-    pub fn move_user_preset(&mut self, old: u32, new: u32) -> Result<(), String> {
+    /// Relocate a user preset between list indices `old`→`new` — `moveUserPreset`
+    /// (field 16), sent as their 1-based device slots. Fire-and-forget; verify by re-listing.
+    pub fn move_user_preset(&mut self, old: ListIndex, new: ListIndex) -> Result<(), String> {
         self.transact(
-            &proto::move_user_preset((old + 1) as u64, (new + 1) as u64),
+            &proto::move_user_preset(old.into(), new.into()),
             PRESET_WRITE_ECHO_MS,
         )?;
         // Stored-preset mutation — see save_current_preset's choke-point note.
@@ -447,7 +445,7 @@ impl Session {
     /// current preset's name when it maps to exactly ONE slot of the strict My Presets
     /// list. `None` = not provable (duplicate or empty-slot name, no reply). Read it
     /// before anything that clears the accumulator.
-    pub(crate) fn active_slot_live(&mut self) -> Option<u32> {
+    pub(crate) fn active_slot_live(&mut self) -> Option<ListIndex> {
         const WINDOW_MS: u64 = 250;
         const MAX_WAIT_MS: u64 = 2000;
         let mut waited = 0;

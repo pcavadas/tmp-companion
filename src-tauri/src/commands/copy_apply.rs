@@ -170,7 +170,7 @@ impl DeviceIds {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct CopyJob {
     #[serde(rename = "listIndex")]
-    pub list_index: u32,
+    pub list_index: ListIndex,
     pub name: String,
     pub ops: Vec<CopyOp>,
 }
@@ -185,7 +185,7 @@ pub struct CopyJob {
 /// [`read_working_copy`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct CopyApplyItem {
-    pub slot: u32,
+    pub slot: ListIndex,
     pub name: String,
     pub outcome: String,
     pub detail: String,
@@ -272,7 +272,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
     // ── LOAD on the held session + RE-ARM the edit context to the just-loaded preset
     //    (mirrors `held_replace_one`). ──
     s.clear_raw();
-    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
+    s.send_and_collect(&proto::load_my_preset(list_index.into()), 200)?;
     s.rearm_active_info()?;
     let _ = s.await_active_preset(&name, 8); // pump for the fresh currentPresetInfoChanged
                                              // SAFETY — confirm the held session re-attached to the TARGET preset before
@@ -480,7 +480,7 @@ fn copy_apply_one(s: &mut Session, job: &CopyJob, save: bool) -> Result<CopyAppl
 }
 
 /// One target's `error` row: nothing was saved, and the frontend patches nothing.
-fn error_item(list_index: u32, name: &str, detail: String) -> CopyApplyItem {
+fn error_item(list_index: ListIndex, name: &str, detail: String) -> CopyApplyItem {
     CopyApplyItem {
         slot: list_index,
         name: name.to_string(),
@@ -599,7 +599,7 @@ fn read_working_copy(
     s: &mut Session,
     pre: &Roster,
     expected: Option<&Roster>,
-    list_index: u32,
+    list_index: ListIndex,
     name: &str,
 ) -> Option<session::ActiveGraph> {
     let Some(expected) = expected else {

@@ -45,6 +45,7 @@ src-tauri/src/trace/*	transport
 
 # ── protocol ──
 src-tauri/src/proto.rs	protocol
+src-tauri/src/slot.rs	protocol
 src-tauri/src/session/decode.rs	protocol
 src-tauri/src/session/scene.rs	protocol
 src-tauri/src/session/types.rs	protocol

@@ -7,6 +7,7 @@ use super::stimulus::probe_stimulus_path;
 use super::stimulus::read_stimulus_calibrated;
 use crate::audio;
 use crate::leveller;
+use crate::slot::ListIndex;
 // Every scene-leveling entry point below ENUMERATES scenes via the complete-JSON
 // fallback (`read_preset_scenes_complete`), not the raw field-8 partial: the scene-tail
 // cut is per-slot-deterministic (notes/gotchas.md's field-8 entry) and a probe run that
@@ -29,7 +30,7 @@ use crate::session::Session;
 // NO save.
 #[allow(clippy::too_many_arguments)] // cohesive per-scene measurement params; a struct would only add ceremony
 fn measure_scene_knob_isolated(
-    list_index: u32,
+    list_index: ListIndex,
     scene_slot: u32,
     group_id: &str,
     node_id: &str,
@@ -64,7 +65,10 @@ fn measure_scene_knob_isolated(
 /// READ-ONLY outcome proof: measure each scene's ACTUAL captured loudness from the
 /// SAVED preset state — load preset, load scene, engage, measure (NO knob change). The
 /// honest "did leveling land?" check, independent of the leveling math.
-pub fn probe_measure_scene_levels(list_index: u32, topology_id: String) -> Result<String, String> {
+pub fn probe_measure_scene_levels(
+    list_index: ListIndex,
+    topology_id: String,
+) -> Result<String, String> {
     use std::time::Duration;
     let stim_path = probe_stimulus_path(&topology_id)?;
     let cal = std::env::var("TMP_LEVELLER_CAL_LUFS")
@@ -99,7 +103,7 @@ pub fn probe_measure_scene_levels(list_index: u32, topology_id: String) -> Resul
 
     let mut out = format!(
         "=== preset {:03} saved-state scene loudness ===\n",
-        list_index + 1
+        list_index.device_slot()
     );
     for (slot, name) in slots {
         match measure(slot) {
@@ -119,7 +123,7 @@ pub fn probe_measure_scene_levels(list_index: u32, topology_id: String) -> Resul
 /// Reuses the 1.8.45-safe block discovery (`load_then_discover_blocks`). Stimulus comes
 /// from `topology_id`; `save` persists. Returns a human-readable per-scene report.
 pub fn probe_level_preset_scenes(
-    list_index: u32,
+    list_index: ListIndex,
     default_target: f64,
     topology_id: String,
     save: bool,
@@ -146,7 +150,7 @@ pub fn probe_level_preset_scenes(
     let mut out = String::new();
     out += &format!(
         "=== preset {:03} (list index {list_index}) · default {:.1} LU · save={save} ===\n",
-        list_index + 1,
+        list_index.device_slot(),
         default_target,
     );
 
@@ -299,7 +303,7 @@ pub fn probe_level_preset_scenes(
 /// Reveals which amp `build_scene_jobs` would pick (first un-bypassed) and whether
 /// the scene's loudness is governed by that amp or by something else (the other amp,
 /// a post-amp boost, a delay/IR `level`). No writes, no re-amp.
-pub fn probe_scene_amp_diag(list_index: u32) -> Result<String, String> {
+pub fn probe_scene_amp_diag(list_index: ListIndex) -> Result<String, String> {
     let scenes = read_preset_scenes_complete(list_index)?;
     let amp_cands = load_and_filter_amp_candidates(list_index)?;
     let mut all_slots: Vec<u32> = (0..scenes.scenes.len() as u32).collect();
@@ -308,7 +312,7 @@ pub fn probe_scene_amp_diag(list_index: u32) -> Result<String, String> {
 
     let mut out = format!(
         "preset {:03} · scenes {:?}\namp candidates: {:?}\n",
-        list_index + 1,
+        list_index.device_slot(),
         scenes.scenes,
         amp_cands
             .iter()
@@ -357,7 +361,7 @@ pub fn probe_scene_amp_diag(list_index: u32) -> Result<String, String> {
 /// both Δ ≈ 0 ⇒ genuine no authority (effect-dominated); both large ⇒ authority fine,
 /// the clamp is the loop's noisy-slope bug. NO SAVE (reloads the stored preset each step).
 pub fn probe_scene_knob_authority(
-    list_index: u32,
+    list_index: ListIndex,
     scene_slot: u32,
     topology_id: String,
 ) -> Result<String, String> {
@@ -426,7 +430,7 @@ pub fn probe_scene_knob_authority(
 /// and the muted lane bleeds into the solo, so the equal-solo balance is only approximate.
 /// NO SAVE. Validates the `verify_by_ear` heuristic `level_scenes_rebalance` applies.
 pub fn probe_mute_floor(
-    list_index: u32,
+    list_index: ListIndex,
     scene_slot: u32,
     topology_id: String,
 ) -> Result<String, String> {
@@ -468,7 +472,7 @@ pub fn probe_mute_floor(
 /// stage so the poisoning element is identified directly on hardware.
 #[allow(clippy::too_many_arguments)] // a HW-bisection CLI arm; a struct would only add ceremony
 pub fn probe_bisect_scene(
-    list_index: u32,
+    list_index: ListIndex,
     scene_slot: u32,
     group_id: String,
     node_id: String,
@@ -566,7 +570,7 @@ pub fn probe_bisect_scene(
 /// diagnostics the UI run doesn't log. Point it at a SCRATCH preset when
 /// save=1: it persists like the real run.
 pub fn probe_jointk_scenes(
-    list_index: u32,
+    list_index: ListIndex,
     default_target: f64,
     topology_id: String,
     save: bool,
@@ -676,7 +680,7 @@ pub fn probe_jointk_scenes(
 /// delta, and re-level every sound to `target` via `redistribute_clamped_headroom` — printing
 /// each sound's measured LUFS + clamp + writes. Point at a SCRATCH preset: it SAVES.
 pub fn probe_redistribute(
-    list_index: u32,
+    list_index: ListIndex,
     target: f64,
     topology_id: String,
     worst_deficit_db: f64,
@@ -748,7 +752,7 @@ pub fn probe_redistribute(
 ///              a scene REVERT its own unsaved write?)
 ///   `base`   — `loadScene(8)`, then save (the restore-original-state shape).
 pub fn probe_defer_scenes(
-    list_index: u32,
+    list_index: ListIndex,
     group_id: String,
     node_id: String,
     writes: Vec<(u32, f32)>,

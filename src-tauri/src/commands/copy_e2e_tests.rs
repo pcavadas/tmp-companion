@@ -21,7 +21,7 @@ mod audition_copy_tests {
             ]
         }"#;
         let job: CopyJob = serde_json::from_str(json).expect("CopyJob deserializes");
-        assert_eq!(job.list_index, 7);
+        assert_eq!(job.list_index, ListIndex(7));
         assert_eq!(job.name, "Lead Tone");
         assert_eq!(job.ops.len(), 5);
 
@@ -99,7 +99,7 @@ mod audition_copy_tests {
     #[test]
     fn copy_apply_item_serializes_like_bulk_replace_item() {
         let item = CopyApplyItem {
-            slot: 7,
+            slot: ListIndex(7),
             name: "Lead Tone".to_string(),
             outcome: "updated".to_string(),
             detail: "5 op(s)".to_string(),
@@ -142,7 +142,7 @@ mod copy_level_e2e_tests {
 
     fn one_replace_job(slot: u32, name: &str) -> CopyJob {
         CopyJob {
-            list_index: slot,
+            list_index: ListIndex(slot),
             name: name.into(),
             ops: vec![model_replace("G1", "n2", "ACD_DeluxeReverb65")],
         }
@@ -190,7 +190,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_multi_op_applies_remove_replace_insert_in_order_then_saves() {
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![
                 CopyOp::Remove {
@@ -316,7 +316,7 @@ mod copy_level_e2e_tests {
         // Re-stamping `n2` with its own model leaves the same roster whether or not it
         // landed, so an unconfirmed one is unverifiable: no re-send, no save.
         let job = CopyJob {
-            list_index: 5,
+            list_index: ListIndex(5),
             name: "Stadium Lead".into(),
             ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
         };
@@ -344,7 +344,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_remove_whose_confirm_is_lost_is_read_back_not_resent() {
         let job = CopyJob {
-            list_index: 5,
+            list_index: ListIndex(5),
             name: "Stadium Lead".into(),
             ops: vec![CopyOp::Remove {
                 group: "G1".into(),
@@ -384,7 +384,7 @@ mod copy_level_e2e_tests {
     #[test]
     fn copy_empty_op_list_is_skipped_without_touching_the_device() {
         let job = CopyJob {
-            list_index: 2,
+            list_index: ListIndex(2),
             name: "Untouched".into(),
             ops: vec![],
         };
@@ -401,7 +401,7 @@ mod copy_level_e2e_tests {
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let echo = s.set_preset_level(0.5).unwrap();
         assert!((echo.expect("level echo") - 0.5).abs() < 1e-6);
-        s.save_current_preset(7).unwrap();
+        s.save_current_preset(ListIndex(7)).unwrap();
         assert_eq!(
             sim.events(),
             vec![SimEvent::PresetLevel(0.5), SimEvent::Saved(7)]
@@ -446,7 +446,7 @@ mod copy_level_e2e_tests {
         );
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let job = CopyJob {
-            list_index: 5,
+            list_index: ListIndex(5),
             name: "Stadium Lead".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
@@ -508,7 +508,7 @@ mod copy_level_e2e_tests {
         // all — and the unfiltered event order proves the read never lands after the save.
         let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Remove {
                 group: "G1".into(),
@@ -560,7 +560,7 @@ mod copy_level_e2e_tests {
             .with_preset_json(&padded_two_node_doc())
             .with_stale_push_after_save();
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Remove {
                 group: "G1".into(),
@@ -590,7 +590,7 @@ mod copy_level_e2e_tests {
         // `WorkingCopyRead`) and the item carries no graph — the cache keeps the acked edit.
         let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![model_replace("G1", "n2", "ACD_ChorusCE2")],
         };
@@ -620,7 +620,7 @@ mod copy_level_e2e_tests {
         // itself is software-green here; its HW validation is still pending.
         let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
@@ -665,7 +665,7 @@ mod copy_level_e2e_tests {
             file: "Oversize.wav".into(),
         };
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![
                 CopyOp::Insert {
@@ -709,7 +709,7 @@ mod copy_level_e2e_tests {
             .with_preset_json(&padded_two_node_doc())
             .with_drop_first();
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
@@ -769,7 +769,7 @@ mod copy_level_e2e_tests {
             ("ACD_CabSimTMS", "cab1"),
         ]));
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
@@ -813,7 +813,7 @@ mod copy_level_e2e_tests {
             fender_id: "ACD_TapeEcho".into(),
         };
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![
                 CopyOp::Insert {
@@ -862,7 +862,7 @@ mod copy_level_e2e_tests {
             .with_preset_json(&padded_two_node_doc())
             .with_lost_first_confirm();
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
@@ -901,7 +901,7 @@ mod copy_level_e2e_tests {
         // such an op is refused before anything is sent.
         let sim = SimDevice::new().with_preset_json(&padded_two_node_doc());
         let job = CopyJob {
-            list_index: 3,
+            list_index: ListIndex(3),
             name: "Clean Verse".into(),
             ops: vec![CopyOp::Insert {
                 group: "G1".into(),
@@ -933,7 +933,7 @@ mod copy_level_e2e_tests {
             .with_preset_json(&padded_two_node_doc())
             .with_drop_first();
         let mut s = Session::from_transport(Box::new(sim.clone()));
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         let g1 = |s: &mut Session| -> Vec<(String, String)> {
             let v = s
                 .live_preset_value(|_| true)
@@ -961,7 +961,7 @@ mod copy_level_e2e_tests {
                 ("ACD_TapeEcho".to_string(), "ACD_TapeEcho".to_string()),
             ]
         );
-        s.load_preset(3).unwrap();
+        s.load_preset(ListIndex(3)).unwrap();
         assert_eq!(
             g1(&mut s),
             [
@@ -1039,11 +1039,11 @@ mod copy_level_e2e_tests {
         s.send_and_collect(&crate::proto::load_preset(6, 1), 50)
             .unwrap(); // dev slot 6 = 0-based list index 5
         assert!(
-            s.confirm_active(5, None).is_ok(),
+            s.confirm_active(ListIndex(5), None).is_ok(),
             "slot echo should confirm: loaded={:?}",
             s.loaded_slot()
         );
-        s.save_current_preset(5).unwrap();
+        s.save_current_preset(ListIndex(5)).unwrap();
         assert!(sim.events().iter().any(|e| matches!(e, SimEvent::Saved(5))));
     }
 
@@ -1054,8 +1054,8 @@ mod copy_level_e2e_tests {
         let sim = SimDevice::new();
         let mut s = Session::from_transport(Box::new(sim.clone()));
         let attempt = |s: &mut Session| -> Result<(), String> {
-            s.confirm_active(7, Some("Target"))?;
-            s.save_current_preset(7)?; // MUST NOT run
+            s.confirm_active(ListIndex(7), Some("Target"))?;
+            s.save_current_preset(ListIndex(7))?; // MUST NOT run
             Ok(())
         };
         assert!(attempt(&mut s).is_err(), "unconfirmed load must not save");
@@ -1075,7 +1075,7 @@ mod copy_level_e2e_tests {
         s.send_and_collect(&crate::proto::load_preset(4, 1), 50)
             .unwrap(); // dev slot 4 = 0-based list index 3
         assert!(
-            s.confirm_active(5, Some("Target")).is_err(),
+            s.confirm_active(ListIndex(5), Some("Target")).is_err(),
             "slot 3 active but target 5 — must not confirm"
         );
     }
@@ -1096,7 +1096,7 @@ mod copy_level_e2e_tests {
         let bad = file.join("tmp-companion-cannot-mkdir");
         let r = crate::commands::migration::snapshot_before_migrate(
             &bad,
-            3,
+            ListIndex(3),
             "Cliff",
             r#"{"info":{"preset_id":"x"}}"#,
         );
@@ -1110,8 +1110,13 @@ mod copy_level_e2e_tests {
             crate::bulkrun::now_stamp()
         ));
         let before = r#"{"info":{"preset_id":"abc","displayName":"Cliff"}}"#;
-        let p =
-            crate::commands::migration::snapshot_before_migrate(&dir, 3, "Cliff", before).unwrap();
+        let p = crate::commands::migration::snapshot_before_migrate(
+            &dir,
+            ListIndex(3),
+            "Cliff",
+            before,
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(
             content.contains("abc"),

@@ -34,7 +34,7 @@ pub(crate) fn held_replace_one(
     // ── LOAD on the held session (the bench-scene-leveling precedent: a held session
     //    accepts a load + decodes its field-3 push). ──
     s.clear_raw();
-    s.send_and_collect(&proto::load_preset((list_index + 1) as u64, 1), 200)?;
+    s.send_and_collect(&proto::load_my_preset(list_index.device_slot()), 200)?;
     // ── RE-ARM: re-arm the device's reply state on the open connection + force a fresh
     //    currentPresetInfoChanged (field 22). Echo-gated: await_active_preset exits as
     //    soon as the field-22 for `name` lands. ──
@@ -169,7 +169,7 @@ mod plan_identity_tests {
 
     fn plan(preset_id: Option<&str>) -> ReplacePlan {
         ReplacePlan {
-            list_index: 5,
+            list_index: ListIndex(5),
             name: "Stadium Lead".into(),
             preset_id: preset_id.map(str::to_string),
             targets: vec![("G1".into(), "n2".into())],
