@@ -8,7 +8,7 @@
 // of slot 0's base. This drives `useLevelingFlow` with the device calls mocked and pins the
 // order the two backend lanes are actually called in.
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 
 const h = vi.hoisted(() => ({
@@ -30,6 +30,12 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import { baseKey, sceneKeyOf } from "../views/level/leveling";
 import type { SetupChoice, SetupOption } from "../views/level/leveling";
+import { resetLevelFlow } from "../views/level/levelRunStore";
+
+// The leveling wizard lives in a module store that outlives a mount; start each case clean.
+beforeEach(() => {
+  resetLevelFlow();
+});
 
 function baseOption(slot: number): SetupOption {
   return {

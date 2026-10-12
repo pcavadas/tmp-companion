@@ -1,0 +1,262 @@
+// src/__tests__/SetupPageRerunAndContext.test.tsx — BUG→GATE for two Set-up defaults.
+//
+// #284: "Run again" / "Re-run off target…" reopened Set up with every row reset to the
+// FIRST target and FIRST instrument, so one Start re-leveled a Lead sound at Rhythm. A
+// re-run row now carries the instrument and target it was leveled with, and Set up seeds
+// from them (falling back to the defaults only for an id the pickers no longer offer).
+//
+// #286: a footswitch row's measurement scene came from a lazy read fired only when its
+// scene picker was opened, so the same selection measured the switch in base or in its
+// enabling scene depending on a click. The suggested scene now comes from the startup
+// backup scan for every footswitch row up front, and Start waits for it.
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { invoke } from "@tauri-apps/api/core";
+
+import { ThemeProvider } from "../theme/ThemeProvider";
+import { SetupPage, type SetupChoice } from "../views/level/SetupPage";
+import { WithCard } from "./pickCardTestUtils";
+import {
+  ensureLibraryScan,
+  resetLibraryScan,
+} from "../views/level/libraryScan";
+import {
+  optionToRunItem,
+  runItemToOption,
+  type SetupOption,
+} from "../views/level/leveling";
+import type { BackupReadResult, FsSceneContext } from "../lib/types";
+import type { PickOption } from "../views/overlays/Pick";
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: () => Promise.resolve(() => undefined),
+}));
+
+const instrumentOptions: PickOption[] = [
+  { id: "none", label: "None" },
+  { id: "strat", label: "Strat" },
+  { id: "tele", label: "Tele" },
+];
+const targetOptions: PickOption[] = [
+  { id: "Rhythm", label: "Rhythm −27" },
+  { id: "Lead", label: "Lead −23" },
+];
+
+function baseOption(): SetupOption {
+  return {
+    key: "p0",
+    slot: 0,
+    presetName: "Plexi",
+    isBase: true,
+    sceneSlot: null,
+    sceneName: "Base Preset",
+    tag: "BASE",
+    hasScenes: true,
+  };
+}
+
+function fsOption(): SetupOption {
+  return {
+    key: "f0:0",
+    slot: 0,
+    presetName: "Plexi",
+    isBase: false,
+    sceneSlot: null,
+    sceneName: "Boost",
+    tag: "FS3",
+    hasScenes: true,
+    footswitch: {
+      switchIndex: 2,
+      levGroupId: "G1",
+      levNodeId: "ACD_Boost",
+      levParameterId: "gain",
+      sceneContext: null,
+    },
+    fsSceneNames: ["Clean", "Crunch", "Lead"],
+  };
+}
+
+function renderSetup(options: SetupOption[], isRelevel: boolean) {
+  const onStart = vi.fn<(c: SetupChoice[]) => void>();
+  render(
+    <ThemeProvider>
+      <WithCard>
+        <SetupPage
+          options={options}
+          isRelevel={isRelevel}
+          instrumentOptions={instrumentOptions}
+          targetOptions={targetOptions}
+          defaultInst="strat"
+          defaultTarget="Rhythm"
+          onCancel={vi.fn()}
+          onStart={onStart}
+        />
+      </WithCard>
+    </ThemeProvider>,
+  );
+  return onStart;
+}
+
+/** Seed the startup backup scan with slot 0 carrying `contexts`. */
+async function seedScan(contexts: FsSceneContext[]) {
+  vi.mocked(invoke).mockImplementation((cmd: string) => {
+    if (cmd === "read_library_via_backup") {
+      const result: BackupReadResult = {
+        members: [],
+        db_bytes: 0,
+        total_rows: 1,
+        scene_mode: "test",
+        presets: [
+          {
+            slot: 1,
+            name: "Plexi",
+            preset_id: null,
+            scene_count: 3,
+            scenes: [],
+            amp_candidates: [],
+            base_active_amp_count: 0,
+            blocks: [],
+            graph: {
+              name: null,
+              slot: null,
+              template: null,
+              split_mix: null,
+              nodes: [],
+              stages: [],
+            },
+            footswitches: [],
+            silence_hint: null,
+            scene_handles: [],
+            base_handles: [],
+            scene_overrides: [],
+            fs_scene_contexts: contexts,
+          },
+        ],
+        song_presets: [],
+        songs: [],
+        setlists: [],
+        setlist_songs: [],
+      };
+      return Promise.resolve(result);
+    }
+    return Promise.resolve([]);
+  });
+  await ensureLibraryScan();
+}
+
+const commandsSent = () => vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+
+beforeEach(() => {
+  resetLibraryScan();
+  vi.mocked(invoke).mockReset();
+  vi.mocked(invoke).mockImplementation(() => Promise.resolve([]));
+});
+
+describe("a re-run keeps each sound's instrument and target (#284)", () => {
+  it("carries instId and targetName through runItemToOption", () => {
+    const item = optionToRunItem(baseOption(), "tele", "Lead");
+    expect(runItemToOption(item)).toMatchObject({
+      instId: "tele",
+      targetName: "Lead",
+    });
+  });
+
+  it("seeds the rows from them, so Start submits the original settings", async () => {
+    const rerun = runItemToOption(
+      optionToRunItem(baseOption(), "tele", "Lead"),
+    );
+    const onStart = renderSetup([rerun], true);
+    // The bulk pickers show the shared values too, not the first profile and target.
+    expect(screen.getAllByText("Tele").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Lead −23").length).toBeGreaterThan(0);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /start.*1 sound/i }));
+    expect(onStart.mock.calls[0][0][0]).toMatchObject({
+      instId: "tele",
+      targetName: "Lead",
+    });
+  });
+
+  it("falls back to the defaults for an id the pickers no longer offer", async () => {
+    const rerun = runItemToOption(
+      optionToRunItem(baseOption(), "deleted-profile", "Removed target"),
+    );
+    const onStart = renderSetup([rerun], true);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /start.*1 sound/i }));
+    expect(onStart.mock.calls[0][0][0]).toMatchObject({
+      instId: "strat",
+      targetName: "Rhythm",
+    });
+  });
+
+  it("keeps the scene a re-run footswitch was measured in", async () => {
+    await seedScan([{ switch: 2, enablingScenes: [2], suggested: 2 }]);
+    const fs = fsOption();
+    const measuredIn: SetupOption = {
+      ...fs,
+      footswitch: fs.footswitch ? { ...fs.footswitch, sceneContext: 0 } : null,
+    };
+    const rerun = runItemToOption(optionToRunItem(measuredIn, "tele", "Lead"));
+    const onStart = renderSetup([rerun], true);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /start.*1 sound/i }));
+    expect(onStart.mock.calls[0][0][0].option.footswitch).toMatchObject({
+      sceneContext: 0,
+    });
+  });
+});
+
+describe("a footswitch row's scene context comes from data (#286)", () => {
+  it("submits the suggested scene without the picker ever being opened", async () => {
+    await seedScan([{ switch: 2, enablingScenes: [1], suggested: 1 }]);
+    vi.mocked(invoke).mockClear();
+    const onStart = renderSetup([fsOption()], false);
+    const user = userEvent.setup();
+    await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
+    const start = await screen.findByRole("button", {
+      name: /start.*1 sound/i,
+    });
+    await waitFor(() => {
+      expect(start).toBeEnabled();
+    });
+    await user.click(start);
+    expect(onStart.mock.calls[0][0][0].option.footswitch).toMatchObject({
+      switchIndex: 2,
+      sceneContext: 1,
+    });
+    // Answered off the backup scan: no device read.
+    expect(commandsSent()).not.toContain("list_footswitch_scene_contexts");
+  });
+
+  it("holds Start until a device-read context lands, then submits it", async () => {
+    // No backup entry for the slot: the context comes from the device read.
+    let answer: (rows: FsSceneContext[]) => void = () => undefined;
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "list_footswitch_scene_contexts"
+        ? new Promise((res) => {
+            answer = res;
+          })
+        : Promise.resolve([]),
+    );
+    const onStart = renderSetup([fsOption()], false);
+    const user = userEvent.setup();
+    await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
+    const pending = screen.getByRole("button", {
+      name: /reading footswitches/i,
+    });
+    expect(pending).toBeDisabled();
+    expect(commandsSent()).toContain("list_footswitch_scene_contexts");
+
+    answer([{ switch: 2, enablingScenes: [2], suggested: 2 }]);
+    const start = await screen.findByRole("button", {
+      name: /start.*1 sound/i,
+    });
+    await user.click(start);
+    expect(onStart.mock.calls[0][0][0].option.footswitch).toMatchObject({
+      sceneContext: 2,
+    });
+  });
+});

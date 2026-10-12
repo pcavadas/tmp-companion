@@ -18,6 +18,7 @@ import { usePresetData } from "../level/usePresetData";
 import { useLiveDevice } from "../level/useLiveDevice";
 import {
   chosenFrom,
+  hasInstrument,
   instrumentOptions,
   instrumentName,
   type SetupOption,
@@ -93,7 +94,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const instNameForKey = useCallback(
     (key: string): string | null => {
       const id = instByKey[key];
-      if (!id || id === "none") return null;
+      if (!id || !hasInstrument(id)) return null;
       return instrumentName(store?.profiles, id);
     },
     [instByKey, store?.profiles],

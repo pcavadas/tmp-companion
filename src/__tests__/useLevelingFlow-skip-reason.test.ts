@@ -21,6 +21,12 @@ import {
   useLevelingFlow,
   type UseLevelingFlowDeps,
 } from "../views/level/useLevelingFlow";
+import { resetLevelFlow } from "../views/level/levelRunStore";
+
+// The leveling wizard lives in a module store that outlives a mount; start each case clean.
+beforeEach(() => {
+  resetLevelFlow();
+});
 
 const deps: UseLevelingFlowDeps = {
   rows: [{ slot: 0, name: "Plexi", empty: false }],

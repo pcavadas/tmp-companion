@@ -92,6 +92,13 @@ pub struct BackupPresetRow {
     /// ([`crate::probe_api::scene_jobs::scene_node_overrides`]) — what a Doctor scene sound
     /// is diagnosed on top of the base graph. Empty for a scene-less/unparseable row.
     pub scene_overrides: Vec<Vec<crate::doctor::NodeOverride>>,
+    /// Per footswitch, the scenes that enable it and the one the Set-up step preselects as
+    /// its measurement context ([`footswitch::scene_contexts_for_switches`]), from the same
+    /// `presetJson`. The Set-up step resolves every footswitch row's default context from
+    /// this up front, so the context a run measures in never depends on whether the user
+    /// opened the row's picker, and it costs no `list_footswitch_scene_contexts` device read.
+    /// Empty for an unparseable row.
+    pub fs_scene_contexts: Vec<footswitch::FsSceneContext>,
 }
 
 /// A7, PURE: [`BackupPresetRow::base_active_amp_count`]'s derivation — DISTINCT
@@ -808,6 +815,10 @@ pub fn read_backup_archive(blob: &[u8]) -> Result<BackupReadResult, String> {
             scene_handles,
             base_handles,
             scene_overrides,
+            fs_scene_contexts: parsed_graph
+                .as_ref()
+                .map(footswitch::scene_contexts_for_switches)
+                .unwrap_or_default(),
         });
     }
     log::info!(

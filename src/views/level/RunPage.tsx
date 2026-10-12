@@ -1,7 +1,7 @@
 // src/views/level/RunPage.tsx — the leveling wizard's "Level" (run) stage (design
 // handoff 1a: full window, one row per preset). Replaces `overlays/RunBody.tsx`.
 //
-// Presentational: `useLevelingFlow` drives the sequence. The list groups by PRESET
+// Presentational: `levelRunStore` drives the sequence. The list groups by PRESET
 // (`PresetGroupRow`) — the preset currently being worked on opens itself
 // (`useGroupOpen`), following the run; the user can override any row on top of that.
 // The live number renders ONCE, in the header (never in a static preset row) — sound
@@ -26,6 +26,7 @@ import { fmtLufs } from "../../lib/format";
 import { useAutoAdvance } from "../../lib/useAutoAdvance";
 import {
   groupItemsBySlot,
+  hasInstrument,
   offbranchStatus,
   resolvedTargetLufs,
   type RunItem,
@@ -368,7 +369,9 @@ export function RunPage({
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {it.instId ? `${instrumentName(it.instId)} · ` : ""}
+                      {hasInstrument(it.instId)
+                        ? `${instrumentName(it.instId)} · `
+                        : ""}
                       {targetText(it)}
                     </span>
                     <span

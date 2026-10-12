@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { doctorCheck, cancelDoctorCheck } from "../../lib/invoke";
-import type { SetupOption } from "../level/leveling";
+import { NO_INSTRUMENT, type SetupOption } from "../level/leveling";
 import type { RailStep } from "../overlays/wizardContext";
 import type {
   DoctorInputArg,
@@ -121,9 +121,9 @@ export function useDoctorFlow({
       instByKey: Record<string, string>,
     ): DoctorInputArg[] =>
       chosen.map((o) => {
-        const instId = instByKey[o.key] ?? "none";
+        const instId = instByKey[o.key] ?? NO_INSTRUMENT;
         const profile =
-          instId === "none"
+          instId === NO_INSTRUMENT
             ? null
             : (store?.profiles.find((p) => p.id === instId) ?? null);
         const label = o.isBase

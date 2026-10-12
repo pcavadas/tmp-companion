@@ -91,6 +91,7 @@ function seedScan(rows: SceneHandleRow[]) {
             scene_handles: rows,
             base_handles: [],
             scene_overrides: [],
+            fs_scene_contexts: [],
           },
         ],
         song_presets: [],

@@ -16,6 +16,7 @@ import type {
   ActiveGraph,
   AmpCandidate,
   FootswitchInfo,
+  FsSceneContext,
   NodeOverride,
   SceneHandleCandidate,
   SceneHandleRow,
@@ -82,6 +83,10 @@ export interface LibraryScan {
   /** Per-preset scene overlays as Doctor node overrides (indexed by scene wire index)
    *  keyed by 0-based LIST INDEX — what a Doctor scene sound is diagnosed on. */
   sceneOverridesByIndex: Map<number, NodeOverride[][]>;
+  /** Per-preset footswitch scene contexts keyed by 0-based LIST INDEX — same backup
+   *  sourcing and map-presence discriminator as `sceneHandlesByIndex`, for
+   *  `useFootswitchSceneContexts`'s instant-first path. */
+  fsSceneContextsByIndex: Map<number, FsSceneContext[]>;
   /** The unit's presets — `{ slot: 0-based LIST INDEX, name }` — for the Songs tab's
    *  Presets axis rail. Read from the same backup, so the axis needs no device call. */
   presets: { slot: number; name: string }[];
@@ -113,6 +118,7 @@ const emptyScan = (): LibraryScan => ({
   sceneHandlesByIndex: new Map(),
   baseHandlesByIndex: new Map(),
   sceneOverridesByIndex: new Map(),
+  fsSceneContextsByIndex: new Map(),
   presets: [],
   songPresetSlots: new Map(),
   songs: [],
@@ -179,6 +185,7 @@ export async function ensureLibraryScan(): Promise<void> {
     const sceneHandles = new Map<number, SceneHandleRow[]>();
     const baseHandles = new Map<number, SceneHandleCandidate[]>();
     const sceneOverrides = new Map<number, NodeOverride[][]>();
+    const fsContexts = new Map<number, FsSceneContext[]>();
     // backup slot is the 1-based device slot; the list is 0-based → −1.
     const presets: { slot: number; name: string }[] = [];
     res.presets.forEach((p) => {
@@ -200,6 +207,7 @@ export async function ensureLibraryScan(): Promise<void> {
       sceneHandles.set(p.slot - 1, p.scene_handles);
       baseHandles.set(p.slot - 1, p.base_handles);
       sceneOverrides.set(p.slot - 1, p.scene_overrides);
+      fsContexts.set(p.slot - 1, p.fs_scene_contexts);
       presets.push({ slot: p.slot - 1, name: p.name });
     });
     // Song slot → preset LIST INDICES (preset device slot − 1), deduped per song.
@@ -232,6 +240,7 @@ export async function ensureLibraryScan(): Promise<void> {
       sceneHandlesByIndex: sceneHandles,
       baseHandlesByIndex: baseHandles,
       sceneOverridesByIndex: sceneOverrides,
+      fsSceneContextsByIndex: fsContexts,
       presets,
       songPresetSlots,
       songs,

@@ -38,6 +38,12 @@ import {
   ensureLibraryScan,
   resetLibraryScan,
 } from "../views/level/libraryScan";
+import { resetLevelFlow } from "../views/level/levelRunStore";
+
+// The leveling wizard lives in a module store that outlives a mount; start each case clean.
+beforeEach(() => {
+  resetLevelFlow();
+});
 
 const SLOT = 0; // list index 0 == device slot 1
 const TARGET_LUFS = -26; // the single "Rhythm" store target
@@ -101,6 +107,7 @@ function mockHappyPath() {
               blocks: [],
               footswitches: [],
               scene_handles: [],
+              fs_scene_contexts: [],
               base_handles: [],
             },
           ],

@@ -29,6 +29,12 @@ vi.mock("../views/settings", () => ({
 
 // Imported AFTER the mocks so App picks up the stand-ins above.
 import App from "../App";
+import { resetLevelFlow } from "../views/level/levelRunStore";
+
+// The leveling wizard lives in a module store that outlives a mount; start each case clean.
+beforeEach(() => {
+  resetLevelFlow();
+});
 
 function renderApp() {
   localStorage.setItem(DISCLAIMER_PERM_KEY, "1"); // skip the startup disclaimer

@@ -47,6 +47,7 @@ const row = (slot: number, name: string) => ({
   scene_handles: [],
   base_handles: [],
   scene_overrides: [],
+  fs_scene_contexts: [],
 });
 
 // device slots 8 / 58 → list indices 7 / 57; three song→preset bindings.

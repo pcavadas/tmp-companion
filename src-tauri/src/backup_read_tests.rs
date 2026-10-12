@@ -484,6 +484,34 @@ fn backup_row_carries_scene_and_base_handle_candidates() {
     assert_eq!(cand.scope, "isolated");
 }
 
+/// Every footswitch's scene context rides the backup row, so the Set-up step resolves a
+/// footswitch row's measurement scene from data up front, never from whether its picker was
+/// opened. Two switches: one enabled only by the second scene, one enabled by no scene.
+#[test]
+fn backup_row_carries_footswitch_scene_contexts() {
+    let preset_json = r#"{"audioGraph":{"template":"gtrSeries","guitarNodes":{"G1":[]}},
+        "ftsw":[[],[]],
+        "scenes":[{"ftswStates":[false,false]},{"ftswStates":[true,false]}]}"#;
+    let archive = build_backup_archive(&format!(
+        "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
+         INSERT INTO UserPresets VALUES (7, 'Fs Context', '{}');",
+        preset_json.replace('\'', "''")
+    ));
+
+    let result = read_backup_archive(&archive).expect("decode archive");
+    let row = result
+        .presets
+        .iter()
+        .find(|p| p.name == "Fs Context")
+        .expect("the row is present");
+
+    assert_eq!(row.fs_scene_contexts.len(), 2, "one context per switch");
+    assert_eq!(row.fs_scene_contexts[0].enabling_scenes, vec![1]);
+    assert_eq!(row.fs_scene_contexts[0].suggested, Some(1));
+    assert!(row.fs_scene_contexts[1].enabling_scenes.is_empty());
+    assert_eq!(row.fs_scene_contexts[1].suggested, None);
+}
+
 /// A row whose `presetJson` fails to parse (`scene_count: -1`) gets empty `scene_handles`
 /// / `base_handles` — same "unparseable ⇒ empty" contract as `amp_candidates`/`blocks`.
 #[test]
@@ -503,6 +531,7 @@ fn backup_row_handle_candidates_are_empty_when_preset_json_does_not_parse() {
     assert_eq!(row.scene_count, -1, "unparseable presetJson");
     assert!(row.scene_handles.is_empty());
     assert!(row.base_handles.is_empty());
+    assert!(row.fs_scene_contexts.is_empty());
 }
 
 /// `BackupPresetRow::preset_id` carries the body's `info.preset_id` when the body has

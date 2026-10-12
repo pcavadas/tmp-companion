@@ -67,6 +67,7 @@ function emptyResultFor(command: string): unknown {
 
     // leveling
     case "list_level_blocks":
+    case "list_footswitch_scene_contexts":
       return [];
     case "list_scene_level_handles":
       return [];

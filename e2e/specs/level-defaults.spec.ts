@@ -255,4 +255,51 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await expectReampBalanced(page, reampBase);
   });
+
+  // #283: a tab switch used to unmount the run with it, leaving the loop writing to the
+  // unit with no reachable Stop. The run lives in a module store now, so leaving the Level
+  // tab and coming back shows the same run, and its Stop still ends it.
+  //
+  // Harness note: the remounted view's reloads queue on the e2e server behind the run, and
+  // Chromium's six-connections-per-host pool fills with them, so the Stop's cancel invoke
+  // only leaves the page once the in-flight item returns. The run itself sees the Stop at
+  // once (the loop's own flag), so it ends after that item instead of aborting it; the
+  // capture delay is short for that reason.
+  test("a run survives a tab switch, and its Stop still ends it", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: /sim/capture-delay is a SimDevice injection",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await armCaptureDelay(page, 10_000);
+    await openLevel(page);
+
+    await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
+
+    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
+    await waitForCaptureInFlight(page, reampBase);
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Level", exact: true }).click();
+
+    // Back on Level: the run is still on screen, with a working Stop.
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    await page.getByRole("button", { name: "Stop", exact: true }).click(); // confirm
+    await expect(page.getByText("Leveling stopped")).toBeVisible({
+      timeout: 60_000,
+    });
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByText(/^Stopped — \d+ sounds? match/)).toBeVisible();
+    // Only the item in flight at the Stop ran; the rest of the run did not.
+    await expect(
+      page.getByText("Stopped before this one was reached.").first(),
+    ).toBeVisible();
+
+    await expectReampBalanced(page, reampBase);
+  });
 });

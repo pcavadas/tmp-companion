@@ -37,6 +37,12 @@ import {
 } from "../views/level/libraryScan";
 import { resetLiveDevice } from "../views/level/useLiveDevice";
 import type { ActiveGraph } from "../lib/types";
+import { resetLevelFlow } from "../views/level/levelRunStore";
+
+// The leveling wizard lives in a module store that outlives a mount; start each case clean.
+beforeEach(() => {
+  resetLevelFlow();
+});
 
 function renderView(connected: boolean) {
   const r = render(
@@ -88,6 +94,7 @@ function mockOnePreset() {
               blocks: [],
               footswitches: [],
               scene_handles: [],
+              fs_scene_contexts: [],
               base_handles: [],
             },
           ],
@@ -302,6 +309,7 @@ function mockLevelingFixture(
                 : [],
               footswitches: opts.footswitch ? [SOLO_FOOTSWITCH] : [],
               scene_handles: [],
+              fs_scene_contexts: [],
               base_handles: [],
             },
           ],
@@ -785,6 +793,7 @@ describe("LevelView — full leveling wizard e2e", () => {
                 blocks: [],
                 footswitches: [],
                 scene_handles: [],
+                fs_scene_contexts: [],
                 base_handles: [],
               },
             ],
@@ -892,6 +901,7 @@ describe("LevelView — full leveling wizard e2e", () => {
                 blocks: [],
                 footswitches: [],
                 scene_handles: [],
+                fs_scene_contexts: [],
                 base_handles: [],
               },
             ],

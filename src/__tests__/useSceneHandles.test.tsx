@@ -64,6 +64,7 @@ function backupRow(slot: number, name: string, sceneHandles: SceneHandleRow[]) {
     scene_handles: sceneHandles,
     base_handles: [],
     scene_overrides: [],
+    fs_scene_contexts: [],
   };
 }
 

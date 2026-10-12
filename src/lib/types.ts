@@ -850,6 +850,11 @@ export interface BackupPresetRow {
    * (`lib::backup_read::BackupPresetRow.scene_overrides`). Empty for a scene-less or
    * unparseable row. */
   scene_overrides: NodeOverride[][];
+  /** Per footswitch, the scenes that enable it and the preselected measurement scene
+   * (`lib::backup_read::BackupPresetRow.fs_scene_contexts`), from the same presetJson
+   * `list_footswitch_scene_contexts` reads live. The Set-up step resolves every footswitch
+   * row's default scene context from this up front. Empty for an unparseable row. */
+  fs_scene_contexts: FsSceneContext[];
 }
 
 /** One node's state change for one diagnosed sound, relative to the saved base graph

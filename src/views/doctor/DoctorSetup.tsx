@@ -21,7 +21,7 @@ import { StepRail, WizardFooter, WizTitle } from "../overlays/WizardShell";
 import { DialogCardCtx } from "../overlays/wizardContext";
 import { Pick, type PickOption } from "../overlays/Pick";
 import { DOCTOR_STEPS } from "./useDoctorFlow";
-import type { SetupOption } from "../level/leveling";
+import { NO_INSTRUMENT, type SetupOption } from "../level/leveling";
 import type { Store } from "../../lib/types";
 
 /** localStorage key for the app-wide last-used Doctor instrument. */
@@ -40,7 +40,7 @@ function defaultInstFor(
   if (has(bySlot)) return bySlot;
   const last = localStorage.getItem(LAST_INST_KEY);
   if (has(last)) return last;
-  return "none";
+  return NO_INSTRUMENT;
 }
 
 export interface DoctorSetupProps {
@@ -92,7 +92,7 @@ export function DoctorSetup({
     return m;
   });
   const rememberLast = (id: string) => {
-    if (id !== "none") localStorage.setItem(LAST_INST_KEY, id);
+    if (id !== NO_INSTRUMENT) localStorage.setItem(LAST_INST_KEY, id);
   };
   const setOneInst = (k: string, v: string) => {
     setRowInst((p) => ({ ...p, [k]: v }));
@@ -109,7 +109,7 @@ export function DoctorSetup({
     scopeLabel,
   } = usePickedRows(options);
 
-  const [bulkInst, setBulkInst] = useState("none");
+  const [bulkInst, setBulkInst] = useState(NO_INSTRUMENT);
   const applyBulkInst = (v: string) => {
     setBulkInst(v);
     rememberLast(v);
@@ -121,11 +121,15 @@ export function DoctorSetup({
   };
 
   const total = options.length;
-  const anyNone = options.some((o) => (rowInst[o.key] ?? "none") === "none");
+  const anyNone = options.some(
+    (o) => (rowInst[o.key] ?? NO_INSTRUMENT) === NO_INSTRUMENT,
+  );
 
   const run = () => {
     const instByKey: Record<string, string> = {};
-    options.forEach((o) => (instByKey[o.key] = rowInst[o.key] ?? "none"));
+    options.forEach(
+      (o) => (instByKey[o.key] = rowInst[o.key] ?? NO_INSTRUMENT),
+    );
     if (total > 0) onRun(instByKey);
   };
 
@@ -256,7 +260,7 @@ export function DoctorSetup({
                     <Pick
                       grow
                       tid={`inst:${o.key}`}
-                      value={rowInst[o.key] ?? "none"}
+                      value={rowInst[o.key] ?? NO_INSTRUMENT}
                       options={instrumentOptions}
                       onChange={(v) => {
                         setOneInst(o.key, v);

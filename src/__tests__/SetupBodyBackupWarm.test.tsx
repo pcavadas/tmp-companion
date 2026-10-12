@@ -68,6 +68,7 @@ function backupRow(
     scene_handles: [],
     base_handles: baseHandles,
     scene_overrides: [],
+    fs_scene_contexts: [],
   };
 }
 

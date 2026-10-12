@@ -13,7 +13,11 @@ import type { ReactElement } from "react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { RunPage } from "../views/level/RunPage";
-import type { RunItem } from "../views/level/leveling";
+import {
+  instrumentName,
+  NO_INSTRUMENT,
+  type RunItem,
+} from "../views/level/leveling";
 
 const activeItem: RunItem = {
   key: "k0",
@@ -218,5 +222,40 @@ describe("RunPage tail caption (issue 6b)", () => {
   it("falls back to the default caption when no tail is set", () => {
     render(runPage(null, [activeItem], null));
     expect(screen.getByText(defaultCaption)).toBeInTheDocument();
+  });
+});
+
+// BUG→GATE #287: picking instrument "None" stored the `"none"` sentinel, and the row label
+// fell back to the raw id ("none · Rhythm · −27.0"). The no-instrument choice now drops the
+// instrument segment, and `instrumentName` names it instead of echoing the id.
+describe("RunPage row label for the no-instrument choice (#287)", () => {
+  it("shows no raw id for a sound leveled with instrument None", () => {
+    render(
+      <ThemeProvider>
+        <RunPage
+          items={[{ ...activeItem, instId: NO_INSTRUMENT, status: "queued" }]}
+          currentIndex={0}
+          total={1}
+          done={false}
+          stopped={false}
+          stopping={false}
+          liveLufs={null}
+          liveTrace={[]}
+          tailMessage={null}
+          instrumentName={(id) => instrumentName([], id)}
+          targetLufsByName={() => -26}
+          onCancel={vi.fn()}
+          onComplete={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.queryByText(/\bnone\b/)).toBeNull();
+    expect(screen.queryByText(/No instrument/)).toBeNull();
+  });
+
+  it("names the no-instrument choice instead of echoing its id", () => {
+    expect(instrumentName([], NO_INSTRUMENT)).toBe("No instrument");
+    expect(instrumentName([], "")).toBe("No instrument");
+    expect(instrumentName([], "gone")).toBe("gone");
   });
 });

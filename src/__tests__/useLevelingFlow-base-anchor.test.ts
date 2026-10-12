@@ -10,7 +10,7 @@
 //     target (not the scene's) when the run includes a base row;
 //   - OMITS the `baseAnchor` key entirely (not `null`) when the run has no base row.
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 import type { SceneLevelProgressItem } from "../lib/invoke";
@@ -32,6 +32,12 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 // Imported AFTER the mock so the hook picks up the mocked seam.
 import { useLevelingFlow } from "../views/level/useLevelingFlow";
 import type { SetupChoice, SetupOption } from "../views/level/leveling";
+import { resetLevelFlow } from "../views/level/levelRunStore";
+
+// The leveling wizard lives in a module store that outlives a mount; start each case clean.
+beforeEach(() => {
+  resetLevelFlow();
+});
 
 function baseOption(): SetupOption {
   return {

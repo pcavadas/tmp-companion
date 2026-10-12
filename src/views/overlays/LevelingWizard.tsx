@@ -2,8 +2,8 @@
 // (design handoff 1a: full window for all three stages, replacing the old
 // setup-is-full-page/run+summary-are-a-centered-modal split — `WizardShell`/
 // `Dialog size="lg"` are no longer used by leveling; `WizardShell` itself stays for
-// Doctor). Purely presentational: useLevelingFlow owns the state machine and the
-// device run.
+// Doctor). Purely presentational: levelRunStore (bound through useLevelingFlow) owns
+// the state machine and the device run.
 //
 // Stage → step: setup 0 (Set up) · run 1 (Level) · summary 2. Every stage is a
 // full-bleed page over the Level tab's body (`LevelPage`, `zIndex:40`) with no

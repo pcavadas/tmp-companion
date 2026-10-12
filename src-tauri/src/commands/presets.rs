@@ -749,6 +749,7 @@ mod truncation_fallback_tests {
             scene_handles: Vec::new(),
             base_handles: Vec::new(),
             scene_overrides: Vec::new(),
+            fs_scene_contexts: Vec::new(),
         }
     }
 

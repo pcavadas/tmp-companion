@@ -165,7 +165,7 @@ export function instCalState(
   id: string,
   options: PickOption[],
 ): "none" | "uncal" | "cal" {
-  if (!id || id === "none") return "none";
+  if (!hasInstrument(id)) return "none";
   const o = options.find((x) => x.id === id);
   if (!o) return "none";
   return o.calibrated ? "cal" : "uncal";
@@ -192,6 +192,10 @@ export function targetFromCandidate(
  *  same +1 scene rows use, verified against `footswitch::scene_fs_map`). */
 const fsTagOf = (switchIndex: number): string => `FS${String(switchIndex + 1)}`;
 
+/** The "no instrument" choice: level or diagnose against the default reference. The one
+ *  sentinel for it, in the pickers, the Set-up defaults and every run item. */
+export const NO_INSTRUMENT = "none";
+
 /** The instrument `Pick` options shared by the Level and Doctor setup steps:
  *  "None" (the no-instrument path — level/diagnose against the default reference)
  *  followed by each saved profile, calibrated ones flagged with their reference dB. */
@@ -199,7 +203,7 @@ export function instrumentOptions(
   profiles: Profile[] | undefined,
 ): PickOption[] {
   return [
-    { id: "none", label: "None" },
+    { id: NO_INSTRUMENT, label: "None" },
     ...(profiles ?? []).map((p) => {
       const cal = p.calibration_lufs;
       return {
@@ -212,12 +216,20 @@ export function instrumentOptions(
   ];
 }
 
-/** Resolve an instrument profile id → its display name (the run-row chip); falls
- *  back to the raw id for an unknown/removed profile. */
+/** True when `id` names an instrument profile rather than the no-instrument choice. An
+ *  empty id counts as no instrument too. */
+export function hasInstrument(id: string): boolean {
+  return id !== "" && id !== NO_INSTRUMENT;
+}
+
+/** Resolve an instrument profile id → its display name (the run-row chip): "No
+ *  instrument" for the no-instrument choice, else the profile's name, falling back to the
+ *  raw id for an unknown/removed profile. */
 export function instrumentName(
   profiles: Profile[] | undefined,
   id: string,
 ): string {
+  if (!hasInstrument(id)) return "No instrument";
   return (profiles ?? []).find((p) => p.id === id)?.name ?? id;
 }
 
@@ -340,6 +352,12 @@ export interface SetupOption {
    *  the wire `scenes[]` slots — the scene-context picker's label source (D3). Undefined
    *  for Base/scene rows. */
   fsSceneNames?: string[];
+  /** Re-run rows only: the instrument profile id this sound was last leveled with, so
+   *  Set up seeds the row with it instead of the first profile. Undefined for a fresh row. */
+  instId?: string;
+  /** Re-run rows only: the target name this sound was last leveled at, so Set up seeds
+   *  the row with it instead of the first target. Undefined for a fresh row. */
+  targetName?: string;
 }
 
 /** A user-chosen BASE leveling control — the block param `level_preset` should drive
@@ -408,7 +426,7 @@ export interface SetupChoice {
  *
  *  The rank only orders rows WITHIN one preset; `sortRunItems` below is the whole run
  *  order (presets in first-appearance order, then this rank). `chosenFrom` emits that
- *  order, and `useLevelingFlow` re-sorts its items through `sortRunItems` so the run
+ *  order, and `levelRunStore` re-sorts its items through `sortRunItems` so the run
  *  holds however they were assembled. */
 export function runRank(it: {
   isBase: boolean;
@@ -559,7 +577,7 @@ export interface RunItem {
   /** Set ⇒ a block-acting FOOTSWITCH step (dispatched to `levelFootswitchesApply`);
    *  null/undefined ⇒ Base (`level_preset`) or FS scene (`level_scenes_apply_batched`). */
   footswitch?: FootswitchTarget | null;
-  /** Chosen instrument profile id ("" when none). */
+  /** Chosen instrument profile id, or `NO_INSTRUMENT`. */
   instId: string;
   /** Chosen target name. */
   targetName: string;
@@ -721,11 +739,13 @@ export function runItemToOption(it: RunItem): SetupOption {
     footswitch: it.footswitch ?? null,
     sceneHandle: it.handle,
     baseHandle: it.baseHandle,
+    instId: it.instId,
+    targetName: it.targetName,
   };
 }
 
-// The wizard's stage machine + run state now live in the flow hook
-// (useLevelingFlow → Stage / RunState); this module just owns the per-scene types.
+// The wizard's stage machine + run state now live in the module store
+// (levelRunStore → Stage / RunState); this module just owns the per-scene types.
 
 // ── the preset-level (Base) job builder ─────────────────────────────────────
 

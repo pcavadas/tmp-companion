@@ -371,6 +371,23 @@ interface RowChoice {
   sceneContext: number | null | undefined;
 }
 
+/** `id` when the picker still offers it, else `fallback`. */
+function seedFrom(
+  id: string | undefined,
+  options: PickOption[],
+  fallback: string,
+): string {
+  return id !== undefined && options.some((x) => x.id === id) ? id : fallback;
+}
+
+/** The one value every entry shares, else `fallback`. */
+function sharedOr(values: string[], fallback: string): string {
+  const distinct = new Set(values);
+  if (distinct.size !== 1) return fallback;
+  const [only] = distinct;
+  return only;
+}
+
 export interface SetupPageProps {
   options: SetupOption[];
   isRelevel: boolean;
@@ -429,12 +446,21 @@ export function SetupPage({
     return [...by.values()].sort((a, b) => a.slot - b.slot);
   }, [options]);
 
+  // A re-run row carries the instrument and target it was leveled with; seed from them so
+  // "Run again" repeats the same settings instead of resetting to the first profile and
+  // target. Only ids the pickers still offer are kept: a `Pick` whose value is missing from
+  // its options DISPLAYS `options[0]` while submitting the stale id (danger.md).
+  const seedInst = (o: SetupOption): string =>
+    seedFrom(o.instId, instrumentOptions, defaultInst);
+  const seedTarget = (o: SetupOption): string =>
+    seedFrom(o.targetName, targetOptions, defaultTarget);
+
   const [rows, setRows] = useState<Partial<Record<string, RowChoice>>>(() => {
     const m: Partial<Record<string, RowChoice>> = {};
     options.forEach((o) => {
       m[o.key] = {
-        inst: defaultInst,
-        target: defaultTarget,
+        inst: seedInst(o),
+        target: seedTarget(o),
         handle:
           o.footswitch != null
             ? {
@@ -445,7 +471,12 @@ export function SetupPage({
             : o.isBase
               ? (o.baseHandle ?? null)
               : (o.sceneHandle ?? undefined),
-        sceneContext: undefined,
+        // A re-run footswitch keeps the scene it was measured in. A fresh row stays
+        // undefined and resolves to the preset's suggested scene (`fsSuggestedFor`).
+        sceneContext:
+          isRelevel && o.footswitch != null
+            ? o.footswitch.sceneContext
+            : undefined,
       };
     });
     return m;
@@ -478,6 +509,18 @@ export function SetupPage({
     });
   }, [groups, fetchBlocksFor, fetchHandlesFor, baseHasBackup, sceneHasBackup]);
 
+  // A footswitch row's default scene context is the preset's suggested scene, so resolve
+  // it for every footswitch row up front rather than on first picker open — otherwise the
+  // same selection could measure a switch in different scenes depending on whether a
+  // picker was opened. Answered off the backup scan; a device read only for a preset the
+  // scan has no entry for. Rows that already carry a context (a re-run) need no fetch.
+  useEffect(() => {
+    if (isRelevel) return;
+    options.forEach((o) => {
+      if (o.footswitch != null) fetchFsContextFor(o.slot);
+    });
+  }, [options, isRelevel, fetchFsContextFor]);
+
   const effectiveHandle = (
     o: SetupOption,
     row: RowChoice | undefined,
@@ -503,10 +546,25 @@ export function SetupPage({
     return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
   };
 
+  // A footswitch row whose default context is still being read. Start waits for it, so
+  // the run never measures a switch in base just because the read hadn't landed yet.
+  const fsContextPending = options.some((o) => {
+    if (o.footswitch == null || rows[o.key]?.sceneContext !== undefined) {
+      return false;
+    }
+    const st = contextFor(o.slot, o.footswitch.switchIndex).status;
+    return st === "unfetched" || st === "loading";
+  });
+
   // The bulk row's current value — always written to EVERY row (no ticking; what
-  // gets leveled was already chosen on the preset list).
-  const [bulkInst, setBulkInst] = useState(defaultInst);
-  const [bulkTarget, setBulkTarget] = useState(defaultTarget);
+  // gets leveled was already chosen on the preset list). Seeded with the rows' shared
+  // value when they all agree (a re-run of sounds leveled alike), else the default.
+  const [bulkInst, setBulkInst] = useState(() =>
+    sharedOr(options.map(seedInst), defaultInst),
+  );
+  const [bulkTarget, setBulkTarget] = useState(() =>
+    sharedOr(options.map(seedTarget), defaultTarget),
+  );
   const applyBulkField = (field: "inst" | "target", v: string) => {
     setRows((p) => {
       const n = { ...p };
@@ -635,11 +693,15 @@ export function SetupPage({
             variant="primary"
             small
             icon="gauge"
-            disabled={total === 0 || (requireBackup && !backedUp)}
+            disabled={
+              total === 0 || (requireBackup && !backedUp) || fsContextPending
+            }
             onClick={start}
             style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
           >
-            {`Start — ${String(total)} sound${total === 1 ? "" : "s"}`}
+            {fsContextPending
+              ? "Reading footswitches…"
+              : `Start — ${String(total)} sound${total === 1 ? "" : "s"}`}
           </Button>
         </>
       }
