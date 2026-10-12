@@ -42,7 +42,7 @@ the intersection. The metric is fully DETERMINISTIC per sound: a verdict
 depends only on that sound's own measurements, never on which other sounds ran
 in the same check.
 
-## Diagnoses (13)
+## Diagnoses (12)
 
 - **Band rules** (consensus, above): muddy / boomy / harsh / lost / thin /
   buried.

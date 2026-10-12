@@ -4443,21 +4443,30 @@ fn solve_param_secant(
         .unwrap_or_else(fixed_fallback);
     // Seed 2 can land silent (a knob whose useful range is a narrow slice of its own
     // range) — past seed 1, that's data, never a routing error (see seed 1's doc above).
-    // `seed2_silent` feeds the initial best-seed pick below so a synthesized floor point
-    // can never win it (mirrors `improve_best`'s exclusion of synthetic points).
-    let (l_b_lufs, l_b_spread, seed2_silent) = match require_live(|| measure_at(v_b), stimulus) {
+    // A clipped seed 2 is the mirror case, the knob's loud end (see `fs_clipped_geometry`).
+    // `seed2_synthetic` feeds the initial best-seed pick below so a synthesized point can
+    // never win it (mirrors `improve_best`'s exclusion of synthetic points).
+    let (l_b_lufs, l_b_spread, seed2_synthetic) = match require_live(|| measure_at(v_b), stimulus) {
         Ok(l) => (l.integrated_lufs, l.spread_lu(), false),
         Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
             (fs_silent_geometry(l_a.integrated_lufs), 0.0, true)
         }
+        Err(e) if e == CLIPPED_CAPTURE_ERR => (
+            fs_clipped_geometry(l_a.integrated_lufs, target_lufs),
+            0.0,
+            true,
+        ),
         Err(e) => return Err(e),
     };
     // The quietest REAL capture seen so far — the anchor `fs_silent_geometry` floors every
     // silent pseudo point under.
-    let mut min_real = if seed2_silent {
-        l_a.integrated_lufs
+    let (mut min_real, mut max_real) = if seed2_synthetic {
+        (l_a.integrated_lufs, l_a.integrated_lufs)
     } else {
-        l_a.integrated_lufs.min(l_b_lufs)
+        (
+            l_a.integrated_lufs.min(l_b_lufs),
+            l_a.integrated_lufs.max(l_b_lufs),
+        )
     };
     // The probe capture (when present) counts as capture 1, so after seed 2 this is 2 real
     // device round-trips on BOTH seeded paths — probe-as-seed-1+seed2, or fixed-seed1+
@@ -4468,7 +4477,7 @@ fn solve_param_secant(
     let mut iterations = 2u32;
     let err = |l: f64| (l - target_lufs).abs();
     let (mut best_v, mut best_lufs, mut best_spread) =
-        if seed2_silent || err(l_a.integrated_lufs) <= err(l_b_lufs) {
+        if seed2_synthetic || err(l_a.integrated_lufs) <= err(l_b_lufs) {
             (v_a, l_a.integrated_lufs, l_a.spread_lu())
         } else {
             (v_b, l_b_lufs, l_b_spread)
@@ -4498,6 +4507,7 @@ fn solve_param_secant(
                 Ok(l_extreme) => {
                     iterations += 1;
                     min_real = min_real.min(l_extreme.integrated_lufs);
+                    max_real = max_real.max(l_extreme.integrated_lufs);
                     improve_best(
                         target_lufs,
                         v_extreme,
@@ -4582,6 +4592,7 @@ fn solve_param_secant(
                         Ok(l2) => {
                             iterations += 1;
                             min_real = min_real.min(l2.integrated_lufs);
+                            max_real = max_real.max(l2.integrated_lufs);
                             improve_best(
                                 target_lufs,
                                 v2,
@@ -4595,6 +4606,10 @@ fn solve_param_secant(
                         Err(e) if e.contains(NO_SIGNAL_CAPTURED) => {
                             iterations += 1;
                             (fs_silent_geometry(min_real), false)
+                        }
+                        Err(e) if e == CLIPPED_CAPTURE_ERR => {
+                            iterations += 1;
+                            (fs_clipped_geometry(max_real, target_lufs), false)
                         }
                         Err(e) => return Err(e),
                     };
@@ -7032,6 +7047,20 @@ const FS_SILENT_MARGIN_LU: f64 = 10.0;
 /// value).
 fn fs_silent_geometry(min_real_lufs: f64) -> f64 {
     FS_SILENT_GEOMETRY_LUFS.min(min_real_lufs - FS_SILENT_MARGIN_LU)
+}
+
+/// How far above both the loudest REAL capture and the target `fs_clipped_geometry` puts a
+/// clipped probe's pseudo point.
+const FS_CLIP_MARGIN_LU: f64 = 6.0;
+
+/// The pseudo-LUFS for a CLIPPED probe past the first seed — the loud mirror of
+/// [`fs_silent_geometry`]. A clipped capture's integrated reading is LOW (the hub refuses it
+/// with [`CLIPPED_CAPTURE_ERR`]), but the knob value that produced it is plainly too loud, so
+/// the geometry places it `FS_CLIP_MARGIN_LU` above both the loudest real capture and the
+/// target: the secant then steps back down instead of the whole row aborting. Geometry only,
+/// like the silent point — never handed to `improve_best` or reported.
+fn fs_clipped_geometry(max_real_lufs: f64, target_lufs: f64) -> f64 {
+    max_real_lufs.max(target_lufs) + FS_CLIP_MARGIN_LU
 }
 
 /// Is this scene already at target? Matches the correction loop's `ACCEPT_TOL_LU`
@@ -10758,6 +10787,45 @@ mod tests {
     // floor `MUTE_FLOOR_SILENT_LUFS`. The first-seed routing-clamp arm has its own test just
     // below, now that its disengage is injected rather than a real connection.
 
+    /// #239 follow-up: a CLIPPED probe past the first seed is the knob's loud end, not a
+    /// fatal error. Before, the hub's clip refusal aborted the whole row even though a lower
+    /// value reaches the target. Here everything above 0.40 clips and the target sits at
+    /// about 0.36: the solve must step back down and land in band on a real capture.
+    #[test]
+    fn solve_footswitch_steps_back_down_from_a_clipped_probe() {
+        let seen: std::cell::RefCell<Vec<(f32, bool)>> = std::cell::RefCell::new(Vec::new());
+        let r = solve_footswitch(
+            12,
+            &[],
+            &[],
+            -24.0,
+            "baked",
+            None,
+            &fs_unit_param(),
+            |_, v| {
+                let clipped = v > 0.40;
+                seen.borrow_mut().push((v, clipped));
+                if clipped {
+                    Err(CLIPPED_CAPTURE_ERR.to_string())
+                } else {
+                    Ok(fs_loud(-40.0 + 45.0 * f64::from(v)))
+                }
+            },
+        )
+        .expect("a clipped probe must not abort the solve");
+        let seen = seen.into_inner();
+        assert!(
+            seen.iter().any(|&(_, c)| c),
+            "the fixture must reach the clipped arm: {seen:?}"
+        );
+        assert!(
+            !r.clamped && !r.unconverged,
+            "must converge below the clip: {r:?} {seen:?}"
+        );
+        assert!(r.final_value <= 0.40, "{r:?}");
+        assert!((r.predicted_lufs - -24.0).abs() <= ACCEPT_TOL_LU, "{r:?}");
+    }
+
     /// #261: the solve owns no connection. A silent FIRST seed is the routing clamp; it
     /// disengages through the caller's hook exactly once, and opens nothing itself.
     #[test]
@@ -10968,12 +11036,12 @@ mod tests {
     /// lands silent, not seed 1. Steepened from the original -26 LU/knob-unit slope to -44:
     /// with the shallower slope the law-predicted seed 2 landed INSIDE the real region
     /// (0.436, computed from seed 1's -32.33 LUFS reading), rerouting this fixture off the
-    /// `seed2_silent` arm entirely. At -44 LU/knob-unit the same prediction (`0.25 +
+    /// `seed2_synthetic` arm entirely. At -44 LU/knob-unit the same prediction (`0.25 +
     /// 20·log10⁻¹(...)` ≈ 1.03) overshoots past the range's 0.95 fraction ceiling (in fact
     /// past `1.0` outright), so the frac gate — UNCHANGED by the `FS_MIN_SEED_GAP_LU` fix,
     /// which only replaced the separate v-space-span component — rejects it and seed 2
     /// falls back to the fixed complement (0.75) — which this curve keeps silent
-    /// (`v ≥ 0.60`). Exercises the `seed2_silent` arm directly: the initial best-seed pick
+    /// (`v ≥ 0.60`). Exercises the `seed2_synthetic` arm directly: the initial best-seed pick
     /// must still choose the real (0.25) reading, never the synthesized one, and the pseudo
     /// point must still let the secant find the target. Provably reaches the arm: `seen[1]`
     /// (seed 2 itself) is asserted silent.
@@ -11006,7 +11074,7 @@ mod tests {
         assert_eq!(seen[0], 0.25, "seed 1 is the fixed quarter-range point");
         assert!(
             seen.len() >= 2 && seen[1] >= 0.60,
-            "the seed2_silent arm must fire: seed 2 itself must be the silent capture: {seen:?}"
+            "the seed2_synthetic arm must fire: seed 2 itself must be the silent capture: {seen:?}"
         );
         assert!(
             (r.predicted_lufs - -20.0).abs() <= KNOB_TOL_LU,

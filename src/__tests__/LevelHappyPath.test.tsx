@@ -71,7 +71,7 @@ function levelResultStub(over: Record<string, unknown> = {}) {
 // One preset "Stadium Lead" with a base + two FS scenes; the backup read supplies its
 // scenes (so the row expands), and the three level commands are stubbed. The batched
 // scene command harmlessly fires its Channel onmessage per scene before resolving.
-function mockHappyPath() {
+function mockHappyPath(baseOver: Record<string, unknown> = {}) {
   vi.mocked(invoke).mockImplementation((command: string, args?: unknown) => {
     switch (command) {
       case "list_presets":
@@ -117,7 +117,7 @@ function mockHappyPath() {
           setlist_songs: [],
         });
       case "level_preset":
-        return Promise.resolve(levelResultStub());
+        return Promise.resolve(levelResultStub(baseOver));
       case "list_level_blocks":
         return Promise.resolve([
           {
@@ -239,5 +239,29 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     ).job;
     expect(job.slot).toBe(SLOT);
     expect(job.target_lufs).toBe(TARGET_LUFS);
+  });
+
+  // #187: the store maps the backend's `verify_failed` to a "not confirmed" row. A Base
+  // whose check capture failed carries only a prediction, so it must not count as matched.
+  it("a Base whose verify failed is reported not confirmed, never matched", async () => {
+    mockHappyPath({ verification: "verify_failed", verify_lufs: null });
+    const user = userEvent.setup();
+    renderView();
+
+    await screen.findByText("Stadium Lead");
+    await screen.findByText("2 scenes");
+    await user.click(screen.getAllByTitle("Select preset to level")[0]);
+    await user.click(
+      await screen.findByRole("button", { name: /level 1 preset/i }),
+    );
+    await ackBackup(user);
+    await user.click(
+      await screen.findByRole("button", { name: /start.*3 sounds/i }),
+    );
+
+    expect(
+      await screen.findByText("not confirmed", undefined, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("All 3 sounds match now.")).toBeNull();
   });
 });
