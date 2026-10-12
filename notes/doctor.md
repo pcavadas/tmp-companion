@@ -60,8 +60,9 @@ in the same check.
   every lag 0–250 ms, on a 65%-wet plate, fw 1.8.45).
 - **spiky** — REMOVED (#241). The dynamics-spread rule (`spread_lu > 4.0`, clean
   chains only) was unreachable on real DI captures (max ~1.88 LU, see
-  `doctor-calibration.md`), so the rule, its post-cab compressor Rx and 407's
-  SPIKY oracle row were deleted.
+  `doctor-calibration.md`), so the rule and its post-cab compressor Rx were
+  deleted. 407's SPIKY oracle switch was cleared, but its footswitch row stays as
+  an empty array so every later row keeps its index.
 - **resonant / boxy** — ENABLED since the 2026-07-17 parametric-EQ
   ground-truth round (`LOCALIZED_RULES_ENABLED = true`). Lineage: three
   earlier shape-only HW rounds (raw capture space → transfer space →
