@@ -47,7 +47,12 @@ import {
   type SetupOption,
 } from "./leveling";
 import type { Stage } from "../overlays";
-import type { AmpCandidate, LevelBlock, Profile } from "../../lib/types";
+import type {
+  AmpCandidate,
+  LevelBlock,
+  Profile,
+  Verification,
+} from "../../lib/types";
 
 // AMP model ids (the catalog's amp categories) — the amp's outputLevel knob is the
 // one with real loudness authority. A non-amp level control saturates to ~1.7 LU;
@@ -119,6 +124,8 @@ interface LevelOutcomeFields {
   /** Footswitch rows only: the clamp's pinned bound is the wet/mix floor, not headroom —
    *  see `FootswitchLevelResult.wet_floor`. */
   wet_floor?: boolean;
+  /** Preset/scene rows only (footswitch rows always measure their result). */
+  verification?: Verification;
 }
 
 // A `clamp_reason` is set ONLY when the leveled signal isn't effectively reaching the USB 1/2
@@ -128,13 +135,16 @@ interface LevelOutcomeFields {
 // A plain headroom/authority clamp (the knob has real effect but can't reach target) has
 // `clamped` set with NO reason → "clamped at X". `unconverged` is last of the miss states
 // (the backend's own precedence): it is only ever set when `clamped` is not, and it means
-// the knob had room left, so a re-run helps.
+// the knob had room left, so a re-run helps. A row whose check capture FAILED is reported
+// the same way: its number is only a prediction, and a re-run confirms it.
+const unverifiedOf = (r: LevelOutcomeFields): boolean =>
+  r.verification === "verify_failed";
 const outcomeOf = (r: LevelOutcomeFields): RunItem["outcome"] =>
   r.clamp_reason != null
     ? "offbranch"
     : r.clamped
       ? "clamped"
-      : r.unconverged
+      : r.unconverged || unverifiedOf(r)
         ? "unconverged"
         : "done";
 const valueOf = (r: LevelOutcomeFields): number =>
@@ -516,6 +526,7 @@ export async function runLeveling(
         } else if (status === "done" && result) {
           entry.item.activeMessage = null;
           entry.item.outcome = outcomeOf(result);
+          entry.item.unverified = unverifiedOf(result);
           entry.item.value = valueOf(result);
           entry.item.spreadLu = result.dynamic_spread_lu;
           entry.item.verifyByEar = causeOf(result);
@@ -603,6 +614,7 @@ export async function runLeveling(
               buildLevelJob(it.slot, targetLufs, profile, true, it.baseHandle),
             );
             it.outcome = outcomeOf(res);
+            it.unverified = unverifiedOf(res);
             it.value = valueOf(res);
             it.ceilingLufs = res.constant_c;
             it.spreadLu = res.dynamic_spread_lu;

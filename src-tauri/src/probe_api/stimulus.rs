@@ -655,8 +655,8 @@ pub fn probe_stim_ab(
     let stim_a = read_stimulus_48k(wav_a)?;
     let stim_b = read_stimulus_48k(wav_b)?;
     // Floor reads are handled INSIDE measure_c now (the production floor guard:
-    // stimulus-aware spread trip → same-ref retry → level-shift confirm) — a
-    // persistent floor read surfaces as leveller::FLOOR_READ_ERR in the row.
+    // stimulus-aware momentary-spread trip → same-ref retry) — a persistent floor read
+    // surfaces as leveller::FLOOR_READ_ERR in the row.
     let mut out = format!(
         "stimulus A/B @ ref {ref_level:.2}\n  A = {wav_a}\n  B = {wav_b}\n\
          \n  slot |      C_A |      C_B |      ΔC | spread_A | spread_B\n"
@@ -1264,28 +1264,10 @@ mod dry_diagnosis_tests {
     }
 }
 
-/// True clipping flat-tops the waveform — a RUN of consecutive samples pinned at
-/// full scale. A clean guitar pick attack is a sub-millisecond transient (one or
-/// two samples at the apex) that a device output meter's ballistics smooth away
-/// but a raw sample-peak catches, so a bare `peak >= 0.99` gate over-fires on hot
-/// transients (the DI tap is a bit-exact USB bus — no analog headroom to lose, so
-/// only genuine flat-topping corrupts a take). Flag a capture as clipped only when
-/// `MIN_CLIP_RUN` consecutive samples sit at/above `CLIP_LEVEL`.
-const CLIP_LEVEL: f32 = 0.999;
-const MIN_CLIP_RUN: usize = 4; // ≈83 µs @ 48 kHz — impossible for a clean transient apex
+/// A mono take flat-topped at full scale — [`lufs::is_clipped`] on one channel (the
+/// ONE clip detector: the processed re-amp captures use the same rule).
 pub(crate) fn is_clipped_capture(samples: &[f32]) -> bool {
-    let mut run = 0usize;
-    for &x in samples {
-        if x.abs() >= CLIP_LEVEL {
-            run += 1;
-            if run >= MIN_CLIP_RUN {
-                return true;
-            }
-        } else {
-            run = 0;
-        }
-    }
-    false
+    lufs::is_clipped(samples, 1)
 }
 
 /// Capture the dry instrument (USB-Out 3) for `secs` while the user plays and

@@ -415,7 +415,7 @@ fn floor_error_for_clears_a_live_capture() {
 
 #[test]
 fn floor_error_for_disarms_on_a_near_stationary_stimulus() {
-    // stimulus spread ≤ STATIONARY_STIM_LU (0.30) can't discriminate by spread —
+    // stimulus momentary spread ≤ STATIONARY_STIM_LU (2.0) can't discriminate —
     // the guard must not fire even though the capture itself reads flat.
     assert_eq!(floor_error_for(0.01, 0.2), None);
 }
@@ -886,6 +886,7 @@ fn measured(lufs: f64, tail_ratio_db: f64, nodes: Vec<doctor::DoctorNode>) -> So
                 .collect(),
             integrated_lufs: lufs,
             spread_lu: 0.0,
+            momentary_spread_lu: 0.0,
             tail_ratio_db,
             air_flatness: 0.5,
             peaks: Vec::new(),

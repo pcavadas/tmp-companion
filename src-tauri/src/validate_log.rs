@@ -212,8 +212,9 @@ impl ValidationRow {
 /// A finite integrated loudness at or below this is genuinely down at the device's
 /// stationary output floor — no leveled sound lands anywhere near it (the shipped targets
 /// are −23/−21/−19 LUFS, and even the deliberately-quiet fixture scene models ≈ −58). Above
-/// it, a `floor` stamp is far more likely to be [`crate::leveller::is_engaged`]'s
-/// spread criterion misfiring than a failed inject — see [`engaged_verdict`].
+/// it, a flat capture is still a failed inject (a floor read scales with `presetLevel`, so
+/// it can sit at ordinary leveling loudness) — but see [`engaged_verdict`] for why the two
+/// are reported apart.
 const FLOOR_SUSPECT_FLOOR_LUFS: f64 = -55.0;
 
 /// The engage verdict the consumer keys its "failed inject, not a level miss" FAIL on.
@@ -224,13 +225,11 @@ const FLOOR_SUSPECT_FLOOR_LUFS: f64 = -55.0;
 /// the same criterion `probe --measure-current`'s FLOOR/SILENT headline uses) is what
 /// keeps the shell from ever having to grep a probe log.
 ///
-/// FOUR verdicts, not three, because the criterion has a KNOWN false positive.
-/// `is_engaged`'s `spread > 0.5` arm (documented in `CLAUDE.md`) stamps FLOOR on perfectly
-/// valid captures of the stationary stimulus through a COMPRESSED chain — the sound is
-/// loud, on-target and real, but its short-term-max sits within 0.5 LU of its integrated
-/// reading. Failing those hard is a FALSE RED that would sink a correct 45-minute online
-/// run, and softening the criterion itself would re-open the failed-inject hole it exists
-/// to close. So the two cases are SPLIT by absolute level:
+/// FOUR verdicts, not three. `is_engaged` reads the MOMENTARY spread (a plucked stimulus
+/// through any chain swings ≳ 0.7 LU at 400 ms; a stationary floor ≈ 0.1), which no longer
+/// stamps FLOOR on every healthy row the way the old short-term `spread > 0.5` arm did. The
+/// flat cases stay SPLIT by absolute level so the consumer can grade a loud one with
+/// ffmpeg rather than sink a long online run on one row:
 ///
 /// * `floor` — flat AND down at the floor (≤ [`FLOOR_SUSPECT_FLOOR_LUFS`]). The genuine
 ///   failed-inject signature; still a hard FAIL downstream.
@@ -413,6 +412,16 @@ mod tests {
             integrated_lufs: integrated,
             short_term_max_lufs: short_term_max,
             true_peak_dbtp: -6.0,
+            momentary_spread_lu: 6.0,
+            clipped: false,
+        }
+    }
+
+    /// A stationary reading: no momentary dynamics (a floor read).
+    fn flat(integrated: f64) -> lufs::Loudness {
+        lufs::Loudness {
+            momentary_spread_lu: 0.1,
+            ..loud(integrated, integrated + 0.01)
         }
     }
 
@@ -426,25 +435,18 @@ mod tests {
     fn engage_verdict_separates_silent_floor_floor_suspect_and_engaged() {
         assert_eq!(engaged_verdict(&loud(f64::NEG_INFINITY, 0.0)), "silent");
         // Finite but flat and DOWN AT THE FLOOR: the failed-inject signature, hard FAIL.
-        assert_eq!(engaged_verdict(&loud(-70.0, -69.9)), "floor");
+        assert_eq!(engaged_verdict(&flat(-70.0)), "floor");
         assert_eq!(engaged_verdict(&loud(-17.0, -12.0)), "engaged");
-        // Flat but LOUD — `is_engaged`'s spread>0.5 arm misfiring on a compressed capture
-        // of the stationary stimulus. A real sound at a real level, so the consumer WARNs
-        // and still grades it with ffmpeg rather than failing the run outright.
-        assert_eq!(engaged_verdict(&loud(-17.0, -16.8)), "floor_suspect");
+        // BUG→GATE (#175): a healthy capture of the stationary stimulus has a short-term
+        // spread under 0.5 LU; it is still ENGAGED (the old arm stamped it floor_suspect).
+        assert_eq!(engaged_verdict(&loud(-17.0, -16.8)), "engaged");
+        // Flat but LOUD: a floor read at leveling loudness (the floor scales with
+        // presetLevel), which the consumer WARNs on.
+        assert_eq!(engaged_verdict(&flat(-27.0)), "floor_suspect");
         // The boundary is exclusive on the floor side: exactly at the constant stays hard.
+        assert_eq!(engaged_verdict(&flat(FLOOR_SUSPECT_FLOOR_LUFS)), "floor");
         assert_eq!(
-            engaged_verdict(&loud(
-                FLOOR_SUSPECT_FLOOR_LUFS,
-                FLOOR_SUSPECT_FLOOR_LUFS + 0.1
-            )),
-            "floor"
-        );
-        assert_eq!(
-            engaged_verdict(&loud(
-                FLOOR_SUSPECT_FLOOR_LUFS + 0.5,
-                FLOOR_SUSPECT_FLOOR_LUFS + 0.6
-            )),
+            engaged_verdict(&flat(FLOOR_SUSPECT_FLOOR_LUFS + 0.5)),
             "floor_suspect"
         );
     }

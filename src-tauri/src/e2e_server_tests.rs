@@ -1107,8 +1107,8 @@ fn bake_path_footswitch_rerun_skips_the_persist_when_already_at_target() {
     );
     assert_eq!(r1[0]["saved"], true, "run 1 must solve and save: {r1:?}");
     // Pin the premise: run 1 must actually CONVERGE (not fall back to a best-effort
-    // best-point-found re-solve). Run 1 currently converges by accepting seed 0.75 with only
-    // 29% of FS_TOL_LU headroom — if a future tolerance/curve shift makes it unconverged, run
+    // best-point-found re-solve). Run 1 currently converges by accepting seed 0.75 inside
+    // ACCEPT_TOL_LU — if a future tolerance/curve shift makes it unconverged, run
     // 2 would legitimately re-solve too, and the no-new-`Saved` gate below would false-red on
     // a correct run. Fail here, at the premise, instead of misattributing that to a
     // regression in the fix.
@@ -1475,7 +1475,7 @@ fn wet_mix_footswitch_bakes_and_pins_at_the_wet_floor_on_an_unreachable_target()
 }
 
 /// The companion half of the row-18 gate: the SAME switch at a target the wet-mix curve can
-/// actually reach converges inside `FS_TOL_LU` with `wet_floor: false`. -16 is the pick
+/// actually reach converges inside `ACCEPT_TOL_LU` with `wet_floor: false`. -16 is the pick
 /// because the curve puts the wet floor at -17.18 and the authored mix at -15, so -16 solves
 /// near mix 0.27 — a 1.18 LU margin over the floor's own reading, ~12x the 0.1 LU tolerance,
 /// so an epsilon in the model can't flip this row into a floor clamp and quietly retire the
@@ -1495,8 +1495,8 @@ fn wet_mix_footswitch_bakes_and_converges_and_stays_off_the_floor_on_a_reachable
         "wet_floor tracks the OUTCOME, not the param's class: {r:?}"
     );
     assert!(
-        (r.predicted_lufs - TARGET).abs() <= 0.1,
-        "the achieved loudness must land within FS_TOL_LU of {TARGET}: {r:?}"
+        (r.predicted_lufs - TARGET).abs() <= crate::leveller::ACCEPT_TOL_LU,
+        "the achieved loudness must land within ACCEPT_TOL_LU of {TARGET}: {r:?}"
     );
     let (lo, hi) = param.bounds();
     assert!(
@@ -1883,6 +1883,84 @@ fn level_defaults_403_scenes_solve_and_offbranch() {
         assert!(
             (lufs + 23.0).abs() < 1.0,
             "solvable scene lands near -23: {r:?}"
+        );
+    }
+}
+
+/// Run slot 403's four scenes through the REAL `level_scenes_apply_batched` with the fake's
+/// next `verify_faults` post-write verify captures silenced; returns the command's rows.
+fn level_403_with_verify_faults(verify_faults: u32) -> Vec<serde_json::Value> {
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    crate::sim_device::arm_verify_capture_faults(verify_faults);
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![level_scenes_apply_batched])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+    let amp = serde_json::json!([
+        {"groupId": "G2", "nodeId": "ampA", "parameterId": "outputLevel", "value": 1.0},
+        {"groupId": "G3", "nodeId": "ampB", "parameterId": "outputLevel", "value": 1.0}
+    ]);
+    let res = invoke(
+        &webview,
+        "level_scenes_apply_batched",
+        serde_json::json!({
+            "slot": 403,
+            "jobs": (0..4).map(|s| serde_json::json!({"sceneSlot": s, "targetLufs": -23.0})).collect::<Vec<_>>(),
+            "candidates": amp,
+            "save": true, "rebalance": false,
+            "topologyId": serde_json::Value::Null, "calibrationLufs": null, "profileId": null,
+            "onResult": "__CHANNEL__:0"
+        }),
+    )
+    .expect("level_scenes_apply_batched");
+    res.as_array().expect("results array").clone()
+}
+
+/// BUG→GATE (#187): a scene whose post-write verify capture fails must never report the
+/// PREDICTION as a verified, on-target result. One failed verify is retried (fresh re-apply +
+/// verify) and the row is verified; when every verify fails the row says `verify_failed`
+/// and carries no `verify_lufs`.
+#[test]
+fn a_failed_scene_verify_is_retried_and_never_reported_as_verified() {
+    let _serial = serial();
+    let solvable = |rows: &[serde_json::Value]| -> Vec<serde_json::Value> {
+        rows.iter()
+            .filter(|r| r["clamp_reason"].is_null())
+            .cloned()
+            .collect()
+    };
+
+    // One failed verify capture: the retry heals it.
+    let rows = level_403_with_verify_faults(1);
+    let ok = solvable(&rows);
+    assert_eq!(
+        ok.len(),
+        3,
+        "the three solvable scenes still solve: {rows:?}"
+    );
+    for r in &ok {
+        assert_eq!(r["verification"], "verified", "{r}");
+        assert!(r["verify_lufs"].is_f64(), "{r}");
+    }
+
+    // Retry exhaustion: every verify fails, so no row may claim a measured result. (The
+    // off-branch scene loses its no-authority verdict too — that verdict needs a reading.)
+    let rows = level_403_with_verify_faults(u32::MAX);
+    let failed = solvable(&rows);
+    assert!(failed.len() >= 3, "{rows:?}");
+    for r in &failed {
+        assert_eq!(r["verification"], "verify_failed", "{r}");
+        assert!(
+            r["verify_lufs"].is_null(),
+            "a failed verify must not reach the wire as a reading: {r}"
         );
     }
 }
@@ -2507,9 +2585,17 @@ fn hiwatt_base_leveling_measures_base_not_the_saved_scene() {
         "base solved from base's C=-17; a CLAMP means the capture measured the saved scene 3 \
          (C=-31) instead of base: {r}"
     );
-    let measured = r["measured_lufs"].as_f64().expect("measured_lufs");
+    // The reference capture now runs at the preset's saved presetLevel, so `measured_lufs` is
+    // that as-is reading, not a reading at the solved level. Check what it solved from (base's
+    // C) and where it lands.
+    let c = r["constant_c"].as_f64().expect("constant_c");
     assert!(
-        (measured + 23.0).abs() < 1.0,
+        (c + 17.0).abs() < 1.0,
+        "the base run measured base's C: {r}"
+    );
+    let predicted = r["predicted_lufs"].as_f64().expect("predicted_lufs");
+    assert!(
+        (predicted + 23.0).abs() < 1.0,
         "the base run lands on target: {r}"
     );
     // Belt-and-braces on the mechanism, not just the outcome: base (wire slot 8) was recalled.
@@ -3089,10 +3175,9 @@ fn the_footswitch_rows_still_converge_after_a_base_boost() {
             "switch {switch} must converge after the base boost: {row}"
         );
         let predicted = row["predicted_lufs"].as_f64().expect("predicted_lufs");
-        // FS_TOL_LU (leveller.rs, private) = 0.1.
         assert!(
-            (predicted - target).abs() <= 0.1,
-            "switch {switch} must land within FS_TOL_LU of {target}: {row}"
+            (predicted - target).abs() <= crate::leveller::ACCEPT_TOL_LU,
+            "switch {switch} must land within ACCEPT_TOL_LU of {target}: {row}"
         );
     }
 }

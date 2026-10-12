@@ -39,7 +39,7 @@
 //! `EACCES` into the udev command that fixes that.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -957,14 +957,15 @@ fn resolve_reamp_streams(sample_rate: u32) -> Result<ReampStreams, String> {
 /// end, advancing `cursor`. The single source of truth for re-amp signal routing —
 /// `reamp_capture` and `reamp_measure` both use it so the injected channel can't
 /// drift. (`LiveReamp` loops the stimulus, so it keeps its own modulo variant.)
+/// A stream error raises `failed` (see [`flag_stream_error`]).
 fn build_oneshot_output_stream(
     streams: &ReampStreams,
     stim: Arc<Vec<f32>>,
     cursor: Arc<AtomicUsize>,
+    failed: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, String> {
     let out_ch = streams.out_cfg.channels() as usize;
     let fmt = streams.out_cfg.sample_format();
-    let err = |e| log::error!("[audio] stream error: {e}");
     streams
         .out_dev
         .build_output_stream_raw(
@@ -976,7 +977,7 @@ fn build_oneshot_output_stream(
                     stim.get(i).copied().unwrap_or(0.0)
                 });
             },
-            err,
+            flag_stream_error("output", failed),
             None,
         )
         .map_err(|e| {
@@ -988,25 +989,197 @@ fn build_oneshot_output_stream(
         })
 }
 
+/// Lock-free capture buffer for a fixed-length recording: a PRE-SIZED sample
+/// array plus a published write index, single-producer (the input callback),
+/// single-consumer (the calling thread).
+///
+/// The input callback runs on the host's real-time audio thread, so it must never
+/// block or allocate: a `Mutex<Vec>` shared with the 200 ms live-LUFS readout made
+/// the callback wait on the main thread, a `Vec::push` past its reserve reallocated
+/// inside it, and a poisoned lock silently dropped samples. Here the callback writes
+/// samples (f32 bits in `AtomicU32`s — no `unsafe`) into `[len, capacity)`, then
+/// publishes the new `len` with `Release`; the reader loads `len` with `Acquire` and
+/// only ever reads `[0, len)`, which the producer never touches again. cpal never
+/// runs one stream's data callback concurrently with itself, so there is exactly one
+/// writer. A callback that would run past the capacity drops the excess and raises
+/// `overflowed` instead of growing — [`check_capture`] then fails the capture.
+struct CaptureBuf {
+    samples: Box<[AtomicU32]>,
+    /// Published sample count: everything below it is written and never rewritten.
+    len: AtomicUsize,
+    /// Set when a callback had more samples than the buffer had room for.
+    overflowed: AtomicBool,
+    /// Largest callback buffer seen, in FRAMES — the device period that sizes the
+    /// short-capture tolerance in [`check_capture`].
+    max_period_frames: AtomicUsize,
+}
+
+impl CaptureBuf {
+    fn with_capacity(samples: usize) -> Self {
+        CaptureBuf {
+            samples: (0..samples).map(|_| AtomicU32::new(0)).collect(),
+            len: AtomicUsize::new(0),
+            overflowed: AtomicBool::new(false),
+            max_period_frames: AtomicUsize::new(0),
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// PRODUCER side (the input callback only): append the interleaved samples
+    /// `fill` yields — one `channels`-wide callback buffer. Never blocks or allocates.
+    fn append(&self, channels: usize, fill: impl FnOnce(&mut dyn FnMut(f32))) {
+        let start = self.len.load(Ordering::Relaxed);
+        let mut n = start;
+        let mut dropped = false;
+        fill(&mut |s: f32| match self.samples.get(n) {
+            Some(slot) => {
+                slot.store(s.to_bits(), Ordering::Relaxed);
+                n += 1;
+            }
+            None => dropped = true,
+        });
+        if dropped {
+            self.overflowed.store(true, Ordering::Release);
+        }
+        self.max_period_frames
+            .fetch_max((n - start) / channels.max(1), Ordering::Relaxed);
+        self.len.store(n, Ordering::Release);
+    }
+
+    /// The published sample count — every sample below it is safe to read.
+    fn published(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    /// Copy the published samples `[from, to)` (`to` clamped to [`Self::published`]).
+    fn copy_range(&self, from: usize, to: usize) -> Vec<f32> {
+        let to = to.min(self.published());
+        self.samples
+            .get(from..to)
+            .unwrap_or(&[])
+            .iter()
+            .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Consume the buffer into its published samples, reusing the allocation
+    /// (`AtomicU32` → `f32` is a same-layout in-place collect) — no clone.
+    fn into_samples(self) -> Vec<f32> {
+        let n = self.len.into_inner();
+        let mut v: Vec<f32> = self
+            .samples
+            .into_vec()
+            .into_iter()
+            .map(|a| f32::from_bits(a.into_inner()))
+            .collect();
+        v.truncate(n);
+        v
+    }
+}
+
+/// Take the finished samples out of a shared [`CaptureBuf`] once its streams are
+/// dropped. Dropping a cpal stream frees its callback (and the callback's `Arc`
+/// clone), so this is a move; the copy is a fallback for a host that keeps the
+/// closure alive longer — the same samples either way.
+fn take_capture(buf: Arc<CaptureBuf>) -> Vec<f32> {
+    match Arc::try_unwrap(buf) {
+        Ok(b) => b.into_samples(),
+        Err(shared) => shared.copy_range(0, usize::MAX),
+    }
+}
+
+/// Samples to reserve for a fixed capture window: the expected window plus a 1 s
+/// margin for stream start-up and the final partial period, so a full-length capture
+/// never reaches [`CaptureBuf`]'s overflow guard. (The old stimulus + 1 s reserve
+/// was overrun by the Doctor's 1.5 s tail.)
+fn capture_capacity(window_ms: u64, sample_rate: u32, channels: usize) -> usize {
+    (window_ms as usize + 1000) * sample_rate as usize / 1000 * channels
+}
+
+/// How many frames a full capture may come up short of `window_ms × rate`: the
+/// stream starts up to about one period late and the final partial period is never
+/// delivered, so allow two device periods, floored at 50 ms (start-up jitter on a
+/// host with tiny periods). A real dropout — a stalled stream, a disconnect — loses
+/// far more.
+fn capture_tolerance_frames(sample_rate: u32, period_frames: usize) -> usize {
+    (2 * period_frames).max(sample_rate as usize * 50 / 1000)
+}
+
+/// The capture-finishing verdict, shared by every fixed-window capture: a stream
+/// error (overrun, device hiccup, disconnect — reported only through cpal's error
+/// callback), a buffer overflow, or a short frame count each fail the capture with
+/// a retryable `Err` instead of handing a damaged window to the meter. `expected_ms`
+/// is `None` where the window legitimately ends early (adaptive measurement).
+fn check_capture(
+    stream_failed: bool,
+    buf: &CaptureBuf,
+    channels: usize,
+    sample_rate: u32,
+    expected_ms: Option<u64>,
+) -> Result<(), String> {
+    if stream_failed {
+        return Err(
+            "audio stream error during the capture (an overrun, a device hiccup \
+                    or a disconnect) — the measurement was discarded; retry it"
+                .to_string(),
+        );
+    }
+    if buf.overflowed.load(Ordering::Acquire) {
+        return Err(format!(
+            "capture buffer overflow ({} samples reserved) — the measurement was \
+             discarded; retry it",
+            buf.capacity()
+        ));
+    }
+    if let Some(ms) = expected_ms {
+        let captured = buf.published() / channels.max(1);
+        let expected = ms as usize * sample_rate as usize / 1000;
+        let tolerance =
+            capture_tolerance_frames(sample_rate, buf.max_period_frames.load(Ordering::Relaxed));
+        if captured + tolerance < expected {
+            return Err(format!(
+                "short capture: {captured} of {expected} frames ({ms} ms at {sample_rate} Hz) \
+                 — the audio stream dropped out; retry the measurement"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A stream error callback that logs AND raises `failed`, so the capture that owns
+/// the stream returns `Err` instead of measuring across the fault.
+fn flag_stream_error(
+    what: &'static str,
+    failed: Arc<AtomicBool>,
+) -> impl FnMut(cpal::Error) + Send + 'static {
+    move |e| {
+        log::error!("[audio] {what} stream error: {e}");
+        failed.store(true, Ordering::Release);
+    }
+}
+
 /// Build the capture INPUT stream that appends the device's USB-Out return into
-/// `captured`. Shared by `reamp_capture` and `reamp_measure`.
+/// `captured`, raising `failed` on a stream error. Shared by `reamp_capture`,
+/// `reamp_measure` and `capture_input`.
 fn build_capture_input_stream(
-    streams: &ReampStreams,
-    captured: Arc<Mutex<Vec<f32>>>,
+    in_dev: &Device,
+    in_cfg: &SupportedStreamConfig,
+    captured: Arc<CaptureBuf>,
+    failed: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, String> {
-    let fmt = streams.in_cfg.sample_format();
-    let err = |e| log::error!("[audio] stream error: {e}");
-    streams
-        .in_dev
+    let fmt = in_cfg.sample_format();
+    let in_ch = in_cfg.channels() as usize;
+    in_dev
         .build_input_stream_raw(
-            streams.in_cfg.config(),
+            in_cfg.config(),
             fmt,
             move |data: &Data, _| {
-                if let Ok(mut buf) = captured.lock() {
-                    read_input_frames_f32(data, |s| buf.push(s));
-                }
+                captured.append(in_ch, |push| read_input_frames_f32(data, push));
             },
-            err,
+            flag_stream_error("input", failed),
             None,
         )
         .map_err(|e| {
@@ -1081,21 +1254,29 @@ fn reamp_capture_real(
     let t_resolve = t0.elapsed();
     let in_ch = streams.in_cfg.channels() as usize;
 
+    let play_ms = stimulus_mono.len() as u64 * 1000 / sample_rate as u64;
+    let total_ms = play_ms + tail_ms;
+
     let stim = Arc::new(stimulus_mono.to_vec());
     let cursor = Arc::new(AtomicUsize::new(0));
-    let captured = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
-        stimulus_mono.len() * in_ch + in_ch * (sample_rate as usize),
+    let failed = Arc::new(AtomicBool::new(false));
+    let captured = Arc::new(CaptureBuf::with_capacity(capture_capacity(
+        total_ms,
+        sample_rate,
+        in_ch,
     )));
 
-    let out_stream = build_oneshot_output_stream(&streams, stim, cursor)?;
-    let in_stream = build_capture_input_stream(&streams, captured.clone())?;
+    let out_stream = build_oneshot_output_stream(&streams, stim, cursor, failed.clone())?;
+    let in_stream = build_capture_input_stream(
+        &streams.in_dev,
+        &streams.in_cfg,
+        captured.clone(),
+        failed.clone(),
+    )?;
 
     in_stream.play().map_err(|e| format!("play input: {e}"))?;
     out_stream.play().map_err(|e| format!("play output: {e}"))?;
     let t_ready = t0.elapsed();
-
-    let play_ms = stimulus_mono.len() as u64 * 1000 / sample_rate as u64;
-    let total_ms = play_ms + tail_ms;
 
     {
         // Advisory live-LUFS: emit the converging integrated loudness on a fixed cadence
@@ -1134,19 +1315,10 @@ fn reamp_capture_real(
                 continue;
             }
 
-            // Copy only the NEW interleaved frames out from under the lock, then release.
-            let (total_frames, new_interleaved) = {
-                let b = captured.lock().map_err(|_| "capture buffer poisoned")?;
-                let total = b.len() / in_ch;
-                let from = consumed_frames * in_ch;
-                let to = total * in_ch;
-                let slice = if to > from {
-                    b[from..to].to_vec()
-                } else {
-                    Vec::new()
-                };
-                (total, slice)
-            };
+            // Copy only the NEW published interleaved frames (no lock — see `CaptureBuf`).
+            let total_frames = captured.published() / in_ch;
+            let new_interleaved =
+                captured.copy_range(consumed_frames * in_ch, total_frames * in_ch);
 
             match loud_ch {
                 None => {
@@ -1210,12 +1382,15 @@ fn reamp_capture_real(
         );
     }
 
-    let interleaved = captured
-        .lock()
-        .map_err(|_| "capture buffer poisoned")?
-        .clone();
+    check_capture(
+        failed.load(Ordering::Acquire),
+        &captured,
+        in_ch,
+        sample_rate,
+        Some(total_ms),
+    )?;
     Ok(Capture {
-        interleaved,
+        interleaved: take_capture(captured),
         channels: in_ch,
         sample_rate,
     })
@@ -1335,7 +1510,8 @@ impl ConvergenceTracker {
 /// for a genuinely 1-channel capture) into an incremental ITU-R BS.1770 meter, and
 /// returns integrated LUFS as soon as the value converges
 /// (or at `max_capture_ms`). Returns `Err` if no finite signal was captured (re-amp
-/// did not route). Requires re-amp mode already ON.
+/// did not route), or a retryable `Err` on a stream error or a short full window
+/// ([`check_capture`]). Requires re-amp mode already ON.
 ///
 /// The pre-roll skip folds in what used to be a fixed post-engage settle: callers
 /// engage re-amp and call this directly — the discarded pre-roll covers the routing
@@ -1359,48 +1535,51 @@ pub fn reamp_measure(
 
     let stim = Arc::new(stimulus_mono.to_vec());
     let cursor = Arc::new(AtomicUsize::new(0));
-    // Bounded by max_capture_ms wall-clock, so a plain Vec can't grow without limit.
-    let captured = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
-        (sample_rate as usize) * in_ch * (opts.max_capture_ms as usize / 1000 + 2),
+    let failed = Arc::new(AtomicBool::new(false));
+    // Sized for the pre-roll + the max_capture_ms window (one more hop of overshoot
+    // than the loop can run), so the callback never reallocates.
+    let window_ms = opts.preroll_ms + opts.max_capture_ms;
+    let captured = Arc::new(CaptureBuf::with_capacity(capture_capacity(
+        window_ms + opts.hop_ms,
+        sample_rate,
+        in_ch,
     )));
 
-    let out_stream = build_oneshot_output_stream(&streams, stim, cursor)?;
-    let in_stream = build_capture_input_stream(&streams, captured.clone())?;
+    let out_stream = build_oneshot_output_stream(&streams, stim, cursor, failed.clone())?;
+    let in_stream = build_capture_input_stream(
+        &streams.in_dev,
+        &streams.in_cfg,
+        captured.clone(),
+        failed.clone(),
+    )?;
     in_stream.play().map_err(|e| format!("play input: {e}"))?;
     out_stream.play().map_err(|e| format!("play output: {e}"))?;
 
     // Pre-roll: discard the routing/attack transient, then mark the frame-aligned
     // offset where measurement begins.
     std::thread::sleep(Duration::from_millis(opts.preroll_ms));
-    let preroll_off = {
-        let b = captured.lock().map_err(|_| "capture buffer poisoned")?;
-        (b.len() / in_ch) * in_ch
-    };
+    let preroll_off = (captured.published() / in_ch) * in_ch;
 
     let mut loud_ch: Option<usize> = None;
     let mut meter: Option<IncrementalLoudness> = None;
     let mut consumed_frames = 0usize;
     let mut tracker = ConvergenceTracker::new(opts.eps_lu, opts.stable_k);
+    // Only a run that went the whole window is frame-count checked: a convergence
+    // exit is legitimately short, and a no-audio exit keeps its own "no signal" Err.
+    let mut full_window = false;
     let measure_start = Instant::now();
 
     loop {
         std::thread::sleep(Duration::from_millis(opts.hop_ms));
         let elapsed_ms = measure_start.elapsed().as_millis() as u64;
 
-        // One lock per hop: read the post-preroll frame count and copy only the NEW
-        // interleaved frames [consumed_frames, total_frames) out from under the lock.
-        let (total_frames, new_interleaved) = {
-            let b = captured.lock().map_err(|_| "capture buffer poisoned")?;
-            let total = b.len().saturating_sub(preroll_off) / in_ch;
-            let from = preroll_off + consumed_frames * in_ch;
-            let to = preroll_off + total * in_ch;
-            let slice = if to > from {
-                b[from..to].to_vec()
-            } else {
-                Vec::new()
-            };
-            (total, slice)
-        };
+        // Read the post-preroll frame count and copy only the NEW published
+        // interleaved frames [consumed_frames, total_frames) — no lock (`CaptureBuf`).
+        let total_frames = captured.published().saturating_sub(preroll_off) / in_ch;
+        let new_interleaved = captured.copy_range(
+            preroll_off + consumed_frames * in_ch,
+            preroll_off + total_frames * in_ch,
+        );
 
         // Fix the loudest channel once enough post-preroll audio exists. Before the
         // pick `consumed_frames` is 0, so `new_interleaved` is everything so far.
@@ -1445,6 +1624,7 @@ pub fn reamp_measure(
             break;
         }
         if elapsed_ms >= opts.max_capture_ms {
+            full_window = true;
             break;
         }
     }
@@ -1452,6 +1632,13 @@ pub fn reamp_measure(
     drop(out_stream);
     drop(in_stream);
 
+    check_capture(
+        failed.load(Ordering::Acquire),
+        &captured,
+        in_ch,
+        sample_rate,
+        full_window.then_some(window_ms),
+    )?;
     match meter.and_then(|m| m.integrated().ok()) {
         Some(v) if v.is_finite() => Ok(v),
         _ => Err("no signal captured (re-amp may not have routed)".to_string()),
@@ -1722,42 +1909,28 @@ pub fn capture_input(secs: f32, sample_rate: u32) -> Result<Capture, String> {
     .ok_or_else(|| input_config_error(sample_rate, DRY_INSTRUMENT_IN_CH + 1, cfg!(windows)))?;
     let in_ch = in_cfg.channels() as usize;
 
-    let captured = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
-        (secs as usize + 1) * sample_rate as usize * in_ch,
+    let window_ms = (secs * 1000.0) as u64;
+    let failed = Arc::new(AtomicBool::new(false));
+    let captured = Arc::new(CaptureBuf::with_capacity(capture_capacity(
+        window_ms,
+        sample_rate,
+        in_ch,
     )));
-    let in_fmt = in_cfg.sample_format();
-    let err = |e| log::error!("[audio] input stream error: {e}");
-    let cap_cb = captured.clone();
-    let in_stream = in_dev
-        .build_input_stream_raw(
-            in_cfg.config(),
-            in_fmt,
-            move |data: &Data, _| {
-                if let Ok(mut buf) = cap_cb.lock() {
-                    read_input_frames_f32(data, |s| buf.push(s));
-                }
-            },
-            err,
-            None,
-        )
-        .map_err(|e| {
-            stream_error(
-                "build input stream",
-                &e.to_string(),
-                cfg!(target_os = "linux"),
-            )
-        })?;
+    let in_stream = build_capture_input_stream(&in_dev, &in_cfg, captured.clone(), failed.clone())?;
 
     in_stream.play().map_err(|e| format!("play input: {e}"))?;
-    std::thread::sleep(Duration::from_millis((secs * 1000.0) as u64));
+    std::thread::sleep(Duration::from_millis(window_ms));
     drop(in_stream);
 
-    let interleaved = captured
-        .lock()
-        .map_err(|_| "capture buffer poisoned")?
-        .clone();
+    check_capture(
+        failed.load(Ordering::Acquire),
+        &captured,
+        in_ch,
+        sample_rate,
+        Some(window_ms),
+    )?;
     Ok(Capture {
-        interleaved,
+        interleaved: take_capture(captured),
         channels: in_ch,
         sample_rate,
     })
@@ -2151,6 +2324,109 @@ mod tests {
         let mut got = Vec::new();
         read_input_frames_f32(&data, |s| got.push(s));
         assert_eq!(got, vec![0.5, -0.5, 0.0]);
+    }
+
+    /// Feed `frames` frames of `ch`-channel audio into `buf` in `period`-frame
+    /// callbacks through the real I32 callback path, the way the input stream does.
+    fn feed_i32(buf: &CaptureBuf, ch: usize, frames: usize, period: usize) {
+        let mut done = 0;
+        while done < frames {
+            let n = period.min(frames - done);
+            let mut raw: Vec<i32> = (0..n * ch).map(|i| ((done * ch + i) as i32) << 8).collect();
+            let data = data_from(&mut raw, SampleFormat::I32);
+            buf.append(ch, |push| read_input_frames_f32(&data, push));
+            done += n;
+        }
+    }
+
+    // Issue #240: the capture buffer hands back exactly the samples the callback
+    // wrote (so leveling sees the same samples as the old Mutex<Vec>), published
+    // in order, and the take does not change them.
+    #[test]
+    fn capture_buf_round_trips_the_callback_samples() {
+        let buf = CaptureBuf::with_capacity(4 * 1000);
+        feed_i32(&buf, 4, 1000, 256);
+        assert_eq!(buf.published(), 4000);
+        let mut want = Vec::new();
+        for i in 0..4000i32 {
+            want.push(i32_to_f32(i << 8));
+        }
+        assert_eq!(buf.copy_range(8, 16), want[8..16].to_vec());
+        assert!(
+            buf.copy_range(16, 8).is_empty(),
+            "an inverted range is empty"
+        );
+        assert_eq!(take_capture(Arc::new(buf)), want);
+    }
+
+    // Issue #240 (a): a stream error reported through the error callback fails the
+    // capture with a retryable Err, even on an otherwise full-length window.
+    #[test]
+    fn a_stream_error_fails_the_capture() {
+        let rate = 48_000;
+        let buf = CaptureBuf::with_capacity(capture_capacity(1000, rate, 4));
+        feed_i32(&buf, 4, 48_000, 512);
+        assert!(check_capture(false, &buf, 4, rate, Some(1000)).is_ok());
+        let err = check_capture(true, &buf, 4, rate, Some(1000)).unwrap_err();
+        assert!(
+            err.contains("stream error") && err.contains("retry"),
+            "{err}"
+        );
+
+        // The callback flag itself: what the error callback runs raises it.
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut on_err = flag_stream_error("input", failed.clone());
+        on_err(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(failed.load(Ordering::Acquire));
+    }
+
+    // Issue #240 (b): a capture that comes up short of `window × rate` by more than
+    // the tolerance fails; one short by under a period passes; an adaptive window
+    // (`None`) is never frame-checked.
+    #[test]
+    fn a_short_capture_fails_and_a_period_short_one_passes() {
+        let rate = 48_000;
+        let ms = 6800;
+        let expected = 6800 * 48;
+        let short = CaptureBuf::with_capacity(capture_capacity(ms, rate, 4));
+        feed_i32(&short, 4, expected - 48 * 200, 512); // 200 ms dropout
+        let err = check_capture(false, &short, 4, rate, Some(ms)).unwrap_err();
+        assert!(err.contains("short capture"), "{err}");
+        assert!(check_capture(false, &short, 4, rate, None).is_ok());
+
+        let nearly = CaptureBuf::with_capacity(capture_capacity(ms, rate, 4));
+        feed_i32(&nearly, 4, expected - 512, 512); // one period missing
+        assert!(check_capture(false, &nearly, 4, rate, Some(ms)).is_ok());
+
+        // Tolerance: two periods, floored at 50 ms.
+        assert_eq!(capture_tolerance_frames(rate, 256), 2400);
+        assert_eq!(capture_tolerance_frames(rate, 4096), 8192);
+    }
+
+    // Issue #240 (c): a Doctor-length capture (3.2 s padded stimulus + 1.5 s tail,
+    // 4 channels) — plus start-up slack — stays inside the reserved capacity, so the
+    // callback never reaches the overflow guard (the old stimulus + 1 s reserve was
+    // overrun by the 1.5 s tail). Past the capacity it flags an overflow instead of
+    // growing, and the capture fails.
+    #[test]
+    fn a_doctor_length_capture_stays_within_its_reserve() {
+        let rate = 48_000;
+        let stim_frames = 3200 * 48;
+        let play_ms = stim_frames as u64 * 1000 / rate as u64;
+        let total_ms = play_ms + 1500;
+        let buf = CaptureBuf::with_capacity(capture_capacity(total_ms, rate, 4));
+        let cap = buf.capacity();
+        // The full window plus 500 ms of late teardown.
+        feed_i32(&buf, 4, (total_ms as usize + 500) * 48, 512);
+        assert_eq!(buf.capacity(), cap, "capacity never changes");
+        assert!(!buf.overflowed.load(Ordering::Acquire));
+        assert!(check_capture(false, &buf, 4, rate, Some(total_ms)).is_ok());
+
+        let tiny = CaptureBuf::with_capacity(4 * 100);
+        feed_i32(&tiny, 4, 300, 64);
+        assert_eq!(tiny.published(), 400, "never grows past its capacity");
+        let err = check_capture(false, &tiny, 4, rate, None).unwrap_err();
+        assert!(err.contains("overflow"), "{err}");
     }
 
     // The "locked up my machine" gate: the LiveReamp capture ring stays bounded at

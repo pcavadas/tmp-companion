@@ -253,6 +253,35 @@ pub(crate) const LEVEL_MAX: f32 = 1.0;
 /// so producer and consumers can't drift.
 const NO_SIGNAL_CAPTURED: &str = "no signal captured";
 
+/// How a written level's reported loudness is KNOWN — the one vocabulary the base and
+/// scene lanes report in, so a prediction can never pass for a measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Verification {
+    /// No post-write capture was planned (verify off, an idempotency skip, a clamp that
+    /// wrote nothing): the reported loudness is the model's prediction.
+    #[default]
+    Predicted,
+    /// A capture of the written state backs the reported loudness.
+    Verified,
+    /// A post-write capture was planned and failed on every try (the retry included): the
+    /// reported loudness is only a prediction, and the row must not read as on target.
+    VerifyFailed,
+}
+
+impl Verification {
+    /// The verdict for a lane that asked for a verify (`planned`) and got `read` back from
+    /// `apply_levels` — whose `None` under a planned verify now means "the capture failed"
+    /// (a Stop propagates as an error instead).
+    pub(crate) fn of(planned: bool, read: Option<f64>) -> Self {
+        match (planned, read) {
+            (_, Some(_)) => Verification::Verified,
+            (true, None) => Verification::VerifyFailed,
+            (false, None) => Verification::Predicted,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct LevelResult {
     pub slot: u32,
@@ -284,6 +313,9 @@ pub struct LevelResult {
     pub saved: bool,
     /// Independent re-measure at `final_level` on a fresh capture (None if skipped).
     pub verify_lufs: Option<f64>,
+    /// Whether the reported loudness was measured after the write, predicted, or a
+    /// planned verify FAILED (see [`Verification`]). Mirrored in `src/lib/types.ts`.
+    pub verification: Verification,
     /// Number of capture iterations the solve used (1 = one-shot presetLevel
     /// path; 2..=N for the closed-loop block-knob path).
     pub iterations: u32,
@@ -504,31 +536,38 @@ pub(crate) fn append_restore_err(primary: String, restore: Result<(), String>) -
 // A silent/failed re-amp inject captures the device's STATIONARY OUTPUT FLOOR, which
 // is finite LUFS and solves into a plausible-looking level (HW: 19/20 floor reads in
 // one sweep; a full solve+verify landed 0.00 LU error on pure floor). The tell is the
-// dynamics spread: a plucked stimulus through ANY chain measures spread ≫ 0 (real
-// library minimum 0.12 LU), the floor ≈ 0.01. The guard is stimulus-aware — an
-// EBow-heavy calibration capture is near-stationary by design, so the spread trip is
-// DISARMED when the stimulus itself is flat; discrimination then rests on the
-// level-shift confirm (`presetLevel` is linear post-chain gain: real signal tracks
-// 20·log10, the floor doesn't).
+// MOMENTARY-loudness spread (P95 − P10 of the 400 ms momentary loudness): the plucked
+// stimulus (10 notes 0.6 s apart) swings ~6 LU at that window on every shipped WAV and
+// still ~0.7–1.4 LU after 40 dB of hard saturation, while a stationary floor reads
+// ≈ 0.1. The 3 s short-term window this guard used to read averages ~5 plucks, so the
+// shipped stimuli measured only 0.26–0.32 LU there and the guard disarmed itself on 7 of
+// 8 of them (and on all 8 Doctor slices, whose 3 s stimulus IS one short-term window).
+// The guard is still stimulus-aware: a stimulus with no momentary dynamics of its own
+// (a near-stationary DI capture) can't discriminate, so it DISARMS the trip.
+//
+// There is no level-shift rescue: the floor is post-DSP, so `presetLevel` scales it by
+// the same 20·log10 a real signal follows (`notes/gotchas.md`'s floor-read entry), and a
+// "did the capture track the level change" confirm passes a floor read as real.
 
-/// Trip gate: capture spread at or below this suspects a floor read. Set BELOW the
-/// measured real-preset minimum (0.12 LU; floor reads ≈ 0.01).
-pub(crate) const FLOOR_TRIP_LU: f64 = 0.08;
-/// A stimulus with spread at or below this can't discriminate by spread — skip the trip.
-pub(crate) const STATIONARY_STIM_LU: f64 = 0.30;
-/// |Δmeasured − Δexpected| tolerance for the level-shift confirm (absorbs the ~0.12 LU
-/// run-to-run noise with wide margin on a 6.02 LU expected shift).
-pub(crate) const FLOOR_CONFIRM_TOL_LU: f64 = 2.0;
+/// Trip gate: a capture whose momentary spread is at or below this is suspected of being
+/// a floor read. A stationary floor reads ≈ 0.1 LU; the shipped stimuli through 40 dB of
+/// hard saturation (a harsher compressor than any library preset) still read ≥ 0.67 LU.
+pub(crate) const FLOOR_TRIP_LU: f64 = 0.4;
+/// A stimulus whose own momentary spread is at or below this can't discriminate a floor
+/// from a live capture — skip the trip. The shipped stimuli read 5.9–6.2 LU (Doctor
+/// slice 5.8–6.5 LU).
+pub(crate) const STATIONARY_STIM_LU: f64 = 2.0;
 /// Quiet gap before the guard's retry — 5 s recovered 9/9 flagged rows on HW
 /// (`probe --stim-ab`).
 pub(crate) const FLOOR_RETRY_GAP_MS: u64 = 5_000;
-/// The honest per-item error when a floor read persists through retry + confirm.
+/// The honest per-item error when a floor read persists through the retry.
 pub(crate) const FLOOR_READ_ERR: &str = "no stimulus reached the device (captured only \
     the output floor) — check the USB audio connection and try again";
 
-/// Should this capture be suspected as a floor read?
-pub(crate) fn floor_suspect(capture_spread_lu: f64, stimulus_spread_lu: f64) -> bool {
-    stimulus_spread_lu > STATIONARY_STIM_LU && capture_spread_lu <= FLOOR_TRIP_LU
+/// Should this capture be suspected as a floor read? Both arguments are MOMENTARY
+/// spreads (`lufs::Loudness::momentary_spread_lu`).
+pub(crate) fn floor_suspect(capture_momentary_lu: f64, stimulus_momentary_lu: f64) -> bool {
+    stimulus_momentary_lu > STATIONARY_STIM_LU && capture_momentary_lu <= FLOOR_TRIP_LU
 }
 
 /// Slack over the stimulus spread before a capture counts as aberrant. A driven chain
@@ -536,44 +575,34 @@ pub(crate) fn floor_suspect(capture_spread_lu: f64, stimulus_spread_lu: f64) -> 
 /// this margin covers metering noise around it (the two spreads are measured on
 /// different buffers by different meter runs), not any real excess.
 pub(crate) const SPREAD_ABERRANT_MARGIN_LU: f64 = 0.3;
+/// A stimulus whose SHORT-TERM spread is at or below this disarms [`spread_aberrant`].
+/// Deliberately still the 3 s statistic: gates and expanders legitimately expand the
+/// momentary dynamics, so the "a chain cannot expand dynamics" check must not move to it.
+pub(crate) const ABERRANT_STIM_LU: f64 = 0.30;
 
 /// Is this capture MORE dynamic than the stimulus that drove it? Physically impossible
 /// for a genuinely driven amp state (a chain compresses, it does not expand), so it is
 /// the tell for a fire-and-forget preset/scene recall that only PARTIALLY landed — the
-/// capture then reads plausible but belongs to a sound we did not ask for. Armed by the
-/// same stationary-stimulus gate as [`floor_suspect`]: a stimulus with no dynamics of
-/// its own (or an unmeasurable one, which reports 0.0) can't discriminate, so it
-/// disarms both checks rather than trip this one on every capture.
+/// capture then reads plausible but belongs to a sound we did not ask for. Both arguments
+/// are SHORT-TERM spreads (`lufs::Loudness::spread_lu`); a stimulus with no short-term
+/// dynamics of its own (or an unmeasurable one, which reports 0.0) can't discriminate, so
+/// it disarms the check rather than trip it on every capture.
 pub(crate) fn spread_aberrant(capture_spread_lu: f64, stimulus_spread_lu: f64) -> bool {
-    stimulus_spread_lu > STATIONARY_STIM_LU
+    stimulus_spread_lu > ABERRANT_STIM_LU
         && capture_spread_lu > stimulus_spread_lu + SPREAD_ABERRANT_MARGIN_LU
 }
 
-/// Did the capture track a `presetLevel` shift by 20·log10 (real signal), or stay
-/// put (floor)?
-pub(crate) fn tracks_level_shift(
-    measured_ref_lufs: f64,
-    measured_confirm_lufs: f64,
-    ref_level: f32,
-    confirm_level: f32,
-) -> bool {
-    let expected = 20.0 * (confirm_level as f64 / ref_level as f64).log10();
-    ((measured_confirm_lufs - measured_ref_lufs) - expected).abs() <= FLOOR_CONFIRM_TOL_LU
+/// The stimulus's own dynamics on both statistics the guard reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StimulusSpread {
+    /// Short-term max − integrated (LU) — arms [`spread_aberrant`].
+    pub short_term_lu: f64,
+    /// P95 − P10 of the momentary loudness (LU) — arms [`floor_suspect`].
+    pub momentary_lu: f64,
 }
 
-/// The confirm probe's level: halve the reference, unless halving would hit the 0.05
-/// clamp — then double (the shift must stay distinguishable from noise either way).
-pub(crate) fn confirm_ref_level(ref_level: f32) -> f32 {
-    if ref_level / 2.0 >= 0.05 {
-        ref_level / 2.0
-    } else {
-        (ref_level * 2.0).min(1.0)
-    }
-}
-
-/// A floor-guarded measurement's outcome. `StillFlat` carries the retry's loudness —
-/// callers decide the escalation (scene paths error with [`FLOOR_READ_ERR`];
-/// `measure_c` escalates to the level-shift confirm to clear ultra-compressed presets).
+/// A floor-guarded measurement's outcome. `StillFlat` carries the retry's loudness for
+/// the caller's log; every caller turns it into [`FLOOR_READ_ERR`].
 pub(crate) enum GuardOutcome {
     Live(lufs::Loudness),
     StillFlat(lufs::Loudness),
@@ -583,76 +612,88 @@ pub(crate) enum GuardOutcome {
 /// settings (heals a transient inject failure or a half-landed recall). TWO tells, one
 /// retry budget between them:
 ///
-/// * FLOOR ([`floor_suspect`]) — no dynamics at all. A persistently flat capture is
-///   reported as [`GuardOutcome::StillFlat`], not swallowed; callers escalate.
+/// * FLOOR ([`floor_suspect`]) — no momentary dynamics at all. A persistently flat
+///   capture is reported as [`GuardOutcome::StillFlat`], not swallowed.
 /// * SPREAD ([`spread_aberrant`]) — MORE dynamics out than in. Always resolves to
 ///   `Live`: the reading is plausible (just possibly of the wrong sound), so erroring a
-///   row on this heuristic would be the worse failure. It must NOT resolve to
-///   `StillFlat` either — `measure_c`'s level-shift confirm would PASS a wrong-scene
-///   capture (`presetLevel` is a linear post-chain multiplier whatever scene landed)
-///   and launder it as verified.
+///   row on this heuristic would be the worse failure.
 pub(crate) fn measure_floor_guarded(
     mut measure: impl FnMut() -> Result<lufs::Loudness, String>,
-    stimulus_spread_lu: f64,
+    stim: StimulusSpread,
     gap: Duration,
 ) -> Result<GuardOutcome, String> {
     let first = measure()?;
-    if floor_suspect(first.spread_lu(), stimulus_spread_lu) {
+    if floor_suspect(first.momentary_spread_lu, stim.momentary_lu) {
         log::warn!(
-            "floor guard: capture spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent inject, retrying once",
-            first.spread_lu()
+            "floor guard: capture momentary spread {:.2} LU ≤ {FLOOR_TRIP_LU} — suspected silent \
+             inject, retrying once",
+            first.momentary_spread_lu
         );
-    } else if spread_aberrant(first.spread_lu(), stimulus_spread_lu) {
+    } else if spread_aberrant(first.spread_lu(), stim.short_term_lu) {
         log::warn!(
-            "floor guard: capture spread {:.2} LU exceeds the stimulus's {stimulus_spread_lu:.2} LU \
+            "floor guard: capture spread {:.2} LU exceeds the stimulus's {:.2} LU \
              — a chain cannot expand dynamics, so the recall likely half-landed; retrying once",
-            first.spread_lu()
+            first.spread_lu(),
+            stim.short_term_lu
         );
     } else {
         return Ok(GuardOutcome::Live(first));
     }
     settle_or_cancel(gap.as_millis() as u64)?;
     let second = measure()?;
-    if floor_suspect(second.spread_lu(), stimulus_spread_lu) {
+    if floor_suspect(second.momentary_spread_lu, stim.momentary_lu) {
         return Ok(GuardOutcome::StillFlat(second));
     }
-    if spread_aberrant(second.spread_lu(), stimulus_spread_lu) {
+    if spread_aberrant(second.spread_lu(), stim.short_term_lu) {
         log::warn!(
             "floor guard: capture spread {:.2} LU still exceeds the stimulus's \
-             {stimulus_spread_lu:.2} LU after the retry — reporting it, verify this sound by ear",
-            second.spread_lu()
+             {:.2} LU after the retry — reporting it, verify this sound by ear",
+            second.spread_lu(),
+            stim.short_term_lu
         );
     }
     Ok(GuardOutcome::Live(second))
 }
 
-/// The common call-site shape: guard `measure`, collapse a persistent flat read to
-/// the honest [`FLOOR_READ_ERR`]. For paths with no better escalation than an error
-/// (scene/knob/solo measurements); `measure_c` keeps its own match — it escalates
-/// `StillFlat` to the level-shift confirm instead (rescuing ultra-compressed presets).
+/// The call-site shape every guarded measurement uses: guard `measure`, collapse a
+/// persistent flat read to the honest [`FLOOR_READ_ERR`].
 pub(crate) fn require_live(
     measure: impl FnMut() -> Result<lufs::Loudness, String>,
     stimulus: &[f32],
 ) -> Result<lufs::Loudness, String> {
     match measure_floor_guarded(
         measure,
-        stimulus_spread_lu(stimulus),
+        stimulus_spread(stimulus),
         Duration::from_millis(FLOOR_RETRY_GAP_MS),
     )? {
         GuardOutcome::Live(l) => Ok(l),
-        GuardOutcome::StillFlat(_) => Err(FLOOR_READ_ERR.to_string()),
+        GuardOutcome::StillFlat(l) => {
+            log::warn!(
+                "floor guard: still flat after the retry (momentary spread {:.2} LU at {:.2} \
+                 LUFS) — reporting a floor read",
+                l.momentary_spread_lu,
+                l.integrated_lufs
+            );
+            Err(FLOOR_READ_ERR.to_string())
+        }
     }
 }
 
-/// The stimulus's own dynamics spread (arms the floor guard). A measurement failure
-/// DISARMS the guard (returns 0.0) — never turn a metering hiccup into false floor
-/// errors; floor reads then pass exactly as they did before the guard existed.
-pub(crate) fn stimulus_spread_lu(stimulus: &[f32]) -> f64 {
+/// The stimulus's own dynamics (arms the floor guard). A measurement failure DISARMS
+/// the guard (both spreads 0.0) — never turn a metering hiccup into false floor errors;
+/// floor reads then pass exactly as they did before the guard existed.
+pub(crate) fn stimulus_spread(stimulus: &[f32]) -> StimulusSpread {
     match lufs::measure_mono(stimulus, RATE) {
-        Ok(l) => l.spread_lu(),
+        Ok(l) => StimulusSpread {
+            short_term_lu: l.spread_lu(),
+            momentary_lu: l.momentary_spread_lu,
+        },
         Err(e) => {
             log::warn!("floor guard disarmed: stimulus spread unmeasurable ({e})");
-            0.0
+            StimulusSpread {
+                short_term_lu: 0.0,
+                momentary_lu: 0.0,
+            }
         }
     }
 }
@@ -691,7 +732,10 @@ fn ftsw_value_a(ftsw: &serde_json::Value, node: &str, param: &str) -> Option<f64
 /// constant, and the capture's dynamics spread (see `LevelResult::dynamic_spread_lu`).
 #[derive(Debug, Clone, Copy)]
 pub struct MeasuredC {
-    /// Captured integrated LUFS at the reference level.
+    /// The `presetLevel` the reading was taken at — the requested reference, or half of
+    /// it when the reference capture clipped ([`measure_c`]'s clip rescue).
+    pub ref_level: f32,
+    /// Captured integrated LUFS at `ref_level`.
     pub measured_lufs: f64,
     /// Solved `C` in `LUFS = 20·log10(level) + C` (= max reachable LUFS).
     pub c: f64,
@@ -700,6 +744,37 @@ pub struct MeasuredC {
     /// True peak (dBTP) of the reference capture — the basis for the one-shot
     /// path's PREDICTED true peak at the solved level (see `predicted_true_peak_dbtp`).
     pub true_peak_dbtp: f64,
+    /// Reference captures the solve used: 1, or 2–3 with the cross-check.
+    pub captures: u32,
+}
+
+/// The per-item error when a capture flat-tops at full scale on the processed pair
+/// ([`lufs::Loudness::clipped`]): its integrated loudness reads LOW, so a level solved
+/// from it lands too LOUD. Raised by the shared measurement hub, so every lane refuses
+/// to solve from a clipped capture; only `measure_c` has a rescue (half the reference).
+pub(crate) const CLIPPED_CAPTURE_ERR: &str = "the sound clipped at full scale while it was \
+    measured, so its loudness can't be read — turn this sound's level down and run it again";
+
+/// Two reference captures at different `presetLevel`s must solve the same `C` within this
+/// (LU) or a third capture decides. ~2.5σ of the ~0.12 LU run-to-run capture noise, far
+/// under the ~3 LU outliers on record (`notes/leveling.md`).
+pub(crate) const C_AGREE_TOL_LU: f64 = 0.3;
+
+/// The cross-check capture's level: −3 dB from the reference (×0.7), or +3 dB when that
+/// would fall under the 0.05 clamp. Different enough to double as a level-shift sanity
+/// check, close enough that the C-model's ~0.2 LU linearity error stays inside the band.
+pub(crate) fn cross_check_level(ref_level: f32) -> f32 {
+    if ref_level * 0.7 >= 0.05 {
+        ref_level * 0.7
+    } else {
+        (ref_level * 1.4).min(1.0)
+    }
+}
+
+/// Median of three (the cross-check's tiebreak): the one reading two others disagree
+/// about can't move it.
+fn median3(a: f64, b: f64, c: f64) -> f64 {
+    a.max(b).min(a.min(b).max(c))
 }
 
 /// Conn 1+2 seam: load `slot` (own connection, since set-after-load is overridden
@@ -714,50 +789,74 @@ pub fn measure_c(
     ref_level: f32,
     force_bypass: &[(String, String, bool)],
 ) -> Result<MeasuredC, String> {
-    let ref_level = ref_level.clamp(0.05, 1.0);
+    measure_c_checked(slot, stimulus, ref_level, force_bypass, false)
+}
+
+/// [`measure_c`] with an optional CROSS-CHECK, for a lane whose result nothing re-measures
+/// afterwards (the base row of a footswitch preset, where the verify is impossible — see
+/// `level_preset_impl`): a second capture at [`cross_check_level`] must solve the same `C`
+/// within [`C_AGREE_TOL_LU`], otherwise a third capture at the reference takes the median.
+/// A single silently-wrong capture (the 2.9 LU-low outliers on record) can then no longer
+/// set the saved level on its own.
+///
+/// CLIP RESCUE: a reference capture that clipped ([`CLIPPED_CAPTURE_ERR`]) is re-taken
+/// ONCE at half the reference level, on its own fresh connection like every capture here
+/// (one engage per connection, the level set before the engage). Still clipped there → the
+/// error stands.
+pub(crate) fn measure_c_checked(
+    slot: u32,
+    stimulus: &[f32],
+    ref_level: f32,
+    force_bypass: &[(String, String, bool)],
+    cross_check: bool,
+) -> Result<MeasuredC, String> {
+    let mut ref_level = ref_level.clamp(0.05, 1.0);
     {
         let mut s = Session::connect_lean()?;
         s.load_preset(slot)?;
         settle_or_cancel(settle_after_load_ms())?;
     }
-    let gap = Duration::from_millis(FLOOR_RETRY_GAP_MS);
     // No load → the set inside measure_at_level sticks on the now-current preset.
-    let outcome = measure_floor_guarded(
-        || measure_at_level(stimulus, ref_level, force_bypass),
-        stimulus_spread_lu(stimulus),
-        gap,
-    )?;
-    let loudness = match outcome {
-        GuardOutcome::Live(l) => l,
-        // Persistently flat: ultra-compressed real signal vs floor — the level-shift
-        // confirm decides (real output tracks 20·log10(presetLevel); the floor doesn't).
-        GuardOutcome::StillFlat(l) => {
-            let confirm_level = confirm_ref_level(ref_level);
-            // The 5 s confirm gap is the single longest non-capture wait in a run — a Stop
-            // here used to cost the gap PLUS a second full capture.
-            settle_or_cancel(gap.as_millis() as u64)?;
-            let confirm = measure_at_level(stimulus, confirm_level, force_bypass)?;
-            if tracks_level_shift(
-                l.integrated_lufs,
-                confirm.integrated_lufs,
-                ref_level,
-                confirm_level,
-            ) {
-                log::info!(
-                    "floor guard: slot={slot} tracked the level shift — ultra-compressed but real"
-                );
-                l
-            } else {
-                return Err(FLOOR_READ_ERR.to_string());
-            }
+    let at =
+        |level: f32| require_live(|| measure_at_level(stimulus, level, force_bypass), stimulus);
+    let loudness = match at(ref_level) {
+        Err(e) if e == CLIPPED_CAPTURE_ERR && ref_level / 2.0 >= 0.05 => {
+            ref_level /= 2.0;
+            log::warn!(
+                "measure_c slot={slot}: the reference capture clipped — re-measuring at \
+                 presetLevel {ref_level:.3}"
+            );
+            at(ref_level)?
         }
+        other => other?,
     };
-    let c = loudness.integrated_lufs - 20.0 * (ref_level as f64).log10();
+    let c_of = |l: &lufs::Loudness, level: f32| l.integrated_lufs - 20.0 * (level as f64).log10();
+    let c1 = c_of(&loudness, ref_level);
+    let (c, captures) = if cross_check {
+        settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+        let level2 = cross_check_level(ref_level);
+        let c2 = c_of(&at(level2)?, level2);
+        if (c1 - c2).abs() <= C_AGREE_TOL_LU {
+            ((c1 + c2) / 2.0, 2)
+        } else {
+            log::warn!(
+                "measure_c slot={slot}: reference captures disagree on C ({c1:.2} vs {c2:.2}) \
+                 — taking a third"
+            );
+            settle_or_cancel(SETTLE_AFTER_SET_MS)?;
+            let c3 = c_of(&at(ref_level)?, ref_level);
+            (median3(c1, c2, c3), 3)
+        }
+    } else {
+        (c1, 1)
+    };
     Ok(MeasuredC {
+        ref_level,
         measured_lufs: loudness.integrated_lufs,
         c,
         dynamic_spread_lu: loudness.spread_lu(),
         true_peak_dbtp: loudness.true_peak_dbtp,
+        captures,
     })
 }
 
@@ -1499,9 +1598,17 @@ pub fn apply_levels(
     crate::settle(Duration::from_millis(SETTLE_AFTER_SET_MS));
 
     if opts.verify {
-        verify_lufs = engage_measure_disengage(&mut s, stimulus)
-            .ok()
-            .map(|l| l.integrated_lufs);
+        // A failed verify is `None` (callers read it as `Verification::VerifyFailed`), never
+        // a stand-in number. A Stop is NOT a failed verify: it propagates, so a cancelled
+        // run can't carry on and report a prediction as this sound's result.
+        verify_lufs = match engage_measure_disengage(&mut s, stimulus) {
+            Ok(l) => Some(l.integrated_lufs),
+            Err(e) if e == CANCELLED => return Err(e),
+            Err(e) => {
+                log::warn!("apply_levels slot={slot}: verify capture failed: {e}");
+                None
+            }
+        };
         // Re-assert after the re-amp toggle ONLY for PresetLevel targets (the
         // historical motivation). For scene knobs the re-assert is actively harmful:
         // its `load_scene` REVERTS the just-verified unsaved write, and the re-write
@@ -1563,13 +1670,31 @@ fn level_unchanged(final_level: f32, previous: f32) -> bool {
 }
 
 /// Is the preset's ALREADY-SAVED `p` already on `target_lufs`, given this run's measured `c`?
-/// Banded at [`FS_TOL_LU`] (0.1), tighter than the ~0.12 LU capture noise on purpose so a
-/// re-measure in `(0.1, 0.3]` re-saves rather than report `done` on an audible shortfall — DO
-/// NOT widen it. Evaluated at the REFERENCE level `p` it is bit-for-bit the boost planner's own
-/// `G`, which fires only above `p_up + KNOB_TOL_LU`, so this band can never pre-empt a boost —
-/// keep `previous_level`/`m.c` read identically to the planner's or that breaks silently.
+/// Banded at [`ACCEPT_TOL_LU`], the band every lane accepts on. Keep it under `KNOB_TOL_LU`:
+/// evaluated at the REFERENCE level `p` it is bit-for-bit the boost planner's own `G`, which
+/// fires only above `p_up + KNOB_TOL_LU`, so this band can never pre-empt a boost — keep
+/// `previous_level`/`m.c` read identically to the planner's or that breaks silently. Since the
+/// base reference IS `p` ([`base_ref_level`]), `lufs_at_level(c, p)` is the measured reading
+/// itself, not an extrapolation.
 fn already_on_target(c: f64, p: f32, target_lufs: f64) -> bool {
-    (target_lufs - lufs_at_level(c, p)).abs() <= FS_TOL_LU
+    (target_lufs - lufs_at_level(c, p)).abs() <= ACCEPT_TOL_LU
+}
+
+/// Lowest saved `presetLevel` the base lane measures at: below it the capture sits near the
+/// output floor, so it measures here and extrapolates instead.
+pub(crate) const SAVED_REF_MIN: f32 = 0.1;
+
+/// The base lane's reference level: the preset's SAVED `presetLevel` (clamped to
+/// [`SAVED_REF_MIN`]..=1) when the caller read it, else `fallback` (`LevelOptions::ref_level`).
+/// Measuring the preset as it is saved makes the capture the idempotency reading itself and,
+/// on a re-run, a near-verify of the final value — with no 0.5 → final extrapolation through
+/// the C-model's ~0.2 LU linearity error. A clipped reading at a hot saved level is
+/// `measure_c`'s clip rescue's job.
+pub(crate) fn base_ref_level(fallback: f32, previous_level: Option<f32>) -> f32 {
+    previous_level
+        .filter(|p| p.is_finite() && *p > 0.0)
+        .map_or(fallback, |p| p.clamp(SAVED_REF_MIN, 1.0))
+        .clamp(0.05, 1.0)
 }
 
 /// The boost-capable extras a caller may supply. `commands::level_preset`'s base
@@ -1702,8 +1827,11 @@ pub(crate) fn level_preset_impl(
         return Err(CANCELLED.to_string());
     }
     let result = (|| {
-        let ref_level = opts.ref_level.clamp(0.05, 1.0);
-        let m = match measure_c(slot, stimulus, ref_level, force_bypass) {
+        let ref_level = base_ref_level(opts.ref_level, previous_level);
+        // A footswitch preset can't verify its base row (see `apply_opts` below), so its one
+        // reference capture is cross-checked instead — nothing else would catch an outlier.
+        let cross_check = opts.verify && !force_bypass.is_empty();
+        let m = match measure_c_checked(slot, stimulus, ref_level, force_bypass, cross_check) {
             Ok(m) => m,
             // Silence == output not routed to USB 1/2 (a routing state, can happen on ANY preset):
             // report the honest "not on USB 1/2" clamp instead of a generic read failure.
@@ -1742,6 +1870,8 @@ pub(crate) fn level_preset_impl(
         if cancelled() {
             return Err(CANCELLED.to_string());
         }
+        // The level the reading was actually taken at (half the request after a clip rescue).
+        let ref_level = m.ref_level;
         let (final_level, clamped, predicted) = solve_level(m.c, target_lufs);
         // Idempotency skip: the solved level matches what's already saved AND that saved level is
         // itself on target — reload to discard the measurement's ref-level edit and return without
@@ -1882,7 +2012,7 @@ pub(crate) fn level_preset_impl(
             ));
         }
 
-        let (saved, verify_lufs) = apply_level(
+        let (saved, mut verify_lufs) = apply_level(
             slot,
             stimulus,
             &LevelKnob::PresetLevel,
@@ -1890,6 +2020,52 @@ pub(crate) fn level_preset_impl(
             apply_opts,
             !force_bypass.is_empty(),
         )?;
+        // ONE bounded correction when the verify misses the acceptance band: the verify is a
+        // second, independent reading of `C` at the written level, so a reference capture
+        // that read low (the 2.9 LU outliers on record) no longer saves silently off target.
+        // A healthy preset lands in band and pays nothing extra.
+        let (mut final_level, mut clamped, mut predicted) = (final_level, clamped, predicted);
+        if let Some(v) = verify_lufs.filter(|v| !clamped && (v - target_lufs).abs() > ACCEPT_TOL_LU)
+        {
+            if cancelled() {
+                return Err(CANCELLED.to_string());
+            }
+            let c_verify = v - 20.0 * (final_level.max(1e-6) as f64).log10();
+            let (level2, clamped2, predicted2) = solve_level(c_verify, target_lufs);
+            log::warn!(
+                "level_preset slot={slot}: verify read {v:.2} LUFS for target {target_lufs:.2} —                  correcting presetLevel {final_level:.4} → {level2:.4}"
+            );
+            let (_, v2) = apply_level(
+                slot,
+                stimulus,
+                &LevelKnob::PresetLevel,
+                level2,
+                apply_opts,
+                false,
+            )?;
+            match v2 {
+                // Landed closer: keep it.
+                Some(v2) if (v2 - target_lufs).abs() <= (v - target_lufs).abs() => {
+                    (final_level, clamped, predicted) = (level2, clamped2, predicted2);
+                    verify_lufs = Some(v2);
+                }
+                // Worse (the VERIFY was the outlier) or unreadable: put the first level back
+                // — it was measured — and report its reading.
+                _ => {
+                    apply_level(
+                        slot,
+                        stimulus,
+                        &LevelKnob::PresetLevel,
+                        final_level,
+                        LevelOptions {
+                            verify: false,
+                            ..apply_opts
+                        },
+                        false,
+                    )?;
+                }
+            }
+        }
 
         Ok(LevelResult {
             slot,
@@ -1903,7 +2079,8 @@ pub(crate) fn level_preset_impl(
             clamped,
             saved,
             verify_lufs,
-            iterations: 1,
+            verification: Verification::of(apply_opts.verify, verify_lufs),
+            iterations: m.captures,
             dynamic_spread_lu: Some(m.dynamic_spread_lu),
             // The one-shot `presetLevel` lane has no wet floor and no routing clamp of its
             // own (that early-returns above), so a clamp here is the plain headroom case.
@@ -2083,7 +2260,8 @@ fn apply_base_boost(
         predicted_lufs: solved.lufs,
         clamped: solved.clamped,
         saved: true,
-        verify_lufs: Some(solved.lufs),
+        verify_lufs: (solved.verification == Verification::Verified).then_some(solved.lufs),
+        verification: solved.verification,
         iterations: solved.writes,
         dynamic_spread_lu: Some(m.dynamic_spread_lu),
         clamp_kind: solved.clamp_kind,
@@ -2256,22 +2434,17 @@ impl LevelKnob {
 
 /// Closed-loop convergence tolerance and iteration cap. Each iteration is one
 /// fresh connection (re-amp engages once per connection), so the cap bounds the
-/// device round-trips. NOT an acceptance band: every at-target check in this file bands on
-/// the tighter [`FS_TOL_LU`] (the footswitch lane, and the base lane's `already_on_target`).
-/// What still sits on this constant is the noise-floor/flatness class plus
-/// [`level_unchanged`]'s "is this the same level" range test and `scene_at_target`.
+/// device round-trips. NOT an acceptance band (that is [`ACCEPT_TOL_LU`]): what sits on this
+/// constant is the noise-floor/flatness/no-authority class ("did this move change anything?"),
+/// [`level_unchanged`]'s "is this the same level" range test, and the block-knob lane.
 pub(crate) const KNOB_TOL_LU: f64 = 0.3;
-/// Footswitch-lane acceptance band — user-decided TRUE ±0.1 vs target, tighter than the
-/// scene lane's `KNOB_TOL_LU` (0.3). Applies to every AT-TARGET check: solve_footswitch's
-/// (the `err(...)` distance-to-target gates), `classify_fs_outcome`, `switch_at_target`, and
-/// the base lane's idempotency band [`already_on_target`] — the FLATNESS/no-authority checks
-/// in the same functions stay on `KNOB_TOL_LU` (a noise-floor threshold, not an acceptance
-/// band; HW measured ~0.12 LU run-to-run noise).
-/// `FS_CORRECT_MAX` was doubled alongside this to compensate — a tighter band needs more
-/// bracket-aware iterates to converge. HW noise caveat: 0.1 LU sits close to the measured
-/// capture noise floor, so a well-converged FS solve may occasionally read `unconverged` on
-/// noise alone; a re-run absorbs it (idempotency skip on the next in-tolerance pass).
-const FS_TOL_LU: f64 = 0.1;
+/// THE acceptance band — "on target" means the same thing in every lane: the base lane's
+/// idempotency skip ([`already_on_target`]) and verify correction, every scene at-target
+/// check, and every footswitch at-target check. About 2σ of the ~0.12 LU run-to-run capture
+/// noise (`notes/gotchas.md`): a perfectly converged point reads inside it ~96% of the time,
+/// where the old footswitch band (0.1 LU, under σ) read it inside only ~60% and the loop kept
+/// buying captures to chase noise.
+pub(crate) const ACCEPT_TOL_LU: f64 = 0.25;
 const KNOB_MAX_ITERS: u32 = 6;
 const LIVE_SETTLE_MS: u64 = 350;
 const LIVE_MAX_ITERS: u32 = 5;
@@ -2699,15 +2872,31 @@ fn processed_loudness(cap: Result<audio::Capture, String>) -> Result<lufs::Loudn
 /// PCM alive past the measurement (the strict re-measure's external-validation dump,
 /// `measure_sound_asis_strict`). Same verdict, same sentinel error.
 fn processed_loudness_of(cap: &audio::Capture) -> Result<lufs::Loudness, String> {
-    let m = measure_processed(cap)?;
-    m.integrated_lufs
-        .is_finite()
-        .then_some(m)
-        .ok_or_else(|| NO_SIGNAL_CAPTURED.to_string())
+    loudness_verdict(measure_processed(cap)?)
+}
+
+/// The hub's verdict on one processed-pair reading: silence → [`NO_SIGNAL_CAPTURED`], a
+/// flat-topped capture → [`CLIPPED_CAPTURE_ERR`] (its integrated reading is LOW, so no lane
+/// may solve from it), else the reading.
+fn loudness_verdict(m: lufs::Loudness) -> Result<lufs::Loudness, String> {
+    if !m.integrated_lufs.is_finite() {
+        return Err(NO_SIGNAL_CAPTURED.to_string());
+    }
+    if m.clipped {
+        log::warn!(
+            "capture clipped at full scale ({:.2} LUFS, {:.2} dBTP) — refusing to solve from it",
+            m.integrated_lufs,
+            m.true_peak_dbtp
+        );
+        return Err(CLIPPED_CAPTURE_ERR.to_string());
+    }
+    Ok(m)
 }
 
 /// The ONE engaged/floor criterion this crate has: finite chain audio meaningfully
-/// above the stationary floor, with real dynamics (a floor read is near-flat). NaN
+/// above the stationary floor, with real dynamics. A floor read is near-flat in the
+/// 400 ms momentary loudness (≈0.1 LU), while a plucked stimulus keeps its note-to-note
+/// envelope through any chain, so the momentary spread must clear `FLOOR_TRIP_LU`. NaN
 /// comparisons are false, so a failed measure reads "not engaged".
 ///
 /// `danger.md`: a silent/failed re-amp inject reads as the device's stationary OUTPUT
@@ -2715,7 +2904,9 @@ fn processed_loudness_of(cap: &audio::Capture) -> Result<lufs::Loudness, String>
 /// FLOOR/SILENT headline and `validate_log`'s `engaged` verdict both stamp from, so a
 /// consumer never has to re-derive it (`probe_api::level::is_engaged` delegates here).
 pub(crate) fn is_engaged(l: &lufs::Loudness) -> bool {
-    l.integrated_lufs.is_finite() && l.integrated_lufs > -50.0 && l.spread_lu() > 0.5
+    l.integrated_lufs.is_finite()
+        && l.integrated_lufs > -50.0
+        && l.momentary_spread_lu > FLOOR_TRIP_LU
 }
 
 /// The metering convention shared by every OUTPUT-side measurement hub in this
@@ -3593,6 +3784,20 @@ fn fs_secant_next(p0: (f64, f64), p1: (f64, f64), target: f64) -> Option<f64> {
     Some(p1.0 + (target - p1.1) / slope)
 }
 
+/// Fraction of the param's whole coordinate span an EXTRAPOLATING secant step may always
+/// take — the trust region's floor, so a small seed pair can still walk the range.
+const FS_TRUST_SPAN_FRACTION: f64 = 0.25;
+
+/// Trust region for an extrapolating (non-straddling) footswitch secant step: `raw` is
+/// clamped to `p1 ± max(2·|p1 − p0|, FS_TRUST_SPAN_FRACTION·span)` in solve-coord space.
+/// A pair whose ΔLUFS is mostly capture noise has an arbitrary slope; without this its next
+/// probe is clamped only by the param's bounds (the scene lane caps its own at
+/// `BATCH_TRUST_DB`).
+fn fs_trust_clamp(raw: f64, p0: f64, p1: f64, span: f64) -> f64 {
+    let reach = (2.0 * (p1 - p0).abs()).max(FS_TRUST_SPAN_FRACTION * span);
+    raw.clamp(p1 - reach, p1 + reach)
+}
+
 /// The extreme knob value worth ONE extra probe before giving up on a FLAT `(v_a, l_a)`/
 /// `(v_b, l_b)` secant seed pair — `None` when the pair already has slope (the plain
 /// secant can extrapolate from it as-is, bracketed or not — unchanged from before this
@@ -3862,7 +4067,7 @@ pub fn measure_fs_ceiling(
 /// How far a footswitch row's target must sit ABOVE its measured ceiling before the prepass
 /// declares it unreachable and skips the solve.
 ///
-/// Deliberately much wider than the lane's `FS_TOL_LU` acceptance band. The ceiling is read
+/// Deliberately much wider than the lane's `ACCEPT_TOL_LU` acceptance band. The ceiling is read
 /// with the handle PINNED AT ITS TOP, which is the hottest this sound ever gets — on a hot
 /// chain that capture can CLIP, and the true-peak caveat machinery is base-only, so the
 /// reading carries more uncertainty than an ordinary solve point. Skipping a row that could
@@ -3943,7 +4148,7 @@ fn classify_fs_outcome(
     target_lufs: f64,
     (lo, hi): (f32, f32),
 ) -> (bool, bool) {
-    if (best_lufs - target_lufs).abs() <= FS_TOL_LU {
+    if (best_lufs - target_lufs).abs() <= ACCEPT_TOL_LU {
         return (false, false);
     }
     // Unreachable only when the knob is pinned at the bound that blocks the direction target
@@ -3956,7 +4161,7 @@ fn classify_fs_outcome(
     (clamped, !clamped)
 }
 
-/// Is the switch's engaged loudness already at target (within `FS_TOL_LU`, not clamped)? The
+/// Is the switch's engaged loudness already at target (within `ACCEPT_TOL_LU`, not clamped)? The
 /// footswitch counterpart of `scene_at_target`, on this lane's tighter band, so a re-run
 /// leaves an in-tolerance switch untouched instead of re-randomizing it. `clamped` is always
 /// `false` here (the probe measures a real value at `cur`), but the param matches
@@ -3967,7 +4172,7 @@ fn classify_fs_outcome(
 /// its skip is provably disjoint from a boost (see its doc); this one has no pair planner
 /// behind it, so dropping the flag would silently suppress an honest FS clamp.
 fn switch_at_target(measured: f64, target: f64, clamped: bool) -> bool {
-    !clamped && (measured - target).abs() <= FS_TOL_LU
+    !clamped && (measured - target).abs() <= ACCEPT_TOL_LU
 }
 
 /// Measurement/solve phase of ONE footswitch job — no write, no save, no reload.
@@ -4330,7 +4535,7 @@ fn solve_param_secant(
     // search — it must never advertise a re-run. Set ONLY where no-authority is proven
     // (the seed/expansion pair below); a mid-loop stall keeps `unconverged`.
     let mut flat_response = false;
-    if err(best_lufs) > FS_TOL_LU {
+    if err(best_lufs) > ACCEPT_TOL_LU {
         // The correction loop below interpolates in solve-COORD space
         // (`param.to_coord`), not raw parameter value — see `to_coord`'s doc for why
         // that makes the secant exact for a `LevelLinear`/`LevelDb` param.
@@ -4392,7 +4597,7 @@ fn solve_param_secant(
         //   * pair does NOT straddle → the plain slide (drop the older point), unchanged
         //     from the validated behavior; the first crossing iterate forms a straddling
         //     consecutive pair, which flips the loop into bracket mode by itself.
-        if err(best_lufs) > FS_TOL_LU {
+        if err(best_lufs) > ACCEPT_TOL_LU {
             if (p1.1 - p0.1).abs() < KNOB_TOL_LU {
                 // The seed pair itself is flat (and the expansion probe didn't land
                 // it): the knob demonstrably can't move loudness, the correction loop
@@ -4404,6 +4609,8 @@ fn solve_param_secant(
                 // −1 / +1: which side of the target the previous bracket-mode iterate
                 // landed on (0 until the pair straddles).
                 let mut last_side = 0i8;
+                let coord_span =
+                    (param.to_coord(bound_hi as f64) - param.to_coord(bound_lo as f64)).abs();
                 for _ in 0..correct_max {
                     let straddles = (p0.1 - target_lufs) * (p1.1 - target_lufs) < 0.0;
                     let Some(raw) = fs_secant_next(p0, p1, target_lufs) else {
@@ -4414,6 +4621,14 @@ fn solve_param_secant(
                         // stuck, not that the knob is dead — keep the honest
                         // `unconverged` from classify_fs_outcome below.
                         break;
+                    };
+                    // A straddling pair interpolates inside its own bracket; an
+                    // extrapolating one gets a trust region, so two close points whose
+                    // ΔLUFS is mostly noise can't fling the next probe across the range.
+                    let raw = if straddles {
+                        raw
+                    } else {
+                        fs_trust_clamp(raw, p0.0, p1.0, coord_span)
                     };
                     let v2 = param
                         .coord_to_value(raw)
@@ -4441,7 +4656,7 @@ fn solve_param_secant(
                         }
                         Err(e) => return Err(e),
                     };
-                    if l2_real && err(l2_lufs) <= FS_TOL_LU {
+                    if l2_real && err(l2_lufs) <= ACCEPT_TOL_LU {
                         break;
                     }
                     let p2 = (param.to_coord(v2 as f64), l2_lufs);
@@ -4955,6 +5170,8 @@ pub struct BatchedSceneOutcome {
     /// pre-wipe and must not be trusted; `Some(false)` = re-read and confirmed. `None` =
     /// not checked (the scene wrote nothing, the run didn't save, or the re-read failed).
     pub persist_mismatch: Option<bool>,
+    /// Whether `final_lufs` was measured after the write (see [`Verification`]).
+    pub verification: Verification,
 }
 
 /// One amp knob to drive within a scene: the control, its bounds, and its current
@@ -5197,6 +5414,8 @@ pub fn level_scenes_live_batched(
                     // The probe-only bench runner reports no taxonomy: it has no
                     // `clamp_reason`/wet-floor inputs to derive one from.
                     clamp_kind: None,
+                    // Its result IS a live-window measurement of the written value.
+                    verification: Verification::Verified,
                 },
                 Err(e) if e == CANCELLED => return Err(e),
                 Err(e) => BatchedSceneOutcome {
@@ -6785,6 +7004,8 @@ struct SceneSolve {
     pinned: Option<PinnedBound>,
     /// Rebalance "verify by ear" flag; `false` for the plain joint-k path.
     verify_by_ear: bool,
+    /// Whether `lufs` was measured after the write (see [`Verification`]).
+    verification: Verification,
 }
 
 /// Max secant CORRECTIONS after the first apply, shared by every re-amp-measured solve
@@ -6800,12 +7021,11 @@ const MEASURE_CORRECT_MAX: u32 = 3;
 /// because arbitrary block params (a `volume` audio taper, a `drive` knob) can
 /// put the target on a steep cliff that needs several Illinois-damped bracket
 /// iterates (HW, Hiwatt fs12: ~4 from a 21-LU-wide bracket) — converged solves
-/// still exit on the first in-tolerance iterate, so the extra headroom costs
-/// well-behaved knobs nothing. Doubled from 8 to 16 alongside the `FS_TOL_LU`
-/// tightening (0.3 → 0.1): a tighter acceptance band needs more bracket-aware
-/// iterates to walk down onto, and a stalled/no-authority pair still exits early
-/// via `flat_response`/the secant's own degenerate-pair break, so the extra
-/// headroom again costs well-behaved knobs nothing.
+/// still exit on the first in-tolerance iterate, so the headroom costs well-behaved knobs
+/// nothing. Kept at 16 when the band widened to [`ACCEPT_TOL_LU`] (0.1 → 0.25 LU): the
+/// noise-chasing the old band caused is gone because a converged point now reads inside
+/// the band (`fs_solve_noise_tests`), and the budget only runs out on genuinely slow
+/// curves (the quiet-chain silence-sentinel fixture needs ~12 iterates).
 const FS_CORRECT_MAX: u32 = 16;
 /// Minimum acceptable `|target_lufs − seed1's measured LUFS|` the law-predicted second
 /// seed's IMPLIED separation must clear before it's trusted over the fixed 0.75/0.25-
@@ -6872,7 +7092,7 @@ fn fs_silent_geometry(min_real_lufs: f64) -> f64 {
     FS_SILENT_GEOMETRY_LUFS.min(min_real_lufs - FS_SILENT_MARGIN_LU)
 }
 
-/// Is this scene already at target? Matches the correction loop's `KNOB_TOL_LU`
+/// Is this scene already at target? Matches the correction loop's `ACCEPT_TOL_LU`
 /// acceptance band (rather than the tighter ~0.1 dB knob-ratio check this replaces)
 /// so a re-run doesn't rewrite an already-in-tolerance scene and re-randomize it.
 /// Deliberately skips the corrective pass (`correct_iter`) for a within-tolerance
@@ -6884,7 +7104,7 @@ fn fs_silent_geometry(min_real_lufs: f64) -> f64 {
 /// `already_on_target` drops it, and may, because its skip is provably disjoint from a boost.
 /// Nothing of the sort holds here — keep the flag.
 fn scene_at_target(measured: f64, target: f64, clamped: bool) -> bool {
-    !clamped && (measured - target).abs() <= KNOB_TOL_LU
+    !clamped && (measured - target).abs() <= ACCEPT_TOL_LU
 }
 
 /// What every per-scene solve opens with: the scene's as-is reading.
@@ -6962,6 +7182,8 @@ impl Prologue {
             writes: 0,
             clamp_reason: None,
             verify_by_ear: false,
+            // Nothing was written: the as-is capture IS the measurement of what stays.
+            verification: Verification::Verified,
         }
     }
 }
@@ -7005,7 +7227,7 @@ fn jointk_one_scene(
         achieved,
         k_eff,
     } = solve_joint_k_at(&job.knobs, target_lufs, measured, floor)?;
-    // Already at target (within the KNOB_TOL_LU acceptance band) and not clamped →
+    // Already at target (within the ACCEPT_TOL_LU acceptance band) and not clamped →
     // leave every knob untouched (a clamp must still be REPORTED even if nothing moves,
     // which is why this lane's test takes the joint-k clamp flag and the handle lane's
     // cannot).
@@ -7061,14 +7283,16 @@ fn jointk_one_scene(
         }
         _ => (v0.unwrap_or(achieved), levels, None, 1 + retry_writes),
     };
+    // A planned verify that failed twice leaves `best_lufs` = the PREDICTION: say so.
+    let verification = Verification::of(verify, v0);
     // Report clamped from the FINAL point, NOT the open-loop's initial want: a specific reason
     // fired, or the verified best still can't reach target (knob out of headroom / chain limits
     // below target). The open-loop `clamped` flag is deliberately DROPPED here — a scene whose
     // first solve wanted `outputLevel > 1.0` but whose verify+correct then landed a valid point
-    // within `KNOB_TOL_LU` HAS reached target (it just started far below), so it is "done", not
+    // within `ACCEPT_TOL_LU` HAS reached target (it just started far below), so it is "done", not
     // clamped. Keying the flag on `clamped ||` over-reported those as clamped (a stale edge flag,
     // exactly the redistribution's once-clamped-now-rescued scenes).
-    let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
+    let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > ACCEPT_TOL_LU;
     let (pinned, clamp_kind) = joint_clamp_report(
         &best_levels,
         &base,
@@ -7088,6 +7312,7 @@ fn jointk_one_scene(
         writes,
         clamp_reason,
         verify_by_ear: false,
+        verification,
     })
 }
 
@@ -7177,8 +7402,8 @@ fn joint_clamp_report(
 /// minutes; 8 still covers the HW-observed worst case (the Hiwatt `volume` cliff converged
 /// in ~4 Illinois-damped bracket iterates), and a well-behaved knob exits on its first
 /// in-tolerance iterate either way. A row that runs out reports honestly — it lands off
-/// target and `handle_one_scene` marks it clamped against the scene lane's own
-/// [`KNOB_TOL_LU`] band, never silently as done.
+/// target and `handle_one_scene` marks it clamped against [`ACCEPT_TOL_LU`], never
+/// silently as done.
 const SCENE_HANDLE_CORRECT_MAX: u32 = 8;
 
 /// One scene solved on the USER'S OWN handle instead of the amp's `outputLevel`.
@@ -7278,12 +7503,12 @@ fn handle_one_scene(
         // control is still measured/written with base's isolation asserted.
         &job.force_bypass,
     )?;
-    // Reported on the SCENE lane's band (`KNOB_TOL_LU`), not the tighter footswitch one the
-    // search accepts on: a handle row and an amp row in the same batch must mean the same
-    // thing by "done". A routing clamp (`clamp_reason`) rides through verbatim.
+    // Reported on the shared band (`ACCEPT_TOL_LU`): a handle row and an amp row in the same
+    // batch must mean the same thing by "done". A routing clamp (`clamp_reason`) rides through
+    // verbatim.
     let clamped = solved.clamp_reason.is_some()
         || solved.clamped
-        || (solved.predicted_lufs - target_lufs).abs() > KNOB_TOL_LU;
+        || (solved.predicted_lufs - target_lufs).abs() > ACCEPT_TOL_LU;
     Ok(SceneSolve {
         lufs: solved.predicted_lufs,
         levels: vec![solved.final_value],
@@ -7301,6 +7526,13 @@ fn handle_one_scene(
         spread,
         // The solve's own captures plus this final apply write.
         writes: solved.iterations + 1,
+        // Every solve point is a real capture of the value it reports; only the routing
+        // clamp's sentinel isn't one.
+        verification: if solved.clamp_reason.is_some() {
+            Verification::Predicted
+        } else {
+            Verification::Verified
+        },
         clamp_reason: solved.clamp_reason,
         verify_by_ear: false,
     })
@@ -7350,6 +7582,16 @@ fn apply_first_verified(
     let targets = zip_targets(knobs, levels);
     let v0 = apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1;
     match v0 {
+        // The verify capture itself failed: one fresh re-apply + verify, the same bounded
+        // retry a dropped write gets. A second failure reaches the caller as `None`, which
+        // it reports as `Verification::VerifyFailed` — never as the prediction verified.
+        None if opts.verify => {
+            log::warn!("scene verify capture failed on slot {slot} — retrying the apply once");
+            Ok((
+                apply_levels(slot, stimulus, &targets, opts, false, saved, force_bypass)?.1,
+                1,
+            ))
+        }
         Some(v)
             if opts.verify
                 && expected_db.abs() >= SUSPECT_DROP_MIN_DB
@@ -7377,7 +7619,7 @@ struct Correction {
 /// Bounded secant correction after a first verified apply (shared by joint-k + rebalance).
 /// The open-loop `20·log10(k)` solve undershoots through a downstream compressor; this
 /// iterates a trust-region-clamped (±`BATCH_TRUST_DB`) secant from the real points until
-/// within `KNOB_TOL_LU`, capped at `MEASURE_CORRECT_MAX`, and ALWAYS lands the device on the
+/// within `ACCEPT_TOL_LU`, capped at `MEASURE_CORRECT_MAX`, and ALWAYS lands the device on the
 /// best point seen — re-applying it if the last write wasn't the best. (Critical: the device
 /// working copy holds whatever was LAST written and the batch-end save persists exactly that,
 /// so a worse final step would otherwise persist while a better number is reported.) When a
@@ -7501,7 +7743,7 @@ fn correct_iter_core(
     }
 
     // Already at target, or no applied gain to read a slope from → keep levels0.
-    if applied_db0.abs() <= 1e-3 || (v0 - target).abs() <= KNOB_TOL_LU {
+    if applied_db0.abs() <= 1e-3 || (v0 - target).abs() <= ACCEPT_TOL_LU {
         return Ok(Correction {
             lufs: v0,
             levels: levels0,
@@ -7572,7 +7814,7 @@ fn correct_iter_core(
     // Bounded secant. Seed points: `prev` (base, or the probe above) and levels0@v0.
     let mut last = (applied_db0, v0);
     for _ in 0..MEASURE_CORRECT_MAX {
-        if (last.1 - target).abs() <= KNOB_TOL_LU {
+        if (last.1 - target).abs() <= ACCEPT_TOL_LU {
             break;
         }
         // Trust-region-clamped secant step (None ⇒ slope too flat / non-finite → stop).
@@ -7986,9 +8228,10 @@ fn rebalance_one_scene(
         }
         _ => (v0.unwrap_or(achieved), levels, None, 0),
     };
+    let verification = Verification::of(verify, v0);
     // Clamped from the FINAL point, not the open-loop want (see `jointk_one_scene`): a
     // verify+correct that landed within tolerance means the lane reached target — "done".
-    let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > KNOB_TOL_LU;
+    let clamped = clamp_reason.is_some() || (best_lufs - target_lufs).abs() > ACCEPT_TOL_LU;
     let (pinned, clamp_kind) = joint_clamp_report(
         &best_levels,
         &base,
@@ -8008,6 +8251,7 @@ fn rebalance_one_scene(
         writes: 1 + retry_writes + corr_writes,
         clamp_reason,
         verify_by_ear,
+        verification,
     })
 }
 
@@ -8039,6 +8283,7 @@ fn solved_scene_outcome(
         clamp_reason: s.clamp_reason,
         verify_by_ear: s.verify_by_ear,
         persist_mismatch: None,
+        verification: s.verification,
     }
 }
 
@@ -8547,51 +8792,250 @@ mod persist_verify_tests {
 }
 
 #[cfg(test)]
-mod floor_guard_tests {
+mod fs_solve_noise_tests {
     use super::*;
 
-    fn loud(integrated: f64, spread: f64) -> lufs::Loudness {
-        lufs::Loudness {
-            integrated_lufs: integrated,
-            short_term_max_lufs: integrated + spread,
-            true_peak_dbtp: integrated + 12.0,
+    /// Deterministic N(0, sigma) noise (xorshift + Box–Muller).
+    struct Noise(u64);
+    impl Noise {
+        fn uniform(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            ((self.0 >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        }
+        fn gauss(&mut self, sigma: f64) -> f64 {
+            let (u1, u2) = (self.uniform(), self.uniform());
+            sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
         }
     }
 
-    // The trip gate sits BELOW the measured real-preset minimum (0.12 LU) and is
-    // DISARMED for a near-stationary stimulus (EBow-heavy captures legitimately
-    // produce near-zero output spread — the level-shift confirm discriminates there).
+    fn reading(integrated: f64) -> lufs::Loudness {
+        lufs::Loudness {
+            integrated_lufs: integrated,
+            short_term_max_lufs: integrated + 0.3,
+            true_peak_dbtp: -6.0,
+            momentary_spread_lu: 6.0,
+            clipped: false,
+        }
+    }
+
+    /// (mean captures per solve, false-`unconverged`/`clamped` rate) for a pedal `level`
+    /// knob whose true response is exactly linear in dB (`-14 + 20·log10 v`), read through
+    /// σ = 0.12 LU capture noise, over targets the knob can reach comfortably.
+    fn noisy_solve_stats(trials: u32) -> (f64, f64) {
+        let param = FsParamTarget::new("ACD_SomeBlock", "level", 0.5);
+        let mut noise = Noise(0x9E37_79B9_7F4A_7C15);
+        let (mut captures, mut misses) = (0u32, 0u32);
+        for i in 0..trials {
+            let target = -34.0 + 14.0 * (i as f64 / trials as f64);
+            let mut n = 0u32;
+            let solved = solve_param_secant(
+                &[],
+                target,
+                None,
+                &param,
+                FS_CORRECT_MAX,
+                || {},
+                |v| {
+                    n += 1;
+                    Ok(reading(
+                        -14.0 + 20.0 * (v.max(1e-6) as f64).log10() + noise.gauss(0.12),
+                    ))
+                },
+            )
+            .expect("solve");
+            captures += n;
+            if solved.unconverged || solved.clamped {
+                misses += 1;
+            }
+        }
+        (
+            captures as f64 / trials as f64,
+            misses as f64 / trials as f64,
+        )
+    }
+
+    // #236: with σ = 0.12 LU capture noise a converged footswitch solve must exit early and
+    // never end `unconverged` on noise alone. Measured when this gate landed, 200 targets:
+    // the old 0.1 LU band averaged 3.33 captures per solve (the 16-iterate budget absorbing
+    // the noise-chasing), the shared 0.25 LU band 2.25.
+    #[test]
+    fn noisy_converged_solves_exit_early_and_rarely_read_unconverged() {
+        let (mean_captures, miss_rate) = noisy_solve_stats(200);
+        eprintln!("fs noise sim: mean captures {mean_captures:.2}, false-miss rate {miss_rate:.3}");
+        assert!(mean_captures <= 2.6, "mean captures {mean_captures:.2}");
+        assert!(miss_rate <= 0.02, "false-miss rate {miss_rate:.3}");
+    }
+
+    // The extrapolating secant's trust region: never further than twice the seed pair's
+    // own span or a quarter of the whole range, whichever is larger.
+    #[test]
+    fn fs_trust_clamp_bounds_an_extrapolating_step() {
+        // A noisy near-flat pair 1 coord apart predicting a 40-coord jump → 15 (¼ of 60).
+        assert_eq!(fs_trust_clamp(-50.0, -9.0, -10.0, 60.0), -25.0);
+        // A wide pair keeps 2× its own span.
+        assert_eq!(fs_trust_clamp(-60.0, -10.0, -30.0, 60.0), -60.0);
+        // A step inside the region is untouched.
+        assert_eq!(fs_trust_clamp(-12.0, -9.0, -10.0, 60.0), -12.0);
+    }
+}
+
+#[cfg(test)]
+mod floor_guard_tests {
+    use super::*;
+
+    /// A reading with short-term spread `st` and momentary spread `mom`.
+    fn loud(integrated: f64, st: f64, mom: f64) -> lufs::Loudness {
+        lufs::Loudness {
+            integrated_lufs: integrated,
+            short_term_max_lufs: integrated + st,
+            true_peak_dbtp: integrated + 12.0,
+            momentary_spread_lu: mom,
+            clipped: false,
+        }
+    }
+
+    /// A lively capture (compressed relative to [`STIM`]) and a stationary floor read.
+    fn lively() -> lufs::Loudness {
+        loud(-30.0, 0.2, 5.0)
+    }
+    fn flat() -> lufs::Loudness {
+        loud(-30.18, 0.01, 0.08)
+    }
+    /// The shipped stimuli's shape: ~0.26 LU short-term, ~6 LU momentary.
+    const STIM: StimulusSpread = StimulusSpread {
+        short_term_lu: 0.4,
+        momentary_lu: 6.0,
+    };
+
+    fn shipped_stimuli() -> Vec<(String, Vec<f32>)> {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/samples");
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
+            .expect("samples dir")
+            .map(|e| e.expect("entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .collect();
+        paths.sort();
+        assert!(
+            paths.len() >= 8,
+            "expected the 8 shipped stimuli, got {paths:?}"
+        );
+        paths
+            .into_iter()
+            .map(|p| {
+                let s = crate::probe_api::stimulus::read_stimulus_48k(p.to_str().expect("utf8"))
+                    .expect("read stimulus");
+                (p.display().to_string(), s)
+            })
+            .collect()
+    }
+
+    /// xorshift white noise in [-amp, amp] — deterministic, so the test is too.
+    fn noise(secs: f32, amp: f32, mut x: u32) -> Vec<f32> {
+        (0..(secs * RATE as f32) as usize)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x as f32 / u32::MAX as f32 * 2.0 - 1.0) * amp
+            })
+            .collect()
+    }
+
+    /// Scale `samples` so they measure `lufs` integrated (mono meter).
+    fn at_lufs(samples: &[f32], lufs: f64) -> Vec<f32> {
+        let now = lufs::measure_mono(samples, RATE)
+            .expect("measure")
+            .integrated_lufs;
+        let g = 10f64.powf((lufs - now) / 20.0) as f32;
+        samples.iter().map(|x| x * g).collect()
+    }
+
+    // BUG→GATE (#233): the guard used to read the 3 s short-term spread, which the shipped
+    // stimuli (10 plucks 0.6 s apart) only move by 0.26–0.32 LU — under the 0.30 arming gate
+    // for 7 of 8 of them, and ≈ 0 for all 8 on the Doctor's 3 s slice. Every shipped WAV must
+    // ARM the guard, on both the leveling stimulus and the Doctor slice.
+    #[test]
+    fn every_shipped_stimulus_arms_the_floor_guard() {
+        for (name, stim) in shipped_stimuli() {
+            let full = stimulus_spread(&stim);
+            assert!(
+                floor_suspect(0.0, full.momentary_lu),
+                "{name}: leveling stimulus momentary spread {:.2} LU does not arm the guard",
+                full.momentary_lu
+            );
+            let doctor = stimulus_spread(&doctor_stim_slice(stim.clone()));
+            assert!(
+                floor_suspect(0.0, doctor.momentary_lu),
+                "{name}: Doctor slice momentary spread {:.2} LU does not arm the guard",
+                doctor.momentary_lu
+            );
+        }
+    }
+
+    // A synthetic stationary floor at ordinary leveling loudness trips the guard; the same
+    // stimuli through 40 dB of hard saturation — harsher than any library preset — and
+    // through plain gain do not. The trip gate sits between the two with margin both ways.
+    #[test]
+    fn a_stationary_floor_trips_and_a_saturated_stimulus_clears() {
+        let floor = at_lufs(&noise(6.8, 0.1, 0x1234_5678), -27.0);
+        let f = lufs::measure_mono(&floor, RATE).unwrap();
+        assert!(
+            floor_suspect(f.momentary_spread_lu, STIM.momentary_lu),
+            "floor momentary spread {:.3} LU",
+            f.momentary_spread_lu
+        );
+        assert!(
+            !is_engaged(&f),
+            "a floor read at -27 LUFS must not read as engaged"
+        );
+        for (name, stim) in shipped_stimuli() {
+            let s = stimulus_spread(&stim);
+            let saturated: Vec<f32> = stim.iter().map(|x| (x * 100.0).tanh() * 0.5).collect();
+            let l = lufs::measure_mono(&saturated, RATE).unwrap();
+            assert!(
+                !floor_suspect(l.momentary_spread_lu, s.momentary_lu),
+                "{name}: a saturated live capture ({:.2} LU) must not trip the guard",
+                l.momentary_spread_lu
+            );
+            assert!(
+                is_engaged(&l),
+                "{name}: a saturated live capture reads engaged"
+            );
+        }
+    }
+
     #[test]
     fn floor_suspect_trips_only_below_gate_with_lively_stimulus() {
-        assert!(floor_suspect(0.01, 1.5)); // classic floor read
-        assert!(floor_suspect(FLOOR_TRIP_LU, 1.5)); // boundary inclusive
-        assert!(!floor_suspect(0.12, 1.5)); // real library minimum stays clear
-        assert!(!floor_suspect(0.01, 0.2)); // stationary stimulus disarms the trip
+        assert!(floor_suspect(0.08, 6.0)); // classic floor read
+        assert!(floor_suspect(FLOOR_TRIP_LU, 6.0)); // boundary inclusive
+        assert!(!floor_suspect(0.7, 6.0)); // a saturated live capture stays clear
+        assert!(!floor_suspect(0.08, STATIONARY_STIM_LU)); // stationary stimulus disarms
     }
 
-    // Real signal tracks a presetLevel shift by 20·log10 (linear post-chain gain);
-    // the output floor doesn't move. Tolerance absorbs run-to-run noise.
+    // BUG→GATE (#234): the floor is post-DSP, so `presetLevel` scales it by the same 20·log10
+    // a real signal follows (`notes/gotchas.md`). The old level-shift confirm accepted such a
+    // floor as "ultra-compressed but real"; now a floor that stays flat through the retry is
+    // the honest error, whatever level it was read at.
     #[test]
-    fn level_shift_tracking_discriminates_floor_from_compressed() {
-        // ref 0.5 → confirm 0.25: expected Δ = −6.02 LU.
-        assert!(tracks_level_shift(-30.0, -36.0, 0.5, 0.25)); // tracks
-        assert!(!tracks_level_shift(-30.18, -30.20, 0.5, 0.25)); // floor: flat
-        assert!(tracks_level_shift(-30.0, -34.1, 0.5, 0.25)); // inside ±2 LU
-        assert!(!tracks_level_shift(-30.0, -33.9, 0.5, 0.25)); // outside ±2 LU
+    fn a_floor_that_scales_with_preset_level_is_rejected() {
+        let mut calls = 0;
+        let r = measure_floor_guarded(
+            || {
+                calls += 1;
+                // Each read 6.02 dB down, exactly as a level-tracking floor would.
+                Ok(loud(-30.0 - 6.02 * calls as f64, 0.01, 0.08))
+            },
+            STIM,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(matches!(r, GuardOutcome::StillFlat(_)));
+        assert_eq!(calls, 2);
     }
 
-    // The confirm level must stay distinguishable from the reference: halve, unless
-    // halving hits the 0.05 clamp — then double instead.
-    #[test]
-    fn confirm_level_is_distinguishable() {
-        assert!((confirm_ref_level(0.5) - 0.25).abs() < 1e-6);
-        assert!((confirm_ref_level(1.0) - 0.5).abs() < 1e-6);
-        assert!((confirm_ref_level(0.08) - 0.16).abs() < 1e-6);
-    }
-
-    // Predicted true peak scales with the same 20·log10(ratio) as presetLevel itself
-    // (linear post-chain gain) — halving the level should drop the predicted peak
-    // ~6.02 dB, matching a level unchanged from ref keeps the ref peak verbatim.
+    // Predicted true peak scales with the same 20·log10(ratio) as presetLevel itself.
     #[test]
     fn predicted_true_peak_scales_with_level_ratio() {
         assert!((predicted_true_peak_dbtp(-3.0, 0.5, 0.5) - -3.0).abs() < 1e-6);
@@ -8602,66 +9046,59 @@ mod floor_guard_tests {
     }
 
     // The guarded wrapper: one same-settings retry heals a transient inject failure;
-    // a persistent flat read is reported as StillFlat (callers decide: scenes error,
-    // measure_c escalates to the level-shift confirm).
+    // a persistent flat read is reported as StillFlat.
     #[test]
     fn guarded_measure_retries_once_then_reports_still_flat() {
-        let lively = loud(-30.0, 5.0);
-        let flat = loud(-30.18, 0.01);
-        // The stimulus spread must exceed the capture's: a chain only compresses, so a
-        // livelier-out-than-in fixture is the aberrant case the spread tell retries.
-        let stim = 6.0;
-
-        // First capture lively → no retry.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
-                Ok(lively)
+                Ok(lively())
             },
-            stim,
+            STIM,
             Duration::ZERO,
         )
         .unwrap();
         assert!(matches!(out, GuardOutcome::Live(_)));
         assert_eq!(calls, 1);
 
-        // Transient failure: flat then lively → Live, two calls.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
-                Ok(if calls == 1 { flat } else { lively })
+                Ok(if calls == 1 { flat() } else { lively() })
             },
-            stim,
+            STIM,
             Duration::ZERO,
         )
         .unwrap();
         assert!(matches!(out, GuardOutcome::Live(_)));
         assert_eq!(calls, 2);
 
-        // Persistent flat → StillFlat after exactly one retry.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
-                Ok(flat)
+                Ok(flat())
             },
-            stim,
+            STIM,
             Duration::ZERO,
         )
         .unwrap();
         assert!(matches!(out, GuardOutcome::StillFlat(_)));
         assert_eq!(calls, 2);
 
-        // Stationary stimulus disarms the guard entirely: flat first capture passes.
+        // A stimulus with no momentary dynamics disarms the guard: a flat capture passes.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
-                Ok(flat)
+                Ok(flat())
             },
-            0.2,
+            StimulusSpread {
+                short_term_lu: 0.2,
+                momentary_lu: 1.0,
+            },
             Duration::ZERO,
         )
         .unwrap();
@@ -8669,37 +9106,49 @@ mod floor_guard_tests {
         assert_eq!(calls, 1);
     }
 
-    // A capture cannot be MORE dynamic than the stimulus that drove it — a chain only
-    // compresses. More spread out than in means the capture is not the sound we asked
-    // for (a partially-landed recall). Armed by the same stationary-stimulus gate as
-    // `floor_suspect`, so a disarmed stimulus disarms both.
+    // A capture cannot be MORE dynamic than the stimulus that drove it (short-term spread —
+    // the "can't expand" premise is NOT applied to momentary dynamics, which gates and
+    // expanders legitimately widen).
     #[test]
     fn spread_aberrant_trips_only_above_the_stimulus_with_a_lively_stimulus() {
-        assert!(spread_aberrant(9.0, 6.0)); // more dynamic out than in — impossible
-        assert!(!spread_aberrant(6.0, 6.0)); // equal: the pass-through limit
-        assert!(!spread_aberrant(5.0, 6.0)); // compressed: the normal case
-        assert!(!spread_aberrant(6.0 + SPREAD_ABERRANT_MARGIN_LU, 6.0)); // margin is inclusive
+        assert!(spread_aberrant(9.0, 6.0));
+        assert!(!spread_aberrant(6.0, 6.0));
+        assert!(!spread_aberrant(5.0, 6.0));
+        assert!(!spread_aberrant(6.0 + SPREAD_ABERRANT_MARGIN_LU, 6.0));
         assert!(!spread_aberrant(9.0, 0.2)); // stationary stimulus disarms the trip
     }
 
-    // The spread tell buys exactly ONE re-measure and then reports whatever it got:
-    // unlike a floor read, an aberrant-spread capture is a plausible number, so it is
-    // never escalated to an error (and never to StillFlat, whose level-shift confirm a
-    // wrong-scene capture would pass — presetLevel is linear whatever scene landed).
+    // A gate-like capture with WIDER momentary dynamics than the stimulus is not aberrant:
+    // the spread tell reads the short-term statistic only.
+    #[test]
+    fn momentary_expansion_alone_is_not_aberrant() {
+        let mut calls = 0;
+        let out = measure_floor_guarded(
+            || {
+                calls += 1;
+                Ok(loud(-24.0, 0.3, 12.0))
+            },
+            STIM,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(matches!(out, GuardOutcome::Live(_)));
+        assert_eq!(calls, 1);
+    }
+
+    // The spread tell buys exactly ONE re-measure and then reports whatever it got.
     #[test]
     fn guarded_measure_retries_once_on_aberrant_spread() {
-        let stim = 6.0;
-        let aberrant = loud(-30.0, 9.0);
-        let compressed = loud(-24.0, 5.0);
+        let aberrant = loud(-30.0, 0.9, 5.0);
+        let compressed = loud(-24.0, 0.2, 5.0);
 
-        // Aberrant then compressed → the SECOND reading is returned, two calls.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
                 Ok(if calls == 1 { aberrant } else { compressed })
             },
-            stim,
+            STIM,
             Duration::ZERO,
         )
         .unwrap();
@@ -8709,52 +9158,112 @@ mod floor_guard_tests {
         }
         assert_eq!(calls, 2);
 
-        // Persistently aberrant → still Live (best effort), still exactly one retry.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
                 Ok(aberrant)
             },
-            stim,
+            STIM,
             Duration::ZERO,
         )
         .unwrap();
         assert!(matches!(out, GuardOutcome::Live(_)));
         assert_eq!(calls, 2);
 
-        // A compressed capture is the normal case — no retry at all.
+        // The retry can land on a FLOOR read — still reported as flat.
         let mut calls = 0;
         let out = measure_floor_guarded(
             || {
                 calls += 1;
-                Ok(compressed)
+                Ok(if calls == 1 { aberrant } else { flat() })
             },
-            stim,
-            Duration::ZERO,
-        )
-        .unwrap();
-        assert!(matches!(out, GuardOutcome::Live(_)));
-        assert_eq!(calls, 1);
-
-        // The retry can land on a FLOOR read — that must still be reported as flat,
-        // not laundered into a Live reading by the spread lane.
-        let mut calls = 0;
-        let out = measure_floor_guarded(
-            || {
-                calls += 1;
-                Ok(if calls == 1 {
-                    aberrant
-                } else {
-                    loud(-30.18, 0.01)
-                })
-            },
-            stim,
+            STIM,
             Duration::ZERO,
         )
         .unwrap();
         assert!(matches!(out, GuardOutcome::StillFlat(_)));
         assert_eq!(calls, 2);
+    }
+
+    // BUG→GATE (#175): `is_engaged` used the short-term spread (> 0.5 LU), which a healthy
+    // capture of the stationary leveling stimulus never reaches, so the external judge
+    // stamped `floor_suspect` on every row. A healthy capture of each shipped stimulus at
+    // leveling loudness must read engaged.
+    #[test]
+    fn a_healthy_capture_of_every_shipped_stimulus_reads_engaged() {
+        for (name, stim) in shipped_stimuli() {
+            let l = lufs::measure_mono(&at_lufs(&stim, -23.0), RATE).unwrap();
+            assert!(
+                l.spread_lu() < 0.5,
+                "{name}: the old arm would have passed this one ({:.2} LU) — fixture drifted",
+                l.spread_lu()
+            );
+            assert!(is_engaged(&l), "{name}: healthy capture not engaged: {l:?}");
+        }
+    }
+
+    // BUG→GATE (#239): a flat-topped capture reads LOW, so no lane may solve from it.
+    #[test]
+    fn a_clipped_capture_is_refused_and_a_hot_transient_is_not() {
+        let mut clipped = loud(-12.0, 0.2, 5.0);
+        clipped.clipped = true;
+        assert_eq!(
+            loudness_verdict(clipped).unwrap_err(),
+            CLIPPED_CAPTURE_ERR.to_string()
+        );
+        assert!(loudness_verdict(loud(-12.0, 0.2, 5.0)).is_ok());
+        assert_eq!(
+            loudness_verdict(loud(f64::NEG_INFINITY, 0.0, 0.0)).unwrap_err(),
+            NO_SIGNAL_CAPTURED.to_string()
+        );
+        // The detector itself, on a real stereo capture shape: a 3-sample apex on one channel
+        // is a transient; a 4-sample run pinned at full scale is clipping.
+        let mut pair = vec![0.1f32; 2_000];
+        for i in 0..3 {
+            pair[100 + 2 * i] = 1.0;
+        }
+        assert!(!lufs::is_clipped(&pair, 2));
+        pair[106] = 1.0;
+        assert!(lufs::is_clipped(&pair, 2));
+        // Interleaving must not join two channels' samples into one run.
+        // (Four consecutive interleaved samples at full scale = two per channel.)
+        let mut alt = vec![0.1f32; 2_000];
+        alt[200..204].fill(1.0);
+        assert!(!lufs::is_clipped(&alt, 2));
+    }
+
+    #[test]
+    fn cross_check_level_moves_three_db_and_stays_in_range() {
+        assert!((cross_check_level(0.5) - 0.35).abs() < 1e-6);
+        assert!((cross_check_level(1.0) - 0.7).abs() < 1e-6);
+        assert!((cross_check_level(0.06) - 0.084).abs() < 1e-6);
+    }
+
+    #[test]
+    fn median3_ignores_the_one_outlier() {
+        assert_eq!(median3(-20.0, -22.9, -20.1), -20.1);
+        assert_eq!(median3(-22.9, -20.0, -20.1), -20.1);
+        assert_eq!(median3(-20.1, -20.0, -22.9), -20.1);
+    }
+
+    // #243: the base lane measures the preset at its SAVED level, clamped away from the
+    // floor; with no saved level it keeps the caller's reference.
+    #[test]
+    fn base_ref_level_uses_the_saved_level() {
+        assert_eq!(base_ref_level(0.5, Some(0.42)), 0.42);
+        assert_eq!(base_ref_level(0.5, Some(0.02)), SAVED_REF_MIN);
+        assert_eq!(base_ref_level(0.5, Some(1.7)), 1.0);
+        assert_eq!(base_ref_level(0.5, None), 0.5);
+        assert_eq!(base_ref_level(0.5, Some(0.0)), 0.5);
+        assert_eq!(base_ref_level(0.5, Some(f32::NAN)), 0.5);
+    }
+
+    #[test]
+    fn verification_never_reports_a_failed_verify_as_measured() {
+        assert_eq!(Verification::of(true, Some(-20.0)), Verification::Verified);
+        assert_eq!(Verification::of(true, None), Verification::VerifyFailed);
+        assert_eq!(Verification::of(false, None), Verification::Predicted);
     }
 }
 
@@ -9700,19 +10209,19 @@ mod tests {
         }
     }
 
-    // scene_at_target mirrors the correction loop's KNOB_TOL_LU acceptance band —
+    // scene_at_target mirrors the correction loop's ACCEPT_TOL_LU acceptance band —
     // a re-run must not rewrite an already-in-tolerance scene.
     #[test]
-    fn scene_at_target_accepts_within_knob_tol() {
+    fn scene_at_target_accepts_within_the_band() {
         assert!(
-            super::scene_at_target(-22.0, -22.29, false),
-            "0.29 LU off, unclamped"
+            super::scene_at_target(-22.0, -22.24, false),
+            "0.24 LU off, unclamped"
         );
     }
 
     #[test]
-    fn scene_at_target_rejects_just_outside_knob_tol() {
-        assert!(!super::scene_at_target(-22.0, -22.31, false), "0.31 LU off");
+    fn scene_at_target_rejects_just_outside_the_band() {
+        assert!(!super::scene_at_target(-22.0, -22.26, false), "0.26 LU off");
     }
 
     #[test]
@@ -9724,20 +10233,21 @@ mod tests {
     }
 
     // switch_at_target is the footswitch mirror of scene_at_target — the re-run
-    // idempotency band (the PR #74 follow-up gap). Same KNOB_TOL_LU acceptance.
+    // idempotency band (the PR #74 follow-up gap). The same ACCEPT_TOL_LU band as scenes:
+    // "on target" means one thing in every lane (#236).
     #[test]
-    fn switch_at_target_accepts_within_fs_tol() {
+    fn switch_at_target_accepts_within_the_band() {
         assert!(
-            super::switch_at_target(-24.0, -24.09, false),
-            "0.09 LU off, unclamped → skip the re-solve (FS_TOL_LU = 0.1, tighter than the scene lane's KNOB_TOL_LU)"
+            super::switch_at_target(-24.0, -24.24, false),
+            "0.24 LU off, unclamped → skip the re-solve"
         );
     }
 
     #[test]
-    fn switch_at_target_rejects_just_outside_fs_tol() {
+    fn switch_at_target_rejects_just_outside_the_band() {
         assert!(
-            !super::switch_at_target(-24.0, -24.11, false),
-            "0.11 LU off → must re-level"
+            !super::switch_at_target(-24.0, -24.26, false),
+            "0.26 LU off → must re-level"
         );
     }
 
@@ -9803,37 +10313,37 @@ mod tests {
         assert!(!super::already_on_target(c, 1.0, -25.0));
     }
 
-    // The band's edges, in the same LU space `FS_TOL_LU` is stated in.
+    // The band's edges, in the same LU space `ACCEPT_TOL_LU` is stated in.
     #[test]
     fn already_on_target_accepts_inside_and_rejects_outside_the_band() {
         let c = -23.0;
-        let inside = super::FS_TOL_LU - 0.01;
-        let outside = super::FS_TOL_LU + 0.01;
+        let inside = super::ACCEPT_TOL_LU - 0.01;
+        let outside = super::ACCEPT_TOL_LU + 0.01;
         assert!(super::already_on_target(c, 1.0, -23.0 + inside));
         assert!(super::already_on_target(c, 1.0, -23.0 - inside));
         assert!(!super::already_on_target(c, 1.0, -23.0 + outside));
         assert!(!super::already_on_target(c, 1.0, -23.0 - outside));
     }
 
-    // The band is PINNED at the user-decided 0.1, not at the scene lane's 0.3. This is the
-    // only offline check that can fail on a silent re-widening: the SimDevice's residual for
-    // the boosted fixture is float-round-trip small (~1e-7 LU), so E8 passes at either value
-    // and cannot tell them apart. A 0.2 LU shortfall at `presetLevel`'s ceiling is a real,
-    // audible-by-the-user's-standard miss — it must fall through, write and report `clamped`,
-    // never be absorbed as `done` with no re-level affordance (`SummaryPage`'s clamped bucket).
+    // The band is PINNED at ACCEPT_TOL_LU, not at the flatness threshold KNOB_TOL_LU (0.3).
+    // This is the only offline check that can fail on a silent re-widening: the SimDevice's
+    // residual for the boosted fixture is float-round-trip small (~1e-7 LU), so E8 passes at
+    // either value and cannot tell them apart. A 0.28 LU shortfall at `presetLevel`'s ceiling
+    // must fall through, write and report `clamped`, never be absorbed as `done` with no
+    // re-level affordance (`SummaryPage`'s clamped bucket).
     #[test]
     fn a_shortfall_above_the_band_is_not_absorbed_even_though_knob_tol_would_have() {
-        let (_lvl, clamped, _predicted) = super::solve_level(-23.2, -23.0);
+        let (_lvl, clamped, _predicted) = super::solve_level(-23.28, -23.0);
         assert!(
             clamped,
-            "0.2 LU short at the ceiling must still clamp the solve"
+            "0.28 LU short at the ceiling must still clamp the solve"
         );
-        assert!(!super::already_on_target(-23.2, 1.0, -23.0));
+        assert!(!super::already_on_target(-23.28, 1.0, -23.0));
         // The residual straddles the two constants — that IS the pin. If the band were ever
         // widened back to `KNOB_TOL_LU` this shortfall would be absorbed as `done` again.
-        let residual = (-23.0f64 - super::lufs_at_level(-23.2, 1.0)).abs();
+        let residual = (-23.0f64 - super::lufs_at_level(-23.28, 1.0)).abs();
         assert!(
-            residual > super::FS_TOL_LU,
+            residual > super::ACCEPT_TOL_LU,
             "{residual} must exceed the band"
         );
         assert!(
@@ -10227,6 +10737,8 @@ mod tests {
             integrated_lufs: integrated,
             short_term_max_lufs: integrated + 2.0,
             true_peak_dbtp: -1.0,
+            momentary_spread_lu: 6.0,
+            clipped: false,
         }
     }
 
@@ -10785,8 +11297,8 @@ mod tests {
         )
         .expect("solve");
         assert!(
-            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
-            "must land within FS_TOL_LU: best {} LUFS at v={} ({captures} captures)",
+            (r.predicted_lufs - -20.0).abs() <= ACCEPT_TOL_LU,
+            "must land within ACCEPT_TOL_LU: best {} LUFS at v={} ({captures} captures)",
             r.predicted_lufs,
             r.final_value,
         );
@@ -10820,8 +11332,8 @@ mod tests {
         )
         .expect("solve");
         assert!(
-            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
-            "must land within FS_TOL_LU: best {} LUFS at v={} ({captures} captures)",
+            (r.predicted_lufs - -20.0).abs() <= ACCEPT_TOL_LU,
+            "must land within ACCEPT_TOL_LU: best {} LUFS at v={} ({captures} captures)",
             r.predicted_lufs,
             r.final_value,
         );
@@ -10857,8 +11369,8 @@ mod tests {
         )
         .expect("solve");
         assert!(
-            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
-            "must land within FS_TOL_LU: best {} LUFS at v={} ({captures} captures)",
+            (r.predicted_lufs - -20.0).abs() <= ACCEPT_TOL_LU,
+            "must land within ACCEPT_TOL_LU: best {} LUFS at v={} ({captures} captures)",
             r.predicted_lufs,
             r.final_value,
         );
@@ -10932,8 +11444,8 @@ mod tests {
              fallback for a seed 1 this low in the range would be 0.75, never 0.1: {seen:?}"
         );
         assert!(
-            (r.predicted_lufs - -20.0).abs() <= FS_TOL_LU,
-            "must land within FS_TOL_LU: best {} LUFS at v={} ({} captures)",
+            (r.predicted_lufs - -20.0).abs() <= ACCEPT_TOL_LU,
+            "must land within ACCEPT_TOL_LU: best {} LUFS at v={} ({} captures)",
             r.predicted_lufs,
             r.final_value,
             seen.len()
@@ -11337,7 +11849,7 @@ mod tests {
             // Mid-range miss: captures ran out, the knob still has room → re-runnable.
             ("mid-range miss", 0.55, -26.0, (false, true)),
             ("mid-range overshoot", 0.55, -14.0, (false, true)),
-            // On target (within FS_TOL_LU) → neither, even sitting on a bound. 0.05, not
+            // On target (within ACCEPT_TOL_LU) → neither, even sitting on a bound. 0.05, not
             // 0.1 exactly — the exact boundary is float-rounding-sensitive (0.1's f64
             // representation makes `abs(-20.1 - -20.0)` land a hair ABOVE 0.1).
             ("on target", 1.0, -20.05, (false, false)),
@@ -12026,8 +12538,8 @@ mod reordered_run_tests {
     #[test]
     fn the_ceiling_skip_margin_leaves_marginal_rows_to_the_solve() {
         // The margin is wider than the FS lane's acceptance band by construction, so a row
-        // that merely misses `FS_TOL_LU` still gets its solve.
-        assert!(!fs_target_beyond_ceiling(-25.0, -25.0 + FS_TOL_LU));
+        // that merely misses `ACCEPT_TOL_LU` still gets its solve.
+        assert!(!fs_target_beyond_ceiling(-25.0, -25.0 + ACCEPT_TOL_LU));
         assert!(!fs_target_beyond_ceiling(
             -25.0,
             -25.0 + FS_CEILING_SKIP_MARGIN_LU

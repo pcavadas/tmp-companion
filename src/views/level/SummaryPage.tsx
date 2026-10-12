@@ -67,11 +67,18 @@ const PROBLEM: Record<ProblemKey, (it: RunItem) => Problem> = {
     msg: "The knob is already all the way up. A quieter target would let this one match.",
     fix: "Level lower",
   }),
-  unconverged: () => ({
-    short: "off target",
-    msg: "It had room left but ran out of tries. Running it again usually finishes the job.",
-    fix: "Run again",
-  }),
+  unconverged: (it) =>
+    it.unverified
+      ? {
+          short: "not confirmed",
+          msg: "We set it, but the check measurement failed, so we couldn’t confirm it landed. Running it again usually confirms it.",
+          fix: "Run again",
+        }
+      : {
+          short: "off target",
+          msg: "It had room left but ran out of tries. Running it again usually finishes the job.",
+          fix: "Run again",
+        },
   offbranch: (it) => {
     const status = offbranchStatus(it.silenceHint);
     return {

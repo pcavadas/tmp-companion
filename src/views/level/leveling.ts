@@ -595,6 +595,9 @@ export interface RunItem {
    *  reverts it, so a later re-run's default is never shadowed by a stale caption. */
   activeMessage?: string | null;
   outcome?: Outcome;
+  /** The write landed but its check capture failed, so the row's number is a prediction —
+   *  shown as `unconverged` ("run it again") with its own copy. */
+  unverified?: boolean;
   /** WHY a row was skipped — the backend's own per-sound message (the planner's
    *  "no active amp" / a capture error / a refused scene write), shown verbatim.
    *  Null when the skip happened client-side with no message. */

@@ -306,10 +306,12 @@ fn doctor_skip_load(prev: Option<&PrevSound>, list_index: u32, is_scene: bool) -
 
 /// Should a just-captured sound be treated as a silent-inject floor read (mirrors
 /// the leveller's `leveller::floor_suspect` guard, applied to the Doctor's capture
-/// spread instead of a leveling measurement)? `Some` carries the honest error to
-/// surface; `None` means the capture looks live.
-fn floor_error_for(profile_spread_lu: f64, stimulus_spread_lu: f64) -> Option<&'static str> {
-    leveller::floor_suspect(profile_spread_lu, stimulus_spread_lu)
+/// instead of a leveling measurement)? Both arguments are MOMENTARY spreads: the Doctor's
+/// 3 s stimulus is exactly one short-term window, so its short-term spread reads ≈ 0 on a
+/// live capture and a floor alike. `Some` carries the honest error to surface; `None`
+/// means the capture looks live.
+fn floor_error_for(profile_momentary_lu: f64, stimulus_momentary_lu: f64) -> Option<&'static str> {
+    leveller::floor_suspect(profile_momentary_lu, stimulus_momentary_lu)
         .then_some(leveller::FLOOR_READ_ERR)
 }
 
@@ -681,7 +683,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                     // `stimulus_samples` all see the same 3 s stimulus.
                     read_stimulus_calibrated(path, cal).map(|s| {
                         let s = leveller::doctor_stim_slice(s);
-                        let spread = leveller::stimulus_spread_lu(&s);
+                        let spread = leveller::stimulus_spread(&s).momentary_lu;
                         &*e.insert((s, spread))
                     })
                 }
@@ -793,7 +795,7 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
             let result = stim.and_then(|(stim, stim_spread)| {
                 let stim_spread = *stim_spread;
                 capture_profile(skip_load, stim).and_then(|(profile, cov)| {
-                    match floor_error_for(profile.spread_lu, stim_spread) {
+                    match floor_error_for(profile.momentary_spread_lu, stim_spread) {
                         None => Ok((profile, cov)),
                         Some(err) => {
                             // A silent-inject floor read (the leveller's guard, applied
@@ -802,12 +804,12 @@ pub(crate) async fn doctor_check<R: tauri::Runtime>(
                             // preset recall (skip_load=false) — a floor read means the
                             // inject failed, not that the cached working copy is dirty.
                             log::warn!(
-                                "doctor_check: floor-suspect capture for {} (spread {:.2} LU ≤ stimulus {:.2} LU) — retrying once",
-                                item.key, profile.spread_lu, stim_spread
+                                "doctor_check: floor-suspect capture for {} (momentary spread {:.2} LU, stimulus {:.2} LU) — retrying once",
+                                item.key, profile.momentary_spread_lu, stim_spread
                             );
                             crate::settle_or_cancel(leveller::FLOOR_RETRY_GAP_MS)?;
                             let (profile, cov) = capture_profile(false, stim)?;
-                            match floor_error_for(profile.spread_lu, stim_spread) {
+                            match floor_error_for(profile.momentary_spread_lu, stim_spread) {
                                 None => Ok((profile, cov)),
                                 Some(_) => Err(err.to_string()),
                             }

@@ -21,6 +21,55 @@
 use ebur128::{EbuR128, Mode};
 use serde::Serialize;
 
+/// Momentary-loudness values below this are treated as this (BS.1770's absolute gate):
+/// a silent window reads `-inf`, which would make every percentile meaningless.
+const MOMENTARY_FLOOR_LUFS: f64 = -70.0;
+/// Hops skipped before the momentary statistic counts: the 400 ms window is still
+/// filling with the meter's initial zeros for the first 4 hops of 100 ms.
+const MOMENTARY_WARMUP_HOPS: usize = 4;
+
+/// P95 − P10 of a set of momentary-loudness readings (LU). Percentiles rather than
+/// max − min, so a few windows of pre-roll latency or a stray click don't decide it.
+/// Fewer than 2 readings → 0.0 (no evidence of dynamics).
+pub(crate) fn momentary_spread(mut values: Vec<f64>) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    values.sort_by(f64::total_cmp);
+    let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize];
+    at(0.95) - at(0.10)
+}
+
+/// True clipping flat-tops the waveform — a RUN of consecutive samples pinned at
+/// full scale. A clean guitar pick attack is a sub-millisecond transient (one or
+/// two samples at the apex) that a device output meter's ballistics smooth away
+/// but a raw sample-peak catches, so a bare `peak >= 0.99` gate over-fires on hot
+/// transients (the USB taps are bit-exact — no analog headroom to lose, so only
+/// genuine flat-topping corrupts a take). Flag a capture as clipped only when
+/// `MIN_CLIP_RUN` consecutive samples of ONE channel sit at/above `CLIP_LEVEL`.
+pub(crate) const CLIP_LEVEL: f32 = 0.999;
+pub(crate) const MIN_CLIP_RUN: usize = 4; // ≈83 µs @ 48 kHz — impossible for a clean transient apex
+
+/// [`CLIP_LEVEL`]/[`MIN_CLIP_RUN`] over an interleaved buffer of `channels`
+/// channels, one run counter per channel (adjacent interleaved samples belong to
+/// different channels, so a single counter would halve the run length).
+pub(crate) fn is_clipped(interleaved: &[f32], channels: usize) -> bool {
+    let channels = channels.max(1);
+    let mut runs = vec![0usize; channels];
+    for (i, &x) in interleaved.iter().enumerate() {
+        let run = &mut runs[i % channels];
+        if x.abs() >= CLIP_LEVEL {
+            *run += 1;
+            if *run >= MIN_CLIP_RUN {
+                return true;
+            }
+        } else {
+            *run = 0;
+        }
+    }
+    false
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct Loudness {
     /// Gated integrated loudness (the leveling target metric).
@@ -30,6 +79,14 @@ pub struct Loudness {
     /// Maximum true peak (dBTP, oversampled) over the clip — 20·log10 of the linear
     /// peak `ebur128` reports. A zero/silent peak floors to −120.0 rather than −inf.
     pub true_peak_dbtp: f64,
+    /// P95 − P10 of the 400 ms MOMENTARY loudness, sampled every 100 ms hop (LU) — see
+    /// [`momentary_spread`]. The floor-read statistic: a plucked stimulus through a
+    /// chain swings several LU at this window, a stationary output floor ≈ 0, where the
+    /// 3 s short-term window averages ~5 plucks and barely moves on either.
+    pub momentary_spread_lu: f64,
+    /// Any channel flat-topped at full scale ([`is_clipped`]): the integrated reading
+    /// then understates the sound, so a level solved from it lands too loud.
+    pub clipped: bool,
 }
 
 impl Loudness {
@@ -72,18 +129,34 @@ fn measure(interleaved: &[f32], sample_rate: u32, channels: u32) -> Result<Loudn
         return Err("empty audio buffer".into());
     }
     let interleaved = &interleaved[..usable_len];
-    let mut meter = EbuR128::new(channels, sample_rate, Mode::I | Mode::S | Mode::TRUE_PEAK)
-        .map_err(|e| format!("ebur128 init: {e:?}"))?;
+    let mut meter = EbuR128::new(
+        channels,
+        sample_rate,
+        Mode::I | Mode::S | Mode::M | Mode::TRUE_PEAK,
+    )
+    .map_err(|e| format!("ebur128 init: {e:?}"))?;
 
     let hop = (sample_rate as usize / 10).max(1) * channels as usize; // 100 ms of FRAMES
     let mut st_max = f64::NEG_INFINITY;
-    for chunk in interleaved.chunks(hop) {
+    let mut momentary = Vec::with_capacity(interleaved.len() / hop + 1);
+    for (i, chunk) in interleaved.chunks(hop).enumerate() {
         meter
             .add_frames_f32(chunk)
             .map_err(|e| format!("ebur128 add_frames: {e:?}"))?;
         if let Ok(st) = meter.loudness_shortterm() {
             if st.is_finite() && st > st_max {
                 st_max = st;
+            }
+        }
+        // Only whole hops: a short trailing chunk would weigh a partly-stale window.
+        if i >= MOMENTARY_WARMUP_HOPS && chunk.len() == hop {
+            if let Ok(m) = meter.loudness_momentary() {
+                // NaN/-inf (silence) → the absolute gate, so silence reads as "flat".
+                momentary.push(if m.is_nan() {
+                    MOMENTARY_FLOOR_LUFS
+                } else {
+                    m.max(MOMENTARY_FLOOR_LUFS)
+                });
             }
         }
     }
@@ -114,6 +187,8 @@ fn measure(interleaved: &[f32], sample_rate: u32, channels: u32) -> Result<Loudn
             integrated
         },
         true_peak_dbtp,
+        momentary_spread_lu: momentary_spread(momentary),
+        clipped: is_clipped(interleaved, channels as usize),
     })
 }
 

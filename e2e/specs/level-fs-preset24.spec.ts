@@ -33,7 +33,7 @@ import {
 //
 // This file is the offline, deterministic, sim-layer proof that the WHOLE stack — the base
 // BOOST (presetLevel + fader, one save), the footswitch batch right after it, and the
-// FS_TOL_LU=0.1 tightened acceptance — lands base AND all 4 pedals within tolerance of their
+// ACCEPT_TOL_LU=0.25 acceptance — lands base AND all 4 pedals within tolerance of their
 // targets on the FIRST run, no clamp, both as REPORTED by the solve and as RE-MEASURED from
 // the saved (persisted) state afterward, with BOTH halves of the boosted pair (presetLevel
 // and the Twin's fader) surviving the footswitch batch's own load → save.
@@ -115,9 +115,9 @@ interface FootswitchLevelResult {
 }
 
 const T = LEVEL_T;
-// Matches the leveller's own tightened FS lane acceptance (`FS_TOL_LU = 0.1`) — the sim's
+// Matches the leveller's own acceptance band (`ACCEPT_TOL_LU = 0.25`) — the sim's
 // leveled-param curve is exact, so there is no HW-noise margin to add on top.
-const TOL = 0.1;
+const TOL = 0.25;
 
 const measureSound = (
   page: Page,

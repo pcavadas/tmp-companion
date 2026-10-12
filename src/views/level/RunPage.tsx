@@ -77,7 +77,9 @@ export function RunPage({
   const resultText = (it: RunItem): string => {
     if (it.outcome === "clamped") return `clamped · ${fmtLufs(it.value)}`;
     if (it.outcome === "unconverged")
-      return `off target · ${fmtLufs(it.value)}`;
+      return it.unverified
+        ? `not confirmed · ${fmtLufs(it.value)}`
+        : `off target · ${fmtLufs(it.value)}`;
     if (it.outcome === "offbranch") return offbranchStatus(it.silenceHint);
     if (it.outcome === "skipped")
       return `skipped · ${it.skipReason ?? "read failed"}`;

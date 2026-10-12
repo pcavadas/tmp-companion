@@ -674,6 +674,11 @@ struct SimState {
     /// e2e-only — its only reader is the offline capture model.
     #[cfg(feature = "e2e")]
     fail_capture_slot: Option<u32>,
+    /// Verify-fault injection: the next `n` captures taken while the leveller has WRITTEN an
+    /// `outputLevel` for the scene under measurement (a post-write verify, never an as-is
+    /// read) return silence. e2e-only, like `fail_capture_slot`.
+    #[cfg(feature = "e2e")]
+    fail_verify_captures: u32,
     /// Per-slot saved doc store (module header). Absent entry = never touched (read OR saved) this
     /// run. Seeded lazily from the slot's own scenario JSON (or 1.0 for a non-scenario
     /// slot) on first touch by EITHER `record_save` or the field-3/field-8 echo readers
@@ -792,6 +797,8 @@ impl Default for SimState {
             reject_next_load: false,
             #[cfg(feature = "e2e")]
             fail_capture_slot: None,
+            #[cfg(feature = "e2e")]
+            fail_verify_captures: 0,
             #[cfg(feature = "e2e")]
             saved_levels: HashMap::new(),
             #[cfg(feature = "e2e")]
@@ -2527,6 +2534,16 @@ pub fn arm_capture_fault(slot: u32) {
     }
 }
 
+/// Arm the currently-installed fake so its next `n` post-write VERIFY captures (a capture
+/// with a leveller-written `outputLevel` for the scene under measurement) return silence.
+/// No-op when no fake is installed.
+#[cfg(all(test, feature = "e2e"))]
+pub fn arm_verify_capture_faults(n: u32) {
+    if let Some(dev) = LIVE.lock().expect("sim live lock").as_ref() {
+        dev.state.lock().expect("sim lock").fail_verify_captures = n;
+    }
+}
+
 /// Arm the currently-installed fake to hold every capture for `ms` (the
 /// `POST /sim/capture-delay` bridge endpoint). No-op online; `/sim/reset` installs a
 /// fresh fake with the hold back at 0.
@@ -2570,6 +2587,10 @@ impl SimDevice {
         }
         // Re-amp must be engaged for the device to route a USB return.
         if !st.reamp_on {
+            return silent_capture(stimulus.len(), rate);
+        }
+        if st.fail_verify_captures > 0 && st.scene_output_level().is_some() {
+            st.fail_verify_captures -= 1;
             return silent_capture(stimulus.len(), rate);
         }
         match model_lufs(&mut st, sidecar(), stored_levels()) {
@@ -2895,7 +2916,7 @@ pub(crate) fn wet_mix_gain_db(v: f64, authored: f64) -> f64 {
 /// level/volume knob: silent (no signal) at or below the noise floor, a steep ~42 LU
 /// cliff, then a heavily compressed plateau — see notes/leveling.md §"Saturated-amp
 /// response shape (preset 024…)". Pure and EXACT (no HW noise, no stimulus-scaling
-/// slack) so the FS solver's tightened `FS_TOL_LU` = 0.1 acceptance is meaningful
+/// slack) so the FS solver's `ACCEPT_TOL_LU` = 0.25 acceptance is meaningful
 /// offline. `None` below the floor is genuine silence (the leveller's no-signal path),
 /// matching the HW note that the bracket-expansion probe down there reads NO_SIGNAL, not
 /// merely "very quiet".

@@ -149,8 +149,12 @@ export interface LevelResult {
   predicted_lufs: number;
   clamped: boolean;
   saved: boolean;
-  /** Independent re-measure at final_level (null if verify skipped). */
+  /** Independent re-measure at final_level (null if verify skipped or failed). */
   verify_lufs: number | null;
+  /** Whether the reported loudness was measured after the write, predicted, or a planned
+   * verify FAILED (mirrors `leveller::Verification`). A `verify_failed` row's number is a
+   * prediction and must not read as on target. */
+  verification: Verification;
   /** Capture iterations used (1 = one-shot presetLevel; 2..N = closed-loop block). */
   iterations: number;
   /** Short-term-max − integrated of the measure capture (LU). Large (≳6 LU) = a
@@ -210,6 +214,9 @@ export interface SoundId {
   kind: "scene";
   sceneSlot: number;
 }
+
+/** How a leveled row's loudness is known (mirrors `leveller::Verification`). */
+export type Verification = "predicted" | "verified" | "verify_failed";
 
 /** Why a sound could not be put on its target (mirrors `headroom_trade::ClampKind`,
  * snake_case tokens). Distinct per cause so the UI can tell them apart without

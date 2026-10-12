@@ -598,7 +598,7 @@ test.describe("Level — footswitch opted-in write path (raw invoke, command-lev
   // longer lives here. `cb7cb60` gave the footswitch Bake lane the same re-run idempotency
   // skip the Assign lane already had: before solving, it probes the block's OWN stored
   // param value (the bake anchor — for a Bake that IS the engaged value), and when that
-  // already renders the target within `FS_TOL_LU` it writes and saves NOTHING (`saved:
+  // already renders the target within `ACCEPT_TOL_LU` it writes and saves NOTHING (`saved:
   // false`, `final_value` = the stored value verbatim). 400's `scenario-loudness.json`
   // entry declares `leveledParams` for `ACD_TMSpring63.mix` and NOTHING ELSE, so the
   // offline model is FLAT in `ACD_Boost.gain` — `model_lufs` returns the same C regardless

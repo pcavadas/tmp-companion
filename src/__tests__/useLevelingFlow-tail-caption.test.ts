@@ -170,6 +170,7 @@ describe("useLevelingFlow — batch tail caption (issue 6b)", () => {
           clamped: false,
           saved: true,
           verify_lufs: null,
+          verification: "predicted",
           iterations: 1,
           dynamic_spread_lu: null,
           clamp_reason: null,

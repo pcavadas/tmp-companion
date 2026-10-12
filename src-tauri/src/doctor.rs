@@ -353,6 +353,11 @@ pub struct SoundProfile {
     /// Short-term-max − integrated LUFS (see `lufs::Loudness::spread_lu`):
     /// gain-invariant dynamics spread of the capture.
     pub spread_lu: f64,
+    /// P95 − P10 of the capture's 400 ms momentary loudness (see
+    /// `lufs::Loudness::momentary_spread_lu`) — the floor-read statistic. The 3 s
+    /// short-term spread can't tell a floor from a live capture of the 3 s Doctor
+    /// stimulus (both read ≈ 0).
+    pub momentary_spread_lu: f64,
     /// Post-stimulus tail RMS vs body RMS, in dB (see [`tail_energy_ratio`]).
     pub tail_ratio_db: f64,
     /// Spectral flatness (SFM, `psd::Psd::flatness`) of the top octave
@@ -448,6 +453,7 @@ impl SoundProfile {
             bands,
             integrated_lufs,
             spread_lu: loudness.spread_lu(),
+            momentary_spread_lu: loudness.momentary_spread_lu,
             tail_ratio_db: tail_energy_ratio(samples, rate, body_len, body_start, tail_ms),
             air_flatness: body_psd.flatness(6000.0, 12000.0),
             // Localization runs on the TRANSFER (capture − stimulus, dB) so
@@ -565,6 +571,7 @@ pub(crate) fn showcase_profile(list_index: u32) -> SoundProfile {
         integrated_lufs: -18.0,
         // Steady by construction — the showcase never features the spiky card.
         spread_lu: 0.0,
+        momentary_spread_lu: 0.0,
         tail_ratio_db: tail,
         air_flatness: 0.5,
         peaks: Vec::new(),
@@ -3166,6 +3173,7 @@ mod cut_through_tests {
             bands,
             integrated_lufs: -20.0,
             spread_lu: 0.0,
+            momentary_spread_lu: 0.0,
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
@@ -3182,6 +3190,7 @@ mod cut_through_tests {
             bands: vec![1.0, 1.0, 1.0, 2.0, 2.0, 0.1],
             integrated_lufs: -20.0,
             spread_lu: 0.0,
+            momentary_spread_lu: 0.0,
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
@@ -3289,6 +3298,7 @@ mod tests {
             bands: bdb.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
             integrated_lufs: -20.0,
             spread_lu: 0.0,
+            momentary_spread_lu: 0.0,
             tail_ratio_db: -40.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
@@ -3364,6 +3374,7 @@ mod tests {
             bands: bdb.iter().map(|d| 10f64.powf(d / 10.0)).collect(),
             integrated_lufs: -20.0,
             spread_lu: 0.0,
+            momentary_spread_lu: 0.0,
             tail_ratio_db: -80.0,
             air_flatness: 0.5,
             peaks: Vec::new(),
@@ -5083,6 +5094,7 @@ mod tests {
             bands,
             integrated_lufs: -20.0,
             spread_lu: 0.0,
+            momentary_spread_lu: 0.0,
             tail_ratio_db: -40.0,
             air_flatness: 0.5,
             peaks: Vec::new(),

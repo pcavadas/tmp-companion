@@ -1564,7 +1564,12 @@ fn outcome_to_level_result(
         predicted_lufs: lufs,
         clamped: o.clamped,
         saved: save,
-        verify_lufs: o.final_lufs,
+        // Only a MEASURED loudness is a verify reading — a failed verify's prediction must
+        // not reach the wire as one (`predicted_lufs` above already carries it).
+        verify_lufs: o
+            .final_lufs
+            .filter(|_| o.verification == leveller::Verification::Verified),
+        verification: o.verification,
         iterations: o.windows.max(o.writes),
         dynamic_spread_lu: o.dynamic_spread_lu,
         // Forwarded verbatim from the runner's outcome — the taxonomy is decided once, in
