@@ -259,4 +259,47 @@ describe("a footswitch row's scene context comes from data (#286)", () => {
       sceneContext: 2,
     });
   });
+
+  it("holds Start on a failed read until a scene is chosen", async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "list_footswitch_scene_contexts"
+        ? Promise.reject(new Error("Device not connected"))
+        : Promise.resolve([]),
+    );
+    const withPicker: SetupOption = {
+      ...fsOption(),
+      levelParams: [
+        {
+          group_id: "G1",
+          node_id: "ACD_Boost",
+          fender_id: "ACD_Boost",
+          parameter_id: "gain",
+          current: 0.5,
+          class: "level_linear",
+        },
+      ],
+    };
+    const onStart = renderSetup([withPicker], false);
+    const user = userEvent.setup();
+    await user.click(screen.getByText(/I.ve backed up with Pro Control/i));
+    const blocked = await screen.findByRole("button", {
+      name: /choose a footswitch scene/i,
+    });
+    expect(blocked).toBeDisabled();
+    expect(screen.getByText(/Couldn.t read FS3.s scenes/)).toBeInTheDocument();
+
+    // An explicit pick (even Base) is the user's answer, so Start opens.
+    const picker = document.querySelector<HTMLElement>('[data-pick="fsctx:2"]');
+    if (!picker) throw new Error("scene picker not rendered");
+    await user.click(picker);
+    const crunch = document.querySelector<HTMLElement>(
+      '[data-pick-option="fsctx:2:1"]',
+    );
+    if (!crunch) throw new Error("scene option not rendered");
+    await user.click(crunch);
+    await user.click(screen.getByRole("button", { name: /start.*1 sound/i }));
+    expect(onStart.mock.calls[0][0][0].option.footswitch).toMatchObject({
+      sceneContext: 1,
+    });
+  });
 });

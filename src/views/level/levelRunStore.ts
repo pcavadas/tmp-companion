@@ -247,6 +247,12 @@ export function getLevelFlow(): LevelFlowState {
 
 // ── run bookkeeping (module-scoped for the same reason as the state) ────────────────
 let running = false;
+// True from the moment `running` drops until the run's final publish — the end-of-run
+// list refresh sits in between, and a detach during it must not let the Summary land.
+let finalizing = false;
+// A device detach during a run or its finalization: the run's rows are keyed by list
+// index, which a reconnect can re-map, so the flow resets once the run has wound down.
+let resetOnDetach = false;
 let cancelRequested = false;
 // Bumped by `resetLevelFlow` so a run still awaiting a command from before the reset can
 // never publish into the fresh state.
@@ -316,17 +322,36 @@ export function requestStop(): void {
   set({ run: { ...state.run, stopping: true } });
 }
 
-/** Test isolation only: back to a closed wizard with no run. */
-export function resetLevelFlow(): void {
+/** Back to a closed wizard with no run, keeping the view's bindings. */
+function clearFlow(): void {
   generation++;
   running = false;
+  finalizing = false;
+  resetOnDetach = false;
   cancelRequested = false;
   didRun = false;
   ranKeys = new Set();
-  rebalance = false;
-  boundRefresh = null;
   state = INITIAL;
   for (const cb of subs) cb();
+}
+
+/** The device went away. Every row and Summary action is keyed by list index, and the
+ *  next connection can map a different preset there (a Pro Control reorder while
+ *  unplugged), so a Re-level from the old Summary could write the wrong preset. Close
+ *  the flow now when idle; a run in flight (or finishing) resets once it has ended. */
+export function onDeviceDetached(): void {
+  if (running || finalizing) {
+    resetOnDetach = true;
+    return;
+  }
+  clearFlow();
+}
+
+/** Test isolation only: back to a closed wizard with no run. */
+export function resetLevelFlow(): void {
+  clearFlow();
+  rebalance = false;
+  boundRefresh = null;
 }
 
 /** What the engine needs from the view, captured when the run starts. */
@@ -811,10 +836,14 @@ export async function runLeveling(
     });
     if (gen === generation) {
       running = false;
+      finalizing = true;
       cancelRequested = false;
       set({ liveLufs: null, liveTrace: [] });
       await (boundRefresh ?? env.refresh)(); // non-throwing: runLoad catches into the error phase
-      if (gen === generation) {
+      if (gen === generation && resetOnDetach) {
+        clearFlow();
+      } else if (gen === generation) {
+        finalizing = false;
         set({
           run: {
             items: [...work],

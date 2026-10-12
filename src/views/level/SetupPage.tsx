@@ -214,6 +214,7 @@ function FsRowControls({
   onHandleChange,
   sceneContext,
   ctxState,
+  needsChoice,
   onOpenSceneContext,
   onSceneContextChange,
 }: {
@@ -224,6 +225,8 @@ function FsRowControls({
   onHandleChange: (h: BlockLevelHandle | null) => void;
   sceneContext: number | null;
   ctxState: FsContextFetchState;
+  /** The suggested scene could not be read and none was chosen: Start waits on a pick. */
+  needsChoice: boolean;
   onOpenSceneContext: () => void;
   onSceneContextChange: (v: number | null) => void;
 }) {
@@ -279,6 +282,11 @@ function FsRowControls({
         muted={sceneContext == null}
         tid={`fsctx:${String(switchIndex)}`}
       />
+      {needsChoice && (
+        <PickWarnNote>
+          {`Couldn’t read FS${String(switchIndex + 1)}’s scenes — choose one`}
+        </PickWarnNote>
+      )}
       {nonEnabling && (
         <PickWarnNote>
           FS{String(switchIndex + 1)} doesn’t turn on in that scene
@@ -546,15 +554,24 @@ export function SetupPage({
     return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
   };
 
-  // A footswitch row whose default context is still being read. Start waits for it, so
-  // the run never measures a switch in base just because the read hadn't landed yet.
+  // A footswitch row with no scene context the user chose, and whose suggested one is
+  // still being read or could not be read. Start waits for the read, so the run never
+  // measures a switch in base just because it hadn't landed yet; a FAILED read (no
+  // retry within this mount, see `useLazySlotCache`) needs an explicit pick instead.
+  const fsContextState = (
+    o: SetupOption,
+  ): FsContextFetchState["status"] | null =>
+    o.footswitch == null || rows[o.key]?.sceneContext !== undefined
+      ? null
+      : contextFor(o.slot, o.footswitch.switchIndex).status;
   const fsContextPending = options.some((o) => {
-    if (o.footswitch == null || rows[o.key]?.sceneContext !== undefined) {
-      return false;
-    }
-    const st = contextFor(o.slot, o.footswitch.switchIndex).status;
+    const st = fsContextState(o);
     return st === "unfetched" || st === "loading";
   });
+  // Only a row that renders the scene picker can take that pick.
+  const fsContextMissing = options.some(
+    (o) => fsContextState(o) === "error" && (o.levelParams ?? []).length > 0,
+  );
 
   // The bulk row's current value — always written to EVERY row (no ticking; what
   // gets leveled was already chosen on the preset list). Seeded with the rows' shared
@@ -694,14 +711,19 @@ export function SetupPage({
             small
             icon="gauge"
             disabled={
-              total === 0 || (requireBackup && !backedUp) || fsContextPending
+              total === 0 ||
+              (requireBackup && !backedUp) ||
+              fsContextPending ||
+              fsContextMissing
             }
             onClick={start}
             style={{ height: 32, padding: `0 ${String(t.space8)}px` }}
           >
             {fsContextPending
               ? "Reading footswitches…"
-              : `Start — ${String(total)} sound${total === 1 ? "" : "s"}`}
+              : fsContextMissing
+                ? "Choose a footswitch scene"
+                : `Start — ${String(total)} sound${total === 1 ? "" : "s"}`}
           </Button>
         </>
       }
@@ -881,6 +903,7 @@ export function SetupPage({
                             : (fsSuggestedFor(o) ?? fsw.sceneContext)
                         }
                         ctxState={contextFor(o.slot, fsw.switchIndex)}
+                        needsChoice={fsContextState(o) === "error"}
                         onOpenSceneContext={() => {
                           fetchFsContextFor(o.slot);
                         }}

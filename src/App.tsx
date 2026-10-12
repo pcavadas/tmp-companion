@@ -43,6 +43,7 @@ import { connectDevice, currentGraph, isTauri } from "./lib/invoke";
 import { useUpdater } from "./lib/useUpdater";
 import { UpdateOverlay } from "./ui/UpdateOverlay";
 import { ensureLibraryScan, resetLibraryScan } from "./views/level/libraryScan";
+import { onDeviceDetached as resetLevelOnDetach } from "./views/level/levelRunStore";
 import { startScanAfterGraph } from "./lib/scheduleLibraryScan";
 import type { ActiveGraph } from "./lib/types";
 import { actionableError } from "./lib/connectError";
@@ -182,6 +183,7 @@ function AppShell() {
         setInitialGraph(null);
         setConnectError(null);
         resetLibraryScan(); // next connection scans fresh
+        resetLevelOnDetach(); // a reconnect can re-map the list indexes a run keyed on
       }),
       listen("tmp://device-attached", () => {
         // Fresh attach — try connecting immediately instead of waiting for the

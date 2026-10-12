@@ -9,6 +9,10 @@
 // #285: the scene lane's fallback `listLevelBlocks` read sat outside any try, so a throw
 // left the wizard on "Saving the last one…" forever with the run still marked running.
 // It now skips that group with the error as the row's reason, and the run ends.
+//
+// Because the flow now outlives the view, a device detach closes it: its rows are keyed by
+// list index, which the next connection can re-map, so a stale Summary's Re-level could
+// write the wrong preset. A run in flight resets once it has wound down.
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,7 +38,11 @@ import {
   useLevelingFlow,
   type UseLevelingFlowDeps,
 } from "../views/level/useLevelingFlow";
-import { isLevelRunning, resetLevelFlow } from "../views/level/levelRunStore";
+import {
+  isLevelRunning,
+  onDeviceDetached,
+  resetLevelFlow,
+} from "../views/level/levelRunStore";
 
 const deps: UseLevelingFlowDeps = {
   rows: [{ slot: 0, name: "Plexi", empty: false }],
@@ -200,5 +208,61 @@ describe("a throwing live block read ends the run (#285)", () => {
     await waitFor(() => {
       expect(h.levelPreset).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("a device detach closes the flow", () => {
+  it("closes an idle Summary at once", async () => {
+    h.levelPreset.mockResolvedValue(leveled);
+    const { result } = renderHook(() => useLevelingFlow(deps));
+    act(() => {
+      result.current.onSetupStart(choices([option("base")]));
+    });
+    await waitFor(() => {
+      expect(result.current.run.done).toBe(true);
+    });
+    act(() => {
+      result.current.onRunComplete();
+    });
+    expect(result.current.stage).toBe("summary");
+
+    act(() => {
+      onDeviceDetached();
+    });
+    expect(result.current.stage).toBe("closed");
+    expect(result.current.run.items).toHaveLength(0);
+  });
+
+  it("lets a run in flight end, then closes instead of showing its Summary", async () => {
+    let finish: (r: LevelResult) => void = () => undefined;
+    h.levelPreset.mockImplementation(
+      () =>
+        new Promise<LevelResult>((res) => {
+          finish = res;
+        }),
+    );
+    const { result } = renderHook(() => useLevelingFlow(deps));
+    act(() => {
+      result.current.onSetupStart(choices([option("base")]));
+    });
+    await waitFor(() => {
+      expect(h.levelPreset).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      onDeviceDetached();
+    });
+    // The run is not torn down under the in-flight command.
+    expect(result.current.stage).toBe("run");
+    expect(isLevelRunning()).toBe(true);
+
+    act(() => {
+      finish(leveled);
+    });
+    await waitFor(() => {
+      expect(result.current.stage).toBe("closed");
+    });
+    expect(result.current.run.done).toBe(false);
+    expect(isLevelRunning()).toBe(false);
   });
 });
