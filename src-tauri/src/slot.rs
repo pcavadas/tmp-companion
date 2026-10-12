@@ -181,7 +181,6 @@ where
 {
     s.split(',')
         .map(str::trim)
-        .filter(|x| !x.is_empty())
         .map(|x| x.parse::<T>().map_err(|e| format!("{x:?}: {e}")))
         .collect()
 }
@@ -227,6 +226,9 @@ mod tests {
         assert_eq!(ok.iter().map(|s| s.get()).collect::<Vec<_>>(), [3, 4, 5]);
         assert!(parse_slot_list::<DeviceSlot>("3,abc").is_err());
         assert!(parse_slot_list::<DeviceSlot>("3,0").is_err());
+        for bad in ["3,,4", "3,", ""] {
+            assert!(parse_slot_list::<DeviceSlot>(bad).is_err(), "{bad:?}");
+        }
         assert_eq!(
             parse_slot_list::<ListIndex>("0,1").unwrap(),
             [ListIndex(0), ListIndex(1)]

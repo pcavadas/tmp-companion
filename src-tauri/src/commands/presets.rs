@@ -415,16 +415,18 @@ pub(crate) async fn delete_preset(
 }
 
 /// Reorder a user preset (`moveUserPreset`). DESTRUCTIVE to slot positions (no
-/// undo). 0-based list indices; `session.move_user_preset` adds the device +1.
+/// undo). 0-based list indices; refused unless both still hold the names the caller
+/// picked (`guarded_move`).
 #[tauri::command]
 pub(crate) async fn move_preset(
     state: State<'_, AppState>,
     from: ListIndex,
+    expect_from: String,
     to: ListIndex,
+    expect_to: String,
 ) -> Result<(), String> {
     with_released_seize(state.session.clone(), move || {
-        let mut s = Session::connect()?;
-        s.move_user_preset(from, to)
+        guarded_move(from, &expect_from, to, &expect_to)
     })
     .await
 }

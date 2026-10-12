@@ -1868,11 +1868,10 @@ pub(crate) fn scan_node_graph(preset: &serde_json::Value) -> NodeGraphScan {
     let mut guitar_roster = Vec::new();
     let mut full_roster = Vec::new();
     crate::audiograph::walk_nodes(preset, |graph, group, node| {
-        if let Some(nid) = node.get("nodeId").and_then(|v| v.as_str()) {
+        if let Some(nid) = node.instance() {
             params.insert(nid.to_string(), node.params().cloned().unwrap_or_default());
         }
-        let fid = node.get("FenderId").and_then(|v| v.as_str());
-        if let (Some(nid), Some(fid)) = (node.instance(), fid) {
+        if let (Some(nid), Some(fid)) = (node.instance(), node.model()) {
             let row = (group.to_string(), nid.to_string(), fid.to_string());
             if graph == "guitarNodes" {
                 guitar_roster.push(row.clone());

@@ -1359,7 +1359,12 @@ fn main() {
     }
 
     if let Some(i) = args.iter().position(|a| a == "--slotread-x") {
-        let slots: Vec<DeviceSlot> = args[i + 1..].iter().map_while(|a| a.parse().ok()).collect();
+        // Every positional token up to the next `--flag` is a slot; any bad one refuses.
+        let count = args[i + 1..]
+            .iter()
+            .take_while(|a| !a.starts_with("--"))
+            .count();
+        let slots: Vec<DeviceSlot> = (0..count).map(|k| slot_at(&args, i + 1 + k)).collect();
         match tmp_companion_lib::probe_slotread_experiments(slots) {
             Ok(report) => {
                 print!("{report}");
