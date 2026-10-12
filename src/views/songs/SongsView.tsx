@@ -212,9 +212,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
 
   // Device ops run one at a time (single USB connection) on a FIFO queue: an op
   // started while another runs waits for it. `apply` runs only on success — a
-  // failed write must NOT leave the UI showing an un-persisted edit.
+  // failed write must NOT leave the UI showing an un-persisted edit. `writes` is false
+  // for a pure read, which changes nothing on the unit.
   const runDeviceOp = useCallback(
-    <T,>(fn: () => Promise<T>, apply: (r: T) => void): Promise<void> => {
+    <T,>(
+      fn: () => Promise<T>,
+      apply: (r: T) => void,
+      writes = true,
+    ): Promise<void> => {
       pendingRef.current += 1;
       setBusy(true);
       const run = async () => {
@@ -223,7 +228,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           // Left the tab while this ran: the unit changed but no view can apply the
           // reply, so make the next visit read live instead of the stale snapshot.
           if (mountedRef.current) apply(r);
-          else forgetLibrarySongs();
+          else if (writes) forgetLibrarySongs();
         } catch (e) {
           if (mountedRef.current) showToast(errMsg(e), "err");
         } finally {
@@ -246,6 +251,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
         (slots) => {
           setMembership((m) => new Map(m).set(slot, slots));
         },
+        false,
       );
     },
     [runDeviceOp],

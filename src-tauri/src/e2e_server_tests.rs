@@ -2135,6 +2135,10 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
             move_setlist_song,
             create_song_full,
             update_song_full,
+            rename_song,
+            set_song_notes,
+            set_song_bpm,
+            add_setlist_song,
             list_setlist_songs,
             read_setlists
         ])
@@ -2190,6 +2194,33 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
     refused(
         "update_song_full",
         serde_json::json!({ "slot": 1, "expectName": "Beta", "name": "X" }),
+    );
+    // The granular commands carry the same guard.
+    refused(
+        "rename_song",
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "name": "X" }),
+    );
+    refused(
+        "set_song_notes",
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "notes": "X" }),
+    );
+    refused(
+        "set_song_bpm",
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "bpm": 120.0 }),
+    );
+    refused(
+        "add_setlist_song",
+        serde_json::json!({
+            "setlistSlot": 2, "expectName": "Set B",
+            "songSlot": 1, "expectSongName": "Alpha"
+        }),
+    );
+    refused(
+        "add_setlist_song",
+        serde_json::json!({
+            "setlistSlot": 2, "expectName": "Set C",
+            "songSlot": 1, "expectSongName": "Beta"
+        }),
     );
     let setlists = invoke(&webview, "read_setlists", serde_json::json!({})).unwrap();
     assert_eq!(

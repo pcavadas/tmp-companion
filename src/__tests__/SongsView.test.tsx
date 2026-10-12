@@ -31,6 +31,7 @@ import type {
 } from "../lib/types";
 import {
   ensureLibraryScan,
+  getLibraryScan,
   resetLibraryScan,
 } from "../views/level/libraryScan";
 
@@ -761,6 +762,28 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
       expect(callsTo("rename_setlist")).toBe(1);
     });
     expect(await screen.findAllByText("Set Z")).not.toHaveLength(0);
+  });
+
+  it("a membership READ that finishes after leaving the tab keeps the cached lists", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "Alpha")],
+      setlists: [{ slot: 1, name: "Set A" }],
+      members: new Map([[1, [1]]]),
+    };
+    const read = gate();
+    fakeUnit(unit, { cmd: "list_setlist_songs", until: read.until });
+    await ensureLibraryScan();
+    const view = renderMgr(true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Set A")); // read held
+    view.unmount();
+    read.open();
+    await waitFor(() => {
+      expect(callsTo("list_setlist_songs")).toBe(1);
+    });
+    await Promise.resolve();
+    // A read changes nothing on the unit, so the seed for the next visit stays.
+    expect(getLibraryScan().setlists).toEqual([{ slot: 1, name: "Set A" }]);
   });
 
   it("#297: deleting a middle setlist keeps each remaining rail row on its own count", async () => {

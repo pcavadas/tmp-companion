@@ -164,16 +164,21 @@ pub(crate) async fn remove_setlist(
 }
 
 /// Add a song (by GLOBAL song slot) to a setlist; returns the setlist's fresh
-/// ordered member song slots (dense — trailing 0s dropped).
+/// member song slots (trailing 0s dropped). Guarded: the setlist still reads
+/// `expect_name` and the song slot still reads `expect_song_name`.
 #[tauri::command]
 pub(crate) async fn add_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
+    expect_name: String,
     song_slot: u32,
+    expect_song_name: String,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
         {
             let mut s = Session::connect()?;
+            guard_setlist_on(&mut s, setlist_slot, &expect_name)?;
+            crate::commands::songs::guard_song_on(&mut s, song_slot, &expect_song_name)?;
             s.add_setlist_song(setlist_slot, song_slot)?;
         }
         read_setlist_songs(setlist_slot)
@@ -261,6 +266,10 @@ pub(crate) async fn add_setlist_songs(
                 expect_song_names.len()
             ));
         }
+        // The guard reads on its own connection and each write opens a fresh one (the
+        // proven per-write shape), so an edit made ON THE UNIT in between could still
+        // shift a song slot. The app's own ops are serialized, so that window is only
+        // the unit's front panel or Pro Control acting mid-command.
         {
             let mut s = Session::connect()?;
             guard_setlist_on(&mut s, setlist_slot, &expect_name)?;

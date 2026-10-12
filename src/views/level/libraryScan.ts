@@ -133,6 +133,12 @@ let inFlight = false;
 // the progress listener (the finally used to crash on a nulled unlistenProgress()).
 let generation = 0;
 let unlistenProgress: UnlistenFn | null = null;
+// Songs-tab edits made BEFORE the scan settles (the Songs tab fell back to a live read
+// and the user edited). The scan's backup may predate them, so they are applied on top
+// of its result when it settles instead of being dropped. Cleared on reset (detach).
+type SongsSeed = Pick<LibraryScan, "songs" | "setlists" | "setlistSongs">;
+let pendingSongs: SongsSeed | null = null;
+let pendingJoinUnknown = false;
 const subs = new Set<() => void>();
 
 function set(next: Partial<LibraryScan>): void {
@@ -244,11 +250,11 @@ export async function ensureLibraryScan(): Promise<void> {
       baseHandlesByIndex: baseHandles,
       sceneOverridesByIndex: sceneOverrides,
       presets,
-      songPresetSlots,
-      songs,
-      setlists,
-      setlistSongs,
+      songPresetSlots: pendingJoinUnknown ? null : songPresetSlots,
+      ...(pendingSongs ?? { songs, setlists, setlistSongs }),
     });
+    pendingSongs = null;
+    pendingJoinUnknown = false;
   } catch {
     // Non-fatal: scene details stay unknown; whole-preset ticks degrade to
     // Base-only. Already on disk via the central invoke-failure logger.
@@ -287,17 +293,22 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
  *  ponytail: a precise old→new slot remap is the upgrade path if the Presets axis needs
  *  to survive edits without a reconnect re-scan. */
 export function invalidateSongPresetJoin(): void {
-  if (!state.ready) return;
+  if (!state.ready) {
+    pendingJoinUnknown = true; // applied when the scan settles
+    return;
+  }
   set({ songPresetSlots: null });
 }
 
 /** Write the Songs tab's post-edit lists back into the snapshot, so a tab switch (which
  *  unmounts the view) repaints what the unit holds now instead of the startup scan.
- *  No-op until the scan has settled — the scan's own result would overwrite it. */
-export function patchLibrarySongs(
-  next: Pick<LibraryScan, "songs" | "setlists" | "setlistSongs">,
-): void {
-  if (!state.ready) return;
+ *  Before the scan settles the lists are held and applied over its result, since its
+ *  backup may predate the edit. */
+export function patchLibrarySongs(next: SongsSeed): void {
+  if (!state.ready) {
+    pendingSongs = next;
+    return;
+  }
   set(next);
 }
 
@@ -305,8 +316,12 @@ export function patchLibrarySongs(
  *  them live: a Songs write that finished after the view unmounted changed the unit,
  *  but there was no view left to patch the snapshot with its reply. */
 export function forgetLibrarySongs(): void {
-  if (!state.ready) return;
-  set({ songs: [], setlists: [], setlistSongs: new Map() });
+  const empty: SongsSeed = { songs: [], setlists: [], setlistSongs: new Map() };
+  if (!state.ready) {
+    pendingSongs = empty;
+    return;
+  }
+  set(empty);
 }
 
 /** Reset on disconnect so the NEXT connection scans fresh. */
@@ -317,5 +332,7 @@ export function resetLibraryScan(): void {
     unlistenProgress = null;
   }
   inFlight = false;
+  pendingSongs = null;
+  pendingJoinUnknown = false;
   set(emptyScan());
 }

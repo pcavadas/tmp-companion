@@ -192,20 +192,42 @@ describe("libraryScan — songs↔presets axis data", () => {
     expect(lib.presets).toHaveLength(2);
   });
 
+  it("Songs edits made before the scan settles are applied over its result", async () => {
+    // The Songs tab fell back to a live read and the user edited before the ~22 s
+    // backup settled: the backup may predate the edit, so the edit must win.
+    let finish: (v: BackupReadResult) => void = () => undefined;
+    vi.mocked(invoke).mockImplementation((cmd: string) =>
+      cmd === "read_library_via_backup"
+        ? new Promise<BackupReadResult>((r) => {
+            finish = r;
+          })
+        : Promise.resolve(null),
+    );
+    const scan = ensureLibraryScan();
+    await vi.waitFor(() => {
+      expect(getLibraryScan().scanning).toBe(true);
+    });
+    patchLibrarySongs({
+      songs: [],
+      setlists: [{ slot: 1, name: "Renamed live" }],
+      setlistSongs: new Map([[1, []]]),
+    });
+    invalidateSongPresetJoin();
+    finish({ ...BACKUP, setlists: [{ slot: 1, name: "Old name" }] });
+    await scan;
+
+    const lib = getLibraryScan();
+    expect(lib.setlists).toEqual([{ slot: 1, name: "Renamed live" }]);
+    expect(lib.songPresetSlots).toBeNull();
+    expect(lib.presets).toHaveLength(2);
+  });
+
   it("patchLibrarySongs replaces the Songs-tab lists once the scan has settled (#295)", async () => {
     vi.mocked(invoke).mockImplementation((cmd: string) =>
       cmd === "read_library_via_backup"
         ? Promise.resolve(BACKUP)
         : Promise.resolve(null),
     );
-    // Before the scan settles a patch is dropped — the scan's own result would win.
-    patchLibrarySongs({
-      songs: [],
-      setlists: [{ slot: 1, name: "Early" }],
-      setlistSongs: new Map(),
-    });
-    expect(getLibraryScan().setlists).toEqual([]);
-
     await ensureLibraryScan();
     patchLibrarySongs({
       songs: [],

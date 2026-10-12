@@ -1,5 +1,5 @@
 import { test, expect } from "../fixtures/test";
-import { clearScenario } from "../fixtures/scenario";
+import { clearScenario, invoke } from "../fixtures/scenario";
 
 // Songs scenario — full CRUD plus BPM, runs identically offline (SimDevice models the song/setlist
 // protocol) and online (real device). Self-cleaning: the song and setlist it creates are
@@ -8,11 +8,31 @@ import { clearScenario } from "../fixtures/scenario";
 const SONG = "E2E Song";
 const SONG2 = "E2E Song Renamed";
 const SETLIST = "E2E Setlist";
+const SETLIST_NEW = "E2E Setlist Renamed";
 // BPM has no setter: it is the tap tempo, which lands in the active song only once its
 // BPM flag is on (fw 1.8.58). A new song has no footswitch and its flag off, so the
 // create exercises the fresh-assign path; the edit, the existing-binding path.
 const BPM = "97";
 const BPM2 = "132";
+
+// Setlists only these specs create — swept in afterEach, so a failed assertion can't
+// strand one on the unit (`clearScenario` doesn't touch setlists). Removed highest slot
+// first, each guarded by its name, so a removal never shifts a slot still to come.
+const TEST_SETLISTS = [SETLIST, SETLIST_NEW];
+async function removeTestSetlists(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  const lists = (await invoke(page, "read_setlists")) as {
+    slot: number;
+    name: string;
+  }[];
+  const ours = lists
+    .filter((l) => TEST_SETLISTS.includes(l.name))
+    .sort((a, b) => b.slot - a.slot);
+  for (const l of ours) {
+    await invoke(page, "remove_setlist", { slot: l.slot, expectName: l.name });
+  }
+}
 
 const songRow = (page: import("@playwright/test").Page, name: string) =>
   page
@@ -23,6 +43,7 @@ const songRow = (page: import("@playwright/test").Page, name: string) =>
 
 test.describe("Songs — full CRUD (self-cleaning)", () => {
   test.afterEach(async ({ page }) => {
+    await removeTestSetlists(page);
     await clearScenario(page); // leaves the unit on preset 001
   });
 
@@ -100,10 +121,10 @@ test.describe("Songs — full CRUD (self-cleaning)", () => {
 // #295: tabs unmount on switch, and the Songs tab repaints from the startup library scan.
 // A setlist renamed here must come back under its NEW name after a tab round-trip — a
 // stale old name sits on a slot that every later setlist write would then address.
-const SETLIST_NEW = "E2E Setlist Renamed";
 
 test.describe("Songs — edits survive a tab switch (self-cleaning)", () => {
   test.afterEach(async ({ page }) => {
+    await removeTestSetlists(page);
     await clearScenario(page);
   });
 
