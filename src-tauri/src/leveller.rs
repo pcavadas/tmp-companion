@@ -12431,6 +12431,22 @@ mod reamp_off_ladder_tests {
         assert!(!crate::session::reamp_engage_unsettled());
     }
 
+    /// A connect that PANICS inside the guard's `Drop`, while the run is already unwinding,
+    /// is caught there: the run's own panic propagates, and the process does not abort.
+    #[test]
+    fn a_panicking_off_inside_drop_is_swallowed() {
+        let sim = SimDevice::new();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard =
+                ReampRunGuard::with_connect("test", || panic!("the OFF's connect panicked"));
+            session(&sim).set_reamp_mode(true).expect("engage");
+            panic!("the run panicked");
+        }));
+        let msg = unwound.expect_err("the run's panic propagates");
+        assert_eq!(msg.downcast_ref::<&str>(), Some(&"the run panicked"));
+        assert!(!crate::session::reamp_engage_unsettled());
+    }
+
     /// An early return BEFORE any engage (a refused read, a bad stimulus) opens nothing.
     #[test]
     fn a_guard_with_no_engage_opens_no_connection() {
