@@ -46,7 +46,7 @@ tar = "0.4"
 rusqlite = { version = "0.40", features = ["bundled"] }
 realfft = "3.5.0"
 # SHA-256 for the trace recorder's stimulus, argument and field-8 hashes (`trace/`).
-sha2 = "0.10"
+sha2 = "0.11"
 
 # macOS-only: IOKit HID (exclusive device seize) is
 # reached by hand-declared `#[link(name = "IOKit", kind = "framework")]` externs
