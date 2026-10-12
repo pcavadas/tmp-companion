@@ -13,6 +13,9 @@
 #
 # Bash 3.2-compatible (.claude/rules/shell-scripts.md); gates.sh runs it under /bin/bash.
 set -euo pipefail
+# A git hook (e.g. pre-push from a linked worktree) exports GIT_DIR and friends; left set,
+# the scratch repo's `git init` / `git config` / `checkout` act on the CALLER's repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 payloads="$script_dir/gate-pr.spec"
