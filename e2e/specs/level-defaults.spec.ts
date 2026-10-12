@@ -253,4 +253,47 @@ test.describe("Level — first-run defaults + physics outcomes (offline, sidecar
 
     await expectReampBalanced(page, reampBase);
   });
+
+  // #283 BUG→GATE: a tab switch mid-run unmounted the Level view and ORPHANED the run — it
+  // kept writing while the returning user saw a closed wizard with no Stop. The run now
+  // lives in a module store: coming back shows the same run page, and its Stop ends it.
+  test("a tab switch mid-run keeps the run page, and its Stop still ends the run", async ({
+    page,
+  }) => {
+    test.skip(
+      await isOnline(page),
+      "offline-only: /sim/capture-delay is a SimDevice injection",
+    );
+    await ensureScenario(page);
+    const reampBase = await reampCounters(page);
+    await armCaptureDelay(page, 60_000);
+    await openLevel(page);
+
+    await selectPresetsForLevel(page, [SCENARIO[1], SCENARIO[2]]);
+    await page.getByRole("button", { name: /Level 2 preset/ }).click();
+    await page.getByText(/I.ve backed up with Pro Control/i).click();
+    await page.getByRole("button", { name: /Start.*\d+ sound/ }).click();
+    await waitForCaptureInFlight(page, reampBase);
+    const stop = page.getByRole("button", { name: "Stop", exact: true });
+    await expect(stop).toBeVisible();
+
+    // Leave mid-run (the Level view unmounts), then come back.
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(stop).toBeHidden();
+    await page.getByRole("button", { name: "Level", exact: true }).click();
+
+    // The SAME run is on screen — its run page and a live Stop, not a closed wizard.
+    await expect(page.getByText(/Listening to sound 1 of/)).toBeVisible();
+    await expect(stop).toBeEnabled();
+    await stop.click();
+    await stop.click(); // confirm
+    await expect(page.getByText("Leveling stopped")).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByText("Stopped — 0 sounds match")).toBeVisible();
+
+    // The run still ended with re-amp OFF, whatever was done with the tabs.
+    await expectReampBalanced(page, reampBase);
+  });
 });

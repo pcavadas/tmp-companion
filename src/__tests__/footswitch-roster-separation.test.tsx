@@ -43,6 +43,7 @@ import {
   resetLibraryScan,
 } from "../views/level/libraryScan";
 import { resetLiveDevice } from "../views/level/useLiveDevice";
+import { resetLevelRun } from "../views/level/useLevelingFlow";
 
 const SOLO_FOOTSWITCH = {
   switch: 4, // → tag FS5
@@ -114,6 +115,7 @@ function freshConnection() {
   listeners.clear();
   resetLibraryScan();
   resetLiveDevice();
+  resetLevelRun();
 }
 
 describe("footswitch roster separation — Level vs. Doctor (BUG 1 regression guard)", () => {

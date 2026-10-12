@@ -63,6 +63,13 @@ pub struct FootswitchInfo {
     /// `level_params`, which stays the safe-default/pre-selection source and keeps its
     /// "never `Other`" contract. Additive on the wire.
     pub all_params: Vec<LevelParamCandidate>,
+    /// The scene context the leveling wizard PRESELECTS for this switch (D3) — the same
+    /// answer as [`FsSceneContext::suggested`], derived from the same document at scan time
+    /// so the wizard's default never waits on (or depends on opening) the lazy
+    /// `list_footswitch_scene_contexts` picker read. PICKER-PRESELECT ONLY, with the same
+    /// caveat as [`scene_contexts_for_switches`]. Additive on the wire.
+    #[serde(default)]
+    pub suggested_scene: Option<u32>,
 }
 
 /// Is `key` on block `fender_id` a leveling candidate? The gate is
@@ -345,6 +352,7 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
             functions,
             level_params,
             all_params,
+            suggested_scene: suggested_scene_for(&enabling_scenes(preset, sw_idx)),
         });
     }
     out
@@ -1147,34 +1155,42 @@ pub fn scene_contexts_for_switches(preset: &Value) -> Vec<FsSceneContext> {
         .get("ftsw")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    let scenes = preset
-        .get("scenes")
-        .and_then(Value::as_array)
-        .map_or(&[][..], |a| a.as_slice());
     (0..switch_count)
         .map(|switch| {
-            let enabling_scenes: Vec<u32> = scenes
-                .iter()
-                .enumerate()
-                .filter(|(_, sc)| {
-                    sc.get("ftswStates")
-                        .and_then(Value::as_array)
-                        .and_then(|st| st.get(switch))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                })
-                .map(|(i, _)| i as u32)
-                .collect();
+            let enabling_scenes = enabling_scenes(preset, switch);
             FsSceneContext {
                 switch: switch as u32,
-                suggested: match enabling_scenes.as_slice() {
-                    [first, ..] => Some(*first),
-                    [] => None,
-                },
+                suggested: suggested_scene_for(&enabling_scenes),
                 enabling_scenes,
             }
         })
         .collect()
+}
+
+/// The 0-based `scenes[]` slots whose `ftswStates` enables switch `switch`, in scene order —
+/// the one derivation behind both [`scene_contexts_for_switches`] and
+/// [`FootswitchInfo::suggested_scene`], so the scan-time preselect and the picker agree.
+fn enabling_scenes(preset: &Value, switch: usize) -> Vec<u32> {
+    preset
+        .get("scenes")
+        .and_then(Value::as_array)
+        .map_or(&[][..], |a| a.as_slice())
+        .iter()
+        .enumerate()
+        .filter(|(_, sc)| {
+            sc.get("ftswStates")
+                .and_then(Value::as_array)
+                .and_then(|st| st.get(switch))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .map(|(i, _)| i as u32)
+        .collect()
+}
+
+/// What to preselect given a switch's enabling scenes: the first one, else base (`None`).
+fn suggested_scene_for(enabling_scenes: &[u32]) -> Option<u32> {
+    enabling_scenes.first().copied()
 }
 
 /// Every `func == "param"` ftsw entry in `p`, in ONE walk: `(total param entries,
@@ -1342,6 +1358,31 @@ mod tests {
         assert_eq!(json["switch"], 0);
         assert_eq!(json["enablingScenes"], serde_json::json!([1]));
         assert_eq!(json["suggested"], 1);
+    }
+
+    // #286: the scan-time `FootswitchInfo` carries the SAME preselect the lazy picker read
+    // answers, so the wizard's default scene context is data, never "was the picker opened".
+    #[test]
+    fn the_scanned_footswitch_carries_the_pickers_suggested_scene() {
+        let mut preset = scene_context_preset();
+        preset["audioGraph"] = serde_json::json!({ "guitarNodes": { "G1": [
+            { "nodeId": "ACD_OD", "FenderId": "ACD_OD", "dspUnitParameters": { "level": 0.7 } }
+        ]}, "micNodes": {} });
+        let on_off = serde_json::json!([{ "func": "on-off",
+            "nodes": [{ "groupId": "G1", "nodeId": "ACD_OD" }], "isActive": false }]);
+        preset["ftsw"] = serde_json::json!([on_off, on_off, on_off]);
+        let infos = enumerate_block_footswitches(&preset["ftsw"], &preset);
+        let picker = scene_contexts_for_switches(&preset);
+        assert_eq!(infos.len(), 3);
+        let scanned: Vec<Option<u32>> = infos.iter().map(|f| f.suggested_scene).collect();
+        assert_eq!(scanned, vec![Some(1), Some(0), None]);
+        let picked: Vec<Option<u32>> = picker.iter().map(|r| r.suggested).collect();
+        assert_eq!(scanned, picked, "scan and picker agree on every switch");
+        let json = serde_json::to_value(&infos[0]).expect("serialize");
+        assert_eq!(
+            json["suggested_scene"], 1,
+            "snake_case wire key, like its siblings"
+        );
     }
 
     // ITEM 4 — THE COMBINED PICKER'S SOURCE. `all_numeric_candidates_for_node` lists EVERY

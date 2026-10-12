@@ -36,6 +36,7 @@ import {
   resetLibraryScan,
 } from "../views/level/libraryScan";
 import { resetLiveDevice } from "../views/level/useLiveDevice";
+import { resetLevelRun } from "../views/level/useLevelingFlow";
 import type { ActiveGraph } from "../lib/types";
 
 function renderView(connected: boolean) {
@@ -108,6 +109,7 @@ describe("LevelView — gating + crash regression", () => {
     listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
+    resetLevelRun();
   });
 
   it("does not load while disconnected, then loads once on the rising edge", async () => {
@@ -141,6 +143,7 @@ describe("LevelView — list + leveling entry", () => {
     listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
+    resetLevelRun();
     mockOnePreset();
   });
 
@@ -398,6 +401,7 @@ describe("LevelView — hero recovers from a graphless connect", () => {
     listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
+    resetLevelRun();
   });
 
   // Repro: the connect-time handshake returned graph=none (App.initialGraph=null),
@@ -461,6 +465,7 @@ describe("LevelView — full leveling wizard e2e", () => {
     listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
+    resetLevelRun();
     localStorage.clear();
   });
 
@@ -968,6 +973,7 @@ describe("LevelView — hero survives a tab-switch remount after a live change",
     listeners.clear();
     resetLibraryScan();
     resetLiveDevice();
+    resetLevelRun();
   });
 
   const heroGraph = (

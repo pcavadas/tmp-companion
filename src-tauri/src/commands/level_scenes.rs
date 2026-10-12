@@ -597,7 +597,6 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     {
         return Err("per-scene leveling needs at least one amp outputLevel candidate".to_string());
     }
-    SCENE_LEVEL_CANCEL.store(false, SeqCst);
     // Playback compensation is one offset for the whole batch; each job's own target
     // gets it added below (the per-scene targets differ, the offset does not).
     let offset = playback_offset_for(&app, topology_id.as_deref());
@@ -610,6 +609,10 @@ pub(crate) async fn level_scenes_apply_batched<R: tauri::Runtime>(
     )?;
     let app_evt = app.clone();
     with_released_seize(state.session.clone(), move || {
+        // Reset this run's cancel flag only once DEVICE_OP_LOCK is HELD (inside this
+        // closure), like `OP_ABORT`: a command QUEUED behind another scene run must never
+        // clear THAT run's Stop.
+        SCENE_LEVEL_CANCEL.store(false, SeqCst);
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;

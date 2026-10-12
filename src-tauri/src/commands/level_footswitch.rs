@@ -46,7 +46,7 @@ pub(crate) struct FootswitchLevelProgressItem {
     message: Option<String>,
 }
 
-static FOOTSWITCH_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
+pub(crate) static FOOTSWITCH_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 pub(crate) fn cancel_footswitch_leveling() {
@@ -216,10 +216,13 @@ pub(crate) async fn level_footswitches_apply<R: tauri::Runtime>(
     )?;
     let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
     let offset = playback_offset_for(&app, topology_id.as_deref());
-    FOOTSWITCH_LEVEL_CANCEL.store(false, SeqCst);
     let app_evt = app.clone();
 
     with_released_seize(state.session.clone(), move || {
+        // Reset this run's cancel flag only once DEVICE_OP_LOCK is HELD (inside this
+        // closure), like `OP_ABORT`: a command QUEUED behind another footswitch run must
+        // never clear THAT run's Stop.
+        FOOTSWITCH_LEVEL_CANCEL.store(false, SeqCst);
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         // THE single field-8 read: it resolves every job AND is the planner's scene-overlay

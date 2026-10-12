@@ -93,8 +93,7 @@ export function DoctorView({ connected, onScan }: DoctorViewProps) {
   const instNameForKey = useCallback(
     (key: string): string | null => {
       const id = instByKey[key];
-      if (!id || id === "none") return null;
-      return instrumentName(store?.profiles, id);
+      return id ? instrumentName(store?.profiles, id) : null;
     },
     [instByKey, store?.profiles],
   );

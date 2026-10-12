@@ -13,7 +13,12 @@ import type { ReactElement } from "react";
 
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { RunPage } from "../views/level/RunPage";
-import type { RunItem } from "../views/level/leveling";
+import {
+  instrumentName,
+  NO_INSTRUMENT,
+  type RunItem,
+} from "../views/level/leveling";
+import type { Profile } from "../lib/types";
 
 const activeItem: RunItem = {
   key: "k0",
@@ -45,7 +50,9 @@ function runPage(
         liveLufs={liveLufs}
         liveTrace={[]}
         tailMessage={tailMessage}
-        instrumentName={() => "Telecaster"}
+        instrumentName={(id) =>
+          instrumentName([{ id: "tele", name: "Telecaster" } as Profile], id)
+        }
         targetLufsByName={() => -26}
         onCancel={vi.fn()}
         onComplete={vi.fn()}
@@ -148,6 +155,22 @@ describe("RunPage grouped rows", () => {
     ).not.toBeInTheDocument();
     // Every row states what it is aiming at.
     expect(screen.getByText("Stage · −26.0")).toBeInTheDocument();
+  });
+
+  // #287 BUG→GATE: picking instrument "None" stored the raw `"none"` sentinel, and the
+  // row label printed it verbatim ("none · Stage · −26.0"). Both no-instrument ids omit
+  // the segment; a real profile still names itself.
+  it.each([NO_INSTRUMENT, ""])(
+    "omits the instrument segment for no instrument (%j)",
+    (instId) => {
+      render(runPage(null, [{ ...activeItem, instId }]));
+      expect(screen.getByText("Stage · −26.0")).toBeInTheDocument();
+      expect(screen.queryByText(/none ·/)).not.toBeInTheDocument();
+    },
+  );
+  it("names a real instrument profile in the row", () => {
+    render(runPage(null, [{ ...activeItem, instId: "tele" }]));
+    expect(screen.getByText("Telecaster · Stage · −26.0")).toBeInTheDocument();
   });
 
   it("prefers a row's targetOverrideLufs over the named target's value", () => {

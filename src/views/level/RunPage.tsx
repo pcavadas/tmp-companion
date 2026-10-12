@@ -41,7 +41,8 @@ export interface RunPageProps {
   liveLufs: number | null;
   liveTrace: number[];
   tailMessage?: string | null;
-  instrumentName: (id: string) => string;
+  /** Display name for an instrument id; null for "no instrument" (segment omitted). */
+  instrumentName: (id: string) => string | null;
   targetLufsByName: (name: string | null) => number;
   onCancel: () => void;
   onComplete: () => void;
@@ -276,6 +277,7 @@ export function RunPage({
               {g.items.map((it) => {
                 const active = it.status === "active";
                 const result = it.status === "result";
+                const inst = instrumentName(it.instId);
                 return (
                   <div
                     key={it.key}
@@ -368,7 +370,7 @@ export function RunPage({
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {it.instId ? `${instrumentName(it.instId)} · ` : ""}
+                      {inst != null ? `${inst} · ` : ""}
                       {targetText(it)}
                     </span>
                     <span

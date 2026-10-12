@@ -429,12 +429,29 @@ export function SetupPage({
     return [...by.values()].sort((a, b) => a.slot - b.slot);
   }, [options]);
 
+  // A re-level row carries the instrument + target it was leveled with (#284); seed from
+  // them, but only while they're still real options — a since-deleted profile/target
+  // falls back to the default, so a Pick never DISPLAYS a fallback it doesn't SUBMIT.
+  const seedInst = (o: SetupOption): string =>
+    o.instId != null && instrumentOptions.some((x) => x.id === o.instId)
+      ? o.instId
+      : defaultInst;
+  const seedTarget = (o: SetupOption): string =>
+    o.targetName != null && targetOptions.some((x) => x.id === o.targetName)
+      ? o.targetName
+      : defaultTarget;
+  // The bulk pickers open on the value EVERY row shares, else the default.
+  const sharedSeed = (seed: (o: SetupOption) => string, fallback: string) => {
+    const values = new Set(options.map(seed));
+    return values.size === 1 ? [...values][0] : fallback;
+  };
+
   const [rows, setRows] = useState<Partial<Record<string, RowChoice>>>(() => {
     const m: Partial<Record<string, RowChoice>> = {};
     options.forEach((o) => {
       m[o.key] = {
-        inst: defaultInst,
-        target: defaultTarget,
+        inst: seedInst(o),
+        target: seedTarget(o),
         handle:
           o.footswitch != null
             ? {
@@ -497,16 +514,14 @@ export function SetupPage({
     return null;
   };
 
-  const fsSuggestedFor = (o: SetupOption): number | null => {
-    if (o.footswitch == null) return null;
-    const st = contextFor(o.slot, o.footswitch.switchIndex);
-    return st.status === "resolved" ? (st.row?.suggested ?? null) : null;
-  };
-
   // The bulk row's current value — always written to EVERY row (no ticking; what
   // gets leveled was already chosen on the preset list).
-  const [bulkInst, setBulkInst] = useState(defaultInst);
-  const [bulkTarget, setBulkTarget] = useState(defaultTarget);
+  const [bulkInst, setBulkInst] = useState(() =>
+    sharedSeed(seedInst, defaultInst),
+  );
+  const [bulkTarget, setBulkTarget] = useState(() =>
+    sharedSeed(seedTarget, defaultTarget),
+  );
   const applyBulkField = (field: "inst" | "target", v: string) => {
     setRows((p) => {
       const n = { ...p };
@@ -542,11 +557,12 @@ export function SetupPage({
                 c.parameter_id === chosenHandle.parameterId,
             )
           : undefined;
-        const suggested = fsSuggestedFor(o);
+        // The default is the row's own DATA (`chosenFrom` seeds the backup scan's
+        // suggested enabling scene) — never whether the picker was opened (#286).
         const sceneContext =
           row?.sceneContext !== undefined
             ? row.sceneContext
-            : (suggested ?? o.footswitch.sceneContext);
+            : o.footswitch.sceneContext;
         const target: FootswitchTarget = candidate
           ? targetFromCandidate(
               o.footswitch.switchIndex,
@@ -816,7 +832,7 @@ export function SetupPage({
                         sceneContext={
                           row?.sceneContext !== undefined
                             ? row.sceneContext
-                            : (fsSuggestedFor(o) ?? fsw.sceneContext)
+                            : fsw.sceneContext
                         }
                         ctxState={contextFor(o.slot, fsw.switchIndex)}
                         onOpenSceneContext={() => {

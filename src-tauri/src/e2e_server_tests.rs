@@ -4562,3 +4562,98 @@ fn side_lane_takes_cancels_and_counters_only() {
         "cancel_doctor_check"
     )));
 }
+
+/// #283 backend half — a leveling command QUEUED behind another device op must not clear that
+/// op's Stop. Each lane's cancel flag used to be reset at command START, before
+/// `DEVICE_OP_LOCK` was taken, so a second command waiting on the lock wiped the in-flight
+/// run's cancel and that run carried on. The reset now happens inside the locked closure
+/// (like `OP_ABORT`). For each lane: a helper thread HOLDS the lock (the in-flight run) and
+/// raises the lane's Stop, the command is invoked and queues on the lock, and the helper
+/// reads the flag while the command waits — it must still be raised.
+#[test]
+fn a_queued_leveling_command_never_clears_the_in_flight_runs_stop() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    let _serial = serial();
+    scenario_env();
+    let sim = crate::sim_device::SimDevice::new();
+    crate::sim_device::set_live(&sim);
+    let sf = sim.clone();
+    crate::session::e2e_transport::set_factory(Box::new(move || Box::new(sf.clone())));
+    let app = tauri::test::mock_builder()
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            level_preset,
+            level_scenes_apply_batched,
+            level_footswitches_apply
+        ])
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("app");
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+        .build()
+        .expect("wv");
+
+    let lanes: [(&str, &'static AtomicBool, serde_json::Value); 3] = [
+        (
+            "level_preset",
+            &crate::commands::level_preset::PRESET_LEVEL_CANCEL,
+            serde_json::json!({ "job": {
+                "slot": 401, "target_lufs": -23.0, "save": false,
+                "topology_id": null, "calibration_lufs": null, "stimulus_path": null,
+                "profile_id": null, "block_group_id": null, "block_node_id": null,
+                "block_parameter_id": null, "block_value": null
+            }}),
+        ),
+        (
+            "level_scenes_apply_batched",
+            &crate::commands::level_scenes::SCENE_LEVEL_CANCEL,
+            serde_json::json!({
+                "slot": 403,
+                "jobs": [{ "sceneSlot": 0, "targetLufs": -23.0 }],
+                "candidates": [
+                    {"groupId": "G2", "nodeId": "ampA", "parameterId": "outputLevel", "value": 1.0},
+                    {"groupId": "G3", "nodeId": "ampB", "parameterId": "outputLevel", "value": 1.0}
+                ],
+                "save": false, "rebalance": false,
+                "topologyId": null, "calibrationLufs": null, "profileId": null,
+                "onResult": "__CHANNEL__:0"
+            }),
+        ),
+        (
+            "level_footswitches_apply",
+            &crate::commands::level_footswitch::FOOTSWITCH_LEVEL_CANCEL,
+            serde_json::json!({
+                "slot": 405,
+                "jobs": [{ "switch": 5, "levGroupId": "G1", "levNodeId": "ACD_Plumes",
+                           "levParameterId": "level", "targetLufs": -23.0 }],
+                "save": false,
+                "topologyId": null, "calibrationLufs": null, "profileId": null,
+                "onResult": "__CHANNEL__:0"
+            }),
+        ),
+    ];
+    for (cmd, flag, args) in lanes {
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            // The in-flight run: it holds the device-op lock, and the user presses Stop.
+            let guard = crate::lock_device_op();
+            flag.store(true, SeqCst);
+            locked_tx.send(()).expect("signal");
+            // Long enough for the queued command to run everything it does BEFORE the lock.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let still_stopped = flag.load(SeqCst);
+            // The in-flight run winds down; release the lane for the queued command.
+            flag.store(false, SeqCst);
+            drop(guard);
+            still_stopped
+        });
+        locked_rx.recv().expect("holder took the lock");
+        // Queues on the lock, then runs once the holder releases it. Its own outcome is not
+        // what this gate is about — only that queueing left the other run's Stop alone.
+        let _ = invoke(&webview, cmd, args);
+        assert!(
+            holder.join().expect("holder thread"),
+            "{cmd}: a command queued on DEVICE_OP_LOCK cleared the in-flight run's cancel flag"
+        );
+        flag.store(false, SeqCst);
+    }
+}

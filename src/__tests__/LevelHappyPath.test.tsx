@@ -38,6 +38,7 @@ import {
   ensureLibraryScan,
   resetLibraryScan,
 } from "../views/level/libraryScan";
+import { resetLevelRun } from "../views/level/useLevelingFlow";
 
 const SLOT = 0; // list index 0 == device slot 1
 const TARGET_LUFS = -26; // the single "Rhythm" store target
@@ -167,6 +168,7 @@ describe("LevelView — full Level wizard happy path (e2e, device mocked)", () =
     vi.mocked(invoke).mockReset();
     listeners.clear();
     resetLibraryScan();
+    resetLevelRun();
     localStorage.clear();
   });
 

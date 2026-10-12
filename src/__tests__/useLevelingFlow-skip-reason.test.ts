@@ -18,6 +18,7 @@ vi.mock("../lib/invoke", async (importOriginal) => ({
 }));
 
 import {
+  resetLevelRun,
   useLevelingFlow,
   type UseLevelingFlowDeps,
 } from "../views/level/useLevelingFlow";
@@ -81,6 +82,7 @@ function choices(options: SetupOption[]): SetupChoice[] {
 }
 
 beforeEach(() => {
+  resetLevelRun();
   for (const mock of Object.values(h)) mock.mockReset();
   h.levelScenesApplyBatched.mockResolvedValue([]);
   h.levelFootswitchesApply.mockResolvedValue([]);

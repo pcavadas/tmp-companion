@@ -741,6 +741,7 @@ mod truncation_fallback_tests {
                 functions: Vec::new(),
                 level_params: Vec::new(),
                 all_params: Vec::new(),
+                suggested_scene: None,
             }],
             silence_hint: None,
             scene_handles: Vec::new(),

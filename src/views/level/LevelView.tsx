@@ -29,7 +29,7 @@ import { PresetList } from "../PresetList";
 import { EmptyState, UsbC } from "../EmptyState";
 import { LevelingWizard } from "../overlays";
 import { HowLevelingSheet } from "./HowLevelingSheet";
-import { instrumentOptions, instrumentName } from "./leveling";
+import { instrumentOptions, instrumentName, NO_INSTRUMENT } from "./leveling";
 import type { PickOption } from "../overlays/Pick";
 import type { ActiveGraph } from "../../lib/types";
 import { currentGraph, readActivePreset } from "../../lib/invoke";
@@ -237,11 +237,12 @@ export function LevelView({
       })),
     [store?.targets],
   );
-  const defaultInst = store?.profiles[0]?.id ?? "";
+  const defaultInst = store?.profiles[0]?.id ?? NO_INSTRUMENT;
   const defaultTarget = store?.targets[0]?.name ?? "";
-  // Resolve an instrument profile id → its display name (the run-row instrument chip).
+  // Resolve an instrument profile id → its display name (the run-row instrument chip);
+  // null for "no instrument", so the row omits the segment.
   const instName = useCallback(
-    (id: string): string => instrumentName(store?.profiles, id),
+    (id: string): string | null => instrumentName(store?.profiles, id),
     [store?.profiles],
   );
 

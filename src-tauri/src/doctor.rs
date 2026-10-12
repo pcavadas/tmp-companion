@@ -4914,6 +4914,7 @@ mod tests {
             }],
             level_params: Vec::new(),
             all_params: Vec::new(),
+            suggested_scene: None,
         }
     }
 

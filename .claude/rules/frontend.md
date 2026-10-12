@@ -38,5 +38,6 @@ Serialized Rust structs have hand-written TS mirrors in `src/lib/types.ts`. Addi
 
 - There is ONE App-owned `libraryScan` backup scan per connection. Consumers **subscribe** via `useSyncExternalStore`; a new device tab consumes the store and **does not add its own trigger**.
 - Live-device state is a MODULE-SCOPED store, not component `useState` — a tab-switch remount would reset component state to initial, and since the monitor only pushes on a CHANGE, the hero would revert to the stale connect-time preset. The hero slot badge reads the frontend `activeListIndex`, **not** `graph.slot` (field-3 carries no slot).
+- The leveling wizard + run engine are a MODULE-SCOPED store too (`useLevelingFlow.ts`): a tab switch mid-run must rebind to the SAME run and its Stop (#283). Never move run state back into component state; tests call `resetLevelRun()` in `beforeEach`.
 - **Row click is SELECTION only — app-driven preset recall was REMOVED.** Recall is owned by Pro Control and the footswitches.
 - A written block copy is **not undoable from the app**; the done summary points at a Pro Control backup restore.

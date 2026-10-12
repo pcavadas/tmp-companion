@@ -157,6 +157,14 @@ export function defaultParamIndex(params: LevelParamCandidate[]): number {
   return bestIdx;
 }
 
+/** THE "no instrument" id — the instrument picker's "None" option and the default when
+ *  the store has no profiles (level/diagnose against the default reference). */
+export const NO_INSTRUMENT = "none";
+
+/** Is `id` "no instrument"? Also true for the empty id older callers used (#287). */
+export const isNoInstrument = (id: string): boolean =>
+  id === "" || id === NO_INSTRUMENT;
+
 /** The apply-to-all instrument's place on the good → better → best ladder that drives
  *  the Set up step's instrument nudge: `none` (no instrument → levels against the
  *  default reference) → `uncal` (instrument, no stored calibration) → `cal`
@@ -165,7 +173,7 @@ export function instCalState(
   id: string,
   options: PickOption[],
 ): "none" | "uncal" | "cal" {
-  if (!id || id === "none") return "none";
+  if (isNoInstrument(id)) return "none";
   const o = options.find((x) => x.id === id);
   if (!o) return "none";
   return o.calibrated ? "cal" : "uncal";
@@ -199,7 +207,7 @@ export function instrumentOptions(
   profiles: Profile[] | undefined,
 ): PickOption[] {
   return [
-    { id: "none", label: "None" },
+    { id: NO_INSTRUMENT, label: "None" },
     ...(profiles ?? []).map((p) => {
       const cal = p.calibration_lufs;
       return {
@@ -213,11 +221,14 @@ export function instrumentOptions(
 }
 
 /** Resolve an instrument profile id → its display name (the run-row chip); falls
- *  back to the raw id for an unknown/removed profile. */
+ *  back to the raw id for an unknown/removed profile. `null` for "no instrument" —
+ *  the `NO_INSTRUMENT` pick or the empty legacy id — so a caller OMITS the segment
+ *  instead of printing a raw sentinel (#287). */
 export function instrumentName(
   profiles: Profile[] | undefined,
   id: string,
-): string {
+): string | null {
+  if (isNoInstrument(id)) return null;
   return (profiles ?? []).find((p) => p.id === id)?.name ?? id;
 }
 
@@ -282,8 +293,10 @@ export function footswitchName(f: FootswitchInfo): string {
 
 /** Resolve a levelable footswitch's DEFAULT row target: the tone-safe default candidate
  *  (D2 — every row levels against a combined block+param dropdown, best candidate
- *  pre-selected), base scene context (D3's `suggested` scene isn't known synchronously —
- *  the combined picker's lazy fetch fills it in once opened). `null` when the footswitch
+ *  pre-selected), and the D3 SUGGESTED scene context the backup scan already derived
+ *  (`FootswitchInfo.suggested_scene` — the first scene that enables the switch, else
+ *  base). Resolved from data up front so the scene a switch is measured in never depends
+ *  on whether its Set-up picker was opened (#286). `null` when the footswitch
  *  is not `footswitchLevelable` (no leveling candidate at all) — callers must NOT rely
  *  on this being pre-filtered upstream: the list shows such a switch too, disabled with
  *  a reason (BUG 1), so `chosenFrom` still has to cope with one reaching it. */
@@ -291,7 +304,11 @@ function footswitchTarget(f: FootswitchInfo): FootswitchTarget | null {
   if (!footswitchLevelable(f)) return null;
   const idx = defaultParamIndex(f.level_params);
   if (idx < 0) return null;
-  return targetFromCandidate(f.switch, null, f.level_params[idx]);
+  return targetFromCandidate(
+    f.switch,
+    f.suggested_scene ?? null,
+    f.level_params[idx],
+  );
 }
 
 // ── setup: one selectable row (Base or an FS scene) ─────────────────────────
@@ -340,6 +357,12 @@ export interface SetupOption {
    *  the wire `scenes[]` slots — the scene-context picker's label source (D3). Undefined
    *  for Base/scene rows. */
   fsSceneNames?: string[];
+  /** Re-level rows only (`runItemToOption`): the instrument profile id the sound was
+   *  leveled with — Set up seeds the row from it instead of the first profile (#284).
+   *  Undefined for a fresh selection (the defaults apply). */
+  instId?: string;
+  /** Re-level rows only: the target name the sound was leveled at (#284). */
+  targetName?: string;
 }
 
 /** A user-chosen BASE leveling control — the block param `level_preset` should drive
@@ -534,7 +557,7 @@ export interface RunItem {
   /** Set ⇒ a block-acting FOOTSWITCH step (dispatched to `levelFootswitchesApply`);
    *  null/undefined ⇒ Base (`level_preset`) or FS scene (`level_scenes_apply_batched`). */
   footswitch?: FootswitchTarget | null;
-  /** Chosen instrument profile id ("" when none). */
+  /** Chosen instrument profile id (`NO_INSTRUMENT` when none). */
   instId: string;
   /** Chosen target name. */
   targetName: string;
@@ -692,6 +715,9 @@ export function runItemToOption(it: RunItem): SetupOption {
     footswitch: it.footswitch ?? null,
     sceneHandle: it.handle,
     baseHandle: it.baseHandle,
+    // #284: a re-run reuses what the sound was leveled WITH, not the first profile/target.
+    instId: it.instId,
+    targetName: it.targetName,
   };
 }
 

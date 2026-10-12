@@ -26,7 +26,8 @@ export interface LevelingWizardProps {
   targetOptions: PickOption[];
   defaultInst: string;
   defaultTarget: string;
-  instrumentName: (id: string) => string;
+  /** Display name for an instrument id; null for "no instrument" (segment omitted). */
+  instrumentName: (id: string) => string | null;
   /** Resolve a target name to its LUFS (the run table's Target column). */
   targetLufsByName: (name: string | null) => number;
   // run state

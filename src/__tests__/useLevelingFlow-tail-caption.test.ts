@@ -5,7 +5,7 @@
 // must read `tail` BEFORE its "unknown key" guard drops the item, publish it as
 // `RunState.tailMessage`, and clear it once the run completes.
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 import type { SceneLevelProgressItem } from "../lib/invoke";
@@ -23,8 +23,13 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 });
 
 // Imported AFTER the mock so the hook picks up the mocked seam.
-import { useLevelingFlow } from "../views/level/useLevelingFlow";
+import { resetLevelRun, useLevelingFlow } from "../views/level/useLevelingFlow";
 import type { SetupChoice, SetupOption } from "../views/level/leveling";
+
+// The run lives in a module store; a held-open run from one test must not block the next.
+beforeEach(() => {
+  resetLevelRun();
+});
 
 function sceneOption(sceneSlot: number, name: string): SetupOption {
   return {

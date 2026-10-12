@@ -75,6 +75,10 @@ export interface FootswitchInfo {
   link_group: number | null;
   functions: FootswitchFn[];
   level_params: LevelParamCandidate[];
+  /** The scene context Set up preselects (D3): the first 0-based `scenes[]` slot whose
+   *  `ftswStates` enables this switch, else null (base). Picker-preselect only — mirrors
+   *  `footswitch::FootswitchInfo::suggested_scene`. Optional: an older snapshot lacks it. */
+  suggested_scene?: number | null;
 }
 
 export interface PresetScenes {

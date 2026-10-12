@@ -300,11 +300,13 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
         }
         _ => None,
     };
-    // Reset the cooperative cancel flag for this run; `cancel_preset_leveling` sets it
-    // (it only flips the atomic — no device lock — so it runs while this op holds it).
-    PRESET_LEVEL_CANCEL.store(false, SeqCst);
     let app_evt = app.clone();
     with_released_seize(state.session.clone(), move || {
+        // Reset the cooperative cancel flag for this run; `cancel_preset_leveling` sets it
+        // (it only flips the atomic — no device lock — so it runs while this op holds it).
+        // Reset only once DEVICE_OP_LOCK is HELD (inside this closure), like `OP_ABORT`: a
+        // command QUEUED behind another leveling op must never clear THAT op's Stop.
+        PRESET_LEVEL_CANCEL.store(false, SeqCst);
         // Stream advisory live LUFS while each capture runs (dropped at closure end).
         let _lufs = LiveLufsGuard::install(app_evt);
         let stim = read_stimulus_calibrated(&stim_path, calibration_lufs)?;
@@ -464,9 +466,10 @@ pub(crate) async fn level_preset<R: tauri::Runtime>(
     .await
 }
 /// Cooperative cancel for [`level_preset`] (base-preset leveling) — set by
-/// `cancel_preset_leveling`, reset at the command's start, read via a closure passed into
-/// `leveller::level_preset`/`level_preset_block`, which bail before the apply+save.
-static PRESET_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
+/// `cancel_preset_leveling`, reset once the command holds the device-op lock, read via a
+/// closure passed into `leveller::level_preset`/`level_preset_block`, which bail before the
+/// apply+save.
+pub(crate) static PRESET_LEVEL_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 pub(crate) fn cancel_preset_leveling() {
