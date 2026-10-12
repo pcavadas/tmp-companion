@@ -15,7 +15,7 @@ import { useCallback, useMemo, useState } from "react";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { EmptyState, UsbC } from "../EmptyState";
 import { usePresetData } from "../level/usePresetData";
-import { useLiveDevice } from "../level/useLiveDevice";
+import { useLiveDevice } from "../../device/useLiveDevice";
 import {
   chosenFrom,
   hasInstrument,

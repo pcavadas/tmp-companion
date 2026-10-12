@@ -19,10 +19,7 @@ import { SetupPage } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
 import { blockArtTile } from "../models/blockArt";
 import { paramLabel } from "../views/level/leveling";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
   ActiveGraph,
   BackupReadResult,

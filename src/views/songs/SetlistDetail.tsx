@@ -2,7 +2,8 @@
 // device (global song slots by position), with SetlistRow co-located (its only parent
 // is SetlistDetail). Each row carries its DEVICE position; an entry whose song slot
 // resolves to no song is shown as an unknown row rather than dropped, so every row
-// keeps the position the device holds it at.
+// keeps the position the device holds it at. Reorder works by drag OR by the
+// row's ⋯ Move up / Move down (the click-only path the UX north-star asks for).
 import { useRef, useState } from "react";
 import { useTheme, useStyles } from "../../theme/ThemeContext";
 import { Icon } from "../../ui/Icon";
@@ -35,8 +36,13 @@ interface SetlistRowProps {
    *  race the first (the backend serializes anyway, but the UI shouldn't invite it). */
   busy: boolean;
   onRemove: () => void;
+  /** Click-only reorder; undefined at the list's edge. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
   onGrab: () => void;
   onDropOn: () => void;
+  /** A drag ended (dropped or abandoned) — clear the drag source. */
+  onDragEnd: () => void;
 }
 
 function SetlistRow({
@@ -44,10 +50,18 @@ function SetlistRow({
   idx,
   busy,
   onRemove,
+  onMoveUp,
+  onMoveDown,
   onGrab,
   onDropOn,
+  onDragEnd,
 }: SetlistRowProps) {
   const { t } = useTheme();
+  const [menu, setMenu] = useState(false);
+  const closeMenuThen = (fn: () => void) => () => {
+    setMenu(false);
+    fn();
+  };
   return (
     <SongRow
       song={song}
@@ -62,6 +76,7 @@ function SetlistRow({
           e.preventDefault();
         },
         onDrop: busy ? undefined : onDropOn,
+        onDragEnd,
       }}
       leading={
         <span
@@ -72,7 +87,56 @@ function SetlistRow({
         </span>
       }
       trailing={
-        <span style={{ display: "flex", justifyContent: "flex-end" }}>
+        <span
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+          }}
+        >
+          {(onMoveUp ?? onMoveDown) && (
+            <span style={{ position: "relative", display: "flex" }}>
+              <span
+                onClick={
+                  busy
+                    ? undefined
+                    : () => {
+                        setMenu((o) => !o);
+                      }
+                }
+                title="Move"
+                style={{
+                  cursor: busy ? "default" : "pointer",
+                  display: "flex",
+                  padding: t.space2,
+                  borderRadius: t.rSm,
+                }}
+              >
+                <Icon name="more" size={14} stroke={t.faint} />
+              </span>
+              {menu && !busy && (
+                <Menu
+                  onClose={() => {
+                    setMenu(false);
+                  }}
+                  minWidth={130}
+                >
+                  {onMoveUp && (
+                    <MenuItem
+                      label="Move up"
+                      onClick={closeMenuThen(onMoveUp)}
+                    />
+                  )}
+                  {onMoveDown && (
+                    <MenuItem
+                      label="Move down"
+                      onClick={closeMenuThen(onMoveDown)}
+                    />
+                  )}
+                </Menu>
+              )}
+            </span>
+          )}
           <span
             onClick={busy ? undefined : onRemove}
             title="Remove from setlist"
@@ -340,25 +404,46 @@ export function SetlistDetail({
               overflowY: "auto",
             }}
           >
-            {rows.map((entry, i) => (
-              <SetlistRow
-                key={entry.position}
-                song={entry.song ?? unknownSong(entry.songSlot)}
-                idx={i}
-                busy={busy}
-                onRemove={() => {
-                  onRemoveSong(entry);
-                }}
-                onGrab={() => {
-                  dragFrom.current = entry;
-                }}
-                onDropOn={() => {
-                  if (dragFrom.current != null)
-                    onReorder(dragFrom.current, entry);
-                  dragFrom.current = null;
-                }}
-              />
-            ))}
+            {rows.map((entry, i) => {
+              const above = i > 0 ? rows[i - 1] : undefined;
+              const below = i + 1 < rows.length ? rows[i + 1] : undefined;
+              return (
+                <SetlistRow
+                  key={entry.position}
+                  song={entry.song ?? unknownSong(entry.songSlot)}
+                  idx={i}
+                  busy={busy}
+                  onRemove={() => {
+                    onRemoveSong(entry);
+                  }}
+                  onMoveUp={
+                    above
+                      ? () => {
+                          onReorder(entry, above);
+                        }
+                      : undefined
+                  }
+                  onMoveDown={
+                    below
+                      ? () => {
+                          onReorder(entry, below);
+                        }
+                      : undefined
+                  }
+                  onDragEnd={() => {
+                    dragFrom.current = null;
+                  }}
+                  onGrab={() => {
+                    dragFrom.current = entry;
+                  }}
+                  onDropOn={() => {
+                    if (dragFrom.current != null)
+                      onReorder(dragFrom.current, entry);
+                    dragFrom.current = null;
+                  }}
+                />
+              );
+            })}
           </div>
         </>
       )}

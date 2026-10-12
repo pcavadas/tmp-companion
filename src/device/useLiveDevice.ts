@@ -1,4 +1,4 @@
-// src/views/level/useLiveDevice.ts — the R3 live-sync event-subscription hook.
+// src/device/useLiveDevice.ts — the R3 live-sync event-subscription hook.
 //
 // The backend's persistent device monitor (src-tauri/src/monitor.rs) holds a live
 // TMP session with a dense heartbeat so the unit PUSHES its state changes
@@ -27,15 +27,15 @@ import {
   onSceneList,
   onSignalChain,
   onSync,
-} from "../../lib/liveEvents";
-import { isTauri } from "../../lib/invoke";
+} from "../lib/liveEvents";
+import { isTauri } from "../lib/invoke";
 import type {
   ActiveGraph,
   LivePresetEvent,
   LiveSceneEvent,
   SceneListRow,
   SyncEvent,
-} from "../../lib/types";
+} from "../lib/types";
 
 /** The active preset's live scene, classified base-vs-FS by the backend. `key` is
  * `"base"` (the preset default) or the FS-scene index; `name` may be null when the

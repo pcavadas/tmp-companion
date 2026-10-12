@@ -6,7 +6,7 @@
 // failure. A found update either waits as the "available" toast or (auto-install
 // on) starts downloading immediately. No auto-dismiss timers anywhere.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { appInfo, getStore, isTauri, setAutoInstallUpdates } from "./invoke";
 import { checkForUpdate, relaunchApp } from "./updater";
@@ -81,7 +81,15 @@ export function useUpdater(): UpdaterApi {
     null,
   );
 
+  // True from a download's start until it settles. `check()` reads `phase` from
+  // its render, so two checks in flight together (the startup check and a manual
+  // Settings Check, auto-install on) would both reach `start` — this ref, not the
+  // phase, is what keeps that to ONE download.
+  const downloadingRef = useRef(false);
+
   const start = useCallback((u: FoundUpdate) => {
+    if (downloadingRef.current) return;
+    downloadingRef.current = true;
     setPhase("downloading");
     setPercent(0);
     u.download(setPercent).then(
@@ -89,6 +97,7 @@ export function useUpdater(): UpdaterApi {
         setPhase("ready");
       },
       () => {
+        downloadingRef.current = false; // retry may start it again
         setPhase("error");
       },
     );

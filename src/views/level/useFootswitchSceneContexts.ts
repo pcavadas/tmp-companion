@@ -14,7 +14,7 @@
 
 import { listFootswitchSceneContexts } from "../../lib/invoke";
 import type { FsSceneContext } from "../../lib/types";
-import { getLibraryScan } from "./libraryScan";
+import { getLibraryScan } from "../../device/libraryScan";
 import { useLazySlotCache } from "./useLazySlotCache";
 
 export type FsContextFetchState =

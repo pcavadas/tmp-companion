@@ -31,10 +31,7 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 
 // Imported AFTER the mocks so the view picks up the forced isTauri().
 import { DoctorView } from "../views/doctor";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 
 function renderView(connected: boolean) {
   const r = render(

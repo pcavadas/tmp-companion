@@ -754,7 +754,10 @@ export function CatalogView({ density = "comfortable" }: CatalogViewProps) {
             () => {
               setRouting(routing === "stereo" ? "all" : "stereo");
             },
-            !hasStereo,
+            // Disabled only while OFF: a scope with no stereo models can't turn
+            // it on, but an active Stereo filter must always be clearable (it
+            // survives a category change).
+            !hasStereo && routing !== "stereo",
           )}
           {showConv &&
             facetBtn("Convolution", convOnly, () => {

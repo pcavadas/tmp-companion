@@ -28,11 +28,8 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 import { SetlistDetail } from "../views/songs/SetlistDetail";
 import { InstrumentRow } from "../views/settings/InstrumentRow";
 import { CopyView } from "../views/copy";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
-import { resetLiveDevice, useLiveDevice } from "../views/level/useLiveDevice";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
+import { resetLiveDevice, useLiveDevice } from "../device/useLiveDevice";
 import { backupRow, seriesGraph } from "./copyFixtures";
 import type {
   ActiveGraph,

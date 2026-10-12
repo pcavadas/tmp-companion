@@ -91,6 +91,26 @@ describe("CatalogView — search + facets + sort", () => {
     expect(screen.getByText("Stereo").style.color).not.toBe("#fff");
   });
 
+  // #303: Stereo on → a category with no stereo models used to lock the grid on
+  // "No models match" with the active chip disabled, so it couldn't be turned off.
+  it("an active Stereo facet stays clearable in a mono-only category (#303)", async () => {
+    const user = userEvent.setup();
+    renderCatalog();
+    await user.click(screen.getByText("Stereo"));
+    expect(screen.getByText("Stereo").style.color).toBe("rgb(255, 255, 255)");
+    await user.click(screen.getAllByText("Combo Amps")[0]);
+    expect(
+      screen.getByText(/No models match these filters/i),
+    ).toBeInTheDocument();
+    // The active chip is still live: clicking it clears the filter.
+    const stereo = screen.getByText("Stereo");
+    expect(stereo.style.opacity).toBe("1");
+    await user.click(stereo);
+    expect(screen.queryByText(/No models match/i)).toBeNull();
+    // Now off in a mono-only scope, it self-disables as before.
+    expect(screen.getByText("Stereo").style.opacity).toBe("0.5");
+  });
+
   it("CPU sort toggles direction", async () => {
     const user = userEvent.setup();
     renderCatalog();

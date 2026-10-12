@@ -33,7 +33,7 @@ import {
   ensureLibraryScan,
   getLibraryScan,
   resetLibraryScan,
-} from "../views/level/libraryScan";
+} from "../device/libraryScan";
 import { backupRow, seriesGraph } from "./copyFixtures";
 
 const NAMES = ["Stadium Lead", "Clean Verse", "Lead Two"];

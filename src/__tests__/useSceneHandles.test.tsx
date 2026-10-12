@@ -24,10 +24,7 @@ import {
 } from "../views/level/FlatLevelPick";
 import { WithCard } from "./pickCardTestUtils";
 import { useSceneHandles } from "../views/level/useSceneHandles";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import type {
   ActiveGraph,
   BackupReadResult,

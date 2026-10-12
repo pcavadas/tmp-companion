@@ -21,7 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { usePresetData } from "./usePresetData";
-import { useLiveDevice } from "./useLiveDevice";
+import { useLiveDevice } from "../../device/useLiveDevice";
 import { useLevelingFlow } from "./useLevelingFlow";
 import { ContextFooter } from "./ContextFooter";
 import { ActiveSignalChainView, type SceneTag } from "../ActiveSignalChainView";

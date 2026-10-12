@@ -16,7 +16,7 @@ import {
 import { listPresets, getStore } from "../../lib/invoke";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
 import { baseKey, childKeys } from "./leveling";
-import { subscribeLibraryScan, getLibraryScan } from "./libraryScan";
+import { subscribeLibraryScan, getLibraryScan } from "../../device/libraryScan";
 import type { PresetRow } from "../PresetList";
 import type {
   PresetEntry,
@@ -37,10 +37,10 @@ function slotOfKey(key: string): number {
  * details stream in via ONE device backup (~27 KiB/s; ~85 s for a 2.2 MiB archive) —
  * `read_library_via_backup`, whose
  * `tmp://backup-progress` events drive the scan strip. `scanning` is true for that
- * window; `percent` is the determinate transfer %. */
+ * window. The determinate transfer % is NOT here: the strip reads it itself
+ * (`useLibraryScanPercent`), so a progress tick never re-renders this hook's host. */
 export interface ScanState {
   scanning: boolean;
-  percent: number;
 }
 
 // The list's empty-slot markers, as the device reports them: "--" / "Empty" / "—".
@@ -79,7 +79,7 @@ export function usePresetData(
   opts: UsePresetDataOptions = {},
 ) {
   const { footswitchRoster = "levelable" } = opts;
-  const { phase, setPhase, mountedRef, runLoad } = useDeviceLoad();
+  const { phase, setPhase, runLoad } = useDeviceLoad();
   const [rows, setRows] = useState<PresetRow[]>([]);
   const [store, setStore] = useState<Store | null>(null);
   // SELECTION is a flat set of scene KEYS (Base = `p${slot}`, FS = `s${slot}:${i}`).
@@ -107,7 +107,7 @@ export function usePresetData(
     footswitchRoster === "all"
       ? lib.allFootswitchesByIndex
       : lib.footswitchesPerIndex;
-  const scan: ScanState = { scanning: lib.scanning, percent: lib.percent };
+  const scan: ScanState = { scanning: lib.scanning };
 
   // rows + sceneInfo + footswitchInfo in refs so the stable toggle callbacks see the
   // latest data. Synced in an effect (after commit) rather than during render — the
@@ -144,9 +144,9 @@ export function usePresetData(
   // handshake (initialGraph) and the live monitor (tmp://signal-chain), so the
   // separate readActivePreset round-trip (which doubled the connect time) is gone.
   const refresh = useCallback(async () => {
-    await runLoad(async () => {
+    await runLoad(async (isCurrent) => {
       const [list, st] = await Promise.all([listPresets(), getStore()]);
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       const mapped = list.map(toPresetRow);
       setRows(mapped);
       setStore(st);
@@ -166,7 +166,7 @@ export function usePresetData(
         return next;
       });
     });
-  }, [runLoad, mountedRef]);
+  }, [runLoad]);
 
   // Load (and re-load) only once the device is connected. App owns the real
   // connection state and threads it down; the rising edge re-runs refresh.

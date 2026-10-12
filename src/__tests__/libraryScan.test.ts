@@ -19,7 +19,7 @@ import {
   forgetLibrarySongs,
   patchLibraryGraph,
   resetLibraryScan,
-} from "../views/level/libraryScan";
+} from "../device/libraryScan";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: () => Promise.resolve(() => undefined),

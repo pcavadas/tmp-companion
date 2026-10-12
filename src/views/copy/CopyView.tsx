@@ -12,8 +12,8 @@ import { useTheme } from "../../theme/ThemeContext";
 import { LoadErrorPane } from "../LoadErrorPane";
 import { errMsg, slotLabel } from "../../lib/format";
 import { copyApply } from "../../lib/invoke";
-import { patchLibraryGraph } from "../level/libraryScan";
-import { patchLiveGraph, useLiveDevice } from "../level/useLiveDevice";
+import { patchLibraryGraph } from "../../device/libraryScan";
+import { patchLiveGraph, useLiveDevice } from "../../device/useLiveDevice";
 import { EmptyState, UsbC } from "../EmptyState";
 import { ChoosePresets } from "./ChoosePresets";
 import { PlaceBlocks } from "./PlaceBlocks";
@@ -328,7 +328,6 @@ export function CopyView({ connected, onScan, initialGraph }: CopyViewProps) {
           setTo={setToSet}
           ready={ready}
           scanning={lib.scanning}
-          percent={lib.percent}
           onContinue={enterStep2}
         />
       ) : (

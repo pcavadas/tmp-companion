@@ -13,7 +13,7 @@
 
 import { listLevelBlocks } from "../../lib/invoke";
 import type { ParamClass } from "../../lib/types";
-import { getLibraryScan } from "./libraryScan";
+import { getLibraryScan } from "../../device/libraryScan";
 import { useLazySlotCache } from "./useLazySlotCache";
 
 /** One Base-row leveling candidate, normalized from EITHER source

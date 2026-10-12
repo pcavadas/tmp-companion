@@ -22,8 +22,16 @@
 // shadows only on the floating ⋯ popover; Icons only (never symbol chars).
 //
 // Targets (handoff design_handoff_settings_targets): user-owned loudness
-// targets — create / rename / reorder (drag) / delete + draggable slider, with
-// NO upper ceiling/clamp.
+// targets — create / rename / reorder (⋯ Move up/down, or drag) / delete +
+// draggable slider, with NO upper ceiling/clamp.
+//
+// Load and save are never silent. The store and the pickup topologies load
+// together into a loading | error | ready state: nothing that edits a list is
+// offered until it is ready, because save_targets / save_profiles replace the
+// WHOLE list (and save_profiles unlinks the captures of every "removed" profile),
+// so an add against the initial empty arrays would overwrite the stored list. A
+// failed load shows an alert with Retry; a failed save shows an alert and
+// re-reads the store, so the page shows what is actually stored.
 //
 // Split into ./TargetRow, ./PlaybackLevelSection, ./InstrumentRow,
 // ./InstrumentForm; NeedsDevicePill stays co-located (shared by body + row).
@@ -35,7 +43,7 @@ import { Icon } from "../../ui/Icon";
 import type { IconName } from "../../ui/Icon";
 import { Rail, RailItem, RailLabel } from "../../ui/Rail";
 import { ActionBar } from "../../ui/ActionBar";
-import { Button } from "../../ui/primitives";
+import { AlertBanner, Button } from "../../ui/primitives";
 import {
   getStore,
   listPickupTopologies,
@@ -43,9 +51,11 @@ import {
   saveTargets,
   setPlaybackLevel,
 } from "../../lib/invoke";
+import { errMsg } from "../../lib/format";
 import type {
   PlaybackLevel,
   Profile,
+  Store,
   Target,
   TopologyInfo,
 } from "../../lib/types";
@@ -139,7 +149,7 @@ const CATEGORIES: Category[] = [
     id: "targets",
     label: "Loudness targets",
     icon: "sliders",
-    desc: "Your loudness targets. Set each level, rename it, and drag to reorder.",
+    desc: "Your loudness targets. Set each level, rename it, and reorder it from its ⋯ menu.",
   },
   {
     id: "instruments",
@@ -160,6 +170,10 @@ const CATEGORIES: Category[] = [
     desc: "App version, updates, and where your data is kept.",
   },
 ];
+
+/** The initial read of the store + topologies. */
+type LoadState =
+  { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready" };
 
 // ===========================================================================
 // SettingsView — the page body (rendered under the App's nav).
@@ -191,24 +205,26 @@ export function SettingsView({
   const [cat, setCat] = useState<CategoryId>(initialCategory ?? "targets");
   // uid of a freshly added target → opens it directly in rename mode.
   const [justAdded, setJustAdded] = useState<string | null>(null);
+  const [load, setLoad] = useState<LoadState>({ kind: "loading" });
+  // The last failed save, shown until the next save succeeds.
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Monotonic counter for transient target uids + drag source.
   const uidRef = useRef(0);
   const dragUid = useRef<string | null>(null);
   const newUid = () => `t${String(uidRef.current++)}`;
+  // Bumped to (re-)read the store: by Retry after a failed load, and after a
+  // failed save so the page shows what is actually stored.
+  const [readGen, setReadGen] = useState(0);
 
-  // Guard async post-await setState against unmount (tab switch).
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const ready = load.kind === "ready";
 
+  // Read the store and the topologies together; either failing is a load error.
+  // A superseded read (a newer readGen, or unmount) applies nothing.
   useEffect(() => {
-    getStore()
-      .then((store) => {
-        if (!mountedRef.current) return;
+    let current = true;
+    Promise.all([getStore(), listPickupTopologies()])
+      .then(([store, tp]: [Store, TopologyInfo[]]) => {
+        if (!current) return;
         setProfiles(store.profiles);
         setTargets(
           // Stamp a transient uid per row (uidRef is stable across renders).
@@ -218,14 +234,30 @@ export function SettingsView({
           })),
         );
         setPlayback(store.playback_level);
+        setTopologies(tp);
+        setLoad({ kind: "ready" });
       })
-      .catch(() => undefined);
-    listPickupTopologies()
-      .then((tp) => {
-        if (mountedRef.current) setTopologies(tp);
-      })
-      .catch(() => undefined);
-  }, []);
+      .catch((e: unknown) => {
+        if (current) setLoad({ kind: "error", message: errMsg(e) });
+      });
+    return () => {
+      current = false;
+    };
+  }, [readGen]);
+
+  function retryLoad() {
+    setLoad({ kind: "loading" });
+    setReadGen((g) => g + 1);
+  }
+
+  // A save failed: say so, and re-read the store so the lists show what is
+  // stored rather than the change that never landed.
+  function saveFailed(what: string, e: unknown) {
+    setSaveError(
+      `Couldn't save your ${what}: ${errMsg(e)}. Showing what is saved instead.`,
+    );
+    setReadGen((g) => g + 1);
+  }
 
   // Distinct instrument types (e.g. Guitar / Bass / Acoustic), in first-seen order.
   const types = useMemo(() => {
@@ -242,12 +274,14 @@ export function SettingsView({
     return m;
   }, [topologies]);
 
+  // Optimistic: the list updates at once; a failed save re-reads the store.
   async function persistProfiles(next: Profile[]) {
     setProfiles(next);
     try {
       await saveProfiles(next);
-    } catch {
-      // best-effort persist; UI already reflects the change.
+      setSaveError(null);
+    } catch (e) {
+      saveFailed("instruments", e);
     }
   }
 
@@ -256,8 +290,9 @@ export function SettingsView({
     setTargets(next);
     try {
       await saveTargets(stripUid(next));
-    } catch {
-      // best-effort persist.
+      setSaveError(null);
+    } catch (e) {
+      saveFailed("loudness targets", e);
     }
   }
 
@@ -277,6 +312,14 @@ export function SettingsView({
   }
   function deleteTarget(uid: string) {
     void persistTargets(targets.filter((row) => row.uid !== uid));
+  }
+  function moveTarget(uid: string, dir: -1 | 1) {
+    const i = targets.findIndex((r) => r.uid === uid);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= targets.length) return;
+    const next = [...targets];
+    [next[i], next[j]] = [next[j], next[i]];
+    void persistTargets(next);
   }
   function reorderTargets(fromUid: string | null, toUid: string) {
     if (!fromUid || fromUid === toUid) return;
@@ -304,8 +347,9 @@ export function SettingsView({
     setPlayback(level);
     try {
       await setPlaybackLevel(level);
-    } catch {
-      // best-effort persist; UI already reflects the change.
+      setSaveError(null);
+    } catch (e) {
+      saveFailed("playback level", e);
     }
   }
 
@@ -348,13 +392,14 @@ export function SettingsView({
   }
 
   // After a real calibration resolves, re-read the store so the persisted
-  // calibration_lufs shows on the row.
+  // calibration_lufs shows on the row. A failed re-read keeps the current rows:
+  // the calibration itself already succeeded and was saved by the backend.
   async function refreshFromStore() {
     try {
       const store = await getStore();
-      if (mountedRef.current) setProfiles(store.profiles);
+      setProfiles(store.profiles);
     } catch {
-      // leave the optimistic state; nothing to refresh.
+      // nothing to refresh; the row keeps its current state.
     }
   }
 
@@ -450,9 +495,40 @@ export function SettingsView({
               padding: `${String(t.space8)}px ${String(t.space10)}px ${String(t.space10)}px`,
             }}
           >
-            {cat === "targets" && (
+            {load.kind === "error" && cat !== "about" && (
+              <AlertBanner
+                style={{
+                  marginBottom: t.space8,
+                  maxWidth: 560,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: t.space6,
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  Couldn&rsquo;t read your settings: {load.message}
+                </span>
+                <Button
+                  variant="ghost"
+                  small
+                  icon="refresh"
+                  onClick={retryLoad}
+                >
+                  Retry
+                </Button>
+              </AlertBanner>
+            )}
+            {saveError != null && cat !== "about" && (
+              <AlertBanner style={{ marginBottom: t.space8, maxWidth: 560 }}>
+                {saveError}
+              </AlertBanner>
+            )}
+            {load.kind === "loading" && cat !== "about" && (
+              <EmptyHint>Reading your settings…</EmptyHint>
+            )}
+            {cat === "targets" && ready && (
               <div style={{ maxWidth: 560 }}>
-                {targets.map((row) => (
+                {targets.map((row, i) => (
                   <TargetRow
                     key={row.uid}
                     name={row.name}
@@ -470,11 +546,29 @@ export function SettingsView({
                     onDelete={() => {
                       deleteTarget(row.uid);
                     }}
+                    onMoveUp={
+                      i > 0
+                        ? () => {
+                            moveTarget(row.uid, -1);
+                          }
+                        : undefined
+                    }
+                    onMoveDown={
+                      i + 1 < targets.length
+                        ? () => {
+                            moveTarget(row.uid, 1);
+                          }
+                        : undefined
+                    }
                     onGrab={() => {
                       dragUid.current = row.uid;
                     }}
                     onDropOn={() => {
                       reorderTargets(dragUid.current, row.uid);
+                      dragUid.current = null;
+                    }}
+                    onDragEnd={() => {
+                      dragUid.current = null;
                     }}
                   />
                 ))}
@@ -503,7 +597,7 @@ export function SettingsView({
             <div
               style={{
                 maxWidth: 620,
-                display: cat === "instruments" ? "block" : "none",
+                display: cat === "instruments" && ready ? "block" : "none",
               }}
             >
               {!connected && (
@@ -614,7 +708,7 @@ export function SettingsView({
                   onClick={() => {
                     setAdding(true);
                   }}
-                  disabled={topologies.length === 0}
+                  disabled={!ready || topologies.length === 0}
                   style={{ marginTop: t.space1 }}
                 >
                   Add instrument
@@ -622,7 +716,7 @@ export function SettingsView({
               )}
             </div>
 
-            {cat === "playback" && (
+            {cat === "playback" && ready && (
               <div style={{ maxWidth: 520 }}>
                 <PlaybackLevelSection
                   value={playback}

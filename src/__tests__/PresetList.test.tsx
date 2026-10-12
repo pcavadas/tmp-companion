@@ -100,7 +100,7 @@ function renderList(over: ListOverrides = {}) {
     activeSlot: null,
     filter: "",
     loading: false,
-    scan: { scanning: false, percent: 100 },
+    scan: { scanning: false },
     sceneInfo: SCENES,
     footswitchInfo: FOOTSWITCHES,
     graphByIndex: new Map(),
@@ -133,9 +133,11 @@ describe("PresetList (scene tree)", () => {
   });
 
   it("shows the scan strip while the background read runs", () => {
-    renderList({ scan: { scanning: true, percent: 42 } });
+    // The % comes from the scan's own progress store (0 until a tick arrives;
+    // libraryScan.test.ts drives the ticks), not from a prop.
+    renderList({ scan: { scanning: true } });
     expect(screen.getByText("Reading preset details…")).toBeTruthy();
-    expect(screen.getByText("42%")).toBeTruthy();
+    expect(screen.getByText("0%")).toBeTruthy();
   });
 
   it("parent meta: scene + footswitch breakdown once known", () => {
@@ -190,7 +192,7 @@ describe("PresetList (scene tree)", () => {
           ready
           activeSlot={null}
           filter=""
-          scan={{ scanning: false, percent: 100 }}
+          scan={{ scanning: false }}
           sceneInfo={SCENES}
           footswitchInfo={FOOTSWITCHES}
           graphByIndex={new Map()}

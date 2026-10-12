@@ -1,4 +1,4 @@
-// src/views/level/libraryScan.ts — module-scoped controller for the ONE-SHOT
+// src/device/libraryScan.ts — module-scoped controller for the ONE-SHOT
 // background scene read (the whole library via one ~22 s device backup).
 //
 // It lives at MODULE scope (not in a component) so it runs exactly ONCE per device
@@ -6,12 +6,23 @@
 // re-trigger the scan. Reset only on disconnect, so the next connection scans fresh.
 //
 // Consumers subscribe via useSyncExternalStore (see usePresetData); the device call
-// + progress listen are owned here, idempotently.
+// + progress listen are owned here, idempotently. It lives under src/device/ (not a
+// view folder) because Level, Doctor, Copy, Songs and the bug report all read it.
+//
+// Two stores, on purpose: the scan DATA (`subscribeLibraryScan`/`getLibraryScan`) and
+// the transfer PERCENT (`useLibraryScanPercent`). The backup emits dozens of progress
+// ticks, and a data subscriber re-rendering on each was wasted work, so only the few
+// progress readouts subscribe to the percent.
+//
+// A failed scan is not an empty library: it settles `ready` (so nothing waits on it
+// forever) with `error` set, and `retryLibraryScan` runs it again.
 
+import { useSyncExternalStore } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
-import { readLibraryViaBackup } from "../../lib/invoke";
-import { onBackupProgress } from "../../lib/liveEvents";
+import { readLibraryViaBackup } from "../lib/invoke";
+import { errMsg } from "../lib/format";
+import { onBackupProgress } from "../lib/liveEvents";
 import type {
   ActiveGraph,
   AmpCandidate,
@@ -24,14 +35,15 @@ import type {
   SilenceHint,
   SongRecord,
   SetlistRecord,
-} from "../../lib/types";
+} from "../lib/types";
 
 export interface LibraryScan {
   scanning: boolean;
-  /** Determinate transfer % (exact, from `tmp://backup-progress`). */
-  percent: number;
   /** Settled — success OR failure. Releases the caret + the Level gate. */
   ready: boolean;
+  /** Why the last scan failed, or null. Set only once `ready`: a failed scan leaves
+   *  every map empty, and this is what tells that apart from an empty library. */
+  error: string | null;
   /** Per-preset scenes keyed by 0-based LIST INDEX (device slot − 1). */
   sceneInfo: Map<number, SceneInfo[]>;
   /** Per-preset amp `outputLevel` candidates keyed by 0-based LIST INDEX — read
@@ -111,8 +123,8 @@ export interface LibraryScan {
 
 const emptyScan = (): LibraryScan => ({
   scanning: false,
-  percent: 0,
   ready: false,
+  error: null,
   sceneInfo: new Map(),
   ampCandidates: new Map(),
   footswitchesPerIndex: new Map(),
@@ -154,6 +166,37 @@ function set(next: Partial<LibraryScan>): void {
   });
 }
 
+// ── The transfer-percent store (exact, from `tmp://backup-progress`) ──
+let percent = 0;
+const percentSubs = new Set<() => void>();
+
+function setPercent(next: number): void {
+  if (next === percent) return;
+  percent = next;
+  percentSubs.forEach((f) => {
+    f();
+  });
+}
+
+export function subscribeLibraryScanPercent(cb: () => void): () => void {
+  percentSubs.add(cb);
+  return () => {
+    percentSubs.delete(cb);
+  };
+}
+
+export function getLibraryScanPercent(): number {
+  return percent;
+}
+
+/** The backup's determinate transfer %, for progress readouts only. */
+export function useLibraryScanPercent(): number {
+  return useSyncExternalStore(
+    subscribeLibraryScanPercent,
+    getLibraryScanPercent,
+  );
+}
+
 export function subscribeLibraryScan(cb: () => void): () => void {
   subs.add(cb);
   return () => {
@@ -166,24 +209,32 @@ export function getLibraryScan(): LibraryScan {
 }
 
 /** Start the one-shot backup scene read. Idempotent: a call while a scan is in
- *  flight, or after one has completed for this connection, is a no-op (so a tab
- *  switch back to Presets never re-scans). */
+ *  flight, or after one has succeeded for this connection, is a no-op (so a tab
+ *  switch back to Presets never re-scans). After a FAILED scan it runs again. */
 export async function ensureLibraryScan(): Promise<void> {
-  if (inFlight || state.ready) return;
+  if (inFlight || (state.ready && state.error == null)) return;
   inFlight = true;
   const gen = generation;
   set({ ...emptyScan(), scanning: true });
-  const unlisten = await onBackupProgress((p) => {
-    if (gen === generation) set({ percent: p.percent });
-  });
-  // A reset (detach) during the listen await → clean up this listener and bail before
-  // publishing it or touching state.
-  if (gen !== generation) {
-    unlisten();
-    return;
-  }
-  unlistenProgress = unlisten;
+  setPercent(0);
+  let failure: string | null = null;
   try {
+    // Progress is cosmetic: a listen that fails leaves the bar at 0 % and the scan
+    // runs anyway. Inside the try so it can never strand `inFlight`.
+    try {
+      const unlisten = await onBackupProgress((p) => {
+        if (gen === generation) setPercent(p.percent);
+      });
+      // A reset (detach) during the listen await → clean up this listener and bail
+      // before publishing it or touching state.
+      if (gen !== generation) {
+        unlisten();
+        return;
+      }
+      unlistenProgress = unlisten;
+    } catch {
+      // No progress events this scan; the read below still runs.
+    }
     const res = await readLibraryViaBackup();
     if (gen !== generation) return; // reset mid-scan → drop the stale results
     const m = new Map<number, SceneInfo[]>();
@@ -264,22 +315,31 @@ export async function ensureLibraryScan(): Promise<void> {
     });
     pendingSongs = null;
     pendingJoinUnknown = false;
-  } catch {
-    // Non-fatal: scene details stay unknown; whole-preset ticks degrade to
-    // Base-only. Already on disk via the central invoke-failure logger.
+  } catch (e) {
+    // Scene details stay unknown and whole-preset ticks degrade to Base-only, but
+    // say so: `error` keeps this from reading as an empty library. Already on disk
+    // via the central invoke-failure logger.
+    failure = errMsg(e);
   } finally {
     // Only the CURRENT scan settles. A reset (detach) already cleared state + the
     // listener; settling `ready` here would strand a stale scan and double-free the
     // listener (the old bug: unlistenProgress() on a nulled ref threw).
     if (gen === generation) {
-      // Provably non-null here: reset (the only nuller) bumps `generation`, so
-      // gen === generation means it hasn't run since we published the listener.
-      unlistenProgress();
-      unlistenProgress = null;
+      if (unlistenProgress) {
+        unlistenProgress();
+        unlistenProgress = null;
+      }
       inFlight = false;
-      set({ scanning: false, percent: 100, ready: true });
+      if (failure == null) setPercent(100);
+      set({ scanning: false, ready: true, error: failure });
     }
   }
+}
+
+/** Run the scan again after it failed (the consumers' Retry). A no-op while one is
+ *  in flight or once one has succeeded. */
+export function retryLibraryScan(): void {
+  void ensureLibraryScan();
 }
 
 /** Patch ONE preset's cached graph in place (0-based list index) — used after a Copy
@@ -302,22 +362,20 @@ export function patchLibraryGraph(listIndex: number, graph: ActiveGraph): void {
  *  ponytail: a precise old→new slot remap is the upgrade path if the Presets axis needs
  *  to survive edits without a reconnect re-scan. */
 export function invalidateSongPresetJoin(): void {
-  if (!state.ready) {
-    pendingJoinUnknown = true; // applied when the scan settles
-    return;
-  }
+  // Also held after a FAILED scan, so a retry's result can't drop it.
+  if (!state.ready || state.error != null) pendingJoinUnknown = true;
+  if (!state.ready) return; // applied when the scan settles
   set({ songPresetSlots: null });
 }
 
 /** Write the Songs tab's post-edit lists back into the snapshot, so a tab switch (which
  *  unmounts the view) repaints what the unit holds now instead of the startup scan.
- *  Before the scan settles the lists are held and applied over its result, since its
- *  backup may predate the edit. */
+ *  Before the scan settles (or after it failed, ahead of a retry) the lists are held
+ *  and applied over its result, since its backup may predate the edit. */
 export function patchLibrarySongs(next: SongsSeed): void {
-  if (!state.ready) {
-    pendingSongs = next;
-    return;
-  }
+  // Also held after a FAILED scan, so a retry's (older) backup can't drop it.
+  if (!state.ready || state.error != null) pendingSongs = next;
+  if (!state.ready) return;
   set(next);
 }
 
@@ -326,10 +384,8 @@ export function patchLibrarySongs(next: SongsSeed): void {
  *  but there was no view left to patch the snapshot with its reply. */
 export function forgetLibrarySongs(): void {
   const empty: SongsSeed = { songs: [], setlists: [], setlistSongs: new Map() };
-  if (!state.ready) {
-    pendingSongs = empty;
-    return;
-  }
+  if (!state.ready || state.error != null) pendingSongs = empty;
+  if (!state.ready) return;
   set(empty);
 }
 
@@ -343,5 +399,6 @@ export function resetLibraryScan(): void {
   inFlight = false;
   pendingSongs = null;
   pendingJoinUnknown = false;
+  setPercent(0);
   set(emptyScan());
 }

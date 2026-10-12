@@ -1,6 +1,6 @@
 // Locks the untested-firmware notice: kicker + title + the below-floor version
-// inline, and the two actions wired to their handlers ("Check again" re-reads,
-// "Use it anyway" proceeds).
+// inline, "Use it anyway" wired to its handler, and no "Check again" (#305: while
+// connected it could only re-serve the cached version, so it could change nothing).
 
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -9,17 +9,13 @@ import userEvent from "@testing-library/user-event";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { FirmwareGate } from "../views/FirmwareGate";
 
-function renderGate(onCheckAgain = vi.fn(), onProceed = vi.fn()) {
+function renderGate(onProceed = vi.fn()) {
   render(
     <ThemeProvider>
-      <FirmwareGate
-        detected="1.6.3"
-        onCheckAgain={onCheckAgain}
-        onProceed={onProceed}
-      />
+      <FirmwareGate detected="1.6.3" onProceed={onProceed} />
     </ThemeProvider>,
   );
-  return { onCheckAgain, onProceed };
+  return { onProceed };
 }
 
 describe("FirmwareGate", () => {
@@ -30,10 +26,10 @@ describe("FirmwareGate", () => {
     expect(screen.getByText("1.6.3")).toBeTruthy();
   });
 
-  it("'Check again' calls onCheckAgain", async () => {
-    const { onCheckAgain } = renderGate();
-    await userEvent.click(screen.getByText("Check again"));
-    expect(onCheckAgain).toHaveBeenCalledTimes(1);
+  it("offers no 'Check again' that can't change anything, and says how it re-checks", () => {
+    renderGate();
+    expect(screen.queryByText("Check again")).toBeNull();
+    expect(screen.getByText(/checks again on its own/i)).toBeTruthy();
   });
 
   it("'Use it anyway' calls onProceed", async () => {

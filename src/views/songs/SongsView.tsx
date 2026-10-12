@@ -76,7 +76,7 @@ import {
   invalidateSongPresetJoin,
   patchLibrarySongs,
   forgetLibrarySongs,
-} from "../level/libraryScan";
+} from "../../device/libraryScan";
 import { SongsLoadingSkeleton } from "./skeletons";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,17 @@ export interface SongsViewProps {
 
 export function SongsView({ connected, onScan }: SongsViewProps) {
   const { t } = useTheme();
-  const { phase, mountedRef, runLoad } = useDeviceLoad();
+  const { phase, runLoad } = useDeviceLoad();
+  // Whether this view is still mounted — NOT a setState guard (a no-op on React
+  // 19), but runDeviceOp's branch: a write that finishes after the tab unmounted
+  // must stale the scan snapshot instead of applying to a view that's gone.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [songs, setSongs] = useState<SongRecord[]>([]);
   const [setlists, setSetlists] = useState<SetlistRecord[]>([]);
   // setlistSlot → ordered GLOBAL song slots (membership). Absent = not yet read.
@@ -134,19 +144,16 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   const [loaded, setLoaded] = useState(false);
   const toastTimer = useRef<number | null>(null);
 
-  const showToast = useCallback(
-    (message: string, kind: ToastKind) => {
-      setToast({ message, kind });
-      if (toastTimer.current) window.clearTimeout(toastTimer.current);
-      toastTimer.current = window.setTimeout(() => {
-        if (mountedRef.current) setToast(null);
-      }, 4200);
-    },
-    [mountedRef],
-  );
+  const showToast = useCallback((message: string, kind: ToastKind) => {
+    setToast({ message, kind });
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => {
+      setToast(null);
+    }, 4200);
+  }, []);
 
-  // Clear the pending toast-dismiss timer on unmount. The mountedRef guard already
-  // blocks the setState, but don't leave a dangling timer (InstrumentRow's pattern).
+  // Clear the pending toast-dismiss timer on unmount — don't leave a dangling
+  // timer (InstrumentRow's pattern).
   useEffect(
     () => () => {
       if (toastTimer.current) window.clearTimeout(toastTimer.current);
@@ -188,12 +195,12 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
   // exclusive HID connection and the TMP is single-connection (concurrent connects
   // collide with kIOReturnExclusiveAccess 0xe00002c5).
   const refresh = useCallback(async () => {
-    await runLoad(async () => {
+    await runLoad(async (isCurrent) => {
       const scan = getLibraryScan();
       const fromScan = scan.ready && scan.songs.length > 0;
       const s = fromScan ? scan.songs : await listSongs();
       const l = fromScan ? scan.setlists : await readSetlists();
-      if (!mountedRef.current) return;
+      if (!isCurrent()) return;
       setSongs(s);
       setSetlists(l);
       setMembership(fromScan ? new Map(scan.setlistSongs) : new Map());
@@ -204,7 +211,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           : v,
       );
     });
-  }, [runLoad, mountedRef]);
+  }, [runLoad]);
 
   useEffect(() => {
     if (connected) void refresh();
@@ -245,14 +252,14 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
           if (mountedRef.current) showToast(errMsg(e), "err");
         } finally {
           pendingRef.current -= 1;
-          if (mountedRef.current && pendingRef.current === 0) setBusy(false);
+          if (pendingRef.current === 0) setBusy(false);
         }
       };
       const next = queueRef.current.then(run);
       queueRef.current = next;
       return next;
     },
-    [showToast, mountedRef],
+    [showToast],
   );
 
   // Fetch a setlist's membership (always re-read on select for freshness). A read

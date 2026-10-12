@@ -14,6 +14,7 @@ import { SlotLabel } from "../../ui/SlotLabel";
 import { slotLabel } from "../../lib/format";
 import { OnUnitChip, StepBadge, MiniLink } from "./copyBits";
 import type { CopyPreset } from "./useCopyLibrary";
+import { useLibraryScanPercent } from "../../device/libraryScan";
 
 export interface ChoosePresetsProps {
   presets: CopyPreset[];
@@ -23,10 +24,8 @@ export interface ChoosePresetsProps {
   setTo: (next: Set<number>) => void;
   /** Per-preset signal graphs (the backup) have settled — gates "Place the blocks". */
   ready: boolean;
-  /** The background backup is still streaming. */
+  /** The background backup is still streaming (its % is read by ScanReadingPill). */
   scanning: boolean;
-  /** Determinate backup transfer %. */
-  percent: number;
   onContinue: () => void;
 }
 
@@ -46,7 +45,6 @@ export function ChoosePresets({
   setTo,
   ready,
   scanning,
-  percent,
   onContinue,
 }: ChoosePresetsProps) {
   const { t } = useTheme();
@@ -383,17 +381,30 @@ export function ChoosePresets({
               Place the blocks
             </Button>
           ) : (
-            <ReadingPill
-              label={
-                scanning
-                  ? `Reading presets… ${String(Math.round(percent))}%`
-                  : undefined
-              }
-            />
+            <ScanReadingPill scanning={scanning} />
           )
         }
       />
     </div>
+  );
+}
+
+interface ScanReadingPillProps {
+  scanning: boolean;
+}
+
+// The only part of the Choose step that follows the backup's transfer %, so a
+// progress tick repaints this pill instead of the whole step.
+function ScanReadingPill({ scanning }: ScanReadingPillProps) {
+  const percent = useLibraryScanPercent();
+  return (
+    <ReadingPill
+      label={
+        scanning
+          ? `Reading presets… ${String(Math.round(percent))}%`
+          : undefined
+      }
+    />
   );
 }
 

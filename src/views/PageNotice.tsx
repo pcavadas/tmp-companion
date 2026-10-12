@@ -15,7 +15,7 @@ import type { IconName } from "../ui/iconNames";
 export interface PageNoticeAction {
   label: string;
   icon?: IconName;
-  onClick?: () => void;
+  onClick: () => void;
 }
 
 export interface PageNoticeProps {

@@ -37,10 +37,7 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 import { CopyView } from "../views/copy";
 // CopyView reuses the ONE module-scoped libraryScan that lives under views/level
 // (useCopyLibrary imports it from there) — reset it between tests so each run scans fresh.
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 // The 3-block series preset + backup row are shared with hardeningFixes.test.tsx's BUG-2 lock.
 import { backupRow, seriesGraph } from "./copyFixtures";
 

@@ -24,6 +24,7 @@ import { PresetRow as PresetRowComponent } from "./level/PresetRow";
 import { childKeys } from "./level/leveling";
 import { presetCpu } from "../models/cpu";
 import type { ScanState } from "./level/usePresetData";
+import { useLibraryScanPercent } from "../device/libraryScan";
 import type { ActiveGraph, FootswitchInfo, SceneInfo } from "../lib/types";
 
 export interface PresetRow {
@@ -177,10 +178,11 @@ export function PresetList(props: PresetListProps) {
     return m;
   }, [rows, graphByIndex]);
 
-  // The rendered rows, memoized WITHOUT `scan.percent` — the backup scan emits ~59
-  // progress ticks, and rebuilding ~500 rows on each is wasted work. Only a real
-  // change (filter / selection / expansion / active row / scenes landing / ready)
-  // recomputes the list; a percent tick just repaints the strip.
+  // The rendered rows, memoized — rebuilding ~500 rows is work. Only a real change
+  // (filter / selection / expansion / active row / scenes landing / ready)
+  // recomputes the list. The backup's ~59 progress ticks never reach this
+  // component at all: only the strip's ScanPercentText / ScanProgressBar read the
+  // percent store.
   const renderedRows = useMemo(
     () =>
       filteredRows.map((r) => {
@@ -297,18 +299,9 @@ export function PresetList(props: PresetListProps) {
               <Spinner size={12} stroke={t.accentDeep} />
               Reading preset details…
             </span>
-            <span
-              style={{
-                fontFamily: t.mono,
-                fontSize: t.fsMeta,
-                color: t.mutedInk,
-                fontVariantNumeric: "tabular-nums",
-              }}
-            >
-              {Math.round(scan.percent)}%
-            </span>
+            <ScanPercentText />
           </div>
-          <ProgressBar percent={scan.percent} height={3} />
+          <ScanProgressBar />
           <div
             style={{
               fontFamily: t.sans,
@@ -371,3 +364,27 @@ export function PresetList(props: PresetListProps) {
 }
 
 export default PresetList;
+
+// The scan strip's two percent readouts. Only these subscribe to the progress store,
+// so a tick repaints them and nothing else.
+function ScanPercentText() {
+  const { t } = useTheme();
+  const percent = useLibraryScanPercent();
+  return (
+    <span
+      style={{
+        fontFamily: t.mono,
+        fontSize: t.fsMeta,
+        color: t.mutedInk,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      {Math.round(percent)}%
+    </span>
+  );
+}
+
+function ScanProgressBar() {
+  const percent = useLibraryScanPercent();
+  return <ProgressBar percent={percent} height={3} />;
+}

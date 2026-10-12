@@ -11,7 +11,7 @@ export interface SongDraft {
 }
 
 export const SONG_COLS = "34px 1fr 72px 72px";
-export const LIST_COLS = "26px 34px 1fr 70px 30px";
+export const LIST_COLS = "26px 34px 1fr 70px 56px";
 
 // (songBpm / bpmStr / plainInput pure helpers moved to ./songUtil.)
 

@@ -1,7 +1,9 @@
 // src/views/settings/InstrumentRow.tsx — status dot + serif name + "Type ·
-// Pickup" + status sub-line; right side = the calibrate control + a ⋯ menu. The
-// calibration state machine lives here (local per-row state; never disables other
-// rows). Split out of SettingsView.tsx (mechanical extraction).
+// Pickup" + status sub-line; right side = the calibrate control + a ⋯ menu (Edit
+// / Move up / Move down / Delete — reorder is click-only, so the row carries no
+// drag grip). The calibration state machine lives here (local per-row state;
+// never disables other rows). Every attempt gets its own token, so a cancelled
+// capture that resolves late can't touch a newer attempt's timers or result.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -56,14 +58,16 @@ export function InstrumentRow({
   // persisted, so a page reload shows the plain calibrated LUFS line only.
   const [calibResult, setCalibResult] = useState<CalibrateResult | null>(null);
 
-  // Live timers. `abortedRef` gates the in-flight calibrate_profile promise's resolve so a
-  // cancelled / unmounted row never applies its result (setState after unmount, or a
-  // spurious onCalibrated). It does NOT stop the backend capture itself — that still runs
-  // to completion on the device and may persist; the recording-cancel path re-reads the
-  // store to surface any value the device already saved.
+  // Live timers. `attemptRef` numbers each calibration attempt: a calibrate_profile
+  // promise applies its result only while its own attempt is still the current one,
+  // so a cancelled / superseded / unmounted attempt never applies its result, clears
+  // a newer attempt's timers, or fires a spurious onCalibrated. It does NOT stop the
+  // backend capture itself — that still runs to completion on the device and may
+  // persist; the recording-cancel path re-reads the store to surface any value the
+  // device already saved.
   const countdownRef = useRef<number | null>(null);
   const recIntervalRef = useRef<number | null>(null);
-  const abortedRef = useRef(false);
+  const attemptRef = useRef(0);
 
   function clearTimers() {
     if (countdownRef.current != null) {
@@ -76,11 +80,11 @@ export function InstrumentRow({
     }
   }
 
-  // On unmount, abort the in-flight promise too (not just the timers) so its .then()/
-  // .catch() can't setState on an unmounted row or fire a spurious onCalibrated.
+  // On unmount, retire the in-flight attempt too (not just the timers) so its
+  // .then()/.catch() can't fire a spurious onCalibrated.
   useEffect(
     () => () => {
-      abortedRef.current = true;
+      attemptRef.current += 1;
       clearTimers();
     },
     [],
@@ -91,7 +95,8 @@ export function InstrumentRow({
   // Countdown 3 → 2 → 1 at ~850ms steps, then start recording.
   function startCountdown() {
     setMenu(false);
-    abortedRef.current = false;
+    attemptRef.current += 1;
+    const attempt = attemptRef.current;
     clearTimers();
     setCalibWarn(null);
     setCalibResult(null);
@@ -101,7 +106,7 @@ export function InstrumentRow({
     const tick = () => {
       n -= 1;
       if (n <= 0) {
-        startRecording();
+        startRecording(attempt);
         return;
       }
       setCount(n);
@@ -112,7 +117,7 @@ export function InstrumentRow({
 
   // Recording: a DETERMINATE bar animates 0→CALIBRATE_SECS over ~8s while the
   // REAL backend calibration runs concurrently. Backend result wins the phase.
-  function startRecording() {
+  function startRecording(attempt: number) {
     setPhase("recording");
     setRec(0);
     const stepMs = 100;
@@ -123,7 +128,7 @@ export function InstrumentRow({
 
     calibrateProfile(profile.id, CALIBRATE_SECS)
       .then((res) => {
-        if (abortedRef.current) return;
+        if (attemptRef.current !== attempt) return;
         clearTimers();
         setCalibResult(res);
         const warns: string[] = [];
@@ -140,7 +145,7 @@ export function InstrumentRow({
         onCalibrated();
       })
       .catch((e: unknown) => {
-        if (abortedRef.current) return;
+        if (attemptRef.current !== attempt) return;
         clearTimers();
         setCalibErr(errMsg(e));
         setPhase("error");
@@ -149,7 +154,7 @@ export function InstrumentRow({
 
   function cancel() {
     const wasRecording = phase === "recording";
-    abortedRef.current = true;
+    attemptRef.current += 1;
     clearTimers();
     setPhase("idle");
     // The backend calibrate_profile may have ALREADY persisted before the user hit cancel;
@@ -222,9 +227,6 @@ export function InstrumentRow({
           flex: 1,
         }}
       >
-        <span style={{ display: "flex", color: t.faint, flexShrink: 0 }}>
-          <Icon name="grip" size={14} stroke="currentColor" />
-        </span>
         <span
           className={phase === "recording" ? "tmp-pulse" : undefined}
           style={{

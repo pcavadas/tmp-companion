@@ -31,11 +31,8 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 
 // Imported AFTER the mocks so the view picks up the forced isTauri().
 import { LevelView } from "../views/level";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
-import { resetLiveDevice } from "../views/level/useLiveDevice";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
+import { resetLiveDevice } from "../device/useLiveDevice";
 import type { ActiveGraph } from "../lib/types";
 import { resetLevelFlow } from "../views/level/levelRunStore";
 

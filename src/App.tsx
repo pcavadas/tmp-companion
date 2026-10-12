@@ -38,11 +38,12 @@ import { CatalogView } from "./views/CatalogView";
 import { SettingsView } from "./views/settings";
 import type { CategoryId } from "./views/settings";
 import { FirmwareGate } from "./views/FirmwareGate";
+import { LibraryScanErrorBanner } from "./views/LibraryScanErrorBanner";
 import { firmwareGateActive, firmwareSupported } from "./lib/firmware";
 import { connectDevice, currentGraph, isTauri } from "./lib/invoke";
 import { useUpdater } from "./lib/useUpdater";
 import { UpdateOverlay } from "./ui/UpdateOverlay";
-import { ensureLibraryScan, resetLibraryScan } from "./views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "./device/libraryScan";
 import { onDeviceDetached as resetLevelOnDetach } from "./views/level/levelRunStore";
 import { startScanAfterGraph } from "./lib/scheduleLibraryScan";
 import type { ActiveGraph } from "./lib/types";
@@ -58,24 +59,19 @@ const RETRY_MS = 3000; // auto-connect retry interval (armed while disconnected)
 type Tab = "level" | "doctor" | "copy" | "songs" | "catalog" | "settings";
 type ConnStatus = "connecting" | "connected" | "disconnected";
 
-// `deviceIndependent` tabs render without a connected TMP, so the connection
-// gate is suppressed while they're active (Catalog is a static reference catalog).
-// Doctor is device-dependent (no `deviceIndependent`) and stays firmware-gated.
-const TABS: { id: Tab; label: string; deviceIndependent?: boolean }[] = [
+// Which tabs the firmware gate covers is decided by FW_UNGATED_TABS in
+// lib/firmware.ts, not here.
+const TABS: { id: Tab; label: string }[] = [
   { id: "level", label: "Level" },
   { id: "doctor", label: "Doctor" },
   { id: "copy", label: "Copy" },
   { id: "songs", label: "Songs" },
-  { id: "catalog", label: "Catalog", deviceIndependent: true },
+  { id: "catalog", label: "Catalog" },
   { id: "settings", label: "Settings" },
 ];
 
+// The single ThemeProvider lives in main.tsx (wraps this root); App is the shell.
 export default function App() {
-  // The single ThemeProvider lives in main.tsx (wraps this root); App is the shell.
-  return <AppShell />;
-}
-
-function AppShell() {
   const { t } = useTheme();
   const updater = useUpdater();
 
@@ -145,8 +141,9 @@ function AppShell() {
     }
   }, []);
 
-  // Guarded single-flight attempt — shared by the 3 s poll and the hotplug
-  // attached event. A no-op while connected or while another attempt runs.
+  // Guarded single-flight attempt — the ONE connect path, shared by the 3 s poll,
+  // the hotplug attached event and the manual "Scan for device". A no-op while
+  // connected or while another attempt runs.
   const attempt = useCallback(async () => {
     if (connectingRef.current || connectedRef.current) return;
     connectingRef.current = true;
@@ -210,12 +207,15 @@ function AppShell() {
     };
   }, []);
 
-  // Manual retry (from the gate button) — forces another attempt immediately.
+  // Manual retry ("Scan for device" on a no-device page) — an immediate attempt
+  // through the same single-flight guard. Only offered while disconnected; if a
+  // poll attempt is already in flight, that one settles the status.
   const retry = useCallback(() => {
+    if (connectedRef.current) return;
     setStatus("connecting");
     setConnectError(null);
-    void connect();
-  }, [connect]);
+    void attempt();
+  }, [attempt]);
 
   const connected = status === "connected";
 
@@ -307,6 +307,9 @@ function AppShell() {
         </AlertBanner>
       )}
 
+      {/* A failed library scan — said once, app-wide, with Retry. */}
+      {connected && <LibraryScanErrorBanner />}
+
       {/* Active workspace. A per-tab ErrorBoundary keyed on `tab` isolates a
           body crash to the workspace — the tab bar + connection state survive,
           and switching tabs remounts a fresh boundary (so a crashed tab doesn't
@@ -329,7 +332,6 @@ function AppShell() {
           firmware != null ? (
             <FirmwareGate
               detected={firmware}
-              onCheckAgain={retry}
               onProceed={() => {
                 setProceeded(true);
               }}
@@ -378,7 +380,7 @@ function AppShell() {
   );
 }
 
-// ── Top tab bar (click-only, 4-tab IA) ────────────────────────────────────────
+// ── Top tab bar (click-only, 6-tab IA) ────────────────────────────────────────
 interface TabBarProps {
   tab: Tab;
   onSelect: (t: Tab) => void;

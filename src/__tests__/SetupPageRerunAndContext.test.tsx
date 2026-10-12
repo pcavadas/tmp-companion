@@ -18,10 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { SetupPage, type SetupChoice } from "../views/level/SetupPage";
 import { WithCard } from "./pickCardTestUtils";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import {
   optionToRunItem,
   runItemToOption,

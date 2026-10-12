@@ -33,7 +33,7 @@ import {
   ensureLibraryScan,
   getLibraryScan,
   resetLibraryScan,
-} from "../views/level/libraryScan";
+} from "../device/libraryScan";
 
 function renderMgr(connected: boolean) {
   return render(

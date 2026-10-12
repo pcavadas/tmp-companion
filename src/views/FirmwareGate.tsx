@@ -2,9 +2,12 @@
 //
 // Warn-toned sibling of EmptyState: shown in place of a unit-driven tab body
 // when the connected unit reports firmware below FW_MIN. Not a hard block —
-// "Use it anyway" proceeds into the app (App holds the per-session override),
-// "Check again" re-reads the unit's firmware in case it was just updated. There
-// is no "how to update" path — updating firmware isn't this app's job.
+// "Use it anyway" proceeds into the app (App holds the per-session override).
+// There is no "Check again": while the unit stays connected its version can't
+// change (the handshake read it once), and a firmware update restarts the unit,
+// whose reconnect re-reads the version and clears this page on its own — the
+// hint says so. There is no "how to update" path — updating firmware isn't this
+// app's job.
 
 import { useTheme } from "../theme/ThemeContext";
 import { Icon } from "../ui/Icon";
@@ -14,17 +17,11 @@ import { FW_MIN } from "../lib/firmware";
 export interface FirmwareGateProps {
   /** The below-floor version the unit reported (e.g. "1.6.3"). */
   detected: string;
-  /** Re-read the unit's firmware. */
-  onCheckAgain: () => void;
   /** Dismiss the notice and proceed into the app for this session. */
   onProceed: () => void;
 }
 
-export function FirmwareGate({
-  detected,
-  onCheckAgain,
-  onProceed,
-}: FirmwareGateProps) {
+export function FirmwareGate({ detected, onProceed }: FirmwareGateProps) {
   const { t } = useTheme();
   return (
     <PageNotice
@@ -43,8 +40,8 @@ export function FirmwareGate({
         </>
       }
       bodyMaxWidth={440}
-      primary={{ label: "Check again", icon: "refresh", onClick: onCheckAgain }}
       secondary={{ label: "Use it anyway", onClick: onProceed }}
+      hint="Updated the firmware? This page checks again on its own when the unit restarts and reconnects."
     />
   );
 }

@@ -1,6 +1,10 @@
 // src/views/settings/TargetRow.tsx — one editable loudness-target row: drag
 // handle · serif name (double-click to rename) · terracotta-filled slider track
-// + white ringed knob · right-aligned mono value · ⋯ menu (Rename / Delete).
+// + white ringed knob · right-aligned mono value · ⋯ menu (Rename / Move up /
+// Move down / Delete). Drag-reorder stays, but the menu is the click-only path.
+// The slider captures its pointer: moves and the release land on the track, and a
+// pointercancel (or a lost capture) ends the drag WITHOUT committing, restoring
+// the value it started from.
 // Replaces the old read-only TargetSlider (handoff design_handoff_settings_targets:
 // targets are now user-owned — create / rename / reorder / delete + draggable
 // slider, with NO upper ceiling / clamp).
@@ -41,9 +45,14 @@ interface TargetRowProps {
   /** Final value on pointer-release (persist once). */
   onCommit: (lufs: number) => void;
   onDelete: () => void;
+  /** Click-only reorder; undefined at the list's edge (the item is hidden). */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
   /** HTML5 DnD reorder: record this row as the drag source / drop target. */
   onGrab: () => void;
   onDropOn: () => void;
+  /** A drag ended (dropped or abandoned) — clear the drag source. */
+  onDragEnd: () => void;
 }
 
 export function TargetRow({
@@ -54,8 +63,11 @@ export function TargetRow({
   onChange,
   onCommit,
   onDelete,
+  onMoveUp,
+  onMoveDown,
   onGrab,
   onDropOn,
+  onDragEnd,
 }: TargetRowProps) {
   const { t } = useTheme();
 
@@ -63,6 +75,9 @@ export function TargetRow({
   const [draft, setDraft] = useState(name);
   const [menu, setMenu] = useState(false);
   const trackRef = useRef<HTMLDivElement | null>(null);
+  // The in-progress slider drag: which pointer owns it and the value it started
+  // from (restored on a cancel). null = no drag.
+  const dragRef = useRef<{ pointerId: number; start: number } | null>(null);
 
   // Keep the draft in sync with the row's name while not editing (e.g. after a
   // reorder reuses this row for a different target). Done via React's "adjust
@@ -96,17 +111,29 @@ export function TargetRow({
 
   function onTrackDown(e: React.PointerEvent<HTMLDivElement>) {
     e.preventDefault();
+    dragRef.current = { pointerId: e.pointerId, start: lufs };
+    // Capture so the move/up/cancel events keep landing on the track even when
+    // the pointer leaves it. Absent in jsdom, hence the guard.
+    if ("setPointerCapture" in e.currentTarget)
+      e.currentTarget.setPointerCapture(e.pointerId);
     onChange(valueAtClientX(e.clientX));
-    const move = (ev: PointerEvent) => {
-      onChange(valueAtClientX(ev.clientX));
-    };
-    const up = (ev: PointerEvent) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      onCommit(valueAtClientX(ev.clientX)); // persist once, on release
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+  }
+  function onTrackMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (dragRef.current?.pointerId !== e.pointerId) return;
+    onChange(valueAtClientX(e.clientX));
+  }
+  function onTrackUp(e: React.PointerEvent<HTMLDivElement>) {
+    if (dragRef.current?.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    onCommit(valueAtClientX(e.clientX)); // persist once, on release
+  }
+  // pointercancel / lost capture: end the drag without committing, and put the
+  // live value back where the drag started.
+  function onTrackCancel(e: React.PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (drag?.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    onChange(drag.start);
   }
 
   const closeMenuThen = (fn: () => void) => () => {
@@ -124,6 +151,7 @@ export function TargetRow({
         e.preventDefault();
       }}
       onDrop={onDropOn}
+      onDragEnd={onDragEnd}
       style={{
         display: "flex",
         alignItems: "center",
@@ -195,6 +223,10 @@ export function TargetRow({
       <div
         ref={trackRef}
         onPointerDown={onTrackDown}
+        onPointerMove={onTrackMove}
+        onPointerUp={onTrackUp}
+        onPointerCancel={onTrackCancel}
+        onLostPointerCapture={onTrackCancel}
         title="Drag to set level"
         style={{
           flex: 1,
@@ -276,6 +308,12 @@ export function TargetRow({
                 setEditing(true);
               })}
             />
+            {onMoveUp && (
+              <MenuItem label="Move up" onClick={closeMenuThen(onMoveUp)} />
+            )}
+            {onMoveDown && (
+              <MenuItem label="Move down" onClick={closeMenuThen(onMoveDown)} />
+            )}
             <MenuDivider />
             <MenuItem label="Delete" onClick={closeMenuThen(onDelete)} danger />
           </Menu>

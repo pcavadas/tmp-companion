@@ -308,6 +308,44 @@ describe("useUpdater — manual check()", () => {
   });
 });
 
+// #311: with auto-install on, a manual Check while the startup check is still
+// pending used to reach start() twice — two concurrent downloads.
+describe("useUpdater — overlapping checks with auto-install (#311)", () => {
+  it("two checks resolving together start ONE download", async () => {
+    const u = mkUpdate("1.1.0", null);
+    h.getStore.mockResolvedValue(storeWith(true));
+    const pending: ((f: FoundUpdate | null) => void)[] = [];
+    h.checkForUpdate.mockImplementation(
+      () =>
+        new Promise<FoundUpdate | null>((res) => {
+          pending.push(res);
+        }),
+    );
+
+    const { result } = renderHook(() => useUpdater());
+    // The startup check is in flight (auto-install read, check pending).
+    await waitFor(() => {
+      expect(pending).toHaveLength(1);
+    });
+    expect(result.current.autoInstall).toBe(true);
+    expect(result.current.phase).toBe("idle");
+
+    // A manual Check while it's pending — both are now in flight.
+    let manual: Promise<"found" | "none" | "error"> | undefined;
+    act(() => {
+      manual = result.current.check();
+    });
+    expect(pending).toHaveLength(2);
+
+    await act(async () => {
+      for (const res of pending) res(u.found);
+      await manual;
+    });
+    expect(result.current.phase).toBe("downloading");
+    expect(u.download).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("useUpdater — dismiss / restart / setAutoInstall", () => {
   it("dismiss() resets any dismissible phase to idle", async () => {
     const u = mkUpdate("1.1.0", null);

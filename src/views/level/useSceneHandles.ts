@@ -19,7 +19,7 @@
 
 import { listSceneLevelHandles } from "../../lib/invoke";
 import type { SceneHandleRow, SceneHandleCandidate } from "../../lib/types";
-import { getLibraryScan } from "./libraryScan";
+import { getLibraryScan } from "../../device/libraryScan";
 import { useLazySlotCache } from "./useLazySlotCache";
 
 export type HandleFetchState =

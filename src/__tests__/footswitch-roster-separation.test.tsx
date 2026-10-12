@@ -38,11 +38,8 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 // Imported AFTER the mocks so both views pick up the forced isTauri().
 import { LevelView } from "../views/level";
 import { DoctorView } from "../views/doctor";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
-import { resetLiveDevice } from "../views/level/useLiveDevice";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
+import { resetLiveDevice } from "../device/useLiveDevice";
 
 const SOLO_FOOTSWITCH = {
   switch: 4, // → tag FS5

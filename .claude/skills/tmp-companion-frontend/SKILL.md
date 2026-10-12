@@ -65,9 +65,9 @@ If a command doesn't exist yet, that's a backend change — coordinate it, don't
 
 ### Shared device data: the `libraryScan` store (App-owned, ONE scan/connection)
 
-Some device data (scenes, blocks, graphs, footswitches, the song↔preset map) is too expensive to read per-tab, so it's read ONCE per connection into a **module-scoped store**, `src/views/level/libraryScan.ts`, consumed by **Level, Copy, and Songs**. The scan TRIGGER is **App-owned**: `App.tsx` fires `ensureLibraryScan()` once on the connect edge and `resetLibraryScan()` on detach — so every device tab shares ONE scan and a tab switch NEVER re-triggers it. A new tab that needs backup-sourced data **CONSUMES the store** (`useSyncExternalStore(subscribeLibraryScan, getLibraryScan)`); it does NOT add its own trigger — that re-introduces the per-tab-rescan bug this layout prevents.
+Some device data (scenes, blocks, graphs, footswitches, the song↔preset map) is too expensive to read per-tab, so it's read ONCE per connection into a **module-scoped store**, `src/device/libraryScan.ts`, consumed by **Level, Copy, and Songs**. The scan TRIGGER is **App-owned**: `App.tsx` fires `ensureLibraryScan()` once on the connect edge and `resetLibraryScan()` on detach — so every device tab shares ONE scan and a tab switch NEVER re-triggers it. A new tab that needs backup-sourced data **CONSUMES the store** (`useSyncExternalStore(subscribeLibraryScan, getLibraryScan)`); it does NOT add its own trigger — that re-introduces the per-tab-rescan bug this layout prevents.
 
-The SAME module-store pattern (not component `useState`) backs `src/views/level/useLiveDevice.ts` — the app-global LIVE device state (active preset/scene/graph from the 5 `tmp://` monitor events), for the same tab-switch-remount reason. The hero SLOT badge reads the frontend `activeListIndex`, not `graph.slot`. Deep-dive on both stores: `references/gotchas.md`.
+The SAME module-store pattern (not component `useState`) backs `src/device/useLiveDevice.ts` — the app-global LIVE device state (active preset/scene/graph from the 5 `tmp://` monitor events), for the same tab-switch-remount reason. The hero SLOT badge reads the frontend `activeListIndex`, not `graph.slot`. Deep-dive on both stores: `references/gotchas.md`.
 
 ## Testing
 

@@ -85,7 +85,7 @@ gate keys live there — `gates.ts`).
 - **C4 — Pro Control holding the device.** Open Pro Control, launch app → **red** AlertBanner with
   the "close Fender Pro Control" hint (the one actionable-error case). Close PC → retry/auto-recovers.
 - **C5 — Firmware gate.** (Hard to force without old fw.) If fw < 1.7: Level/Copy/Songs show
-  FirmwareGate full-page ("Check again" / "Use it anyway"); Catalog/Settings stay reachable;
+  FirmwareGate full-page ("Use it anyway"); Catalog/Settings stay reachable;
   DeviceStatus shows persistent "untested ⚠". "Use it anyway" unlocks per-mount.
 - **C6 — Hot-plug detach.** While connected on Level, unplug → DeviceStatus→hollow, body→EmptyState,
   firmware/graph cleared, retry loop stays armed. Replug → auto-reconnects, body repopulates.

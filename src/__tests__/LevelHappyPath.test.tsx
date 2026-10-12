@@ -34,10 +34,7 @@ vi.mock("../lib/invoke", async (importOriginal) => {
 
 // Imported AFTER the mocks so the view picks up the forced isTauri().
 import { LevelView } from "../views/level";
-import {
-  ensureLibraryScan,
-  resetLibraryScan,
-} from "../views/level/libraryScan";
+import { ensureLibraryScan, resetLibraryScan } from "../device/libraryScan";
 import { resetLevelFlow } from "../views/level/levelRunStore";
 
 // The leveling wizard lives in a module store that outlives a mount; start each case clean.

@@ -20,7 +20,7 @@ import { Pick } from "./overlays/Pick";
 import { plainInput } from "../theme/tokens";
 import { saveSupportBundle, buildSupportBundle } from "../lib/invoke";
 import { errMsg } from "../lib/format";
-import { subscribeLibraryScan, getLibraryScan } from "./level/libraryScan";
+import { subscribeLibraryScan, getLibraryScan } from "../device/libraryScan";
 import { sendReport, type SendReportOutcome } from "./sendReport";
 import { REPORT_ENDPOINT } from "../lib/reportEndpoint";
 
