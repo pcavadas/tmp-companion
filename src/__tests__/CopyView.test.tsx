@@ -18,6 +18,7 @@ import {
   removeEditBlock,
   retargetHistory,
   type EditBlock,
+  type EditMap,
   type PresetEdit,
 } from "../views/copy/copyModel";
 import { invoke } from "@tauri-apps/api/core";
@@ -271,8 +272,8 @@ describe("copyModel — retargetHistory (#292)", () => {
     const e0 = s0[0];
     const e1 = s0[1];
     if (!e0 || !e1) throw new Error("missing slot");
-    const s1 = { ...s0, 0: replaceTwin(e0) };
-    const s2 = { ...s1, 1: replaceTwin(e1) };
+    const s1: EditMap = { ...s0, 0: replaceTwin(e0) };
+    const s2: EditMap = { ...s1, 1: replaceTwin(e1) };
     return { ...h, stack: [s0, s1, s2], idx: 2 };
   }
 
