@@ -240,8 +240,8 @@ in-flight, `busy` gates all buttons). The **Presets axis is read-only** (from th
 
 ### Monkey/chaos
 
-- **M-S1 — Rapid CRUD spam** — fire create/delete/rename back-to-back; `busy`/`busyRef` must
-  serialize (single in-flight), buttons disable; no concurrent USB connect collision.
+- **M-S1 — Rapid CRUD spam** — fire create/delete/rename back-to-back; the op queue must
+  serialize (single in-flight, nothing dropped), buttons disable; no concurrent USB connect collision.
 - **M-S2 — Write-failure Toast** — induce a failed write (e.g. disconnect mid-op) → err Toast,
   **state NOT mutated** (read-back failed, UI keeps prior authoritative list). _vitest covers the
   mock; verify live._
