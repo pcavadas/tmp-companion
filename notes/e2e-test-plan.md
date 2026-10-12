@@ -204,7 +204,7 @@ device write is `copy_apply` on Save.
   channel reported before a rejection; Done keeps the unsaved presets' edits on Step 2 (#291,
   `CopyStagedEdits.test.tsx`). The physical unplug is still untested.
 - **M-P3 — Partial save failure** — one of N presets returns `error` → row shows warn-tri, others
-  "updated", only updated items patch the cache. _No test injects an error item._
+  "updated", only updated items patch the cache. Gated by `CopyStagedEdits.test.tsx` (#291).
 - **M-P4 — Double-click Save** — must fire `copy_apply` once.
 - **M-P5 — Rapid tab-switch during the backup scan** that gates "Place the blocks" (shared
   `libraryScan` with Level/Songs).
