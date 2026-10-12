@@ -2003,7 +2003,7 @@ fn offline_songs_crud_through_real_backend() {
     let after_rm = invoke(
         &webview,
         "remove_song",
-        serde_json::json!({ "slot": 1, "expectName": "Opening Set", "expectCount": 3 }),
+        serde_json::json!({ "slot": 1, "expectName": "Opening Set", "expectList": sim.song_names() }),
     )
     .expect("remove_song");
     assert_eq!(
@@ -2051,7 +2051,7 @@ fn offline_batched_song_saves_open_one_connection_each() {
         serde_json::json!({
             "name": "Soundcheck", "notes": "capo 2", "bpm": 97.0,
             "addToSetlist": 1, "expectSetlistName": "Saturday Night",
-            "expectSetlistCount": 1
+            "expectSetlistList": ["Saturday Night"]
         }),
     )
     .expect("create_song_full");
@@ -2080,7 +2080,8 @@ fn offline_batched_song_saves_open_one_connection_each() {
         &webview,
         "update_song_full",
         serde_json::json!({
-            "slot": slot, "expectName": "Soundcheck", "expectCount": 3, "name": "Soundcheck 2", "bpm": 132.0
+            "slot": slot, "expectName": "Soundcheck", "expectList": sim.song_names(),
+            "name": "Soundcheck 2", "bpm": 132.0
         }),
     )
     .expect("update_song_full");
@@ -2101,7 +2102,7 @@ fn offline_batched_song_saves_open_one_connection_each() {
         serde_json::json!({
             "name": "Encore", "notes": "x", "bpm": 150.0,
             "addToSetlist": 1, "expectSetlistName": "Saturday Night",
-            "expectSetlistCount": 1
+            "expectSetlistList": ["Saturday Night"]
         }),
     )
     .expect("create_song_full (duplicate name)");
@@ -2166,75 +2167,75 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
     // The UI still believes slot 2 is "Set B" (deleted since): every write refuses.
     refused(
         "rename_setlist",
-        serde_json::json!({ "slot": 2, "expectName": "Set B", "expectCount": 3, "name": "X" }),
+        serde_json::json!({ "slot": 2, "expectName": "Set B", "expectList": ["Set A", "Set B", "Set C"], "name": "X" }),
     );
     refused(
         "rename_setlist",
-        serde_json::json!({ "slot": 3, "expectName": "Set C", "expectCount": 3, "name": "X" }),
+        serde_json::json!({ "slot": 3, "expectName": "Set C", "expectList": ["Set A", "Set B", "Set C"], "name": "X" }),
     );
     refused(
         "add_setlist_songs",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set B", "expectCount": 3,
-            "songSlots": [1], "expectSongNames": ["Alpha"], "expectSongCount": 3
+            "setlistSlot": 2, "expectName": "Set B", "expectList": ["Set A", "Set B", "Set C"],
+            "songSlots": [1], "expectSongNames": ["Alpha"], "expectSongList": ["Alpha", "Beta", "Gamma"]
         }),
     );
     refused(
         "create_song_full",
         serde_json::json!({
             "name": "New", "addToSetlist": 2, "expectSetlistName": "Set B",
-            "expectSetlistCount": 3
+            "expectSetlistList": ["Set A", "Set B", "Set C"]
         }),
     );
     // …and a stale SONG slot refuses too.
     refused(
         "add_setlist_songs",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
-            "songSlots": [1], "expectSongNames": ["Beta"], "expectSongCount": 3
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
+            "songSlots": [1], "expectSongNames": ["Beta"], "expectSongList": ["Alpha", "Beta", "Gamma"]
         }),
     );
     refused(
         "update_song_full",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectCount": 3, "name": "X" }),
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "name": "X" }),
     );
     // The granular commands carry the same guard.
     refused(
         "rename_song",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectCount": 3, "name": "X" }),
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "name": "X" }),
     );
     refused(
         "set_song_notes",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectCount": 3, "notes": "X" }),
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "notes": "X" }),
     );
     refused(
         "set_song_bpm",
-        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectCount": 3, "bpm": 120.0 }),
+        serde_json::json!({ "slot": 1, "expectName": "Beta", "expectList": ["Alpha", "Beta", "Gamma"], "bpm": 120.0 }),
     );
     refused(
         "add_setlist_song",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set B", "expectCount": 3,
-            "songSlot": 1, "expectSongName": "Alpha", "expectSongCount": 3
+            "setlistSlot": 2, "expectName": "Set B", "expectList": ["Set A", "Set B", "Set C"],
+            "songSlot": 1, "expectSongName": "Alpha", "expectSongList": ["Alpha", "Beta", "Gamma"]
         }),
     );
     refused(
         "add_setlist_song",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
-            "songSlot": 1, "expectSongName": "Beta", "expectSongCount": 3
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
+            "songSlot": 1, "expectSongName": "Beta", "expectSongList": ["Alpha", "Beta", "Gamma"]
         }),
     );
-    // A name that still matches at the slot is not enough when the list changed size
-    // since the UI read it: with repeated names, a shift can put ANOTHER song or setlist
-    // of that name there.
+    // A name that still matches at the slot is not enough when the list changed since
+    // the UI read it: with repeated names, a delete plus an add can put ANOTHER song or
+    // setlist of that name there while the slot's name and the list size stay the same.
     refused(
         "rename_song",
-        serde_json::json!({ "slot": 1, "expectName": "Alpha", "expectCount": 4, "name": "X" }),
+        serde_json::json!({ "slot": 1, "expectName": "Alpha", "expectList": ["Alpha", "Beta", "Beta"], "name": "X" }),
     );
     refused(
         "rename_setlist",
-        serde_json::json!({ "slot": 1, "expectName": "Set A", "expectCount": 3, "name": "X" }),
+        serde_json::json!({ "slot": 1, "expectName": "Set A", "expectList": ["Set A", "Set B"], "name": "X" }),
     );
     let setlists = invoke(&webview, "read_setlists", serde_json::json!({})).unwrap();
     assert_eq!(
@@ -2262,8 +2263,8 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
         &webview,
         "add_setlist_songs",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
-            "songSlots": [1, 3], "expectSongNames": ["Alpha", "Gamma"], "expectSongCount": 3
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
+            "songSlots": [1, 3], "expectSongNames": ["Alpha", "Gamma"], "expectSongList": ["Alpha", "Beta", "Gamma"]
         }),
     )
     .expect("add_setlist_songs");
@@ -2273,14 +2274,14 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
     refused(
         "remove_setlist_song",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
             "setlistSongSlot": 1, "expectSongSlot": 3
         }),
     );
     refused(
         "move_setlist_song",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
             "oldPos": 3, "newPos": 1, "expectSongSlot": 3
         }),
     );
@@ -2288,7 +2289,7 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
         &webview,
         "move_setlist_song",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
             "oldPos": 2, "newPos": 1, "expectSongSlot": 3
         }),
     )
@@ -2298,7 +2299,7 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
         &webview,
         "remove_setlist_song",
         serde_json::json!({
-            "setlistSlot": 2, "expectName": "Set C", "expectCount": 2,
+            "setlistSlot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"],
             "setlistSongSlot": 2, "expectSongSlot": 1
         }),
     )
@@ -2307,7 +2308,7 @@ fn offline_slot_keyed_song_writes_refuse_a_stale_name() {
     let renamed = invoke(
         &webview,
         "rename_setlist",
-        serde_json::json!({ "slot": 2, "expectName": "Set C", "expectCount": 2, "name": "Closers" }),
+        serde_json::json!({ "slot": 2, "expectName": "Set C", "expectList": ["Set A", "Set C"], "name": "Closers" }),
     )
     .expect("rename_setlist");
     assert_eq!(names(renamed), ["Set A", "Closers"]);

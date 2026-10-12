@@ -182,7 +182,7 @@ describe("SongsView (device-backed)", () => {
         bpm: null,
         addToSetlist: null,
         expectSetlistName: null,
-        expectSetlistCount: null,
+        expectSetlistList: null,
       });
     });
     expect(await screen.findByText("Toto")).toBeInTheDocument();
@@ -218,7 +218,7 @@ describe("SongsView (device-backed)", () => {
     expect(lastArgsTo("update_song_full")).toEqual({
       slot: 2,
       expectName: "Toto",
-      expectCount: 1,
+      expectList: ["Toto"],
       name: "Toto Toto",
       notes: null,
       bpm: 102,
@@ -251,7 +251,7 @@ describe("SongsView (device-backed)", () => {
       expect(lastArgsTo("remove_song")).toEqual({
         slot: 5,
         expectName: "Doomed",
-        expectCount: 1,
+        expectList: ["Doomed"],
       });
     });
   });
@@ -275,7 +275,7 @@ describe("SongsView (device-backed)", () => {
       expect(lastArgsTo("remove_setlist")).toEqual({
         slot: 1,
         expectName: "Set A",
-        expectCount: 1,
+        expectList: ["Set A"],
       });
     });
     // View falls back to the library: the deleted setlist is gone from the rail.
@@ -323,7 +323,7 @@ describe("SongsView (device-backed)", () => {
       expect(lastArgsTo("remove_setlist_song")).toEqual({
         setlistSlot: 1,
         expectName: "Set A",
-        expectCount: 1,
+        expectList: ["Set A"],
         setlistSongSlot: 1,
         expectSongSlot: 3,
       });
@@ -350,7 +350,7 @@ describe("SongsView (device-backed)", () => {
       expect(lastArgsTo("move_setlist_song")).toEqual({
         setlistSlot: 1,
         expectName: "Set A",
-        expectCount: 1,
+        expectList: ["Set A"],
         oldPos: 1,
         newPos: 2,
         expectSongSlot: 3,
@@ -392,7 +392,7 @@ describe("SongsView (device-backed)", () => {
       bpm: null,
       addToSetlist: 1,
       expectSetlistName: "Set A",
-      expectSetlistCount: 1,
+      expectSetlistList: ["Set A"],
     });
     expect(await screen.findByText("Fresh")).toBeInTheDocument();
   });
@@ -708,7 +708,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(lastArgsTo("rename_setlist")).toEqual({
       slot: 1,
       expectName: "Set A",
-      expectCount: 2,
+      expectList: ["Set A", "Set C"],
       name: "Openers",
     });
 
@@ -895,6 +895,45 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
     expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 1 });
   });
 
+  it("#297: a setlist picked while an earlier delete runs is read at its shifted slot", async () => {
+    const unit: FakeUnit = {
+      songs: [song(1, "Only Song")],
+      setlists: [
+        { slot: 1, name: "Set A" },
+        { slot: 2, name: "Set B" },
+        { slot: 3, name: "Set C" },
+      ],
+      members: new Map([
+        [1, []],
+        [2, []],
+        [3, [1]],
+      ]),
+    };
+    const del = gate();
+    fakeUnit(unit, { cmd: "remove_setlist", until: del.until });
+    await ensureLibraryScan();
+    renderMgr(true);
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Set A"));
+    await user.click(screen.getByTitle("Setlist options"));
+    await user.click(screen.getByText("Delete setlist"));
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    await waitFor(() => {
+      expect(callsTo("remove_setlist")).toBe(1);
+    });
+    // C is picked at slot 3 while A's delete is still running; the read queues.
+    await user.click(screen.getByText("Set C"));
+    const readsBefore = callsTo("list_setlist_songs");
+    del.open();
+    // The delete moved C to slot 2: the read follows it there, not to the old slot 3.
+    await waitFor(() => {
+      expect(callsTo("list_setlist_songs")).toBe(readsBefore + 1);
+    });
+    expect(lastArgsTo("list_setlist_songs")).toEqual({ setlistSlot: 2 });
+    expect(await screen.findAllByText("Only Song")).not.toHaveLength(0);
+    expect(within(railRow("Set C")).getByText("1")).toBeInTheDocument();
+  });
+
   it("#298: an unresolvable member is shown, and a later row is removed at its real device position", async () => {
     const unit: FakeUnit = {
       songs: [song(3, "Song C"), song(5, "Song E")],
@@ -915,7 +954,7 @@ describe("SongsView — stale slots after edits (#295–#299)", () => {
       expect(lastArgsTo("remove_setlist_song")).toEqual({
         setlistSlot: 1,
         expectName: "Set A",
-        expectCount: 1,
+        expectList: ["Set A"],
         setlistSongSlot: 3,
         expectSongSlot: 5,
       });

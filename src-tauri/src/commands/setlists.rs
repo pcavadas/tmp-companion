@@ -54,21 +54,24 @@ pub(crate) async fn add_setlist(
 // UI read earlier can name ANOTHER setlist now. Every slot-keyed write therefore
 // re-reads the list in the same slot space and refuses unless `slot` still holds the
 // name the user acted on (danger.md: the guard lives in the mutation's address space).
-// The list must also still hold the count the UI saw: when two setlists share a name, a
-// delete can shift one into the other's slot, and only the count tells them apart.
+// The whole list must also still read as the UI saw it, names in order: setlist names
+// can repeat, so a delete plus an add can keep both the target's name and the list size
+// while the slot now holds the other setlist of that name. The device exposes no stable
+// setlist id, so a change that restores the same names in the same order cannot be seen.
 
-/// Refuse unless `list` still holds `expect_count` setlists and setlist `slot` still
-/// reads `expect_name`.
+/// Refuse unless `list` still reads `expect_list` (names, in order) and setlist `slot`
+/// still reads `expect_name`.
 pub(crate) fn check_setlist_slot(
     list: &[session::SetlistRecord],
     slot: u32,
     expect_name: &str,
-    expect_count: u32,
+    expect_list: &[String],
 ) -> Result<(), String> {
-    if list.len() != expect_count as usize {
+    if !list.iter().map(|r| &r.name).eq(expect_list) {
         return Err(format!(
-            "refused: the unit has {} setlists, expected {expect_count} (list changed)",
-            list.len()
+            "refused: the unit's {} setlists no longer match the {} the app read (list changed)",
+            list.len(),
+            expect_list.len()
         ));
     }
     let rec = list
@@ -89,12 +92,12 @@ pub(crate) fn guard_setlist_on(
     s: &mut Session,
     slot: u32,
     expect_name: &str,
-    expect_count: u32,
+    expect_list: &[String],
 ) -> Result<(), String> {
     let list = s
         .setlist_list_strict()?
         .ok_or("the setlist list didn't read back, so the setlist can't be confirmed — refused")?;
-    check_setlist_slot(&list, slot, expect_name, expect_count)
+    check_setlist_slot(&list, slot, expect_name, expect_list)
 }
 
 /// Refuse unless position `position` (1-based) of `members` still holds `expect_song`
@@ -120,37 +123,37 @@ pub(crate) fn check_member_position(
     }
 }
 
-/// Guard a membership edit on `s`: the setlist still reads `expect_name` among
-/// `expect_count` setlists and `position` still holds `expect_song`.
+/// Guard a membership edit on `s`: the setlist still reads `expect_name` in the
+/// setlist list `expect_list` and `position` still holds `expect_song`.
 fn guard_member_on(
     s: &mut Session,
     setlist_slot: u32,
     expect_name: &str,
-    expect_count: u32,
+    expect_list: &[String],
     position: u32,
     expect_song: u32,
 ) -> Result<(), String> {
-    guard_setlist_on(s, setlist_slot, expect_name, expect_count)?;
+    guard_setlist_on(s, setlist_slot, expect_name, expect_list)?;
     let members = s.setlist_songs_strict(setlist_slot)?.ok_or(
         "the setlist's songs didn't read back, so the position can't be confirmed — refused",
     )?;
     check_member_position(&members, position, expect_song)
 }
 
-/// Rename a setlist by slot, guarded by `expect_name` and `expect_count`; returns the
+/// Rename a setlist by slot, guarded by `expect_name` and `expect_list`; returns the
 /// fresh setlist list.
 #[tauri::command]
 pub(crate) async fn rename_setlist(
     state: State<'_, AppState>,
     slot: u32,
     expect_name: String,
-    expect_count: u32,
+    expect_list: Vec<String>,
     name: String,
 ) -> Result<Vec<session::SetlistRecord>, String> {
     with_released_seize(state.session.clone(), move || {
         {
             let mut s = Session::connect()?;
-            guard_setlist_on(&mut s, slot, &expect_name, expect_count)?;
+            guard_setlist_on(&mut s, slot, &expect_name, &expect_list)?;
             s.rename_setlist(slot, &name)?;
         }
         read_setlist_list()
@@ -159,19 +162,19 @@ pub(crate) async fn rename_setlist(
 }
 
 /// Delete a setlist by slot — DESTRUCTIVE (the songs themselves are kept). Guarded
-/// by `expect_name` and `expect_count` in the same read space. Returns the fresh
-/// setlist list.
+/// by `expect_name` and `expect_list` on the delete's own connection. Returns the
+/// fresh setlist list.
 #[tauri::command]
 pub(crate) async fn remove_setlist(
     state: State<'_, AppState>,
     slot: u32,
     expect_name: String,
-    expect_count: u32,
+    expect_list: Vec<String>,
 ) -> Result<Vec<session::SetlistRecord>, String> {
     with_released_seize(state.session.clone(), move || {
-        check_setlist_slot(&read_setlist_list()?, slot, &expect_name, expect_count)?;
         {
             let mut s = Session::connect()?;
+            guard_setlist_on(&mut s, slot, &expect_name, &expect_list)?;
             s.remove_setlist(slot)?;
         }
         read_setlist_list()
@@ -181,27 +184,27 @@ pub(crate) async fn remove_setlist(
 
 /// Add a song (by GLOBAL song slot) to a setlist; returns the setlist's fresh
 /// member song slots (trailing 0s dropped). Guarded: the setlist still reads
-/// `expect_name` among `expect_count` setlists, and the song slot still reads
-/// `expect_song_name` among `expect_song_count` songs.
+/// `expect_name` in the setlist list `expect_list`, and the song slot still reads
+/// `expect_song_name` in the song list `expect_song_list`.
 #[tauri::command]
 pub(crate) async fn add_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
     expect_name: String,
-    expect_count: u32,
+    expect_list: Vec<String>,
     song_slot: u32,
     expect_song_name: String,
-    expect_song_count: u32,
+    expect_song_list: Vec<String>,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
         {
             let mut s = Session::connect()?;
-            guard_setlist_on(&mut s, setlist_slot, &expect_name, expect_count)?;
+            guard_setlist_on(&mut s, setlist_slot, &expect_name, &expect_list)?;
             crate::commands::songs::guard_song_on(
                 &mut s,
                 song_slot,
                 &expect_song_name,
-                expect_song_count,
+                &expect_song_list,
             )?;
             s.add_setlist_song(setlist_slot, song_slot)?;
         }
@@ -212,14 +215,14 @@ pub(crate) async fn add_setlist_song(
 
 /// Remove a song from a setlist by its POSITION within the setlist
 /// (`setlist_song_slot`, NOT the global song slot). Guarded: the setlist still reads
-/// `expect_name` among `expect_count` setlists and the position still holds
+/// `expect_name` in the setlist list `expect_list` and the position still holds
 /// `expect_song_slot`. Returns fresh member slots.
 #[tauri::command]
 pub(crate) async fn remove_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
     expect_name: String,
-    expect_count: u32,
+    expect_list: Vec<String>,
     setlist_song_slot: u32,
     expect_song_slot: u32,
 ) -> Result<Vec<u32>, String> {
@@ -230,7 +233,7 @@ pub(crate) async fn remove_setlist_song(
                 &mut s,
                 setlist_slot,
                 &expect_name,
-                expect_count,
+                &expect_list,
                 setlist_song_slot,
                 expect_song_slot,
             )?;
@@ -243,14 +246,14 @@ pub(crate) async fn remove_setlist_song(
 
 /// Reorder a song within a setlist by POSITION (both indices are positions within
 /// the setlist, NOT global song slots). Guarded: the setlist still reads
-/// `expect_name` among `expect_count` setlists and `old_pos` still holds
+/// `expect_name` in the setlist list `expect_list` and `old_pos` still holds
 /// `expect_song_slot`. Returns fresh member slots.
 #[tauri::command]
 pub(crate) async fn move_setlist_song(
     state: State<'_, AppState>,
     setlist_slot: u32,
     expect_name: String,
-    expect_count: u32,
+    expect_list: Vec<String>,
     old_pos: u32,
     new_pos: u32,
     expect_song_slot: u32,
@@ -262,7 +265,7 @@ pub(crate) async fn move_setlist_song(
                 &mut s,
                 setlist_slot,
                 &expect_name,
-                expect_count,
+                &expect_list,
                 old_pos,
                 expect_song_slot,
             )?;
@@ -276,18 +279,18 @@ pub(crate) async fn move_setlist_song(
 /// final membership read — replaces the UI's per-song `add_setlist_song` loop
 /// (which paid a bookend + membership read per song). Same proven per-write fresh
 /// connection per `addSetlistSong`. Guarded before any write: the setlist still reads
-/// `expect_name` among `expect_count` setlists, and each song slot still reads its
-/// `expect_song_names` entry among `expect_song_count` songs (song slots shift on every
+/// `expect_name` in the setlist list `expect_list`, and each song slot still reads its
+/// `expect_song_names` entry in the song list `expect_song_list` (song slots shift on every
 /// song add/remove).
 #[tauri::command]
 pub(crate) async fn add_setlist_songs(
     state: State<'_, AppState>,
     setlist_slot: u32,
     expect_name: String,
-    expect_count: u32,
+    expect_list: Vec<String>,
     song_slots: Vec<u32>,
     expect_song_names: Vec<String>,
-    expect_song_count: u32,
+    expect_song_list: Vec<String>,
 ) -> Result<Vec<u32>, String> {
     with_released_seize(state.session.clone(), move || {
         if song_slots.len() != expect_song_names.len() {
@@ -303,12 +306,12 @@ pub(crate) async fn add_setlist_songs(
         // the unit's front panel or Pro Control acting mid-command.
         {
             let mut s = Session::connect()?;
-            guard_setlist_on(&mut s, setlist_slot, &expect_name, expect_count)?;
+            guard_setlist_on(&mut s, setlist_slot, &expect_name, &expect_list)?;
             let songs = s.song_list_strict()?.ok_or(
                 "the song list didn't read back, so the songs can't be confirmed — refused",
             )?;
             for (slot, name) in song_slots.iter().zip(&expect_song_names) {
-                crate::commands::songs::check_song_slot(&songs, *slot, name, expect_song_count)?;
+                crate::commands::songs::check_song_slot(&songs, *slot, name, &expect_song_list)?;
             }
         }
         for ss in &song_slots {
@@ -335,23 +338,32 @@ mod tests {
             .collect()
     }
 
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
     #[test]
     fn a_setlist_slot_must_still_read_the_expected_name() {
         // [A, B, C] with B deleted → [A, C]: the UI's stale "B" at slot 2 and "C" at
         // slot 3 both refuse; only the current pairing passes.
         let now = list(&["A", "C"]);
-        assert!(check_setlist_slot(&now, 2, "B", 2).is_err());
-        assert!(check_setlist_slot(&now, 3, "C", 2).is_err());
-        assert!(check_setlist_slot(&now, 2, "C", 2).is_ok());
+        let seen = names(&["A", "C"]);
+        assert!(check_setlist_slot(&now, 2, "B", &seen).is_err());
+        assert!(check_setlist_slot(&now, 3, "C", &seen).is_err());
+        assert!(check_setlist_slot(&now, 2, "C", &seen).is_ok());
     }
 
     #[test]
-    fn a_shift_onto_a_same_named_setlist_is_refused_by_the_count() {
+    fn a_shift_onto_a_same_named_setlist_is_refused_by_the_list() {
         // [X, X, C] with the first X deleted → [X, C]: the UI's stale (1, "X") still
-        // names an "X", but the other one; the count the UI saw (3) refuses it.
+        // names an "X", but the other one; the shorter list refuses it.
         let now = list(&["X", "C"]);
-        assert!(check_setlist_slot(&now, 1, "X", 3).is_err());
-        assert!(check_setlist_slot(&now, 1, "X", 2).is_ok());
+        assert!(check_setlist_slot(&now, 1, "X", &names(&["X", "X", "C"])).is_err());
+        assert!(check_setlist_slot(&now, 1, "X", &names(&["X", "C"])).is_ok());
+        // Then Y added → [X, C, Y]: the size is back to 3 and slot 1 still reads "X",
+        // yet it is the other X; only the names in order tell the lists apart.
+        let now = list(&["X", "C", "Y"]);
+        assert!(check_setlist_slot(&now, 1, "X", &names(&["X", "X", "C"])).is_err());
     }
 
     #[test]

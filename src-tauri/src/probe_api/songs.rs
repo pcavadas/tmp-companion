@@ -272,14 +272,18 @@ pub(crate) fn set_song_bpm_on(
 /// Set song `slot`'s BPM over ONE connection ([`set_song_bpm_on`], restoring the preset
 /// the handshake showed active). Returns the fresh song list and whether the BPM landed;
 /// `false` is the caller's to report. `Err` only on a connection/transact failure or a
-/// refused footswitch. Shared by the `set_song_bpm` command and `probe_set_song_bpm`.
+/// refused footswitch, or a refusal from `guard`, which runs on the same connection
+/// before any write. Shared by the `set_song_bpm` command and `probe_set_song_bpm`.
 pub(crate) fn converge_song_bpm(
     slot: u32,
     bpm: f32,
+    guard: impl FnOnce(&mut Session) -> Result<(), String>,
 ) -> Result<(Vec<session::SongRecord>, bool), String> {
     let read = {
         let mut s = Session::connect()?;
+        // Before any read clears the handshake replies it comes from.
         let prior = s.active_slot_live();
+        guard(&mut s)?;
         set_song_bpm_on(&mut s, slot, bpm, prior)?
     };
     match read {
@@ -331,7 +335,7 @@ pub fn probe_active_slot() -> Result<String, String> {
 pub fn probe_set_song_bpm(name: &str, bpm: f32) -> Result<String, String> {
     let songs = read_song_list()?;
     let slot = find_song_slot(&songs, name)?;
-    let (after, converged) = converge_song_bpm(slot, bpm)?;
+    let (after, converged) = converge_song_bpm(slot, bpm, |_| Ok(()))?;
     let r = after.iter().find(|x| x.slot == slot);
     let got = r.map(|x| x.bpm).unwrap_or(0);
     if converged {

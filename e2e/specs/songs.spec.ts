@@ -32,14 +32,15 @@ async function removeTestSetlists(
   const ours = lists
     .filter((l) => TEST_SETLISTS.includes(l.name))
     .sort((a, b) => b.slot - a.slot);
-  let count = lists.length;
+  // Each delete is guarded by the whole list as it then reads, in order.
+  const seen = lists.map((l) => l.name);
   for (const l of ours) {
     await invoke(page, "remove_setlist", {
       slot: l.slot,
       expectName: l.name,
-      expectCount: count,
+      expectList: [...seen],
     });
-    count -= 1;
+    seen.splice(l.slot - 1, 1);
   }
 }
 

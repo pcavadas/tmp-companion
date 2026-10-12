@@ -24,6 +24,20 @@ export interface SetlistEntry {
   song: SongRecord | null;
 }
 
+/** Where setlist `slot` sits after the setlist deletes in `removed`, in the order they
+ *  ran: each delete above it shifts it down one slot. `null` when it was deleted. */
+export function slotAfterDeletes(
+  slot: number,
+  removed: readonly number[],
+): number | null {
+  let at = slot;
+  for (const r of removed) {
+    if (r === at) return null;
+    if (r < at) at -= 1;
+  }
+  return at;
+}
+
 /** Re-key a membership cache after setlist `removed` is deleted: every later setlist
  *  shifts down one slot, so its cached songs move with it. */
 export function shiftMembershipAfterDelete(
