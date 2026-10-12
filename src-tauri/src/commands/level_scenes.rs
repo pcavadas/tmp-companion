@@ -1739,7 +1739,7 @@ mod trade_planner_tests {
             },
             "scenes": [
                 { "guitarNodes": { "G1": {
-                    "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "outputLevel": 0.5 } } } } },
+                    "amp": { "dspUnitParameters": { "outputLevel": 0.5 } } } } },
                 // Scene 1 mentions no amp at all (`Absent`): it READS base's fader, so a base
                 // fader drop moves it too — exactly net-zero, and it never benefits.
                 { "guitarNodes": { "G1": {
@@ -2045,9 +2045,9 @@ mod scene_handle_tests {
             ] } },
             "scenes": [
                 { "guitarNodes": { "G1": {
-                    "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "outputLevel": 0.3 } } } } },
+                    "amp": { "dspUnitParameters": { "outputLevel": 0.3 } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_TwinReverb65NoFx": { "dspUnitParameters": { "bypass": true } } } } }
+                    "amp": { "dspUnitParameters": { "bypass": true } } } } }
             ]
         })
     }
@@ -2331,13 +2331,13 @@ mod scene_handle_tests {
             ] } },
             "scenes": [
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
+                    "boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": true } } } } },
+                    "boost": { "dspUnitParameters": { "bypass": true } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": false } } } } },
+                    "boost": { "dspUnitParameters": { "bypass": false } } } } },
                 { "guitarNodes": { "G1": {
-                    "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
+                    "boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
             ]
         })
     }
@@ -2384,7 +2384,7 @@ mod scene_handle_tests {
         let mut preset = hbe_boost_preset();
         // Clean (scene 1) un-bypassed too, with no Full overlay pinning `gain` there — now
         // BOTH Clean and Solo would hear the shared write, so neither can safely take it.
-        preset["scenes"][1]["guitarNodes"]["G1"]["ACD_Boost"] =
+        preset["scenes"][1]["guitarNodes"]["G1"]["boost"] =
             serde_json::json!({ "dspUnitParameters": { "bypass": false } });
         let rows = scene_handle_rows(&preset);
         assert_eq!(

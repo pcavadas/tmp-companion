@@ -137,8 +137,8 @@ pub fn probe_ftsw_validate(switch_override: Option<u32>, commit: bool) -> Result
     let mut param = "volume".to_string();
     if let Some(g) = &graph {
         audiograph::for_each_node(g, |obj| {
-            if obj.get("nodeId").and_then(|v| v.as_str()) == Some(node.as_str()) {
-                if let Some(ps) = obj.get("dspUnitParameters").and_then(|v| v.as_object()) {
+            if obj.matches_instance(&node) {
+                if let Some(ps) = obj.params() {
                     if let Some(k) = ps
                         .keys()
                         .find(|k| !matches!(k.as_str(), "bypass" | "bypassType"))

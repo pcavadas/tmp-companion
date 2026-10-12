@@ -311,7 +311,7 @@ fn base_isolation_or_refuse_refuses_on_a_truncated_ftsw_read_exactly_like_produc
 fn nodes_from(preset: &serde_json::Value) -> Vec<doctor::DoctorNode> {
     let mut out = Vec::new();
     crate::audiograph::for_each_node(preset, |obj| {
-        let Some(nid) = obj.get("nodeId").and_then(serde_json::Value::as_str) else {
+        let Some(nid) = obj.instance() else {
             return;
         };
         let bypassed = obj
@@ -996,7 +996,7 @@ fn wet_by_switch_fixture() -> serde_json::Value {
                "valueA": 0.9, "valueB": 0.5, "valueType": 0, "isActive": false }],
         ],
         "scenes": [
-            { "guitarNodes": { "G1": { "ACD_TMLargePlate": {
+            { "guitarNodes": { "G1": { "plate1": {
                 "dspUnitParameters": { "bypass": false, "wetdrymix": 0.7 } } } } },
             { "guitarNodes": {} }
         ]

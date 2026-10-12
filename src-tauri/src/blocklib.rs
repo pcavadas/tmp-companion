@@ -29,16 +29,8 @@ pub fn capture_block(preset: &Value, model: &str, name: &str) -> Option<BlockTem
         if found.is_some() {
             return; // keep the first match
         }
-        let id = node
-            .get("nodeId")
-            .and_then(Value::as_str)
-            .or_else(|| node.get("FenderId").and_then(Value::as_str));
-        if id == Some(model) {
-            let params = node
-                .get("dspUnitParameters")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
+        if node.matches_model(model) {
+            let params = node.params().cloned().unwrap_or_default();
             found = Some(BlockTemplate {
                 name: name.to_string(),
                 model: model.to_string(),
@@ -53,11 +45,7 @@ pub fn capture_block(preset: &Value, model: &str, name: &str) -> Option<BlockTem
 /// number of blocks written (0 = preset has no block of that model → skip).
 pub fn apply_block(preset: &mut Value, template: &BlockTemplate) -> usize {
     for_each_node_mut(preset, |node| {
-        let id = node
-            .get("nodeId")
-            .and_then(Value::as_str)
-            .or_else(|| node.get("FenderId").and_then(Value::as_str));
-        if id != Some(template.model.as_str()) {
+        if !crate::audiograph::Node::new(node).matches_model(&template.model) {
             return false;
         }
         node.insert(

@@ -170,8 +170,8 @@ pub fn probe_replace_debug(dev_slot: u32, from_id: &str, to_id: &str) -> Result<
         if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
             report.push_str(&format!(
                 "verify after save: {from_id}×{}  {to_id}×{}\n",
-                audiograph::count_nodes_with_id(&vval, from_id),
-                audiograph::count_nodes_with_id(&vval, to_id)
+                audiograph::count_model_nodes(&vval, from_id),
+                audiograph::count_model_nodes(&vval, to_id)
             ));
         }
     } else {
@@ -259,8 +259,8 @@ pub fn probe_bulk_replace(
         for &dev_slot in device_slots {
             let vraw = s.read_slot_preset_json(dev_slot)?.unwrap_or_default();
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
-                let now_from = audiograph::count_nodes_with_id(&vval, from_id);
-                let now_to = audiograph::count_nodes_with_id(&vval, to_id);
+                let now_from = audiograph::count_model_nodes(&vval, from_id);
+                let now_to = audiograph::count_model_nodes(&vval, to_id);
                 report.push_str(&format!(
                     "    slot {dev_slot:03}: {from_id}×{now_from}  {to_id}×{now_to}\n"
                 ));
@@ -353,8 +353,8 @@ pub fn probe_replace_held(
         for &dev_slot in device_slots {
             let vraw = v.read_slot_preset_json(dev_slot)?.unwrap_or_default();
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
-                let now_from = audiograph::count_nodes_with_id(&vval, from_id);
-                let now_to = audiograph::count_nodes_with_id(&vval, to_id);
+                let now_from = audiograph::count_model_nodes(&vval, from_id);
+                let now_to = audiograph::count_model_nodes(&vval, to_id);
                 report.push_str(&format!(
                     "    slot {dev_slot:03}: {from_id}×{now_from}  {to_id}×{now_to}\n"
                 ));
@@ -457,8 +457,8 @@ pub fn probe_bulk_replace_saved(
         for &dev_slot in device_slots {
             let vraw = v.read_slot_preset_json(dev_slot)?.unwrap_or_default();
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&vraw)) {
-                let now_from = audiograph::count_nodes_with_id(&vval, from_id);
-                let now_to = audiograph::count_nodes_with_id(&vval, &to_id);
+                let now_from = audiograph::count_model_nodes(&vval, from_id);
+                let now_to = audiograph::count_model_nodes(&vval, &to_id);
                 report.push_str(&format!(
                     "    slot {dev_slot:03}: {from_id}×{now_from}  {to_id}×{now_to}\n"
                 ));

@@ -116,21 +116,21 @@ pub(crate) struct MigrationApplyRow {
 /// Snapshot a preset's pre-edit JSON before an in-place migration write, so a mid-run
 /// failure still leaves it revertible (bulkrun's AC2 discipline, which `migration_apply`
 /// bypasses by calling `replace_inplace_core` directly). `Err` ⇒ DO NOT WRITE. `source`
-/// is `"offline-file"`: migration edits a complete `.preset` from the offline library.
+/// is `SnapshotSource::OfflineFile`: migration edits a complete `.preset` from the offline library.
 pub(crate) fn snapshot_before_migrate(
     backup_dir: &std::path::Path,
     list_index: u32,
     display_name: &str,
     before_json: &str,
 ) -> Result<std::path::PathBuf, String> {
-    // list_enum 1 = My Presets; source "offline-file" = migration edits a complete
+    // list_enum 1 = My Presets; source OfflineFile = migration edits a complete
     // `.preset` from the offline library.
     bulkrun::save_pre_write_snapshot(
         backup_dir,
         1,
         list_index,
         display_name,
-        "offline-file",
+        crate::backup::SnapshotSource::OfflineFile,
         before_json,
     )
 }

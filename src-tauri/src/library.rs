@@ -96,7 +96,7 @@ impl LibraryRecord {
             list_index,
             list_enum: self.list_enum,
             display_name: self.display_name.clone(),
-            source: "offline-file".to_string(),
+            source: crate::backup::SnapshotSource::OfflineFile,
             before_json: self.decoded_json.clone(),
         })
     }

@@ -133,7 +133,7 @@ pub fn probe_insert_active(
     match v.read_slot_preset_json(dev_slot)? {
         Some(raw) => {
             if let Some(vval) = session::tolerant_parse_json(&String::from_utf8_lossy(&raw)) {
-                let n = audiograph::count_nodes_with_id(&vval, fender_id);
+                let n = audiograph::count_model_nodes(&vval, fender_id);
                 report.push_str(&format!(
                     "  VERIFY (field-8, persisted) slot {dev_slot:03}: {fender_id}×{n}  {}\n",
                     if commit {

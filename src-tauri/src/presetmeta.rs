@@ -109,7 +109,7 @@ mod tests {
             list_index: 0,
             list_enum: 1,
             display_name: "P0".to_string(),
-            source: "offline-file".to_string(),
+            source: crate::backup::SnapshotSource::OfflineFile,
             before_json: r#"{"bpm":120.0,"onLoadMidiMsgs":null}"#.to_string(),
         };
         let op = SetOnLoadMidiOp {

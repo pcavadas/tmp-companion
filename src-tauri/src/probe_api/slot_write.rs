@@ -984,7 +984,7 @@ fn find_amp_output_level(preset: &serde_json::Value) -> Option<(String, String, 
                 .and_then(|p| p.get("outputLevel"))
                 .and_then(serde_json::Value::as_f64)
             {
-                let id = crate::audiograph::node_id(node)?.to_string();
+                let id = crate::audiograph::instance_id(node)?.to_string();
                 return Some((k.clone(), id, v as f32));
             }
         }

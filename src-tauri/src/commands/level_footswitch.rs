@@ -62,10 +62,10 @@ pub(crate) fn node_param_f64(
     param: &str,
 ) -> Option<f64> {
     let mut found = None;
-    audiograph::for_each_node(preset, |obj| {
-        if obj.get("nodeId").and_then(|v| v.as_str()) == Some(node_id) {
-            found = obj
-                .get("dspUnitParameters")
+    audiograph::for_each_node(preset, |node| {
+        if node.matches_instance(node_id) {
+            found = node
+                .params()
                 .and_then(|p| p.get(param))
                 .and_then(|v| v.as_f64());
         }

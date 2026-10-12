@@ -62,11 +62,8 @@ pub fn index_preset(preset: &Value, categories: &CategoryMap) -> Facets {
 
     // Walk every node under audioGraph.{guitarNodes,micNodes}.{group}[].
     crate::audiograph::for_each_node(preset, |node| {
-        let id = node
-            .get("nodeId")
-            .and_then(Value::as_str)
-            .or_else(|| node.get("FenderId").and_then(Value::as_str))
-            .unwrap_or("");
+        // The block index is by MODEL: a second instance (`X_1`) is still an `X` block.
+        let id = node.model().unwrap_or("");
         if !id.is_empty() {
             blocks.insert(id.to_string());
         }

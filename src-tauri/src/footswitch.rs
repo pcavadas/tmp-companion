@@ -212,19 +212,11 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
     let mut nodes: std::collections::HashMap<String, (String, serde_json::Map<String, Value>)> =
         std::collections::HashMap::new();
     crate::audiograph::for_each_node(preset, |obj| {
-        let Some(nid) = obj.get("nodeId").and_then(Value::as_str) else {
+        let (Some(nid), Some(fid)) = (obj.instance(), obj.model()) else {
             return;
         };
-        let fid = obj
-            .get("FenderId")
-            .and_then(Value::as_str)
-            .unwrap_or(nid)
-            .to_string();
-        let params = obj
-            .get("dspUnitParameters")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        let fid = fid.to_string();
+        let params = obj.params().cloned().unwrap_or_default();
         nodes.insert(nid.to_string(), (fid, params));
     });
     let fender_of = |nid: &str| nodes.get(nid).map(|(f, _)| f.clone()).unwrap_or_default();
@@ -362,10 +354,10 @@ pub fn enumerate_block_footswitches(ftsw: &Value, preset: &Value) -> Vec<Footswi
 /// or absent `bypass` key → `false` (conservatively "not bypassed" → not bake-eligible).
 pub fn block_bypassed_in_base(preset: &Value, node_id: &str) -> bool {
     let mut bypassed = false;
-    crate::audiograph::for_each_node(preset, |obj| {
-        if obj.get("nodeId").and_then(Value::as_str) == Some(node_id) {
-            bypassed = obj
-                .get("dspUnitParameters")
+    crate::audiograph::for_each_node(preset, |node| {
+        if node.matches_instance(node_id) {
+            bypassed = node
+                .params()
                 .and_then(|p| p.get("bypass"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false);

@@ -53,12 +53,12 @@ pub(crate) fn amp_nodes(preset: &Value) -> Vec<AmpNode> {
             continue;
         };
         for node in nodes {
-            let fender = node.get("FenderId").and_then(Value::as_str);
-            let nid = node.get("nodeId").and_then(Value::as_str);
-            let Some(node_id) = nid.or(fender) else {
+            let Some(node) = crate::audiograph::Node::of(node) else {
                 continue;
             };
-            let model = fender.unwrap_or(node_id);
+            let (Some(node_id), Some(model)) = (node.instance(), node.model()) else {
+                continue;
+            };
             if is_amp_model_id(model) {
                 out.push(AmpNode {
                     group: group.clone(),

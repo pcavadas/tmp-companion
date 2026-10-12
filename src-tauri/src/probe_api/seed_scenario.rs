@@ -399,8 +399,7 @@ fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, 
         }
     };
     crate::audiograph::for_each_node(doc, |node| {
-        if let Some(id) = node.get("nodeId").and_then(Value::as_str) {
-            let fender_id = node.get("FenderId").and_then(Value::as_str).unwrap_or(id);
+        if let (Some(id), Some(fender_id)) = (node.instance(), node.model()) {
             fender_ids.insert(id.to_string(), fender_id.to_string());
             put(
                 format!("base/{id}"),
@@ -416,7 +415,7 @@ fn leveled_values(doc: &serde_json::Value) -> std::collections::HashMap<String, 
             .to_string()
     };
     for (i, scene) in doc["scenes"].as_array().into_iter().flatten().enumerate() {
-        for lane in ["guitarNodes", "micNodes"] {
+        for lane in crate::audiograph::GRAPHS {
             for (group, nodes) in scene[lane].as_object().into_iter().flatten() {
                 for (node, entry) in nodes.as_object().into_iter().flatten() {
                     put(

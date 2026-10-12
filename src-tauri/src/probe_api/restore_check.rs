@@ -131,7 +131,7 @@ fn group_nodes<'a>(doc: &'a Value, group: &str) -> impl Iterator<Item = &'a Valu
 
 fn param<'a>(doc: &'a Value, group: &str, node: &str, p: &str) -> Option<&'a Value> {
     group_nodes(doc, group)
-        .find(|n| crate::audiograph::node_id(n) == Some(node))?
+        .find(|n| crate::audiograph::instance_id(n) == Some(node))?
         .get("dspUnitParameters")?
         .get(p)
 }
@@ -160,7 +160,7 @@ fn pick_edits(doc: &Value) -> Result<Vec<Edit>, String> {
         let b = n.get("dspUnitParameters")?.get("bypass")?.as_bool()?;
         Some(Edit::Bypass {
             group: g.clone(),
-            node: crate::audiograph::node_id(n)?.to_string(),
+            node: crate::audiograph::instance_id(n)?.to_string(),
             from: b,
         })
     });
@@ -173,7 +173,7 @@ fn pick_edits(doc: &Value) -> Result<Vec<Edit>, String> {
         let to = if v > 0.5 { v - 0.1 } else { v + 0.1 };
         Some(Edit::Float {
             group: g.clone(),
-            node: crate::audiograph::node_id(n)?.to_string(),
+            node: crate::audiograph::instance_id(n)?.to_string(),
             param: p.to_string(),
             from: v,
             to: to as f32,

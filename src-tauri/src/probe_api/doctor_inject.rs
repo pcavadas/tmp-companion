@@ -76,7 +76,7 @@ pub(crate) fn measure(
 fn node_params<'a>(doc: &'a serde_json::Value, fender_id: &str) -> Option<&'a serde_json::Value> {
     // guitarNodes/micNodes are OBJECTS keyed by group id (G1..G7 / M1..M4),
     // each holding the node array.
-    ["guitarNodes", "micNodes"].iter().find_map(|grp| {
+    crate::audiograph::GRAPHS.iter().find_map(|grp| {
         doc.pointer(&format!("/audioGraph/{grp}"))?
             .as_object()?
             .values()

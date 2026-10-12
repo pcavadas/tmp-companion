@@ -826,11 +826,11 @@ pub(crate) fn prepass_scene_docs(slot: u32, scene_slots: &[u32]) -> Result<Scene
 
 /// Shallow-merge a saved scene's sparse overlay onto a cloned base `audioGraph` (mutated in
 /// place). For every node in every group of both `guitarNodes` and `micNodes`, if the scene
-/// carries `<graph>.<group>.<FenderId or nodeId>.dspUnitParameters`, those keys win over the
+/// carries `<graph>.<group>.<nodeId>.dspUnitParameters`, those keys win over the
 /// cloned node's `dspUnitParameters` (base keys the overlay omits survive). A `splitMix`
 /// overlay merges key-level onto the cloned `audioGraph.splitMix`.
 fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::Value) {
-    for key in ["guitarNodes", "micNodes"] {
+    for key in crate::audiograph::GRAPHS {
         let overlay_groups = scene.get(key).and_then(|g| g.as_object());
         let Some(groups) = graph.get_mut(key).and_then(|g| g.as_object_mut()) else {
             continue;
@@ -840,22 +840,13 @@ fn overlay_scene_onto_graph(graph: &mut serde_json::Value, scene: &serde_json::V
                 continue;
             };
             for node in nodes.iter_mut() {
-                // Overlay keyed by FenderId (nodeId fallback), matching overlay_ab.rs.
-                let fid = node
-                    .get("FenderId")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                let nid = node
-                    .get("nodeId")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                // The overlay is keyed by INSTANCE (`nodeId`): fw 1.8.58 keys
+                // `scenes[N].<graph>[group][nodeId]` by the request's node id, so a second
+                // same-model block (`X_1`) has its own entry, never its sibling `X`'s.
+                let nid = crate::audiograph::instance_id(node).map(str::to_string);
                 let overlay_params = overlay_groups
                     .and_then(|g| g.get(group))
-                    .and_then(|grp| {
-                        fid.as_deref()
-                            .and_then(|f| grp.get(f))
-                            .or_else(|| nid.as_deref().and_then(|n| grp.get(n)))
-                    })
+                    .and_then(|grp| nid.as_deref().and_then(|n| grp.get(n)))
                     .and_then(|n| n.get("dspUnitParameters"))
                     .and_then(|p| p.as_object());
                 let Some(overlay_params) = overlay_params else {
@@ -960,8 +951,9 @@ pub(crate) enum SceneOverlay<'a> {
     Unknown,
 }
 
-/// Read `scenes[scene].{guitarNodes,micNodes}.<group>.<FenderId|nodeId>.dspUnitParameters`
-/// for `node` (its `nodeId` or `FenderId`) out of a saved (field-8) preset. Pure — no device
+/// Read `scenes[scene].{guitarNodes,micNodes}.<group>.<nodeId>.dspUnitParameters`
+/// for `node` (its `nodeId`; a `FenderId` resolves to that model's first instance, see
+/// `audiograph::roster_entry`) out of a saved (field-8) preset. Pure — no device
 /// I/O. See [`SceneOverlay`] for why the three states must stay distinct.
 pub(crate) fn scene_overlay<'a>(
     preset: &'a serde_json::Value,
@@ -1033,19 +1025,18 @@ fn scene_body(preset: &serde_json::Value, scene: u32) -> Option<&serde_json::Val
 pub(crate) fn scene_overlay_for<'a>(
     preset: &'a serde_json::Value,
     scene: u32,
-    (group, node_id, fender_id): (&str, &str, &str),
+    (group, node_id, _): (&str, &str, &str),
 ) -> SceneOverlay<'a> {
     let Some(body) = scene_body(preset, scene) else {
         return SceneOverlay::Unknown;
     };
-    // The overlay is keyed by FenderId with a nodeId fallback (exactly like
-    // `overlay_scene_onto_graph`); the node's group picks the graph.
-    // Group ids are disjoint across the two graphs (G1..G7 guitar / M1..M4 mic), so the
-    // group key alone picks the right one.
-    let entry = ["guitarNodes", "micNodes"].iter().find_map(|graph| {
-        let nodes = body.get(graph)?.get(group)?;
-        nodes.get(fender_id).or_else(|| nodes.get(node_id))
-    });
+    // The overlay is keyed by the node's INSTANCE id (exactly like
+    // `overlay_scene_onto_graph`; fw 1.8.58 keys it by `nodeId`, so for duplicate blocks
+    // `X`/`X_1` each has its own entry). The node's group picks the graph: group ids are
+    // disjoint across the two graphs (G1..G7 guitar / M1..M4 mic).
+    let entry = crate::audiograph::GRAPHS
+        .iter()
+        .find_map(|graph| body.get(graph)?.get(group)?.get(node_id));
     match entry {
         None => SceneOverlay::Absent,
         Some(e) => match e.get("dspUnitParameters").and_then(|p| p.as_object()) {
@@ -1154,7 +1145,7 @@ pub(crate) fn scene_node_overrides(
 pub(crate) fn scene_overlay_entry_mut<'a>(
     preset: &'a mut serde_json::Value,
     scene: u32,
-    (group, node_id, fender_id): (&str, &str, &str),
+    (group, node_id, _): (&str, &str, &str),
 ) -> Option<&'a mut serde_json::Value> {
     let body = preset
         .get_mut("scenes")
@@ -1164,7 +1155,7 @@ pub(crate) fn scene_overlay_entry_mut<'a>(
     // below borrows `body` exactly once — a loop that both `get_mut`s and early-`return`s
     // per iteration trips the borrow checker (each iteration looks like it could still be
     // holding the previous one's borrow for lifetime `'a`).
-    let graph = ["guitarNodes", "micNodes"].into_iter().find(|g| {
+    let graph = crate::audiograph::GRAPHS.into_iter().find(|g| {
         body.get(*g)
             .and_then(|g| g.get(group))
             .is_some_and(|v| v.is_object())
@@ -1173,14 +1164,10 @@ pub(crate) fn scene_overlay_entry_mut<'a>(
         .get_mut(graph)
         .and_then(|g| g.get_mut(group))
         .and_then(|g| g.as_object_mut())?;
-    let key = if nodes.contains_key(fender_id) {
-        fender_id
-    } else {
-        node_id
-    };
+    // Keyed by instance, like the read side ([`scene_overlay_for`]).
     Some(
         nodes
-            .entry(key.to_string())
+            .entry(node_id.to_string())
             .or_insert_with(|| serde_json::json!({ "dspUnitParameters": {} })),
     )
 }
@@ -1424,24 +1411,18 @@ fn values_differ(base: &serde_json::Value, overlay: &serde_json::Value) -> bool 
     }
 }
 
-/// Every BASE-graph node answering to `node` — by `nodeId` OR `FenderId`, the same two-id rule
-/// [`scene_overlay`] resolves by — each with its `dspUnitParameters` (`None` = the node carries
-/// none). More than one hit means the id is AMBIGUOUS, which the caller refuses outright.
+/// Every BASE-graph node answering to `node` — as an instance (`nodeId`) OR a model
+/// (`FenderId`) — each with its `dspUnitParameters` (`None` = the node carries none). More than
+/// one hit means the id is AMBIGUOUS (a model id naming two instances, say), which the caller
+/// refuses outright.
 fn base_node_matches(
     preset: &serde_json::Value,
     node: &str,
 ) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
     let mut hits = Vec::new();
     crate::audiograph::for_each_node(preset, |obj| {
-        let is_node = ["nodeId", "FenderId"]
-            .iter()
-            .any(|k| obj.get(*k).and_then(|v| v.as_str()) == Some(node));
-        if is_node {
-            hits.push(
-                obj.get("dspUnitParameters")
-                    .and_then(|p| p.as_object())
-                    .cloned(),
-            );
+        if obj.matches_instance(node) || obj.matches_model(node) {
+            hits.push(obj.params().cloned());
         }
     });
     hits
@@ -1880,45 +1861,19 @@ pub(crate) fn scan_node_graph(preset: &serde_json::Value) -> NodeGraphScan {
         std::collections::HashMap::new();
     let mut guitar_roster = Vec::new();
     let mut full_roster = Vec::new();
-    let Some(ag) = preset.get("audioGraph").and_then(|a| a.as_object()) else {
-        return NodeGraphScan {
-            params,
-            guitar_roster,
-            full_roster,
-        };
-    };
-    for graph in ["guitarNodes", "micNodes"] {
-        let Some(groups) = ag.get(graph).and_then(|g| g.as_object()) else {
-            continue;
-        };
-        let mut keys: Vec<&String> = groups.keys().collect();
-        keys.sort();
-        for k in keys {
-            for node in groups[k].as_array().into_iter().flatten() {
-                let Some(obj) = node.as_object() else {
-                    continue;
-                };
-                if let Some(nid) = obj.get("nodeId").and_then(|v| v.as_str()) {
-                    params.insert(
-                        nid.to_string(),
-                        obj.get("dspUnitParameters")
-                            .and_then(|p| p.as_object())
-                            .cloned()
-                            .unwrap_or_default(),
-                    );
-                }
-                let fid = obj.get("FenderId").and_then(|v| v.as_str());
-                let nid = obj.get("nodeId").and_then(|v| v.as_str()).or(fid);
-                if let (Some(nid), Some(fid)) = (nid, fid) {
-                    let row = (k.clone(), nid.to_string(), fid.to_string());
-                    if graph == "guitarNodes" {
-                        guitar_roster.push(row.clone());
-                    }
-                    full_roster.push(row);
-                }
-            }
+    crate::audiograph::walk_nodes(preset, |graph, group, node| {
+        if let Some(nid) = node.get("nodeId").and_then(|v| v.as_str()) {
+            params.insert(nid.to_string(), node.params().cloned().unwrap_or_default());
         }
-    }
+        let fid = node.get("FenderId").and_then(|v| v.as_str());
+        if let (Some(nid), Some(fid)) = (node.instance(), fid) {
+            let row = (group.to_string(), nid.to_string(), fid.to_string());
+            if graph == "guitarNodes" {
+                guitar_roster.push(row.clone());
+            }
+            full_roster.push(row);
+        }
+    });
     NodeGraphScan {
         params,
         guitar_roster,

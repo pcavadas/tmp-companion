@@ -312,7 +312,7 @@ fn saved_preset() -> serde_json::Value {
         },
         "scenes": [
             { "guitarNodes": { "G1": {
-                "ACD_TwinReverb": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.9 } }
+                "ampA": { "dspUnitParameters": { "bypass": false, "outputLevel": 0.9 } }
               } },
               "splitMix": { "balance": 0.1 } },
             { "guitarNodes": { "G1": {} } }
@@ -498,7 +498,7 @@ fn scene_overlay_full_carries_bypass() {
     assert!(params.contains_key("bypass"));
 }
 
-// The FenderId is accepted as the node key too (callers hold either id).
+// A FenderId resolves to that model's first instance, whose `nodeId` keys the overlay.
 #[test]
 fn scene_overlay_resolves_by_fender_id() {
     let p = saved_preset();
@@ -513,7 +513,7 @@ fn scene_overlay_resolves_by_fender_id() {
 #[test]
 fn scene_overlay_full_without_bypass() {
     let mut p = saved_preset();
-    p["scenes"][1]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+    p["scenes"][1]["guitarNodes"]["G1"]["ampA"] =
         serde_json::json!({ "dspUnitParameters": { "outputLevel": 0.7 } });
     let SceneOverlay::Full(params) = scene_overlay(&p, 1, "ampA") else {
         panic!("scene 1 overlays ampA");
@@ -575,7 +575,7 @@ fn scene_overlay_unknown_when_scene_entry_truncated() {
 #[test]
 fn scene_overlay_unknown_when_params_not_object() {
     let mut p = saved_preset();
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"] = serde_json::json!("cut");
+    p["scenes"][0]["guitarNodes"]["G1"]["ampA"] = serde_json::json!("cut");
     assert!(matches!(
         scene_overlay(&p, 0, "ampA"),
         SceneOverlay::Unknown
@@ -627,7 +627,7 @@ fn bake_gate_preset() -> serde_json::Value {
 /// `ACD_TwinReverb`).
 pub(crate) fn with_scene0_overlay(params: serde_json::Value) -> serde_json::Value {
     let mut p = saved_preset();
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+    p["scenes"][0]["guitarNodes"]["G1"]["ampA"] =
         serde_json::json!({ "dspUnitParameters": params });
     p
 }
@@ -687,10 +687,10 @@ fn scene_overlay_shape_classifies_bypass_only_vs_full() {
 fn restating_base_skips_a_bypass_only_scene_which_inherits_the_bake() {
     let mut p = bake_gate_preset();
     // Scene 0: a FULL overlay restating base's outputLevel (0.4) → a genuine mirror target.
-    p["scenes"][0]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+    p["scenes"][0]["guitarNodes"]["G1"]["ampA"] =
         serde_json::json!({ "dspUnitParameters": { "bypass": true, "outputLevel": 0.4 } });
     // Scene 1: bypass-only → shares base's knobs → nothing to mirror.
-    p["scenes"][1]["guitarNodes"]["G1"]["ACD_TwinReverb"] =
+    p["scenes"][1]["guitarNodes"]["G1"]["ampA"] =
         serde_json::json!({ "dspUnitParameters": { "bypass": false } });
     assert!(matches!(
         scene_overlay(&p, 1, "ampA"),
@@ -734,16 +734,16 @@ pub(crate) fn hbe_boost_preset() -> serde_json::Value {
         "scenes": [
             // Dirt: Full overlay, own gain — pins `gain` against base.
             { "guitarNodes": { "G1": {
-                "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
+                "boost": { "dspUnitParameters": { "bypass": true, "gain": 5.0 } } } } },
             // Clean: bypass-only, stays bypassed — the leak is silent here.
             { "guitarNodes": { "G1": {
-                "ACD_Boost": { "dspUnitParameters": { "bypass": true } } } } },
+                "boost": { "dspUnitParameters": { "bypass": true } } } } },
             // Solo: bypass-only, un-bypassed — the ONLY scene that can hear the leak.
             { "guitarNodes": { "G1": {
-                "ACD_Boost": { "dspUnitParameters": { "bypass": false } } } } },
+                "boost": { "dspUnitParameters": { "bypass": false } } } } },
             // Crunch: Full overlay, own gain — pins `gain` against base.
             { "guitarNodes": { "G1": {
-                "ACD_Boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
+                "boost": { "dspUnitParameters": { "bypass": true, "gain": 6.0 } } } } }
         ]
     })
 }
@@ -774,7 +774,7 @@ fn shared_write_is_scene_local_false_when_a_second_scene_is_audible_without_pinn
     let mut p = hbe_boost_preset();
     // Clean (scene 1) un-bypassed too, with NO Full overlay pinning `gain` there — now BOTH
     // scene 1 and Solo would hear the shared write, so neither is scene-LOCAL to it.
-    p["scenes"][1]["guitarNodes"]["G1"]["ACD_Boost"] =
+    p["scenes"][1]["guitarNodes"]["G1"]["boost"] =
         serde_json::json!({ "dspUnitParameters": { "bypass": false } });
     assert!(!shared_write_is_scene_local(&p, 2, HBE_NODE, HBE_PARAM));
 }
@@ -1271,4 +1271,35 @@ fn scene_node_overrides_map_every_overlay_state() {
     let mut cut = saved_preset();
     cut["scenes"][0] = serde_json::Value::Null;
     assert!(super::scene_node_overrides(&cut)[0].is_empty());
+}
+
+// fw 1.8.58 keys a scene overlay by the node's INSTANCE id (`nodeId`). Two blocks of one
+// model in a group (`X`, `X_1`) each own their entry: the second instance never reads its
+// sibling's overlay, and a model-keyed lookup can't stand in for it.
+#[test]
+fn scene_overlay_keys_duplicate_model_blocks_by_instance() {
+    let p = serde_json::json!({
+        "audioGraph": { "guitarNodes": { "G1": [
+            { "nodeId": "ACD_TubeScreamer", "FenderId": "ACD_TubeScreamer",
+              "dspUnitParameters": { "bypass": false, "level": 0.5 } },
+            { "nodeId": "ACD_TubeScreamer_1", "FenderId": "ACD_TubeScreamer",
+              "dspUnitParameters": { "bypass": false, "level": 0.5 } }
+        ] } },
+        "scenes": [
+            { "guitarNodes": { "G1": {
+                "ACD_TubeScreamer_1": { "dspUnitParameters": { "bypass": false, "level": 0.9 } }
+            } } }
+        ]
+    });
+    let SceneOverlay::Full(params) = scene_overlay(&p, 0, "ACD_TubeScreamer_1") else {
+        panic!("the second instance owns the scene-0 overlay");
+    };
+    assert_eq!(params.get("level").and_then(|v| v.as_f64()), Some(0.9));
+    assert!(
+        matches!(
+            scene_overlay(&p, 0, "ACD_TubeScreamer"),
+            SceneOverlay::Absent
+        ),
+        "the first instance has no overlay of its own"
+    );
 }

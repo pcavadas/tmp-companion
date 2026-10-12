@@ -442,7 +442,7 @@ fn backup_row_carries_scene_and_base_handle_candidates() {
         {"nodeId":"amp","FenderId":"ACD_TwinReverb65NoFx",
          "dspUnitParameters":{"outputLevel":0.5,"bypass":false}}
     ]}},"scenes":[
-        {"guitarNodes":{"G1":{"ACD_TwinReverb65NoFx":{"dspUnitParameters":{"outputLevel":0.3}}}}}
+        {"guitarNodes":{"G1":{"amp":{"dspUnitParameters":{"outputLevel":0.3}}}}}
     ]}"#;
     let archive = build_backup_archive(&format!(
         "CREATE TABLE UserPresets(slot INTEGER, displayName TEXT, presetJson TEXT); \
@@ -1003,4 +1003,36 @@ fn silence_hint_ignores_exp_binding_on_bypassed_amp() {
             {"func":"param","groupId":"G1","nodeId":"ACD_TweedDeluxe",
              "paramId":"outputLevel","heel":0.0,"toe":0.68}]}});
     assert_eq!(silence_hint(&v), None);
+}
+
+// A negative or NULL slot in a backup side table is refused with a named warning, never
+// wrapped into a huge `u32` slot or dropped without a word; the good rows still come through.
+#[test]
+fn typed_rows_refuse_negative_and_null_slots() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE Setlists (slot INTEGER, name TEXT);
+         INSERT INTO Setlists VALUES (0, 'Gig'), (-1, 'Wrapped'), (NULL, 'Nulled'), (2, NULL);",
+    )
+    .unwrap();
+    let rows = super::typed_rows(
+        &conn,
+        "setlists",
+        "SELECT slot, name FROM Setlists ORDER BY rowid",
+        |r| {
+            Ok((
+                super::u32_col(r, "slot")?,
+                super::opt_text_col(r, "name")?.ok_or("name is NULL")?,
+            ))
+        },
+    );
+    assert_eq!(rows, vec![(0, "Gig".to_string())]);
+    let neg = conn
+        .query_row("SELECT -1 AS slot", [], |r| Ok(super::u32_col(r, "slot")))
+        .unwrap();
+    assert_eq!(neg.unwrap_err(), "slot = -1 is out of range");
+    let null = conn
+        .query_row("SELECT NULL AS slot", [], |r| Ok(super::u32_col(r, "slot")))
+        .unwrap();
+    assert_eq!(null.unwrap_err(), "slot is NULL");
 }

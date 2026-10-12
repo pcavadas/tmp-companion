@@ -21,7 +21,7 @@ use crate::backup::{self, FieldChange, PresetSnapshot};
 
 /// A preset selected for a run, carrying its captured "before" state. `before_json`
 /// is the canonical full preset JSON (an OFFLINE `.preset` decode, or a USB partial);
-/// `source` records its fidelity (`"offline-file"` | `"usb-partial"`) so the
+/// `source` records its fidelity ([`backup::SnapshotSource`]) so the
 /// snapshot never over-promises. `list_index` is the 0-based
 /// "My Presets" index (`session` translates to the device's 1-based userSlot).
 #[derive(Debug, Clone)]
@@ -29,7 +29,7 @@ pub struct PresetTarget {
     pub list_index: u32,
     pub list_enum: u32,
     pub display_name: String,
-    pub source: String,
+    pub source: backup::SnapshotSource,
     pub before_json: String,
 }
 
@@ -212,7 +212,7 @@ fn apply_one(
         t.list_enum,
         t.list_index,
         &t.display_name,
-        &t.source,
+        t.source,
         &t.before_json,
     ) {
         Ok(p) => e.snapshot_path = Some(p),
@@ -272,7 +272,7 @@ pub fn revert(report: &RunReport, io: &mut dyn PresetIo) -> Vec<RevertEntry> {
                     list_index: snap.slot,
                     list_enum: snap.list_enum,
                     display_name: snap.display_name.clone(),
-                    source: snap.source.clone(),
+                    source: snap.source,
                     before_json: snap.preset_json.clone(),
                 };
                 match io.write(&target, &snap.preset_json) {
@@ -307,7 +307,7 @@ pub(crate) fn save_pre_write_snapshot(
     list_enum: u32,
     slot: u32,
     display_name: &str,
-    source: &str,
+    source: backup::SnapshotSource,
     preset_json: &str,
 ) -> Result<PathBuf, String> {
     let snap = PresetSnapshot {
@@ -315,7 +315,7 @@ pub(crate) fn save_pre_write_snapshot(
         slot,
         display_name: display_name.to_string(),
         captured_at: now_stamp(),
-        source: source.to_string(),
+        source,
         preset_json: preset_json.to_string(),
     };
     backup::save_snapshot_to_dir(dir, &snap)
@@ -384,7 +384,7 @@ mod tests {
             list_index: idx,
             list_enum: 1,
             display_name: format!("P{idx}"),
-            source: "offline-file".into(),
+            source: crate::backup::SnapshotSource::OfflineFile,
             before_json: json.into(),
         }
     }

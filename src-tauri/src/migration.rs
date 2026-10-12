@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::audiograph::{count_nodes_with_id, replace_block};
+use crate::audiograph::{count_model_nodes, replace_block};
 
 /// Raw set difference between two catalogs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -76,7 +76,7 @@ pub fn scan_affected(presets: &[(u32, Value)], ids: &HashSet<String>) -> Vec<(u3
     for (idx, preset) in presets {
         let hits: Vec<String> = ids
             .iter()
-            .filter(|id| count_nodes_with_id(preset, id) > 0)
+            .filter(|id| count_model_nodes(preset, id) > 0)
             .cloned()
             .collect();
         if !hits.is_empty() {
@@ -192,7 +192,34 @@ mod tests {
         // Applying the plan swaps the block (dispatches to block-replace).
         let mut p = preset_with("A");
         assert_eq!(apply_replacement(&mut p, &plan[0]), 1);
-        assert_eq!(count_nodes_with_id(&p, "A"), 0);
-        assert_eq!(count_nodes_with_id(&p, "A2"), 1);
+        assert_eq!(count_model_nodes(&p, "A"), 0);
+        assert_eq!(count_model_nodes(&p, "A2"), 1);
+    }
+
+    /// A firmware migration must reach a SECOND instance of a renamed model (`A_1`), which
+    /// carries the model only in `FenderId`.
+    fn preset_with_second_instance_only() -> Value {
+        serde_json::json!({
+            "audioGraph": { "guitarNodes": { "G1": [
+                { "FenderId": "B", "nodeId": "B" },
+                { "FenderId": "A", "nodeId": "A_1" }
+            ] } }
+        })
+    }
+
+    #[test]
+    fn scan_and_apply_reach_a_second_instance() {
+        let presets = vec![(3u32, preset_with_second_instance_only())];
+        let affected = scan_affected(&presets, &set(&["A"]));
+        assert_eq!(affected, vec![(3, ids(&["A"]))], "A_1 is an A block");
+        let mut p = preset_with_second_instance_only();
+        let r = Replacement {
+            list_index: 3,
+            from: "A".into(),
+            to: "A2".into(),
+        };
+        assert_eq!(apply_replacement(&mut p, &r), 1);
+        assert_eq!(count_model_nodes(&p, "A"), 0);
+        assert_eq!(count_model_nodes(&p, "A2"), 1);
     }
 }

@@ -1238,9 +1238,11 @@ fn patch_scene_overlays(
 ) {
     let roster = crate::audiograph::roster(v);
     for ((scene, group, node, param), value) in scene_params {
+        // Instance first, then a model id's first instance — `audiograph::roster_entry`'s rule.
         let Some((_, node_id, fender_id)) = roster
             .iter()
-            .find(|(_, nid, fid)| nid == node || fid == node)
+            .find(|(_, nid, _)| nid == node)
+            .or_else(|| roster.iter().find(|(_, _, fid)| fid == node))
         else {
             continue;
         };
@@ -1836,7 +1838,7 @@ impl SimDevice {
                 });
                 return Vec::new();
             }
-            let new_id = mint_node_id(&ids, &fender_id);
+            let new_id = crate::audiograph::mint_node_id(&ids, &fender_id);
             let reply = node_json_payload(&group, &fender_id, &new_id);
             return confirm_structural(
                 &mut st,
@@ -3230,18 +3232,6 @@ fn working_group_ids(st: &mut SimState, group: &str, except: Option<&str>) -> Ve
         .unwrap_or_default()
 }
 
-/// The firmware's id for a new node (fw 1.8.58 `FUN_00c7fd80`): its FenderId, or the
-/// first free `<FenderId>_<n>` when the group already uses it.
-fn mint_node_id(ids: &[String], base: &str) -> String {
-    if !ids.iter().any(|id| id == base) {
-        return base.to_string();
-    }
-    (1..)
-        .map(|n| format!("{base}_{n}"))
-        .find(|id| !ids.contains(id))
-        .expect("an unbounded range always finds a free id")
-}
-
 /// Confirm a replace, minting the new node's id against the rest of its group.
 fn confirm_replace(
     st: &mut SimState,
@@ -3249,7 +3239,8 @@ fn confirm_replace(
     node_id: String,
     fender_id: String,
 ) -> Vec<Vec<u8>> {
-    let new_id = mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
+    let new_id =
+        crate::audiograph::mint_node_id(&working_group_ids(st, &group, Some(&node_id)), &fender_id);
     let reply = node_json_payload(&group, &fender_id, &new_id);
     confirm_structural(
         st,
@@ -3317,7 +3308,7 @@ fn group_nodes_mut<'a>(
 }
 
 /// One structural edit on the working copy, group-scoped like the device's own ops. An
-/// inserted or replaced node carries the id [`mint_node_id`] gave it.
+/// inserted or replaced node carries the id [`crate::audiograph::mint_node_id`] gave it.
 fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
     match e {
         WorkingEdit::Replace {
@@ -3329,7 +3320,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
                 if let Some(node) = nodes
                     .iter_mut()
-                    .find(|n| audiograph::node_id(n) == Some(node_id.as_str()))
+                    .find(|n| audiograph::instance_id(n) == Some(node_id.as_str()))
                 {
                     if let Some(obj) = node.as_object_mut() {
                         obj.insert("nodeId".into(), serde_json::Value::String(new_id.clone()));
@@ -3343,7 +3334,7 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
         }
         WorkingEdit::Remove { group, node_id } => {
             if let Some(nodes) = group_nodes_mut(v, group, false) {
-                nodes.retain(|n| audiograph::node_id(n) != Some(node_id.as_str()));
+                nodes.retain(|n| audiograph::instance_id(n) != Some(node_id.as_str()));
             }
         }
         WorkingEdit::Insert {
@@ -3356,7 +3347,11 @@ fn apply_working_edit(v: &mut serde_json::Value, e: &WorkingEdit) {
                 // field-2 = the nodeId to insert BEFORE; absent → append at the group end.
                 let at = before
                     .as_deref()
-                    .and_then(|b| nodes.iter().position(|n| audiograph::node_id(n) == Some(b)))
+                    .and_then(|b| {
+                        nodes
+                            .iter()
+                            .position(|n| audiograph::instance_id(n) == Some(b))
+                    })
                     .unwrap_or(nodes.len());
                 nodes.insert(
                     at,

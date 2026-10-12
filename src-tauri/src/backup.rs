@@ -25,6 +25,20 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// How a snapshot's `preset_json` was obtained — its fidelity. Serialized as the same
+/// kebab-case strings the snapshot files have always carried.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotSource {
+    /// A complete `.preset` decode — the only fidelity safe to re-import.
+    OfflineFile,
+    /// A USB read that can be incomplete (AC1).
+    UsbPartial,
+    /// Any other value found in an older or hand-edited snapshot file. Never restorable.
+    #[serde(other)]
+    Unknown,
+}
+
 /// A pre-edit capture of one preset. `preset_json` is opaque — we round-trip it
 /// verbatim and never reserialize through a typed schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -34,11 +48,11 @@ pub struct PresetSnapshot {
     /// Best-effort display name (for the backups list); not load-bearing.
     #[serde(default)]
     pub display_name: String,
-    /// Capture instant, RFC3339 UTC (opaque string — only used for ordering/naming).
+    /// Capture instant as zero-padded epoch MILLISECONDS (`bulkrun::now_stamp`), so a
+    /// lexical sort is chronological. Opaque: only used for ordering and naming.
     pub captured_at: String,
-    /// How `preset_json` was obtained: `"usb-partial"` (incomplete — see AC1) or
-    /// `"offline-file"` (a complete `.preset`).
-    pub source: String,
+    /// How `preset_json` was obtained ([`SnapshotSource`]).
+    pub source: SnapshotSource,
     /// The preset JSON at capture time, verbatim.
     pub preset_json: String,
 }
@@ -50,7 +64,7 @@ pub struct PresetSnapshot {
 /// in-place path (`lib::run_replace_inplace`) so the restore lands on the
 /// snapshot's original slot and keeps its Song binding — NOT a bare append.
 pub fn restore_bytes(snapshot: &PresetSnapshot) -> Result<Vec<u8>, String> {
-    if snapshot.source != "offline-file" {
+    if snapshot.source != SnapshotSource::OfflineFile {
         return Err(format!(
             "refusing to restore a {:?} snapshot to the device: only a complete \
              'offline-file' backup is safe to re-import (a partial would overwrite the \
@@ -237,8 +251,8 @@ mod tests {
             list_enum: 1,
             slot: 11,
             display_name: "Bassmans Comparison".into(),
-            captured_at: "2026-06-20T16:09:00Z".into(),
-            source: "offline-file".into(),
+            captured_at: "00000001750435740000".into(),
+            source: SnapshotSource::OfflineFile,
             preset_json:
                 r#"{"uuid":"abc","audioGraph":{"guitarNodes":{"G1":[{"outputLevel":0.5}]}}}"#.into(),
         }
@@ -312,7 +326,7 @@ mod tests {
         let json = r#"{"info":{"displayName":"X"}}"#;
         let preset_file = super::xor_jld(json.as_bytes()); // what was on disk
         let snap = PresetSnapshot {
-            source: "offline-file".into(),
+            source: SnapshotSource::OfflineFile,
             preset_json: json.into(),
             ..sample()
         };
@@ -327,7 +341,7 @@ mod tests {
     #[test]
     fn restore_bytes_refuses_usb_partial() {
         let snap = PresetSnapshot {
-            source: "usb-partial".into(),
+            source: SnapshotSource::UsbPartial,
             ..sample()
         };
         let err = restore_bytes(&snap).unwrap_err();
@@ -335,5 +349,20 @@ mod tests {
             err.contains("usb-partial") || err.contains("partial"),
             "got: {err}"
         );
+    }
+
+    // The source is an enum on the same wire strings: an existing snapshot file still
+    // reads, and an unrecognised source parses as `Unknown`, which the restore gate refuses.
+    #[test]
+    fn snapshot_source_keeps_its_strings_and_refuses_unknown() {
+        let mut v = serde_json::to_value(sample()).unwrap();
+        assert_eq!(v["source"], "offline-file");
+        v["source"] = "usb-partial".into();
+        let partial: PresetSnapshot = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(partial.source, SnapshotSource::UsbPartial);
+        v["source"] = "something-else".into();
+        let odd: PresetSnapshot = serde_json::from_value(v).unwrap();
+        assert_eq!(odd.source, SnapshotSource::Unknown);
+        assert!(restore_bytes(&odd).is_err());
     }
 }

@@ -78,7 +78,7 @@ pub fn apply_recipe(source: &Value, recipe: &Recipe) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audiograph::count_nodes_with_id;
+    use crate::audiograph::count_model_nodes;
 
     fn source() -> Value {
         serde_json::json!({
@@ -119,8 +119,8 @@ mod tests {
             v["audioGraph"]["guitarNodes"]["G1"][0]["dspUnitParameters"]["gain"],
             0.2
         );
-        assert_eq!(count_nodes_with_id(&v, "ACD_BassComp"), 1);
-        assert_eq!(count_nodes_with_id(&v, "ACD_Comp"), 0);
+        assert_eq!(count_model_nodes(&v, "ACD_BassComp"), 1);
+        assert_eq!(count_model_nodes(&v, "ACD_Comp"), 0);
         assert_eq!(v["bpm"], 90.0);
         // Source is untouched (clone semantics).
         assert_eq!(
