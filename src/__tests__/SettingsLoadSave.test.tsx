@@ -112,6 +112,62 @@ describe("SettingsView — load and save are never silent (#300)", () => {
     });
     expect(screen.getByText("Rhythm")).toBeInTheDocument();
   });
+
+  it("a recovery read overtaken by a newer save keeps that save's list", async () => {
+    let reads = 0;
+    let releaseRead: () => void = () => undefined;
+    let saves = 0;
+    let releaseSave: () => void = () => undefined;
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      const stored = store([{ name: "Rhythm", lufs: -26 }]);
+      if (command === "get_store") {
+        reads++;
+        if (reads === 1) return Promise.resolve(stored);
+        // The recovery read stays pending until released.
+        return new Promise((res) => {
+          releaseRead = () => {
+            res(stored);
+          };
+        });
+      }
+      if (command === "list_pickup_topologies") return Promise.resolve([]);
+      if (command === "save_targets") {
+        saves++;
+        if (saves === 1) return Promise.reject(new Error("disk full"));
+        return new Promise((res) => {
+          releaseSave = () => {
+            res(null);
+          };
+        });
+      }
+      return Promise.resolve(null);
+    });
+    renderView();
+    await screen.findByText("Rhythm");
+
+    // Save 1 fails → a recovery read starts and stays pending.
+    await userEvent.click(screen.getByText("Add target"));
+    await screen.findByRole("alert");
+    await vi.waitFor(() => {
+      expect(reads).toBe(2);
+    });
+    // Save 2 starts while that read is pending (Rhythm + 2 new rows).
+    await userEvent.click(screen.getByText("Add target"));
+    const all = savedTargets();
+    expect(all[all.length - 1]).toHaveLength(3);
+
+    // The stale read lands, then save 2 succeeds: its list stays.
+    releaseRead();
+    releaseSave();
+    await vi.waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+    expect(screen.getByText("Rhythm")).toBeInTheDocument();
+    expect(
+      screen.getAllByText("New target").length +
+        screen.queryAllByDisplayValue("New target").length,
+    ).toBe(2);
+  });
 });
 
 describe("Settings — click-only reorder and slider cancel (#302)", () => {

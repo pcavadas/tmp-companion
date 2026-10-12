@@ -235,6 +235,7 @@ export async function ensureLibraryScan(): Promise<void> {
     } catch {
       // No progress events this scan; the read below still runs.
     }
+    if (gen !== generation) return; // reset during the listen → no stale read
     const res = await readLibraryViaBackup();
     if (gen !== generation) return; // reset mid-scan → drop the stale results
     const m = new Map<number, SceneInfo[]>();

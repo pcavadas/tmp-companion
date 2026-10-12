@@ -94,6 +94,7 @@ export function useUpdater(): UpdaterApi {
     setPercent(0);
     u.download(setPercent).then(
       () => {
+        downloadingRef.current = false;
         setPhase("ready");
       },
       () => {

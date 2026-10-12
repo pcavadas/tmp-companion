@@ -175,6 +175,42 @@ describe("useUpdater — download failure + retry", () => {
   });
 });
 
+// A finished download must release the single-flight guard, or an update found
+// after dismissing "ready" could never download.
+describe("useUpdater — a finished download releases the guard", () => {
+  it("success → dismiss → a later update downloads again", async () => {
+    const u = mkUpdate("1.1.0", null);
+    h.checkForUpdate.mockResolvedValue(u.found);
+
+    const { result } = renderHook(() => useUpdater());
+    await waitFor(() => {
+      expect(result.current.phase).toBe("available");
+    });
+    act(() => {
+      result.current.startDownload();
+    });
+    act(() => {
+      u.finish();
+    });
+    await waitFor(() => {
+      expect(result.current.phase).toBe("ready");
+    });
+
+    act(() => {
+      result.current.dismiss();
+    });
+    await act(async () => {
+      await result.current.check();
+    });
+    expect(result.current.phase).toBe("available");
+    act(() => {
+      result.current.startDownload();
+    });
+    expect(result.current.phase).toBe("downloading");
+    expect(u.download).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("useUpdater — dev-build guard", () => {
   it("never checks when the app version is the dev placeholder", async () => {
     h.appInfo.mockResolvedValue(info("0.0.0-development"));

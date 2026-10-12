@@ -199,6 +199,7 @@ export function SongsView({ connected, onScan }: SongsViewProps) {
       const scan = getLibraryScan();
       const fromScan = scan.ready && scan.songs.length > 0;
       const s = fromScan ? scan.songs : await listSongs();
+      if (!isCurrent()) return;
       const l = fromScan ? scan.setlists : await readSetlists();
       if (!isCurrent()) return;
       setSongs(s);

@@ -25,7 +25,7 @@ const STEPS: readonly { title: string; body: string }[] = [
   },
   {
     title: "Still nothing?",
-    body: "Try another USB port or another cable, then press Scan for device.",
+    body: "Try another USB port or another cable. The app finds the unit on its own once it is plugged in.",
   },
 ];
 

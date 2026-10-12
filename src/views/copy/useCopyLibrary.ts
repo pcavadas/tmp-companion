@@ -16,7 +16,11 @@ import {
 import { listPresets } from "../../lib/invoke";
 import { useDeviceLoad } from "../../lib/useDeviceLoad";
 import { presetCpu } from "../../models/cpu";
-import { subscribeLibraryScan, getLibraryScan } from "../../device/libraryScan";
+import {
+  subscribeLibraryScan,
+  getLibraryScan,
+  retryLibraryScan,
+} from "../../device/libraryScan";
 import { isEmptyName } from "../level/usePresetData";
 import type { ActiveGraph, PresetEntry } from "../../lib/types";
 
@@ -76,6 +80,13 @@ export function useCopyLibrary(
     if (connected) void refresh();
   }, [connected, refresh]);
 
+  // The error pane's Retry: re-read the list, and re-run the shared scan only if
+  // IT failed (a healthy scan is never re-triggered from a tab).
+  const retry = useCallback(async () => {
+    if (getLibraryScan().error != null) retryLibraryScan();
+    await refresh();
+  }, [refresh]);
+
   // The backup scan is App-owned (one per connection, shared by every device tab); this
   // hook only SUBSCRIBES to it (`lib`) — no trigger here, so a tab switch never re-scans.
 
@@ -111,7 +122,8 @@ export function useCopyLibrary(
     loaded: phase.kind === "ready",
     ready: lib.ready,
     scanning: lib.scanning,
-    error: phase.kind === "error" ? phase.message : null,
-    refresh,
+    // A failed library scan blocks Copy too: without it every graph is empty.
+    error: lib.error ?? (phase.kind === "error" ? phase.message : null),
+    refresh: retry,
   };
 }

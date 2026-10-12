@@ -215,16 +215,27 @@ export function SettingsView({
   // Bumped to (re-)read the store: by Retry after a failed load, and after a
   // failed save so the page shows what is actually stored.
   const [readGen, setReadGen] = useState(0);
+  // Bumped as each save starts. A recovery read that sees it move discards its
+  // result: a newer optimistic edit outranks what was stored before it.
+  const saveSeqRef = useRef(0);
 
   const ready = load.kind === "ready";
 
   // Read the store and the topologies together; either failing is a load error.
-  // A superseded read (a newer readGen, or unmount) applies nothing.
+  // A superseded read (a newer readGen, or unmount) applies nothing, and a read
+  // overtaken by a newer save leaves that save's optimistic lists in place.
   useEffect(() => {
     let current = true;
+    const seq = saveSeqRef.current;
     Promise.all([getStore(), listPickupTopologies()])
       .then(([store, tp]: [Store, TopologyInfo[]]) => {
         if (!current) return;
+        if (saveSeqRef.current !== seq) {
+          // A save started during this read; its own outcome decides the lists
+          // (a failure re-reads again).
+          setLoad({ kind: "ready" });
+          return;
+        }
         setProfiles(store.profiles);
         setTargets(
           // Stamp a transient uid per row (uidRef is stable across renders).
@@ -277,6 +288,7 @@ export function SettingsView({
   // Optimistic: the list updates at once; a failed save re-reads the store.
   async function persistProfiles(next: Profile[]) {
     setProfiles(next);
+    saveSeqRef.current++;
     try {
       await saveProfiles(next);
       setSaveError(null);
@@ -288,6 +300,7 @@ export function SettingsView({
   // Persist a target list (strips the transient uid for the wire model).
   async function persistTargets(next: UiTarget[]) {
     setTargets(next);
+    saveSeqRef.current++;
     try {
       await saveTargets(stripUid(next));
       setSaveError(null);
@@ -345,6 +358,7 @@ export function SettingsView({
 
   async function persistPlayback(level: PlaybackLevel) {
     setPlayback(level);
+    saveSeqRef.current++;
     try {
       await setPlaybackLevel(level);
       setSaveError(null);
